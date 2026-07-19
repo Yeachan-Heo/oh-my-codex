@@ -1,7 +1,7 @@
-import { randomBytes } from 'crypto';
-import { constants as fsConstants, lstatSync, readFileSync, realpathSync, type Stats } from 'fs';
-import { lstat, open, readFile, rename, rm } from 'fs/promises';
-import { join } from 'path';
+import { createHash, randomBytes } from 'node:crypto';
+import { constants as fsConstants, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { lstat, open, readFile, readdir } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 
 import { getBaseStateDir, getStatePath, normalizeSessionId, resolveWritableStateScope } from '../mcp/state-paths.js';
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
@@ -10,435 +10,193 @@ export const UNSUPPORTED_DOCUMENTED_LEADER_PROOF = 'unsupported_documented_leade
 
 export const UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE = Object.freeze({
   hookSpecificOutput: Object.freeze({
-    hookEventName: 'PreToolUse',
-    permissionDecision: 'deny',
+    hookEventName: 'PreToolUse', permissionDecision: 'deny',
     permissionDecisionReason: 'unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.',
   }),
 });
-
 export const UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE = Object.freeze({
-  hookSpecificOutput: Object.freeze({
-    hookEventName: 'PreToolUse',
-    permissionDecision: 'deny',
-    permissionDecisionReason: 'Ralplan role-intent denied: unknown_role.',
-  }),
+  hookSpecificOutput: Object.freeze({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Ralplan role-intent denied: unknown_role.' }),
 });
+type PreToolUseDenial = typeof UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE | typeof UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
 
-type PreToolUseDenial = typeof UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE
-  | typeof UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
-
-export interface Codex01445PreToolUseDependencies {
-  resolveInstalledRoleName: typeof resolveInstalledRoleName;
-  platform: NodeJS.Platform;
-}
-
-const defaultDependencies: Codex01445PreToolUseDependencies = {
-  resolveInstalledRoleName,
-  platform: process.platform,
-};
-
+export interface Codex01445PreToolUseDependencies { resolveInstalledRoleName: typeof resolveInstalledRoleName; platform: NodeJS.Platform; }
+const defaultDependencies: Codex01445PreToolUseDependencies = { resolveInstalledRoleName, platform: process.platform };
 function readCommand(payload: Record<string, unknown>): string | undefined {
-  if (payload.tool_name !== 'Bash') return undefined;
-  const toolInput = payload.tool_input;
-  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return undefined;
-  const command = (toolInput as Record<string, unknown>).command;
+  if (payload.tool_name !== 'Bash' || !payload.tool_input || typeof payload.tool_input !== 'object' || Array.isArray(payload.tool_input)) return undefined;
+  const command = (payload.tool_input as Record<string, unknown>).command;
   return typeof command === 'string' ? command : undefined;
 }
-
-/**
- * Recognize only the canonical standalone adapted role-intent invocation. The
- * environment placeholder is matched lexically and is never expanded or used
- * as authority. Wrappers, assignments, compounds, redirects, duplicate flags,
- * alternate ordering, and malformed commands deliberately fall through to the
- * CLI parser.
- */
-export function parseCodex01445AdaptedRoleIntentCommand(
-  command: string,
-  platform: NodeJS.Platform = process.platform,
-): { role: string } | null {
-  const parentPlaceholder = platform === 'win32'
-    ? '"%CODEX_THREAD_ID%"'
-    : '"$CODEX_THREAD_ID"';
-  const escapedPlaceholder = parentPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(
-    `^omx ralplan role-intent write --role ([A-Za-z0-9_-]{1,64}) --parent-thread ${escapedPlaceholder} --json$`,
-  );
-  const match = command.match(pattern);
+export function parseCodex01445AdaptedRoleIntentCommand(command: string, platform: NodeJS.Platform = process.platform): { role: string } | null {
+  const placeholder = platform === 'win32' ? '"%CODEX_THREAD_ID%"' : '"$CODEX_THREAD_ID"';
+  const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = command.match(new RegExp(`^omx ralplan role-intent write --role ([A-Za-z0-9_-]{1,64}) --parent-thread ${escaped} --json$`));
   return match?.[1] ? { role: match[1] } : null;
 }
-
-export function evaluateCodex01445PreToolUse(
-  payload: Record<string, unknown>,
-  overrides: Partial<Codex01445PreToolUseDependencies> = {},
-): PreToolUseDenial | undefined {
-  const command = readCommand(payload);
-  if (!command) return undefined;
+export function evaluateCodex01445PreToolUse(payload: Record<string, unknown>, overrides: Partial<Codex01445PreToolUseDependencies> = {}): PreToolUseDenial | undefined {
+  const command = readCommand(payload); if (!command) return undefined;
   const dependencies = { ...defaultDependencies, ...overrides };
   const parsed = parseCodex01445AdaptedRoleIntentCommand(command, dependencies.platform);
   if (!parsed) return undefined;
-  if (!dependencies.resolveInstalledRoleName(parsed.role)) return UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
-  return UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE;
+  return dependencies.resolveInstalledRoleName(parsed.role) ? UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE : UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
 }
 
-function collectRoutingOwnerIds(baseStateDir: string, canonicalSessionId: string): Set<string> {
-  const ownerIds = new Set([canonicalSessionId]);
-  try {
-    const pointerPath = join(baseStateDir, 'session.json');
-    if (realpathSync(pointerPath) !== pointerPath || !lstatSync(pointerPath).isFile()) return ownerIds;
-    const pointer = JSON.parse(readFileSync(pointerPath, 'utf-8')) as Record<string, unknown>;
-    for (const field of ['session_id', 'native_session_id', 'codex_session_id', 'owner_omx_session_id', 'owner_codex_session_id']) {
-      const ownerId = normalizeSessionId(pointer[field]);
-      if (ownerId) ownerIds.add(ownerId);
-    }
-  } catch {}
-  return ownerIds;
-}
-
-
-function hasContradictoryRoutingOwner(state: Record<string, unknown>, ownerIds: Set<string>): boolean {
-  for (const field of ['session_id', 'owner_omx_session_id', 'owner_codex_session_id']) {
-    if (!Object.prototype.hasOwnProperty.call(state, field)) continue;
-    const ownerId = normalizeSessionId(state[field]);
-    if (!ownerId || !ownerIds.has(ownerId)) return true;
-  }
-  return false;
-}
-
-const MAX_ROUTING_STATE_BYTES = 128 * 1024;
-const MAX_ROLLBACK_ATTEMPTS = 2;
-
-type TransactionPoint =
-  | 'temp-create'
-  | 'temp-write'
-  | 'temp-sync'
-  | 'first-publish'
-  | 'second-publish'
-  | 'directory-sync'
-  | 'read-back'
-  | 'cleanup'
-  | 'rollback';
-type DirectorySyncPhase = 'prepare' | 'publish' | 'rollback' | 'cleanup';
-
+const MAX_BYTES = 128 * 1024;
+const MAX_GENERATION_BYTES = 64 * 1024;
+const MAX_GENERATIONS = 32;
+const GENERATION_PREFIX = '.ralplan-neutralization-';
+const COMMIT_SUFFIX = '.commit.json';
+const GENERATION_VERSION = 1;
+type OverlayKind = 'ralplan' | 'skill';
+type FaultPoint = 'data-create' | 'data-write' | 'data-sync' | 'commit-create' | 'commit-write' | 'commit-sync' | 'directory-sync' | 'commit-final-write' | 'commit-final-sync';
 /** @internal Test-only hooks; no CLI argument reaches these hooks. */
-export const RALPLAN_NEUTRALIZE_TEST_SEAM: {
-  fail?: (point: TransactionPoint) => void | Promise<void>;
-  random?: () => Buffer;
-  beforePublish?: (index: number) => void | Promise<void>;
-  beforePublishRename?: (index: number) => void | Promise<void>;
-  beforeRollback?: (index: number) => void | Promise<void>;
-  beforeRollbackRename?: (index: number) => void | Promise<void>;
-  beforeCleanupRemoval?: (index: number) => void | Promise<void>;
-  directorySync?: (phase: DirectorySyncPhase) => void | Promise<void>;
-} = {};
+export const RALPLAN_NEUTRALIZE_TEST_SEAM: { fail?: (point: FaultPoint) => void | Promise<void>; random?: () => Buffer; directorySync?: () => void | Promise<void> } = {};
 
-interface PinnedFile {
-  path: string;
-  bytes: Buffer;
-  stat: Stats;
-  state: Record<string, unknown>;
+function regularSingleLink(stat: Awaited<ReturnType<typeof lstat>>, max = MAX_BYTES): boolean {
+  return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size <= max;
 }
-
-interface StagedFile {
-  path: string;
-  bytes: Buffer;
-  stat: Stats;
-}
-
-interface PublishedFile {
-  path: string;
-  stat: Stats;
-  next: Buffer;
-  original: Buffer;
-  backup: string;
-}
-
-function sameFile(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
-}
-
-async function pinRegularState(path: string): Promise<PinnedFile | null> {
-  const stat = await lstat(path);
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size > MAX_ROUTING_STATE_BYTES) return null;
-
-  const bytes = await readFile(path);
-  const after = await lstat(path);
-  if (!sameFile(stat, after) || bytes.length !== stat.size) return null;
-
+async function readPinned(path: string, max = MAX_BYTES): Promise<Buffer | null> {
   try {
-    const state = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
-    return state && !Array.isArray(state) ? { path, bytes, stat, state } : null;
-  } catch {
-    return null;
+    const before = await lstat(path); if (!regularSingleLink(before, max)) return null;
+    const bytes = await readFile(path); const after = await lstat(path);
+    return regularSingleLink(after, max) && before.dev === after.dev && before.ino === after.ino && before.size === after.size && bytes.length === before.size ? bytes : null;
+  } catch { return null; }
+}
+function object(bytes: Buffer): Record<string, unknown> | null {
+  try { const parsed = JSON.parse(bytes.toString('utf8')); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null; } catch { return null; }
+}
+function digest(ralplan: Buffer, skill: Buffer): string {
+  return createHash('sha256').update('ralplan-state.json\0').update(ralplan).update('\0skill-active-state.json\0').update(skill).digest('hex');
+}
+function ownerMatches(state: Record<string, unknown>, owners: Set<string>): boolean {
+  for (const key of ['session_id', 'owner_omx_session_id', 'owner_codex_session_id']) {
+    if (!Object.prototype.hasOwnProperty.call(state, key)) continue;
+    const value = normalizeSessionId(state[key]); if (!value || !owners.has(value)) return false;
   }
-}
-
-async function stillPinned(file: PinnedFile): Promise<boolean> {
-  try {
-    const stat = await lstat(file.path);
-    return !stat.isSymbolicLink()
-      && stat.isFile()
-      && stat.nlink === 1
-      && sameFile(stat, file.stat)
-      && (await readFile(file.path)).equals(file.bytes);
-  } catch {
-    return false;
-  }
-}
-
-function hasOnlyFields(state: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Object.keys(state).every((field) => allowed.includes(field));
-}
-
-function ordinaryRoutingSeed(state: Record<string, unknown>, ownerIds: Set<string>, kind: 'ralplan' | 'skill'): boolean {
-  if (hasContradictoryRoutingOwner(state, ownerIds) || state.active !== true || state.source !== 'keyword-detector') return false;
-
-  const ownerFields = ['session_id', 'owner_omx_session_id', 'owner_codex_session_id'];
-  if (kind === 'ralplan') {
-    return hasOnlyFields(state, ['active', 'source', 'mode', 'current_phase', ...ownerFields])
-      && state.mode === 'ralplan'
-      && state.current_phase === 'planning';
-  }
-
-  if (!hasOnlyFields(state, ['active', 'source', 'skill', 'phase', 'current_phase', 'active_skills', ...ownerFields])
-    || state.skill !== 'ralplan'
-    || state.phase !== 'planning'
-    || state.current_phase !== 'planning'
-    || !Array.isArray(state.active_skills)
-    || state.active_skills.length !== 1) return false;
-
-  const [entry] = state.active_skills;
-  return Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
-    && hasOnlyFields(entry as Record<string, unknown>, ['skill', 'active', 'phase', 'current_phase', ...ownerFields])
-    && (entry as Record<string, unknown>).skill === 'ralplan'
-    && (entry as Record<string, unknown>).active === true
-    && (entry as Record<string, unknown>).phase === 'planning'
-    && (entry as Record<string, unknown>).current_phase === 'planning'
-    && !hasContradictoryRoutingOwner(entry as Record<string, unknown>, ownerIds));
-}
-
-async function fault(point: TransactionPoint): Promise<void> {
-  await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.(point);
-}
-
-function temporaryPath(directory: string, label: string): string {
-  const random = RALPLAN_NEUTRALIZE_TEST_SEAM.random ?? (() => randomBytes(24));
-  return join(directory, `.${label}.${random().toString('hex')}`);
-}
-
-async function createStaged(directory: string, label: string, bytes: Buffer, staged: StagedFile[]): Promise<StagedFile> {
-  await fault('temp-create');
-  const path = temporaryPath(directory, label);
-  const handle = await open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
-  const created = { path, bytes, stat: await handle.stat() };
-  staged.push(created);
-  try {
-    await fault('temp-write');
-    await handle.writeFile(bytes);
-    await fault('temp-sync');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  const stat = await lstat(path);
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || !(await readFile(path)).equals(bytes)) {
-    throw new Error('staged state changed before use');
-  }
-  created.stat = stat;
-  return created;
-}
-
-async function stagedStillOwned(file: StagedFile): Promise<boolean> {
-  try {
-    const stat = await lstat(file.path);
-    return !stat.isSymbolicLink()
-      && stat.isFile()
-      && stat.nlink === 1
-      && sameFile(stat, file.stat)
-      && (await readFile(file.path)).equals(file.bytes);
-  } catch {
-    return false;
-  }
-}
-
-function removeStaged(staged: StagedFile[], path: string): void {
-  const index = staged.findIndex((file) => file.path === path);
-  if (index >= 0) staged.splice(index, 1);
-}
-
-async function removeOwnedStaged(file: StagedFile): Promise<boolean> {
-  if (!await stagedStillOwned(file)) return false;
-  await rm(file.path);
   return true;
 }
-
-async function syncDirectory(directory: string, phase: DirectorySyncPhase): Promise<void> {
+function routingOnlyRalplan(state: Record<string, unknown>, owners: Set<string>): boolean {
+  if (state.active !== true || state.mode !== 'ralplan' || state.current_phase !== 'planning' || state.source !== 'keyword-detector' || !ownerMatches(state, owners)) return false;
+  return !['iteration', 'max_iterations', 'completed_at', 'review', 'handoff', 'execution', 'run_outcome', 'lifecycle_outcome', 'planning_complete'].some((key) => Object.prototype.hasOwnProperty.call(state, key));
+}
+function routingOnlySkill(state: Record<string, unknown>, owners: Set<string>): boolean {
+  if (state.active !== true || state.skill !== 'ralplan' || state.phase !== 'planning' || state.source !== 'keyword-detector' || !ownerMatches(state, owners) || !Array.isArray(state.active_skills) || state.active_skills.length !== 1) return false;
+  const entry = state.active_skills[0];
+  return Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
+    && (entry as Record<string, unknown>).skill === 'ralplan' && (entry as Record<string, unknown>).active === true
+    && ((entry as Record<string, unknown>).phase === 'planning' || (entry as Record<string, unknown>).phase === undefined)
+    && ownerMatches(entry as Record<string, unknown>, owners)
+    && !['requested_skills', 'deferred_skills', 'transition_messages', 'input_lock'].some((key) => Object.prototype.hasOwnProperty.call(state, key)));
+}
+function neutralized(state: Record<string, unknown>, kind: OverlayKind): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...state, active: false, phase: 'cancelled', current_phase: 'cancelled' };
+  if (kind === 'skill' && Array.isArray(state.active_skills)) next.active_skills = state.active_skills.map((entry) => entry && typeof entry === 'object' && !Array.isArray(entry) ? { ...entry as Record<string, unknown>, active: false, phase: 'cancelled', current_phase: 'cancelled' } : entry);
+  return next;
+}
+function collectOwners(baseStateDir: string, sessionId: string): Set<string> {
+  const owners = new Set([sessionId]);
+  try {
+    const pointerPath = join(baseStateDir, 'session.json');
+    if (realpathSync(pointerPath) !== pointerPath || !lstatSync(pointerPath).isFile()) return owners;
+    const pointer = JSON.parse(readFileSync(pointerPath, 'utf8')) as Record<string, unknown>;
+    for (const key of ['session_id', 'native_session_id', 'codex_session_id', 'owner_omx_session_id', 'owner_codex_session_id']) { const value = normalizeSessionId(pointer[key]); if (value) owners.add(value); }
+  } catch {}
+  return owners;
+}
+interface Generation { version: number; digest: string; canonical: { ralplan: { sha256: string; size: number }; skill: { sha256: string; size: number } }; }
+function validGeneration(candidate: unknown, expectedDigest: string, ralplan: Buffer, skill: Buffer): candidate is Generation {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+  const item = candidate as Partial<Generation>;
+  const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  return item.version === GENERATION_VERSION && item.digest === expectedDigest
+    && item.canonical?.ralplan?.sha256 === hash(ralplan) && item.canonical.ralplan.size === ralplan.length
+    && item.canonical?.skill?.sha256 === hash(skill) && item.canonical.skill.size === skill.length;
+}
+interface Commit { version: number; digest: string; dataFile: string; committed: boolean; }
+function validCommit(candidate: unknown, expectedDigest: string, dataFile: string): candidate is Commit {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+  const item = candidate as Partial<Commit>;
+  return item.version === GENERATION_VERSION && item.digest === expectedDigest && item.dataFile === dataFile && item.committed === true;
+}
+async function readGeneration(directory: string, expectedDigest: string, ralplan: Buffer, skill: Buffer): Promise<Generation | null> {
+  const names = await readdir(directory).catch(() => [] as string[]);
+  const prefix = `${GENERATION_PREFIX}${expectedDigest}-`;
+  for (const commitName of names.filter((name) => name.startsWith(prefix) && name.endsWith(COMMIT_SUFFIX)).sort().slice(0, MAX_GENERATIONS)) {
+    const token = commitName.slice(prefix.length, -COMMIT_SUFFIX.length);
+    if (!/^[0-9a-f]{48}$/.test(token)) continue;
+    const dataFile = `${prefix}${token}.json`;
+    const commitBytes = await readPinned(join(directory, commitName), MAX_GENERATION_BYTES); if (!commitBytes || !validCommit(object(commitBytes), expectedDigest, dataFile)) continue;
+    const dataBytes = await readPinned(join(directory, dataFile), MAX_GENERATION_BYTES); if (!dataBytes) continue;
+    const parsed = object(dataBytes); if (validGeneration(parsed, expectedDigest, ralplan, skill)) return parsed;
+  }
+  return null;
+}
+/** Returns an inert overlay only for the exact current canonical pair. */
+export async function readNeutralizedRoutingOverlay(path: string, kind: OverlayKind): Promise<Record<string, unknown> | null> {
+  const directory = join(path, '..');
+  const ralplanPath = kind === 'ralplan' ? path : join(directory, 'ralplan-state.json');
+  const skillPath = kind === 'skill' ? path : join(directory, 'skill-active-state.json');
+  const [ralplan, skill] = await Promise.all([readPinned(ralplanPath), readPinned(skillPath)]);
+  if (!ralplan || !skill || basename(ralplanPath) !== 'ralplan-state.json' || basename(skillPath) !== 'skill-active-state.json') return null;
+  const generation = await readGeneration(directory, digest(ralplan, skill), ralplan, skill);
+  if (!generation) return null;
+  const canonical = object(kind === 'ralplan' ? ralplan : skill);
+  return canonical ? neutralized(canonical, kind) : null;
+}
+async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, fsConstants.O_RDONLY);
+  try { await RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync?.(); await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('directory-sync'); await handle.sync(); } finally { await handle.close(); }
+}
+export async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolean> {
   try {
-    await RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync?.(phase);
-    await fault('directory-sync');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-function neutralized(state: Record<string, unknown>, kind: 'ralplan' | 'skill'): Buffer {
-  const now = new Date().toISOString();
-  const next: Record<string, unknown> = {
-    ...state,
-    active: false,
-    phase: 'cancelled',
-    current_phase: 'cancelled',
-    completed_at: now,
-    last_turn_at: now,
-  };
-  if (kind === 'skill' && Array.isArray(state.active_skills)) {
-    next.active_skills = state.active_skills.map((entry) => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-      const candidate = entry as Record<string, unknown>;
-      return candidate.skill === 'ralplan' ? { ...candidate, active: false, phase: 'cancelled', current_phase: 'cancelled' } : candidate;
-    });
-  }
-  return Buffer.from(`${JSON.stringify(next, null, 2)}\n`);
-}
-
-async function publishedStillOwned(file: PublishedFile): Promise<boolean> {
-  try {
-    const stat = await lstat(file.path);
-    return !stat.isSymbolicLink() && stat.isFile() && sameFile(stat, file.stat) && (await readFile(file.path)).equals(file.next);
-  } catch {
-    return false;
-  }
-}
-
-async function rollbackPublished(directory: string, published: PublishedFile[], staged: StagedFile[]): Promise<boolean> {
-  for (let attempt = 0; attempt < MAX_ROLLBACK_ATTEMPTS; attempt += 1) {
-    try {
-      let restored = false;
-      for (let index = published.length - 1; index >= 0; index -= 1) {
-        const file = published[index];
-        await RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollback?.(index);
-        await fault('rollback');
-        const current = await pinRegularState(file.path);
-        if (current?.bytes.equals(file.original)) {
-          restored = true;
-          continue;
+    const ownerSessionId = normalizeSessionId(process.env.OMX_SESSION_ID); if (!ownerSessionId) return false;
+    const scope = await resolveWritableStateScope(cwd); if (scope.source !== 'session' || !scope.sessionId) return false;
+    const base = getBaseStateDir(cwd); const directory = scope.stateDir;
+    if (realpathSync(base) !== base || realpathSync(directory) !== directory || lstatSync(directory).isSymbolicLink()) return false;
+    const owners = collectOwners(base, scope.sessionId); if (!owners.has(ownerSessionId)) return false;
+    const [ralplanBytes, skillBytes] = await Promise.all([readPinned(getStatePath('ralplan', cwd, scope.sessionId)), readPinned(join(directory, 'skill-active-state.json'))]);
+    if (!ralplanBytes || !skillBytes) return false;
+    const ralplan = object(ralplanBytes); const skill = object(skillBytes);
+    if (!ralplan || !skill || !routingOnlyRalplan(ralplan, owners) || !routingOnlySkill(skill, owners)) return false;
+    const pairDigest = digest(ralplanBytes, skillBytes);
+    const record: Generation = { version: GENERATION_VERSION, digest: pairDigest, canonical: { ralplan: { sha256: createHash('sha256').update(ralplanBytes).digest('hex'), size: ralplanBytes.length }, skill: { sha256: createHash('sha256').update(skillBytes).digest('hex'), size: skillBytes.length } } };
+    const bytes = Buffer.from(`${JSON.stringify(record)}\n`); const random = RALPLAN_NEUTRALIZE_TEST_SEAM.random ?? (() => randomBytes(24));
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const token = random().toString('hex'); if (!/^[0-9a-f]{48}$/.test(token)) return false;
+      const dataFile = `${GENERATION_PREFIX}${pairDigest}-${token}.json`;
+      const commitFile = `${GENERATION_PREFIX}${pairDigest}-${token}${COMMIT_SUFFIX}`;
+      let dataHandle: Awaited<ReturnType<typeof open>> | undefined;
+      let commitHandle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('data-create');
+        dataHandle = await open(join(directory, dataFile), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('data-write'); await dataHandle.writeFile(bytes);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('data-sync'); await dataHandle.sync(); await dataHandle.close(); dataHandle = undefined;
+        const pending = Buffer.from(`${JSON.stringify({ version: GENERATION_VERSION, digest: pairDigest, dataFile, committed: false } satisfies Commit)}\n`);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('commit-create');
+        commitHandle = await open(join(directory, commitFile), fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('commit-write'); await commitHandle.writeFile(pending);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('commit-sync'); await commitHandle.sync();
+        await syncDirectory(directory);
+        const committed = Buffer.from(`${JSON.stringify({ version: GENERATION_VERSION, digest: pairDigest, dataFile, committed: true } satisfies Commit)}\n`);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('commit-final-write');
+        await commitHandle.write(committed, 0, committed.length, 0); await commitHandle.truncate(committed.length);
+        await RALPLAN_NEUTRALIZE_TEST_SEAM.fail?.('commit-final-sync');
+        await commitHandle.sync(); await commitHandle.close(); commitHandle = undefined;
+        return true;
+      } catch (error) {
+        if (commitHandle) {
+          try {
+            const pending = Buffer.from(`${JSON.stringify({ version: GENERATION_VERSION, digest: pairDigest, dataFile, committed: false } satisfies Commit)}\n`);
+            await commitHandle.write(pending, 0, pending.length, 0);
+            await commitHandle.truncate(pending.length);
+            await commitHandle.sync();
+          } catch {}
         }
-        const backup = staged.find((candidate) => candidate.path === file.backup);
-        if (!await publishedStillOwned(file) || !backup || !await stagedStillOwned(backup)) {
-          throw new Error('foreign replacement during rollback');
-        }
-        await RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollbackRename?.(index);
-        if (!await publishedStillOwned(file) || !await stagedStillOwned(backup)) {
-          throw new Error('state changed immediately before rollback');
-        }
-        await rename(backup.path, file.path);
-        removeStaged(staged, backup.path);
-        restored = true;
+        await dataHandle?.close().catch(() => {}); await commitHandle?.close().catch(() => {});
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        return false;
       }
-      if (restored) await syncDirectory(directory, 'rollback');
-      published.splice(0, published.length);
-      return true;
-    } catch {
-      if (attempt + 1 === MAX_ROLLBACK_ATTEMPTS) return false;
     }
-  }
+  } catch {}
   return false;
 }
-
-export async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolean> {
-  const ownerSessionId = normalizeSessionId(process.env.OMX_SESSION_ID);
-  if (!ownerSessionId) return false;
-
-  const staged: StagedFile[] = [];
-  const published: PublishedFile[] = [];
-  let directory = '';
-  let committed = false;
-  let preserveRecoveryFiles = false;
-
-  try {
-    const scope = await resolveWritableStateScope(cwd);
-    if (scope.source !== 'session' || !scope.sessionId) return false;
-
-    const baseStateDir = getBaseStateDir(cwd);
-    const sessionsDir = join(baseStateDir, 'sessions');
-    directory = join(sessionsDir, scope.sessionId);
-    if (realpathSync(baseStateDir) !== baseStateDir
-      || realpathSync(sessionsDir) !== sessionsDir
-      || realpathSync(directory) !== directory
-      || lstatSync(sessionsDir).isSymbolicLink()
-      || lstatSync(directory).isSymbolicLink()) return false;
-
-    const ownerIds = collectRoutingOwnerIds(baseStateDir, scope.sessionId);
-    if (!ownerIds.has(ownerSessionId)) return false;
-
-    const [ralplan, skill] = await Promise.all([
-      pinRegularState(getStatePath('ralplan', cwd, scope.sessionId)),
-      pinRegularState(join(directory, 'skill-active-state.json')),
-    ]);
-    if (!ralplan || !skill || !ordinaryRoutingSeed(ralplan.state, ownerIds, 'ralplan') || !ordinaryRoutingSeed(skill.state, ownerIds, 'skill')) return false;
-
-    const originals = [ralplan, skill];
-    const next = [neutralized(ralplan.state, 'ralplan'), neutralized(skill.state, 'skill')];
-    const backups: StagedFile[] = [];
-    for (let index = 0; index < originals.length; index += 1) {
-      const backup = await createStaged(directory, `ralplan-recovery-${index}`, originals[index].bytes, staged);
-      backups.push(backup);
-    }
-    const replacements: StagedFile[] = [];
-    for (let index = 0; index < next.length; index += 1) {
-      const replacement = await createStaged(directory, `ralplan-next-${index}`, next[index], staged);
-      replacements.push(replacement);
-    }
-    await syncDirectory(directory, 'prepare');
-
-    for (let index = 0; index < originals.length; index += 1) {
-      await RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublish?.(index);
-      if (!await stillPinned(originals[index])) throw new Error('canonical state changed before publish');
-      await fault(index === 0 ? 'first-publish' : 'second-publish');
-      if (!await stagedStillOwned(replacements[index])) throw new Error('replacement temporary changed before publish');
-      await RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublishRename?.(index);
-      if (!await stillPinned(originals[index]) || !await stagedStillOwned(replacements[index])) {
-        throw new Error('state changed immediately before publish');
-      }
-      await rename(replacements[index].path, originals[index].path);
-      removeStaged(staged, replacements[index].path);
-      const stat = await lstat(originals[index].path);
-      if (stat.isSymbolicLink() || !stat.isFile() || !(await readFile(originals[index].path)).equals(next[index])) throw new Error('published state changed');
-      published.push({ path: originals[index].path, stat, next: next[index], original: originals[index].bytes, backup: backups[index].path });
-    }
-
-    await syncDirectory(directory, 'publish');
-    await fault('read-back');
-    if (!(await Promise.all(published.map(publishedStillOwned))).every(Boolean)) throw new Error('canonical state changed after publish');
-    committed = true;
-
-    try {
-      for (const [index, backup] of backups.entries()) {
-        await fault('cleanup');
-        await RALPLAN_NEUTRALIZE_TEST_SEAM.beforeCleanupRemoval?.(index);
-        if (!await removeOwnedStaged(backup)) throw new Error('recovery temporary changed before cleanup');
-        removeStaged(staged, backup.path);
-      }
-      await syncDirectory(directory, 'cleanup');
-    } catch {
-      // A foreign replacement or unsynced cleanup is an uncertainty signal, never a successful preflight.
-      preserveRecoveryFiles = true;
-      return false;
-    }
-    return true;
-  } catch {
-    if (committed) return true;
-    preserveRecoveryFiles = !await rollbackPublished(directory, published, staged);
-    return false;
-  } finally {
-    if (!preserveRecoveryFiles) {
-      for (const file of staged) {
-        try {
-          await removeOwnedStaged(file);
-        } catch {}
-      }
-    }
-  }
-}
-

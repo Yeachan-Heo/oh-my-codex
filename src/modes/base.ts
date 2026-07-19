@@ -29,6 +29,7 @@ import {
   resolveWritableStateScope,
 } from '../mcp/state-paths.js';
 import { completeRalplanSession, validateRalplanTerminalConsensus } from '../state/operations.js';
+import { readNeutralizedRoutingOverlay } from '../ralplan/documented-leader-preflight.js';
 
 
 export interface ModeState {
@@ -225,7 +226,12 @@ async function readModeStateFromPaths(paths: string[]): Promise<ModeState | null
   for (const path of paths) {
     if (!existsSync(path)) continue;
     try {
-      return JSON.parse(await readFile(path, 'utf-8'));
+      const canonical = JSON.parse(await readFile(path, 'utf-8')) as ModeState;
+      if (canonical.mode === 'ralplan') {
+        const overlay = await readNeutralizedRoutingOverlay(path, 'ralplan');
+        if (overlay) return overlay as ModeState;
+      }
+      return canonical;
     } catch {
       return null;
     }

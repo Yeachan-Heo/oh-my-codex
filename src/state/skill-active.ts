@@ -8,6 +8,7 @@ import {
   isTrackedWorkflowMode,
   pickPrimaryWorkflowMode,
 } from './workflow-transition.js';
+import { readNeutralizedRoutingOverlay } from '../ralplan/documented-leader-preflight.js';
 
 export const SKILL_ACTIVE_STATE_MODE = 'skill-active';
 export const SKILL_ACTIVE_STATE_FILE = `${SKILL_ACTIVE_STATE_MODE}-state.json`;
@@ -316,7 +317,9 @@ export function getSkillActiveStatePathsForStateDir(stateDir: string, sessionId?
 
 export async function readSkillActiveState(path: string): Promise<SkillActiveStateLike | null> {
   try {
-    return normalizeSkillActiveState(JSON.parse(await readFile(path, 'utf-8')));
+    const canonical = JSON.parse(await readFile(path, 'utf-8'));
+    const overlay = await readNeutralizedRoutingOverlay(path, 'skill');
+    return normalizeSkillActiveState(overlay ?? canonical);
   } catch {
     return null;
   }

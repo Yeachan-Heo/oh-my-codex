@@ -7,6 +7,8 @@ import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { readModeState } from '../../modes/base.js';
+import { readSkillActiveState } from '../../state/skill-active.js';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, '..', '..', '..');
@@ -476,14 +478,14 @@ describe('CLI session-scoped state parity', () => {
 
       await mkdir(sessionDir, { recursive: true });
       await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
-      await writeFile(ralplanPath, JSON.stringify({
+      const ralplanState = JSON.stringify({
         active: true,
         source: 'keyword-detector',
         mode: 'ralplan',
         session_id: sessionId,
         current_phase: 'planning',
-      }, null, 2));
-      await writeFile(sessionSkillPath, JSON.stringify({
+      }, null, 2);
+      const sessionSkillState = JSON.stringify({
         active: true,
         source: 'keyword-detector',
         skill: 'ralplan',
@@ -491,7 +493,9 @@ describe('CLI session-scoped state parity', () => {
         current_phase: 'planning',
         session_id: sessionId,
         active_skills: [{ skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: sessionId }],
-      }, null, 2));
+      }, null, 2);
+      await writeFile(ralplanPath, ralplanState);
+      await writeFile(sessionSkillPath, sessionSkillState);
       await writeFile(rootTeamPath, rootTeam);
       await writeFile(rootSkillPath, rootSkill);
       await writeFile(rootStopPath, rootStop);
@@ -503,14 +507,16 @@ describe('CLI session-scoped state parity', () => {
         ok: false,
         reason: 'unsupported_documented_leader_proof',
       });
+      assert.equal(await readFile(ralplanPath, 'utf-8'), ralplanState);
+      assert.equal(await readFile(sessionSkillPath, 'utf-8'), sessionSkillState);
       const [state, skillState] = await Promise.all([
-        readFile(ralplanPath, 'utf-8').then(JSON.parse),
-        readFile(sessionSkillPath, 'utf-8').then(JSON.parse),
+        readModeState('ralplan', wd),
+        readSkillActiveState(sessionSkillPath),
       ]);
-      assert.equal(state.active, false);
-      assert.equal(state.current_phase, 'cancelled');
-      assert.equal(skillState.active, false);
-      assert.equal(skillState.current_phase, 'cancelled');
+      assert.equal(state?.active, false);
+      assert.equal(state?.current_phase, 'cancelled');
+      assert.equal(skillState?.active, false);
+      assert.equal(skillState?.current_phase, 'cancelled');
       assert.equal(await readFile(rootTeamPath, 'utf-8'), rootTeam);
       assert.equal(await readFile(rootSkillPath, 'utf-8'), rootSkill);
       assert.equal(await readFile(rootStopPath, 'utf-8'), rootStop);

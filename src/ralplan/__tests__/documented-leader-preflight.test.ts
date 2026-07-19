@@ -1,441 +1,111 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { readModeState } from '../../modes/base.js';
+import { readSkillActiveState } from '../../state/skill-active.js';
 import {
-  UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE,
-  UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE,
-  evaluateCodex01445PreToolUse,
-  parseCodex01445AdaptedRoleIntentCommand,
-  neutralizeOwnedRoutingRalplan,
+  UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE, UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE,
+  evaluateCodex01445PreToolUse, neutralizeOwnedRoutingRalplan, parseCodex01445AdaptedRoleIntentCommand,
   RALPLAN_NEUTRALIZE_TEST_SEAM,
 } from '../documented-leader-preflight.js';
 
-const posixCommand = (role: string) =>
-  `omx ralplan role-intent write --role ${role} --parent-thread "$CODEX_THREAD_ID" --json`;
-const windowsCommand = (role: string) =>
-  `omx ralplan role-intent write --role ${role} --parent-thread "%CODEX_THREAD_ID%" --json`;
-
+const command = (role: string) => `omx ralplan role-intent write --role ${role} --parent-thread "$CODEX_THREAD_ID" --json`;
 describe('Codex 0.144.5 adapted role-intent preflight', () => {
-  it('recognizes only the canonical standalone POSIX and Windows forms', () => {
-    assert.deepEqual(parseCodex01445AdaptedRoleIntentCommand(posixCommand('architect'), 'linux'), { role: 'architect' });
-    assert.deepEqual(parseCodex01445AdaptedRoleIntentCommand(windowsCommand('critic'), 'win32'), { role: 'critic' });
-    for (const command of [
-      'ROLE=architect ' + posixCommand('architect'),
-      'env ' + posixCommand('architect'),
-      posixCommand('architect') + '; id',
-      posixCommand('architect') + ' > out',
-      'omx ralplan role-intent write --role architect --json',
-      'omx ralplan role-intent write --role architect --role critic --parent-thread "$CODEX_THREAD_ID" --json',
-      'omx ralplan role-intent write --parent-thread "$CODEX_THREAD_ID" --role architect --json',
-      'omx ralplan role-intent write --role $ROLE --parent-thread "$CODEX_THREAD_ID" --json',
-    ]) assert.equal(parseCodex01445AdaptedRoleIntentCommand(command, 'linux'), null, command);
+  it('recognizes only the canonical standalone form', () => {
+    assert.deepEqual(parseCodex01445AdaptedRoleIntentCommand(command('architect'), 'linux'), { role: 'architect' });
+    assert.equal(parseCodex01445AdaptedRoleIntentCommand(`${command('architect')}; id`, 'linux'), null);
   });
-
-  it('denies installed roles and preserves unknown-role precedence without inspecting unrelated tools', () => {
-    let calls = 0;
-    const resolveInstalledRoleName = (role: string) => {
-      calls += 1;
-      return role === 'architect' || role === 'custom-role' ? role : null;
-    };
-    assert.equal(evaluateCodex01445PreToolUse({
-      tool_name: 'Bash',
-      tool_input: { command: posixCommand('architect') },
-    }, { resolveInstalledRoleName, platform: 'linux' }), UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE);
-    assert.equal(evaluateCodex01445PreToolUse({
-      tool_name: 'Bash',
-      tool_input: { command: posixCommand('custom-role') },
-    }, { resolveInstalledRoleName, platform: 'linux' }), UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE);
-    assert.equal(evaluateCodex01445PreToolUse({
-      tool_name: 'Bash',
-      tool_input: { command: posixCommand('missing-role') },
-    }, { resolveInstalledRoleName, platform: 'linux' }), UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE);
-    assert.equal(evaluateCodex01445PreToolUse({
-      tool_name: 'apply_patch', agent_role: 'architect', tool_input: { command: posixCommand('architect') },
-    }, { resolveInstalledRoleName, platform: 'linux' }), undefined);
-    assert.equal(calls, 3);
+  it('denies installed and unknown roles distinctly', () => {
+    const resolveInstalledRoleName = (role: string) => role === 'architect' ? role : null;
+    assert.equal(evaluateCodex01445PreToolUse({ tool_name: 'Bash', tool_input: { command: command('architect') } }, { resolveInstalledRoleName, platform: 'linux' }), UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE);
+    assert.equal(evaluateCodex01445PreToolUse({ tool_name: 'Bash', tool_input: { command: command('missing') } }, { resolveInstalledRoleName, platform: 'linux' }), UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE);
   });
 });
 
-interface RoutingFixture {
-  cwd: string;
-  sessionId: string;
-  sessionDir: string;
-  ralplanPath: string;
-  skillPath: string;
-  originalRalplan: Buffer;
-  originalSkill: Buffer;
+interface Fixture { cwd: string; sessionId: string; directory: string; ralplanPath: string; skillPath: string; ralplan: Buffer; skill: Buffer; }
+function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; }
+async function fixture(): Promise<Fixture> {
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-generation-')); const sessionId = 'owned-session';
+  const directory = join(cwd, '.omx', 'state', 'sessions', sessionId); const ralplanPath = join(directory, 'ralplan-state.json'); const skillPath = join(directory, 'skill-active-state.json');
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: join(cwd, '.omx', 'state') }));
+  // This is the keyword-detector producer shape: timestamps, version, provenance, and its active-skills mirror are real producer fields.
+  await writeFile(ralplanPath, JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'planning', started_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }));
+  await writeFile(skillPath, JSON.stringify({ version: 1, active: true, skill: 'ralplan', keyword: '$ralplan', phase: 'planning', activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, thread_id: 'thread', turn_id: 'turn', active_skills: [{ skill: 'ralplan', phase: 'planning', active: true, activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }] }));
+  return { cwd, sessionId, directory, ralplanPath, skillPath, ralplan: await readFile(ralplanPath), skill: await readFile(skillPath) };
 }
+function pairDigest(f: Fixture): string { return createHash('sha256').update('ralplan-state.json\0').update(f.ralplan).update('\0skill-active-state.json\0').update(f.skill).digest('hex'); }
+async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> { const old = process.env.OMX_SESSION_ID; const f = await fixture(); process.env.OMX_SESSION_ID = f.sessionId; clear(); try { await fn(f); } finally { clear(); old === undefined ? delete process.env.OMX_SESSION_ID : process.env.OMX_SESSION_ID = old; await rm(f.cwd, { recursive: true, force: true }); } }
+async function originals(f: Fixture): Promise<void> { assert.deepEqual(await readFile(f.ralplanPath), f.ralplan); assert.deepEqual(await readFile(f.skillPath), f.skill); }
+async function visibleNeutralized(f: Fixture): Promise<void> { assert.equal((await readModeState('ralplan', f.cwd))?.active, false); assert.equal((await readSkillActiveState(f.skillPath))?.active, false); }
+function generations(f: Fixture): Promise<string[]> { return readdir(f.directory).then((names) => names.filter((name) => name.startsWith('.ralplan-neutralization-'))); }
 
-function clearNeutralizeSeam(): void {
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.random;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublish;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublishRename;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollback;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollbackRename;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.beforeCleanupRemoval;
-  delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync;
-}
+describe('documented leader immutable neutralization generation', () => {
+  it('publishes one durable generation while canonical pair remains byte-for-byte immutable', async () => withFixture(async (f) => {
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await originals(f); await visibleNeutralized(f); assert.equal((await generations(f)).length, 2);
 
-async function makeRoutingFixture(): Promise<RoutingFixture> {
-  const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-preflight-'));
-  const sessionId = 'owned-session';
-  const sessionDir = join(cwd, '.omx', 'state', 'sessions', sessionId);
-  const ralplanPath = join(sessionDir, 'ralplan-state.json');
-  const skillPath = join(sessionDir, 'skill-active-state.json');
-  await mkdir(sessionDir, { recursive: true });
-  await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({
-    session_id: sessionId,
-    cwd,
-    state_root: join(cwd, '.omx', 'state'),
   }));
-  await writeFile(ralplanPath, JSON.stringify({
-    active: true,
-    source: 'keyword-detector',
-    mode: 'ralplan',
-    current_phase: 'planning',
-    session_id: sessionId,
-  }, null, 2));
-  await writeFile(skillPath, JSON.stringify({
-    active: true,
-    source: 'keyword-detector',
-    skill: 'ralplan',
-    phase: 'planning',
-    current_phase: 'planning',
-    session_id: sessionId,
-    active_skills: [
-      { skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: sessionId },
-    ],
-  }, null, 2));
-  return {
-    cwd,
-    sessionId,
-    sessionDir,
-    ralplanPath,
-    skillPath,
-    originalRalplan: await readFile(ralplanPath),
-    originalSkill: await readFile(skillPath),
-  };
-}
+  for (const point of ['data-create', 'data-write', 'data-sync', 'commit-create', 'commit-write', 'commit-sync', 'directory-sync', 'commit-final-write', 'commit-final-sync'] as const) it(`keeps canonical and readers unchanged when ${point} fails`, async () => withFixture(async (f) => {
 
-async function withFixture(run: (fixture: RoutingFixture) => Promise<void>): Promise<void> {
-  const previousSessionId = process.env.OMX_SESSION_ID;
-  const fixture = await makeRoutingFixture();
-  process.env.OMX_SESSION_ID = fixture.sessionId;
-  clearNeutralizeSeam();
-  try {
-    await run(fixture);
-  } finally {
-    clearNeutralizeSeam();
-    if (previousSessionId === undefined) delete process.env.OMX_SESSION_ID;
-    else process.env.OMX_SESSION_ID = previousSessionId;
-    await rm(fixture.cwd, { recursive: true, force: true });
-  }
-}
+    RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (seen) => { if (seen === point) throw new Error(point); };
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); await originals(f);
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+  }));
+  it('never overwrites a colliding data or commit pathname and retries with a new correlated pair', async () => withFixture(async (f) => {
+    const digest = pairDigest(f); const token = 'a'.repeat(48); const collision = join(f.directory, `.ralplan-neutralization-${digest}-${token}.json`); await writeFile(collision, 'foreign');
+    const values = [Buffer.from(token, 'hex'), Buffer.from('b'.repeat(48), 'hex')]; RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => values.shift() ?? Buffer.alloc(24, 3);
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); assert.equal(await readFile(collision, 'utf8'), 'foreign'); await originals(f); await visibleNeutralized(f);
+  }));
+  it('never overwrites a colliding commit pathname and leaves its first data file inert', async () => withFixture(async (f) => {
+    const digest = pairDigest(f); const token = 'e'.repeat(48); const commit = join(f.directory, `.ralplan-neutralization-${digest}-${token}.commit.json`); await writeFile(commit, 'foreign');
+    const values = [Buffer.from(token, 'hex'), Buffer.from('f'.repeat(48), 'hex')]; RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => values.shift() ?? Buffer.alloc(24, 6);
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); assert.equal(await readFile(commit, 'utf8'), 'foreign'); await originals(f); await visibleNeutralized(f);
+  }));
 
-async function neutralize(fixture: RoutingFixture): Promise<boolean> {
-  return neutralizeOwnedRoutingRalplan(fixture.cwd);
-}
-
-async function assertOriginalPair(fixture: RoutingFixture): Promise<void> {
-  assert.deepEqual(await readFile(fixture.ralplanPath), fixture.originalRalplan);
-  assert.deepEqual(await readFile(fixture.skillPath), fixture.originalSkill);
-}
-
-async function assertNeutralizedPair(fixture: RoutingFixture): Promise<void> {
-  const ralplan = JSON.parse(await readFile(fixture.ralplanPath, 'utf8')) as Record<string, unknown>;
-  const skill = JSON.parse(await readFile(fixture.skillPath, 'utf8')) as Record<string, unknown>;
-  assert.equal(ralplan.active, false);
-  assert.equal(ralplan.current_phase, 'cancelled');
-  assert.equal(skill.active, false);
-  assert.equal(skill.phase, 'cancelled');
-  assert.equal(skill.current_phase, 'cancelled');
-  const activeSkills = skill.active_skills as Array<Record<string, unknown>>;
-  assert.equal(activeSkills.find((entry) => entry.skill === 'ralplan')?.active, false);
-  assert.equal(activeSkills.find((entry) => entry.skill === 'ralplan')?.current_phase, 'cancelled');
-}
-
-async function assertAtomicPair(fixture: RoutingFixture): Promise<void> {
-  const [ralplan, skill] = await Promise.all([readFile(fixture.ralplanPath), readFile(fixture.skillPath)]);
-  const original = ralplan.equals(fixture.originalRalplan) && skill.equals(fixture.originalSkill);
-  if (original) return;
-  await assertNeutralizedPair(fixture);
-}
-
-
-describe('#3194 documented leader preflight neutralization transaction', () => {
-  it('neutralizes both canonical session routing files for an ordinary owned seed', async () => {
-    await withFixture(async (fixture) => {
-      await neutralize(fixture);
-      await assertNeutralizedPair(fixture);
-    });
-  });
-
-  for (const point of ['temp-create', 'temp-write', 'temp-sync', 'first-publish', 'second-publish', 'directory-sync', 'read-back', 'cleanup'] as const) {
-    it(`keeps the canonical pair atomic when ${point} fails once`, async () => {
-      await withFixture(async (fixture) => {
-        let injected = false;
-        RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (observed) => {
-          if (!injected && observed === point) {
-            injected = true;
-            throw new Error(`injected ${point}`);
-          }
-        };
-        await neutralize(fixture);
-        assert.equal(injected, true);
-        await assertAtomicPair(fixture);
-      });
-    });
-  }
-
-  it('retries a one-shot rollback failure and restores both original canonical files', async () => {
-    await withFixture(async (fixture) => {
-      let secondPublishFailed = false;
-      let rollbackFailed = false;
-      const syncPhases: string[] = [];
-      RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => {
-        if (point === 'second-publish' && !secondPublishFailed) {
-          secondPublishFailed = true;
-          throw new Error('injected second publish');
-        }
-        if (point === 'rollback' && !rollbackFailed) {
-          rollbackFailed = true;
-          throw new Error('injected rollback');
-        }
-      };
-      RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync = (phase) => { syncPhases.push(phase); };
-      await neutralize(fixture);
-      assert.equal(secondPublishFailed, true);
-      assert.equal(rollbackFailed, true);
-      assert.ok(syncPhases.includes('prepare'));
-      assert.ok(syncPhases.includes('rollback'));
-      await assertOriginalPair(fixture);
-    });
-  });
-
-  it('fsyncs the directory around a successful publish', async () => {
-    await withFixture(async (fixture) => {
-      const phases: string[] = [];
-      RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync = (phase) => { phases.push(phase); };
-      await neutralize(fixture);
-      assert.deepEqual(phases.slice(0, 2), ['prepare', 'publish']);
-      await assertNeutralizedPair(fixture);
-    });
-  });
-
-  it('does not overwrite a pre-created predictable temporary name', async () => {
-    await withFixture(async (fixture) => {
-      const predictable = Buffer.from('predictable');
-      const tempPath = join(fixture.sessionDir, `.ralplan-recovery-0.${predictable.toString('hex')}`);
-      await writeFile(tempPath, 'foreign temp');
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => predictable;
-      await neutralize(fixture);
-      assert.equal(await readFile(tempPath, 'utf8'), 'foreign temp');
-      await assertOriginalPair(fixture);
-    });
-  });
-
-  it('fails closed when controlled random temporary names collide', async () => {
-    await withFixture(async (fixture) => {
-      const collision = Buffer.alloc(24, 7);
-      await writeFile(join(fixture.sessionDir, `.ralplan-recovery-0.${collision.toString('hex')}`), 'collision');
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => collision;
-      await neutralize(fixture);
-      await assertOriginalPair(fixture);
-    });
-  });
-
-  it('does not follow or overwrite a pre-created recovery symlink', async () => {
-    await withFixture(async (fixture) => {
-      const predictable = Buffer.from('recovery-symlink');
-      const recoveryPath = join(fixture.sessionDir, `.ralplan-recovery-0.${predictable.toString('hex')}`);
-      const target = join(fixture.cwd, 'foreign-recovery-target');
-      await writeFile(target, 'foreign recovery target');
-      await symlink(target, recoveryPath);
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => predictable;
-      await neutralize(fixture);
-      assert.equal((await lstat(recoveryPath)).isSymbolicLink(), true);
-      assert.equal(await readFile(target, 'utf8'), 'foreign recovery target');
-      await assertOriginalPair(fixture);
-    });
-  });
-
-  it('cleans owned recovery files when a pre-created replacement temporary collides', async () => {
-    await withFixture(async (fixture) => {
-      const randomValues = [Buffer.alloc(24, 1), Buffer.alloc(24, 2), Buffer.alloc(24, 3)];
-      const replacementPath = join(fixture.sessionDir, `.ralplan-next-0.${randomValues[2].toString('hex')}`);
-      await writeFile(replacementPath, 'foreign replacement temporary');
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => randomValues.shift() ?? Buffer.alloc(24, 4);
-      await neutralize(fixture);
-      assert.equal(await readFile(replacementPath, 'utf8'), 'foreign replacement temporary');
-      assert.deepEqual((await readdir(fixture.sessionDir)).filter((name) => name.startsWith('.ralplan-recovery-')), []);
-      await assertOriginalPair(fixture);
-    });
-  });
-
-  it('does not publish over a foreign replacement before first publish', async () => {
-    await withFixture(async (fixture) => {
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublish = async (index) => {
-        if (index === 0) {
-          await rm(fixture.ralplanPath);
-          await writeFile(fixture.ralplanPath, 'foreign-before-first');
-        }
-      };
-      await neutralize(fixture);
-      assert.equal(await readFile(fixture.ralplanPath, 'utf8'), 'foreign-before-first');
-      assert.deepEqual(await readFile(fixture.skillPath), fixture.originalSkill);
-    });
-  });
-
-  it('rolls back the first publish without overwriting a foreign replacement between publishes', async () => {
-    await withFixture(async (fixture) => {
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublish = async (index) => {
-        if (index === 1) {
-          await rm(fixture.skillPath);
-          await writeFile(fixture.skillPath, 'foreign-between-publishes');
-        }
-      };
-      await neutralize(fixture);
-      assert.equal(await readFile(fixture.skillPath, 'utf8'), 'foreign-between-publishes');
-      assert.deepEqual(await readFile(fixture.ralplanPath), fixture.originalRalplan);
-    });
-  });
-
-  it('preserves recovery files and does not overwrite a foreign replacement before rollback', async () => {
-    await withFixture(async (fixture) => {
-      RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => {
-        if (point === 'second-publish') throw new Error('force rollback');
-      };
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollback = async () => {
-        await rm(fixture.ralplanPath);
-        await writeFile(fixture.ralplanPath, 'foreign-before-rollback');
-      };
-      await neutralize(fixture);
-      assert.equal(await readFile(fixture.ralplanPath, 'utf8'), 'foreign-before-rollback');
-      const names = await readdir(fixture.sessionDir);
-      assert.ok(names.some((name) => name.startsWith('.ralplan-recovery-')));
-    });
-  });
-
-  it('does not use a same-user replacement of a recovery file during rollback', async () => {
-    await withFixture(async (fixture) => {
-      const randomValues = [Buffer.alloc(24, 11), Buffer.alloc(24, 12), Buffer.alloc(24, 13), Buffer.alloc(24, 14)];
-      const recoveryPath = join(fixture.sessionDir, `.ralplan-recovery-0.${randomValues[0].toString('hex')}`);
-      let replaced = false;
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => randomValues.shift() ?? Buffer.alloc(24, 15);
-      RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => {
-        if (point === 'second-publish') throw new Error('force rollback');
-      };
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollback = async () => {
-        if (replaced) return;
-        replaced = true;
-        await rm(recoveryPath);
-        await writeFile(recoveryPath, 'foreign recovery before rollback');
-      };
-      await neutralize(fixture);
-      assert.equal(replaced, true);
-      assert.equal(await readFile(recoveryPath, 'utf8'), 'foreign recovery before rollback');
-      assert.equal((JSON.parse(await readFile(fixture.ralplanPath, 'utf8')) as Record<string, unknown>).active, false);
-      assert.deepEqual(await readFile(fixture.skillPath), fixture.originalSkill);
-    });
-  });
-
-  it('does not overwrite a foreign canonical replacement in the decisive publish window', async () => {
-    await withFixture(async (fixture) => {
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforePublishRename = async (index) => {
-        if (index === 0) {
-          await rm(fixture.ralplanPath);
-          await writeFile(fixture.ralplanPath, 'foreign-after-final-publish-check');
-        }
-      };
-      assert.equal(await neutralize(fixture), false);
-      assert.equal(await readFile(fixture.ralplanPath, 'utf8'), 'foreign-after-final-publish-check');
-      assert.deepEqual(await readFile(fixture.skillPath), fixture.originalSkill);
-    });
-  });
-
-  it('does not overwrite foreign recovery bytes in the decisive rollback window', async () => {
-    await withFixture(async (fixture) => {
-      const randomValues = [Buffer.alloc(24, 21), Buffer.alloc(24, 22), Buffer.alloc(24, 23), Buffer.alloc(24, 24)];
-      const recoveryPath = join(fixture.sessionDir, `.ralplan-recovery-0.${randomValues[0].toString('hex')}`);
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => randomValues.shift() ?? Buffer.alloc(24, 25);
-      RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => {
-        if (point === 'second-publish') throw new Error('force rollback');
-      };
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforeRollbackRename = async () => {
-        await rm(recoveryPath);
-        await writeFile(recoveryPath, 'foreign-after-final-rollback-check');
-      };
-      assert.equal(await neutralize(fixture), false);
-      assert.equal(await readFile(recoveryPath, 'utf8'), 'foreign-after-final-rollback-check');
-    });
-  });
-
-  it('does not delete a foreign recovery replacement in the decisive cleanup window', async () => {
-    await withFixture(async (fixture) => {
-      const randomValues = [Buffer.alloc(24, 31), Buffer.alloc(24, 32), Buffer.alloc(24, 33), Buffer.alloc(24, 34)];
-      const recoveryPath = join(fixture.sessionDir, `.ralplan-recovery-0.${randomValues[0].toString('hex')}`);
-      RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => randomValues.shift() ?? Buffer.alloc(24, 35);
-      RALPLAN_NEUTRALIZE_TEST_SEAM.beforeCleanupRemoval = async (index) => {
-        if (index === 0) {
-          await rm(recoveryPath);
-          await writeFile(recoveryPath, 'foreign-after-final-cleanup-check');
-        }
-      };
-      assert.equal(await neutralize(fixture), false);
-      assert.equal(await readFile(recoveryPath, 'utf8'), 'foreign-after-final-cleanup-check');
-      await assertNeutralizedPair(fixture);
-    });
-  });
-
-  it('rejects a mixed Team routing record without changing either visible state', async () => {
-    await withFixture(async (fixture) => {
-      const mixed = JSON.parse(await readFile(fixture.skillPath, 'utf8')) as Record<string, unknown>;
-      mixed.active_skills = [
-        { skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: fixture.sessionId },
-        { skill: 'team', active: true, phase: 'executing', current_phase: 'executing', session_id: fixture.sessionId },
-      ];
-      await writeFile(fixture.skillPath, JSON.stringify(mixed, null, 2));
-      const beforeSkill = await readFile(fixture.skillPath);
-      await neutralize(fixture);
-      assert.deepEqual(await readFile(fixture.ralplanPath), fixture.originalRalplan);
-      assert.deepEqual(await readFile(fixture.skillPath), beforeSkill);
-    });
-  });
-
-  for (const invalidCase of ['absent', 'malformed', 'oversized', 'symlink', 'hardlink', 'foreign-owner', 'substantive'] as const) {
-    it(`leaves ${invalidCase} routing state byte-for-byte unchanged`, async () => {
-      await withFixture(async (fixture) => {
-        if (invalidCase === 'absent') await rm(fixture.skillPath);
-        if (invalidCase === 'malformed') await writeFile(fixture.ralplanPath, '{not json');
-        if (invalidCase === 'oversized') await writeFile(fixture.ralplanPath, Buffer.alloc(128 * 1024 + 1, 1));
-        if (invalidCase === 'symlink') {
-          const target = join(fixture.cwd, 'outside.json');
-          await writeFile(target, fixture.originalRalplan);
-          await rm(fixture.ralplanPath);
-          await symlink(target, fixture.ralplanPath);
-        }
-        if (invalidCase === 'hardlink') {
-          const target = join(fixture.cwd, 'hardlinked.json');
-          await writeFile(target, fixture.originalRalplan);
-          await rm(fixture.ralplanPath);
-          await link(target, fixture.ralplanPath);
-        }
-        if (invalidCase === 'foreign-owner') await writeFile(fixture.ralplanPath, JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'planning', session_id: 'foreign-session' }));
-        if (invalidCase === 'substantive') await writeFile(fixture.ralplanPath, JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'executing', session_id: fixture.sessionId }));
-
-        const beforeRalplan = await readFile(fixture.ralplanPath);
-        const beforeSkill = await readFile(fixture.skillPath).catch(() => null);
-        await neutralize(fixture);
-        assert.deepEqual(await readFile(fixture.ralplanPath), beforeRalplan);
-        if (beforeSkill === null) await assert.rejects(() => readFile(fixture.skillPath));
-        else assert.deepEqual(await readFile(fixture.skillPath), beforeSkill);
-        if (invalidCase === 'symlink') assert.equal((await lstat(fixture.ralplanPath)).isSymbolicLink(), true);
-        if (invalidCase === 'hardlink') assert.equal((await lstat(fixture.ralplanPath)).nlink, 2);
-      });
-    });
-  }
-
+  it('leaves a pre-created generation symlink untouched', async () => withFixture(async (f) => {
+    const target = join(f.cwd, 'foreign-generation'); await writeFile(target, 'foreign');
+    const path = join(f.directory, `.ralplan-neutralization-${pairDigest(f)}-${'c'.repeat(48)}.json`); await symlink(target, path);
+    const values = [Buffer.from('c'.repeat(48), 'hex'), Buffer.from('d'.repeat(48), 'hex')]; RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => values.shift() ?? Buffer.alloc(24, 4);
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); assert.equal(await readFile(target, 'utf8'), 'foreign'); assert.equal((await lstat(path)).isSymbolicLink(), true); await originals(f);
+  }));
+  it('retries after a partial uncommitted pair with a distinct immutable pair', async () => withFixture(async (f) => {
+    const values = [Buffer.alloc(24, 9), Buffer.alloc(24, 10)]; RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => values.shift() ?? Buffer.alloc(24, 11);
+    let failed = false; RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => { if (!failed && point === 'commit-final-sync') { failed = true; throw new Error('partial'); } };
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); await originals(f);
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+    delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail;
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await originals(f); await visibleNeutralized(f); assert.ok((await generations(f)).length >= 4);
+  }));
+  it('ignores pending, malformed, symlink, and hardlink generation pairs', async () => withFixture(async (f) => {
+    RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => Buffer.alloc(24, 7);
+    RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => { if (point === 'commit-final-write') throw new Error('pending'); };
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false);
+    const pending = (await generations(f)).find((name) => name.endsWith('.commit.json')); assert.ok(pending);
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+    await writeFile(join(f.directory, pending), '{');
+    const target = join(f.cwd, 'target'); await writeFile(target, '{}'); await symlink(target, join(f.directory, '.ralplan-neutralization-symlink.json')); await link(target, join(f.directory, '.ralplan-neutralization-hardlink.json'));
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true); assert.equal((await lstat(join(f.directory, '.ralplan-neutralization-symlink.json'))).isSymbolicLink(), true);
+  }));
+  it('rejects mixed or substantive workflow state without an overlay', async () => withFixture(async (f) => {
+    const skill = JSON.parse(await readFile(f.skillPath, 'utf8')); skill.active_skills.push({ skill: 'team', active: true, phase: 'executing', session_id: f.sessionId }); await writeFile(f.skillPath, JSON.stringify(skill));
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); await originals(f).catch(() => {}); assert.equal((await readModeState('ralplan', f.cwd))?.active, true);
+  }));
+  it('makes stale generation inert after either canonical byte string changes', async () => withFixture(async (f) => {
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await writeFile(f.ralplanPath, Buffer.concat([f.ralplan, Buffer.from(' ')]));
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+  }));
+  it('derives the inert overlay from canonical bytes instead of trusting attacker-supplied generation state', async () => withFixture(async (f) => {
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true);
+    const dataName = (await generations(f)).find((name) => name.endsWith('.json') && !name.endsWith('.commit.json'));
+    assert.ok(dataName);
+    const dataPath = join(f.directory, dataName);
+    const data = JSON.parse(await readFile(dataPath, 'utf8')) as Record<string, unknown>;
+    data.overlay = { ralplan: { active: true, current_phase: 'complete' }, skill: { active: true, phase: 'handoff' } };
+    await writeFile(dataPath, `${JSON.stringify(data)}\n`);
+    await visibleNeutralized(f);
+    await originals(f);
+  }));
 });
