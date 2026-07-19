@@ -7476,6 +7476,9 @@ case "$1" in
     case "$4" in
       %51) printf '%%51\t0\t%s\tteam:liveness\n' "$PPID" ;;
       %52) printf '%%leader\t0\t52\tteam:liveness\n' ;;
+      %53) printf '%%53\t0\t53\t\n' ;;
+      %54) printf '%%54\t1\t54\t\n' ;;
+      %55) printf '%%55\t0\t55\tteam:liveness\n' ;;
       *) exit 2 ;;
     esac
     ;;
@@ -7497,6 +7500,19 @@ esac
           assert.throws(
             () => isWorkerAlive('ignored-session', 2, '%52', 52, 'team:liveness'),
             /worker pane identity changed.*pane_id_changed/,
+          );
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 3, '%53', 53, 'team:liveness'),
+            /worker pane incarnation changed.*missing/,
+          );
+          assert.equal(isWorkerAlive('ignored-session', 4, '%54', 54, 'team:liveness'), false);
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 5, '%55', 55, 'team:liveness', '%55'),
+            /worker pane is HUD target/,
+          );
+          assert.throws(
+            () => getWorkerPanePid('ignored-session', 5, '%55', 55, 'team:liveness', '%55'),
+            /worker pane is HUD target/,
           );
         } finally {
           process.kill = originalProcessKill;
@@ -7645,7 +7661,7 @@ esac
 `,
       async ({ logPath }) => {
         assert.equal(getWorkerPanePid('ignored-session', 1, '%1'), null);
-        assert.equal(isWorkerAlive('ignored-session', 1, '%1'), false);
+        assert.equal(isWorkerAlive('ignored-session', 1, '%1'), true);
         assert.equal(isWorkerPaneOpen('ignored-session', 1, '%1'), false);
         await assert.rejects(() => sendToWorker('ignored-session', 1, 'check inbox', '%1'), /not proven live/);
         await killWorker('ignored-session', 1, '%1');

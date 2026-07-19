@@ -843,7 +843,7 @@ type ExactWorkerPaneLivenessProof =
 
 function readExactWorkerPaneLivenessProofSync(paneId: string): ExactWorkerPaneLivenessProof {
   if (!/^%[0-9]+$/.test(paneId)) return { status: 'unavailable', paneId, reason: 'invalid_pane_id' };
-  const result = runTmux([
+  const result = runTmuxStructured([
     'display-message', '-p', '-t', paneId,
     `#{pane_id}\t#{pane_dead}\t#{pane_pid}\t#{${OMX_TEAM_PANE_OWNER_OPTION}}`,
   ]);
@@ -874,7 +874,11 @@ function requireExactWorkerPaneLivenessIdentity(
   paneId: string,
   expectedPanePid?: number,
   expectedTeamOwnerId?: string,
+  hudPaneId?: string,
 ): ExactWorkerPaneLivenessProof {
+  if (hudPaneId?.trim() && paneId === hudPaneId.trim()) {
+    throw new Error(`tmux worker pane is HUD target: ${paneId}`);
+  }
   const proof = readExactWorkerPaneLivenessProofSync(paneId);
   if (proof.status === 'unavailable' && proof.reason.startsWith('pane_id_changed:')) {
     throw new Error(`tmux worker pane identity changed: ${paneId}: ${proof.reason}`);
@@ -3512,10 +3516,10 @@ export function getWorkerPanePid(
   workerPaneId?: string,
   expectedPanePid?: number,
   expectedTeamOwnerId?: string,
-  _hudPaneId?: string,
+  hudPaneId?: string,
 ): number | null {
   if (hasExplicitWorkerPaneId(workerPaneId)) {
-    const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId);
+    const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);
     return proof.status === 'live' ? proof.pid : null;
   }
 
@@ -3538,10 +3542,12 @@ export function isWorkerAlive(
   workerPaneId?: string,
   expectedPanePid?: number,
   expectedTeamOwnerId?: string,
-  _hudPaneId?: string,
+  hudPaneId?: string,
 ): boolean {
   if (hasExplicitWorkerPaneId(workerPaneId)) {
-    const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId);
+    if (typeof expectedPanePid !== 'number' || !Number.isSafeInteger(expectedPanePid) || expectedPanePid <= 0) return true;
+    if (typeof expectedTeamOwnerId !== 'string' || expectedTeamOwnerId.trim() === '') return true;
+    const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);
     if (proof.status === 'unavailable') return true;
     if (proof.status === 'gone') return false;
     return probeProcessLiveness(proof.pid) !== 'gone';
