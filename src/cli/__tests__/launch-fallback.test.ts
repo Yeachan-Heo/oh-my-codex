@@ -70,8 +70,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function shouldSkipForSpawnPermissions(err: string): boolean {
-  return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
+function shouldSkipForSpawnPermissions(_err: string): false {
+  // These integration fixtures are contractual: EPERM/EACCES is a failure,
+  // not a pass. Node's test runner has no portable dynamic skip here.
+  return false;
 }
 
 
@@ -1793,6 +1795,7 @@ exit 0
       );
 
       if (shouldSkipForSpawnPermissions(result.error)) return;
+      await waitForPath(`${fakeTmuxPath}.leader-done`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 1, result.error || result.stderr || result.stdout);

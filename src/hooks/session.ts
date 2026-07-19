@@ -1438,6 +1438,7 @@ async function writePointerTransaction<T>(
   timeoutMs: number,
   transition: (pointer: SessionPointerReadResult, context: SessionPointerContext) => T | Promise<T>,
   pointerState: (value: T) => SessionState,
+  beforeCommit?: (context: SessionPointerContext) => Promise<void>,
 ): Promise<PointerTransactionResult<T>> {
   let context: SessionPointerContext;
   try {
@@ -1540,6 +1541,7 @@ async function writePointerTransaction<T>(
         cause: error,
       });
     }
+    if (beforeCommit) await beforeCommit(context);
     try {
       await transactionDependencies.fs.rename(pointerTempPath, context.sessionPath);
       pointerCommitted = true;
@@ -1674,6 +1676,7 @@ async function writeSessionStartTransition(
   options: SessionStartOptions,
   requireLaunchLineageToken = false,
   requireAbsent = false,
+  beforeCommit?: (context: SessionPointerContext) => Promise<void>,
 ): Promise<SessionState> {
   const requestedSessionId = normalizeSessionId(sessionId);
   const result = await writePointerTransaction(
@@ -1683,6 +1686,7 @@ async function writeSessionStartTransition(
     DEFAULT_POINTER_TIMEOUT_MS,
     startPointerTransition(requestedSessionId ?? sessionId, options, requireLaunchLineageToken, requireAbsent),
     (state) => state,
+    beforeCommit,
   );
   await appendToLogAtContext(result.context, {
     event: 'session_start',
@@ -1809,7 +1813,29 @@ export async function establishLaunchSessionBinding(
   const acquired = await acquireDirectoryCapability(context.baseStateDir, platform);
   const cleanup = (): EstablishmentCleanupEvidence => ({ capability: acquired.cleanup });
   try {
-    const state = await writeSessionStartTransition(context.cwd, requestedSessionId, { ...options, context }, true, true);
+    const state = await writeSessionStartTransition(context.cwd, requestedSessionId, { ...options, context }, true, true, async (lockedContext) => {
+      if (acquired.identity.kind !== 'supported') return;
+      const retained = await acquired.lease.handle?.stat({ bigint: true });
+      if (!retained || !retained.isDirectory() || retained.dev !== acquired.identity.dev || retained.ino !== acquired.identity.ino) {
+        throw resolvedAbort(lockedContext, {
+          code: 'session_pointer_io_failure', operation: 'pointer-classify', candidateSessionId: normalizeSessionId(requestedSessionId),
+          lockPath: lockedContext.lockPath, reason: 'Selected state root identity changed before pointer publication.',
+        });
+      }
+      const canonical = await realpath(lockedContext.baseStateDir);
+      const fresh = await open(canonical, 'r');
+      try {
+        const stats = await fresh.stat({ bigint: true });
+        if (canonical !== acquired.canonicalRealpath || !stats.isDirectory() || stats.dev !== acquired.identity.dev || stats.ino !== acquired.identity.ino) {
+          throw resolvedAbort(lockedContext, {
+            code: 'session_pointer_io_failure', operation: 'pointer-classify', candidateSessionId: normalizeSessionId(requestedSessionId),
+            lockPath: lockedContext.lockPath, reason: 'Selected state root was replaced before pointer publication.',
+          });
+        }
+      } finally {
+        await fresh.close();
+      }
+    });
     const token = state.launch_lineage_token;
     if (!isValidToken(token)) {
       const close = await closeLease(acquired.lease, 'before-authorization');

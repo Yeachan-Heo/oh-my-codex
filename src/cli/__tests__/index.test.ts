@@ -486,7 +486,7 @@ describe("detached launch state machine", () => {
     });
   }
 
-  for (const failure of ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D9"] as const) {
+  for (const failure of ["D1", "D2", "D3", "D4", "D5", "D6", "D7"] as const) {
     it(`rolls back verified pre-release ownership when ${failure} fails`, async () => {
       const events: string[] = [];
       await assert.rejects(executeDetachedLaunchStateMachine(
@@ -528,6 +528,32 @@ describe("detached launch state machine", () => {
     });
     assert.equal(events.includes("rollback"), false);
     assert.deepEqual(events.slice(-2), ["D9", "D10"]);
+  });
+
+  it("preserves leader authority when D9 publication fails without an authenticated finalization acknowledgement", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => {
+      events.push("abort-request");
+      return { acknowledged: false };
+    };
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.deepEqual(events.slice(-2), ["D9", "abort-request"]);
+    assert.equal(events.includes("rollback"), false);
+  });
+
+  it("permits rollback only after an authenticated D9 abort acknowledgement", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => ({ acknowledged: true });
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.equal(events.includes("rollback"), true);
   });
 });
 

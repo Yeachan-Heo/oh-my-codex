@@ -1990,6 +1990,33 @@ describe('bound launch authority', () => {
     }
   });
 
+  it('denies selected-root replacement under lock before pointer publication', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-establish-root-race-'));
+    const displacedRoot = join(cwd, 'displaced-state');
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      let replaced = false;
+      let established: Awaited<ReturnType<typeof establishLaunchSessionBinding>> | undefined;
+      await withPointerDependencies({
+        fs: {
+          openAndSync: async (path) => {
+            if (!replaced && path.startsWith(`${context.sessionPath}.tmp-`)) {
+              replaced = true;
+              await rename(context.baseStateDir, displacedRoot);
+              await mkdir(context.baseStateDir, { recursive: true });
+            }
+            return 'synced' as const;
+          },
+        },
+      }, async () => { established = await establishLaunchSessionBinding(cwd, 'sess-establish-root-race'); });
+      assert.ok(established);
+      assert.notEqual(established.kind, 'committed-released');
+      assert.equal(existsSync(context.sessionPath), false);
+      assert.equal(existsSync(join(displacedRoot, 'session.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it('denies same-path replacement before creating state, lock, history, or HUD artifacts', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-replaced-path-'));
     const retainedCwd = `${cwd}-retained`;

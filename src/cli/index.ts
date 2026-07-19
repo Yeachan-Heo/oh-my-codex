@@ -2754,6 +2754,12 @@ export type DetachedLaunchTransition = "D0" | "D1" | "D2" | "D3" | "D4" | "D5" |
 export type DetachedLaunchTerminal =
   | { kind: "attached" | "returned"; released: true; report: DetachedBootstrapReport };
 
+export interface DetachedReleaseFailureResolution {
+  /** True only after the leader authenticated and completed terminal finalization. */
+  acknowledged: boolean;
+}
+
+
 export class DetachedTransportUnavailable extends Error {
   readonly name = "DetachedTransportUnavailable";
   readonly noSideEffects = true;
@@ -2786,9 +2792,16 @@ export interface DetachedLaunchDependencies<Binding = unknown, InertSession = un
   // The long-lived leader retains this authority until terminal finalization.
   finalizeSetupFailure(binding: Binding): Promise<void>;
   releaseBarrier(): Promise<void>;
+  /**
+   * D9 failure is special: once the leader exists, only it may consume pointer
+   * authority. The outer process requests an authenticated abort and must not
+   * clean or kill the session unless finalization is acknowledged.
+   */
+  abortAndAwaitFinalization?(error: unknown): Promise<DetachedReleaseFailureResolution>;
   attachOrReturn(session: InertSession, shouldAttach: boolean): Promise<void>;
   rollback(ownedRecord: DetachedActiveRecordOwnership | undefined, report: DetachedBootstrapReport): Promise<void>;
   diagnostic?(error: unknown): void;
+
 }
 
 /** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
@@ -2834,8 +2847,17 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
     transition("D7");
     ownedRecord = await deps.publishActiveRecord(inertSession, pane);
     transition("D9");
-    await deps.releaseBarrier();
-    released = true;
+    try {
+      await deps.releaseBarrier();
+      released = true;
+    } catch (releaseError) {
+      // A failed publication must not let the outer launcher destroy the
+      // leader's finalization capability. Request a nonce-bound abort and
+      // preserve all artifacts on timeout, malformed, or foreign reports.
+      const resolution = await deps.abortAndAwaitFinalization?.(releaseError);
+      if (!resolution?.acknowledged) released = true;
+      throw releaseError;
+    }
     transition("D10");
     await deps.attachOrReturn(inertSession, input.preflight.shouldAttach);
     return { kind: input.preflight.shouldAttach ? "attached" : "returned", released: true, report };
@@ -4449,7 +4471,8 @@ function buildDetachedWindowsLeaderCommand(
 
 interface DetachedLeaderReport {
   version: 1;
-  kind: "ready" | "failed" | "terminal" | "release";
+  kind: "ready" | "failed" | "terminal" | "release" | "abort";
+
   nonce: string;
   sessionId: string;
   sessionName: string;
@@ -4482,7 +4505,8 @@ function readDetachedLeaderReport(path: string): DetachedLeaderReport | undefine
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (!value || typeof value !== "object") return undefined;
     const report = value as Record<string, unknown>;
-    if (report.version !== 1 || !["ready", "failed", "terminal", "release"].includes(String(report.kind)) ||
+    if (report.version !== 1 || !["ready", "failed", "terminal", "release", "abort"].includes(String(report.kind)) ||
+
       typeof report.nonce !== "string" || typeof report.sessionId !== "string" || typeof report.sessionName !== "string") return undefined;
     if (report.paneId !== undefined && typeof report.paneId !== "string") return undefined;
     if (report.leaderPid !== undefined && (!Number.isSafeInteger(report.leaderPid) || Number(report.leaderPid) <= 0)) return undefined;
@@ -4492,6 +4516,10 @@ function readDetachedLeaderReport(path: string): DetachedLeaderReport | undefine
 
 function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string): void {
   writeDetachedLeaderReport(`${releaseMarkerPath}.release`, { version: 1, kind: "release", nonce, sessionId, sessionName });
+}
+
+function publishDetachedAbortMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string): void {
+  writeDetachedLeaderReport(`${releaseMarkerPath}.abort`, { version: 1, kind: "abort", nonce, sessionId, sessionName });
 }
 
 type TmuxExecSync = (file: string, args: readonly string[]) => string;
@@ -5778,6 +5806,8 @@ async function runCodex(
     );
     let detachedParentEnvFilePath: string | undefined;
     let detachedLeaderPaneId: string | null = null;
+    let detachedLeaderPid: number | null = null;
+
     let attachStep: DetachedSessionTmuxStep | null = null;
 
     const launchDetachedSession = async (): Promise<{ postLaunchHandledExternally: boolean }> => {
@@ -5824,7 +5854,10 @@ async function runCodex(
         while (true) {
           const report = readDetachedLeaderReport(releaseMarkerPath);
           if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId &&
-            report.sessionName === sessionName && report.paneId === detachedLeaderPaneId && report.leaderPid && report.kind === "ready") return report;
+            report.sessionName === sessionName && report.paneId === detachedLeaderPaneId && report.leaderPid && report.kind === "ready") {
+            detachedLeaderPid = report.leaderPid;
+            return report;
+          }
           if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.kind === "failed") {
             throw new DetachedLaunchSafetyError("completion", new Error(report.error || "detached leader setup failed"), detachedPreflight.report);
           }
@@ -5844,6 +5877,21 @@ async function runCodex(
           publishActiveRecord: async () => ({ bytes: "", digest: "", nonce: detachedLaunchNonce }),
           finalizeSetupFailure: async () => {},
           releaseBarrier: async () => publishDetachedReleaseMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName),
+          abortAndAwaitFinalization: async () => {
+            // The leader has the retained binding. Publishing abort is the only
+            // outer action permitted after a D9 write failure; a mismatched or
+            // missing report leaves every artifact and the tmux session intact.
+            publishDetachedAbortMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName);
+            const deadline = Date.now() + 30_000;
+            while (Date.now() < deadline) {
+              const report = readDetachedLeaderReport(releaseMarkerPath);
+              if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId &&
+                report.sessionName === sessionName && report.leaderPid === detachedLeaderPid &&
+                (report.kind === "failed" || report.kind === "terminal")) return { acknowledged: true };
+              blockMs(20);
+            }
+            return { acknowledged: false };
+          },
           attachOrReturn: async () => { if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" }); },
           rollback: async (_ownedRecord, report) => {
             const attempt = async (step: DetachedRollbackStep, operation: () => Promise<void> | void): Promise<void> => {
@@ -6064,6 +6112,8 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
   const activeRecordPath = contextKey
     ? madmaxDetachedActiveRecordPath(resolveMadmaxRunsRoot(process.env), contextKey)
     : join(omxRoot(payload.cwd), "state", "detached-active-record.json");
+  let externalInterrupt: NodeJS.Signals | undefined;
+
   try {
     const completion = await completePreLaunchSetup(
       payload.cwd,
@@ -6093,6 +6143,8 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     if (payload.readyPath) {
       writeDetachedLeaderReport(payload.readyPath, { version: 1, kind: "ready", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName, paneId: pane, leaderPid: process.pid });
       const releasePath = `${payload.readyPath}.release`;
+      const abortPath = `${payload.readyPath}.abort`;
+      const releaseDeadline = Date.now() + 30_000;
       let interrupted: NodeJS.Signals | undefined;
       const interrupt = (signal: NodeJS.Signals): void => { interrupted = signal; };
       process.once("SIGINT", () => interrupt("SIGINT"));
@@ -6102,9 +6154,15 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
         if (interrupted) throw new Error(`detached leader interrupted before release: ${interrupted}`);
         const release = readDetachedLeaderReport(releasePath);
         if (release?.kind === "release" && release.nonce === nonce && release.sessionId === payload.sessionId && release.sessionName === payload.sessionName) break;
+        const abort = readDetachedLeaderReport(abortPath);
+        if (abort?.kind === "abort" && abort.nonce === nonce && abort.sessionId === payload.sessionId && abort.sessionName === payload.sessionName) {
+          throw new Error("detached launch aborted before release");
+        }
+        if (Date.now() >= releaseDeadline) throw new Error("detached leader release timed out");
         blockMs(20);
       }
       rmSync(releasePath, { force: true });
+      rmSync(abortPath, { force: true });
     }
     const child = spawn(process.platform === "win32" ? "powershell.exe" : "/bin/sh", process.platform === "win32" ? ["-NoProfile", "-Command", payload.codexCmd] : ["-c", payload.codexCmd], {
       cwd: payload.cwd,
@@ -6120,29 +6178,42 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       } catch {}
     };
     const forward = (signal: NodeJS.Signals): void => {
+      externalInterrupt ??= signal;
       signalChildTree(signal);
       if (!escalation) { escalation = setTimeout(() => signalChildTree("SIGKILL", true), 5_000); escalation.unref(); }
     };
     process.once("SIGINT", () => forward("SIGINT"));
     process.once("SIGTERM", () => forward("SIGTERM"));
     process.once("SIGHUP", () => forward("SIGHUP"));
+
     const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveChild, rejectChild) => {
       child.once("error", rejectChild);
       child.once("exit", (code, signal) => resolveChild({ code, signal }));
     });
     if (escalation) clearTimeout(escalation);
     if (process.platform !== "win32" && child.pid) {
-      const treeDeadline = Date.now() + 5_000;
-      while (true) {
-        try {
-          process.kill(-child.pid, 0);
-          if (Date.now() >= treeDeadline) { signalChildTree("SIGKILL", true); break; }
-          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-        } catch { break; }
+      const waitForGroupExit = async (deadline: number): Promise<boolean> => {
+        while (Date.now() < deadline) {
+          try {
+            process.kill(-child.pid!, 0);
+            await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+          } catch {
+            return true;
+          }
+        }
+        return false;
+      };
+      let groupGone = await waitForGroupExit(Date.now() + 5_000);
+      if (!groupGone) {
+        signalChildTree("SIGKILL", true);
+        groupGone = await waitForGroupExit(Date.now() + 5_000);
       }
+      if (!groupGone) throw new Error("detached child process group did not disappear after forced termination");
     }
     const signalExitCodes: Partial<Record<NodeJS.Signals, number>> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGKILL: 137 };
-    process.exitCode = outcome.code ?? (outcome.signal ? signalExitCodes[outcome.signal] ?? 1 : 1);
+    process.exitCode = externalInterrupt
+      ? signalExitCodes[externalInterrupt] ?? 1
+      : outcome.code ?? (outcome.signal ? signalExitCodes[outcome.signal] ?? 1 : 1);
     await postLaunch(payload.cwd, payload.sessionId, binding, payload.codexHomeOverride, payload.preLaunchOptions.enableNotifyFallbackAuthority, payload.projectLocalCodexHomeForCleanup);
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "terminal", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
@@ -6204,11 +6275,13 @@ export async function postLaunch(
     if (closeFailure) terminalError = new Error(`bound session retained close failed: ${closeFailure.error?.message ?? "unknown error"}`);
   } catch (error) {
     terminalError = error;
-  } finally {
-    const closeEvidence = await closeLaunchSessionBindingOnce(binding);
-    if (closeEvidence.status === "failed" && !terminalError) terminalError = new Error(`bound session retained close failed: ${closeEvidence.error?.message ?? "unknown error"}`);
   }
-  if (terminalError) throw terminalError;
+  if (terminalError) {
+    // Denial diagnostics are complete; do not mutate ordinary lifecycle state.
+    await closeLaunchSessionBindingOnce(binding);
+    throw terminalError;
+  }
+
 
 
   // 0. Reap MCP orphans left behind by the session that just exited.
@@ -6342,6 +6415,10 @@ export async function postLaunch(
   } catch (err) {
     logCliOperationFailure(err);
     // Non-fatal
+  }
+  const closeEvidence = await closeLaunchSessionBindingOnce(binding);
+  if (closeEvidence.status === "failed") {
+    throw new Error(`bound session retained close failed: ${closeEvidence.error?.message ?? "unknown error"}`);
   }
 }
 
