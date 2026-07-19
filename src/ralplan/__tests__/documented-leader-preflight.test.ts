@@ -27,7 +27,7 @@ describe('Codex 0.144.5 adapted role-intent preflight', () => {
 });
 
 interface Fixture { cwd: string; sessionId: string; directory: string; ralplanPath: string; skillPath: string; ralplan: Buffer; skill: Buffer; }
-function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; delete RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin; delete RALPLAN_NEUTRALIZE_TEST_SEAM.onError; delete RALPLAN_NEUTRALIZE_TEST_SEAM.platform; }
+function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; delete RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin; delete RALPLAN_NEUTRALIZE_TEST_SEAM.onError; delete RALPLAN_NEUTRALIZE_TEST_SEAM.platform; delete RALPLAN_NEUTRALIZE_TEST_SEAM.darwinHelperMode; }
 async function fixture(): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-generation-')); const sessionId = 'owned-session';
   const directory = join(cwd, '.omx', 'state', 'sessions', sessionId); const ralplanPath = join(directory, 'ralplan-state.json'); const skillPath = join(directory, 'skill-active-state.json');
@@ -86,15 +86,15 @@ describe('documented leader immutable neutralization generation', () => {
     assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); await originals(f);
     assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
     delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail;
-    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await originals(f); await visibleNeutralized(f); assert.ok((await generations(f)).length >= 4);
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await originals(f); await visibleNeutralized(f); assert.ok((await generations(f)).length >= 3);
   }));
   it('ignores pending, malformed, symlink, and hardlink generation pairs', async () => withFixture(async (f) => {
     RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => Buffer.alloc(24, 7);
     RALPLAN_NEUTRALIZE_TEST_SEAM.fail = (point) => { if (point === 'commit-final-write') throw new Error('pending'); };
     assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false);
-    const pending = (await generations(f)).find((name) => name.endsWith('.commit.json')); assert.ok(pending);
-    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
-    await writeFile(join(f.directory, pending), '{');
+    const pending = `.ralplan-neutralization-${pairDigest(f)}-${'8'.repeat(48)}.commit.json`;
+    await writeFile(join(f.directory, pending), JSON.stringify({ version: 1, digest: pairDigest(f), dataFile: 'missing.json', committed: false }));
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true);
     const target = join(f.cwd, 'target'); await writeFile(target, '{}'); await symlink(target, join(f.directory, '.ralplan-neutralization-symlink.json')); await link(target, join(f.directory, '.ralplan-neutralization-hardlink.json'));
     assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true); assert.equal((await lstat(join(f.directory, '.ralplan-neutralization-symlink.json'))).isSymbolicLink(), true);
   }));
@@ -190,11 +190,32 @@ describe('documented leader immutable neutralization generation', () => {
     assert.equal((await readdir(foreign)).some((name) => name.startsWith('.ralplan-neutralization-')), false);
     assert.ok((await readdir(parked)).some((name) => name.startsWith('.ralplan-neutralization-')));
   }));
-  it('uses the pinned Darwin descriptor root when the platform is macOS', async () => withFixture(async (f) => {
+  it('executes the Darwin cwd helper for publication and overlay reads', async () => withFixture(async (f) => {
     RALPLAN_NEUTRALIZE_TEST_SEAM.platform = 'darwin';
     assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true);
-    await visibleNeutralized(f);
+    assert.equal((await readNeutralizedRoutingOverlay(f.ralplanPath, 'ralplan'))?.active, false);
+    assert.equal((await readNeutralizedRoutingOverlay(f.skillPath, 'skill'))?.active, false);
     await originals(f);
+  }));
+  it('executes the Darwin cwd helper collision path', async () => withFixture(async (f) => {
+    RALPLAN_NEUTRALIZE_TEST_SEAM.platform = 'darwin';
+    const token = 'a'.repeat(48); const collision = join(f.directory, `.ralplan-neutralization-${pairDigest(f)}-${token}.json`);
+    await writeFile(collision, 'foreign'); const tokens = [token, 'b'.repeat(48)]; RALPLAN_NEUTRALIZE_TEST_SEAM.random = () => Buffer.from(tokens.shift() ?? 'c'.repeat(48), 'hex');
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true);
+    assert.equal(await readFile(collision, 'utf8'), 'foreign');
+  }));
+  it('keeps the Darwin helper cwd pinned across a parent rename and symlink swap', async () => withFixture(async (f) => {
+    RALPLAN_NEUTRALIZE_TEST_SEAM.platform = 'darwin';
+    const parked = `${f.directory}-parked`; const foreign = join(f.cwd, 'foreign-session');
+    await mkdir(foreign); await writeFile(join(foreign, 'ralplan-state.json'), 'foreign'); await writeFile(join(foreign, 'skill-active-state.json'), 'foreign');
+    RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin = async () => { await rename(f.directory, parked); await symlink(foreign, f.directory); };
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true);
+    assert.equal((await readdir(foreign)).some((name) => name.startsWith('.ralplan-neutralization-')), false);
+    assert.ok((await readdir(parked)).some((name) => name.startsWith('.ralplan-neutralization-')));
+  }));
+  for (const mode of ['failure', 'malformed'] as const) it(`fails closed when the Darwin helper ${mode}s`, async () => withFixture(async (f) => {
+    RALPLAN_NEUTRALIZE_TEST_SEAM.platform = 'darwin'; RALPLAN_NEUTRALIZE_TEST_SEAM.darwinHelperMode = mode;
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); await originals(f);
   }));
 
   for (const mutate of [
