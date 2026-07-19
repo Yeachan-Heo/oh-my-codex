@@ -102,6 +102,8 @@ if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
   for last_arg do :; done
   pane=$(printf '%s' "$output" | sed -n '1p')
   TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+  leader_pid=$!
+  (while kill -0 "$leader_pid" 2>/dev/null; do sleep 0.02; done; printf done > ${JSON.stringify(`${fakeTmuxPath}.leader-done`)}) </dev/null >/dev/null 2>&1 &
 fi
 exit "$status"
 `);
@@ -1265,6 +1267,7 @@ exit 0
       );
       assert.match(tmuxLog, new RegExp(`tmux:split-window -v -l ${HUD_TMUX_HEIGHT_LINES} .* -t `));
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      await waitForPath(`${fakeTmuxPath}.leader-done`);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1793,7 +1796,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 1, result.error || result.stderr || result.stdout);
-      assert.match(result.stderr, /Command failed: .*tmux attach-session/);
+      assert.match(result.stderr, /detached launch safety failure during post-release-attach/);
       assert.match(tmuxLog, /tmux:attach-session -t /);
       assert.doesNotMatch(tmuxLog, /tmux:kill-session -t /);
     } finally {
@@ -2047,6 +2050,7 @@ exit 0
       assert.doesNotMatch(tmuxLog, /not-a-real-shell/);
       assert.match(tmuxLog, /__detached-session-leader/);
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      await waitForPath(`${fakeTmuxPath}.leader-done`);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -2071,6 +2075,7 @@ exit 0
         sessionId,
         codexCmd: fakeChild,
         readyPath,
+        preLaunchOptions: { enableNotifyFallbackAuthority: false, worktreeDirty: false },
       })).toString('base64url');
       const leader = spawn(process.execPath, [omxBin, '__detached-session-leader', payload], {
         cwd: wd,
@@ -2084,6 +2089,9 @@ exit 0
         }),
         stdio: ['ignore', 'inherit', 'inherit'],
       });
+      await waitForPath(readyPath);
+      const ready = JSON.parse(await readFile(readyPath, 'utf-8')) as { nonce: string; sessionId: string; sessionName: string };
+      await writeFile(`${readyPath}.release`, `${JSON.stringify({ version: 1, kind: 'release', nonce: ready.nonce, sessionId: ready.sessionId, sessionName: ready.sessionName })}\n`);
       await waitForPath(childReady);
       assert.equal(existsSync(readyPath), true);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), true);

@@ -4401,69 +4401,98 @@ function withTmuxExtendedKeysLeaseLock<T>(
   throw new Error(`timed out waiting for tmux extended-keys lease lock: ${lockPath}`);
 }
 
+interface DetachedLeaderPreLaunchOptions {
+  notifyTempContract?: NotifyTempContract;
+  enableNotifyFallbackAuthority: boolean;
+  worktreeDirty: boolean;
+}
+
 function buildDetachedSessionLeaderCommand(
   cwd: string,
   sessionName: string,
   codexCmd: string,
-  sessionId?: string,
-  _codexHomeOverride?: string,
-  projectLocalCodexHomeForCleanup?: string,
-  runtimeCodexHomeForCleanup?: string,
-  parentEnvFilePath?: string,
-  releaseMarkerPath?: string,
+  sessionId: string | undefined,
+  codexHomeOverride: string | undefined,
+  projectLocalCodexHomeForCleanup: string | undefined,
+  runtimeCodexHomeForCleanup: string | undefined,
+  parentEnvFilePath: string | undefined,
+  readyPath: string | undefined,
+  preLaunchOptions: DetachedLeaderPreLaunchOptions,
   omxBin = process.argv[1],
 ): string {
   const payload = Buffer.from(JSON.stringify({
-    cwd,
-    sessionName,
-    sessionId,
-    codexCmd,
-    projectLocalCodexHomeForCleanup,
-    runtimeCodexHomeForCleanup,
-    parentEnvFilePath,
-    readyPath: releaseMarkerPath,
+    cwd, sessionName, sessionId, codexCmd, codexHomeOverride,
+    projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, parentEnvFilePath,
+    readyPath, preLaunchOptions,
   })).toString("base64url");
   return `/bin/sh -c ${quoteShellArg(`${parentEnvFilePath ? `if [ -r ${quoteShellArg(parentEnvFilePath)} ]; then . ${quoteShellArg(parentEnvFilePath)}; rm -f ${quoteShellArg(parentEnvFilePath)}; fi; ` : ""}exec ${quoteShellArg(process.execPath)} ${quoteShellArg(omxBin)} __detached-session-leader ${quoteShellArg(payload)}`)}`;
 }
+
 function buildDetachedWindowsLeaderCommand(
   cwd: string,
   sessionName: string,
   codexCmd: string,
-  sessionId?: string,
-  projectLocalCodexHomeForCleanup?: string,
-  runtimeCodexHomeForCleanup?: string,
-  releaseMarkerPath?: string,
+  sessionId: string | undefined,
+  codexHomeOverride: string | undefined,
+  projectLocalCodexHomeForCleanup: string | undefined,
+  runtimeCodexHomeForCleanup: string | undefined,
+  readyPath: string | undefined,
+  preLaunchOptions: DetachedLeaderPreLaunchOptions,
   omxBin = process.argv[1],
 ): string {
   const payload = Buffer.from(JSON.stringify({
-    cwd, sessionName, sessionId, codexCmd, projectLocalCodexHomeForCleanup,
-    runtimeCodexHomeForCleanup, readyPath: releaseMarkerPath,
+    cwd, sessionName, sessionId, codexCmd, codexHomeOverride,
+    projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, readyPath, preLaunchOptions,
   })).toString("base64url");
   const invocation = `& ${quotePowerShellArg(process.execPath)} ${quotePowerShellArg(omxBin)} __detached-session-leader ${quotePowerShellArg(payload)}`;
   return `powershell.exe -NoLogo -NoProfile -NonInteractive -Command ${quotePowerShellArg(invocation)}`;
 }
 
+interface DetachedLeaderReport {
+  version: 1;
+  kind: "ready" | "failed" | "terminal" | "release";
+  nonce: string;
+  sessionId: string;
+  sessionName: string;
+  paneId?: string;
+  leaderPid?: number;
+  error?: string;
+}
 
-
-function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string): void {
-  mkdirSync(dirname(releaseMarkerPath), { recursive: true, mode: 0o700 });
-  const tempPath = `${releaseMarkerPath}.${process.pid}.${randomUUID()}.tmp`;
+function writeDetachedLeaderReport(path: string, report: DetachedLeaderReport): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   let fd: number | undefined;
   try {
     fd = openSync(tempPath, "wx", 0o600);
-    writeFileSync(fd, `${nonce}\n`, "utf-8");
-    try {
-      fsyncSync(fd);
-    } catch (error) {
+    writeFileSync(fd, `${JSON.stringify(report)}\n`, "utf-8");
+    try { fsyncSync(fd); } catch (error) {
       if (!(process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")) throw error;
     }
     closeSync(fd);
     fd = undefined;
-    renameSync(tempPath, releaseMarkerPath);
+    renameSync(tempPath, path);
   } finally {
     if (fd !== undefined) closeSync(fd);
     try { unlinkSync(tempPath); } catch {}
   }
+}
+
+function readDetachedLeaderReport(path: string): DetachedLeaderReport | undefined {
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!value || typeof value !== "object") return undefined;
+    const report = value as Record<string, unknown>;
+    if (report.version !== 1 || !["ready", "failed", "terminal", "release"].includes(String(report.kind)) ||
+      typeof report.nonce !== "string" || typeof report.sessionId !== "string" || typeof report.sessionName !== "string") return undefined;
+    if (report.paneId !== undefined && typeof report.paneId !== "string") return undefined;
+    if (report.leaderPid !== undefined && (!Number.isSafeInteger(report.leaderPid) || Number(report.leaderPid) <= 0)) return undefined;
+    return report as unknown as DetachedLeaderReport;
+  } catch { return undefined; }
+}
+
+function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string): void {
+  writeDetachedLeaderReport(`${releaseMarkerPath}.release`, { version: 1, kind: "release", nonce, sessionId, sessionName });
 }
 
 type TmuxExecSync = (file: string, args: readonly string[]) => string;
@@ -4671,23 +4700,21 @@ export function buildDetachedSessionBootstrapSteps(
   inheritedWorkerModel?: string | null,
   releaseMarkerPath?: string,
   omxBin = process.argv[1],
+  preLaunchOptions: DetachedLeaderPreLaunchOptions = {
+    enableNotifyFallbackAuthority: false,
+    worktreeDirty: false,
+  },
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? buildDetachedWindowsLeaderCommand(
-        cwd, sessionName, codexCmd, sessionId, projectLocalCodexHomeForCleanup,
-        runtimeCodexHomeForCleanup, releaseMarkerPath, omxBin,
+        cwd, sessionName, codexCmd, sessionId, codexHomeOverride,
+        projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, releaseMarkerPath,
+        preLaunchOptions, omxBin,
       )
     : buildDetachedSessionLeaderCommand(
-        cwd,
-        sessionName,
-        codexCmd,
-        sessionId,
-        codexHomeOverride,
-        projectLocalCodexHomeForCleanup,
-        runtimeCodexHomeForCleanup,
-        parentEnvFilePath,
-        releaseMarkerPath,
-        omxBin,
+        cwd, sessionName, codexCmd, sessionId, codexHomeOverride,
+        projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, parentEnvFilePath,
+        releaseMarkerPath, preLaunchOptions, omxBin,
       );
   const resolvedEnvStateRoot = env.OMX_STATE_ROOT?.trim()
     ? resolveLaunchPath(cwd, env.OMX_STATE_ROOT.trim())
@@ -5755,43 +5782,86 @@ async function runCodex(
     let attachStep: DetachedSessionTmuxStep | null = null;
 
     const launchDetachedSession = async (): Promise<{ postLaunchHandledExternally: boolean }> => {
-      if (!nativeWindows) detachedParentEnvFilePath = writeDetachedSessionParentEnvFile(cwd, sessionId, codexEnvWithNotify);
-      const bootstrapSteps = buildDetachedSessionBootstrapSteps(
-        sessionName, cwd, nativeWindows && detachedWindowsCodexCmd ? detachedWindowsCodexCmd : codexCmd,
-        hudCmd, workerLaunchArgs, codexHomeOverride, notifyTempContractRaw, nativeWindows, sessionId,
-        projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, omxRootOverride, runtimeHookEnv,
-        sqliteHomeOverride, detachedParentEnvFilePath, inheritedWorkerModel, releaseMarkerPath, omxBin,
-      );
-      for (const step of bootstrapSteps) {
-        let output: string;
-        try {
-          output = execTmuxFileSync(step.args, { stdio: "pipe", encoding: "utf-8" });
-        } catch (error) {
-          throw new DetachedLaunchSafetyError(step.name === "new-session" ? "inert-session" : "pane-id", error, detachedPreflight.report);
-        }
-        if (step.name === "new-session") {
-          detachedLeaderPaneId = parsePaneIdFromTmuxOutput(output || "");
-          if (!detachedLeaderPaneId) throw new DetachedLaunchSafetyError("pane-id", new Error("detached session did not report a leader pane id"), detachedPreflight.report);
-          setDetachedTmuxSessionHistoryLimit(sessionName, detachedLeaderPaneId);
-        }
-        if (step.name === "split-and-capture-hud-pane") {
-          const hudPaneId = parsePaneIdFromTmuxOutput(output || "");
-          const hookWindowIndex = hudPaneId ? detectDetachedSessionWindowIndex(sessionName) : null;
-          for (const finalizeStep of buildDetachedSessionFinalizeSteps(sessionName, hudPaneId, hookWindowIndex, process.env.OMX_MOUSE !== "0", nativeWindows, detachedPreflight.shouldAttach, detachedLeaderPaneId)) {
-            if (finalizeStep.name === "attach-session") { attachStep = finalizeStep; continue; }
-            if (finalizeStep.name === "sanitize-copy-mode-style") { try { mitigateCopyModeUnderlineArtifacts(sessionName); } catch (error) { logCliOperationFailure(error); } continue; }
-            try { execTmuxFileSync(finalizeStep.args, { stdio: "ignore" }); } catch (error) { logCliOperationFailure(error); continue; }
-            if (finalizeStep.name === "reconcile-hud-resize") registerDetachedHudLayoutReconcileHook({ hudPaneId, detachedLeaderPaneId, cwd, sessionId, omxBin, omxRootOverride, baseEnv: runtimeHookEnv });
+      let createdSession = false;
+      const bootstrapLeader = async (): Promise<DetachedLeaderReport> => {
+        if (!nativeWindows) detachedParentEnvFilePath = writeDetachedSessionParentEnvFile(cwd, sessionId, codexEnvWithNotify);
+        const bootstrapSteps = buildDetachedSessionBootstrapSteps(
+          sessionName, cwd, nativeWindows && detachedWindowsCodexCmd ? detachedWindowsCodexCmd : codexCmd,
+          hudCmd, workerLaunchArgs, codexHomeOverride, notifyTempContractRaw, nativeWindows, sessionId,
+          projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, omxRootOverride, runtimeHookEnv,
+          sqliteHomeOverride, detachedParentEnvFilePath, inheritedWorkerModel, releaseMarkerPath,
+          omxBin,
+          {
+            ...(preLaunchOptions.notifyTempContract.active ? { notifyTempContract: preLaunchOptions.notifyTempContract } : {}),
+            enableNotifyFallbackAuthority: preLaunchOptions.enableNotifyFallbackAuthority,
+            worktreeDirty: preLaunchOptions.worktreeDirty,
+          },
+        );
+        for (const step of bootstrapSteps) {
+          let output: string;
+          try {
+            output = execTmuxFileSync(step.args, { stdio: "pipe", encoding: "utf-8" });
+          } catch (error) {
+            throw new DetachedLaunchSafetyError(step.name === "new-session" ? "inert-session" : "pane-id", error, detachedPreflight.report);
+          }
+          if (step.name === "new-session") {
+            createdSession = true;
+            detachedLeaderPaneId = parsePaneIdFromTmuxOutput(output || "");
+            if (!detachedLeaderPaneId) throw new DetachedLaunchSafetyError("pane-id", new Error("detached session did not report a leader pane id"), detachedPreflight.report);
+            setDetachedTmuxSessionHistoryLimit(sessionName, detachedLeaderPaneId);
+          }
+          if (step.name === "split-and-capture-hud-pane") {
+            const hudPaneId = parsePaneIdFromTmuxOutput(output || "");
+            const hookWindowIndex = hudPaneId ? detectDetachedSessionWindowIndex(sessionName) : null;
+            for (const finalizeStep of buildDetachedSessionFinalizeSteps(sessionName, hudPaneId, hookWindowIndex, process.env.OMX_MOUSE !== "0", nativeWindows, detachedPreflight.shouldAttach, detachedLeaderPaneId)) {
+              if (finalizeStep.name === "attach-session") { attachStep = finalizeStep; continue; }
+              if (finalizeStep.name === "sanitize-copy-mode-style") { try { mitigateCopyModeUnderlineArtifacts(sessionName); } catch (error) { logCliOperationFailure(error); } continue; }
+              try { execTmuxFileSync(finalizeStep.args, { stdio: "ignore" }); } catch (error) { logCliOperationFailure(error); continue; }
+              if (finalizeStep.name === "reconcile-hud-resize") registerDetachedHudLayoutReconcileHook({ hudPaneId, detachedLeaderPaneId, cwd, sessionId, omxBin, omxRootOverride, baseEnv: runtimeHookEnv });
+            }
           }
         }
-      }
-      const readyDeadline = Date.now() + 30_000;
-      while (!existsSync(releaseMarkerPath)) {
-        if (Date.now() >= readyDeadline) throw new DetachedLaunchSafetyError("barrier-release", new Error("detached leader readiness timed out"), detachedPreflight.report);
-        blockMs(20);
-      }
-      rmSync(releaseMarkerPath, { force: true });
-      if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" });
+        const readyDeadline = Date.now() + 30_000;
+        while (true) {
+          const report = readDetachedLeaderReport(releaseMarkerPath);
+          if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId &&
+            report.sessionName === sessionName && report.paneId === detachedLeaderPaneId && report.leaderPid && report.kind === "ready") return report;
+          if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.kind === "failed") {
+            throw new DetachedLaunchSafetyError("completion", new Error(report.error || "detached leader setup failed"), detachedPreflight.report);
+          }
+          if (Date.now() >= readyDeadline) throw new DetachedLaunchSafetyError("barrier-release", new Error("detached leader readiness timed out"), detachedPreflight.report);
+          blockMs(20);
+        }
+      };
+      await executeDetachedLaunchStateMachine(
+        { preflight: detachedPreflight },
+        {
+          establish: bootstrapLeader,
+          complete: async () => ({ kind: "success" }),
+          createInertSession: async () => sessionName,
+          capturePane: async () => detachedLeaderPaneId ?? "",
+          updateNameMetadata: async () => "committed-released",
+          updatePaneMetadata: async () => "committed-released",
+          publishActiveRecord: async () => ({ bytes: "", digest: "", nonce: detachedLaunchNonce }),
+          finalizeSetupFailure: async () => {},
+          releaseBarrier: async () => publishDetachedReleaseMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName),
+          attachOrReturn: async () => { if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" }); },
+          rollback: async (_ownedRecord, report) => {
+            const attempt = async (step: DetachedRollbackStep, operation: () => Promise<void> | void): Promise<void> => {
+              report.rollback.attempted.push(step);
+              try { await operation(); } catch (error) { report.rollback.failures.push({ step, status: "failed", code: detachedFailureCode(error) }); }
+            };
+            await attempt("parent-env", async () => { if (detachedParentEnvFilePath) await rm(detachedParentEnvFilePath, { force: true }); });
+            await attempt("runtime-codex-home", () => cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup));
+            await attempt("rollback", () => { rmSync(releaseMarkerPath, { force: true }); rmSync(`${releaseMarkerPath}.release`, { force: true }); });
+            if (createdSession) {
+              for (const step of buildDetachedSessionRollbackSteps(sessionName, null, null, null)) {
+                await attempt(`session:${step.name}`, () => { execTmuxFileSync(step.args, { stdio: "ignore" }); });
+              }
+            }
+          },
+        },
+      );
       return { postLaunchHandledExternally: true };
     };
 
@@ -5950,11 +6020,13 @@ function quotePowerShellArg(value: string): string {
 interface DetachedLeaderPayload {
   cwd: string;
   sessionName: string;
-  sessionId?: string;
+  sessionId: string;
   codexCmd: string;
+  codexHomeOverride?: string;
   projectLocalCodexHomeForCleanup?: string;
   runtimeCodexHomeForCleanup?: string;
   readyPath?: string;
+  preLaunchOptions: DetachedLeaderPreLaunchOptions;
 }
 
 function decodeDetachedLeaderPayload(encoded: string | undefined): DetachedLeaderPayload {
@@ -5963,24 +6035,45 @@ function decodeDetachedLeaderPayload(encoded: string | undefined): DetachedLeade
   try { value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")); } catch { throw new Error("invalid detached leader payload"); }
   if (!value || typeof value !== "object") throw new Error("invalid detached leader payload");
   const payload = value as Record<string, unknown>;
-  if (typeof payload.cwd !== "string" || typeof payload.sessionName !== "string" || typeof payload.sessionId !== "string" || typeof payload.codexCmd !== "string") throw new Error("invalid detached leader payload");
-  return { cwd: payload.cwd, sessionName: payload.sessionName, sessionId: payload.sessionId, codexCmd: payload.codexCmd,
+  const options = payload.preLaunchOptions;
+  if (typeof payload.cwd !== "string" || typeof payload.sessionName !== "string" || typeof payload.sessionId !== "string" ||
+    typeof payload.codexCmd !== "string" || !options || typeof options !== "object" ||
+    typeof (options as Record<string, unknown>).enableNotifyFallbackAuthority !== "boolean" ||
+    typeof (options as Record<string, unknown>).worktreeDirty !== "boolean") throw new Error("invalid detached leader payload");
+  const notifyTempContract = (options as Record<string, unknown>).notifyTempContract;
+  if (notifyTempContract !== undefined && (!notifyTempContract || typeof notifyTempContract !== "object")) throw new Error("invalid detached leader payload");
+  return {
+    cwd: payload.cwd, sessionName: payload.sessionName, sessionId: payload.sessionId, codexCmd: payload.codexCmd,
+    ...(typeof payload.codexHomeOverride === "string" ? { codexHomeOverride: payload.codexHomeOverride } : {}),
     ...(typeof payload.projectLocalCodexHomeForCleanup === "string" ? { projectLocalCodexHomeForCleanup: payload.projectLocalCodexHomeForCleanup } : {}),
     ...(typeof payload.runtimeCodexHomeForCleanup === "string" ? { runtimeCodexHomeForCleanup: payload.runtimeCodexHomeForCleanup } : {}),
     ...(typeof payload.readyPath === "string" ? { readyPath: payload.readyPath } : {}),
+    preLaunchOptions: {
+      ...(notifyTempContract ? { notifyTempContract: notifyTempContract as NotifyTempContract } : {}),
+      enableNotifyFallbackAuthority: (options as DetachedLeaderPreLaunchOptions).enableNotifyFallbackAuthority,
+      worktreeDirty: (options as DetachedLeaderPreLaunchOptions).worktreeDirty,
+    },
   };
 }
 
 async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise<void> {
-  const established = await establishPreLaunchBinding(payload.cwd, payload.sessionId!);
+  const established = await establishPreLaunchBinding(payload.cwd, payload.sessionId);
   const binding = established.binding;
   let ownedRecord: DetachedActiveRecordOwnership | undefined;
+  const nonce = payload.readyPath?.split(".").at(-2) || payload.sessionId;
   const contextKey = process.env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
   const activeRecordPath = contextKey
     ? madmaxDetachedActiveRecordPath(resolveMadmaxRunsRoot(process.env), contextKey)
     : join(omxRoot(payload.cwd), "state", "detached-active-record.json");
   try {
-    const completion = await completePreLaunchSetup(payload.cwd, payload.sessionId!, undefined, undefined, false, false);
+    const completion = await completePreLaunchSetup(
+      payload.cwd,
+      payload.sessionId,
+      payload.preLaunchOptions.notifyTempContract,
+      payload.codexHomeOverride,
+      payload.preLaunchOptions.enableNotifyFallbackAuthority,
+      payload.preLaunchOptions.worktreeDirty,
+    );
     if (completion.kind === "failure") {
       const finalization = await finalizeBoundOnce(binding, "setup-failure", payload.cwd);
       if (!finalization.finalized) throw new Error(`bound setup finalization denied: ${finalization.cleanup.comparison?.reason ?? "unknown reason"}`);
@@ -5995,19 +6088,41 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       version: 1, context_key: contextKey ?? payload.sessionId!, created_at: new Date().toISOString(),
       source_cwd: payload.cwd, argv: [payload.codexCmd], run_dir: process.env.OMX_ROOT ?? payload.cwd,
       tmux_session_name: payload.sessionName, session_id: payload.sessionId, tmux_pane_id: pane,
-      launch_nonce: payload.sessionId, leader_pid: process.pid, base_state_root: binding.context.baseStateDir,
+      launch_nonce: nonce, leader_pid: process.pid, base_state_root: binding.context.baseStateDir,
       lifecycle_phase: "ready",
     });
-    if (payload.readyPath) publishDetachedReleaseMarker(payload.readyPath, payload.sessionId!);
-    const child = spawn(process.platform === "win32" ? "powershell.exe" : "/bin/sh", process.platform === "win32" ? ["-NoProfile", "-Command", payload.codexCmd] : ["-c", payload.codexCmd], { cwd: payload.cwd, stdio: "inherit" });
-    let escalation: NodeJS.Timeout | undefined;
-    const forward = (signal: NodeJS.Signals): void => {
-      if (!child.pid) return;
-      try { child.kill(process.platform === "win32" ? "SIGTERM" : signal); } catch {}
-      if (!escalation) {
-        escalation = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 5_000);
-        escalation.unref();
+    if (payload.readyPath) {
+      writeDetachedLeaderReport(payload.readyPath, { version: 1, kind: "ready", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName, paneId: pane, leaderPid: process.pid });
+      const releasePath = `${payload.readyPath}.release`;
+      let interrupted: NodeJS.Signals | undefined;
+      const interrupt = (signal: NodeJS.Signals): void => { interrupted = signal; };
+      process.once("SIGINT", () => interrupt("SIGINT"));
+      process.once("SIGTERM", () => interrupt("SIGTERM"));
+      process.once("SIGHUP", () => interrupt("SIGHUP"));
+      while (true) {
+        if (interrupted) throw new Error(`detached leader interrupted before release: ${interrupted}`);
+        const release = readDetachedLeaderReport(releasePath);
+        if (release?.kind === "release" && release.nonce === nonce && release.sessionId === payload.sessionId && release.sessionName === payload.sessionName) break;
+        blockMs(20);
       }
+      rmSync(releasePath, { force: true });
+    }
+    const child = spawn(process.platform === "win32" ? "powershell.exe" : "/bin/sh", process.platform === "win32" ? ["-NoProfile", "-Command", payload.codexCmd] : ["-c", payload.codexCmd], {
+      cwd: payload.cwd,
+      stdio: "inherit",
+      ...(process.platform === "win32" ? {} : { detached: true }),
+    });
+    let escalation: NodeJS.Timeout | undefined;
+    const signalChildTree = (signal: NodeJS.Signals): void => {
+      if (!child.pid) return;
+      try {
+        if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        else process.kill(-child.pid, signal);
+      } catch {}
+    };
+    const forward = (signal: NodeJS.Signals): void => {
+      signalChildTree(signal);
+      if (!escalation) { escalation = setTimeout(() => signalChildTree("SIGKILL"), 5_000); escalation.unref(); }
     };
     process.once("SIGINT", () => forward("SIGINT"));
     process.once("SIGTERM", () => forward("SIGTERM"));
@@ -6015,7 +6130,11 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     const code = await new Promise<number | null>((resolveChild, rejectChild) => { child.once("error", rejectChild); child.once("exit", resolveChild); });
     if (escalation) clearTimeout(escalation);
     process.exitCode = code ?? 1;
-    await postLaunch(payload.cwd, payload.sessionId!, binding, undefined, false, payload.projectLocalCodexHomeForCleanup);
+    await postLaunch(payload.cwd, payload.sessionId, binding, payload.codexHomeOverride, payload.preLaunchOptions.enableNotifyFallbackAuthority, payload.projectLocalCodexHomeForCleanup);
+    if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
+      version: 1, kind: "terminal", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
+      paneId: pane, leaderPid: process.pid,
+    });
     await cleanupRuntimeCodexHome(payload.runtimeCodexHomeForCleanup, payload.projectLocalCodexHomeForCleanup);
     if (ownedRecord) {
       const bytes = readFileSync(activeRecordPath, "utf-8");
@@ -6023,6 +6142,10 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
     }
   } catch (error) {
+    if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
+      version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
+      leaderPid: process.pid, error: error instanceof Error ? error.message : String(error),
+    });
     const finalization = await finalizeBoundOnce(binding, "detached-pre-release-failure", payload.cwd).catch(() => undefined);
     if (finalization?.finalized && ownedRecord) {
       try {
