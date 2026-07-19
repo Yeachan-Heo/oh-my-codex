@@ -857,6 +857,12 @@ case "$1" in
     printf 'hud-pane\n'
     exit 0
     ;;
+  list-panes)
+    session=$(cat "${activeMarker}")
+    instance=$(cat "${instanceMarker}")
+    printf '%%12\t0\t4242\t%s\t$1\t100\t%s\n' "$session" "$instance"
+    exit 0
+    ;;
   display-message)
     if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
       printf '/tmp/tmux-test.sock\n'
@@ -911,7 +917,13 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 1);
+      assert.equal((tmuxLog.match(/tmux:has-session/g) || []).length, 0);
+      assert.ok((tmuxLog.match(/tmux:list-panes/g) || []).length >= 2);
+      assert.equal((tmuxLog.match(/tmux:attach-session/g) || []).length, 2);
       const activeRecord = await readFile(join(runs, 'active-detached', 'boxed-context-under-test.json'), 'utf-8');
+      assert.match(activeRecord, /"tmux_session_name"/);
+      assert.match(activeRecord, /"session_id"/);
+      assert.match(activeRecord, /"tmux_pane_id": "%12"/);
       assert.match(activeRecord, /"leader_pid"/);
       assert.match(activeRecord, /"base_state_root"/);
       assert.match(activeRecord, /"lifecycle_phase": "ready"/);
@@ -926,6 +938,8 @@ exit 0
       const repo = await createGitRepo(wd);
       const runs = join(wd, 'runs');
       const instanceMarker = join(wd, 'active-instance');
+      const sessionMarker = join(wd, 'active-session-name');
+
       const { env, tmuxLogPath, leaderDonePath } = await createLaunchFixture(
         wd,
         (logPath) => `#!/bin/sh
@@ -939,13 +953,25 @@ case "$1" in
     exit 1
     ;;
   new-session)
+    prev=''
+    for arg in "$@"; do
+      if [ "$prev" = '-s' ]; then printf '%s' "$arg" > "${sessionMarker}"; fi
+      prev="$arg"
+    done
     printf '%%77\n'
     exit 0
     ;;
+
   split-window)
     printf '%%78\n'
     exit 0
     ;;
+  list-panes)
+    instance=$(cat "${instanceMarker}")
+    printf '%%77\t0\t4242\t%s\t$1\t100\t%s\n' "$(cat "${sessionMarker}")" "$instance"
+    exit 0
+    ;;
+
   display-message)
     if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then
       printf '/tmp/tmux-test.sock\n'
@@ -1098,6 +1124,9 @@ exit 0
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-independent-high-'));
     try {
       const runs = join(wd, 'runs');
+      const sessionMarker = join(wd, 'independent-session');
+      const instanceMarker = join(wd, 'independent-instance');
+
       const { env, tmuxLogPath } = await createLaunchFixture(
         wd,
         (logPath) => `#!/bin/sh
@@ -1105,11 +1134,14 @@ printf 'tmux:%s\n' "$*" >> "${logPath}"
 case "$1" in
   -V) printf 'tmux 3.4\n'; exit 0 ;;
   has-session) exit 1 ;;
-  new-session) printf '%%12\n'; exit 0 ;;
+  new-session) prev=''; for arg in "$@"; do if [ "$prev" = '-s' ]; then printf '%s' "$arg" > "${sessionMarker}"; fi; prev="$arg"; done; printf '%%12\n'; exit 0 ;;
+
   split-window) printf 'hud-pane\n'; exit 0 ;;
   display-message) if [ "$2" = '-p' ] && [ "$3" = '#{socket_path}' ]; then printf '/tmp/tmux-test.sock\n'; else printf '0\n'; fi; exit 0 ;;
+  list-panes) printf '%%12\t0\t4242\t%s\t$1\t100\t%s\n' "$(cat "${sessionMarker}")" "$(cat "${instanceMarker}")"; exit 0 ;;
   show-options) printf 'off\n'; exit 0 ;;
-  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
+  set-option) if [ "$4" = '@omx_instance_id' ]; then printf '%s' "$5" > "${instanceMarker}"; fi; exit 0 ;;
+  set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
 esac
 exit 0
 `,

@@ -2555,6 +2555,11 @@ function readTeamWorkerEnvironment(): { teamName: string; workerName: string } |
   return internalWorker ?? externalWorker;
 }
 
+function hasRawTeamWorkerDeclaration(): boolean {
+  return safeString(process.env.OMX_TEAM_INTERNAL_WORKER).trim() !== ""
+    || safeString(process.env.OMX_TEAM_WORKER).trim() !== "";
+}
+
 async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> {
   const workerContext = readTeamWorkerEnvironment();
   if (!workerContext) return false;
@@ -2679,7 +2684,7 @@ async function resolveTeamWorkerStopDecision(
   const blockWorkerStop = (
     reasonCode: string,
     detail: string,
-    stateDirForDecision = getBaseStateDir(cwd),
+    stateDirForDecision = join(cwd, ".omx", "state"),
   ): TeamWorkerStopDecision => ({
     kind: "blocked",
     stateDir: stateDirForDecision,
@@ -2799,6 +2804,38 @@ function isStopExempt(payload: CodexHookPayload): boolean {
     || value.includes("compact")
     || value.includes("limit"),
   );
+}
+
+async function buildDeclaredTeamWorkerStopOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+): Promise<Record<string, unknown> | null> {
+  if (isStopExempt(payload)) return null;
+  const decision = await resolveTeamWorkerStopDecision(cwd);
+  if (decision.kind === "blocked") {
+    if ((payload.stop_hook_active === true || payload.stopHookActive === true) && !decision.allowRepeatDuringStopHook) return null;
+    return decision.output;
+  }
+  if (decision.kind === "allowed") {
+    try {
+      await maybeNudgeLeaderForAllowedWorkerStop({
+        stateDir: decision.stateDir,
+        logsDir: join(cwd, ".omx", "logs"),
+        workerContext: decision.workerContext,
+      });
+    } catch (err) {
+      void err;
+    }
+    return null;
+  }
+  const workerName = readTeamWorkerEnvironment()?.workerName ?? "unknown";
+  const reason = "OMX cannot resolve authoritative Team worker state for Stop.";
+  return {
+    decision: "block",
+    stopReason: `team_worker_${workerName}_missing_worker_state`,
+    reason,
+    systemMessage: reason,
+  };
 }
 
 async function readModeStateWithStopSource(
@@ -3331,6 +3368,12 @@ function payloadHasOwnerIdentityClaim(payload: CodexHookPayload): boolean {
 }
 function readPayloadSessionId(payload: CodexHookPayload): string {
   return payloadAliasValues(payload, ["session_id", "sessionId"])[0] ?? "";
+}
+
+function readUnambiguousNormalizedPayloadSessionId(payload: CodexHookPayload): string {
+  const aliases = payloadAliasValues(payload, ["session_id", "sessionId"]);
+  if (aliases.length !== 1) return "";
+  return normalizeSessionId(aliases[0]) ?? "";
 }
 
 function readPayloadThreadId(payload: CodexHookPayload): string {
@@ -19267,12 +19310,44 @@ async function buildStopHookOutput(
   payload: CodexHookPayload,
   cwd: string,
   stateDir: string,
-  options: { skipAutoNudge?: boolean; skipRalphStopBlock?: boolean; canonicalSessionId?: string } = {},
+  options: { skipAutoNudge?: boolean; skipRalphStopBlock?: boolean; canonicalSessionId?: string; teamWorkerOnly?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
   if (isStopExempt(payload)) {
     return null;
   }
 
+  if (options.teamWorkerOnly === true) {
+    const teamWorkerDecision = await resolveTeamWorkerStopDecision(cwd);
+    if (teamWorkerDecision.kind === "blocked") {
+      return await returnPersistentStopBlock(
+        payload,
+        stateDir,
+        "team-worker-stop",
+        safeString(teamWorkerDecision.output.stopReason),
+        teamWorkerDecision.output,
+        undefined,
+        { allowRepeatDuringStopHook: teamWorkerDecision.allowRepeatDuringStopHook },
+      );
+    }
+    if (teamWorkerDecision.kind === "allowed") {
+      try {
+        await maybeNudgeLeaderForAllowedWorkerStop({
+          stateDir: teamWorkerDecision.stateDir,
+          logsDir: join(cwd, ".omx", "logs"),
+          workerContext: teamWorkerDecision.workerContext,
+        });
+      } catch (err) {
+        void err;
+      }
+      return null;
+    }
+    return {
+      decision: "block",
+      stopReason: `team_worker_${readTeamWorkerEnvironment()?.workerName ?? "unknown"}_missing_worker_state`,
+      reason: "OMX cannot resolve authoritative Team worker state for Stop.",
+      systemMessage: "OMX cannot resolve authoritative Team worker state for Stop.",
+    };
+  }
   const sessionId = readPayloadSessionId(payload);
   const canonicalSessionId = options.canonicalSessionId
     ?? await resolveInternalSessionIdForPayload(cwd, sessionId);
@@ -19641,6 +19716,14 @@ export async function dispatchCodexNativeHook(
       outputJson: null,
     };
   }
+  if (hookEventName === "Stop" && hasRawTeamWorkerDeclaration()) {
+    return {
+      hookEventName,
+      omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
+      skillState: null,
+      outputJson: await buildDeclaredTeamWorkerStopOutput(payload, cwd),
+    };
+  }
   if (hookEventName === "Stop" && !hasNativeStopRuntimeSurface(cwd)) {
     return {
       hookEventName,
@@ -19664,7 +19747,13 @@ export async function dispatchCodexNativeHook(
   let teamNoticeTargetKey: string | null = null;
   let promptClassification: KeywordInputClassification | null = null;
 
-  const nativeSessionId = safeString(payload.session_id ?? payload.sessionId).trim();
+  const declaredTeamWorker = hasRawTeamWorkerDeclaration();
+  const candidateWorkerPayloadSessionId = declaredTeamWorker
+    ? readUnambiguousNormalizedPayloadSessionId(payload)
+    : "";
+  const nativeSessionId = declaredTeamWorker
+    ? candidateWorkerPayloadSessionId
+    : safeString(payload.session_id ?? payload.sessionId).trim();
   const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
   const pointer = await readSessionPointer(pointerContext);
@@ -19708,8 +19797,20 @@ export async function dispatchCodexNativeHook(
   let resolvedNativeSessionId = nativeSessionId;
   let skipCanonicalSessionStartContext = false;
   let isSubagentSessionStart = false;
+  const authoritativeTeamWorker = declaredTeamWorker && await hasAuthoritativeTeamWorkerContext(cwd);
+  const authoritativeWorkerPayloadSessionId = authoritativeTeamWorker
+    && candidateWorkerPayloadSessionId
+    && (!pointer.state || !payloadMatchesSessionPointer(candidateWorkerPayloadSessionId, pointer.state))
+      ? candidateWorkerPayloadSessionId
+      : "";
+  const declaredTeamWorkerStopOnly = hookEventName === "Stop" && declaredTeamWorker;
 
-  if (hookEventName === "SessionStart" && nativeSessionId) {
+  if (hookEventName === "SessionStart" && declaredTeamWorker && !authoritativeWorkerPayloadSessionId) {
+    canonicalSessionId = "";
+    resolvedNativeSessionId = nativeSessionId;
+    skipCanonicalSessionStartContext = true;
+    allowImplicitSessionSideEffects = false;
+  } else if (hookEventName === "SessionStart" && nativeSessionId) {
     const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
     const subagentSessionStart = readNativeSubagentSessionStartMetadata(transcriptPath);
     if (subagentSessionStart) {
@@ -19763,6 +19864,21 @@ export async function dispatchCodexNativeHook(
           transcriptPath,
         );
       }
+    } else if (declaredTeamWorker) {
+      if (authoritativeWorkerPayloadSessionId && authoritativeWorkerPayloadSessionId === nativeSessionId) {
+        // Team workers share the leader's selected state root, but they do not own
+        // its compatibility pointer. Keep lifecycle state scoped to the explicit
+        // hook payload without reconciling or replacing the live leader pointer.
+        canonicalSessionId = authoritativeWorkerPayloadSessionId;
+        resolvedNativeSessionId = authoritativeWorkerPayloadSessionId;
+        allowImplicitSessionSideEffects = true;
+        stopAuthorizationFailure = null;
+      } else {
+        canonicalSessionId = "";
+        resolvedNativeSessionId = nativeSessionId;
+        skipCanonicalSessionStartContext = true;
+        allowImplicitSessionSideEffects = false;
+      }
     } else {
       const ownerOmxSessionId = await resolveVerifiedOwnerOmxSessionId();
       try {
@@ -19803,17 +19919,27 @@ export async function dispatchCodexNativeHook(
 
   if (hookEventName === "Stop") {
     const stopPayloadSessionId = readPayloadSessionId(payload);
-    const stopCanonicalSessionId = await resolveInternalSessionIdForPayload(
-      cwd,
-      stopPayloadSessionId,
-      undefined,
-      currentSessionState,
-      pointer.status === "absent",
-    );
-    if (stopPayloadSessionId && !stopCanonicalSessionId) {
+    const authorizedWorkerStopSessionId = authoritativeWorkerPayloadSessionId;
+    const stopCanonicalSessionId = declaredTeamWorker && !authorizedWorkerStopSessionId
+      ? ""
+      : await resolveInternalSessionIdForPayload(
+        cwd,
+        authorizedWorkerStopSessionId || stopPayloadSessionId,
+        undefined,
+        currentSessionState,
+        declaredTeamWorker
+          ? Boolean(authorizedWorkerStopSessionId)
+          : pointer.status === "absent",
+      );
+    if ((declaredTeamWorker && !authorizedWorkerStopSessionId) || (stopPayloadSessionId && !stopCanonicalSessionId)) {
       canonicalSessionId = "";
       allowImplicitSessionSideEffects = false;
-      if (!stopAuthorizationFailure) {
+      if (declaredTeamWorker && !authorizedWorkerStopSessionId) {
+        stopAuthorizationFailure = {
+          stopReason: "session_scope_unmatched",
+          reason: "OMX cannot authorize Team worker Stop without exactly one valid explicit session id.",
+        };
+      } else if (!stopAuthorizationFailure) {
         stopAuthorizationFailure = {
           stopReason: "session_scope_unmatched",
           reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
@@ -19821,6 +19947,10 @@ export async function dispatchCodexNativeHook(
       }
     } else if (stopCanonicalSessionId) {
       canonicalSessionId = stopCanonicalSessionId;
+    }
+    if (authorizedWorkerStopSessionId && stopCanonicalSessionId === authorizedWorkerStopSessionId) {
+      allowImplicitSessionSideEffects = true;
+      stopAuthorizationFailure = null;
     }
     if (canonicalSessionId && safeString(currentSessionState?.session_id).trim() === canonicalSessionId) {
       resolvedNativeSessionId =
@@ -19858,7 +19988,11 @@ export async function dispatchCodexNativeHook(
         )),
     )).some(Boolean)
     : false;
-  if (isSubagentStop && stopAuthorizationFailure?.stopReason === "session_scope_unmatched") {
+  if (
+    isSubagentStop
+    && stopAuthorizationFailure?.stopReason === "session_scope_unmatched"
+    && !(declaredTeamWorker && !authoritativeWorkerPayloadSessionId)
+  ) {
     canonicalSessionId = normalizeSessionId(readPayloadSessionId(payload)) ?? "";
     allowImplicitSessionSideEffects = true;
     stopAuthorizationFailure = null;
@@ -20306,7 +20440,9 @@ export async function dispatchCodexNativeHook(
     }
     outputJson = buildNativePostToolUseOutput(payload);
   } else if (hookEventName === "Stop") {
-    if (allowImplicitSessionSideEffects) {
+    if (declaredTeamWorkerStopOnly) {
+      outputJson = await buildStopHookOutput(payload, cwd, stateDir, { teamWorkerOnly: true });
+    } else if (allowImplicitSessionSideEffects) {
       outputJson = await buildStopHookOutput(payload, cwd, stateDir, {
         canonicalSessionId: canonicalSessionId || undefined,
         skipRalphStopBlock: isSubagentStop,

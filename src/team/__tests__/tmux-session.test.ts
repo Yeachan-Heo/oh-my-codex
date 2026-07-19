@@ -7351,8 +7351,6 @@ describe('dismissTrustPromptIfPresent', () => {
 
 describe('isWorkerAlive', () => {
   it('does not require pane_current_command to match "codex"', () => {
-    // This was a real failure mode: tmux reports pane_current_command=node for the Codex TUI,
-    // which caused workers to be treated as dead and the leader to clean up state too early.
     withEmptyPath(() => {
       assert.equal(isWorkerAlive('omx-team-x', 1), false);
     });
@@ -7372,56 +7370,78 @@ exit 1
     );
   });
 
-  it('treats EPERM liveness probes as unknown and emits no async kill controls', async () => {
+  it('queries each exact pane even when a broad snapshot would return the leader first', async () => {
     await withMockTmuxFixture(
-      'omx-worker-liveness-eperm-',
+      'omx-worker-liveness-exact-target-',
       (logPath) => `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "${logPath}"
 case "$1" in
-  list-panes)
-    if [ "$2" = "-a" ]; then printf '%%77\t0\t%s\n' "$PPID"; exit 0; fi
-    if [ "$2" = "-t" ]; then printf '0 %s\n' "$PPID"; exit 0; fi
-    exit 1
+  display-message)
+    case "$4" in
+      %21) printf '%%21\t0\t%s\tteam:liveness\n' "$PPID" ;;
+      %22) printf '%%22\t0\t%s\tteam:liveness\n' "$PPID" ;;
+      *) exit 1 ;;
+    esac
     ;;
-  show-option) printf 'team:liveness\n'; exit 0 ;;
+  list-panes) printf '%%11\t0\t111\n%%21\t0\t%s\n%%22\t0\t%s\n' "$PPID" "$PPID" ;;
   *) exit 1 ;;
 esac
 `,
       async ({ logPath }) => {
-        const originalProcessKill = process.kill;
-        process.kill = ((pid: number, signal?: number | NodeJS.Signals) => {
-          if (pid === process.pid && signal === 0) {
-            const error = new Error('permission denied') as NodeJS.ErrnoException;
-            error.code = 'EPERM';
-            throw error;
-          }
-          return originalProcessKill(pid, signal as NodeJS.Signals);
-        }) as typeof process.kill;
-        try {
-          assert.equal(isWorkerAlive('compat-session', 1), true);
-          assert.equal(isWorkerAlive('ignored-session', 1, '%77', process.pid, 'team:liveness'), true);
-          await killWorker('ignored-session', 1, '%77', undefined, process.pid, 'team:liveness');
-        } finally {
-          process.kill = originalProcessKill;
-        }
+        assert.equal(isWorkerAlive('ignored-session', 1, '%21', process.pid, 'team:liveness'), true);
+        assert.equal(isWorkerAlive('ignored-session', 2, '%22', process.pid, 'team:liveness'), true);
         const log = await readFile(logPath, 'utf-8');
-        assert.doesNotMatch(log, /send-keys -t %77|kill-pane -t %77/);
+        assert.match(log, /display-message -p -t %21/);
+        assert.match(log, /display-message -p -t %22/);
+        assert.doesNotMatch(log, /list-panes -a/);
       },
     );
   });
 
-  it('treats only ESRCH as a gone process', async () => {
+  it('treats pane recycle and PID reuse identity mismatches as diagnostics, not death', async () => {
     await withMockTmuxFixture(
-      'omx-worker-liveness-esrch-',
+      'omx-worker-liveness-reuse-',
       () => `#!/bin/sh
+set -eu
 case "$1" in
-  list-panes)
-    if [ "$2" = "-a" ]; then printf '%%77\t0\t%s\n' "$PPID"; exit 0; fi
-    if [ "$2" = "-t" ]; then printf '0 %s\n' "$PPID"; exit 0; fi
-    exit 1
+  display-message)
+    case "$4" in
+      %31) printf '%%31\t0\t999999\tteam:liveness\n' ;;
+      %32) printf '%%32\t0\t%s\tteam:replacement\n' "$PPID" ;;
+      *) exit 1 ;;
+    esac
     ;;
-  show-option) printf 'team:liveness\n'; exit 0 ;;
+  *) exit 1 ;;
+esac
+`,
+      async () => {
+        assert.throws(
+          () => isWorkerAlive('ignored-session', 1, '%31', process.pid, 'team:liveness'),
+          /worker pane PID changed/,
+        );
+        assert.throws(
+          () => isWorkerAlive('ignored-session', 2, '%32', process.pid, 'team:liveness'),
+          /worker pane incarnation changed/,
+        );
+      },
+    );
+  });
+
+  it('classifies only missing, dead, or ESRCH exact panes as dead', async () => {
+    await withMockTmuxFixture(
+      'omx-worker-liveness-gone-',
+      () => `#!/bin/sh
+set -eu
+case "$1" in
+  display-message)
+    case "$4" in
+      %41) echo "can't find pane: %41" >&2; exit 1 ;;
+      %42) printf '%%42\t1\t42\tteam:liveness\n' ;;
+      %43) printf '%%43\t0\t%s\tteam:liveness\n' "$PPID" ;;
+      *) exit 1 ;;
+    esac
+    ;;
   *) exit 1 ;;
 esac
 `,
@@ -7436,8 +7456,9 @@ esac
           return originalProcessKill(pid, signal as NodeJS.Signals);
         }) as typeof process.kill;
         try {
-          assert.equal(isWorkerAlive('compat-session', 1), false);
-          assert.equal(isWorkerAlive('ignored-session', 1, '%77', process.pid, 'team:liveness'), false);
+          assert.equal(isWorkerAlive('ignored-session', 1, '%41', 41, 'team:liveness'), false);
+          assert.equal(isWorkerAlive('ignored-session', 2, '%42', 42, 'team:liveness'), false);
+          assert.equal(isWorkerAlive('ignored-session', 3, '%43', process.pid, 'team:liveness'), false);
         } finally {
           process.kill = originalProcessKill;
         }
@@ -7445,33 +7466,67 @@ esac
     );
   });
 
-  it('uses the exact global row for explicit pane liveness and fails closed for dead rows', async () => {
+  it('keeps EPERM and malformed exact identity as diagnostic/live-unknown outcomes', async () => {
     await withMockTmuxFixture(
-      'omx-pane-id-liveness-',
-      (logPath) => `#!/bin/sh
+      'omx-worker-liveness-fail-closed-',
+      () => `#!/bin/sh
 set -eu
-printf '%s\n' "$*" >> "${logPath}"
-case "\${1:-}" in
-  list-panes)
-    if [ "$2" = "-a" ]; then
-      printf '%%77\t0\t%s\n%%88\t1\t1\n' "$PPID"
-      exit 0
-    fi
-    exit 1
+case "$1" in
+  display-message)
+    case "$4" in
+      %51) printf '%%51\t0\t%s\tteam:liveness\n' "$PPID" ;;
+      %52) printf '%%leader\t0\t52\tteam:liveness\n' ;;
+      %53) printf '%%53\t0\t53\t\n' ;;
+      %54) printf '%%54\t1\t54\t\n' ;;
+      %55) printf '%%55\t0\t55\tteam:liveness\n' ;;
+      %56) printf '%%56\t1\t56\tteam:liveness\n' ;;
+      *) exit 2 ;;
+    esac
     ;;
-  show-option)
-    printf 'team:liveness\n'
-    ;;
-  *)
-    exit 1
-    ;;
+  *) exit 1 ;;
 esac
 `,
       async () => {
-        assert.equal(isWorkerAlive('ignored-session', 1, '%77', process.pid, 'team:liveness'), true);
-        assert.equal(isWorkerPaneOpen('ignored-session', 1, '%77', process.pid, 'team:liveness'), true);
-        assert.equal(isWorkerAlive('ignored-session', 2, '%88', 1, 'team:liveness'), false);
-        assert.equal(isWorkerPaneOpen('ignored-session', 2, '%88', 1, 'team:liveness'), false);
+        const originalProcessKill = process.kill;
+        process.kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+          if (pid === process.pid && signal === 0) {
+            const error = new Error('permission denied') as NodeJS.ErrnoException;
+            error.code = 'EPERM';
+            throw error;
+          }
+          return originalProcessKill(pid, signal as NodeJS.Signals);
+        }) as typeof process.kill;
+        try {
+          assert.equal(isWorkerAlive('ignored-session', 1, '%51', process.pid, 'team:liveness'), true);
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 2, '%52', 52, 'team:liveness'),
+            /worker pane identity changed.*pane_id_changed/,
+          );
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 3, '%53', 53, 'team:liveness'),
+            /worker pane incarnation changed.*missing/,
+          );
+          assert.equal(isWorkerAlive('ignored-session', 4, '%54', 54, 'team:liveness'), false);
+          assert.equal(isWorkerAlive('ignored-session', 6, '%56', undefined, 'team:liveness'), false);
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 5, '%55', 55, 'team:liveness', '%55'),
+            /worker pane is HUD target/,
+          );
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 5, '%55', undefined, 'team:liveness', '%55'),
+            /worker pane is HUD target/,
+          );
+          assert.throws(
+            () => isWorkerAlive('ignored-session', 5, '%55', 55, undefined, '%55'),
+            /worker pane is HUD target/,
+          );
+          assert.throws(
+            () => getWorkerPanePid('ignored-session', 5, '%55', 55, 'team:liveness', '%55'),
+            /worker pane is HUD target/,
+          );
+        } finally {
+          process.kill = originalProcessKill;
+        }
       },
     );
   });
@@ -7491,6 +7546,13 @@ case "$1" in
     ;;
   show-option)
     printf 'team:rows\n'
+    ;;
+  display-message)
+    case "$4" in
+      %13) printf '%%13\t0\t%s\tteam:rows\n' "${pane13Pid}" ;;
+      %130) printf '%%130\t0\t%s\tteam:rows\n' "${pane130Pid}" ;;
+      *) exit 1 ;;
+    esac
     ;;
   *)
     exit 1
@@ -7597,6 +7659,10 @@ printf '%s\n' "$*" >> "${logPath}"
 case "$1" in
   list-panes)
     printf '%%13\t0\t%s\n' "$PPID"
+    ;;
+  display-message)
+    echo "can't find pane: $4" >&2
+    exit 1
     ;;
   *)
     exit 0
