@@ -109,14 +109,19 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     // Check if stage should be skipped
     if (stage.canSkip?.(ctx)) {
       let skippedArtifacts: Record<string, unknown> = {};
+      let skippedError: string | undefined;
       if (stage.name === 'ralplan') {
         const materialized = await stage.run(ctx);
         skippedArtifacts = materialized.artifacts;
+        if (isRalplanHostReceiptBlocked(stage.name, skippedArtifacts)) {
+          skippedError = materialized.error ?? 'documented_host_consensus_receipt_unavailable';
+        }
       }
       const skippedResult: StageResult = {
-        status: 'skipped',
+        status: skippedError ? 'failed' : 'skipped',
         artifacts: skippedArtifacts,
         duration_ms: 0,
+        ...(skippedError ? { error: skippedError } : {}),
       };
       stageResults[stage.name] = skippedResult;
       if (Object.keys(skippedArtifacts).length > 0) {
@@ -130,6 +135,24 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         pipeline_stage_results: { ...stageResults },
         handoff_artifacts: normalizeHandoffArtifactKeys(handoffArtifactsByStage),
       } as Partial<PipelineModeStateExtension>, cwd);
+
+      if (skippedError) {
+        const duration_ms = Date.now() - startTime;
+        await updateAutopilotPipelineState({
+          active: false,
+          current_phase: 'failed',
+          completed_at: new Date().toISOString(),
+          error: skippedError,
+        }, cwd);
+        return {
+          status: 'failed',
+          stageResults,
+          duration_ms,
+          artifacts,
+          error: skippedError,
+          failedStage: stage.name,
+        };
+      }
 
       lastStageName = stage.name;
       previousResult = skippedResult;
@@ -154,6 +177,14 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         artifacts: {},
         duration_ms: Date.now() - startTime,
         error: `Stage ${stage.name} threw: ${errorMsg}`,
+      };
+    }
+
+    if (isRalplanHostReceiptBlocked(stage.name, result.artifacts)) {
+      result = {
+        ...result,
+        status: 'failed',
+        error: result.error ?? 'documented_host_consensus_receipt_unavailable',
       };
     }
 
@@ -360,6 +391,16 @@ function normalizeHandoffArtifactKeys(artifacts: Record<string, unknown>): Recor
     }
   }
   return normalized;
+}
+
+function isRalplanHostReceiptBlocked(stageName: string, artifacts: Record<string, unknown>): boolean {
+  if (stageName !== 'ralplan') return false;
+  const gate = artifacts.ralplanConsensusGate ?? artifacts.ralplan_consensus_gate;
+  if (!gate || typeof gate !== 'object') return false;
+
+  const gateRecord = gate as Record<string, unknown>;
+  return gateRecord.blockedReason === 'documented_host_consensus_receipt_unavailable'
+    || gateRecord.blocked_reason === 'documented_host_consensus_receipt_unavailable';
 }
 
 function toHandoffArtifactKey(stageName: string): string {

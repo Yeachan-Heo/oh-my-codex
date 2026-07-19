@@ -17,6 +17,7 @@ import {
   buildRalplanConsensusGateForCwd,
   buildRalplanConsensusGateFromSources,
   hasDurableRalplanConsensusEvidenceForCwd,
+  type RalplanConsensusBlockedReason,
   type RalplanConsensusGateEvidence,
 } from '../../ralplan/consensus-gate.js';
 
@@ -152,6 +153,9 @@ function buildRalplanConsensusGate(runtimeResult: {
   architectReviews: unknown[];
   criticReviews: unknown[];
 }, ctx: StageContext, requireNativeSubagents?: boolean): RalplanConsensusGateEvidence {
+  const runtimeGate = runtimeConsensusGateDiagnostic(runtimeResult.ralplanConsensusGate);
+  if (runtimeGate) return runtimeGate;
+
   return buildRalplanConsensusGateFromSources([{
     source: 'runtime-result',
     value: runtimeResult,
@@ -160,6 +164,32 @@ function buildRalplanConsensusGate(runtimeResult: {
     sessionId: ctx.sessionId,
     requireNativeSubagents,
   });
+}
+
+function runtimeConsensusGateDiagnostic(value: unknown): RalplanConsensusGateEvidence | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const gate = value as Record<string, unknown>;
+  const blockedReason = gate.blocked_reason ?? gate.blockedReason;
+  if (typeof blockedReason !== 'string') return null;
+
+  const blockedDetailsValue = gate.blocked_details ?? gate.blockedDetails;
+  const blockedDetails = Array.isArray(blockedDetailsValue)
+    ? blockedDetailsValue.filter((detail): detail is string => typeof detail === 'string')
+    : [];
+  return {
+    complete: false,
+    sequence: ['architect-review', 'critic-review'],
+    ralplan_architect_review: asRecord(gate.ralplan_architect_review ?? gate.architect_review),
+    ralplan_critic_review: asRecord(gate.ralplan_critic_review ?? gate.critic_review),
+    source: 'runtime-result',
+    blockedReason: blockedReason as RalplanConsensusBlockedReason,
+    ...(blockedDetails.length > 0 ? { blockedDetails } : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
 
 function hasDurableRalplanConsensusEvidence(

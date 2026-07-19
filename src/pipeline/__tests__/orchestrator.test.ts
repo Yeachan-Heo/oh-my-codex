@@ -303,7 +303,7 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.stageResults.ralplan.error, 'ralplan_consensus_evidence_missing');
     });
 
-    it('returns to ralplan rather than deep-interview after default quality-gate failures', async () => {
+    it('stops at ralplan before default quality gates when the host receipt is unavailable', async () => {
       const order: string[] = [];
       let qaRuns = 0;
       const stages: PipelineStage[] = [
@@ -345,27 +345,21 @@ describe('Pipeline Orchestrator', () => {
         },
       ];
 
-      const result = await runPipeline({
-        name: 'default-quality-loop-test',
-        task: 'loop until QA clean',
-        stages,
-        cwd: tempDir,
-        maxRalphIterations: 3,
-      });
-
-      assert.equal(result.status, 'completed');
+      await assert.rejects(
+        () => runPipeline({
+          name: 'default-quality-loop-test',
+          task: 'loop until QA clean',
+          stages,
+          cwd: tempDir,
+          maxRalphIterations: 3,
+        }),
+        /documented_host_consensus_receipt_unavailable/,
+      );
       assert.deepEqual(order, [
         'deep-interview:skip-check',
         'ralplan',
-        'ultraqa',
-        'ralplan',
-        'ultraqa',
       ]);
-
-      const ext = await readPipelineState(tempDir);
-      assert.equal(ext?.review_cycle, 1);
-      assert.equal((ext?.qa_verdict as { clean?: boolean } | undefined)?.clean, true);
-      assert.equal(ext?.return_to_ralplan_reason, null);
+      assert.equal(qaRuns, 0);
     });
 
     it('fails after bounded non-clean code-review cycles', async () => {
@@ -398,7 +392,7 @@ describe('Pipeline Orchestrator', () => {
     });
 
 
-    it('final completion write replaces stale BLOCK verdict state with clean artifacts', async () => {
+    it('does not reach final completion cleanup when ralplan lacks a host receipt', async () => {
       let reviewRuns = 0;
       const stages: PipelineStage[] = [
         makeStage('ralplan', { artifacts: { plan: 'approved' } }),
@@ -437,28 +431,16 @@ describe('Pipeline Orchestrator', () => {
         }),
       ];
 
-      const result = await runPipeline({
-        name: 'stale-block-finalization',
-        task: 'finalization replaces stale blockers',
-        stages,
-        cwd: tempDir,
-      });
-
-      assert.equal(result.status, 'completed');
-      assert.equal(reviewRuns, 2);
-      const ext = await readPipelineState(tempDir);
-      const modeState = await readModeState('autopilot', tempDir);
-      assert.equal(modeState?.active, false);
-      assert.equal(modeState?.current_phase, 'complete');
-      assert.equal((ext?.review_verdict as { recommendation?: string } | undefined)?.recommendation, 'APPROVE');
-      assert.equal((ext?.review_verdict as { architectural_status?: string } | undefined)?.architectural_status, 'CLEAR');
-      assert.equal((ext?.review_verdict as { clean?: boolean } | undefined)?.clean, true);
-      assert.equal((ext?.qa_verdict as { clean?: boolean } | undefined)?.clean, true);
-      assert.equal(ext?.return_to_ralplan_reason, null);
-      assert.ok(ext?.handoff_artifacts?.code_review, 'clean code-review artifact should be preserved in terminal state');
-      assert.ok(ext?.handoff_artifacts?.ultraqa, 'clean ultraqa artifact should be preserved in terminal state');
-      assert.equal((ext?.pipeline_stage_results as Record<string, unknown> | undefined)?.['code-review'] !== undefined, true);
-      assert.equal((ext?.pipeline_stage_results as Record<string, unknown> | undefined)?.ultraqa !== undefined, true);
+      await assert.rejects(
+        () => runPipeline({
+          name: 'stale-block-finalization',
+          task: 'finalization replaces stale blockers',
+          stages,
+          cwd: tempDir,
+        }),
+        /documented_host_consensus_receipt_unavailable/,
+      );
+      assert.equal(reviewRuns, 0);
     });
 
     it('passes artifacts between stages', async () => {
@@ -605,6 +587,52 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
       assert.ok(gate.ralplan_architect_review);
       assert.ok(gate.ralplan_critic_review);
+    });
+
+    it('does not advance a completed Ralplan result with a host-receipt blocker into execution', async () => {
+      const executionAttempts: string[] = [];
+      const blockedGate = {
+        complete: false,
+        sequence: ['architect-review', 'critic-review'],
+        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
+        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
+        source: 'runtime-result',
+        blockedReason: 'documented_host_consensus_receipt_unavailable',
+      };
+      const result = await runPipeline({
+        name: 'ralplan-host-receipt-blocker',
+        task: 'do not execute without host receipt',
+        stages: [
+          makeStage('ralplan', { artifacts: { ralplanConsensusGate: blockedGate } }, { canSkip: () => true }),
+          {
+            name: 'ultragoal',
+            async run(): Promise<StageResult> {
+              executionAttempts.push('ultragoal');
+              return { status: 'completed', artifacts: {}, duration_ms: 0 };
+            },
+          },
+          {
+            name: 'ultraqa',
+            async run(): Promise<StageResult> {
+              executionAttempts.push('ultraqa');
+              return { status: 'completed', artifacts: {}, duration_ms: 0 };
+            },
+          },
+        ],
+        cwd: tempDir,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.failedStage, 'ralplan');
+      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.stageResults.ralplan.status, 'failed');
+      assert.equal(result.stageResults.ultragoal, undefined);
+      assert.equal(result.stageResults.ultraqa, undefined);
+      assert.deepEqual(executionAttempts, []);
+
+      const ext = await readPipelineState(tempDir);
+      const handoffs = ext?.handoff_artifacts as Record<string, unknown> | undefined;
+      assert.deepEqual((handoffs?.ralplan as { ralplanConsensusGate?: unknown } | undefined)?.ralplanConsensusGate, blockedGate);
     });
 
     it('fires onStageTransition callback', async () => {

@@ -724,7 +724,12 @@ describe('RALPLAN Stage', () => {
 
     const result = await stage.run(makeCtx({ task: 'live ralplan run' }));
     const artifacts = result.artifacts as Record<string, unknown>;
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
+    const gate = artifacts.ralplanConsensusGate as {
+      complete?: boolean;
+      blockedReason?: string;
+      ralplan_architect_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
+      ralplan_critic_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
+    };
 
     assert.equal(result.status, 'failed');
     assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
@@ -732,9 +737,19 @@ describe('RALPLAN Stage', () => {
     assert.equal(artifacts.planningComplete, false);
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-    assert.ok(gate.ralplan_architect_review);
-    assert.ok(gate.ralplan_critic_review);
-    assert.equal(artifacts.iteration, 5);
+    assert.deepEqual(gate.ralplan_architect_review, {
+      agent_role: 'architect',
+      verdict: 'approve',
+      summary: 'architect ok',
+      iteration: 1,
+    });
+    assert.deepEqual(gate.ralplan_critic_review, {
+      agent_role: 'critic',
+      verdict: 'approve',
+      summary: 'critic ok',
+      iteration: 1,
+    });
+    assert.equal(artifacts.iteration, 1);
     assert.equal(artifacts.runtimeDrafted, true);
   });
 
@@ -822,17 +837,28 @@ describe('RALPLAN Stage', () => {
 
     const result = await stage.run(makeCtx({ task: 'live ralplan run' }));
     const artifacts = result.artifacts as Record<string, unknown>;
+    const gate = artifacts.ralplanConsensusGate as {
+      complete?: boolean;
+      blockedReason?: string;
+      ralplan_architect_review?: { agent_role?: string; verdict?: string; provenance_kind?: unknown } | null;
+      ralplan_critic_review?: { agent_role?: string; verdict?: string; provenance_kind?: unknown } | null;
+    };
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.deepEqual(artifacts.ralplanConsensusGate, {
-      complete: false,
-      sequence: ['architect-review', 'critic-review'],
-      ralplan_architect_review: null,
-      ralplan_critic_review: null,
-      source: null,
-      blockedReason: 'documented_host_consensus_receipt_unavailable',
-      blockedDetails: ['official host consensus receipt verifier is unavailable'],
+    assert.equal(result.error, 'ralplan_consensus_not_reached_after_1_iterations');
+    assert.equal(gate.complete, false);
+    assert.equal(gate.blockedReason, 'critic_review_missing_or_not_approved');
+    assert.deepEqual(gate.ralplan_architect_review, {
+      agent_role: 'architect',
+      verdict: 'approve',
+      summary: 'architect ok',
+      iteration: 1,
+    });
+    assert.deepEqual(gate.ralplan_critic_review, {
+      agent_role: 'critic',
+      verdict: 'iterate',
+      summary: 'critic needs changes',
+      iteration: 1,
     });
   });
 
