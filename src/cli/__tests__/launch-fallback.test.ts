@@ -264,7 +264,7 @@ exit 42
       assert.match(result.stderr, /codex-startup-boom/);
       assert.match(result.stderr, /\[omx\] codex exited with code 42/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -294,7 +294,7 @@ exit 42
       assert.match(result.stderr, /failed to launch codex: executable not found in PATH/);
       assert.notEqual(result.stderr.trim(), '');
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -335,7 +335,7 @@ exit 42
       assert.match(result.stdout, /fake-codex:.*model_reasoning_effort="xhigh"/);
       assert.doesNotMatch(result.stderr, /spawnSync tmux ENOENT/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -420,7 +420,7 @@ exit 42
         'after second marker',
       ]);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -488,7 +488,7 @@ exec "$NODE_BINARY" -e 'const fs = require("node:fs"); const path = require("nod
         assert.equal(captured.hasResumeSqlite, testCase.resumes, JSON.stringify(testCase.args));
       }
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 });
@@ -526,7 +526,7 @@ describe('ordinary launch root collision guidance', () => {
       await finalizeBoundOnce(binding, 'test');
     } finally {
       if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -563,7 +563,7 @@ describe('ordinary launch root collision guidance', () => {
     } finally {
       if (first) first.kill('SIGKILL');
       if (second) second.kill('SIGKILL');
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -602,7 +602,7 @@ describe('ordinary launch root collision guidance', () => {
     } finally {
       if (firstBinding) await closeLaunchSessionBindingOnce(firstBinding).catch(() => {});
       if (secondBinding) await closeLaunchSessionBindingOnce(secondBinding).catch(() => {});
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 });
@@ -648,7 +648,7 @@ printf 'fake-codex:%s\n' "$*"
       assert.equal(existsSync(join(repo, '.omx', 'state')), true);
       assert.equal(existsSync(join(worktreePath, '.omx')), false);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -689,7 +689,7 @@ printf 'fake-codex:%s\n' "$*"
       assert.equal(existsSync(join(explicitRoot, '.omx', 'state')), true);
       assert.equal(existsSync(join(repo, '.omx')), false);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -750,7 +750,7 @@ printf 'fake-codex:%s\n' "$*"
       );
       assert.match(normalizedStdout, /fake-codex-context:[0-9a-f]{32}/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 });
@@ -819,7 +819,7 @@ exit 0
       assert.doesNotMatch(tmuxLog, /tmux:attach-session/);
       assert.doesNotMatch(result.stderr, /failed to attach detached tmux session/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 });
@@ -916,7 +916,7 @@ exit 0
       assert.match(activeRecord, /"base_state_root"/);
       assert.match(activeRecord, /"lifecycle_phase": "ready"/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1002,7 +1002,7 @@ exit 0
       assert.match(tmuxLog, new RegExp(`-e OMX_SOURCE_CWD=${escapeRegExp(normalizeDarwinTmpPath(repo))}`));
       await waitForPath(leaderDonePath);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1090,7 +1090,7 @@ exit 0
       assert.doesNotMatch(tmuxLog, /tmux:clear-history .*user-owned-session|tmux:clear-history .*%99/);
       assert.match(tmuxLog, /tmux:new-session /);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1145,7 +1145,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1184,7 +1184,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1277,7 +1277,7 @@ exit 0
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       await waitForPath(`${fakeTmuxPath}.leader-done`);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1396,7 +1396,7 @@ exit 0
       assert.match(tmuxLog, /__detached-session-leader/);
       assert.doesNotMatch(tmuxLog, /fake-provider-key|CUSTOM_LLM_API_KEY=/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1433,7 +1433,7 @@ exit 0
       assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
       assert.doesNotMatch(tmuxLog, /new-session|split-window|attach-session/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1466,7 +1466,7 @@ exit 0
       assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
       assert.doesNotMatch(tmuxLog, /new-session|split-window|attach-session/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1498,7 +1498,7 @@ exit 0
       assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
       assert.doesNotMatch(tmuxLog, /split-window|show-options|extended-keys|mouse on/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1556,7 +1556,7 @@ exit 0
       assert.match(tmuxLog, /tmux:set-option -t managed-session mouse on/);
       assert.match(tmuxLog, /tmux:set-option -sq extended-keys always/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1643,7 +1643,7 @@ exit 0
       assert.match(tmuxLog, /tmux:new-session .* -s /);
       assert.doesNotMatch(result.stderr, /server\/socket is unusable/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1721,7 +1721,7 @@ exit 1
       assert.match(tmuxLog, /tmux:new-session/);
       assert.doesNotMatch(tmuxLog, /tmux:list-sessions|attach-session/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1809,7 +1809,7 @@ exit 0
       assert.match(tmuxLog, /tmux:attach-session -t /);
       assert.doesNotMatch(tmuxLog, /tmux:kill-session -t /);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1873,7 +1873,7 @@ exit 0
       assert.match(tmuxLog, /tmux:attach-session -t /);
       assert.doesNotMatch(tmuxLog, /tmux:display-message -p -t .* #\{session_attached\}|tmux:kill-session -t/);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -1968,7 +1968,7 @@ exit 0
       assert.match(tmuxLog, /__detached-session-leader/);
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -2062,7 +2062,7 @@ exit 0
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       await waitForPath(`${fakeTmuxPath}.leader-done`);
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 
@@ -2073,19 +2073,31 @@ exit 0
     const fakeChild = join(wd, 'fake-codex.sh');
     const childReady = join(wd, 'child-ready');
     const childRelease = join(wd, 'child-release');
+    const childEnv = join(wd, 'child-env');
+    const descendantPidPath = join(wd, 'descendant-pid');
     const readyPath = join(wd, '.omx', 'runtime', 'detached-release', 'ready');
     const omxBin = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'cli', 'omx.js');
     const sessionId = 'omx-detached-leader-process';
     try {
       await mkdir(home, { recursive: true });
-      await writeExecutable(fakeChild, `#!/bin/sh\nprintf ready > ${JSON.stringify(childReady)}\nwhile [ ! -f ${JSON.stringify(childRelease)} ]; do sleep 0.02; done\nexit 0\n`);
+      await writeExecutable(fakeChild, `#!/bin/sh\nprintf '%s' "$OMX_NOTIFY_TEMP_CONTRACT" > ${JSON.stringify(childEnv)}\n(sh -c 'trap "" TERM; while :; do sleep 1; done') &\nprintf '%s' "$!" > ${JSON.stringify(descendantPidPath)}\nprintf ready > ${JSON.stringify(childReady)}\nwhile [ ! -f ${JSON.stringify(childRelease)} ]; do sleep 0.02; done\nexit 0\n`);
       const payload = Buffer.from(JSON.stringify({
         cwd: wd,
         sessionName: 'omx-detached-leader-process',
         sessionId,
         codexCmd: fakeChild,
         readyPath,
-        preLaunchOptions: { enableNotifyFallbackAuthority: false, worktreeDirty: false },
+        preLaunchOptions: {
+          notifyTempContract: {
+            active: true,
+            selectors: ['custom:test-provider'],
+            canonicalSelectors: ['custom:test-provider'],
+            warnings: [],
+            source: 'cli',
+          },
+          enableNotifyFallbackAuthority: false,
+          worktreeDirty: false,
+        },
       })).toString('base64url');
       const leader = spawn(process.execPath, [omxBin, '__detached-session-leader', payload], {
         cwd: wd,
@@ -2100,9 +2112,16 @@ exit 0
         stdio: ['ignore', 'inherit', 'inherit'],
       });
       await waitForPath(readyPath);
-      const ready = JSON.parse(await readFile(readyPath, 'utf-8')) as { nonce: string; sessionId: string; sessionName: string };
-      await writeFile(`${readyPath}.release`, `${JSON.stringify({ version: 1, kind: 'release', nonce: ready.nonce, sessionId: ready.sessionId, sessionName: ready.sessionName })}\n`);
+      const ready = JSON.parse(await readFile(readyPath, 'utf-8')) as { nonce: string; sessionId: string; sessionName: string; leaderPid: number };
+      await writeFile(`${readyPath}.release`, `${JSON.stringify({ version: 1, kind: 'release', nonce: `${ready.nonce}-foreign`, sessionId: ready.sessionId, sessionName: ready.sessionName, leaderPid: ready.leaderPid })}\n`);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      assert.equal(existsSync(childReady), false);
+      await writeFile(`${readyPath}.release`, `${JSON.stringify({ version: 1, kind: 'release', nonce: ready.nonce, sessionId: ready.sessionId, sessionName: ready.sessionName, leaderPid: ready.leaderPid })}\n`);
       await waitForPath(childReady);
+      assert.match(await readFile(childEnv, 'utf-8'), /custom:test-provider/);
+      await waitForPath(descendantPidPath);
+      const descendantPid = Number.parseInt((await readFile(descendantPidPath, 'utf-8')).trim(), 10);
+      assert.equal(Number.isSafeInteger(descendantPid) && descendantPid > 0, true);
       assert.equal(existsSync(readyPath), true);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), true);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'detached-active-record.json')), true);
@@ -2112,13 +2131,34 @@ exit 0
         leader.once('exit', resolveExit);
       });
       assert.equal(exitCode, 0);
+      assert.throws(() => process.kill(descendantPid, 0), (error: unknown) => (error as NodeJS.ErrnoException).code === 'ESRCH');
+      const terminalReport = JSON.parse(await readFile(readyPath, 'utf-8')) as {
+        version: number;
+        kind: string;
+        nonce: string;
+        sessionId: string;
+        sessionName: string;
+        paneId: string;
+        leaderPid: number;
+        finalized: boolean;
+      };
+      assert.deepEqual(terminalReport, {
+        version: 1,
+        kind: 'terminal',
+        nonce: ready.nonce,
+        sessionId: ready.sessionId,
+        sessionName: ready.sessionName,
+        leaderPid: ready.leaderPid,
+        paneId: '%3202',
+        finalized: true,
+      });
       assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), false);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'detached-active-record.json')), false);
       assert.equal(existsSync(readyPath), true);
       await rm(readyPath, { force: true });
       assert.match(await readFile(join(wd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'), new RegExp(sessionId));
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
 });

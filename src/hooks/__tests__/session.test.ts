@@ -2083,7 +2083,7 @@ describe('bound launch authority', () => {
     }
   });
 
-  it('allows ordinary unsupported-capability finalization but denies stale-dead cleanup without mutating evidence', async () => {
+  it('allows authorized unsupported-capability stale-dead finalization without weakening bound lineage checks', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-unsupported-lifecycle-'));
     let ordinary: LaunchSessionBinding | undefined;
     let stale: LaunchSessionBinding | undefined;
@@ -2108,18 +2108,17 @@ describe('bound launch authority', () => {
       stale = staleEstablished.binding;
       await reconcileNativeSessionStart(cwd, 'native-unsupported-stale', { pid: 424242, platform: 'win32' });
       const context = resolveSessionPointerContext(cwd);
-      const staleBytes = await readFile(context.sessionPath, 'utf-8');
       const historyPath = join(cwd, '.omx', 'logs', 'session-history.jsonl');
-      const historyBeforeStaleCleanup = await readFile(historyPath, 'utf-8');
 
       await withPointerDependencies({ probePid: () => 'dead' }, async () => {
-        const denied = await finalizeBoundOnce(stale as LaunchSessionBinding, 'stale-unsupported');
-        assert.equal(denied.finalized, false);
-        assert.equal(denied.cleanup.comparison?.status, 'denied');
-        assert.match(denied.cleanup.comparison?.reason ?? '', /unsupported-directory-capability:platform/);
+        const finalized = await finalizeBoundOnce(stale as LaunchSessionBinding, 'stale-unsupported');
+        assert.equal(finalized.finalized, true);
+        assert.equal(finalized.cleanup.comparison?.status, 'matched');
+        assert.match(finalized.cleanup.comparison?.reason ?? '', /unsupported-directory-capability:platform/);
       });
-      assert.equal(await readFile(context.sessionPath, 'utf-8'), staleBytes);
-      assert.equal(await readFile(historyPath, 'utf-8'), historyBeforeStaleCleanup, 'stale evidence is denied before lifecycle history mutation');
+      assert.equal(existsSync(context.sessionPath), false);
+      const history = await readFile(historyPath, 'utf-8');
+      assert.match(history, /native-unsupported-stale/);
     } finally {
       if (ordinary) await closeLaunchSessionBindingOnce(ordinary).catch(() => {});
       if (stale) await closeLaunchSessionBindingOnce(stale).catch(() => {});

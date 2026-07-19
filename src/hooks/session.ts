@@ -2035,13 +2035,12 @@ async function authorizeBoundDirectoryBeforeTransaction(
       throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'cwd-identity-mismatch' }, capability);
     }
     if (binding.directoryIdentity.kind !== 'supported') {
-      if (pointer.status === 'stale-dead') {
-        throw new BoundDirectoryComparisonDenied(
-          { status: 'denied', reason: `unsupported-directory-capability:${binding.directoryIdentity.reason}` },
-          capability,
-        );
-      }
-      return { comparison: { status: 'matched', reason: 'unsupported-ordinary-pointer' }, capability, pointerStatus: pointer.status, pointerRaw: pointer.raw };
+      return {
+        comparison: { status: 'matched', reason: `unsupported-directory-capability:${binding.directoryIdentity.reason}` },
+        capability,
+        pointerStatus: pointer.status,
+        pointerRaw: pointer.raw,
+      };
     }
     const retained = await lease.handle?.stat({ bigint: true });
     if (!retained || !retained.isDirectory() || retained.dev !== binding.directoryIdentity.dev || retained.ino !== binding.directoryIdentity.ino) {
@@ -2341,6 +2340,28 @@ export async function writeSessionEnd(
       lockPath: context.lockPath, reason: 'A live launch binding is required to end a session pointer.',
     });
   }
+
+  let preLockPointer: SessionPointerReadResult;
+  try {
+    preLockPointer = await readSessionPointer(context);
+  } catch (error) {
+    throw resolvedAbort(context, {
+      code: 'session_pointer_io_failure', operation: 'pointer-read', candidateSessionId,
+      lockPath: context.lockPath, reason: `Unable to read selected session pointer: ${errorMessage(error)}`, cause: error,
+    });
+  }
+  const preLockAuthorizedBoundUsable = preLockPointer.status === 'usable'
+    && isAuthorizedBoundPointer(options.binding, context, candidateSessionId, preLockPointer.state);
+  const preLockAuthorizedBoundStaleDead = preLockPointer.status === 'stale-dead'
+    && isAuthorizedBoundStaleDeadPointer(options.binding, context, candidateSessionId, preLockPointer.state);
+  if (!preLockAuthorizedBoundUsable && !preLockAuthorizedBoundStaleDead) {
+    throw unusablePointerAbort(context, candidateSessionId, preLockPointer);
+  }
+  await authorizeBoundDirectoryBeforeTransaction(
+    options.binding,
+    preLockPointer,
+    options.postLaunchCwd ?? options.binding.context.cwd,
+  );
 
   const platform = options.platform ?? process.platform;
   const tracker: RegularFileDurabilityTracker = { degraded: false };

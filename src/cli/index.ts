@@ -132,6 +132,7 @@ import {
 import {
   closeLaunchSessionBindingOnce,
   establishLaunchSessionBinding,
+  readSessionState,
   updateDetachedSessionMetadata,
   finalizeBoundOnce,
   isSessionPointerLaunchAbort,
@@ -2679,13 +2680,17 @@ function writeMadmaxDetachedActiveRecord(
   try {
     fd = openSync(tempPath, "wx", 0o600);
     writeFileSync(fd, bytes, "utf-8");
-    fsyncSync(fd);
+    try { fsyncSync(fd); } catch (error) {
+      if (!(process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")) throw error;
+    }
     closeSync(fd);
     fd = undefined;
     renameSync(tempPath, recordPath);
     const directoryFd = openSync(dirname(recordPath), "r");
     try {
-      fsyncSync(directoryFd);
+      try { fsyncSync(directoryFd); } catch (error) {
+        if (!(process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")) throw error;
+      }
     } finally {
       closeSync(directoryFd);
     }
@@ -2757,6 +2762,11 @@ export type DetachedLaunchTerminal =
 export interface DetachedReleaseFailureResolution {
   /** True only after the leader authenticated and completed terminal finalization. */
   acknowledged: boolean;
+  nonce?: string;
+  sessionId?: string;
+  sessionName?: string;
+  leaderPid?: number;
+  kind?: "failed" | "terminal";
 }
 
 
@@ -2815,9 +2825,12 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
   let binding: Binding | undefined;
   let ownedRecord: DetachedActiveRecordOwnership | undefined;
   let released = false;
+  let retainedAuthority = false;
+  let rollbackAuthorized = false;
   try {
     transition("D1");
     binding = await deps.establish();
+    retainedAuthority = true;
     transition("D2");
     const completion = await deps.complete(binding);
     if (completion.kind === "failure") {
@@ -2829,7 +2842,6 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
         report.rollback.failures.push({ step: "setup-finalization", status: "failed", code: detachedFailureCode(finalizationError) });
         failures.push(finalizationError);
       }
-      binding = undefined;
       throw new DetachedLaunchSafetyError("completion", new AggregateError(failures, `preLaunch ${completion.operation} failed`), report);
     }
     transition("D3");
@@ -2854,14 +2866,18 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
       // A failed publication must not let the outer launcher destroy the
       // leader's finalization capability. Request a nonce-bound abort and
       // preserve all artifacts on timeout, malformed, or foreign reports.
-      let resolution: { acknowledged: boolean } | undefined;
+      let resolution: DetachedReleaseFailureResolution | undefined;
       try {
         resolution = await deps.abortAndAwaitFinalization?.(releaseError);
       } catch (abortError) {
         released = true;
         throw new AggregateError([releaseError, abortError], "detached release and abort publication both failed");
       }
-      if (!resolution?.acknowledged) released = true;
+      rollbackAuthorized = resolution?.acknowledged === true && Boolean(
+        resolution.nonce && resolution.sessionId && resolution.sessionName &&
+        Number.isSafeInteger(resolution.leaderPid) && resolution.kind,
+      );
+      if (!rollbackAuthorized) released = true;
       throw releaseError;
     }
     transition("D10");
@@ -2869,6 +2885,19 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
     return { kind: input.preflight.shouldAttach ? "attached" : "returned", released: true, report };
   } catch (error) {
     deps.diagnostic?.(error);
+    if (retainedAuthority && !rollbackAuthorized && !released) {
+      try {
+        const resolution = await deps.abortAndAwaitFinalization?.(error);
+        rollbackAuthorized = resolution?.acknowledged === true && Boolean(
+          resolution.nonce && resolution.sessionId && resolution.sessionName &&
+          Number.isSafeInteger(resolution.leaderPid) && resolution.kind,
+        );
+        if (!rollbackAuthorized) released = true;
+      } catch (abortError) {
+        released = true;
+        deps.diagnostic?.(abortError);
+      }
+    }
     if (!released) {
       try {
         report.rollback.attempted.push("rollback");
@@ -4463,13 +4492,16 @@ function buildDetachedWindowsLeaderCommand(
   codexHomeOverride: string | undefined,
   projectLocalCodexHomeForCleanup: string | undefined,
   runtimeCodexHomeForCleanup: string | undefined,
+  parentEnv: NodeJS.ProcessEnv | undefined,
   readyPath: string | undefined,
   preLaunchOptions: DetachedLeaderPreLaunchOptions,
   omxBin = process.argv[1],
 ): string {
   const payload = Buffer.from(JSON.stringify({
     cwd, sessionName, sessionId, codexCmd, codexHomeOverride,
-    projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, readyPath, preLaunchOptions,
+    projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup,
+    ...(parentEnv ? { parentEnv: detachedSessionParentEnvironment(parentEnv) } : {}),
+    readyPath, preLaunchOptions,
   })).toString("base64url");
   const invocation = `& ${quotePowerShellArg(process.execPath)} ${quotePowerShellArg(omxBin)} __detached-session-leader ${quotePowerShellArg(payload)}`;
   return `powershell.exe -NoLogo -NoProfile -NonInteractive -Command ${quotePowerShellArg(invocation)}`;
@@ -4501,6 +4533,14 @@ function writeDetachedLeaderReport(path: string, report: DetachedLeaderReport): 
     closeSync(fd);
     fd = undefined;
     renameSync(tempPath, path);
+    const directoryFd = openSync(dirname(path), "r");
+    try {
+      try { fsyncSync(directoryFd); } catch (error) {
+        if (!(process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")) throw error;
+      }
+    } finally {
+      closeSync(directoryFd);
+    }
   } finally {
     if (fd !== undefined) closeSync(fd);
     try { unlinkSync(tempPath); } catch {}
@@ -4521,12 +4561,12 @@ function readDetachedLeaderReport(path: string): DetachedLeaderReport | undefine
   } catch { return undefined; }
 }
 
-function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string): void {
-  writeDetachedLeaderReport(`${releaseMarkerPath}.release`, { version: 1, kind: "release", nonce, sessionId, sessionName });
+function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string, leaderPid: number): void {
+  writeDetachedLeaderReport(`${releaseMarkerPath}.release`, { version: 1, kind: "release", nonce, sessionId, sessionName, leaderPid });
 }
 
-function publishDetachedAbortMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string): void {
-  writeDetachedLeaderReport(`${releaseMarkerPath}.abort`, { version: 1, kind: "abort", nonce, sessionId, sessionName });
+function publishDetachedAbortMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string, leaderPid: number): void {
+  writeDetachedLeaderReport(`${releaseMarkerPath}.abort`, { version: 1, kind: "abort", nonce, sessionId, sessionName, leaderPid });
 }
 
 type TmuxExecSync = (file: string, args: readonly string[]) => string;
@@ -4661,19 +4701,22 @@ const DETACHED_SESSION_PANE_ENV_KEYS = new Set([
   "LINES",
 ]);
 
+function detachedSessionParentEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const key of Object.keys(env).sort()) {
+    if (!SHELL_ENV_NAME_PATTERN.test(key) || DETACHED_SESSION_PANE_ENV_KEYS.has(key)) continue;
+    const value = env[key];
+    if (typeof value === "string" && !value.includes("\0")) values[key] = value;
+  }
+  return values;
+}
+
 export function serializeDetachedSessionParentEnv(
   env: NodeJS.ProcessEnv,
 ): string {
-  const lines: string[] = [];
-  for (const key of Object.keys(env).sort()) {
-    if (!SHELL_ENV_NAME_PATTERN.test(key)) continue;
-    if (DETACHED_SESSION_PANE_ENV_KEYS.has(key)) continue;
-    const value = env[key];
-    if (typeof value !== "string") continue;
-    if (value.includes("\0")) continue;
-    lines.push(`export ${key}=${quoteShellArg(value)}`);
-  }
-  return `${lines.join("\n")}\n`;
+  return `${Object.entries(detachedSessionParentEnvironment(env))
+    .map(([key, value]) => `export ${key}=${quoteShellArg(value)}`)
+    .join("\n")}\n`;
 }
 
 export function detachedSessionParentEnvFilePath(
@@ -4742,7 +4785,7 @@ export function buildDetachedSessionBootstrapSteps(
   const detachedLeaderCmd = nativeWindows
     ? buildDetachedWindowsLeaderCommand(
         cwd, sessionName, codexCmd, sessionId, codexHomeOverride,
-        projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, releaseMarkerPath,
+        projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, env, releaseMarkerPath,
         preLaunchOptions, omxBin,
       )
     : buildDetachedSessionLeaderCommand(
@@ -5819,7 +5862,7 @@ async function runCodex(
 
     const launchDetachedSession = async (): Promise<{ postLaunchHandledExternally: boolean }> => {
       let createdSession = false;
-      const bootstrapLeader = async (): Promise<DetachedLeaderReport> => {
+      const bootstrapLeader = async (): Promise<void> => {
         if (!nativeWindows) detachedParentEnvFilePath = writeDetachedSessionParentEnvFile(cwd, sessionId, codexEnvWithNotify);
         const bootstrapSteps = buildDetachedSessionBootstrapSteps(
           sessionName, cwd, nativeWindows && detachedWindowsCodexCmd ? detachedWindowsCodexCmd : codexCmd,
@@ -5857,44 +5900,98 @@ async function runCodex(
             }
           }
         }
-        const readyDeadline = Date.now() + 30_000;
-        while (true) {
-          const report = readDetachedLeaderReport(releaseMarkerPath);
-          if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId &&
-            report.sessionName === sessionName && report.paneId === detachedLeaderPaneId && report.leaderPid && report.kind === "ready") {
-            detachedLeaderPid = report.leaderPid;
-            return report;
-          }
-          if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.kind === "failed") {
-            throw new DetachedLaunchSafetyError("completion", new Error(report.error || "detached leader setup failed"), detachedPreflight.report);
-          }
-          if (Date.now() >= readyDeadline) throw new DetachedLaunchSafetyError("barrier-release", new Error("detached leader readiness timed out"), detachedPreflight.report);
-          blockMs(20);
-        }
+        return undefined;
       };
       await executeDetachedLaunchStateMachine(
         { preflight: detachedPreflight },
         {
           establish: bootstrapLeader,
-          complete: async () => ({ kind: "success" }),
-          createInertSession: async () => sessionName,
-          capturePane: async () => detachedLeaderPaneId ?? "",
-          updateNameMetadata: async () => "committed-released",
-          updatePaneMetadata: async () => "committed-released",
-          publishActiveRecord: async () => ({ bytes: "", digest: "", nonce: detachedLaunchNonce }),
+          complete: async () => {
+            const readyDeadline = Date.now() + 30_000;
+            while (true) {
+              const report = readDetachedLeaderReport(releaseMarkerPath);
+              if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.sessionName === sessionName && report.paneId === detachedLeaderPaneId && report.leaderPid && report.kind === "ready") {
+                detachedLeaderPid = report.leaderPid;
+                return { kind: "success" };
+              }
+              if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.sessionName === sessionName && report.leaderPid && report.kind === "failed") {
+                detachedLeaderPid = report.leaderPid;
+                return { kind: "failure", operation: "session-instructions", error: new Error(report.error || "detached leader setup failed") };
+              }
+              if (Date.now() >= readyDeadline) return { kind: "failure", operation: "session-instructions", error: new Error("detached leader readiness timed out") };
+              blockMs(20);
+            }
+          },
+          createInertSession: async () => {
+            const report = readDetachedLeaderReport(releaseMarkerPath);
+            if (report?.kind !== "ready" || report.nonce !== detachedLaunchNonce || report.sessionId !== sessionId || report.sessionName !== sessionName || report.leaderPid !== detachedLeaderPid) {
+              throw new Error("detached ready report does not bind the inert session");
+            }
+            return sessionName;
+          },
+          capturePane: async () => {
+            const report = readDetachedLeaderReport(releaseMarkerPath);
+            if (!detachedLeaderPaneId || report?.kind !== "ready" || report.paneId !== detachedLeaderPaneId || report.leaderPid !== detachedLeaderPid) {
+              throw new Error("detached ready report does not bind the leader pane");
+            }
+            return detachedLeaderPaneId;
+          },
+          updateNameMetadata: async () => {
+            const state = await readSessionState(cwd);
+            if (state?.session_id !== sessionId || state.tmux_session_name !== sessionName) {
+              throw new Error("detached session-name metadata was not committed by the leader");
+            }
+            return "committed-released";
+          },
+          updatePaneMetadata: async (_binding, pane) => {
+            const state = await readSessionState(cwd);
+            if (state?.session_id !== sessionId || state.tmux_pane_id !== pane) {
+              throw new Error("detached pane metadata was not committed by the leader");
+            }
+            return "committed-released";
+          },
+          publishActiveRecord: async () => {
+            const activeRecordPath = contextKey ? madmaxDetachedActiveRecordPath(runsRoot, contextKey) : join(omxRoot(cwd), "state", "detached-active-record.json");
+            const record = readMadmaxDetachedActiveRecord(activeRecordPath);
+            if (!record || record.launch_nonce !== detachedLaunchNonce || record.leader_pid !== detachedLeaderPid || record.session_id !== sessionId || record.tmux_session_name !== sessionName || record.tmux_pane_id !== detachedLeaderPaneId) throw new Error("detached active record does not bind the ready leader");
+            const bytes = readFileSync(activeRecordPath, "utf-8");
+            return { bytes, digest: createHash("sha256").update(bytes).digest("hex"), nonce: detachedLaunchNonce };
+          },
           finalizeSetupFailure: async () => {},
-          releaseBarrier: async () => publishDetachedReleaseMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName),
+          releaseBarrier: async () => {
+            if (!detachedLeaderPid) throw new Error("detached leader PID missing before release");
+            publishDetachedReleaseMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName, detachedLeaderPid);
+          },
           abortAndAwaitFinalization: async () => {
             // The leader has the retained binding. Publishing abort is the only
             // outer action permitted after a D9 write failure; a mismatched or
             // missing report leaves every artifact and the tmux session intact.
-            publishDetachedAbortMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName);
+            if (!detachedLeaderPid) return { acknowledged: false };
+            const current = readDetachedLeaderReport(releaseMarkerPath);
+            if (current?.nonce === detachedLaunchNonce && current.sessionId === sessionId &&
+              current.sessionName === sessionName && current.leaderPid === detachedLeaderPid &&
+              current.finalized === true && (current.kind === "failed" || current.kind === "terminal")) return {
+                acknowledged: true,
+                nonce: current.nonce,
+                sessionId: current.sessionId,
+                sessionName: current.sessionName,
+                leaderPid: current.leaderPid,
+                kind: current.kind,
+              };
+            publishDetachedAbortMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName, detachedLeaderPid);
             const deadline = Date.now() + 30_000;
             while (Date.now() < deadline) {
               const report = readDetachedLeaderReport(releaseMarkerPath);
               if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId &&
                 report.sessionName === sessionName && report.leaderPid === detachedLeaderPid &&
-                report.finalized === true && (report.kind === "failed" || report.kind === "terminal")) return { acknowledged: true };
+                report.finalized === true && (report.kind === "failed" || report.kind === "terminal")) return {
+                  acknowledged: true,
+                  nonce: report.nonce,
+                  sessionId: report.sessionId,
+                  sessionName: report.sessionName,
+                  leaderPid: report.leaderPid,
+                  kind: report.kind,
+                };
               blockMs(20);
             }
             return { acknowledged: false };
@@ -6079,6 +6176,7 @@ interface DetachedLeaderPayload {
   codexHomeOverride?: string;
   projectLocalCodexHomeForCleanup?: string;
   runtimeCodexHomeForCleanup?: string;
+  parentEnv?: Record<string, string>;
   readyPath?: string;
   preLaunchOptions: DetachedLeaderPreLaunchOptions;
 }
@@ -6096,11 +6194,17 @@ function decodeDetachedLeaderPayload(encoded: string | undefined): DetachedLeade
     typeof (options as Record<string, unknown>).worktreeDirty !== "boolean") throw new Error("invalid detached leader payload");
   const notifyTempContract = (options as Record<string, unknown>).notifyTempContract;
   if (notifyTempContract !== undefined && (!notifyTempContract || typeof notifyTempContract !== "object")) throw new Error("invalid detached leader payload");
+  const parentEnv = payload.parentEnv;
+  if (parentEnv !== undefined && (!parentEnv || typeof parentEnv !== "object" ||
+    Object.entries(parentEnv).some(([key, value]) => !SHELL_ENV_NAME_PATTERN.test(key) || DETACHED_SESSION_PANE_ENV_KEYS.has(key) || typeof value !== "string" || value.includes("\0")))) {
+    throw new Error("invalid detached leader parent environment");
+  }
   return {
     cwd: payload.cwd, sessionName: payload.sessionName, sessionId: payload.sessionId, codexCmd: payload.codexCmd,
     ...(typeof payload.codexHomeOverride === "string" ? { codexHomeOverride: payload.codexHomeOverride } : {}),
     ...(typeof payload.projectLocalCodexHomeForCleanup === "string" ? { projectLocalCodexHomeForCleanup: payload.projectLocalCodexHomeForCleanup } : {}),
     ...(typeof payload.runtimeCodexHomeForCleanup === "string" ? { runtimeCodexHomeForCleanup: payload.runtimeCodexHomeForCleanup } : {}),
+    ...(parentEnv ? { parentEnv: parentEnv as Record<string, string> } : {}),
     ...(typeof payload.readyPath === "string" ? { readyPath: payload.readyPath } : {}),
     preLaunchOptions: {
       ...(notifyTempContract ? { notifyTempContract: notifyTempContract as NotifyTempContract } : {}),
@@ -6111,6 +6215,7 @@ function decodeDetachedLeaderPayload(encoded: string | undefined): DetachedLeade
 }
 
 async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise<void> {
+  for (const [key, value] of Object.entries(payload.parentEnv ?? {})) process.env[key] = value;
   const established = await establishPreLaunchBinding(payload.cwd, payload.sessionId);
   const binding = established.binding;
   let ownedRecord: DetachedActiveRecordOwnership | undefined;
@@ -6160,9 +6265,9 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       while (true) {
         if (interrupted) throw new Error(`detached leader interrupted before release: ${interrupted}`);
         const release = readDetachedLeaderReport(releasePath);
-        if (release?.kind === "release" && release.nonce === nonce && release.sessionId === payload.sessionId && release.sessionName === payload.sessionName) break;
+        if (release?.kind === "release" && release.nonce === nonce && release.sessionId === payload.sessionId && release.sessionName === payload.sessionName && release.leaderPid === process.pid) break;
         const abort = readDetachedLeaderReport(abortPath);
-        if (abort?.kind === "abort" && abort.nonce === nonce && abort.sessionId === payload.sessionId && abort.sessionName === payload.sessionName) {
+        if (abort?.kind === "abort" && abort.nonce === nonce && abort.sessionId === payload.sessionId && abort.sessionName === payload.sessionName && abort.leaderPid === process.pid) {
           throw new Error("detached launch aborted before release");
         }
         if (Date.now() >= releaseDeadline) throw new Error("detached leader release timed out");

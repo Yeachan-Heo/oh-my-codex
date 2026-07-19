@@ -459,6 +459,14 @@ describe("detached launch state machine", () => {
       },
       finalizeSetupFailure: async () => { await step("finalize-setup-failure"); },
       releaseBarrier: async () => { await step("D9"); },
+      abortAndAwaitFinalization: async () => ({
+        acknowledged: true,
+        nonce: "nonce",
+        sessionId: "session",
+        sessionName: "session-name",
+        leaderPid: 123,
+        kind: "failed",
+      }),
       attachOrReturn: async () => { await step("D10"); },
       rollback: async () => { events.push("rollback"); },
     };
@@ -548,12 +556,45 @@ describe("detached launch state machine", () => {
   it("permits rollback only after an authenticated D9 abort acknowledgement", async () => {
     const events: string[] = [];
     const deps = createDependencies(events, "D9");
-    deps.abortAndAwaitFinalization = async () => ({ acknowledged: true });
+    deps.abortAndAwaitFinalization = async () => ({
+      acknowledged: true,
+      nonce: "nonce",
+      sessionId: "session",
+      sessionName: "session-name",
+      leaderPid: 123,
+      kind: "failed",
+    });
     await assert.rejects(() => executeDetachedLaunchStateMachine(
       { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
       deps,
     ));
     assert.equal(events.includes("rollback"), true);
+  });
+
+  it("fails closed when a purported D9 acknowledgement omits its finalized authority binding", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => ({ acknowledged: true });
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.equal(events.includes("rollback"), false);
+  });
+
+  it("preserves the authority-owning leader on a pre-D9 failure without finalized acknowledgement", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D4");
+    deps.abortAndAwaitFinalization = async () => {
+      events.push("abort-request");
+      return { acknowledged: false };
+    };
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.deepEqual(events.slice(-2), ["D4", "abort-request"]);
+    assert.equal(events.includes("rollback"), false);
   });
 });
 
@@ -5495,6 +5536,20 @@ describe("buildWindowsDetachedChildCommand", () => {
       Buffer.from(result.slice(prefix.length), "base64").toString("utf16le"),
       "$ErrorActionPreference = 'Stop'; & 'codex' '--model' 'gpt-5'; exit $LASTEXITCODE",
     );
+  });
+});
+
+describe("Windows detached leader environment", () => {
+  it("serializes inherited parent values into the detached Windows leader command", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-test", "C:/project", "codex", "hud", null, undefined, null, true, "session-1",
+      undefined, undefined, undefined, { PATH: "C:/parent/bin", CUSTOM_VALUE: "retained", TMUX: "foreign" },
+    );
+    const command = steps[0]?.args.at(-1) ?? "";
+    const encodedPayload = command.match(/__detached-session-leader ''([^']+)''/)?.[1];
+    assert.ok(encodedPayload);
+    const payload = JSON.parse(Buffer.from(encodedPayload!, "base64url").toString("utf8"));
+    assert.deepEqual(payload.parentEnv, { CUSTOM_VALUE: "retained", PATH: "C:/parent/bin" });
   });
 });
 
