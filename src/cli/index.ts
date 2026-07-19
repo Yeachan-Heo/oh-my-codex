@@ -4,9 +4,11 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, join, posix, resolve, win32 } from "path";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
-import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
+
+import { chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+
+import { copyFile, cp, lstat, mkdir, open, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash, randomUUID } from "crypto";
 import {
@@ -1629,34 +1631,7 @@ function clearDetachedTmuxSessionHistoryIfUnattached(
   }
 }
 
-function readTmuxSessionInstanceId(sessionName: string): string | null {
-  try {
-    return execTmuxFileSync(
-      ["show-options", "-qv", "-t", sessionName, OMX_INSTANCE_OPTION],
-      {
-        stdio: ["ignore", "pipe", "ignore"],
-        encoding: "utf-8",
-      },
-    ).trim();
-  } catch {
-    return null;
-  }
-}
 
-function tmuxPaneBelongsToSession(paneId: string, sessionName: string): boolean {
-  try {
-    const paneSessionName = execTmuxFileSync(
-      ["display-message", "-p", "-t", paneId, "#{session_name}"],
-      {
-        stdio: ["ignore", "pipe", "ignore"],
-        encoding: "utf-8",
-      },
-    ).trim();
-    return paneSessionName === sessionName;
-  } catch {
-    return false;
-  }
-}
 
 function buildDetachedHistoryPruneHookCommand(leaderPaneId: string): string {
   // The leader pane can be gone by the time the hook fires (e.g. crashed
@@ -2409,6 +2384,10 @@ interface MadmaxDetachedActiveRecord {
   tmux_session_name: string;
   session_id?: string;
   tmux_pane_id?: string;
+  tmux_internal_session_id?: string;
+  tmux_session_created?: string;
+  tmux_pane_pid?: number;
+
 }
 
 function resolveMadmaxRunsRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -2518,6 +2497,10 @@ function readMadmaxDetachedActiveRecord(
       tmux_session_name: parsed.tmux_session_name,
       ...(typeof parsed.session_id === "string" ? { session_id: parsed.session_id } : {}),
       ...(typeof parsed.tmux_pane_id === "string" ? { tmux_pane_id: parsed.tmux_pane_id } : {}),
+      ...(typeof parsed.tmux_internal_session_id === "string" ? { tmux_internal_session_id: parsed.tmux_internal_session_id } : {}),
+      ...(typeof parsed.tmux_session_created === "string" ? { tmux_session_created: parsed.tmux_session_created } : {}),
+      ...(typeof parsed.tmux_pane_pid === "number" ? { tmux_pane_pid: parsed.tmux_pane_pid } : {}),
+
       ...(typeof parsed.worktree_cwd === "string" ? { worktree_cwd: parsed.worktree_cwd } : {}),
     };
   } catch {
@@ -2525,25 +2508,51 @@ function readMadmaxDetachedActiveRecord(
   }
 }
 
-function isReusableMadmaxDetachedActiveRecord(
-  record: MadmaxDetachedActiveRecord,
-): boolean {
-  if (!detachedTmuxSessionExists(record.tmux_session_name)) return false;
-  if (!record.session_id || !record.tmux_pane_id) return false;
-  if (readTmuxSessionInstanceId(record.tmux_session_name) !== record.session_id) {
-    return false;
-  }
-  return tmuxPaneBelongsToSession(record.tmux_pane_id, record.tmux_session_name);
+interface MadmaxDetachedRuntimeBinding {
+  paneId: string;
+  panePid: number;
+  sessionName: string;
+  internalSessionId: string;
+  sessionCreated: string;
+  omxInstanceId: string;
 }
 
-function detachedTmuxSessionExists(sessionName: string): boolean {
+function queryMadmaxDetachedRuntimeBinding(record: MadmaxDetachedActiveRecord): MadmaxDetachedRuntimeBinding | null {
+  if (!record.tmux_pane_id || !record.session_id) return null;
   try {
-    execTmuxFileSync(["has-session", "-t", sessionName], { stdio: "ignore" });
-    return true;
+    const output = execTmuxFileSync([
+      "list-panes", "-a", "-F",
+      "#{pane_id}\t#{pane_dead}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{@omx_instance_id}",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    let binding: MadmaxDetachedRuntimeBinding | null = null;
+    const seen = new Set<string>();
+    for (const line of output.split("\n").filter(Boolean)) {
+      const fields = line.split("\t");
+      if (fields.length !== 7) return null;
+      const [paneId, dead, panePidRaw, sessionName, internalSessionId, sessionCreated, omxInstanceId] = fields;
+      const panePid = Number(panePidRaw);
+      if (!/^%[0-9]+$/.test(paneId) || seen.has(paneId) || (dead !== "0" && dead !== "1")
+        || !Number.isSafeInteger(panePid) || panePid <= 0 || !sessionName
+        || !/^\$[0-9]+$/.test(internalSessionId) || !/^[0-9]+$/.test(sessionCreated)) return null;
+      seen.add(paneId);
+      if (paneId !== record.tmux_pane_id) continue;
+      if (dead !== "0" || sessionName !== record.tmux_session_name || omxInstanceId !== record.session_id) return null;
+      binding = { paneId, panePid, sessionName, internalSessionId, sessionCreated, omxInstanceId };
+    }
+    return binding;
   } catch {
-    return false;
+    return null;
   }
 }
+
+function isReusableMadmaxDetachedActiveRecord(record: MadmaxDetachedActiveRecord): boolean {
+  const binding = queryMadmaxDetachedRuntimeBinding(record);
+  return !!binding
+    && binding.panePid === record.tmux_pane_pid
+    && binding.internalSessionId === record.tmux_internal_session_id
+    && binding.sessionCreated === record.tmux_session_created;
+}
+
 
 function readMadmaxDetachedLockOwner(lockPath: string): MadmaxDetachedLockOwner | null {
   try {
@@ -5693,21 +5702,31 @@ function runCodex(
             if (leaderPaneId) {
               detachedLeaderPaneId = leaderPaneId;
               setDetachedTmuxSessionHistoryLimit(sessionName, leaderPaneId);
-              if (activeRecordPath && contextKey) {
-                writeMadmaxDetachedActiveRecord(activeRecordPath, {
-                  version: 1,
-                  context_key: contextKey,
-                  created_at: new Date().toISOString(),
-                  source_cwd: runtimeContext?.sourceCwd ?? process.env.OMX_SOURCE_CWD ?? cwd,
-                  ...(runtimeContext?.worktreeCwd ? { worktree_cwd: runtimeContext.worktreeCwd } : {}),
-                  argv: args,
-                  run_dir: runtimeContext?.omxRoot ?? process.env.OMX_ROOT ?? cwd,
-                  tmux_session_name: sessionName,
-                  session_id: sessionId,
-                  tmux_pane_id: leaderPaneId,
-                });
-              }
+
               writeDetachedSessionBinding(leaderPaneId);
+            }
+          }
+          if (step.name === "tag-session" && detachedLeaderPaneId && activeRecordPath && contextKey) {
+            const record: MadmaxDetachedActiveRecord = {
+              version: 1,
+              context_key: contextKey,
+              created_at: new Date().toISOString(),
+              source_cwd: runtimeContext?.sourceCwd ?? process.env.OMX_SOURCE_CWD ?? cwd,
+              ...(runtimeContext?.worktreeCwd ? { worktree_cwd: runtimeContext.worktreeCwd } : {}),
+              argv: args,
+              run_dir: runtimeContext?.omxRoot ?? process.env.OMX_ROOT ?? cwd,
+              tmux_session_name: sessionName,
+              session_id: sessionId,
+              tmux_pane_id: detachedLeaderPaneId,
+            };
+            const binding = queryMadmaxDetachedRuntimeBinding(record);
+            if (binding) {
+              writeMadmaxDetachedActiveRecord(activeRecordPath, {
+                ...record,
+                tmux_internal_session_id: binding.internalSessionId,
+                tmux_session_created: binding.sessionCreated,
+                tmux_pane_pid: binding.panePid,
+              });
             }
           }
           if (step.name === "split-and-capture-hud-pane") {
@@ -6761,6 +6780,7 @@ function canonicalizePathForRunDirMatch(p: string): string {
   }
 }
 
+
 async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFileRef[]> {
   const runsRoot = resolveMadmaxRunsRoot(process.env);
   const registryPath = join(runsRoot, "registry.jsonl");
@@ -6782,16 +6802,14 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
 
     try {
       if (
-        canonicalizePathForRunDirMatch(sourceCwd) !== canonicalCwd &&
-        (!worktreeCwd || canonicalizePathForRunDirMatch(worktreeCwd) !== canonicalCwd)
+        canonicalizePathForRunDirMatch(sourceCwd) !== canonicalCwd
+        && (!worktreeCwd || canonicalizePathForRunDirMatch(worktreeCwd) !== canonicalCwd)
       ) return;
       const resolvedRunDir = resolve(runDir);
       if (
         resolvedRunDir !== canonicalRunsRoot
         && !resolvedRunDir.startsWith(`${canonicalRunsRoot}/`)
-      ) {
-        return;
-      }
+      ) return;
       runDirs.add(resolvedRunDir);
     } catch {
       return;
@@ -6856,52 +6874,272 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
   return refs.sort((a, b) => a.mode.localeCompare(b.mode));
 }
 
+interface AuthorizedRunStateSelection {
+  refs: ModeStateFileRef[];
+  sessionId: string;
+  sessionDir: string;
+
+  record: MadmaxDetachedActiveRecord;
+}
+
+function isCanonicalPathWithin(parent: string, child: string, allowEqual = false): boolean {
+  const rel = relative(parent, child);
+  if (rel === "") return allowEqual;
+  return rel !== ".." && !rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(rel);
+}
+
+async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<AuthorizedRunStateSelection | null> {
+  const runsRoot = resolveMadmaxRunsRoot(process.env);
+  const activeDir = join(runsRoot, MADMAX_DETACHED_ACTIVE_DIR);
+  const canonicalCwd = canonicalizePathForRunDirMatch(cwd);
+  let canonicalRunsRoot: string;
+  try {
+    canonicalRunsRoot = realpathSync(resolve(runsRoot));
+  } catch {
+    return null;
+  }
+
+  const candidates: Array<{ sessionDir: string; sessionId: string; record: MadmaxDetachedActiveRecord }> = [];
+
+  const files = await readdir(activeDir).catch(() => [] as string[]);
+  for (const file of files) {
+    if (!file.endsWith(".json")) continue;
+    const record = readMadmaxDetachedActiveRecord(join(activeDir, file));
+    if (!record || file !== `${record.context_key}.json`) continue;
+    if (!record.session_id || normalizeSessionId(record.session_id) !== record.session_id) continue;
+    if (!isReusableMadmaxDetachedActiveRecord(record)) continue;
+    if (
+      canonicalizePathForRunDirMatch(record.source_cwd) !== canonicalCwd
+      && (!record.worktree_cwd || canonicalizePathForRunDirMatch(record.worktree_cwd) !== canonicalCwd)
+    ) continue;
+
+    try {
+      const canonicalRunDir = realpathSync(resolve(record.run_dir));
+      if (!isCanonicalPathWithin(canonicalRunsRoot, canonicalRunDir)) {
+        throw new Error("run directory escapes the authorized runs root");
+      }
+      const stateDir = realpathSync(join(canonicalRunDir, ".omx", "state"));
+      if (!isCanonicalPathWithin(canonicalRunDir, stateDir)) {
+        throw new Error("state directory escapes the authorized run directory");
+      }
+      const session = JSON.parse(await readFile(join(stateDir, "session.json"), "utf-8")) as Record<string, unknown>;
+      if (session.session_id !== record.session_id) throw new Error("run session pointer changed");
+      const sessionDir = realpathSync(join(stateDir, "sessions", record.session_id));
+      if (!isCanonicalPathWithin(stateDir, sessionDir)) {
+        throw new Error("session directory escapes the authorized state directory");
+      }
+      candidates.push({ sessionDir, sessionId: record.session_id, record });
+    } catch (err) {
+      throw new Error(`Refusing cancellation because detached run authority is invalid: ${record.run_dir}.`, { cause: err });
+    }
+  }
+
+  if (candidates.length > 1) throw new Error("Refusing cancellation because multiple detached run authorities match.");
+  if (candidates.length === 0) return null;
+  const [{ sessionDir, sessionId, record }] = candidates;
+  const refs: ModeStateFileRef[] = [];
+  const stateFiles = await readdir(sessionDir).catch(() => [] as string[]);
+  for (const file of stateFiles) {
+    if (!file.endsWith("-state.json") || file === "session.json") continue;
+    const path = join(sessionDir, file);
+    try {
+      const fileStat = lstatSync(path);
+      if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+        throw new Error(`Refusing cancellation through non-regular run state target: ${path}.`);
+      }
+      const canonicalFile = realpathSync(path);
+      if (!isCanonicalPathWithin(sessionDir, canonicalFile)) {
+        throw new Error(`Refusing cancellation outside authorized run session: ${path}.`);
+      }
+      refs.push({
+        mode: file.slice(0, -"-state.json".length),
+        path: canonicalFile,
+        scope: "session",
+      });
+    } catch (err) {
+      throw new Error(`Refusing cancellation because detached run state authority is invalid: ${path}.`, { cause: err });
+    }
+  }
+  return { refs: refs.sort((a, b) => a.mode.localeCompare(b.mode)), sessionId, sessionDir, record };
+}
+
+function assertCancellationAuthorityPath(baseStateDir: string, authorityRoot: string): string {
+  const resolvedBase = resolve(baseStateDir);
+  const resolvedAuthority = resolve(authorityRoot);
+  const baseStat = lstatSync(resolvedBase);
+  if (!baseStat.isDirectory() || baseStat.isSymbolicLink() || realpathSync(resolvedBase) !== resolvedBase) {
+    throw new Error(`Refusing cancellation through symlinked state authority root: ${baseStateDir}.`);
+  }
+  if (!isCanonicalPathWithin(resolvedBase, resolvedAuthority, true)) {
+    throw new Error(`Refusing cancellation outside base state authority: ${authorityRoot}.`);
+  }
+  let current = resolvedBase;
+  const rel = relative(resolvedBase, resolvedAuthority);
+  for (const component of rel ? rel.split(/[\\/]+/) : []) {
+    current = join(current, component);
+    const componentStat = lstatSync(current);
+    if (!componentStat.isDirectory() || componentStat.isSymbolicLink() || realpathSync(current) !== current) {
+      throw new Error(`Refusing cancellation through symlinked authority component: ${current}.`);
+    }
+  }
+  return resolvedAuthority;
+}
+
+function collectCancellationOwnerIds(baseStateDir: string, sessionId?: string): Set<string> {
+  const ownerIds = new Set<string>();
+  if (sessionId) ownerIds.add(sessionId);
+  try {
+    const pointer = JSON.parse(readFileSync(join(baseStateDir, "session.json"), "utf-8")) as Record<string, unknown>;
+    for (const field of [
+      "session_id",
+      "native_session_id",
+      "codex_session_id",
+      "owner_omx_session_id",
+      "owner_codex_session_id",
+    ]) {
+      const normalized = normalizeSessionId(pointer[field]);
+      if (normalized) ownerIds.add(normalized);
+    }
+  } catch {}
+  return ownerIds;
+}
+
+function assertCancellationOwnerMetadata(
+  value: Record<string, unknown>,
+  ownerIds: Set<string>,
+  path: string,
+): void {
+  for (const ownerField of ["session_id", "owner_omx_session_id", "owner_codex_session_id"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(value, ownerField)) continue;
+    const owner = normalizeSessionId(value[ownerField]);
+    if (!owner || !ownerIds.has(owner)) {
+      throw new Error(`Refusing contradictory ${ownerField} in ${path}.`);
+    }
+  }
+}
+
 async function cancelModes(args: string[] = []): Promise<void> {
-  const { writeFile, readFile } = await import("fs/promises");
+
   const cwd = process.cwd();
   const nowIso = new Date().toISOString();
-  const force = args.includes("--force");
+  if (args.length > 1 || args.some((arg) => arg !== "--force")) {
+    const unsupported = args.find((arg) => arg !== "--force") ?? args[1] ?? "";
+    throw new Error(unsupported === "--all"
+      ? "omx cancel --all is not supported; broad workspace cancellation requires a separate command."
+      : `Unknown cancel argument: ${unsupported}`);
+  }
+  const force = args.length === 1;
   try {
     const writableScope = await resolveWritableStateScope(cwd);
-    const loadStates = async (refs: ModeStateFileRef[]) => {
+    const baseStateDir = getBaseStateDir(cwd);
+    const expectedOwnerIds = collectCancellationOwnerIds(baseStateDir, writableScope.sessionId);
+    const loadStates = async (
+      refs: ModeStateFileRef[],
+      authorityRoot: string,
+      ownerIds: Set<string> = expectedOwnerIds,
+    ) => {
       const loaded = new Map<
-      string,
-      {
-        path: string;
-        scope: "root" | "session";
-        state: Record<string, unknown>;
-      }
-    >();
-
+        string,
+        {
+          path: string;
+          scope: "root" | "session";
+          state: Record<string, unknown>;
+          originalContent: string;
+          dev: number;
+          ino: number;
+        }
+      >();
+      if (refs.length === 0) return loaded;
+      const canonicalAuthorityRoot = assertCancellationAuthorityPath(
+        authorityRoot === writableScope.stateDir ? baseStateDir : authorityRoot,
+        authorityRoot,
+      );
       for (const ref of refs) {
-        const content = await readFile(ref.path, "utf-8");
+        const fileStat = lstatSync(ref.path);
+        if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+          throw new Error(`Refusing cancellation through non-regular state target ${ref.path}.`);
+        }
+        const canonicalPath = realpathSync(ref.path);
+        const canonicalParent = realpathSync(dirname(ref.path));
+        if (!isCanonicalPathWithin(canonicalAuthorityRoot, canonicalParent, true)
+          || !isCanonicalPathWithin(canonicalAuthorityRoot, canonicalPath)) {
+          throw new Error(`Refusing cancellation outside authorized state root: ${ref.path}.`);
+        }
+        const content = await readFile(canonicalPath, "utf-8");
         let parsedState: Record<string, unknown>;
         try {
-          parsedState = JSON.parse(content) as Record<string, unknown>;
+          const parsed = JSON.parse(content) as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("state must be a JSON object");
+          }
+          parsedState = parsed as Record<string, unknown>;
         } catch (err) {
           logCliOperationFailure(err);
-          continue;
+          throw new Error(`Refusing partial cancellation because ${ref.path} is malformed.`, { cause: err });
+        }
+        if (typeof parsedState.mode === "string" && parsedState.mode !== ref.mode) {
+          throw new Error(`Refusing contradictory mode state in ${ref.path}.`);
+        }
+        assertCancellationOwnerMetadata(parsedState, ownerIds, ref.path);
+        if (Array.isArray(parsedState.active_skills)) {
+          for (const skill of parsedState.active_skills) {
+            if (skill && typeof skill === "object" && !Array.isArray(skill)) {
+              assertCancellationOwnerMetadata(skill as Record<string, unknown>, ownerIds, `${ref.path} active_skills`);
+            }
+          }
         }
         loaded.set(ref.mode, {
-          path: ref.path,
+          path: canonicalPath,
           scope: ref.scope,
           state: parsedState,
+          originalContent: content,
+          dev: fileStat.dev,
+          ino: fileStat.ino,
         });
       }
       return loaded;
     };
 
-    let states = await loadStates(await listModeStateFilesWithScopePreference(cwd));
+    const preferredRefs: ModeStateFileRef[] = writableScope.source === "root"
+      ? (await readdir(writableScope.stateDir).catch(() => [] as string[]))
+        .filter((file) => file.endsWith("-state.json") && file !== "session.json")
+        .map((file) => ({
+          mode: file.slice(0, -"-state.json".length),
+          path: join(writableScope.stateDir, file),
+          scope: "root" as const,
+        }))
+      : await listModeStateFilesWithScopePreference(cwd, writableScope.sessionId);
+    const hasPreferredSessionStateFiles = preferredRefs.some((ref) => ref.scope === "session");
+    const targetRefs = writableScope.source === "session"
+      ? preferredRefs.filter((ref) => ref.scope === "session")
+      : preferredRefs;
+
+    let runSelection: AuthorizedRunStateSelection | null = null;
+
+    let states = await loadStates(targetRefs, writableScope.stateDir, expectedOwnerIds);
+
+
     const hasActiveWorkflowMode = (entries: typeof states): boolean =>
       [...entries.entries()].some(
         ([mode, entry]) => mode !== SKILL_ACTIVE_STATE_MODE && entry.state.active === true,
       );
-    if (!hasActiveWorkflowMode(states)) {
-      const runDirStates = await loadStates(await listHookVisibleRunDirStateRefs(cwd));
-      if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
+    if (
+      writableScope.source === "root"
+      && !hasActiveWorkflowMode(states)
+      && !hasPreferredSessionStateFiles
+    ) {
+      runSelection = await selectAuthorizedHookVisibleRunDirState(cwd);
+      if (runSelection) {
+        const runOwnerIds = new Set([runSelection.sessionId]);
+        const runDirStates = await loadStates(runSelection.refs, runSelection.sessionDir, runOwnerIds);
+        if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
+        else runSelection = null;
+      }
     }
 
-    const currentSessionId = writableScope.sessionId ?? "";
+
+    const currentSessionId = writableScope.sessionId ?? runSelection?.sessionId ?? "";
+
     const changed = new Set<string>();
     const reported = new Set<string>();
 
@@ -6938,15 +7176,18 @@ async function cancelModes(args: string[] = []): Promise<void> {
       if (reportIfWasActive && wasActive && mode !== SKILL_ACTIVE_STATE_MODE) reported.add(mode);
     };
 
-    const ralphLinksUltrawork = (state: Record<string, unknown>): boolean =>
-      state.linked_ultrawork === true || state.linked_mode === "ultrawork";
+    const linkedRalphMode = (state: Record<string, unknown>): "ultrawork" | "ecomode" | undefined => {
+      if (state.linked_ultrawork === true || state.linked_mode === "ultrawork") return "ultrawork";
+      if (state.linked_ecomode === true || state.linked_mode === "ecomode") return "ecomode";
+      return undefined;
+    };
 
     const ralph = states.get("ralph");
     const hadActiveRalph = !!(ralph && ralph.state.active === true);
     if (ralph && ralph.state.active === true) {
+      const linkedMode = linkedRalphMode(ralph.state);
+      if (linkedMode) cancelMode(linkedMode, "cancelled", true);
       cancelMode("ralph", "cancelled", true);
-      if (ralphLinksUltrawork(ralph.state))
-        cancelMode("ultrawork", "cancelled", true);
     }
 
     if (!hadActiveRalph) {
@@ -6955,10 +7196,12 @@ async function cancelModes(args: string[] = []): Promise<void> {
       }
     }
 
-    for (const [mode, entry] of states.entries()) {
-      if (!changed.has(mode)) continue;
-      await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
-    }
+    const assertRunAuthority = (): void => {
+      if (runSelection && !isReusableMadmaxDetachedActiveRecord(runSelection.record)) {
+        throw new Error("Refusing cancellation because detached run authority changed.");
+      }
+    };
+
     if (force && currentSessionId) {
       const stopStateEntries = [...states.entries()].filter(([mode]) => mode === "native-stop");
       for (const [, entry] of stopStateEntries) {
@@ -6968,9 +7211,60 @@ async function cancelModes(args: string[] = []): Promise<void> {
         if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, currentSessionId)) continue;
         delete sessions[currentSessionId];
         entry.state.sessions = sessions;
-        await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
         changed.add("native-stop");
       }
+    }
+
+    const orderedChanges = [...changed]
+      .sort((left, right) => {
+        if (left === "ralph") return 1;
+        if (right === "ralph") return -1;
+        return left.localeCompare(right);
+      })
+      .map((mode) => {
+        const entry = states.get(mode);
+        if (!entry) throw new Error(`Missing frozen cancellation entry for ${mode}.`);
+        return { mode, entry, nextContent: JSON.stringify(entry.state, null, 2) };
+      });
+    const opened: Array<{ mode: string; entry: (typeof states extends Map<string, infer T> ? T : never); nextContent: string; handle: Awaited<ReturnType<typeof open>> }> = [];
+    try {
+      for (const change of orderedChanges) {
+        assertRunAuthority();
+        const handle = await open(change.entry.path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+        const currentStat = await handle.stat();
+        const currentContent = await handle.readFile({ encoding: "utf-8" });
+        if (!currentStat.isFile() || currentStat.dev !== change.entry.dev || currentStat.ino !== change.entry.ino) {
+          await handle.close();
+          throw new Error(`Refusing cancellation because state identity changed: ${change.entry.path}.`);
+        }
+        if (currentContent !== change.entry.originalContent) {
+          await handle.close();
+          throw new Error(`Refusing cancellation because state content changed: ${change.entry.path}.`);
+        }
+        opened.push({ ...change, handle });
+      }
+
+      const committed: typeof opened = [];
+      try {
+        for (const openedEntry of opened) {
+          assertRunAuthority();
+          committed.push(openedEntry);
+          await openedEntry.handle.truncate(0);
+          await openedEntry.handle.write(openedEntry.nextContent, 0, "utf-8");
+          await openedEntry.handle.sync();
+        }
+      } catch (writeError) {
+        for (const committedEntry of committed.reverse()) {
+          try {
+            await committedEntry.handle.truncate(0);
+            await committedEntry.handle.write(committedEntry.entry.originalContent, 0, "utf-8");
+            await committedEntry.handle.sync();
+          } catch {}
+        }
+        throw writeError;
+      }
+    } finally {
+      await Promise.all(opened.map(({ handle }) => handle.close().catch(() => undefined)));
     }
 
     for (const mode of reported) {
@@ -6982,6 +7276,6 @@ async function cancelModes(args: string[] = []): Promise<void> {
     }
   } catch (err) {
     logCliOperationFailure(err);
-    console.log("No active modes to cancel.");
+    process.exitCode = 1;
   }
 }

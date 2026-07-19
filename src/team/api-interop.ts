@@ -146,24 +146,28 @@ async function markLatestMailboxDispatchDelivered(
   messageId: string,
   cwd: string,
 ): Promise<{ matched_request_id: string | null; dispatch_updated: boolean }> {
-  const requests = await teamListDispatchRequests(teamName, cwd, { kind: 'mailbox', to_worker: worker });
-  const matching = requests
-    .filter((request) => request.message_id === messageId)
+  const active = (await teamListDispatchRequests(teamName, cwd, { kind: 'mailbox', to_worker: worker }))
+    .filter((request) => request.status === 'pending' || request.status === 'notified')
     .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+  const latest = active[0];
+  if (!latest) return { matched_request_id: null, dispatch_updated: false };
 
-  const latest = matching[0];
-  if (!latest) {
-    return { matched_request_id: null, dispatch_updated: false };
+  const mailbox = await listMailboxMessages(teamName, worker, cwd);
+  if (mailbox.some((message) => !message.delivered_at)) {
+    return { matched_request_id: latest.request_id, dispatch_updated: false };
   }
 
-  if (latest.status === 'pending') {
-    await teamMarkDispatchRequestNotified(teamName, latest.request_id, { message_id: messageId }, cwd);
+  let allDelivered = true;
+  for (const request of active) {
+    if (request.status === 'pending') {
+      await teamMarkDispatchRequestNotified(teamName, request.request_id, { message_id: messageId }, cwd);
+    }
+    const delivered = await teamMarkDispatchRequestDelivered(teamName, request.request_id, { message_id: messageId }, cwd);
+    allDelivered &&= delivered?.status === 'delivered';
   }
-
-  const delivered = await teamMarkDispatchRequestDelivered(teamName, latest.request_id, { message_id: messageId }, cwd);
   return {
     matched_request_id: latest.request_id,
-    dispatch_updated: delivered?.status === 'delivered',
+    dispatch_updated: allDelivered,
   };
 }
 

@@ -417,10 +417,8 @@ describe('team message delivery end-to-end smoke tests', () => {
         assert.equal(workerMessages.filter((message) => message.notified_at).length, 3);
 
         const requests = await listDispatchRequests('worker-leader-concurrent', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
-        const workerMessageIds = new Set(workerMessages.map((message) => message.message_id));
-        const workerRequests = requests.filter((request) => request.message_id && workerMessageIds.has(request.message_id));
-        assert.equal(workerRequests.length, 3);
-        assert.equal(workerRequests.filter((request) => request.status === 'notified').length, 3);
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0]?.status, 'notified');
       });
     } finally {
       await cleanup();

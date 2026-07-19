@@ -635,6 +635,51 @@ describe('executeTeamApiOperation: mailbox-mark-delivered', () => {
     }
   });
 
+  it('keeps one mailbox wake pending until every queued message is acknowledged', async () => {
+    const { cwd, cleanup } = await setupTeam('mark-dlv-coalesced');
+    try {
+      const firstMessage = await sendDirectMessage('mark-dlv-coalesced', 'worker-1', 'worker-2', 'first', cwd);
+      const secondMessage = await sendDirectMessage('mark-dlv-coalesced', 'worker-1', 'worker-2', 'second', cwd);
+      const firstId = firstMessage.message_id;
+      const secondId = secondMessage.message_id;
+
+      const wake = await enqueueDispatchRequest('mark-dlv-coalesced', {
+        kind: 'mailbox', to_worker: 'worker-2', worker_index: 2,
+        message_id: firstId, trigger_message: 'check mailbox', intent: 'pending-mailbox-review',
+      }, cwd);
+      const coalesced = await enqueueDispatchRequest('mark-dlv-coalesced', {
+        kind: 'mailbox', to_worker: 'worker-2', worker_index: 2,
+        message_id: secondId, trigger_message: 'check mailbox', intent: 'pending-mailbox-review',
+      }, cwd);
+      assert.equal(coalesced.deduped, true);
+      assert.equal(coalesced.request.request_id, wake.request.request_id);
+      const alternateWake = await enqueueDispatchRequest('mark-dlv-coalesced', {
+        kind: 'mailbox', to_worker: 'worker-2', worker_index: 2,
+        message_id: secondId, trigger_message: 'follow up', intent: 'followup-relaunch',
+      }, cwd);
+      assert.equal(alternateWake.deduped, false);
+
+      const firstAck = await executeTeamApiOperation('mailbox-mark-delivered', {
+        team_name: 'mark-dlv-coalesced', worker: 'worker-2', message_id: firstId,
+      }, cwd);
+      assert.equal(firstAck.ok, true);
+      if (!firstAck.ok) throw new Error('expected first acknowledgement to succeed');
+      assert.equal(firstAck.data.dispatch_updated, false);
+      assert.equal((await readDispatchRequest('mark-dlv-coalesced', wake.request.request_id, cwd))?.status, 'pending');
+
+      const finalAck = await executeTeamApiOperation('mailbox-mark-delivered', {
+        team_name: 'mark-dlv-coalesced', worker: 'worker-2', message_id: secondId,
+      }, cwd);
+      assert.equal(finalAck.ok, true);
+      if (!finalAck.ok) throw new Error('expected final acknowledgement to succeed');
+      assert.equal(finalAck.data.dispatch_updated, true);
+      assert.equal((await readDispatchRequest('mark-dlv-coalesced', wake.request.request_id, cwd))?.status, 'delivered');
+      assert.equal((await readDispatchRequest('mark-dlv-coalesced', alternateWake.request.request_id, cwd))?.status, 'delivered');
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('marks leader-fixed mailbox delivery from a worker worktree and resolves the matching dispatch receipt', async () => {
     const teamName = 'mark-dlv-leader-worktree';
     const repoCwd = await mkdtemp(join(tmpdir(), 'omx-interop-mark-dlv-root-'));

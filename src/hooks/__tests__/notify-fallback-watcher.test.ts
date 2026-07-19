@@ -1433,6 +1433,46 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+  it('does not keep leader mailbox nudges alive after the team becomes terminal', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-terminal-mailbox-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    try {
+      await writeCanonicalWatcherTeamFixture(wd, { coarseState: 'inactive', terminal: true });
+      await mkdir(join(wd, '.omx', 'state', 'team', 'dispatch-team', 'mailbox'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(join(wd, '.omx', 'state', 'team', 'dispatch-team', 'mailbox', 'leader-fixed.json'), JSON.stringify({
+        worker: 'leader-fixed',
+        messages: [{
+          message_id: 'terminal-msg',
+          from_worker: 'worker-1',
+          to_worker: 'leader-fixed',
+          body: 'must not wake a terminal team',
+          created_at: new Date().toISOString(),
+        }],
+      }, null, 2));
+
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(process.execPath, [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook], {
+        encoding: 'utf-8',
+        env: buildCleanNotifyEnv({
+          PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          OMX_SESSION_ID: 'sess-current',
+        }),
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(await readFile(tmuxLogPath, 'utf8').catch(() => ''), '');
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = await readJsonLines(logPath);
+      assert.equal(logEntries.some((entry) => entry.type === 'leader_nudge_tick'), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not run stalled-worker leader nudges from the fallback watcher when the leader is not stale', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-worker-stall-nudge-'));
     const fakeBinDir = join(wd, 'fake-bin');

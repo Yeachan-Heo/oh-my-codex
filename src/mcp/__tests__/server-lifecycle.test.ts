@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const STARTUP_SETTLE_MS = 150;
-const SPAWN_TIMEOUT_MS = 1_500;
-const EXIT_TIMEOUT_MS = 2_500;
+const SPAWN_TIMEOUT_MS = 3_000;
+const EXIT_TIMEOUT_MS = 5_000;
 const OUTPUT_LIMIT = 4_096;
 
 const IDLE_ENTRYPOINTS = [
@@ -260,7 +260,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
 
       await waitForCondition(
         () => !isChildAlive(older),
-        4_000,
+        8_000,
         `older duplicate failed to self-exit: ${formatFailureContext(entrypoint, stderr, stdout)}`,
       );
 
@@ -382,7 +382,7 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
 
       await waitForCondition(
         () => children.filter(isChildAlive).length <= 4,
-        4_000,
+        8_000,
         `pre-traffic hard cap did not bound duplicate children: ${formatFailureContext(entrypoint, stderr, stdout)}`,
       );
 

@@ -836,6 +836,64 @@ function hasExplicitWorkerPaneId(workerPaneId: string | undefined): workerPaneId
   return typeof workerPaneId === 'string' && workerPaneId.trim().length > 0;
 }
 
+type ExactWorkerPaneLivenessProof =
+  | { status: 'live'; paneId: string; pid: number; ownerId: string }
+  | { status: 'gone'; paneId: string; reason: 'absent' | 'dead' }
+  | { status: 'unavailable'; paneId: string; reason: string };
+
+function readExactWorkerPaneLivenessProofSync(paneId: string): ExactWorkerPaneLivenessProof {
+  if (!/^%[0-9]+$/.test(paneId)) return { status: 'unavailable', paneId, reason: 'invalid_pane_id' };
+  const result = runTmuxStructured([
+    'display-message', '-p', '-t', paneId,
+    `#{pane_id}\t#{pane_dead}\t#{pane_pid}\t#{${OMX_TEAM_PANE_OWNER_OPTION}}`,
+  ]);
+  if (!result.ok) {
+    if (/can't find pane|no such pane|unknown pane/i.test(result.stderr)) {
+      return { status: 'gone', paneId, reason: 'absent' };
+    }
+    return { status: 'unavailable', paneId, reason: `query_failed:${result.stderr || 'unknown'}` };
+  }
+
+  const lines = result.stdout.replace(/\r\n/g, '\n').split('\n').filter((line) => line.length > 0);
+  if (lines.length !== 1) return { status: 'unavailable', paneId, reason: 'malformed_exact_pane_result' };
+  const fields = lines[0]!.split('\t');
+  if (fields.length !== 4) return { status: 'unavailable', paneId, reason: 'malformed_exact_pane_result' };
+  const [actualPaneId, paneDead, rawPid, ownerId] = fields;
+  if (actualPaneId !== paneId) {
+    return { status: 'unavailable', paneId, reason: `pane_id_changed:expected=${paneId}:actual=${actualPaneId}` };
+  }
+  if (paneDead !== '0' && paneDead !== '1') return { status: 'unavailable', paneId, reason: 'malformed_exact_pane_result' };
+  if (!/^[0-9]+$/.test(rawPid)) return { status: 'unavailable', paneId, reason: 'malformed_exact_pane_result' };
+  const pid = Number(rawPid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: 'unavailable', paneId, reason: 'malformed_exact_pane_result' };
+  if (paneDead === '1') return { status: 'gone', paneId, reason: 'dead' };
+  return { status: 'live', paneId, pid, ownerId };
+}
+
+function requireExactWorkerPaneLivenessIdentity(
+  paneId: string,
+  expectedPanePid?: number,
+  expectedTeamOwnerId?: string,
+  hudPaneId?: string,
+): ExactWorkerPaneLivenessProof {
+  if (hudPaneId?.trim() && paneId === hudPaneId.trim()) {
+    throw new Error(`tmux worker pane is HUD target: ${paneId}`);
+  }
+  const proof = readExactWorkerPaneLivenessProofSync(paneId);
+  if (proof.status === 'unavailable' && proof.reason.startsWith('pane_id_changed:')) {
+    throw new Error(`tmux worker pane identity changed: ${paneId}: ${proof.reason}`);
+  }
+  if (proof.status !== 'live') return proof;
+  if (typeof expectedPanePid === 'number' && proof.pid !== expectedPanePid) {
+    throw new Error(`tmux worker pane PID changed: ${paneId}: expected ${expectedPanePid}, got ${proof.pid}`);
+  }
+  const expectedOwner = typeof expectedTeamOwnerId === 'string' ? expectedTeamOwnerId.trim() : '';
+  if (expectedOwner && proof.ownerId !== expectedOwner) {
+    throw new Error(`tmux worker pane incarnation changed: ${paneId}: expected ${expectedOwner}, got ${proof.ownerId || 'missing'}`);
+  }
+  return proof;
+}
+
 function resolveWorkerPaneTargetSync(
   sessionName: string,
   workerIndex: number,
@@ -3461,15 +3519,8 @@ export function getWorkerPanePid(
   hudPaneId?: string,
 ): number | null {
   if (hasExplicitWorkerPaneId(workerPaneId)) {
-    const target = createPinnedWorkerPaneTargetResolverSync(
-      sessionName,
-      workerIndex,
-      workerPaneId,
-      expectedPanePid,
-      expectedTeamOwnerId,
-      hudPaneId,
-    )();
-    return target ? expectedPanePid ?? null : null;
+    const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);
+    return proof.status === 'live' ? proof.pid : null;
   }
 
   const result = runTmux(['list-panes', '-t', paneTarget(sessionName, workerIndex), '-F', '#{pane_pid}']);
@@ -3494,16 +3545,15 @@ export function isWorkerAlive(
   hudPaneId?: string,
 ): boolean {
   if (hasExplicitWorkerPaneId(workerPaneId)) {
-    const target = createPinnedWorkerPaneTargetResolverSync(
-      sessionName,
-      workerIndex,
-      workerPaneId,
-      expectedPanePid,
-      expectedTeamOwnerId,
-      hudPaneId,
-    )();
-    if (!target || typeof expectedPanePid !== 'number') return false;
-    return probeProcessLiveness(expectedPanePid) !== 'gone';
+    if (hudPaneId?.trim() && workerPaneId === hudPaneId.trim()) {
+      throw new Error(`tmux worker pane is HUD target: ${workerPaneId}`);
+    }
+    const proof = requireExactWorkerPaneLivenessIdentity(workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);
+    if (proof.status === 'unavailable') return true;
+    if (proof.status === 'gone') return false;
+    if (typeof expectedPanePid !== 'number' || !Number.isSafeInteger(expectedPanePid) || expectedPanePid <= 0) return true;
+    if (typeof expectedTeamOwnerId !== 'string' || expectedTeamOwnerId.trim() === '') return true;
+    return probeProcessLiveness(proof.pid) !== 'gone';
   }
 
   const result = runTmux([

@@ -11,6 +11,7 @@ interface RunnerRequest {
   pluginPath: string;
   event: HookEventEnvelope;
   sideEffectsEnabled?: boolean;
+  stateRoot?: string;
 }
 
 interface RunnerResult {
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
       pluginName: pluginId,
       event: request.event,
       sideEffectsEnabled: request.sideEffectsEnabled !== false,
+      stateRoot: request.stateRoot,
     });
 
     await Promise.resolve(loaded.onHookEvent(request.event, sdk));

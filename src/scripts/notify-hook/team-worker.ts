@@ -16,7 +16,8 @@ import {
   resolveAllWorkersIdleIntent,
   resolveWorkerIdleIntent,
 } from './orchestration-intent.js';
-import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
+import { DEFAULT_MARKER, paneHasActiveTask } from '../tmux-hook-engine.js';
+import { registerTeamNotice, releaseTeamNoticeWake } from '../../team/notice-ledger.js';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 
 function positivePanePid(value) {
@@ -425,8 +426,6 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
   }
 
   const N = workers.length;
-  const nextAction = `Run \`omx team status ${teamName}\` now, read unread worker messages, then assign the next concrete task, reconcile results, or shut the team down.`;
-  const message = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. ${nextAction} ${DEFAULT_MARKER}`;
   const tmuxTarget = canonicalLeaderPaneId;
   const paneGuard = await checkLeaderPaneReadyForWorkerStateReminder(tmuxTarget, canonicalLeaderPaneId, leaderPanePid, tmuxPaneOwnerId);
   if (!paneGuard.ok) {
@@ -454,6 +453,22 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
     });
     return;
   }
+  const leaderBusy = paneHasActiveTask(paneGuard.paneCapture);
+  let queuedNoticeRegistration = null;
+  let message = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle. Run \`omx team status ${teamName}\` now, read unread worker messages, then assign the next concrete task, reconcile results, or shut the team down. ${DEFAULT_MARKER}`;
+  if (leaderBusy) {
+    const noticeRegistration = await registerTeamNotice({
+      stateRoot: stateDir,
+      targetId: tmuxPaneOwnerId,
+      teamName,
+      noticeClass: 'all_idle',
+      generation: `${nowIso}:${N}:${orchestrationIntent}`,
+      source: { kind: 'all_workers_idle', detail: orchestrationIntent },
+    }).catch(() => null);
+    if (!noticeRegistration?.queued || !noticeRegistration.prompt) return;
+    message = `${noticeRegistration.prompt} ${DEFAULT_MARKER}`;
+    queuedNoticeRegistration = noticeRegistration;
+  }
 
   try {
     const sendResult = await sendPaneInput({
@@ -467,6 +482,7 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
       expectedHudPaneId: hudPaneId,
     });
     if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
+    queuedNoticeRegistration = null;
 
     const nextIdleState = {
       ...idleState,
@@ -503,6 +519,9 @@ export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, 
       orchestration_intent: orchestrationIntent,
     });
   } catch (err) {
+    if (queuedNoticeRegistration?.targetKey && queuedNoticeRegistration?.wakeId) {
+      await releaseTeamNoticeWake(stateDir, queuedNoticeRegistration.targetKey, queuedNoticeRegistration.wakeId).catch(() => {});
+    }
     await logTmuxHookEvent(logsDir, {
       timestamp: nowIso,
       type: 'all_workers_idle_notification',
@@ -646,13 +665,28 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
     return;
   }
 
-  // Build notification message with context
+  // Build notification message with context. Busy panes use the durable ledger wake.
   const parts = [`[OMX] ${workerName} ${currentState}`];
   if (prevState && prevState !== 'unknown') parts.push(`(was: ${prevState})`);
   if (currentTaskId) parts.push(`task: ${currentTaskId}`);
   if (currentReason) parts.push(`reason: ${currentReason}`);
   parts.push(`Next: read ${workerName}'s latest message/output, then assign the next concrete step or mark the task complete.`);
-  const message = `${parts.join('. ')}. ${DEFAULT_MARKER}`;
+  const leaderBusy = paneHasActiveTask(paneGuard.paneCapture);
+  let queuedNoticeRegistration = null;
+  let message = `${parts.join('. ')}. ${DEFAULT_MARKER}`;
+  if (leaderBusy) {
+    const noticeRegistration = await registerTeamNotice({
+      stateRoot: stateDir,
+      targetId: tmuxPaneOwnerId,
+      teamName,
+      noticeClass: 'worker_idle',
+      generation: `${workerName}:${currentState}:${currentTaskId}:${safeString(heartbeat.last_turn_at)}`,
+      source: { kind: 'worker_idle', detail: orchestrationIntent },
+    }).catch(() => null);
+    if (!noticeRegistration?.queued || !noticeRegistration.prompt) return;
+    queuedNoticeRegistration = noticeRegistration;
+    message = `${noticeRegistration.prompt} ${DEFAULT_MARKER}`;
+  }
 
   try {
     const sendResult = await sendPaneInput({
@@ -666,6 +700,7 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
       expectedHudPaneId: hudPaneId,
     });
     if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
+    queuedNoticeRegistration = null;
 
     // Update cooldown state
     try {
@@ -709,6 +744,9 @@ export async function maybeNotifyLeaderWorkerIdle({ cwd, stateDir, logsDir, pars
       orchestration_intent: orchestrationIntent,
     });
   } catch (err) {
+    if (queuedNoticeRegistration?.targetKey && queuedNoticeRegistration?.wakeId) {
+      await releaseTeamNoticeWake(stateDir, queuedNoticeRegistration.targetKey, queuedNoticeRegistration.wakeId).catch(() => {});
+    }
     await logTmuxHookEvent(logsDir, {
       timestamp: nowIso,
       type: 'worker_idle_notification',

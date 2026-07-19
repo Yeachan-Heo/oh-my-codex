@@ -24,6 +24,7 @@ import { readLatestTeamProgressEvidenceMs } from '../../team/progress-evidence.j
 import { validateSessionId } from '../../mcp/state-paths.js';
 import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
 import { isDeepInterviewStateActive } from './auto-nudge.js';
+import { registerTeamNotice, releaseTeamNoticeWake } from '../../team/notice-ledger.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
 const TEAM_SHUTDOWN_NO_INJECTION_REASON = 'team_state_gone_or_shutdown';
@@ -1043,8 +1044,16 @@ export async function maybeNudgeTeamLeader({
       await recordShutdownSuppression(orchestrationIntent);
       continue;
     }
-    const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
-    const markedText = `${capped} ${DEFAULT_MARKER}`;
+    const noticeClass = nudgeReason === 'all_workers_idle'
+      || nudgeReason === 'done_waiting_on_leader'
+      || nudgeReason === 'stuck_waiting_on_leader'
+      ? 'all_idle'
+      : nudgeReason.includes('stale')
+        ? 'leader_stale'
+        : 'mailbox';
+    const noticeGeneration = noticeClass === 'mailbox' && newestId
+      ? newestId
+      : `${nudgeReason}:${progressSnapshot.signature}:${prevIdleAtIso || prevAtIso || 'initial'}`;
 
     if (!tmuxTarget) {
       if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
@@ -1148,7 +1157,7 @@ export async function maybeNudgeTeamLeader({
       continue;
     }
 
-    if (paneAlreadyShowsVisibleLeaderState(paneGuard.paneCapture, capped)) {
+    if (paneAlreadyShowsVisibleLeaderState(paneGuard.paneCapture, text)) {
       if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
         await recordShutdownSuppression(orchestrationIntent);
         continue;
@@ -1194,11 +1203,26 @@ export async function maybeNudgeTeamLeader({
       await recordShutdownSuppression(orchestrationIntent);
       continue;
     }
-
+    let queuedNoticeRegistration = null;
     try {
       const leaderHasActiveTask = paneHasActiveTask(paneGuard.paneCapture);
       let deliveryMode = 'sent';
+      let markedText = `${text.length > 180 ? `${text.slice(0, 177)}...` : text} ${DEFAULT_MARKER}`;
       if (leaderHasActiveTask) {
+        const noticeRegistration = await registerTeamNotice({
+          stateRoot: stateDir,
+          targetId: tmuxPaneOwnerId,
+          teamName,
+          noticeClass,
+          generation: noticeGeneration,
+          source: { kind: 'leader_nudge', detail: nudgeReason },
+        }).catch(() => null);
+        if (!noticeRegistration?.queued || !noticeRegistration.prompt) {
+          await persistLeaderNudgeBookkeeping({ orchestrationIntent, recordLastNudged: true });
+          continue;
+        }
+        markedText = `${noticeRegistration.prompt} ${DEFAULT_MARKER}`;
+        queuedNoticeRegistration = noticeRegistration;
         const sendResult = await sendPaneInput({
           paneTarget: tmuxTarget,
           prompt: markedText,
@@ -1214,6 +1238,7 @@ export async function maybeNudgeTeamLeader({
           throw new Error(sendResult.error || sendResult.reason);
         }
         deliveryMode = 'queued';
+        queuedNoticeRegistration = null;
       } else {
         const sendResult = await sendPaneInput({
           paneTarget: tmuxTarget,
@@ -1266,6 +1291,9 @@ export async function maybeNudgeTeamLeader({
         orchestration_intent: orchestrationIntent,
       }).catch(() => {});
     } catch (err) {
+      if (queuedNoticeRegistration?.targetKey && queuedNoticeRegistration?.wakeId) {
+        await releaseTeamNoticeWake(stateDir, queuedNoticeRegistration.targetKey, queuedNoticeRegistration.wakeId).catch(() => {});
+      }
       if (!(await teamStateAllowsLeaderNudge(stateDir, teamName))) {
         await recordShutdownSuppression(orchestrationIntent);
         continue;

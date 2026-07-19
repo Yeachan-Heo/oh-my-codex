@@ -46,6 +46,7 @@ export interface SessionState {
   codex_session_id?: string;
   started_at: string;
   cwd: string;
+  state_root?: string;
   pid: number;
   platform?: NodeJS.Platform;
   pid_start_ticks?: number;
@@ -659,6 +660,7 @@ export async function readUsableSessionState(
 
 function createSessionState(
   cwd: string,
+  stateRoot: string,
   sessionId: string,
   pid: number,
   platform: NodeJS.Platform,
@@ -689,6 +691,7 @@ function createSessionState(
     ...(ownerOmxSessionId ? { owner_omx_session_id: ownerOmxSessionId } : {}),
     started_at: options.startedAt ?? nowIso,
     cwd,
+    state_root: stateRoot,
     pid,
     platform,
     ...(linuxIdentity ? { pid_start_ticks: linuxIdentity.startTicks } : {}),
@@ -1539,7 +1542,7 @@ function startPointerTransition(
       }, error);
     }
 
-    return createSessionState(context.cwd, canonicalSessionId, pid, platform, sessionIdentityFor(pid, platform), {
+    return createSessionState(context.cwd, context.baseStateDir, canonicalSessionId, pid, platform, sessionIdentityFor(pid, platform), {
       nativeSessionId: options.nativeSessionId ?? existing?.native_session_id,
       previousNativeSessionId: options.previousNativeSessionId ?? existing?.previous_native_session_id,
       nativeSessionSwitchedAt: options.nativeSessionSwitchedAt ?? existing?.native_session_switched_at,
@@ -1599,7 +1602,7 @@ function reconcileNativeTransition(
       const ownerCandidate = verifiedOwnerCandidate(context, options);
       const ownerOmxSessionId = ownerCandidate;
       return {
-        state: createSessionState(context.cwd, nativeSessionId, pid, platform, linuxIdentity, {
+        state: createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
           nativeSessionId,
           ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
         }),
@@ -1610,7 +1613,7 @@ function reconcileNativeTransition(
     if (existingNativeSessionId && existingNativeSessionId !== nativeSessionId) {
       const ownerOmxSessionId = getOmxLaunchSessionId(existing);
       return {
-        state: createSessionState(context.cwd, nativeSessionId, pid, platform, linuxIdentity, {
+        state: createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
           nativeSessionId,
           ...(ownerOmxSessionId ? {
             previousNativeSessionId: existingNativeSessionId,
@@ -1645,7 +1648,7 @@ function reconcileNativeTransition(
     }
 
     return {
-      state: createSessionState(context.cwd, existing.session_id, pid, platform, linuxIdentity, {
+      state: createSessionState(context.cwd, context.baseStateDir, existing.session_id, pid, platform, linuxIdentity, {
         nowIso,
         nativeSessionId,
         previousNativeSessionId: existing.previous_native_session_id,
