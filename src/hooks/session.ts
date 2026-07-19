@@ -11,6 +11,7 @@ import {
   open,
   readFile as nodeReadFile,
   readdir as nodeReaddir,
+  realpath,
   rename as nodeRename,
   rmdir as nodeRmdir,
   rm,
@@ -18,6 +19,7 @@ import {
   writeFile as nodeWriteFile,
 } from 'fs/promises';
 import { readFileSync } from 'fs';
+import type { FileHandle } from 'fs/promises';
 import { createHash, randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import { omxRoot, omxLogsDir, sameFilePath } from '../utils/paths.js';
@@ -51,6 +53,8 @@ export interface SessionState {
   pid_cmdline?: string;
   tmux_session_name?: string;
   tmux_pane_id?: string;
+  /** Private wrapper lineage evidence; native reconciliation never creates or repairs it. */
+  launch_lineage_token?: string;
 }
 
 export interface SessionPointerContext {
@@ -99,6 +103,7 @@ export type SessionPointerCleanupPhase =
   | 'remove-pointer-temp'
   | 'token-check'
   | 'rename'
+  | 'remove-release-owner'
   | 'remove-release-dir';
 
 export interface SessionPointerSecondaryFailure {
@@ -152,6 +157,63 @@ export interface ResolvedSessionPointerAbort extends SessionPointerAbortBase {
 export type SessionPointerLaunchAbort =
   | SessionPointerContextAbort
   | ResolvedSessionPointerAbort;
+
+export type UnsupportedDirectoryCapabilityReason = 'platform' | 'inadequate-identity' | 'stat-feature';
+export type CapabilityCloseEvidence = Readonly<{
+  role: 'acquisition' | 'fresh-comparison' | 'original-retained';
+  phase: 'before-authorization' | 'post-finalization' | 'detached-pre-release';
+  status: 'not-needed' | 'closed' | 'failed';
+  error?: Readonly<{ name: string; message: string; code?: string }>;
+}>;
+export interface EstablishmentCleanupEvidence {
+  readonly capability: readonly CapabilityCloseEvidence[];
+}
+export interface LifecycleCleanupEvidence extends EstablishmentCleanupEvidence {
+  readonly comparison?: Readonly<{ status: 'not-run' | 'matched' | 'denied'; reason?: string }>;
+}
+export interface LaunchSessionBinding {
+  readonly context: Readonly<SessionPointerContext>;
+  readonly canonicalRealpath: string;
+  readonly directoryIdentity: Readonly<
+    | { kind: 'supported'; dev: bigint; ino: bigint }
+    | { kind: 'unsupported'; reason: UnsupportedDirectoryCapabilityReason }
+  >;
+  readonly canonicalSessionId: string;
+  readonly ownerOmxSessionId?: string;
+  readonly nativeSessionId?: string;
+  readonly startedAt: string;
+  readonly launchLineageToken: string;
+}
+export interface CommittedLaunchEvidence {
+  readonly context: Readonly<SessionPointerContext>;
+  readonly canonicalSessionId: string;
+}
+export class CommittedLaunchBlockedError extends Error {
+  readonly name = 'CommittedLaunchBlockedError';
+  constructor(readonly secondaryFailures: readonly SessionPointerSecondaryFailure[]) {
+    super('Session pointer committed, but lock release left recovery evidence.');
+  }
+}
+export type LaunchEstablishment =
+  | { kind: 'precommit-aborted'; abort: SessionPointerLaunchAbort; cleanup: EstablishmentCleanupEvidence }
+  | { kind: 'committed-released'; binding: LaunchSessionBinding; cleanup: EstablishmentCleanupEvidence }
+  | {
+      kind: 'committed-release-failed'; evidence: CommittedLaunchEvidence; error: CommittedLaunchBlockedError;
+      lockDisposition: 'held' | 'released-with-residue' | 'uncertain';
+      secondaryFailures: readonly SessionPointerSecondaryFailure[]; cleanup: EstablishmentCleanupEvidence;
+    };
+export type DetachedMetadataUpdate =
+  | { kind: 'precommit-aborted'; abort: SessionPointerLaunchAbort; cleanup: EstablishmentCleanupEvidence }
+  | { kind: 'committed-released'; evidence: CommittedLaunchEvidence; cleanup: EstablishmentCleanupEvidence }
+  | {
+      kind: 'committed-release-failed'; evidence: CommittedLaunchEvidence; error: CommittedLaunchBlockedError;
+      lockDisposition: 'held' | 'released-with-residue' | 'uncertain';
+      secondaryFailures: readonly SessionPointerSecondaryFailure[]; cleanup: EstablishmentCleanupEvidence;
+    };
+export interface BoundFinalizationReport {
+  readonly cleanup: LifecycleCleanupEvidence;
+  readonly finalized: boolean;
+}
 
 const SESSION_FILE = 'session.json';
 const HISTORY_FILE = 'session-history.jsonl';
@@ -644,6 +706,7 @@ function createSessionState(
   options: {
     nowIso?: string;
     nativeSessionId?: string;
+    launchLineageToken?: string;
     previousNativeSessionId?: string;
     nativeSessionSwitchedAt?: string;
     ownerOmxSessionId?: string;
@@ -666,6 +729,7 @@ function createSessionState(
     ...(nativeSessionSwitchedAt ? { native_session_switched_at: nativeSessionSwitchedAt } : {}),
     ...(ownerOmxSessionId ? { owner_omx_session_id: ownerOmxSessionId } : {}),
     started_at: options.startedAt ?? nowIso,
+    ...(isValidToken(options.launchLineageToken) ? { launch_lineage_token: options.launchLineageToken } : {}),
     cwd,
     pid,
     platform,
@@ -674,6 +738,12 @@ function createSessionState(
     ...(tmuxSessionName ? { tmux_session_name: tmuxSessionName } : {}),
     ...(tmuxPaneId ? { tmux_pane_id: tmuxPaneId } : {}),
   };
+}
+
+function preserveExistingLaunchLineageToken(existing: SessionState | undefined, state: SessionState): SessionState {
+  return existing && Object.hasOwn(existing, 'launch_lineage_token')
+    ? { ...state, launch_lineage_token: existing.launch_lineage_token }
+    : state;
 }
 
 function normalizeNonempty(value: unknown): string | undefined {
@@ -722,11 +792,6 @@ function isStartCompatible(existing: SessionState, requestedSessionId: string): 
     || currentOwnerAlias(existing) === requestedSessionId;
 }
 
-function getOmxLaunchSessionId(state: SessionState): string | undefined {
-  if (state.session_id.startsWith('omx-')) return state.session_id;
-  const owner = currentOwnerAlias(state);
-  return owner?.startsWith('omx-') ? owner : undefined;
-}
 
 interface SessionPointerLockOwnerV1 {
   version: 1;
@@ -1081,7 +1146,7 @@ async function releasePointerLock(lock: HeldPointerLock): Promise<SessionPointer
     if (!isNotFound(error)) {
       return [{
         operation: 'lock-release',
-        phase: 'remove-release-dir',
+        phase: 'remove-release-owner',
         ownership: 'released',
         message: `Unable to remove released session pointer lock owner: ${errorMessage(error)}`,
         cause: error,
@@ -1125,9 +1190,16 @@ function recoveryAbort(
   });
 }
 
-function releaseFailureError(failures: readonly SessionPointerSecondaryFailure[]): Error {
-  const error = new Error('Session pointer committed, but lock release left recovery evidence.');
-  Object.assign(error, { secondaryFailures: failures });
+function releaseFailureError<T>(
+  failures: readonly SessionPointerSecondaryFailure[],
+  context?: SessionPointerContext,
+  value?: T,
+): CommittedLaunchBlockedError & { context?: SessionPointerContext; value?: T } {
+  const error = new CommittedLaunchBlockedError(failures) as CommittedLaunchBlockedError & {
+    context?: SessionPointerContext; value?: T;
+  };
+  if (context) error.context = context;
+  if (value !== undefined) error.value = value;
   return error;
 }
 
@@ -1199,7 +1271,7 @@ async function writePointerTransaction<T>(
   candidateSessionId: string | undefined,
   options: Pick<SessionStartOptions, 'context' | 'platform' | 'regularFileSync'>,
   timeoutMs: number,
-  transition: (pointer: SessionPointerReadResult, context: SessionPointerContext) => T,
+  transition: (pointer: SessionPointerReadResult, context: SessionPointerContext) => T | Promise<T>,
   pointerState: (value: T) => SessionState,
 ): Promise<PointerTransactionResult<T>> {
   let context: SessionPointerContext;
@@ -1263,7 +1335,7 @@ async function writePointerTransaction<T>(
 
     let next: T;
     try {
-      next = transition(pointer, context);
+      next = await transition(pointer, context);
     } catch (error) {
       if (isSessionPointerLaunchAbort(error)) throw error;
       const state = pointer.state;
@@ -1318,7 +1390,7 @@ async function writePointerTransaction<T>(
     }
 
     const releaseFailures = await releasePointerLock(lock);
-    if (releaseFailures.length > 0) throw releaseFailureError(releaseFailures);
+    if (releaseFailures.length > 0) throw releaseFailureError(releaseFailures, context, next);
     emitDegradedDurabilityWarning('session pointer start/reconcile', tracker);
     return { context, value: next };
   } catch (error) {
@@ -1343,14 +1415,25 @@ async function writePointerTransaction<T>(
 function startPointerTransition(
   requestedSessionId: string,
   options: SessionStartOptions,
+  requireLaunchLineageToken = false,
+  requireAbsent = false,
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
+    if (requireAbsent && pointer.status !== 'absent') {
+      if (pointer.status === 'usable' && pointer.state) {
+        throw ownerConflictAbort(context, requestedSessionId, pointer.state);
+      }
+      throw unusablePointerAbort(context, requestedSessionId, pointer);
+    }
     if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
       throw unusablePointerAbort(context, requestedSessionId, pointer);
     }
 
     const existing = pointer.status === 'usable' ? pointer.state : undefined;
     if (existing && !isStartCompatible(existing, requestedSessionId)) {
+      throw ownerConflictAbort(context, requestedSessionId, existing);
+    }
+    if (requireLaunchLineageToken && existing && !isValidToken(existing.launch_lineage_token)) {
       throw ownerConflictAbort(context, requestedSessionId, existing);
     }
 
@@ -1374,22 +1457,58 @@ function startPointerTransition(
       }, error);
     }
 
-    return createSessionState(context.cwd, canonicalSessionId, pid, platform, sessionIdentityFor(pid, platform), {
+    const state = createSessionState(context.cwd, canonicalSessionId, pid, platform, sessionIdentityFor(pid, platform), {
       nativeSessionId: options.nativeSessionId ?? existing?.native_session_id,
       previousNativeSessionId: options.previousNativeSessionId ?? existing?.previous_native_session_id,
       nativeSessionSwitchedAt: options.nativeSessionSwitchedAt ?? existing?.native_session_switched_at,
       ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
+      launchLineageToken: existing
+        ? (isValidToken(existing.launch_lineage_token) ? existing.launch_lineage_token : undefined)
+        : transactionDependencies.token(),
       tmuxSessionName: options.tmuxSessionName ?? existing?.tmux_session_name,
       tmuxPaneId: options.tmuxPaneId ?? existing?.tmux_pane_id,
     });
+    return preserveExistingLaunchLineageToken(existing, state);
   };
 }
 
-/** Write or merge a wrapper-owned canonical pointer through the exact-root transaction. */
+/** Create a wrapper-owned canonical pointer only when the selected pointer is absent. */
 export async function writeSessionStart(
   cwd: string,
   sessionId: string,
   options: SessionStartOptions = {},
+): Promise<SessionState> {
+  const candidateSessionId = normalizeSessionId(sessionId);
+  let context: SessionPointerContext;
+  try {
+    context = options.context ?? resolveSessionPointerContext(cwd);
+  } catch (error) {
+    throw contextAbort(cwd, candidateSessionId, error);
+  }
+  let pointer: SessionPointerReadResult;
+  try {
+    pointer = await readSessionPointer(context);
+  } catch (error) {
+    throw resolvedAbort(context, {
+      code: 'session_pointer_io_failure', operation: 'pointer-read', candidateSessionId,
+      lockPath: context.lockPath, reason: `Unable to read selected session pointer: ${errorMessage(error)}`, cause: error,
+    });
+  }
+  if (pointer.status !== 'absent') {
+    if (pointer.status === 'usable' && pointer.state) {
+      throw ownerConflictAbort(context, candidateSessionId ?? sessionId, pointer.state);
+    }
+    throw unusablePointerAbort(context, candidateSessionId ?? sessionId, pointer);
+  }
+  return await writeSessionStartTransition(cwd, sessionId, { ...options, context });
+}
+
+async function writeSessionStartTransition(
+  cwd: string,
+  sessionId: string,
+  options: SessionStartOptions,
+  requireLaunchLineageToken = false,
+  requireAbsent = false,
 ): Promise<SessionState> {
   const requestedSessionId = normalizeSessionId(sessionId);
   const result = await writePointerTransaction(
@@ -1397,7 +1516,7 @@ export async function writeSessionStart(
     requestedSessionId,
     options,
     DEFAULT_POINTER_TIMEOUT_MS,
-    startPointerTransition(requestedSessionId ?? sessionId, options),
+    startPointerTransition(requestedSessionId ?? sessionId, options, requireLaunchLineageToken, requireAbsent),
     (state) => state,
   );
   await appendToLogAtContext(result.context, {
@@ -1408,6 +1527,416 @@ export async function writeSessionStart(
     timestamp: result.value.started_at,
   }).catch(() => {});
   return result.value;
+}
+
+const DIRECTORY_CAPABILITY_PLATFORMS = new Set<NodeJS.Platform>([
+  'linux', 'darwin', 'freebsd', 'openbsd', 'netbsd', 'sunos',
+]);
+
+export class LaunchContextResolutionError extends Error {
+  readonly name = 'LaunchContextResolutionError';
+  constructor(readonly cleanup: EstablishmentCleanupEvidence, cause: unknown) {
+    super(`Unable to establish launch directory capability: ${errorMessage(cause)}`, { cause });
+  }
+}
+
+interface BindingLease {
+  handle?: FileHandle;
+  closed: boolean;
+  closeEvidence?: CapabilityCloseEvidence;
+}
+const bindingLeases = new WeakMap<LaunchSessionBinding, BindingLease>();
+const bindingFinalizations = new WeakMap<LaunchSessionBinding, Promise<BoundFinalizationReport>>();
+
+function safeError(error: unknown): Readonly<{ name: string; message: string; code?: string }> {
+  return {
+    name: error instanceof Error ? error.name : 'Error',
+    message: errorMessage(error),
+    ...(errorCode(error) ? { code: errorCode(error) } : {}),
+  };
+}
+
+function lockDisposition(failures: readonly SessionPointerSecondaryFailure[]): 'held' | 'released-with-residue' | 'uncertain' {
+  if (failures.some((failure) => failure.ownership === 'uncertain')) return 'uncertain';
+  return failures.some((failure) => failure.ownership === 'held') ? 'held' : 'released-with-residue';
+}
+
+async function acquireDirectoryCapability(
+  cwd: string,
+  platform: NodeJS.Platform,
+): Promise<{ canonicalRealpath: string; identity: LaunchSessionBinding['directoryIdentity']; lease: BindingLease; cleanup: CapabilityCloseEvidence[] }> {
+  const cleanup: CapabilityCloseEvidence[] = [];
+  let canonicalRealpath: string;
+  try {
+    canonicalRealpath = await realpath(cwd);
+  } catch (error) {
+    throw new LaunchContextResolutionError({ capability: cleanup }, error);
+  }
+  if (!DIRECTORY_CAPABILITY_PLATFORMS.has(platform)) {
+    return { canonicalRealpath, identity: { kind: 'unsupported', reason: 'platform' }, lease: { closed: false }, cleanup };
+  }
+  let handle: FileHandle;
+  try {
+    handle = await open(canonicalRealpath, 'r');
+  } catch (error) {
+    throw new LaunchContextResolutionError({ capability: cleanup }, error);
+  }
+  let statFailure: unknown;
+  try {
+    const stats = await handle.stat({ bigint: true });
+    if (!stats.isDirectory() || typeof stats.dev !== 'bigint' || typeof stats.ino !== 'bigint' || stats.dev <= 0n || stats.ino <= 0n) {
+      try {
+        await handle.close();
+        cleanup.push({ role: 'acquisition', phase: 'before-authorization', status: 'closed' });
+      } catch (closeError) {
+        cleanup.push({ role: 'acquisition', phase: 'before-authorization', status: 'failed', error: safeError(closeError) });
+        throw new LaunchContextResolutionError({ capability: cleanup }, closeError);
+      }
+      return { canonicalRealpath, identity: { kind: 'unsupported', reason: 'inadequate-identity' }, lease: { closed: false }, cleanup };
+    }
+    return { canonicalRealpath, identity: { kind: 'supported', dev: stats.dev, ino: stats.ino }, lease: { handle, closed: false }, cleanup };
+  } catch (error) {
+    if (error instanceof LaunchContextResolutionError) throw error;
+    statFailure = error;
+  }
+  try {
+    await handle.close();
+    cleanup.push({ role: 'acquisition', phase: 'before-authorization', status: 'closed' });
+  } catch (closeError) {
+    cleanup.push({ role: 'acquisition', phase: 'before-authorization', status: 'failed', error: safeError(closeError) });
+    throw new LaunchContextResolutionError({ capability: cleanup }, closeError);
+  }
+  const code = errorCode(statFailure);
+  if (code === 'ENOSYS' || code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'EINVAL') {
+    return { canonicalRealpath, identity: { kind: 'unsupported', reason: 'stat-feature' }, lease: { closed: false }, cleanup };
+  }
+  throw new LaunchContextResolutionError({ capability: cleanup }, statFailure);
+}
+
+export async function closeLaunchSessionBindingOnce(
+  binding: LaunchSessionBinding,
+  phase: CapabilityCloseEvidence['phase'] = 'post-finalization',
+): Promise<CapabilityCloseEvidence> {
+  const lease = bindingLeases.get(binding);
+  if (!lease || lease.closed) return lease?.closeEvidence ?? { role: 'original-retained', phase, status: 'not-needed' };
+  lease.closed = true;
+  try {
+    await lease.handle?.close();
+    return lease.closeEvidence = { role: 'original-retained', phase, status: 'closed' };
+  } catch (error) {
+    return lease.closeEvidence = { role: 'original-retained', phase, status: 'failed', error: safeError(error) };
+  }
+}
+
+export async function establishLaunchSessionBinding(
+  cwd: string,
+  requestedSessionId: string,
+  options: SessionStartOptions = {},
+): Promise<LaunchEstablishment> {
+  const platform = options.platform ?? process.platform;
+  let context: SessionPointerContext;
+  try {
+    context = options.context ?? resolveSessionPointerContext(cwd);
+    await transactionDependencies.fs.mkdir(context.baseStateDir, { recursive: true });
+  } catch (error) {
+    throw new LaunchContextResolutionError({ capability: [] }, error);
+  }
+  const acquired = await acquireDirectoryCapability(context.baseStateDir, platform);
+  const cleanup = (): EstablishmentCleanupEvidence => ({ capability: acquired.cleanup });
+  try {
+    const state = await writeSessionStartTransition(context.cwd, requestedSessionId, { ...options, context }, true, true);
+    const token = state.launch_lineage_token;
+    if (!isValidToken(token)) {
+      const close = await closeLease(acquired.lease, 'before-authorization');
+      if (close) acquired.cleanup.push(close);
+      throw new LaunchContextResolutionError(cleanup(), new Error('Committed session pointer lacks a valid lineage token.'));
+    }
+    const binding: LaunchSessionBinding = Object.freeze({
+      context: Object.freeze({ ...context }), canonicalRealpath: acquired.canonicalRealpath,
+      directoryIdentity: acquired.identity, canonicalSessionId: state.session_id,
+      ...(state.owner_omx_session_id ? { ownerOmxSessionId: state.owner_omx_session_id } : {}),
+      ...(state.native_session_id ? { nativeSessionId: state.native_session_id } : {}),
+      startedAt: state.started_at, launchLineageToken: token,
+    });
+    bindingLeases.set(binding, acquired.lease);
+    return { kind: 'committed-released', binding, cleanup: cleanup() };
+  } catch (error) {
+    if (error instanceof CommittedLaunchBlockedError) {
+      const state = (error as CommittedLaunchBlockedError & { value?: SessionState }).value;
+      const errorContext = (error as CommittedLaunchBlockedError & { context?: SessionPointerContext }).context ?? context;
+      const close = await closeLease(acquired.lease, 'before-authorization');
+      if (close) acquired.cleanup.push(close);
+      return {
+        kind: 'committed-release-failed', evidence: { context: errorContext, canonicalSessionId: state?.session_id ?? requestedSessionId },
+        error, lockDisposition: lockDisposition(error.secondaryFailures), secondaryFailures: error.secondaryFailures, cleanup: cleanup(),
+      };
+    }
+    const close = await closeLease(acquired.lease, 'before-authorization');
+    if (close) acquired.cleanup.push(close);
+    if (isSessionPointerLaunchAbort(error)) return { kind: 'precommit-aborted', abort: error, cleanup: cleanup() };
+    throw error;
+  }
+}
+
+async function closeLease(lease: BindingLease, phase: CapabilityCloseEvidence['phase']): Promise<CapabilityCloseEvidence | undefined> {
+  if (lease.closed) return undefined;
+  lease.closed = true;
+  try {
+    await lease.handle?.close();
+    return { role: 'acquisition', phase, status: 'closed' };
+  } catch (error) {
+    return { role: 'acquisition', phase, status: 'failed', error: safeError(error) };
+  }
+}
+
+export async function updateDetachedSessionMetadata(
+  binding: LaunchSessionBinding,
+  patch: { tmuxSessionName?: string; tmuxPaneId?: string },
+): Promise<DetachedMetadataUpdate> {
+  const capability: CapabilityCloseEvidence[] = [];
+  const cleanup: EstablishmentCleanupEvidence = { capability };
+  try {
+    let pointerBeforeTransaction: SessionPointerReadResult;
+    try {
+      pointerBeforeTransaction = await readSessionPointer(binding.context);
+    } catch (error) {
+      throw resolvedAbort(binding.context, {
+        code: 'session_pointer_io_failure', operation: 'pointer-read', candidateSessionId: binding.canonicalSessionId,
+        lockPath: binding.context.lockPath, reason: `Unable to read selected session pointer: ${errorMessage(error)}`, cause: error,
+      });
+    }
+    if (pointerBeforeTransaction.status !== 'usable'
+      || !isAuthorizedBoundPointer(binding, binding.context, binding.canonicalSessionId, pointerBeforeTransaction.state)) {
+      throw unusablePointerAbort(binding.context, binding.canonicalSessionId, pointerBeforeTransaction);
+    }
+    if (binding.directoryIdentity.kind !== 'supported') {
+      throw unusablePointerAbort(binding.context, binding.canonicalSessionId, pointerBeforeTransaction);
+    }
+    const authorization = await authorizeBoundDirectoryBeforeTransaction(
+      binding,
+      pointerBeforeTransaction,
+      binding.context.cwd,
+    );
+    capability.push(...authorization.capability);
+
+    const result = await writePointerTransaction(
+      binding.context.cwd,
+      binding.canonicalSessionId,
+      { context: binding.context },
+      DEFAULT_POINTER_TIMEOUT_MS,
+      async (pointer, context) => {
+        const state = pointer.status === 'usable' ? pointer.state : undefined;
+        if (!state || !isAuthorizedBoundPointer(binding, context, binding.canonicalSessionId, state)) {
+          throw unusablePointerAbort(context, binding.canonicalSessionId, pointer);
+        }
+        await consumeBoundDirectoryAuthorizationUnderLock(binding, authorization, pointer);
+        return {
+          ...state,
+          ...(patch.tmuxSessionName !== undefined ? { tmux_session_name: patch.tmuxSessionName } : {}),
+          ...(patch.tmuxPaneId !== undefined ? { tmux_pane_id: patch.tmuxPaneId } : {}),
+        };
+      },
+      (state) => state,
+    );
+    return { kind: 'committed-released', evidence: { context: result.context, canonicalSessionId: binding.canonicalSessionId }, cleanup };
+  } catch (error) {
+    if (error instanceof CommittedLaunchBlockedError) {
+      const context = (error as CommittedLaunchBlockedError & { context?: SessionPointerContext }).context ?? binding.context;
+      return { kind: 'committed-release-failed', evidence: { context, canonicalSessionId: binding.canonicalSessionId }, error,
+        lockDisposition: lockDisposition(error.secondaryFailures), secondaryFailures: error.secondaryFailures, cleanup };
+    }
+    if (isSessionPointerLaunchAbort(error)) return { kind: 'precommit-aborted', abort: error, cleanup };
+    throw error;
+  }
+}
+
+function isAuthorizedBoundPointer(
+  binding: LaunchSessionBinding,
+  context: SessionPointerContext,
+  candidateSessionId: string,
+  state: SessionState | undefined,
+): boolean {
+  const lease = bindingLeases.get(binding);
+  if (!lease || (binding.directoryIdentity.kind === 'supported' && lease.closed) || !state) return false;
+  if (!isValidToken(binding.launchLineageToken) || !isValidToken(state.launch_lineage_token)) return false;
+  if (candidateSessionId !== binding.canonicalSessionId) return false;
+  if (state.launch_lineage_token !== binding.launchLineageToken) return false;
+  if (state.started_at !== binding.startedAt) return false;
+  const directCanonicalIdentity = state.session_id === binding.canonicalSessionId
+    && ((state.owner_omx_session_id ?? undefined) === binding.ownerOmxSessionId
+      || (binding.ownerOmxSessionId === undefined && state.owner_omx_session_id === binding.canonicalSessionId))
+    && (binding.nativeSessionId === undefined || state.native_session_id === binding.nativeSessionId);
+  const replacedNativeIdentity = state.owner_omx_session_id === binding.canonicalSessionId
+    && normalizeSessionId(state.session_id) !== undefined
+    && state.native_session_id === state.session_id;
+  if (!directCanonicalIdentity && !replacedNativeIdentity) return false;
+  try {
+    return context.rootSource === binding.context.rootSource
+      && context.baseStateDir === binding.context.baseStateDir
+      && context.sessionPath === binding.context.sessionPath
+      && sameFilePath(context.cwd, binding.context.cwd)
+      && sameFilePath(state.cwd, binding.context.cwd);
+  } catch {
+    return false;
+  }
+}
+
+function isAuthorizedBoundStaleDeadPointer(
+  binding: LaunchSessionBinding,
+  context: SessionPointerContext,
+  candidateSessionId: string,
+  state: SessionState | undefined,
+): boolean {
+  return isAuthorizedBoundPointer(binding, context, candidateSessionId, state)
+    && Boolean(normalizeSessionId(state?.native_session_id));
+}
+
+interface BoundDirectoryAuthorization {
+  readonly comparison: LifecycleCleanupEvidence['comparison'];
+  readonly capability: CapabilityCloseEvidence[];
+  readonly pointerStatus: SessionPointerStatus;
+  readonly pointerRaw?: string;
+}
+
+class BoundDirectoryComparisonDenied extends Error {
+  constructor(readonly comparison: NonNullable<LifecycleCleanupEvidence['comparison']>, readonly capability: CapabilityCloseEvidence[]) {
+    super(comparison.reason);
+  }
+}
+
+async function authorizeBoundDirectoryBeforeTransaction(
+  binding: LaunchSessionBinding,
+  pointer: SessionPointerReadResult,
+  postLaunchCwd: string,
+): Promise<BoundDirectoryAuthorization> {
+  const capability: CapabilityCloseEvidence[] = [];
+  const lease = bindingLeases.get(binding);
+  if (!lease || lease.closed) {
+    throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'binding-lease-closed' }, capability);
+  }
+  try {
+    if (!sameFilePath(binding.context.cwd, postLaunchCwd)
+      || !pointer.state?.cwd
+      || !sameFilePath(binding.context.cwd, pointer.state.cwd)) {
+      throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'cwd-identity-mismatch' }, capability);
+    }
+    if (binding.directoryIdentity.kind !== 'supported') {
+      if (pointer.status === 'stale-dead') {
+        throw new BoundDirectoryComparisonDenied(
+          { status: 'denied', reason: `unsupported-directory-capability:${binding.directoryIdentity.reason}` },
+          capability,
+        );
+      }
+      return { comparison: { status: 'matched', reason: 'unsupported-ordinary-pointer' }, capability, pointerStatus: pointer.status, pointerRaw: pointer.raw };
+    }
+    const retained = await lease.handle?.stat({ bigint: true });
+    if (!retained || !retained.isDirectory() || retained.dev !== binding.directoryIdentity.dev || retained.ino !== binding.directoryIdentity.ino) {
+      throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'retained-directory-identity-mismatch' }, capability);
+    }
+    const canonical = await realpath(binding.context.baseStateDir);
+    const handle = await open(canonical, 'r');
+    let matched = false;
+    try {
+      const stats = await handle.stat({ bigint: true });
+      matched = canonical === binding.canonicalRealpath
+        && stats.isDirectory()
+        && stats.dev === binding.directoryIdentity.dev
+        && stats.ino === binding.directoryIdentity.ino;
+    } finally {
+      try {
+        await handle.close();
+        capability.push({ role: 'fresh-comparison', phase: 'before-authorization', status: 'closed' });
+      } catch (error) {
+        capability.push({ role: 'fresh-comparison', phase: 'before-authorization', status: 'failed', error: safeError(error) });
+        throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'fresh-comparison-close-failed' }, capability);
+      }
+    }
+    if (!matched) throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'directory-identity-mismatch' }, capability);
+    return { comparison: { status: 'matched' }, capability, pointerStatus: pointer.status, pointerRaw: pointer.raw };
+  } catch (error) {
+    if (error instanceof BoundDirectoryComparisonDenied) throw error;
+    throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: errorMessage(error) }, capability);
+  }
+}
+
+async function consumeBoundDirectoryAuthorizationUnderLock(
+  binding: LaunchSessionBinding,
+  authorization: BoundDirectoryAuthorization,
+  pointer: SessionPointerReadResult,
+): Promise<{ comparison: LifecycleCleanupEvidence['comparison']; capability: CapabilityCloseEvidence[] }> {
+  if (authorization.comparison?.status !== 'matched' || binding.directoryIdentity.kind !== 'supported') return authorization;
+  const lease = bindingLeases.get(binding);
+  try {
+    const retained = await lease?.handle?.stat({ bigint: true });
+    if (!retained || !retained.isDirectory() || retained.dev !== binding.directoryIdentity.dev || retained.ino !== binding.directoryIdentity.ino) {
+      throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'retained-directory-identity-mismatch' }, authorization.capability);
+    }
+    if (!pointer.state?.cwd || !sameFilePath(binding.context.cwd, pointer.state.cwd)) {
+      throw new BoundDirectoryComparisonDenied(
+        { status: 'denied', reason: 'cwd-identity-mismatch-under-lock' },
+        authorization.capability,
+      );
+    }
+    const canonical = await realpath(binding.context.baseStateDir);
+    const handle = await open(canonical, 'r');
+    let matched = false;
+    try {
+      const stats = await handle.stat({ bigint: true });
+      matched = canonical === binding.canonicalRealpath
+        && stats.isDirectory()
+        && stats.dev === binding.directoryIdentity.dev
+        && stats.ino === binding.directoryIdentity.ino;
+    } finally {
+      try {
+        await handle.close();
+        authorization.capability.push({ role: 'fresh-comparison', phase: 'before-authorization', status: 'closed' });
+      } catch (error) {
+        authorization.capability.push({ role: 'fresh-comparison', phase: 'before-authorization', status: 'failed', error: safeError(error) });
+        throw new BoundDirectoryComparisonDenied(
+          { status: 'denied', reason: 'fresh-comparison-close-failed-under-lock' },
+          authorization.capability,
+        );
+      }
+    }
+    if (!matched) throw new BoundDirectoryComparisonDenied(
+      { status: 'denied', reason: 'directory-identity-mismatch-under-lock' },
+      authorization.capability,
+    );
+    if (pointer.status !== authorization.pointerStatus || pointer.raw !== authorization.pointerRaw) {
+      throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: 'pointer-changed-before-consume' }, authorization.capability);
+    }
+    return authorization;
+  } catch (error) {
+    if (error instanceof BoundDirectoryComparisonDenied) throw error;
+    throw new BoundDirectoryComparisonDenied({ status: 'denied', reason: errorMessage(error) }, authorization.capability);
+  }
+}
+
+export function finalizeBoundOnce(
+  binding: LaunchSessionBinding,
+  _reason: string,
+  postLaunchCwd = binding.context.cwd,
+): Promise<BoundFinalizationReport> {
+  const existing = bindingFinalizations.get(binding);
+  if (existing) return existing;
+  const finalization = (async (): Promise<BoundFinalizationReport> => {
+    try {
+      const revalidation = await writeSessionEnd(binding.context.cwd, binding.canonicalSessionId, {
+        context: binding.context, binding, postLaunchCwd,
+      });
+      return { finalized: true, cleanup: { capability: revalidation.capability, comparison: revalidation.comparison } };
+    } catch (error) {
+      if (error instanceof BoundDirectoryComparisonDenied) {
+        return { finalized: false, cleanup: { capability: error.capability, comparison: error.comparison } };
+      }
+      if (isSessionPointerLaunchAbort(error)) {
+        return { finalized: false, cleanup: { capability: [], comparison: { status: 'denied', reason: error.code } } };
+      }
+      throw error;
+    }
+  })();
+  bindingFinalizations.set(binding, finalization);
+  return finalization;
 }
 
 interface NativeReconcileTransition {
@@ -1443,16 +1972,23 @@ function reconcileNativeTransition(
 
     const existingNativeSessionId = normalizeSessionId(existing.native_session_id);
     if (existingNativeSessionId && existingNativeSessionId !== nativeSessionId) {
-      const ownerOmxSessionId = getOmxLaunchSessionId(existing);
+      const ownerOmxSessionId = normalizeSessionId(existing.owner_omx_session_id)
+        ?? (isValidToken(existing.launch_lineage_token) ? existing.session_id : undefined);
       return {
-        state: createSessionState(context.cwd, nativeSessionId, pid, platform, linuxIdentity, {
+        state: preserveExistingLaunchLineageToken(existing, createSessionState(context.cwd, nativeSessionId, pid, platform, linuxIdentity, {
           nativeSessionId,
+          startedAt: existing.started_at,
           ...(ownerOmxSessionId ? {
             previousNativeSessionId: existingNativeSessionId,
             nativeSessionSwitchedAt: nowIso,
             ownerOmxSessionId,
           } : {}),
-        }),
+          tmuxSessionName: existing.tmux_session_name,
+          tmuxPaneId: existing.tmux_pane_id,
+          launchLineageToken: isValidToken(existing.launch_lineage_token)
+            ? existing.launch_lineage_token
+            : undefined,
+        })),
         ...(ownerOmxSessionId ? {
           replacementLog: {
             event: 'native_session_replaced',
@@ -1480,7 +2016,7 @@ function reconcileNativeTransition(
     }
 
     return {
-      state: createSessionState(context.cwd, existing.session_id, pid, platform, linuxIdentity, {
+      state: preserveExistingLaunchLineageToken(existing, createSessionState(context.cwd, existing.session_id, pid, platform, linuxIdentity, {
         nowIso,
         nativeSessionId,
         previousNativeSessionId: existing.previous_native_session_id,
@@ -1489,7 +2025,10 @@ function reconcileNativeTransition(
         startedAt: existing.started_at,
         tmuxSessionName: existing.tmux_session_name,
         tmuxPaneId: existing.tmux_pane_id,
-      }),
+        launchLineageToken: isValidToken(existing.launch_lineage_token)
+          ? existing.launch_lineage_token
+          : undefined,
+      })),
     };
   };
 }
@@ -1559,8 +2098,11 @@ async function removeDeadSessionHudState(
 export async function writeSessionEnd(
   cwd: string,
   sessionId: string,
-  options: Pick<SessionStartOptions, 'context' | 'platform' | 'regularFileSync'> = {},
-): Promise<void> {
+  options: Pick<SessionStartOptions, 'context' | 'platform' | 'regularFileSync'> & {
+    binding?: LaunchSessionBinding;
+    postLaunchCwd?: string;
+  } = {},
+): Promise<{ comparison: LifecycleCleanupEvidence['comparison']; capability: CapabilityCloseEvidence[] }> {
   const candidateSessionId = normalizeSessionId(sessionId);
   let context: SessionPointerContext;
   try {
@@ -1579,16 +2121,10 @@ export async function writeSessionEnd(
     });
   }
 
-  try {
-    await transactionDependencies.fs.mkdir(context.baseStateDir, { recursive: true });
-  } catch (error) {
+  if (!options.binding) {
     throw resolvedAbort(context, {
-      code: 'session_pointer_io_failure',
-      operation: 'state-dir-create',
-      candidateSessionId,
-      lockPath: context.lockPath,
-      reason: `Unable to create selected session state directory: ${errorMessage(error)}`,
-      cause: error,
+      code: 'session_pointer_io_failure', operation: 'pointer-classify', candidateSessionId,
+      lockPath: context.lockPath, reason: 'A live launch binding is required to end a session pointer.',
     });
   }
 
@@ -1603,6 +2139,9 @@ export async function writeSessionEnd(
     options.regularFileSync,
   );
   let primary: unknown;
+  let revalidation: { comparison: LifecycleCleanupEvidence['comparison']; capability: CapabilityCloseEvidence[] } = {
+    comparison: { status: 'not-run' }, capability: [],
+  };
   try {
     let pointer: SessionPointerReadResult;
     try {
@@ -1617,15 +2156,22 @@ export async function writeSessionEnd(
         cause: error,
       });
     }
-    if (pointer.status !== 'absent' && pointer.status !== 'usable') {
+    const authorizedBoundUsable = pointer.status === 'usable'
+      && isAuthorizedBoundPointer(options.binding, context, candidateSessionId, pointer.state);
+    const authorizedBoundStaleDead = pointer.status === 'stale-dead'
+      && isAuthorizedBoundStaleDeadPointer(options.binding, context, candidateSessionId, pointer.state);
+    if (!authorizedBoundUsable && !authorizedBoundStaleDead) {
       throw unusablePointerAbort(context, candidateSessionId, pointer);
     }
+    const authorization = await authorizeBoundDirectoryBeforeTransaction(
+      options.binding,
+      pointer,
+      options.postLaunchCwd ?? options.binding.context.cwd,
+    );
+    revalidation = await consumeBoundDirectoryAuthorizationUnderLock(options.binding, authorization, pointer);
 
-    const state = pointer.state;
-    const ownsCurrentSessionFile = state == null
-      || state.session_id === candidateSessionId
-      || state.native_session_id === candidateSessionId
-      || state.owner_omx_session_id === candidateSessionId;
+    const state = pointer.state!;
+    const ownsCurrentSessionFile = true;
     const endTime = new Date().toISOString();
     const historyEntry = {
       session_id: ownsCurrentSessionFile
@@ -1676,6 +2222,7 @@ export async function writeSessionEnd(
   }
   if (releaseFailures.length > 0) throw releaseFailureError(releaseFailures);
   emitDegradedDurabilityWarning('session pointer end', tracker);
+  return revalidation;
 }
 
 /** Reset session-scoped HUD/metrics files at launch. */

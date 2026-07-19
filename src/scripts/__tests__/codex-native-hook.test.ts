@@ -33,7 +33,13 @@ import {
 	mapCodexHookEventToOmxEvent,
 	resolveSessionOwnerPidFromAncestry,
 } from "../codex-native-hook.js";
-import { writeSessionStart } from "../../hooks/session.js";
+import {
+	closeLaunchSessionBindingOnce,
+	establishLaunchSessionBinding,
+	finalizeBoundOnce,
+	updateDetachedSessionMetadata,
+	writeSessionStart,
+} from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../../hud/constants.js";
@@ -3874,10 +3880,63 @@ PY`,
       assert.match(additionalContext, /not available from this outside-tmux surface/);
       const sessionState = JSON.parse(
         await readFile(join(cwd, ".omx", "state", "session.json"), "utf-8"),
-      ) as { session_id?: string; native_session_id?: string; pid?: number };
+      ) as { session_id?: string; native_session_id?: string; pid?: number; launch_lineage_token?: string };
       assert.equal(sessionState.session_id, "sess-start-1");
       assert.equal(sessionState.native_session_id, "sess-start-1");
       assert.equal(sessionState.pid, 43210);
+      assert.equal(sessionState.launch_lineage_token, undefined, 'native SessionStart must never mint or backfill wrapper lineage authority');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves wrapper lineage and detached metadata through shipped native SessionStart reconciliation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-start-wrapper-lineage-"));
+    try {
+      const established = await establishLaunchSessionBinding(cwd, "omx-launch-lineage");
+      assert.equal(established.kind, "committed-released");
+      if (established.kind !== "committed-released") return;
+
+      const metadata = await updateDetachedSessionMetadata(established.binding, {
+        tmuxSessionName: "omx-detached-lineage",
+        tmuxPaneId: "%3202",
+      });
+      assert.equal(metadata.kind, "committed-released");
+
+      const pointerPath = join(cwd, ".omx", "state", "session.json");
+      const ownedPointer = JSON.parse(await readFile(pointerPath, "utf-8")) as Record<string, unknown>;
+      await writeFile(pointerPath, JSON.stringify({ ...ownedPointer, owner_omx_session_id: "omx-launch-lineage" }), "utf-8");
+
+      await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: "codex-native-lineage" },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const sessionState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "session.json"), "utf-8"),
+      ) as {
+        session_id?: string;
+        native_session_id?: string;
+        owner_omx_session_id?: string;
+        started_at?: string;
+        launch_lineage_token?: string;
+        tmux_session_name?: string;
+        tmux_pane_id?: string;
+      };
+      assert.equal(sessionState.session_id, "omx-launch-lineage");
+      assert.equal(sessionState.native_session_id, "codex-native-lineage");
+      assert.equal(sessionState.owner_omx_session_id, "omx-launch-lineage");
+      assert.equal(typeof sessionState.started_at, "string");
+      assert.equal(sessionState.launch_lineage_token, established.binding.launchLineageToken);
+      assert.equal(sessionState.tmux_session_name, "omx-detached-lineage");
+      assert.equal(sessionState.tmux_pane_id, "%3202");
+
+      const firstFinalization = finalizeBoundOnce(established.binding, "test");
+      const secondFinalization = finalizeBoundOnce(established.binding, "duplicate");
+      assert.equal(firstFinalization, secondFinalization);
+      assert.equal((await firstFinalization).finalized, true);
+      assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, "closed");
+      assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, "closed");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

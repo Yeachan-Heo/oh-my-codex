@@ -8,7 +8,13 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HUD_TMUX_HEIGHT_LINES } from '../../hud/constants.js';
 import { DETACHED_TMUX_HISTORY_LIMIT } from '../index.js';
-import { writeSessionEnd, writeSessionStart } from '../../hooks/session.js';
+import {
+  closeLaunchSessionBindingOnce,
+  establishLaunchSessionBinding,
+  finalizeBoundOnce,
+  writeSessionStart,
+  type LaunchSessionBinding,
+} from '../../hooks/session.js';
 
 const CLI_SPAWN_TIMEOUT_MS = 60_000;
 
@@ -28,6 +34,7 @@ function buildRunOmxEnv(envOverrides: Record<string, string>): NodeJS.ProcessEnv
   }
   return {
     ...env,
+    OMX_TEST_DETACHED_READY_BYPASS: '1',
     ...envOverrides,
   };
 }
@@ -455,10 +462,14 @@ exec "$NODE_BINARY" -e 'const fs = require("node:fs"); const path = require("nod
 describe('ordinary launch root collision guidance', () => {
   it('keeps the cwd default for the first launch and fails the second and third launches closed with explicit-root guidance', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-root-conflict-'));
+    let binding: LaunchSessionBinding | undefined;
     try {
       execFileSync('git', ['init'], { cwd: wd, stdio: 'ignore' });
       const fixture = await createHeldCodexFixture(wd);
-      await writeSessionStart(wd, 'first-standard-launch', { pid: process.pid });
+      const established = await establishLaunchSessionBinding(wd, 'first-standard-launch', { pid: process.pid });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
 
       const second = runOmx(wd, ['--direct', '--version'], fixture.env);
       const third = runOmx(wd, ['--direct', '--version'], fixture.env);
@@ -478,8 +489,9 @@ describe('ordinary launch root collision guidance', () => {
         assert.match(resume.stderr, /session_pointer_owner_conflict/);
         assert.doesNotMatch(resume.stderr, /concurrent conversations in this checkout require distinct user-specified OMX_ROOT values/);
       }
-      await writeSessionEnd(wd, 'first-standard-launch');
+      await finalizeBoundOnce(binding, 'test');
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -521,8 +533,10 @@ describe('ordinary launch root collision guidance', () => {
     }
   });
 
-  it('keeps different checkout defaults independent and relaunches through stale default-pointer evidence', async () => {
+  it('keeps different checkout defaults independent and fails closed on stale default-pointer evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-root-stale-'));
+    let firstBinding: LaunchSessionBinding | undefined;
+    let secondBinding: LaunchSessionBinding | undefined;
     try {
       const firstCheckout = join(wd, 'first-checkout');
       const secondCheckout = join(wd, 'second-checkout');
@@ -531,21 +545,29 @@ describe('ordinary launch root collision guidance', () => {
       execFileSync('git', ['init'], { cwd: firstCheckout, stdio: 'ignore' });
       execFileSync('git', ['init'], { cwd: secondCheckout, stdio: 'ignore' });
 
-      await writeSessionStart(firstCheckout, 'first-checkout-owner', { pid: process.pid });
-      await writeSessionStart(secondCheckout, 'second-checkout-owner', { pid: process.pid });
+      const firstEstablished = await establishLaunchSessionBinding(firstCheckout, 'first-checkout-owner', { pid: process.pid });
+      const secondEstablished = await establishLaunchSessionBinding(secondCheckout, 'second-checkout-owner', { pid: process.pid });
+      assert.equal(firstEstablished.kind, 'committed-released');
+      assert.equal(secondEstablished.kind, 'committed-released');
+      if (firstEstablished.kind !== 'committed-released' || secondEstablished.kind !== 'committed-released') return;
+      firstBinding = firstEstablished.binding;
+      secondBinding = secondEstablished.binding;
       assert.match(await readFile(join(firstCheckout, '.omx', 'state', 'session.json'), 'utf-8'), /first-checkout-owner/);
       assert.match(await readFile(join(secondCheckout, '.omx', 'state', 'session.json'), 'utf-8'), /second-checkout-owner/);
-      await writeSessionEnd(firstCheckout, 'first-checkout-owner');
-      await writeSessionEnd(secondCheckout, 'second-checkout-owner');
+      await finalizeBoundOnce(firstBinding, 'test');
+      await finalizeBoundOnce(secondBinding, 'test');
 
       await writeSessionStart(firstCheckout, 'stale-owner', { pid: 2_147_483_647 });
       const fixture = await createHeldCodexFixture(wd);
       await rm(fixture.releasePath, { force: true });
       const relaunch = runOmx(firstCheckout, ['--direct', '--version'], fixture.env);
       if (shouldSkipForSpawnPermissions(relaunch.error)) return;
-      assert.equal(relaunch.status, 0, relaunch.error || relaunch.stderr || relaunch.stdout);
-      assert.doesNotMatch(relaunch.stderr, /concurrent conversations in this checkout require distinct user-specified OMX_ROOT values/);
+      assert.notEqual(relaunch.status, 0, relaunch.error || relaunch.stderr || relaunch.stdout);
+      assert.match(relaunch.stderr, /session_pointer_unusable|stale-dead/);
+      assert.match(await readFile(join(firstCheckout, '.omx', 'state', 'session.json'), 'utf-8'), /stale-owner/);
     } finally {
+      if (firstBinding) await closeLaunchSessionBindingOnce(firstBinding).catch(() => {});
+      if (secondBinding) await closeLaunchSessionBindingOnce(secondBinding).catch(() => {});
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -769,7 +791,7 @@ exit 0
 });
 
 describe('omx launcher when tmux is available', () => {
-  it('reuses the same boxed madmax detached launch context instead of spawning duplicate tmux sessions', async () => {
+  it('does not let the outer launcher fabricate leader-owned active records', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-reuse-'));
     try {
       const runs = join(wd, 'runs');
@@ -851,28 +873,17 @@ exit 0
       const second = runOmx(wd, ['--madmax', '--tmux'], baseEnv);
       if (shouldSkipForSpawnPermissions(second.error)) return;
       assert.equal(second.status, 0, second.error || second.stderr || second.stdout);
-      assert.match(
-        second.stderr,
-        /madmax detached launch already active for this context; attaching .* instead of starting a duplicate/,
-      );
+      assert.doesNotMatch(second.stderr, /madmax detached launch already active/);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 1);
-      assert.equal((tmuxLog.match(/tmux:has-session/g) || []).length, 1);
-      assert.equal((tmuxLog.match(/tmux:attach-session/g) || []).length, 2);
-      const activeRecords = await readFile(
-        join(runs, 'active-detached', 'boxed-context-under-test.json'),
-        'utf-8',
-      );
-      assert.match(activeRecords, /"tmux_session_name"/);
-      assert.match(activeRecords, /"session_id"/);
-      assert.match(activeRecords, /"tmux_pane_id": "%12"/);
+      assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
+      assert.equal(existsSync(join(runs, 'active-detached', 'boxed-context-under-test.json')), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('records boxed runtime identity for detached madmax worktree launches', async () => {
+  it('keeps boxed runtime identity in leader launch environment without outer active records', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-worktree-detached-'));
     try {
       const repo = await createGitRepo(wd);
@@ -941,21 +952,11 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
 
-      const activeFiles = await readdir(join(runs, 'active-detached'));
-      assert.equal(activeFiles.length, 1);
-      const activeRecord = JSON.parse(await readFile(join(runs, 'active-detached', activeFiles[0]), 'utf-8'));
-      const worktreePath = join(dirname(repo), `${basename(repo)}.omx-worktrees`, 'launch-detached');
-      assert.match(activeRecord.run_dir, new RegExp(`^${escapeRegExp(normalizeDarwinTmpPath(runs))}/run-`));
-      assert.equal(normalizeDarwinTmpPath(activeRecord.source_cwd), normalizeDarwinTmpPath(repo));
-      assert.equal(normalizeDarwinTmpPath(activeRecord.worktree_cwd), normalizeDarwinTmpPath(worktreePath));
-      assert.equal(activeRecord.session_id.startsWith('omx-'), true);
-      assert.equal(activeRecord.tmux_pane_id, '%77');
-
+      assert.deepEqual(await readdir(join(runs, 'active-detached')), []);
       const tmuxLog = normalizeDarwinTmpPath(await readFile(tmuxLogPath, 'utf-8'));
-      assert.match(tmuxLog, new RegExp(`-e OMX_ROOT=${escapeRegExp(normalizeDarwinTmpPath(activeRecord.run_dir))}`));
+      assert.match(tmuxLog, /__detached-session-leader/);
       assert.match(tmuxLog, /-e OMXBOX_ACTIVE=1/);
       assert.match(tmuxLog, new RegExp(`-e OMX_SOURCE_CWD=${escapeRegExp(normalizeDarwinTmpPath(repo))}`));
-      assert.match(tmuxLog, new RegExp(`-e OMX_MADMAX_DETACHED_CONTEXT=${escapeRegExp(activeRecord.context_key)}`));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1094,14 +1095,7 @@ exit 0
         registryEntries[1]!.detached_launch_context,
         'independent launches must get distinct active-detached lock identities',
       );
-      assert.equal(
-        existsSync(join(runs, 'active-detached', `${registryEntries[0]!.detached_launch_context}.json`)),
-        true,
-      );
-      assert.equal(
-        existsSync(join(runs, 'active-detached', `${registryEntries[1]!.detached_launch_context}.json`)),
-        true,
-      );
+      assert.deepEqual(await readdir(join(runs, 'active-detached')), []);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
@@ -1295,8 +1289,7 @@ case "$1" in
       TERMINFO=/tmp/server-terminfo \
       TERMINFO_DIRS=/tmp/server-terminfo-dirs \
       TERMCAP=server-termcap \
-      sh -c "$last" >/dev/null 2>&1 || true
-    printf 'leader-pane\\n'
+    printf '%%12\n'
     exit 0
     ;;
   split-window)
@@ -1351,28 +1344,9 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.equal(
-        await readFile(envLogPath, 'utf-8'),
-        [
-          'custom=fake-provider-key',
-          'marker=1',
-          'term=tmux-256color',
-          'term_program=tmux',
-          'term_program_version=3.4',
-          'colorterm=truecolor',
-          'tmux=/tmp/tmux-test.sock,123,0',
-          'tmux_pane=%12',
-          'columns=211',
-          'lines=77',
-          'terminfo=/tmp/outer-terminfo',
-          'terminfo_dirs=/tmp/outer-terminfo-dirs',
-          'termcap=outer-termcap',
-          '',
-        ].join('\n'),
-      );
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.doesNotMatch(tmuxLog, /fake-provider-key/);
-      assert.doesNotMatch(tmuxLog, /CUSTOM_LLM_API_KEY=/);
+      assert.match(tmuxLog, /__detached-session-leader/);
+      assert.doesNotMatch(tmuxLog, /fake-provider-key|CUSTOM_LLM_API_KEY=/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1538,7 +1512,8 @@ exit 0
     }
   });
 
-  it('treats a missing tmux server socket as safe for detached tmux startup', async () => {
+  it('does not probe an existing tmux server before detached tmux startup', async () => {
+
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-missing-socket-'));
     try {
       const home = join(wd, 'home');
@@ -1566,12 +1541,9 @@ case "$1" in
     printf 'tmux 3.6a\n'
     exit 0
     ;;
-  list-sessions)
-    printf 'error connecting to /private/tmp/tmux-501/default (No such file or directory)\n' >&2
-    exit 1
-    ;;
+
   new-session)
-    printf 'leader-pane\n'
+    printf '%%12\n'
     exit 0
     ;;
   split-window)
@@ -1617,7 +1589,8 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.match(tmuxLog, /tmux:list-sessions/);
+      assert.doesNotMatch(tmuxLog, /tmux:list-sessions/);
+
       assert.match(tmuxLog, /tmux:new-session .* -s /);
       assert.doesNotMatch(result.stderr, /server\/socket is unusable/);
     } finally {
@@ -1625,7 +1598,8 @@ exit 0
     }
   });
 
-  it('falls back directly when tmux is installed but the server socket is unusable', async () => {
+  it('does not fall back directly when a later detached tmux operation fails', async () => {
+
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-stale-socket-'));
     try {
       const home = join(wd, 'home');
@@ -1634,6 +1608,8 @@ exit 0
       const fakePsPath = join(fakeBin, 'ps');
       const fakeTmuxPath = join(fakeBin, 'tmux');
       const tmuxLogPath = join(wd, 'tmux.log');
+      const runsPath = join(wd, 'runs');
+
 
       await mkdir(home, { recursive: true });
       await mkdir(fakeBin, { recursive: true });
@@ -1650,13 +1626,16 @@ exit 0
 printf 'tmux:%s\n' "$*" >> "${tmuxLogPath}"
 case "$1" in
   -V)
+    printf 'tmux:d0-runs:%s\n' "$(test -e "${runsPath}" && printf present || printf missing)" >> "${tmuxLogPath}"
+
     printf 'tmux 3.6a\n'
     exit 0
     ;;
-  list-sessions)
-    printf 'error connecting to /tmp/tmux-1000/default (Operation not permitted)\n' >&2
+  new-session)
+    printf 'unsafe-tmux-handle-secret\n' >&2
     exit 1
     ;;
+
 esac
 printf 'unexpected tmux command: %s\n' "$*" >&2
 exit 1
@@ -1673,6 +1652,8 @@ exit 1
           OMX_AUTO_UPDATE: '0',
           OMX_NOTIFY_FALLBACK: '0',
           OMX_HOOK_DERIVED_SIGNALS: '0',
+          OMX_RUNS_DIR: runsPath,
+
           TMUX: '',
           TMUX_PANE: '',
         },
@@ -1681,16 +1662,20 @@ exit 1
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(result.stderr, /server\/socket is unusable/);
-      assert.doesNotMatch(tmuxLog, /new-session|attach-session/);
+      assert.equal(result.status, 1, result.error || result.stderr || result.stdout);
+      assert.match(result.stderr, /detached launch safety failure during inert-session/);
+      assert.doesNotMatch(result.stderr, /unsafe-tmux-handle-secret/);
+      assert.doesNotMatch(result.stdout, /fake-codex/);
+      assert.match(tmuxLog, /tmux:-V/);
+      assert.match(tmuxLog, /tmux:d0-runs:missing/);
+      assert.match(tmuxLog, /tmux:new-session/);
+      assert.doesNotMatch(tmuxLog, /tmux:list-sessions|attach-session/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('rolls back and falls back directly when attaching the detached tmux session fails', async () => {
+  it('preserves detached ownership when attaching the released tmux session fails', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-attach-fail-'));
     try {
       const home = join(wd, 'home');
@@ -1718,7 +1703,7 @@ case "$1" in
     exit 0
     ;;
   new-session)
-    printf 'leader-pane\n'
+    printf '%%12\n'
     exit 0
     ;;
   split-window)
@@ -1767,16 +1752,16 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
+      assert.equal(result.status, 1, result.error || result.stderr || result.stdout);
+      assert.match(result.stderr, /Command failed: .*tmux attach-session/);
       assert.match(tmuxLog, /tmux:attach-session -t /);
-      assert.match(tmuxLog, /tmux:kill-session -t /);
+      assert.doesNotMatch(tmuxLog, /tmux:kill-session -t /);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('rolls back with guidance when WSL Windows Terminal attach exits without attaching', async () => {
+  it('does not probe or fall back after a released WSL attach returns immediately', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-tmux-attach-noop-'));
     try {
       const { env, tmuxLogPath } = await createLaunchFixture(
@@ -1788,7 +1773,7 @@ case "$1" in
     exit 0
     ;;
   new-session)
-    printf 'leader-pane\n'
+    printf '%%12\n'
     exit 0
     ;;
   split-window)
@@ -1832,12 +1817,9 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.match(result.stdout, /fake-codex:.*--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(result.stderr, /attach-session returned immediately without attaching a client/i);
-      assert.match(result.stderr, /Falling back to direct Codex launch/i);
+      assert.doesNotMatch(result.stderr, /Falling back to direct Codex launch|attach-session returned immediately/);
       assert.match(tmuxLog, /tmux:attach-session -t /);
-      assert.match(tmuxLog, /tmux:display-message -p -t .* #\{session_attached\}/);
-      assert.match(tmuxLog, /tmux:kill-session -t /);
+      assert.doesNotMatch(tmuxLog, /tmux:display-message -p -t .* #\{session_attached\}|tmux:kill-session -t/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1882,11 +1864,7 @@ case "$cmd" in
     exit 0
     ;;
   new-session)
-    for last; do :; done
-    if [ -n "\${last:-}" ]; then
-      /bin/sh -c "$last"
-    fi
-    printf 'leader-pane\\n'
+    printf '%%12\n'
     exit 0
     ;;
   split-window)
@@ -1931,9 +1909,9 @@ exit 0
 
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
-      const codexLog = normalizeDarwinTmpPath(await readFile(codexLogPath, 'utf-8'));
-      assert.match(codexLog, /codex:.*--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(codexLog, new RegExp(`codex-pwd:${escapeRegExp(normalizeDarwinTmpPath(wd))}`));
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /\/bin\/sh/);
+      assert.match(tmuxLog, /__detached-session-leader/);
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1977,11 +1955,7 @@ case "$cmd" in
     exit 0
     ;;
   new-session)
-    for last; do :; done
-    if [ -n "\${last:-}" ]; then
-      /bin/sh -c "$last"
-    fi
-    printf 'leader-pane\\n'
+    printf '%%12\n'
     exit 0
     ;;
   split-window)
@@ -2027,15 +2001,14 @@ exit 0
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      const codexLog = normalizeDarwinTmpPath(await readFile(codexLogPath, 'utf-8'));
       assert.match(tmuxLog, /\/bin\/sh/);
       assert.doesNotMatch(tmuxLog, /not-a-real-shell/);
-      assert.match(codexLog, /codex:.*--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(codexLog, new RegExp(`codex-pwd:${escapeRegExp(normalizeDarwinTmpPath(wd))}`));
+      assert.match(tmuxLog, /__detached-session-leader/);
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
 
 });
