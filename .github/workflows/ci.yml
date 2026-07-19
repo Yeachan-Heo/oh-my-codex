@@ -576,7 +576,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build]
+    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, build]
     steps:
       - name: Check required job results
         shell: bash
@@ -595,6 +595,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           BUILD_DIST_RESULT: ${{ needs.build-dist.result }}
+          RALPLAN_PREFLIGHT_MACOS_RESULT: ${{ needs.ralplan-preflight-macos.result }}
           TEST_RESULT: ${{ needs.test.result }}
           COVERAGE_TEAM_CRITICAL_RESULT: ${{ needs.coverage-team-critical.result }}
           RALPH_PERSISTENCE_GATE_RESULT: ${{ needs.ralph-persistence-gate.result }}
@@ -647,6 +648,7 @@ jobs:
           echo "  lint: $LINT_RESULT"
           echo "  typecheck: $TYPECHECK_RESULT"
           echo "  build-dist: $BUILD_DIST_RESULT"
+          echo "  ralplan-preflight-macos: $RALPLAN_PREFLIGHT_MACOS_RESULT"
           echo "  test: $TEST_RESULT"
           echo "  coverage-team-critical: $COVERAGE_TEAM_CRITICAL_RESULT"
           echo "  ralph-persistence-gate: $RALPH_PERSISTENCE_GATE_RESULT"
@@ -672,6 +674,7 @@ jobs:
           check_job lint "$LINT_RESULT" "$ts_active"
           check_job typecheck "$TYPECHECK_RESULT" "$ts_active"
           check_job build-dist "$BUILD_DIST_RESULT" "$dist_active"
+          check_job ralplan-preflight-macos "$RALPLAN_PREFLIGHT_MACOS_RESULT" "$ts_active"
           check_job test "$TEST_RESULT" "$ts_active"
           check_job coverage-team-critical "$COVERAGE_TEAM_CRITICAL_RESULT" "$ts_active"
           check_job ralph-persistence-gate "$RALPH_PERSISTENCE_GATE_RESULT" "$ts_active"
