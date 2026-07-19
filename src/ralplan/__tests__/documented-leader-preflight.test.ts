@@ -106,11 +106,17 @@ describe('documented leader immutable neutralization generation', () => {
     await mintCommittedGeneration(f);
     assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
   }));
-  it('keeps substantive Ralplan state active despite a forged valid committed generation', async () => withFixture(async (f) => {
-    const ralplan = JSON.parse(await readFile(f.ralplanPath, 'utf8')); ralplan.execution = { active: true }; await writeFile(f.ralplanPath, JSON.stringify(ralplan));
-    await mintCommittedGeneration(f);
-    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
-  }));
+  for (const [field, value] of [
+    ['native_subagent_support', { supported: true }],
+    ['ralplan_consensus_gate', { complete: false }],
+    ['review_history', [{ verdict: 'approve' }]],
+  ] as const) {
+    it(`keeps substantive Ralplan field ${field} active despite a forged valid committed generation`, async () => withFixture(async (f) => {
+      const ralplan = JSON.parse(await readFile(f.ralplanPath, 'utf8')); ralplan[field] = value; await writeFile(f.ralplanPath, JSON.stringify(ralplan));
+      await mintCommittedGeneration(f);
+      assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+    }));
+  }
   it('makes stale generation inert after either canonical byte string changes', async () => withFixture(async (f) => {
     assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await writeFile(f.ralplanPath, Buffer.concat([f.ralplan, Buffer.from(' ')]));
     assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);

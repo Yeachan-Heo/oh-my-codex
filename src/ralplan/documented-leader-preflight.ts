@@ -74,18 +74,42 @@ function ownerMatches(state: Record<string, unknown>, owners: Set<string>): bool
   }
   return true;
 }
+function hasOnlyKeys(state: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(state).every((key) => allowed.has(key));
+}
+
+const ROUTING_ONLY_RALPLAN_KEYS = new Set([
+  'active', 'mode', 'current_phase', 'started_at', 'updated_at',
+  'session_id', 'owner_omx_session_id', 'owner_codex_session_id',
+  'thread_id', 'turn_id', 'tmux_pane_id', 'tmux_pane_set_at', 'tmux_window_id',
+]);
+
+const ROUTING_ONLY_SKILL_KEYS = new Set([
+  'version', 'active', 'skill', 'keyword', 'phase', 'activated_at', 'updated_at',
+  'source', 'session_id', 'owner_omx_session_id', 'owner_codex_session_id',
+  'thread_id', 'turn_id', 'active_skills', 'initialized_mode', 'initialized_state_path',
+]);
+
+const ROUTING_ONLY_SKILL_ENTRY_KEYS = new Set([
+  'skill', 'phase', 'active', 'activated_at', 'updated_at',
+  'session_id', 'owner_omx_session_id', 'owner_codex_session_id', 'thread_id', 'turn_id',
+]);
+
 function routingOnlyRalplan(state: Record<string, unknown>, owners: Set<string>): boolean {
-  if (state.active !== true || state.mode !== 'ralplan' || state.current_phase !== 'planning' || !ownerMatches(state, owners)) return false;
-  return !['iteration', 'max_iterations', 'completed_at', 'review', 'handoff', 'execution', 'run_outcome', 'lifecycle_outcome', 'planning_complete'].some((key) => Object.prototype.hasOwnProperty.call(state, key));
+  return state.active === true
+    && state.mode === 'ralplan'
+    && state.current_phase === 'planning'
+    && ownerMatches(state, owners)
+    && hasOnlyKeys(state, ROUTING_ONLY_RALPLAN_KEYS);
 }
 function routingOnlySkill(state: Record<string, unknown>, owners: Set<string>): boolean {
-  if (state.active !== true || state.skill !== 'ralplan' || state.phase !== 'planning' || state.source !== 'keyword-detector' || !ownerMatches(state, owners) || !Array.isArray(state.active_skills) || state.active_skills.length !== 1) return false;
+  if (state.active !== true || state.skill !== 'ralplan' || state.phase !== 'planning' || state.source !== 'keyword-detector' || !ownerMatches(state, owners) || !Array.isArray(state.active_skills) || state.active_skills.length !== 1 || !hasOnlyKeys(state, ROUTING_ONLY_SKILL_KEYS)) return false;
   const entry = state.active_skills[0];
   return Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
     && (entry as Record<string, unknown>).skill === 'ralplan' && (entry as Record<string, unknown>).active === true
     && ((entry as Record<string, unknown>).phase === 'planning' || (entry as Record<string, unknown>).phase === undefined)
     && ownerMatches(entry as Record<string, unknown>, owners)
-    && !['requested_skills', 'deferred_skills', 'transition_messages', 'input_lock'].some((key) => Object.prototype.hasOwnProperty.call(state, key)));
+    && hasOnlyKeys(entry as Record<string, unknown>, ROUTING_ONLY_SKILL_ENTRY_KEYS));
 }
 function routingOnlyPair(ralplan: Record<string, unknown>, skill: Record<string, unknown>, owners: Set<string>): boolean {
   const ralplanSessionId = normalizeSessionId(ralplan.session_id);
