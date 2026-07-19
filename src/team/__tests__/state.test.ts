@@ -61,6 +61,8 @@ import { normalizeDispatchRequest } from '../state/dispatch.js';
 import { claimTask as claimTaskWithDeps } from '../state/tasks.js';
 import { withScalingLock as withScalingLeaseLock, withTeamLock } from '../state/locks.js';
 import type { TeamTaskV2 } from '../state/types.js';
+import type { TeamReminderIntent } from '../reminder-intents.js';
+
 
 const ORIGINAL_OMX_TEAM_STATE_ROOT = process.env.OMX_TEAM_STATE_ROOT;
 
@@ -602,46 +604,47 @@ exit 1
     }
   });
 
-  it('dispatch request store enqueues, dedupes, and transitions idempotently', async () => {
+  it('coalesces mailbox wakes only for an exact target proof and releases on acknowledgement', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-store-'));
     try {
-      await initTeamState('team-dispatch', 't', 'executor', 1, cwd);
-      const first = await enqueueDispatchRequest(
-        'team-dispatch',
-        {
-          kind: 'mailbox',
-          to_worker: 'worker-1',
-          message_id: 'msg-1',
-          trigger_message: 'check mailbox',
-          intent: 'pending-mailbox-review',
-        },
-        cwd,
-      );
-      assert.equal(first.deduped, false);
-
-      const dup = await enqueueDispatchRequest(
-        'team-dispatch',
-        {
-          kind: 'mailbox',
-          to_worker: 'worker-1',
-          message_id: 'msg-1',
-          trigger_message: 'check mailbox',
-        },
-        cwd,
-      );
-      assert.equal(dup.deduped, true);
-      assert.equal(dup.request.request_id, first.request.request_id);
+      await initTeamState('team-dispatch', 't', 'executor', 2, cwd);
+      await initTeamState('team-dispatch-other', 't', 'executor', 1, cwd);
+      const input = (to_worker: string, message_id: string, pane_id = 'pane-1', intent: TeamReminderIntent = 'pending-mailbox-review') => ({
+        kind: 'mailbox' as const,
+        to_worker,
+        pane_id,
+        message_id,
+        trigger_message: 'check mailbox',
+        intent,
+      });
+      const first = await enqueueDispatchRequest('team-dispatch', input('worker-1', 'msg-1'), cwd);
+      const pendingSibling = await enqueueDispatchRequest('team-dispatch', input('worker-1', 'msg-2'), cwd);
+      assert.equal(pendingSibling.deduped, true);
+      assert.equal(pendingSibling.request.request_id, first.request.request_id);
 
       const notified = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
       assert.equal(notified?.status, 'notified');
-      const notifiedAgain = await markDispatchRequestNotified('team-dispatch', first.request.request_id, {}, cwd);
-      assert.equal(notifiedAgain?.status, 'notified');
+      const notifiedSibling = await enqueueDispatchRequest('team-dispatch', input('worker-1', 'msg-3'), cwd);
+      assert.equal(notifiedSibling.deduped, true);
+      assert.equal(notifiedSibling.request.request_id, first.request.request_id);
+
+      const differentWorker = await enqueueDispatchRequest('team-dispatch', input('worker-2', 'msg-4'), cwd);
+      const differentPane = await enqueueDispatchRequest('team-dispatch', input('worker-1', 'msg-5', 'pane-2'), cwd);
+      const differentIntent = await enqueueDispatchRequest('team-dispatch', input('worker-1', 'msg-6', 'pane-1', 'followup-relaunch'), cwd);
+      const differentTeam = await enqueueDispatchRequest('team-dispatch-other', input('worker-1', 'msg-7'), cwd);
+      assert.equal(differentWorker.deduped, false);
+      assert.equal(differentPane.deduped, false);
+      assert.equal(differentIntent.deduped, false);
+      assert.equal(differentTeam.deduped, false);
+
       const delivered = await markDispatchRequestDelivered('team-dispatch', first.request.request_id, {}, cwd);
       assert.equal(delivered?.status, 'delivered');
-      const listed = await listDispatchRequests('team-dispatch', cwd);
-      assert.equal(listed.length, 1);
-      assert.equal(listed[0]?.message_id, 'msg-1');
-      assert.equal(listed[0]?.intent, 'pending-mailbox-review');
+      const successor = await enqueueDispatchRequest('team-dispatch', input('worker-1', 'msg-8'), cwd);
+      assert.equal(successor.deduped, false);
+      assert.notEqual(successor.request.request_id, first.request.request_id);
+
+      const listed = await listDispatchRequests('team-dispatch', cwd, { kind: 'mailbox' });
+      assert.equal(listed.length, 5);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
