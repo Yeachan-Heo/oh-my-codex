@@ -27,7 +27,7 @@ describe('Codex 0.144.5 adapted role-intent preflight', () => {
 });
 
 interface Fixture { cwd: string; sessionId: string; directory: string; ralplanPath: string; skillPath: string; ralplan: Buffer; skill: Buffer; }
-function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; delete RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin; delete RALPLAN_NEUTRALIZE_TEST_SEAM.onError; }
+function clear(): void { delete RALPLAN_NEUTRALIZE_TEST_SEAM.fail; delete RALPLAN_NEUTRALIZE_TEST_SEAM.random; delete RALPLAN_NEUTRALIZE_TEST_SEAM.directorySync; delete RALPLAN_NEUTRALIZE_TEST_SEAM.afterPin; delete RALPLAN_NEUTRALIZE_TEST_SEAM.onError; delete RALPLAN_NEUTRALIZE_TEST_SEAM.platform; }
 async function fixture(): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-generation-')); const sessionId = 'owned-session';
   const directory = join(cwd, '.omx', 'state', 'sessions', sessionId); const ralplanPath = join(directory, 'ralplan-state.json'); const skillPath = join(directory, 'skill-active-state.json');
@@ -190,4 +190,28 @@ describe('documented leader immutable neutralization generation', () => {
     assert.equal((await readdir(foreign)).some((name) => name.startsWith('.ralplan-neutralization-')), false);
     assert.ok((await readdir(parked)).some((name) => name.startsWith('.ralplan-neutralization-')));
   }));
+  it('uses the pinned Darwin descriptor root when the platform is macOS', async () => withFixture(async (f) => {
+    RALPLAN_NEUTRALIZE_TEST_SEAM.platform = 'darwin';
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true);
+    await visibleNeutralized(f);
+    await originals(f);
+  }));
+
+  for (const mutate of [
+    (ralplan: Record<string, unknown>) => { ralplan.session_id = ` ${String(ralplan.session_id)} `; },
+    (ralplan: Record<string, unknown>) => { ralplan.started_at = 'not-a-timestamp'; },
+    (ralplan: Record<string, unknown>) => { ralplan.started_at = '2026-01-01T00:00:01.000Z'; },
+    (_ralplan: Record<string, unknown>, skill: Record<string, unknown>) => { skill.updated_at = '2026-01-01T00:00:01.000Z'; },
+  ]) {
+    it('keeps producer-impossible session or timestamp pairs active despite a forged generation', async () => withFixture(async (f) => {
+      const ralplan = JSON.parse(await readFile(f.ralplanPath, 'utf8')) as Record<string, unknown>;
+      const skill = JSON.parse(await readFile(f.skillPath, 'utf8')) as Record<string, unknown>;
+      mutate(ralplan, skill);
+      await writeFile(f.ralplanPath, JSON.stringify(ralplan));
+      await writeFile(f.skillPath, JSON.stringify(skill));
+      await mintCommittedGeneration(f);
+      assert.equal((await readModeState('ralplan', f.cwd))?.active, true);
+      assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+    }));
+  }
 });

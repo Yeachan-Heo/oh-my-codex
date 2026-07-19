@@ -26,19 +26,21 @@ const GENERATION_VERSION = 1;
 type OverlayKind = 'ralplan' | 'skill';
 type FaultPoint = 'data-create' | 'data-write' | 'data-sync' | 'commit-create' | 'commit-write' | 'commit-sync' | 'directory-sync' | 'commit-final-write' | 'commit-final-sync';
 /** @internal Test-only hooks; no CLI argument reaches these hooks. */
-export const RALPLAN_NEUTRALIZE_TEST_SEAM: { fail?: (point: FaultPoint) => void | Promise<void>; random?: () => Buffer; directorySync?: () => void | Promise<void>; afterPin?: (directory: string) => void | Promise<void>; onError?: (error: unknown) => void } = {};
+export const RALPLAN_NEUTRALIZE_TEST_SEAM: { fail?: (point: FaultPoint) => void | Promise<void>; random?: () => Buffer; directorySync?: () => void | Promise<void>; afterPin?: (directory: string) => void | Promise<void>; onError?: (error: unknown) => void; platform?: NodeJS.Platform } = {};
 
 function regularSingleLink(stat: Awaited<ReturnType<typeof lstat>>, max = MAX_BYTES): boolean { return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size <= max; }
 async function readPinned(path: string, max = MAX_BYTES): Promise<Buffer | null> { try { const before = await lstat(path); if (!regularSingleLink(before, max)) return null; const bytes = await readFile(path); const after = await lstat(path); return regularSingleLink(after, max) && before.dev === after.dev && before.ino === after.ino && before.size === after.size && bytes.length === before.size ? bytes : null; } catch { return null; } }
 async function pinDirectory(directory: string): Promise<{ path: string; close: () => Promise<void> } | null> {
-  if (process.platform !== 'linux') return null;
+  const platform = RALPLAN_NEUTRALIZE_TEST_SEAM.platform ?? process.platform;
+  const descriptorRoot = platform === 'linux' ? '/proc/self/fd' : platform === 'darwin' ? '/dev/fd' : null;
+  if (!descriptorRoot) return null;
   try {
     const before = await lstat(directory);
     if (before.isSymbolicLink() || !before.isDirectory()) return null;
     const handle = await open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
     const [opened, current] = await Promise.all([handle.stat(), lstat(directory)]);
     if (!current.isDirectory() || current.isSymbolicLink() || opened.dev !== before.dev || opened.ino !== before.ino || current.dev !== before.dev || current.ino !== before.ino) { await handle.close(); return null; }
-    return { path: `/proc/self/fd/${handle.fd}`, close: () => handle.close() };
+    return { path: `${descriptorRoot}/${handle.fd}`, close: () => handle.close() };
   } catch { return null; }
 }
 function object(bytes: Buffer): Record<string, unknown> | null { try { const parsed = JSON.parse(bytes.toString('utf8')); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null; } catch { return null; } }
@@ -55,9 +57,14 @@ function isRalplanProducerKeyword(value: unknown): boolean {
 const RALPLAN_KEYS = new Set(['active', 'mode', 'current_phase', 'started_at', 'updated_at', 'session_id', 'owner_omx_session_id', 'owner_codex_session_id', 'thread_id', 'turn_id', 'tmux_pane_id', 'tmux_pane_set_at', 'tmux_window_id']);
 const SKILL_KEYS = new Set(['version', 'active', 'skill', 'keyword', 'phase', 'activated_at', 'updated_at', 'source', 'session_id', 'owner_omx_session_id', 'owner_codex_session_id', 'thread_id', 'turn_id', 'active_skills', 'initialized_mode', 'initialized_state_path']);
 const ENTRY_KEYS = new Set(['skill', 'phase', 'active', 'activated_at', 'updated_at', 'session_id', 'owner_omx_session_id', 'owner_codex_session_id', 'thread_id', 'turn_id']);
-function exactSession(value: unknown, sessionId: string): boolean { return normalizeSessionId(value) === sessionId; }
+function exactSession(value: unknown, sessionId: string): boolean { return typeof value === 'string' && value === sessionId; }
 function correlatedOptional(states: readonly Record<string, unknown>[], key: string): boolean { const values = states.map((state) => state[key]); if (values.every((value) => value === undefined)) return true; return values.every(isNonEmptyString) && values.every((value) => value === values[0]); }
-function routingOnlyRalplan(state: Record<string, unknown>, sessionId: string): boolean { return state.active === true && state.mode === 'ralplan' && state.current_phase === 'planning' && isNonEmptyString(state.started_at) && isNonEmptyString(state.updated_at) && exactSession(state.session_id, sessionId) && (!('owner_omx_session_id' in state) || exactSession(state.owner_omx_session_id, sessionId)) && ['owner_codex_session_id', 'thread_id', 'turn_id', 'tmux_pane_id', 'tmux_pane_set_at', 'tmux_window_id'].every((key) => !(key in state) || isNonEmptyString(state[key])) && hasOnlyKeys(state, RALPLAN_KEYS); }
+function isProducerTimestamp(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+}
+function routingOnlyRalplan(state: Record<string, unknown>, sessionId: string): boolean { return state.active === true && state.mode === 'ralplan' && state.current_phase === 'planning' && isProducerTimestamp(state.started_at) && isProducerTimestamp(state.updated_at) && exactSession(state.session_id, sessionId) && (!('owner_omx_session_id' in state) || exactSession(state.owner_omx_session_id, sessionId)) && ['owner_codex_session_id', 'thread_id', 'turn_id', 'tmux_pane_id', 'tmux_pane_set_at', 'tmux_window_id'].every((key) => !(key in state) || isNonEmptyString(state[key])) && hasOnlyKeys(state, RALPLAN_KEYS); }
 function routingOnlySkill(state: Record<string, unknown>, sessionId: string): Record<string, unknown> | null {
   const expectedPath = `.omx/state/sessions/${sessionId}/ralplan-state.json`;
   const entries = Array.isArray(state.active_skills) ? state.active_skills : null;
@@ -69,8 +76,8 @@ function routingOnlySkill(state: Record<string, unknown>, sessionId: string): Re
     && state.source === 'keyword-detector'
     && state.initialized_mode === 'ralplan'
     && state.initialized_state_path === expectedPath
-    && isNonEmptyString(state.activated_at)
-    && isNonEmptyString(state.updated_at)
+    && isProducerTimestamp(state.activated_at)
+    && isProducerTimestamp(state.updated_at)
     && exactSession(state.session_id, sessionId)
     && (!('owner_omx_session_id' in state) || exactSession(state.owner_omx_session_id, sessionId))
     && ['owner_codex_session_id', 'thread_id', 'turn_id'].every((key) => !(key in state) || isNonEmptyString(state[key]))
@@ -84,8 +91,8 @@ function routingOnlySkill(state: Record<string, unknown>, sessionId: string): Re
   const entryValid = item.skill === 'ralplan'
     && item.active === true
     && item.phase === 'planning'
-    && isNonEmptyString(item.activated_at)
-    && isNonEmptyString(item.updated_at)
+    && isProducerTimestamp(item.activated_at)
+    && isProducerTimestamp(item.updated_at)
     && exactSession(item.session_id, sessionId)
     && (!('owner_omx_session_id' in item) || exactSession(item.owner_omx_session_id, sessionId))
     && ['owner_codex_session_id', 'thread_id', 'turn_id'].every((key) => !(key in item) || isNonEmptyString(item[key]))
@@ -95,7 +102,12 @@ function routingOnlySkill(state: Record<string, unknown>, sessionId: string): Re
 function routingOnlyPair(ralplan: Record<string, unknown>, skill: Record<string, unknown>, sessionId: string): boolean {
   const entry = routingOnlySkill(skill, sessionId);
   const modeValid = routingOnlyRalplan(ralplan, sessionId);
-  const correlationValid = entry !== null && ['owner_codex_session_id', 'thread_id', 'turn_id'].every((key) => correlatedOptional([ralplan, skill, entry], key));
+  const correlationValid = entry !== null
+    && ['owner_codex_session_id', 'thread_id', 'turn_id'].every((key) => correlatedOptional([ralplan, skill, entry], key))
+    && ralplan.started_at === skill.activated_at
+    && skill.activated_at === entry.activated_at
+    && ralplan.updated_at === skill.updated_at
+    && skill.updated_at === entry.updated_at;
   if (!modeValid || !entry || !correlationValid) {
     RALPLAN_NEUTRALIZE_TEST_SEAM.onError?.(new Error(`pair validation failed: mode=${modeValid} skill=${entry !== null} correlation=${correlationValid}`));
   }
