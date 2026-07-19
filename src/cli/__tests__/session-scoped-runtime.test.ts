@@ -187,7 +187,8 @@ describe('CLI session-scoped state parity', () => {
       const foreignState = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
       await mkdir(dirname(ownerPath), { recursive: true });
       await mkdir(dirname(foreignPath), { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: ownerSession }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: ownerSession, cwd: wd, state_root: stateDir }));
+
       await writeFile(ownerPath, ownerState);
       await writeFile(foreignPath, foreignState);
 
@@ -243,7 +244,8 @@ describe('CLI session-scoped state parity', () => {
       const malformedState = '{"active":true';
       const rootTeamState = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+
       await writeFile(malformedPath, malformedState);
       await writeFile(teamPath, rootTeamState);
 
@@ -289,7 +291,8 @@ describe('CLI session-scoped state parity', () => {
         sessions: { [sessionId]: { last_signature: 'team-stop|pending' } },
       }, null, 2);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+
       await writeFile(ralplanPath, ralplanState);
       await writeFile(teamPath, rootTeamState);
       await writeFile(skillActivePath, rootSkillActiveState);
@@ -331,7 +334,8 @@ describe('CLI session-scoped state parity', () => {
         current_phase: 'starting',
       }, null, 2);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+
       await writeFile(ralplanPath, ralplanState);
 
       const preflightResult = runOmx(wd, 'ralplan', 'preflight', '--json');
@@ -354,7 +358,7 @@ describe('CLI session-scoped state parity', () => {
       const sessionDir = join(stateDir, 'sessions', sessionId);
       const ralplanPath = join(sessionDir, 'ralplan-state.json');
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
       await writeFile(ralplanPath, JSON.stringify({
         active: true,
         mode: 'ralplan',
