@@ -24,6 +24,7 @@ import {
   type TeamSession,
   waitForWorkerReady,
   waitForWorkerReadyAsync,
+  waitForWorkerReadyDetailedAsync,
   dismissTrustPromptIfPresent,
   evaluateStartupDirectTriggerSafety,
   sendToWorker,
@@ -2224,6 +2225,10 @@ function isStartupEvidenceMissingReason(reason: string): boolean {
     || normalized.includes('fallback_attempted_but_unconfirmed');
 }
 
+function isStartupIncompatibleReason(reason: string): boolean {
+  return reason.trim() === 'codex_bypass_mdm_incompatible';
+}
+
 async function recordRecoverableStartupIssue(params: {
   teamName: string;
   workerName: string;
@@ -2233,7 +2238,7 @@ async function recordRecoverableStartupIssue(params: {
 }): Promise<void> {
   const { teamName, workerName, taskIds, reason, cwd } = params;
   const updatedAt = new Date().toISOString();
-  const currentTaskId = isStartupEvidenceMissingReason(reason) ? undefined : taskIds[0];
+  const currentTaskId = isStartupEvidenceMissingReason(reason) || isStartupIncompatibleReason(reason) ? undefined : taskIds[0];
   await writeWorkerStatus(
     teamName,
     workerName,
@@ -3766,6 +3771,7 @@ export async function startTeam(
       writeWarning: options.writeCleanupWarning,
     });
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
+    let workerStartupArgs: ReadonlyArray<ReadonlyArray<string>> | undefined;
 
     if (workerLaunchMode === 'interactive') {
       const createdSession = createTeamSession(
@@ -3781,6 +3787,7 @@ export async function startTeam(
       createdWorkerPaneIds.push(...createdSession.workerPaneIds);
       createdLeaderPaneId = createdSession.leaderPaneId;
       applyCreatedInteractiveSessionToConfig(config, createdSession, workerPaneIds);
+      workerStartupArgs = createdSession.workerStartupArgs;
       const createdOwnerId = typeof createdSession.teamPaneOwnerId === 'string'
         ? createdSession.teamPaneOwnerId.trim()
         : '';
@@ -3882,6 +3889,7 @@ export async function startTeam(
           workerIndex,
           paneId,
           workerCli: bootstrapPlan.workerCli,
+          finalArgs: workerStartupArgs?.[workerIndex - 1],
           inbox,
           triggerMessage: trigger,
           intent: triggerIntent,
@@ -3890,12 +3898,47 @@ export async function startTeam(
           timing: startupTiming,
         })
         : null;
+      if (startupDirectOutcome?.reason === 'codex_bypass_mdm_incompatible') {
+        await recordRecoverableStartupIssue({
+          teamName: sanitized,
+          workerName,
+          taskIds: workerTasks.map((task) => task.id),
+          reason: startupDirectOutcome.reason,
+          cwd: leaderCwd,
+        });
+        return {
+          ok: false,
+          workerIndex,
+          workerName,
+          error: new Error(`worker_startup_incompatible:${workerName}:${startupDirectOutcome.reason}`),
+        };
+      }
 
       let startupReadyPromptObserved = false;
       if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait && !initialPrompt && !startupDirectOutcome?.ok) {
         startupTiming.mark('ready_wait_start', { worker: workerName, pane_id: paneId });
-        const ready = await waitForWorkerReadyAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId, config!.workers[workerIndex - 1]?.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined);
+        let readinessIncompatibility: string | null = null;
+        const ready = await waitForWorkerReadyDetailedAsync(sessionName, workerIndex, workerReadyTimeoutMs, paneId, config!.workers[workerIndex - 1]?.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined, {
+          workerCli: bootstrapPlan.workerCli,
+          finalArgs: workerStartupArgs?.[workerIndex - 1],
+          onIncompatible: (reason) => { readinessIncompatibility = reason; },
+        });
         startupTiming.mark('ready_wait_end', { worker: workerName, pane_id: paneId, ok: ready });
+        if (readinessIncompatibility) {
+          await recordRecoverableStartupIssue({
+            teamName: sanitized,
+            workerName,
+            taskIds: workerTasks.map((task) => task.id),
+            reason: readinessIncompatibility,
+            cwd: leaderCwd,
+          });
+          return {
+            ok: false,
+            workerIndex,
+            workerName,
+            error: new Error(`worker_startup_incompatible:${workerName}:${readinessIncompatibility}`),
+          };
+        }
         if (!ready) {
           const workerAlive = isWorkerPaneOpen(
             sessionName,
@@ -5819,6 +5862,7 @@ async function attemptStartupDirectTrigger(params: {
   workerIndex: number;
   paneId?: string;
   workerCli?: TeamWorkerCli;
+  finalArgs?: readonly string[];
   inbox: string;
   triggerMessage: string;
   intent?: TeamReminderIntent;
@@ -5833,6 +5877,7 @@ async function attemptStartupDirectTrigger(params: {
     workerIndex,
     paneId,
     workerCli,
+    finalArgs,
     inbox,
     triggerMessage,
     intent,
@@ -5841,7 +5886,7 @@ async function attemptStartupDirectTrigger(params: {
     timing,
   } = params;
 
-  const safety = await evaluateStartupDirectTriggerSafety(config.tmux_session, workerIndex, paneId, workerCli);
+  const safety = await evaluateStartupDirectTriggerSafety(config.tmux_session, workerIndex, paneId, workerCli, finalArgs);
   if (!safety.safe) {
     timing.mark('startup_direct_bypass', {
       worker: workerName,
@@ -5849,6 +5894,9 @@ async function attemptStartupDirectTrigger(params: {
       ok: false,
       reason: `startup_direct_unsafe:${safety.reason}`,
     });
+    if (safety.reason === 'codex_bypass_mdm_incompatible') {
+      return { ok: false, transport: 'none', reason: safety.reason };
+    }
     return null;
   }
 

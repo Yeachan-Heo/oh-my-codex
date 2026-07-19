@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAuthHotswap, type HotswapLifecycle } from "../hotswap.js";
+import type { LaunchSessionBinding } from "../../hooks/session.js";
 
 function sessionPointerAbort(cwd: string): Error {
   return Object.assign(new Error("selected pointer root is unavailable"), {
@@ -20,7 +21,7 @@ function sessionPointerAbort(cwd: string): Error {
 function lifecycle(overrides: Partial<HotswapLifecycle> = {}): HotswapLifecycle {
   return {
     prepareCodexHomeForLaunch: async () => ({}),
-    preLaunch: async () => {},
+    preLaunch: async () => ({ binding: {} as LaunchSessionBinding, completion: { kind: "success" } }),
     postLaunch: async () => {},
     cleanupRuntimeCodexHome: async () => {},
     normalizeCodexLaunchArgs: (args) => args,
@@ -98,6 +99,35 @@ describe("auth hotswap pointer abort lifecycle", () => {
     }
   });
 
+  it("does not mutate a slot or call postLaunch when preLaunch setup fails", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-hotswap-setup-failure-"));
+    const home = join(cwd, "home");
+    const runtimeHome = join(cwd, "runtime-codex-home");
+    const liveAuthPath = join(runtimeHome, "auth.json");
+    let postLaunchCalls = 0;
+    try {
+      await writeAuthSlot(home);
+      await mkdir(runtimeHome, { recursive: true });
+      await writeFile(liveAuthPath, '{"access_token":"live-sentinel"}\n');
+      const status = await runAuthHotswap({
+        cwd,
+        home,
+        env: { CODEX_HOME: runtimeHome },
+        argv: [],
+        lifecycle: lifecycle({
+          prepareCodexHomeForLaunch: async () => ({ codexHomeOverride: runtimeHome }),
+          preLaunch: async () => { throw new Error("mandatory overlay failed"); },
+          postLaunch: async () => { postLaunchCalls += 1; },
+        }),
+      });
+      assert.equal(status, 1);
+      assert.equal(postLaunchCalls, 0);
+      assert.equal(await readFile(liveAuthPath, "utf-8"), '{"access_token":"live-sentinel"}\n');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("runs postLaunch and runtime cleanup after a successful preLaunch then initial useSlot failure", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-hotswap-use-slot-failure-"));
     const home = join(cwd, "home");
@@ -119,6 +149,7 @@ describe("auth hotswap pointer abort lifecycle", () => {
           }),
           preLaunch: async () => {
             await rm(slotPath);
+            return { binding: {} as LaunchSessionBinding, completion: { kind: "success" } };
           },
           postLaunch: async () => {
             postLaunchCalls += 1;
@@ -182,6 +213,7 @@ describe("auth hotswap pointer abort lifecycle", () => {
           }),
           preLaunch: async () => {
             await rm(secondSlotPath);
+            return { binding: {} as LaunchSessionBinding, completion: { kind: "success" } };
           },
           postLaunch: async () => {
             postLaunchCalls += 1;
@@ -196,6 +228,34 @@ describe("auth hotswap pointer abort lifecycle", () => {
       assert.equal(await readFile(codexLog, "utf-8"), "spawned\n");
       assert.equal(postLaunchCalls, 1);
       assert.equal(cleanupCalls, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("auth hotswap terminal lifecycle failures", () => {
+  it("returns nonzero when postLaunch finalization fails", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-hotswap-terminal-failure-"));
+    const home = join(cwd, "home");
+    const runtimeHome = join(cwd, "runtime-codex-home");
+    const binDir = join(cwd, "bin");
+    try {
+      await writeAuthSlot(home);
+      await mkdir(binDir, { recursive: true });
+      await writeFile(join(binDir, "codex"), "#!/bin/sh\nexit 0\n");
+      await chmod(join(binDir, "codex"), 0o755);
+      const status = await runAuthHotswap({
+        cwd,
+        home,
+        env: { CODEX_HOME: runtimeHome, PATH: `${binDir}:/usr/bin:/bin` },
+        argv: [],
+        lifecycle: lifecycle({
+          prepareCodexHomeForLaunch: async () => ({ codexHomeOverride: runtimeHome }),
+          postLaunch: async () => { throw new Error("retained close failed"); },
+        }),
+      });
+      assert.equal(status, 1);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

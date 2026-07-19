@@ -9,6 +9,9 @@ import { join } from 'node:path';
 import {
   __createDefaultPidProbeForTests,
   appendPromptSessionProvenanceRejection,
+  closeLaunchSessionBindingOnce,
+  establishLaunchSessionBinding,
+  finalizeBoundOnce,
   __resetSessionPointerTransactionDependenciesForTests,
   __setSessionPointerTransactionDependenciesForTests,
   inspectSessionPointerLock,
@@ -22,7 +25,9 @@ import {
   resetSessionMetrics,
   resolveSessionPointerContext,
   writeSessionEnd,
+  updateDetachedSessionMetadata,
   writeSessionStart,
+  type LaunchSessionBinding,
   type SessionState,
 } from '../session.js';
 
@@ -181,8 +186,12 @@ describe('session lifecycle manager', () => {
   it('writes session start/end lifecycle artifacts and archives session history', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-lifecycle-'));
     const sessionId = 'sess-lifecycle-1';
+    let binding: LaunchSessionBinding | undefined;
     try {
-      await writeSessionStart(cwd, sessionId);
+      const established = await establishLaunchSessionBinding(cwd, sessionId);
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
 
       const state = await readSessionState(cwd);
       assert.ok(state);
@@ -194,7 +203,7 @@ describe('session lifecycle manager', () => {
       const sessionPath = join(cwd, '.omx', 'state', 'session.json');
       assert.equal(existsSync(sessionPath), true);
 
-      await writeSessionEnd(cwd, sessionId);
+      await finalizeBoundOnce(binding, 'test');
 
       assert.equal(existsSync(sessionPath), false);
 
@@ -219,6 +228,7 @@ describe('session lifecycle manager', () => {
       assert.match(dailyLog, /"event":"session_start"/);
       assert.match(dailyLog, /"event":"session_end"/);
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -231,8 +241,15 @@ describe('session lifecycle manager', () => {
       warnings.push(value);
       return true;
     }) as typeof process.stderr.write;
+    let binding: LaunchSessionBinding | undefined;
     try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-end-durability');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
       await writeSessionEnd(cwd, 'sess-end-durability', {
+        binding,
+        context: binding.context,
         platform: 'win32',
         regularFileSync: async () => { throw codedError('EPERM'); },
       });
@@ -240,6 +257,7 @@ describe('session lifecycle manager', () => {
         '[omx] warning: Windows EPERM regular-file fsync unsupported in session pointer end; operation succeeded with degraded durability.\n',
       ]);
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       process.stderr.write = originalWrite;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -254,19 +272,28 @@ describe('session lifecycle manager', () => {
       return true;
     }) as typeof process.stderr.write;
     const regularFileSync = async () => { throw codedError('EPERM'); };
+    let binding: LaunchSessionBinding | undefined;
     try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-end-release-failure');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const establishedBinding = binding;
       await withPointerDependencies({
         fs: {
           rmdir: async () => { throw new Error('release failure'); },
         },
       }, async () => {
         await assert.rejects(writeSessionEnd(cwd, 'sess-end-release-failure', {
+          binding: establishedBinding,
+          context: establishedBinding.context,
           platform: 'win32',
           regularFileSync,
         }));
       });
       assert.deepEqual(warnings, []);
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       process.stderr.write = originalWrite;
       await rm(cwd, { recursive: true, force: true });
     }
@@ -276,6 +303,7 @@ describe('session lifecycle manager', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-owner-'));
     try {
       await writeSessionStart(cwd, 'sess-current');
+      const beforePointer = await readFile(resolveSessionPointerContext(cwd).sessionPath, 'utf-8');
       const stateDir = join(cwd, '.omx', 'state');
       const sessionPath = join(stateDir, 'session.json');
       const currentHudPath = join(stateDir, 'sessions', 'sess-current', 'hud-state.json');
@@ -285,25 +313,14 @@ describe('session lifecycle manager', () => {
       await writeFile(currentHudPath, JSON.stringify({ turn_count: 2 }), 'utf-8');
       await writeFile(endingHudPath, JSON.stringify({ turn_count: 1 }), 'utf-8');
 
-      await writeSessionEnd(cwd, 'sess-ending');
+      await assert.rejects(() => writeSessionEnd(cwd, 'sess-ending'), isSessionPointerLaunchAbort);
 
       const state = await readSessionState(cwd);
       assert.equal(state?.session_id, 'sess-current');
-      assert.equal(existsSync(sessionPath), true);
+      assert.equal(await readFile(sessionPath, 'utf-8'), beforePointer);
       assert.equal(existsSync(currentHudPath), true);
-      assert.equal(existsSync(endingHudPath), false);
-
-      const historyLines = (await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'))
-        .trim()
-        .split('\n')
-        .filter(Boolean);
-      assert.equal(historyLines.length, 1);
-      const historyEntry = JSON.parse(historyLines[0]) as SessionHistoryEntry & {
-        preserved_active_session_id?: string;
-      };
-      assert.equal(historyEntry.session_id, 'sess-ending');
-      assert.equal(historyEntry.started_at, 'unknown');
-      assert.equal(historyEntry.preserved_active_session_id, 'sess-current');
+      assert.equal(existsSync(endingHudPath), true);
+      assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -313,8 +330,12 @@ describe('session lifecycle manager', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-hud-cleanup-'));
     const canonicalSessionId = 'omx-launch-hud';
     const nativeSessionId = 'codex-native-hud';
+    let binding: LaunchSessionBinding | undefined;
     try {
-      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId });
+      const established = await establishLaunchSessionBinding(cwd, canonicalSessionId, { nativeSessionId });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
       const stateDir = join(cwd, '.omx', 'state');
       const rootHudPath = join(stateDir, 'hud-state.json');
       const canonicalHudPath = join(stateDir, 'sessions', canonicalSessionId, 'hud-state.json');
@@ -325,12 +346,13 @@ describe('session lifecycle manager', () => {
       await writeFile(canonicalHudPath, JSON.stringify({ last_turn_at: 'canonical', turn_count: 2 }), 'utf-8');
       await writeFile(nativeHudPath, JSON.stringify({ last_turn_at: 'native', turn_count: 9 }), 'utf-8');
 
-      await writeSessionEnd(cwd, canonicalSessionId);
+      await finalizeBoundOnce(binding, 'test');
 
       assert.equal(existsSync(rootHudPath), false);
       assert.equal(existsSync(canonicalHudPath), false);
       assert.equal(existsSync(nativeHudPath), false);
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -338,7 +360,7 @@ describe('session lifecycle manager', () => {
   it('preserves canonical session id while reconciling native SessionStart metadata', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-reconcile-'));
     try {
-      await writeSessionStart(cwd, 'omx-launch-1');
+      const established = await writeSessionStart(cwd, 'omx-launch-1');
 
       const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-1', {
         pid: 54321,
@@ -349,11 +371,13 @@ describe('session lifecycle manager', () => {
       assert.equal(reconciled.native_session_id, 'codex-native-1');
       assert.equal(reconciled.pid, 54321);
       assert.equal(reconciled.platform, 'win32');
+      assert.equal(reconciled.launch_lineage_token, established.launch_lineage_token);
 
       const persisted = await readSessionState(cwd);
       assert.equal(persisted?.session_id, 'omx-launch-1');
       assert.equal(persisted?.native_session_id, 'codex-native-1');
       assert.equal(persisted?.pid, 54321);
+      assert.equal(persisted?.launch_lineage_token, established.launch_lineage_token);
 
       const dailyLogPath = join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`);
       const dailyLog = await readFile(dailyLogPath, 'utf-8');
@@ -400,47 +424,58 @@ describe('session lifecycle manager', () => {
     }
   });
 
-  it('preserves existing native and tmux bindings on same-session start updates', async () => {
+  it('routes existing detached metadata updates through the exact binding', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-preserve-'));
+    let binding: LaunchSessionBinding | undefined;
     try {
-      await writeSessionStart(cwd, 'omx-launch-1', {
+      const established = await establishLaunchSessionBinding(cwd, 'omx-launch-1', {
         nativeSessionId: 'codex-native-1',
         tmuxSessionName: 'omx-detached-demo',
       });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
 
-      const withPane = await writeSessionStart(cwd, 'omx-launch-1', {
+      const withPaneResult = await updateDetachedSessionMetadata(binding, {
         tmuxSessionName: 'omx-detached-demo',
         tmuxPaneId: '%42',
       });
+      assert.equal(withPaneResult.kind, 'committed-released');
+      const withPane = await readSessionState(cwd);
+      assert.equal(withPane?.native_session_id, 'codex-native-1');
+      assert.equal(withPane?.tmux_session_name, 'omx-detached-demo');
+      assert.equal(withPane?.tmux_pane_id, '%42');
 
-      assert.equal(withPane.native_session_id, 'codex-native-1');
-      assert.equal(withPane.tmux_session_name, 'omx-detached-demo');
-      assert.equal(withPane.tmux_pane_id, '%42');
-
-      const withoutPane = await writeSessionStart(cwd, 'omx-launch-1', {
+      const withoutPaneResult = await updateDetachedSessionMetadata(binding, {
         tmuxSessionName: 'omx-detached-demo',
       });
-
-      assert.equal(withoutPane.native_session_id, 'codex-native-1');
-      assert.equal(withoutPane.tmux_session_name, 'omx-detached-demo');
-      assert.equal(withoutPane.tmux_pane_id, '%42');
+      assert.equal(withoutPaneResult.kind, 'committed-released');
+      const withoutPane = await readSessionState(cwd);
+      assert.equal(withoutPane?.native_session_id, 'codex-native-1');
+      assert.equal(withoutPane?.tmux_session_name, 'omx-detached-demo');
+      assert.equal(withoutPane?.tmux_pane_id, '%42');
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
   it('lets an owner OMX launch session end the fresh native session it spawned', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-end-'));
+    let binding: LaunchSessionBinding | undefined;
     try {
-      await writeSessionStart(cwd, 'omx-owner-session', {
+      const established = await establishLaunchSessionBinding(cwd, 'omx-owner-session', {
         nativeSessionId: 'codex-native-old',
       });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
       await reconcileNativeSessionStart(cwd, 'codex-native-new', {
         pid: process.pid,
         platform: 'win32',
       });
 
-      await writeSessionEnd(cwd, 'omx-owner-session');
+      await finalizeBoundOnce(binding, 'test');
 
       assert.equal(await readSessionState(cwd), null);
       const historyLines = (await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'))
@@ -455,16 +490,21 @@ describe('session lifecycle manager', () => {
       assert.equal(historyEntry.native_session_id, 'codex-native-new');
       assert.equal(historyEntry.active_session_id, 'codex-native-new');
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
   it('preserves owner OMX metadata when reconciling the same fresh native session', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-reconcile-'));
+    let binding: LaunchSessionBinding | undefined;
     try {
-      await writeSessionStart(cwd, 'omx-owner-session', {
+      const established = await establishLaunchSessionBinding(cwd, 'omx-owner-session', {
         nativeSessionId: 'codex-native-old',
       });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
       await reconcileNativeSessionStart(cwd, 'codex-native-new', {
         pid: process.pid,
         platform: 'win32',
@@ -481,19 +521,24 @@ describe('session lifecycle manager', () => {
       assert.equal(reconciled.owner_omx_session_id, 'omx-owner-session');
       assert.equal(reconciled.pid, process.pid);
 
-      await writeSessionEnd(cwd, 'omx-owner-session');
+      await finalizeBoundOnce(binding, 'test');
       assert.equal(await readSessionState(cwd), null);
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
   it('carries the owner OMX launch session across chained native SessionStart replacements', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-chain-'));
+    let binding: LaunchSessionBinding | undefined;
     try {
-      await writeSessionStart(cwd, 'omx-owner-session', {
+      const established = await establishLaunchSessionBinding(cwd, 'omx-owner-session', {
         nativeSessionId: 'codex-native-a',
       });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
       await reconcileNativeSessionStart(cwd, 'codex-native-b', {
         pid: process.pid,
         platform: 'win32',
@@ -516,7 +561,7 @@ describe('session lifecycle manager', () => {
       assert.match(dailyLog, /"previous_native_session_id":"codex-native-b"/);
       assert.match(dailyLog, /"replaced_by_native_session_id":"codex-native-c"/);
 
-      await writeSessionEnd(cwd, 'omx-owner-session');
+      await finalizeBoundOnce(binding, 'test');
       assert.equal(await readSessionState(cwd), null);
       const historyLines = (await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'))
         .trim()
@@ -529,11 +574,12 @@ describe('session lifecycle manager', () => {
       assert.equal(historyEntry.native_session_id, 'codex-native-c');
       assert.equal(historyEntry.active_session_id, 'codex-native-c');
     } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('starts a fresh canonical session when a non-OMX native session is replaced', async () => {
+  it('retains wrapper lineage when a wrapper-owned native session is replaced', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-non-omx-fresh-'));
     try {
       await writeSessionStart(cwd, 'codex-native-old', {
@@ -547,13 +593,15 @@ describe('session lifecycle manager', () => {
 
       assert.equal(reconciled.session_id, 'codex-native-new');
       assert.equal(reconciled.native_session_id, 'codex-native-new');
-      assert.equal(reconciled.previous_native_session_id, undefined);
+      assert.equal(reconciled.previous_native_session_id, 'codex-native-old');
+      assert.equal(reconciled.owner_omx_session_id, 'codex-native-old');
       assert.equal(reconciled.pid, 54321);
 
       const persisted = await readSessionState(cwd);
       assert.equal(persisted?.session_id, 'codex-native-new');
       assert.equal(persisted?.native_session_id, 'codex-native-new');
-      assert.equal(persisted?.previous_native_session_id, undefined);
+      assert.equal(persisted?.previous_native_session_id, 'codex-native-old');
+      assert.equal(persisted?.owner_omx_session_id, 'codex-native-old');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1189,8 +1237,9 @@ describe('session pointer transaction', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-durability-warning-'));
     const originalWrite = process.stderr.write;
     const warnings: Array<{ value: string; lockExists: boolean }> = [];
+    let warningCwd = cwd;
     process.stderr.write = ((value: string) => {
-      warnings.push({ value, lockExists: existsSync(resolveSessionPointerContext(cwd).lockPath) });
+      warnings.push({ value, lockExists: existsSync(resolveSessionPointerContext(warningCwd).lockPath) });
       return true;
     }) as typeof process.stderr.write;
     const regularFileSync = async () => { throw codedError('EPERM'); };
@@ -1202,18 +1251,24 @@ describe('session pointer transaction', () => {
       }]);
 
       warnings.length = 0;
-      await writeSessionStart(cwd, 'sess-degraded-start', { platform: 'win32' });
+      const syncedCwd = join(cwd, 'synced');
+      await mkdir(syncedCwd);
+      warningCwd = syncedCwd;
+      await writeSessionStart(syncedCwd, 'sess-synced-start', { platform: 'win32' });
       assert.deepEqual(warnings, []);
+      const failedCwd = join(cwd, 'failed');
+      await mkdir(failedCwd);
+      warningCwd = failedCwd;
 
       await withPointerDependencies({
         fs: {
           rename: async (from, to) => {
-            if (to === resolveSessionPointerContext(cwd).sessionPath) throw new Error('rename failure');
+            if (to === resolveSessionPointerContext(failedCwd).sessionPath) throw new Error('rename failure');
             await rename(from, to);
           },
         },
       }, async () => {
-        await assert.rejects(writeSessionStart(cwd, 'sess-degraded-start', { platform: 'win32', regularFileSync }));
+        await assert.rejects(writeSessionStart(failedCwd, 'sess-failed-start', { platform: 'win32', regularFileSync }));
       });
       assert.deepEqual(warnings, []);
     } finally {
@@ -1473,23 +1528,655 @@ describe('session pointer transaction', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-preserve-'));
     try {
       const context = resolveSessionPointerContext(cwd);
-      await writeSessionStart(cwd, 'sess-history', { platform: 'win32' });
+      const established = await establishLaunchSessionBinding(cwd, 'sess-history', { platform: 'win32' });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
       await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
       await rm(join(cwd, '.omx', 'logs'), { recursive: true, force: true });
       await writeFile(join(cwd, '.omx', 'logs'), 'not-a-directory', 'utf-8');
-      await assert.rejects(writeSessionEnd(cwd, 'sess-history'));
+      await assert.rejects(finalizeBoundOnce(established.binding, 'history-failure'));
       assert.equal((await readSessionState(cwd))?.session_id, 'sess-history');
       await rm(join(cwd, '.omx', 'logs'), { force: true });
 
       await writeFile(context.sessionPath, '{ malformed', 'utf-8');
       await assert.rejects(
-        writeSessionEnd(cwd, 'sess-history'),
+        writeSessionEnd(cwd, 'sess-history', { binding: established.binding }),
         (error: unknown) => isSessionPointerLaunchAbort(error)
           && error.code === 'session_pointer_unusable'
           && error.pointerStatus === 'malformed',
       );
       assert.equal(await readFile(context.sessionPath, 'utf-8'), '{ malformed');
       assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('bound launch authority', () => {
+  it('returns one private binding and only capability-free metadata updates', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-authority-'));
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-authority');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      assert.match(established.binding.launchLineageToken, /^[A-Za-z0-9_-]{16,128}$/);
+      assert.equal('handle' in established.binding, false);
+      const metadata = await updateDetachedSessionMetadata(established.binding, {
+        tmuxSessionName: 'omx-authority', tmuxPaneId: '%42',
+      });
+      assert.equal(metadata.kind, 'committed-released');
+      assert.equal((await readSessionState(cwd))?.launch_lineage_token, established.binding.launchLineageToken);
+      const firstFinalization = finalizeBoundOnce(established.binding, 'test');
+      const secondFinalization = finalizeBoundOnce(established.binding, 'duplicate');
+      assert.equal(firstFinalization, secondFinalization);
+      const finalized = await firstFinalization;
+      assert.equal(finalized.finalized, true);
+      assert.equal(finalized.cleanup.comparison?.status, 'matched');
+      assert.equal(existsSync(resolveSessionPointerContext(cwd).sessionPath), false);
+      assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, 'closed');
+      assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, 'closed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('anchors capability acquisition and finalization to context.baseStateDir rather than cwd', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-selected-root-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const baseStateDir = join(cwd, 'selected', 'state');
+      const context = {
+        cwd,
+        baseStateDir,
+        rootSource: 'cwd-default' as const,
+        sessionPath: join(baseStateDir, 'session.json'),
+        lockPath: join(baseStateDir, 'session.json.lock'),
+      };
+      const established = await establishLaunchSessionBinding(cwd, 'sess-selected-root', { context });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      assert.equal(binding.context.baseStateDir, baseStateDir);
+      assert.equal(existsSync(context.sessionPath), true);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'session.json')), false);
+      assert.equal((await finalizeBoundOnce(binding, 'selected-root')).finalized, true);
+      assert.equal(existsSync(context.sessionPath), false);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects forged and changed-incarnation detached metadata before lifecycle mutation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-metadata-hostile-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-metadata-hostile');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const context = resolveSessionPointerContext(cwd);
+      const original = await readFile(context.sessionPath, 'utf-8');
+      let mkdirCalls = 0;
+
+      await withPointerDependencies({
+        fs: { mkdir: async (path, options) => { mkdirCalls += 1; await mkdir(path, options); } },
+      }, async () => {
+        const forged = await updateDetachedSessionMetadata({ ...binding } as LaunchSessionBinding, { tmuxPaneId: '%forged' });
+        assert.equal(forged.kind, 'precommit-aborted');
+      });
+      assert.equal(mkdirCalls, 0);
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), original);
+      assert.equal(existsSync(context.lockPath), false);
+
+      const parsed = JSON.parse(original) as Partial<SessionState>;
+      const state: SessionState = { ...parsed, session_id: binding.canonicalSessionId } as SessionState;
+      const changed = JSON.stringify({ ...state, started_at: '1999-01-01T00:00:00.000Z' }, null, 2);
+      await writeFile(context.sessionPath, changed, 'utf-8');
+      const denied = await updateDetachedSessionMetadata(binding, { tmuxPaneId: '%changed' });
+      assert.equal(denied.kind, 'precommit-aborted');
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), changed);
+      assert.equal(existsSync(context.lockPath), false);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rechecks supported directory identity under the metadata lock before pointer mutation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-metadata-race-'));
+    const retainedCwd = `${cwd}-retained`;
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-metadata-race');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const context = resolveSessionPointerContext(cwd);
+      const original = await readFile(context.sessionPath, 'utf-8');
+      let replaced = false;
+
+      let result: Awaited<ReturnType<typeof updateDetachedSessionMetadata>> | undefined;
+      await withPointerDependencies({
+        fs: {
+          mkdir: async (path, options) => {
+            if (!replaced && String(path) === context.baseStateDir) {
+              replaced = true;
+              await rename(cwd, retainedCwd);
+              await mkdir(context.baseStateDir, { recursive: true });
+              await writeFile(context.sessionPath, original, 'utf-8');
+              return;
+            }
+            await mkdir(path, options);
+          },
+        },
+      }, async () => { result = await updateDetachedSessionMetadata(binding as LaunchSessionBinding, { tmuxPaneId: '%race' }); });
+
+      assert.equal(result?.kind, 'precommit-aborted');
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), original);
+      assert.equal(await readFile(join(retainedCwd, '.omx', 'state', 'session.json'), 'utf-8'), original);
+      assert.equal(existsSync(context.lockPath), false);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+      await rm(retainedCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('permits an ordinary absent launch when directory identity is unsupported', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-unsupported-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-unsupported', { platform: 'win32' });
+
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      assert.deepEqual(binding.directoryIdentity, { kind: 'unsupported', reason: 'platform' });
+      assert.equal((await readSessionState(cwd))?.session_id, 'sess-binding-unsupported');
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('establishment preflight is absent-only under the selected pointer lock and preserves every existing pointer byte', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-session-binding-preflight-'));
+    try {
+      const cases: Array<{ name: string; raw: string; probePid?: 'dead' | 'indeterminate' }> = [
+        { name: 'usable', raw: JSON.stringify(makeState({ cwd: join(root, 'usable'), pid: process.pid, platform: 'linux', pid_start_ticks: 1 })) },
+        { name: 'stale-dead', raw: JSON.stringify(makeState({ cwd: join(root, 'stale-dead'), pid: 424242, platform: 'linux', pid_start_ticks: 1 })), probePid: 'dead' },
+        { name: 'malformed', raw: '{ malformed pointer' },
+        { name: 'foreign', raw: JSON.stringify(makeState({ cwd: join(root, 'foreign', 'other'), platform: 'win32' })) },
+        { name: 'indeterminate', raw: JSON.stringify(makeState({ cwd: join(root, 'indeterminate'), pid: 424242, platform: 'linux', pid_start_ticks: 1 })), probePid: 'indeterminate' },
+      ];
+      for (const testCase of cases) {
+        const cwd = join(root, testCase.name);
+        const context = resolveSessionPointerContext(cwd);
+        const order: string[] = [];
+        await mkdir(context.baseStateDir, { recursive: true });
+        await writeFile(context.sessionPath, testCase.raw, 'utf-8');
+        await withPointerDependencies({
+          probePid: () => testCase.probePid ?? 'alive',
+          readProcessIdentity: () => matchingProcessIdentity(),
+          fs: {
+            mkdir: async (path, options) => { order.push(`mkdir:${path}`); await mkdir(path, options); },
+            readFile: async (path, encoding) => { order.push(`read:${path}`); return await readFile(path, encoding); },
+            rename: async (from, to) => { order.push(`rename:${from}:${to}`); await rename(from, to); },
+            unlink: async (path) => { order.push(`unlink:${path}`); await rm(path, { force: false }); },
+          },
+        }, async () => {
+          const established = await establishLaunchSessionBinding(cwd, `sess-preflight-${testCase.name}`);
+          assert.equal(established.kind, 'precommit-aborted', testCase.name);
+        });
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), testCase.raw, testCase.name);
+        assert.ok(order.indexOf(`mkdir:${context.lockPath}`) < order.indexOf(`read:${context.sessionPath}`), testCase.name);
+        assert.equal(order.filter((entry) => entry === `rename:${context.sessionPath}`).length, 0, testCase.name);
+        assert.equal(order.filter((entry) => entry === `unlink:${context.sessionPath}`).length, 0, testCase.name);
+        assert.equal(existsSync(context.lockPath), false, testCase.name);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('denies an absent bound pointer without creating synthetic terminal history', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-absent-finalization-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-absent-finalization');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const context = resolveSessionPointerContext(cwd);
+      await rm(context.sessionPath);
+      const finalized = await finalizeBoundOnce(binding, 'absent');
+      assert.equal(finalized.finalized, false);
+      assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+      assert.equal(existsSync(join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`)), true);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unbound usable finalization before changing any lifecycle bytes', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-unbound-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-unbound');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const context = resolveSessionPointerContext(cwd);
+      const historyPath = join(cwd, '.omx', 'logs', 'session-history.jsonl');
+      const dailyPath = join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`);
+      const hudPath = join(cwd, '.omx', 'state', 'hud-state.json');
+      const metricsPath = join(cwd, '.omx', 'metrics.json');
+      await writeFile(historyPath, 'history-sentinel\n', 'utf-8');
+      await writeFile(hudPath, 'hud-sentinel\n', 'utf-8');
+      await writeFile(metricsPath, 'metrics-sentinel\n', 'utf-8');
+      const before = {
+        pointer: await readFile(context.sessionPath, 'utf-8'),
+        history: await readFile(historyPath, 'utf-8'),
+        daily: await readFile(dailyPath, 'utf-8'),
+        hud: await readFile(hudPath, 'utf-8'),
+        metrics: await readFile(metricsPath, 'utf-8'),
+      };
+
+      await assert.rejects(() => writeSessionEnd(cwd, 'sess-binding-unbound'), isSessionPointerLaunchAbort);
+
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), before.pointer);
+      assert.equal(await readFile(historyPath, 'utf-8'), before.history);
+      assert.equal(await readFile(dailyPath, 'utf-8'), before.daily);
+      assert.equal(await readFile(hudPath, 'utf-8'), before.hud);
+      assert.equal(await readFile(metricsPath, 'utf-8'), before.metrics);
+      assert.equal(existsSync(context.lockPath), false);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a compatible tokenless pointer and refuses to establish cleanup authority from it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-tokenless-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      await reconcileNativeSessionStart(cwd, 'native-compatible-tokenless');
+      const beforeUpdate = await readFile(context.sessionPath, 'utf-8');
+      await assert.rejects(
+        () => writeSessionStart(cwd, 'native-compatible-tokenless', { tmuxPaneId: '%42' }),
+        isSessionPointerLaunchAbort,
+      );
+      assert.equal((await readSessionState(cwd))?.launch_lineage_token, undefined);
+      const afterUpdate = await readFile(context.sessionPath, 'utf-8');
+      assert.equal(afterUpdate, beforeUpdate);
+
+      const established = await establishLaunchSessionBinding(cwd, 'native-compatible-tokenless');
+      assert.equal(established.kind, 'precommit-aborted');
+      if (established.kind !== 'precommit-aborted') return;
+      assert.equal(established.abort.committed, false);
+      assert.equal(established.abort.code, 'session_pointer_owner_conflict');
+      assert.equal((await readSessionState(cwd))?.launch_lineage_token, undefined);
+      assert.equal(afterUpdate.includes('launch_lineage_token'), false);
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), afterUpdate);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a compatible malformed lineage token without granting cleanup authority', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-malformed-token-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      const tokenless = await reconcileNativeSessionStart(cwd, 'native-compatible-malformed-token');
+      await writeFile(context.sessionPath, JSON.stringify({ ...tokenless, launch_lineage_token: 'bad' }), 'utf-8');
+
+      const beforeUpdate = await readFile(context.sessionPath, 'utf-8');
+      await assert.rejects(
+        () => writeSessionStart(cwd, 'native-compatible-malformed-token', { tmuxPaneId: '%42' }),
+        isSessionPointerLaunchAbort,
+      );
+      const afterUpdate = await readFile(context.sessionPath, 'utf-8');
+      assert.equal(afterUpdate, beforeUpdate);
+      assert.match(afterUpdate, /"launch_lineage_token":"bad"|"launch_lineage_token": "bad"/);
+      assert.equal((await reconcileNativeSessionStart(cwd, 'native-compatible-malformed-token')).launch_lineage_token, 'bad');
+      const beforeEstablishment = await readFile(context.sessionPath, 'utf-8');
+
+      const established = await establishLaunchSessionBinding(cwd, 'native-compatible-malformed-token');
+      assert.equal(established.kind, 'precommit-aborted');
+      if (established.kind !== 'precommit-aborted') return;
+      assert.equal(established.abort.committed, false);
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), beforeEstablishment);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves malformed pointer bytes when binding establishment aborts before commit', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-malformed-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      const malformed = '{ malformed pointer';
+      await mkdir(context.baseStateDir, { recursive: true });
+      await writeFile(context.sessionPath, malformed, 'utf-8');
+
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-malformed');
+      assert.equal(established.kind, 'precommit-aborted');
+      if (established.kind !== 'precommit-aborted') return;
+      assert.equal(established.abort.committed, false);
+      assert.equal(established.abort.code, 'session_pointer_unusable');
+      assert.equal(established.abort.pointerStatus, 'malformed');
+      assert.equal(await readFile(context.sessionPath, 'utf-8'), malformed);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('finalizes only its exact stale-dead native pointer after history is retained', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-stale-dead-'));
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-stale-dead');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      await reconcileNativeSessionStart(cwd, 'native-binding-stale-dead', { pid: 424242 });
+      await withPointerDependencies({ probePid: () => 'dead' }, async () => {
+        const finalized = await finalizeBoundOnce(established.binding, 'test');
+        assert.equal(finalized.finalized, true);
+      });
+      await closeLaunchSessionBindingOnce(established.binding);
+      assert.equal(existsSync(resolveSessionPointerContext(cwd).sessionPath), false);
+      const history = await readFile(join(cwd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8');
+      assert.match(history, /native-binding-stale-dead/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a stale-dead pointer whose bound lineage token does not match', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-stale-mismatch-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-stale-mismatch');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const context = resolveSessionPointerContext(cwd);
+      const state = await reconcileNativeSessionStart(cwd, 'native-binding-stale-mismatch', { pid: 424242 });
+      await writeFile(context.sessionPath, JSON.stringify({ ...state, launch_lineage_token: FOREIGN_TOKEN }), 'utf-8');
+      await withPointerDependencies({ probePid: () => 'dead' }, async () => {
+        const denied = await finalizeBoundOnce(binding as LaunchSessionBinding, 'test');
+        assert.equal(denied.finalized, false);
+      });
+      assert.equal(existsSync(context.sessionPath), true);
+      assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves usable and stale bound pointers without the exact valid lineage token before any mutation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-token-gate-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-token-gate');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+      const context = resolveSessionPointerContext(cwd);
+      const state = await readSessionState(cwd);
+      assert.ok(state);
+      const historyPath = join(cwd, '.omx', 'logs', 'session-history.jsonl');
+      const dailyPath = join(cwd, '.omx', 'logs', `omx-${todayIsoDate()}.jsonl`);
+      const hudPath = join(cwd, '.omx', 'state', 'hud-state.json');
+      const metricsPath = join(cwd, '.omx', 'metrics.json');
+      await writeFile(historyPath, 'history-sentinel\n', 'utf-8');
+      await writeFile(hudPath, 'hud-sentinel\n', 'utf-8');
+      await writeFile(metricsPath, 'metrics-sentinel\n', 'utf-8');
+      const lifecycleBytes = {
+        history: await readFile(historyPath, 'utf-8'),
+        daily: await readFile(dailyPath, 'utf-8'),
+        hud: await readFile(hudPath, 'utf-8'),
+        metrics: await readFile(metricsPath, 'utf-8'),
+      };
+      const cases: Array<{ name: string; state: SessionState; probePid?: 'dead' | 'indeterminate' }> = [
+        { name: 'tokenless usable', state: (() => { const { launch_lineage_token: _, ...tokenless } = state; return tokenless; })() },
+        { name: 'malformed usable', state: { ...state, launch_lineage_token: 'bad' } },
+        { name: 'mismatched usable', state: { ...state, launch_lineage_token: FOREIGN_TOKEN } },
+        { name: 'replaced usable', state: { ...state, launch_lineage_token: SUCCESSOR_TOKEN } },
+        { name: 'same-token changed incarnation', state: { ...state, started_at: '1999-01-01T00:00:00.000Z' } },
+        { name: 'unknown identity', state: { ...state, pid: 424242 }, probePid: 'indeterminate' },
+        {
+          name: 'tokenless stale native',
+          state: (() => {
+            const { launch_lineage_token: _, ...tokenless } = state;
+            return { ...tokenless, native_session_id: 'native-tokenless-stale', pid: 424242 };
+          })(),
+          probePid: 'dead',
+        },
+      ];
+
+      for (const testCase of cases) {
+        const raw = JSON.stringify(testCase.state);
+        let mkdirCalls = 0;
+        let unlinkCalls = 0;
+        await writeFile(context.sessionPath, raw, 'utf-8');
+        await withPointerDependencies({
+          probePid: () => testCase.probePid ?? 'alive',
+          fs: {
+            mkdir: async (path, options) => { mkdirCalls += 1; await mkdir(path, options); },
+            unlink: async (path) => { if (path === context.sessionPath) unlinkCalls += 1; await rm(path, { force: false }); },
+          },
+        }, async () => {
+          await assert.rejects(
+            writeSessionEnd(cwd, binding!.canonicalSessionId, { binding }),
+            isSessionPointerLaunchAbort,
+          );
+        });
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), raw, testCase.name);
+        assert.ok(mkdirCalls <= 1, testCase.name);
+        assert.equal(unlinkCalls, 0, testCase.name);
+        assert.equal(existsSync(context.lockPath), false, testCase.name);
+        assert.equal(await readFile(historyPath, 'utf-8'), lifecycleBytes.history, testCase.name);
+        assert.equal(await readFile(dailyPath, 'utf-8'), lifecycleBytes.daily, testCase.name);
+        assert.equal(await readFile(hudPath, 'utf-8'), lifecycleBytes.hud, testCase.name);
+        assert.equal(await readFile(metricsPath, 'utf-8'), lifecycleBytes.metrics, testCase.name);
+      }
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies selected-root replacement under lock before pointer publication', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-establish-root-race-'));
+    const displacedRoot = join(cwd, 'displaced-state');
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      let replaced = false;
+      let established: Awaited<ReturnType<typeof establishLaunchSessionBinding>> | undefined;
+      await withPointerDependencies({
+        fs: {
+          openAndSync: async (path) => {
+            if (!replaced && path.startsWith(`${context.sessionPath}.tmp-`)) {
+              replaced = true;
+              await rename(context.baseStateDir, displacedRoot);
+              await mkdir(context.baseStateDir, { recursive: true });
+            }
+            return 'synced' as const;
+          },
+        },
+      }, async () => { established = await establishLaunchSessionBinding(cwd, 'sess-establish-root-race'); });
+      assert.ok(established);
+      assert.notEqual(established.kind, 'committed-released');
+      assert.equal(existsSync(context.sessionPath), false);
+      assert.equal(existsSync(join(displacedRoot, 'session.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('returns committed blocked evidence when selected root changes after pointer rename', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-establish-post-rename-race-'));
+    const displacedRoot = join(cwd, 'displaced-after-rename');
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      let replaced = false;
+      let established: Awaited<ReturnType<typeof establishLaunchSessionBinding>> | undefined;
+      await withPointerDependencies({
+        fs: {
+          rename: async (from, to) => {
+            await rename(from, to);
+            if (!replaced && to === context.sessionPath) {
+              replaced = true;
+              await rename(context.baseStateDir, displacedRoot);
+              await mkdir(context.baseStateDir, { recursive: true });
+            }
+          },
+        },
+      }, async () => { established = await establishLaunchSessionBinding(cwd, 'sess-establish-post-rename-race'); });
+      assert.ok(established);
+      assert.equal(established.kind, 'committed-release-failed');
+      assert.equal(existsSync(context.sessionPath), false);
+      assert.equal(existsSync(join(displacedRoot, 'session.json')), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('denies same-path replacement before creating state, lock, history, or HUD artifacts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-replaced-path-'));
+    const retainedCwd = `${cwd}-retained`;
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-binding-replaced-path');
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+
+      await rename(cwd, retainedCwd);
+      await mkdir(cwd);
+      const context = resolveSessionPointerContext(cwd);
+
+      const finalized = await finalizeBoundOnce(binding, 'test');
+      assert.equal(finalized.finalized, false);
+      assert.equal(finalized.cleanup.comparison?.status, 'denied');
+      assert.equal(existsSync(context.baseStateDir), false);
+      assert.equal(existsSync(context.lockPath), false);
+      assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'hud-state.json')), false);
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+      await rm(retainedCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps native absent reconciliation tokenless without backfill', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-tokenless-'));
+    try {
+      assert.equal((await reconcileNativeSessionStart(cwd, 'native-tokenless')).launch_lineage_token, undefined);
+      assert.equal((await reconcileNativeSessionStart(cwd, 'native-tokenless')).launch_lineage_token, undefined);
+      assert.equal((await readSessionState(cwd))?.launch_lineage_token, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows authorized unsupported-capability stale-dead finalization without weakening bound lineage checks', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-unsupported-lifecycle-'));
+    let ordinary: LaunchSessionBinding | undefined;
+    let stale: LaunchSessionBinding | undefined;
+    try {
+      const ordinaryEstablished = await establishLaunchSessionBinding(cwd, 'sess-unsupported-ordinary', { platform: 'win32' });
+      assert.equal(ordinaryEstablished.kind, 'committed-released');
+      if (ordinaryEstablished.kind !== 'committed-released') return;
+      ordinary = ordinaryEstablished.binding;
+      assert.deepEqual(ordinary.directoryIdentity, { kind: 'unsupported', reason: 'platform' });
+
+      const ordinaryFinalized = await finalizeBoundOnce(ordinary, 'ordinary-unsupported');
+      assert.equal(ordinaryFinalized.finalized, true);
+      assert.equal(existsSync(resolveSessionPointerContext(cwd).sessionPath), false);
+      assert.equal((await closeLaunchSessionBindingOnce(ordinary)).status, 'closed');
+
+      const staleEstablished = await establishLaunchSessionBinding(cwd, 'sess-unsupported-stale', {
+        nativeSessionId: 'native-unsupported-stale',
+        platform: 'win32',
+      });
+      assert.equal(staleEstablished.kind, 'committed-released');
+      if (staleEstablished.kind !== 'committed-released') return;
+      stale = staleEstablished.binding;
+      await reconcileNativeSessionStart(cwd, 'native-unsupported-stale', { pid: 424242, platform: 'win32' });
+      const context = resolveSessionPointerContext(cwd);
+      const historyPath = join(cwd, '.omx', 'logs', 'session-history.jsonl');
+
+      await withPointerDependencies({ probePid: () => 'dead' }, async () => {
+        const finalized = await finalizeBoundOnce(stale as LaunchSessionBinding, 'stale-unsupported');
+        assert.equal(finalized.finalized, true);
+        assert.equal(finalized.cleanup.comparison?.status, 'matched');
+        assert.match(finalized.cleanup.comparison?.reason ?? '', /unsupported-directory-capability:platform/);
+      });
+      assert.equal(existsSync(context.sessionPath), false);
+      const history = await readFile(historyPath, 'utf-8');
+      assert.match(history, /native-unsupported-stale/);
+    } finally {
+      if (ordinary) await closeLaunchSessionBindingOnce(ordinary).catch(() => {});
+      if (stale) await closeLaunchSessionBindingOnce(stale).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves native lineage and tmux metadata across an authorized native-ID replacement', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-lineage-metadata-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      const established = await establishLaunchSessionBinding(cwd, 'sess-native-lineage-metadata', {
+        nativeSessionId: 'native-before',
+        tmuxSessionName: 'omx-native-lineage',
+        tmuxPaneId: '%88',
+      });
+      assert.equal(established.kind, 'committed-released');
+      if (established.kind !== 'committed-released') return;
+      binding = established.binding;
+
+      const reconciled = await reconcileNativeSessionStart(cwd, 'native-after', { pid: process.pid });
+      assert.equal(reconciled.session_id, 'native-after');
+      assert.equal(reconciled.native_session_id, 'native-after');
+      assert.equal(reconciled.owner_omx_session_id, binding.canonicalSessionId);
+      assert.equal(reconciled.previous_native_session_id, 'native-before');
+      assert.equal(reconciled.launch_lineage_token, binding.launchLineageToken);
+      assert.equal(reconciled.tmux_session_name, 'omx-native-lineage');
+      assert.equal(reconciled.tmux_pane_id, '%88');
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports owner unlink residue and does not rmdir it', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-unlink-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      let rmdirCalls = 0;
+      await withPointerDependencies({
+        token: () => TEST_TOKEN,
+        fs: {
+          unlink: async (path) => {
+            if (path.endsWith(`.release-${TEST_TOKEN}/owner.json`)) throw new Error('owner unlink failure');
+            await rm(path, { force: false });
+          },
+          rmdir: async (path) => { rmdirCalls += 1; await rm(path, { recursive: false }); },
+        },
+      }, async () => {
+        const result = await establishLaunchSessionBinding(cwd, 'sess-owner-unlink');
+        assert.equal(result.kind, 'committed-release-failed');
+        if (result.kind === 'committed-release-failed') {
+          assert.equal(result.secondaryFailures[0]?.phase, 'remove-release-owner');
+          assert.equal(result.lockDisposition, 'released-with-residue');
+        }
+      });
+      assert.equal(rmdirCalls, 0);
+      assert.equal(existsSync(`${context.lockPath}.release-${TEST_TOKEN}`), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

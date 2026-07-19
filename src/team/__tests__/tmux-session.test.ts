@@ -66,6 +66,7 @@ import {
   checkWorkerStartupInjectSafety,
   dismissTrustPromptIfPresent,
   evaluateStartupDirectTriggerSafetyCapture,
+  classifyCodexBypassMdmIncompatibility,
   mitigateCopyModeUnderlineArtifacts,
   listPaneIds,
 } from '../tmux-session.js';
@@ -546,6 +547,18 @@ esac
 
 
 describe('evaluateStartupDirectTriggerSafetyCapture', () => {
+  it('classifies only the exact Codex bypass MDM rejection marker', () => {
+    const bypassArgs = ['--dangerously-bypass-approvals-and-sandbox'];
+    const directPolicyArgs = ['--sandbox', 'workspace-write', '--model', 'gpt-5'];
+    const marker = 'MDM_POLICY_REJECTED: approval_policy=never forbids --dangerously-bypass-approvals-and-sandbox';
+    assert.equal(classifyCodexBypassMdmIncompatibility(marker, 'codex', bypassArgs), 'codex_bypass_mdm_incompatible');
+    assert.equal(classifyCodexBypassMdmIncompatibility(`${marker} extra`, 'codex', bypassArgs), null);
+    assert.equal(classifyCodexBypassMdmIncompatibility(` ${marker}`, 'codex', bypassArgs), null);
+    assert.equal(classifyCodexBypassMdmIncompatibility(`${marker} `, 'codex', bypassArgs), null);
+    assert.equal(classifyCodexBypassMdmIncompatibility(marker, 'claude', bypassArgs), null);
+    assert.equal(classifyCodexBypassMdmIncompatibility(marker, 'codex', directPolicyArgs), null, 'direct policy without bypass must keep normal startup handling');
+    assert.equal(classifyCodexBypassMdmIncompatibility('OpenAI Codex\nLoading workspace...', 'codex', bypassArgs), null, 'bypass without the exact marker must keep normal readiness/timeout handling');
+  });
   it('allows startup direct triggers on a ready prompt or Codex viewport', () => {
     assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(READY_HELPER_CAPTURE, 'codex'), {
       safe: true,

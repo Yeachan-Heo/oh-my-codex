@@ -551,6 +551,86 @@ if (process.argv.includes('--version') || process.argv.includes('-V')) {
 ${body}`;
 }
 
+function codexMdmTmuxScript(marker: string): (tmuxLogPath: string) => string {
+  return (tmuxLogPath) => `#!/bin/sh
+set -eu
+${tmuxOwnerProofShim}
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  display-message)
+    case "$*" in *'#{window_width}'*) echo 120 ;; *) echo 'leader:0 %1' ;; esac
+    ;;
+  list-panes)
+    case "$*" in
+      *'-a -F #{pane_id}'*)
+        printf '%%1\t0\t2000001111\n'
+        if [ -f "${tmuxLogPath}.worker-created" ]; then
+          worker_pid=$(cat "${tmuxLogPath}.worker-pid")
+          printf '%%2\t0\t%s\n' "$worker_pid"
+        fi
+        if [ -f "${tmuxLogPath}.hud-created" ]; then printf '%%3\t0\t2000003333\n'; fi
+        ;;
+      *'pane_current_command'*)
+        printf "%%1\tnode\t'codex'\n"
+        if [ -f "${tmuxLogPath}.worker-created" ]; then printf '%%2\tcodex\tcodex\n'; fi
+        if [ -f "${tmuxLogPath}.hud-created" ]; then printf '%%3\tnode\thud --watch\n'; fi
+        ;;
+      *'#{pane_dead} #{pane_pid}'*)
+        case "$*" in
+          *'%1'*) echo '0 2000001111' ;;
+          *'%2'*) if [ -f "${tmuxLogPath}.worker-pid" ]; then echo "0 $(cat "${tmuxLogPath}.worker-pid")"; fi ;;
+          *'%3'*) echo '0 2000003333' ;;
+        esac
+        ;;
+      *'#{pane_dead}'*) echo 0 ;;
+      *'#{pane_pid}'*)
+        case "$*" in
+          *'%1'*) echo 2000001111 ;;
+          *'%2'*) if [ -f "${tmuxLogPath}.worker-pid" ]; then cat "${tmuxLogPath}.worker-pid"; fi ;;
+          *'%3'*) echo 2000003333 ;;
+        esac
+        ;;
+    esac
+    ;;
+  capture-pane)
+    count=0
+    [ -f "${tmuxLogPath}.capture-count" ] && count=$(cat "${tmuxLogPath}.capture-count")
+    count=$((count + 1))
+    printf '%s' "$count" > "${tmuxLogPath}.capture-count"
+    if [ "${'$'}{OMX_MDM_CAPTURE_MODE:-direct}" = detailed ] && [ "$count" -lt 5 ]; then
+      printf 'OpenAI Codex\\nmodel: test\\ndirectory: /tmp/demo\\n'
+    else
+      printf '%s\\n' '${marker}'
+    fi
+    ;;
+  split-window)
+    case "$*" in
+      *' -h '*)
+        : > "${tmuxLogPath}.worker-created"
+        last=''
+        for arg in "$@"; do last="$arg"; done
+        sh -c "$last" >/dev/null 2>&1 &
+        printf '%s' "$!" > "${tmuxLogPath}.worker-pid"
+        echo '%2'
+        ;;
+      *) : > "${tmuxLogPath}.hud-created"; echo '%3' ;;
+    esac
+    ;;
+  kill-pane)
+    case "$*" in
+      *'%2'*)
+        if [ -f "${tmuxLogPath}.worker-pid" ]; then kill "$(cat "${tmuxLogPath}.worker-pid")" 2>/dev/null || true; fi
+        rm -f "${tmuxLogPath}.worker-created" "${tmuxLogPath}.worker-pid"
+        ;;
+      *'%3'*) rm -f "${tmuxLogPath}.hud-created" ;;
+    esac
+    ;;
+  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-session|resize-pane) ;;
+esac
+`;
+}
+
 
 function teamStateTestPath(cwd: string, ...parts: string[]): string {
   const stateRoot = process.env.OMX_TEAM_STATE_ROOT ?? join(cwd, '.omx', 'state');
@@ -3370,6 +3450,152 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
       if (typeof previousStartupDispatchRetryDelay === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = previousStartupDispatchRetryDelay;
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates attached Codex startup on the first exact MDM bypass marker without dispatch or retry', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-codex-mdm-direct-'));
+    const teamName = `codex-mdm-${process.pid}-${Date.now().toString(36)}`;
+    const argvCapturePath = join(cwd, 'codex-argv.json');
+    const marker = 'MDM_POLICY_REJECTED: approval_policy=never forbids --dangerously-bypass-approvals-and-sandbox';
+    const previousTmux = process.env.TMUX;
+    const previousPane = process.env.TMUX_PANE;
+
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-codex-mdm-direct-bin-',
+          tmuxScript: codexMdmTmuxScript(marker),
+          binaries: [{
+            name: 'codex',
+            content: fakeCodexNodeScript(`require('fs').writeFileSync(process.env.OMX_CODEX_ARGV_CAPTURE, JSON.stringify(process.argv.slice(2)));
+process.stdin.resume();`),
+          }],
+          env: {
+            OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
+            OMX_TEAM_WORKER_CLI: 'codex',
+            OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-test',
+            OMX_CODEX_ARGV_CAPTURE: argvCapturePath,
+            OMX_TEAM_READY_TIMEOUT_MS: '50',
+            OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS: '50',
+            OMX_TEAM_STARTUP_DISPATCH_RETRIES: '2',
+            OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS: '1',
+          },
+        },
+        async ({ tmuxLogPath }) => {
+          delete process.env.TMUX;
+          process.env.TMUX_PANE = '%1';
+
+          await assert.rejects(
+            () => withoutTeamWorkerEnv(() => startTeam(
+              teamName,
+              'reject an attached Codex bypass rejected by MDM',
+              'executor',
+              1,
+              [{ subject: 'w1', description: 'worker one', owner: 'worker-1' }],
+              cwd,
+            )),
+            /(worker_startup_incompatible:worker-1:codex_bypass_mdm_incompatible|startup_rollback_pane_proof_unavailable:%2:pane_proof_lost_during_process_teardown)/,
+          );
+
+          const finalArgv = JSON.parse(await waitForFileText(argvCapturePath, (content) => content.length > 0)) as string[];
+          assert.deepEqual(finalArgv.slice(0, 5), [
+            '-c', 'model_reasoning_effort="medium"',
+            '--model', 'gpt-5.6-test',
+            '--dangerously-bypass-approvals-and-sandbox',
+          ]);
+          assert.ok(finalArgv.some((arg) => arg.startsWith('model_instructions_file=')));
+          assert.equal(finalArgv.filter((arg) => arg === '--dangerously-bypass-approvals-and-sandbox').length, 1);
+
+          const tmuxEvents = (await readFile(tmuxLogPath, 'utf-8')).trim().split('\n').filter(Boolean);
+          const captureEvents = tmuxEvents.filter((event) => event.startsWith('capture-pane '));
+          assert.equal(captureEvents.length, 1, 'marker must not enter a second readiness cycle');
+          assert.equal(tmuxEvents.some((event) => event.startsWith('send-keys ') && event.includes(' -l -- ')), false, `marker must stop before any literal dispatch: ${tmuxEvents.join(',')}`);
+          const retainedTeams = await readdir(teamStateTestPath(cwd, 'team'));
+          assert.equal(retainedTeams.length, 1, 'proof-loss rollback must retain one inspectable team root');
+          const retainedTeamName = retainedTeams[0]!;
+          const retainedTask = await readTask(retainedTeamName, '1', cwd);
+          assert.equal(retainedTask?.status, 'pending');
+          assert.equal(retainedTask?.owner, 'worker-1');
+          assert.equal(retainedTask?.claim, undefined);
+          const retainedWorker = await readWorkerStatus(retainedTeamName, 'worker-1', cwd);
+          assert.equal(retainedWorker.reason, 'codex_bypass_mdm_incompatible');
+          assert.equal(retainedWorker.current_task_id, undefined);
+        },
+      );
+    } finally {
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousPane === 'string') process.env.TMUX_PANE = previousPane;
+      else delete process.env.TMUX_PANE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates on an MDM marker first observed during detailed readiness before fallback dispatch', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-codex-mdm-detailed-'));
+    const teamName = `codex-mdm-detailed-${process.pid}-${Date.now().toString(36)}`;
+    const marker = 'MDM_POLICY_REJECTED: approval_policy=never forbids --dangerously-bypass-approvals-and-sandbox';
+    const previousTmux = process.env.TMUX;
+    const previousPane = process.env.TMUX_PANE;
+
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-codex-mdm-detailed-bin-',
+          tmuxScript: codexMdmTmuxScript(marker),
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();') }],
+          env: {
+            OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
+            OMX_TEAM_WORKER_CLI: 'codex',
+            OMX_TEAM_WORKER_LAUNCH_ARGS: '--dangerously-bypass-approvals-and-sandbox --model gpt-5.6-test',
+            OMX_MDM_CAPTURE_MODE: 'detailed',
+            OMX_TEAM_READY_TIMEOUT_MS: '50',
+            OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS: '50',
+            OMX_TEAM_STARTUP_DISPATCH_RETRIES: '2',
+            OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS: '1',
+          },
+        },
+        async ({ tmuxLogPath }) => {
+          delete process.env.TMUX;
+          process.env.TMUX_PANE = '%1';
+          await assert.rejects(
+            () => withoutTeamWorkerEnv(() => startTeam(
+              teamName,
+              'reject a detailed-readiness Codex MDM bypass marker',
+              'executor',
+              1,
+              [{ subject: 'w1', description: 'worker one', owner: 'worker-1' }],
+              cwd,
+            )),
+            /(worker_startup_incompatible:worker-1:codex_bypass_mdm_incompatible|startup_rollback_pane_proof_unavailable:%2:pane_proof_lost_during_process_teardown)/,
+          );
+
+          const tmuxEvents = (await readFile(tmuxLogPath, 'utf-8')).trim().split('\n').filter(Boolean);
+          const captureIndexes = tmuxEvents
+            .map((event, index) => event.startsWith('capture-pane ') ? index : -1)
+            .filter((index) => index >= 0);
+          assert.ok(captureIndexes.length >= 5, `expected startup-direct delivery captures followed by detailed readiness marker: ${tmuxEvents.join(',')}`);
+          const markerCaptureIndex = captureIndexes[4]!;
+          assert.equal(tmuxEvents.slice(markerCaptureIndex + 1).some((event) => event.startsWith('send-keys ') && event.includes(' -l -- ')), false, `marker must stop before fallback dispatch/retry: ${tmuxEvents.join(',')}`);
+          const retainedTeams = await readdir(teamStateTestPath(cwd, 'team'));
+          assert.equal(retainedTeams.length, 1, 'proof-loss rollback must retain one inspectable team root');
+          const retainedTeamName = retainedTeams[0]!;
+          const retainedTask = await readTask(retainedTeamName, '1', cwd);
+          assert.equal(retainedTask?.status, 'pending');
+          assert.equal(retainedTask?.owner, 'worker-1');
+          assert.equal(retainedTask?.claim, undefined);
+          const retainedWorker = await readWorkerStatus(retainedTeamName, 'worker-1', cwd);
+          assert.equal(retainedWorker.reason, 'codex_bypass_mdm_incompatible');
+          assert.equal(retainedWorker.current_task_id, undefined);
+        },
+      );
+    } finally {
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousPane === 'string') process.env.TMUX_PANE = previousPane;
+      else delete process.env.TMUX_PANE;
       await rm(cwd, { recursive: true, force: true });
     }
   });

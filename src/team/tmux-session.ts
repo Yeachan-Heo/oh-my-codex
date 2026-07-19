@@ -89,6 +89,8 @@ export interface TeamSession {
   resizeHookTarget: string | null;
   /** Team-scoped tmux pane ownership token used by shutdown safety checks. */
   teamPaneOwnerId: string;
+  /** Immutable effective argv used by attached tmux startup scripts, aligned by worker index. */
+  workerStartupArgs?: ReadonlyArray<ReadonlyArray<string>>;
 }
 
 /** Carries live tmux resources when creation cannot safely roll them back. */
@@ -1779,6 +1781,42 @@ function appendTeamWorkerMcpDisableOverrides(args: string[], env: NodeJS.Process
   }
 }
 
+const CODEX_BYPASS_MDM_INCOMPATIBLE_REASON = 'codex_bypass_mdm_incompatible';
+const CODEX_BYPASS_MDM_REJECTED_MARKER = 'MDM_POLICY_REJECTED: approval_policy=never forbids --dangerously-bypass-approvals-and-sandbox';
+
+export function classifyCodexBypassMdmIncompatibility(
+  captured: string,
+  workerCli: TeamWorkerCli | undefined,
+  finalArgs: readonly string[] | undefined,
+): typeof CODEX_BYPASS_MDM_INCOMPATIBLE_REASON | null {
+  if (workerCli !== 'codex' || !finalArgs || !parseTeamWorkerLaunchArgs([...finalArgs], 'final tmux worker arguments', { directPolicyMode: 'ignore' }).wantsBypass) return null;
+  const normalizedLines = captured.replace(/\r\n?/g, '\n').split('\n');
+  return normalizedLines.includes(CODEX_BYPASS_MDM_REJECTED_MARKER)
+    ? CODEX_BYPASS_MDM_INCOMPATIBLE_REASON
+    : null;
+}
+
+type AttachedTmuxWorkerStartupPlan = Readonly<{
+  processSpec: WorkerProcessLaunchSpec;
+  startupArgs: ReadonlyArray<string>;
+}>;
+
+function buildAttachedTmuxWorkerStartupPlan(
+  teamName: string,
+  workerIndex: number,
+  launchArgs: string[],
+  cwd: string,
+  extraEnv: Record<string, string>,
+  workerCliOverride?: TeamWorkerCli,
+  initialPrompt?: string,
+  workerRole?: string,
+): AttachedTmuxWorkerStartupPlan {
+  const processSpec = buildWorkerStartupProcessLaunchSpec(teamName, workerIndex, launchArgs, cwd, extraEnv, workerCliOverride, initialPrompt, workerRole);
+  const startupArgs = [...processSpec.args];
+  if (processSpec.workerCli === 'codex') appendTeamWorkerMcpDisableOverrides(startupArgs, { ...process.env, ...extraEnv });
+  return Object.freeze({ processSpec, startupArgs: Object.freeze(startupArgs) });
+}
+
 function insertArgsBeforeEndOfOptions(args: string[], insertedArgs: readonly string[]): string[] {
   const endOfOptionsIndex = args.indexOf('--');
   if (endOfOptionsIndex < 0) return [...args, ...insertedArgs];
@@ -1946,33 +1984,17 @@ export function writeWorkerStartupScriptCommand(
   workerCliOverride?: TeamWorkerCli,
   initialPrompt?: string,
   workerRole?: string,
+  attachedPlan?: AttachedTmuxWorkerStartupPlan,
 ): string | null {
   if (process.platform === 'win32' && !isMsysOrGitBash()) return null;
   const stateRoot = extraEnv[OMX_TEAM_STATE_ROOT_ENV]?.trim();
   if (!stateRoot) return null;
 
-  const processSpec = buildWorkerStartupProcessLaunchSpec(
-    teamName,
-    workerIndex,
-    launchArgs,
-    cwd,
-    extraEnv,
-    workerCliOverride,
-    initialPrompt,
-    workerRole,
-  );
-  const startupEnv = {
-    ...readTmuxWorkerAmbientEnv(process.env),
-    ...processSpec.env,
-  };
-  const startupArgs = [...processSpec.args];
-  if (processSpec.workerCli === 'codex') {
-    appendTeamWorkerMcpDisableOverrides(startupArgs, { ...process.env, ...extraEnv });
-  }
-
+  const startupPlan = attachedPlan ?? buildAttachedTmuxWorkerStartupPlan(teamName, workerIndex, launchArgs, cwd, extraEnv, workerCliOverride, initialPrompt, workerRole);
+  const startupEnv = { ...readTmuxWorkerAmbientEnv(process.env), ...startupPlan.processSpec.env };
   const scriptPath = join(stateRoot, 'team', teamName, 'runtime', `worker-${workerIndex}-startup.sh`);
   mkdirSync(dirname(scriptPath), { recursive: true });
-  writeFileSync(scriptPath, buildWorkerStartupScriptContent(processSpec, startupEnv, startupArgs, cwd, extraEnv), 'utf-8');
+  writeFileSync(scriptPath, buildWorkerStartupScriptContent(startupPlan.processSpec, startupEnv, [...startupPlan.startupArgs], cwd, extraEnv), 'utf-8');
   chmodSync(scriptPath, 0o700);
   return `exec /bin/sh ${shellQuoteSingle(translatePathForMsys(scriptPath))}`;
 }
@@ -2296,6 +2318,7 @@ export function createTeamSession(
     }
 
     const workerPaneIds: string[] = [];
+    const workerStartupArgs: Array<ReadonlyArray<string>> = Array.from({ length: workerCount }, () => Object.freeze([]));
     const workerPanePidsByIndex: Array<number | null> = Array.from({ length: workerCount }, () => null);
     let rightStackRootPaneId: string | null = null;
     let rightStackRootPanePid: number | null = null;
@@ -2308,17 +2331,10 @@ export function createTeamSession(
       const tmuxWorkerCwd = translatePathForMsys(workerCwd);
       const workerEnv = startup.env || {};
       const launchArgsForWorker = [...(workerLaunchPolicyPlan[i - 1] ?? workerLaunchArgs)];
+      const attachedStartupPlan = buildAttachedTmuxWorkerStartupPlan(safeTeamName, i, launchArgsForWorker, workerCwd, workerEnv, workerCliPlan[i - 1], startup.initialPrompt, startup.workerRole);
+      workerStartupArgs[i - 1] = attachedStartupPlan.startupArgs;
       trustWorkerMiseConfigIfAvailable(workerCwd);
-      const cmd = writeWorkerStartupScriptCommand(
-        safeTeamName,
-        i,
-        launchArgsForWorker,
-        workerCwd,
-        workerEnv,
-        workerCliPlan[i - 1],
-        startup.initialPrompt,
-        startup.workerRole,
-      ) ?? buildWorkerStartupCommand(
+      const cmd = writeWorkerStartupScriptCommand(safeTeamName, i, launchArgsForWorker, workerCwd, workerEnv, workerCliPlan[i - 1], startup.initialPrompt, startup.workerRole, attachedStartupPlan) ?? buildWorkerStartupCommand(
         safeTeamName,
         i,
         launchArgsForWorker,
@@ -2573,6 +2589,7 @@ export function createTeamSession(
       workerPaneIdsByIndex: [...workerPaneIds],
       workerPanePidsByIndex,
       leaderPanePid,
+      workerStartupArgs: Object.freeze(workerStartupArgs),
       hudPanePid: partialHudPanePid,
 
       leaderPaneId,
@@ -2897,9 +2914,11 @@ function paneHasClaudeBypassPermissionsPrompt(captured: string): boolean {
 
 export type StartupDirectTriggerSafety =
   | { safe: true; reason: 'ready_prompt' | 'codex_viewport' }
-  | { safe: false; reason: 'tmux_unavailable' | 'capture_failed' | 'trust_prompt' | 'claude_bypass_prompt' | 'bootstrapping' | 'not_agent_viewport' };
+  | { safe: false; reason: 'tmux_unavailable' | 'capture_failed' | 'trust_prompt' | 'claude_bypass_prompt' | 'bootstrapping' | 'not_agent_viewport' | typeof CODEX_BYPASS_MDM_INCOMPATIBLE_REASON };
 
-export function evaluateStartupDirectTriggerSafetyCapture(captured: string, workerCli?: TeamWorkerCli): StartupDirectTriggerSafety {
+export function evaluateStartupDirectTriggerSafetyCapture(captured: string, workerCli?: TeamWorkerCli, finalArgs?: readonly string[]): StartupDirectTriggerSafety {
+  const incompatibleReason = classifyCodexBypassMdmIncompatibility(captured, workerCli, finalArgs);
+  if (incompatibleReason) return { safe: false, reason: incompatibleReason };
   if (paneHasTrustPrompt(captured)) return { safe: false, reason: 'trust_prompt' };
   if (paneHasClaudeBypassPermissionsPrompt(captured)) return { safe: false, reason: 'claude_bypass_prompt' };
   if (paneLooksReady(captured)) return { safe: true, reason: 'ready_prompt' };
@@ -2913,14 +2932,14 @@ export async function evaluateStartupDirectTriggerSafety(
   workerIndex: number,
   workerPaneId?: string,
   workerCli?: TeamWorkerCli,
+  finalArgs?: readonly string[],
 ): Promise<StartupDirectTriggerSafety> {
   if (!isTmuxAvailable()) return { safe: false, reason: 'tmux_unavailable' };
   const target = await resolveWorkerPaneTargetAsync(sessionName, workerIndex, workerPaneId);
-
   if (!target) return { safe: false, reason: 'capture_failed' };
   const result = await runTmuxAsync(sharedBuildVisibleCapturePaneArgv(target));
   if (!result.ok) return { safe: false, reason: 'capture_failed' };
-  return evaluateStartupDirectTriggerSafetyCapture(result.stdout, workerCli);
+  return evaluateStartupDirectTriggerSafetyCapture(result.stdout, workerCli, finalArgs);
 }
 
 function acceptClaudeBypassPermissionsPrompt(resolveTarget: () => string | null): boolean {
@@ -3228,7 +3247,7 @@ export function waitForWorkerReady(
 // Async twin of waitForWorkerReady for team startup fan-out. Keep the readiness
 // semantics mirrored with the synchronous helper above, but yield between polls
 // so one slow worker pane cannot block later workers' startup attempts.
-export async function waitForWorkerReadyAsync(
+export async function waitForWorkerReadyDetailedAsync(
   sessionName: string,
   workerIndex: number,
   timeoutMs: number = 30_000,
@@ -3236,12 +3255,14 @@ export async function waitForWorkerReadyAsync(
   expectedPanePid?: number,
   expectedTeamOwnerId?: string,
   hudPaneId?: string,
+  incompatibility?: { workerCli?: TeamWorkerCli; finalArgs?: readonly string[]; onIncompatible: (reason: typeof CODEX_BYPASS_MDM_INCOMPATIBLE_REASON) => void },
 ): Promise<boolean> {
   const initialBackoffMs = 150;
   const maxBackoffMs = 8000;
   const startedAt = Date.now();
   let blockedByTrustPrompt = false;
   let promptDismissed = false;
+  let startupIncompatible = false;
   const resolveTarget = createPinnedWorkerPaneTargetResolver(sessionName, workerIndex, workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);
 
 
@@ -3262,6 +3283,12 @@ export async function waitForWorkerReadyAsync(
     if (!target) return false;
     const result = await runTmuxAsync(sharedBuildVisibleCapturePaneArgv(target));
     if (!result.ok) return false;
+    const incompatibleReason = classifyCodexBypassMdmIncompatibility(result.stdout, incompatibility?.workerCli, incompatibility?.finalArgs);
+    if (incompatibleReason) {
+      startupIncompatible = true;
+      incompatibility?.onIncompatible(incompatibleReason);
+      return false;
+    }
     if (await dismissClaudeBypassPermissionsPromptIfPresentAsync(resolveTarget, result.stdout)) {
       promptDismissed = true;
       return false;
@@ -3296,6 +3323,7 @@ export async function waitForWorkerReadyAsync(
   let delayMs = initialBackoffMs;
   while (Date.now() - startedAt < timeoutMs) {
     if (await check()) return true;
+    if (startupIncompatible) return false;
     if (blockedByTrustPrompt) return false;
     // After dismissing a trust prompt, reset backoff so we re-check quickly
     // instead of sleeping 2s/4s/8s while the worker is starting up.
@@ -3310,6 +3338,18 @@ export async function waitForWorkerReadyAsync(
   }
 
   return false;
+}
+
+export async function waitForWorkerReadyAsync(
+  sessionName: string,
+  workerIndex: number,
+  timeoutMs: number = 30_000,
+  workerPaneId?: string,
+  expectedPanePid?: number,
+  expectedTeamOwnerId?: string,
+  hudPaneId?: string,
+): Promise<boolean> {
+  return waitForWorkerReadyDetailedAsync(sessionName, workerIndex, timeoutMs, workerPaneId, expectedPanePid, expectedTeamOwnerId, hudPaneId);
 }
 
 /**

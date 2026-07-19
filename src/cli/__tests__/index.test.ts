@@ -1,6 +1,7 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import {
   buildTmuxPaneCommand,
   shouldSourceTmuxPaneShellRc,
   buildWindowsPromptCommand,
+  buildWindowsDetachedChildCommand,
   buildTmuxSessionName,
   resolveCliInvocation,
   parseResumeCodexHomeSelection,
@@ -52,6 +54,8 @@ import {
   createMadmaxIsolatedRoot,
   buildMadmaxDetachedLaunchContextKey,
   withMadmaxDetachedContextLock,
+  executeDetachedLaunchStateMachine,
+  type DetachedLaunchDependencies,
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
@@ -79,7 +83,6 @@ import {
   resolveNotifyFallbackWatcherScript,
   resolveHookDerivedWatcherScript,
   resolveNotifyHookScript,
-  buildDetachedWindowsBootstrapScript,
   acquireTmuxExtendedKeysLease,
   resolveNativeSessionName,
   releaseTmuxExtendedKeysLease,
@@ -382,7 +385,7 @@ describe("madmax state isolation", () => {
       await writeFile(join(lockPath, "pid"), "2147483647");
 
       let ran = false;
-      const result = withMadmaxDetachedContextLock(
+      const result = await withMadmaxDetachedContextLock(
         runs,
         contextKey,
         () => {
@@ -417,7 +420,7 @@ describe("madmax state isolation", () => {
       );
       await writeFile(join(lockPath, "pid"), String(process.pid));
 
-      assert.throws(
+      await assert.rejects(
         () => withMadmaxDetachedContextLock(runs, contextKey, () => "should-not-run", { maxAttempts: 1, retryMs: 0 }),
         (err: unknown) => {
           assert.ok(err instanceof Error);
@@ -434,6 +437,164 @@ describe("madmax state isolation", () => {
     } finally {
       await rm(runs, { recursive: true, force: true });
     }
+  });
+});
+
+describe("detached launch state machine", () => {
+  function createDependencies(events: string[], failAt?: string): DetachedLaunchDependencies<string, string, string> {
+    const step = async (name: string): Promise<void> => {
+      events.push(name);
+      if (failAt === name) throw new Error(name);
+    };
+    return {
+      establish: async () => { await step("D1"); return "binding"; },
+      complete: async () => { await step("D2"); return { kind: "success" }; },
+      createInertSession: async () => { await step("D3"); return "inert"; },
+      capturePane: async () => { await step("D4"); return "%1"; },
+      updateNameMetadata: async () => { await step("D5"); return "committed-released"; },
+      updatePaneMetadata: async () => { await step("D6"); return "committed-released"; },
+      publishActiveRecord: async () => {
+        await step("D7");
+        return { bytes: "record", digest: "digest", nonce: "nonce" };
+      },
+      finalizeSetupFailure: async () => { await step("finalize-setup-failure"); },
+      releaseBarrier: async () => { await step("D9"); },
+      abortAndAwaitFinalization: async () => ({
+        acknowledged: true,
+        nonce: "nonce",
+        sessionId: "session",
+        sessionName: "session-name",
+        leaderPid: 123,
+        kind: "failed",
+      }),
+      attachOrReturn: async () => { await step("D10"); },
+      rollback: async () => { events.push("rollback"); },
+    };
+  }
+
+  it("uses the frozen D0 outcome without rediscovering transport or reuse", async () => {
+    const events: string[] = [];
+    const result = await executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      createDependencies(events),
+    );
+    assert.equal(result.kind, "attached");
+    assert.deepEqual(events, ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D9", "D10"]);
+  });
+
+  for (const platform of ["posix", "native-windows"] as const) {
+    it(`${platform}: releases only after atomic record and starts exactly once`, async () => {
+      const events: string[] = [];
+      const result = await executeDetachedLaunchStateMachine(
+        { preflight: { kind: "available", shouldAttach: platform === "posix", report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+        createDependencies(events),
+      );
+      assert.equal(result.kind, platform === "posix" ? "attached" : "returned");
+      assert.deepEqual(events, ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D9", "D10"]);
+    });
+  }
+
+  for (const failure of ["D1", "D2", "D3", "D4", "D5", "D6", "D7"] as const) {
+    it(`rolls back verified pre-release ownership when ${failure} fails`, async () => {
+      const events: string[] = [];
+      await assert.rejects(executeDetachedLaunchStateMachine(
+        { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+        createDependencies(events, failure),
+      ), (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal((err as { report?: { transitions: string[] } }).report?.transitions.at(-1), failure);
+        return true;
+      });
+      assert.ok(events.includes("rollback"));
+      assert.equal(events.includes("D10"), false);
+    });
+  }
+
+  it("finalizes and closes exactly once before D2 rollback without transport effects", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events);
+    deps.complete = async () => {
+      events.push("D2");
+      return { kind: "failure", operation: "session-instructions", error: new Error("instructions") };
+    };
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.deepEqual(events, ["D1", "D2", "finalize-setup-failure", "rollback"]);
+  });
+
+  it("never rolls back, deletes records, or falls back after D10 attach failure", async () => {
+    const events: string[] = [];
+    await assert.rejects(executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      createDependencies(events, "D10"),
+    ), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.equal((err as { report?: { transitions: string[] } }).report?.transitions.at(-1), "D10");
+      return true;
+    });
+    assert.equal(events.includes("rollback"), false);
+    assert.deepEqual(events.slice(-2), ["D9", "D10"]);
+  });
+
+  it("preserves leader authority when D9 publication fails without an authenticated finalization acknowledgement", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => {
+      events.push("abort-request");
+      return { acknowledged: false };
+    };
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.deepEqual(events.slice(-2), ["D9", "abort-request"]);
+    assert.equal(events.includes("rollback"), false);
+  });
+
+  it("permits rollback only after an authenticated D9 abort acknowledgement", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => ({
+      acknowledged: true,
+      nonce: "nonce",
+      sessionId: "session",
+      sessionName: "session-name",
+      leaderPid: 123,
+      kind: "failed",
+    });
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.equal(events.includes("rollback"), true);
+  });
+
+  it("fails closed when a purported D9 acknowledgement omits its finalized authority binding", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => ({ acknowledged: true });
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.equal(events.includes("rollback"), false);
+  });
+
+  it("preserves the authority-owning leader on a pre-D9 failure without finalized acknowledgement", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D4");
+    deps.abortAndAwaitFinalization = async () => {
+      events.push("abort-request");
+      return { acknowledged: false };
+    };
+    await assert.rejects(() => executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.deepEqual(events.slice(-2), ["D4", "abort-request"]);
+    assert.equal(events.includes("rollback"), false);
   });
 });
 
@@ -3359,7 +3520,7 @@ describe("pointer launch aborts", () => {
       });
 
       assert.equal(result.status, 1, result.stderr || result.stdout);
-      assert.match(result.stderr, /session_pointer_context_failure/);
+      assert.match(result.stderr, /Unable to establish launch directory capability/);
       assert.equal(existsSync(codexLog), false);
       assert.equal(existsSync(tmuxLog), false);
       assert.equal(existsSync(join(wd, ".omx", "state", "sessions")), false);
@@ -4513,562 +4674,47 @@ exit 0
     }), false);
   });
 
-  it("buildDetachedSessionBootstrapSteps starts native Windows detached sessions with powershell", () => {
-    const hudCmd = buildWindowsPromptCommand("node", [
-      "omx.js",
-      "hud",
-      "--watch",
-    ]);
+  it("buildDetachedSessionBootstrapSteps starts native Windows with the persistent internal leader", () => {
     const steps = buildDetachedSessionBootstrapSteps(
-      "omx-demo",
-      "C:/project",
-      "'codex' '--dangerously-bypass-approvals-and-sandbox'",
-      hudCmd,
-      "--model gpt-5",
-      "C:/codex-home",
-      null,
-      true,
+      "omx-demo", "C:/project", buildWindowsDetachedChildCommand("codex", ["--model", "gpt-5"]),
+      "'node' 'omx.js' 'hud' '--watch'", null, undefined, null, true, "omx-session-123",
+      "C:/project/.codex", "C:/project/.omx/runtime/codex-home/omx-session-123", undefined,
+      process.env, undefined, undefined, undefined,
+      "C:/project/.omx/runtime/detached-release/omx-session-123.release",
+      "C:/project/dist/cli/omx.js",
     );
-    assert.equal(steps[0]?.name, "new-session");
-    assert.equal(steps[0]?.args.at(-1), "powershell.exe");
-    assert.equal(steps[1]?.name, "split-and-capture-hud-pane");
-    assert.equal(steps[1]?.args.at(-1), hudCmd);
+    const leaderCmd = steps[0]?.args.at(-1);
+    assert.equal(typeof leaderCmd, "string");
+    assert.match(leaderCmd!, /powershell\.exe -NoLogo -NoProfile -NonInteractive -Command/);
+    assert.match(leaderCmd!, /__detached-session-leader/);
+    assert.doesNotMatch(leaderCmd!, /__detached-post-launch|Test-Path -LiteralPath/);
   });
 
-  it("buildDetachedWindowsBootstrapScript targets the resolved tmux-compatible command", () => {
-    const script = buildDetachedWindowsBootstrapScript(
-      "omx-demo",
-      "powershell.exe -NoLogo -NoExit -EncodedCommand abc",
-      2500,
-      "C:\\Program Files\\psmux\\psmux.exe",
-    );
-    assert.match(script, /const tmuxCommand = "C:\\\\Program Files\\\\psmux\\\\psmux\.exe";/);
-    assert.match(script, /execFileSync\(tmuxCommand, \['send-keys'/);
-    assert.doesNotMatch(script, /execFileSync\('tmux'/);
-  });
-
-  it("buildDetachedSessionBootstrapSteps kills detached tmux session on normal shell exit", () => {
+  it("buildDetachedSessionBootstrapSteps gives the POSIX leader persistent lifecycle ownership", () => {
+    const releaseMarkerPath = "/tmp/project/.omx/runtime/detached-release/omx-session-123.release";
     const steps = buildDetachedSessionBootstrapSteps(
-      "omx-demo",
-      "/tmp/project",
-      "'codex' '--model' 'gpt-5'",
-      "'node' '/tmp/omx.js' 'hud' '--watch'",
-      null,
+      "omx-demo", "/tmp/project", "'codex' '--model' 'gpt-5'", "'node' '/tmp/omx.js' 'hud' '--watch'",
+      null, "/tmp/codex-home", null, false, "omx-session-123", "/tmp/project/.codex-project",
+      "/tmp/project/.omx/runtime/codex-home/omx-session-123", undefined, process.env, undefined,
+      undefined, undefined, releaseMarkerPath,
     );
     const leaderCmd = steps[0]?.args.at(-1);
     assert.equal(typeof leaderCmd, "string");
     assert.match(leaderCmd!, /^\/bin\/sh -c '/);
-    assert.doesNotMatch(leaderCmd!, /^\/bin\/sh -lc '/);
-    assert.match(leaderCmd!, /acquireTmuxExtendedKeysLease/);
-    assert.match(leaderCmd!, /omx_detached_session_cleanup\(\)/);
-    assert.match(leaderCmd!, /trap omx_detached_session_cleanup 0 INT TERM HUP;/);
-    assert.match(leaderCmd!, /exec 3<&0;/);
-    assert.match(leaderCmd!, /omx_codex_pid=\$!;/);
-    assert.match(leaderCmd!, /<\&3 &/);
-    assert.match(leaderCmd!, /wait "\$omx_codex_pid";/);
-    assert.match(leaderCmd!, /kill -TERM "\$omx_codex_pid"/);
-    assert.match(leaderCmd!, /releaseTmuxExtendedKeysLease/);
-    assert.match(leaderCmd!, /if \[ "\$status" -eq 0 \]; then/);
-    assert.match(leaderCmd!, /tmux kill-session -t/);
-    assert.match(leaderCmd!, /"omx-demo"/);
-    assert.match(leaderCmd!, /codex exited immediately with code 0/);
-    assert.match(leaderCmd!, /codex exited with code/);
-    assert.match(leaderCmd!, /detached tmux session is being kept open/);
-    assert.match(leaderCmd!, /exit \$status/);
+    assert.match(leaderCmd!, /__detached-session-leader/);
+    assert.doesNotMatch(leaderCmd!, /__detached-post-launch|omx_codex_pid|while \[ ! -f/);
   });
 
-  it("buildDetachedSessionBootstrapSteps finalizes postLaunch inside the detached leader when a session id is available", () => {
+  it("keeps capability data out of the detached leader command payload", () => {
     const steps = buildDetachedSessionBootstrapSteps(
-      "omx-demo",
-      "/tmp/project",
-      "'codex' '--model' 'gpt-5'",
-      "'node' '/tmp/omx.js' 'hud' '--watch'",
-      null,
-      "/tmp/codex-home",
-      null,
-      false,
-      "omx-session-123",
-      "/tmp/project/.codex-project",
-      "/tmp/project/.omx/runtime/codex-home/omx-session-123",
+      "omx-demo", "/tmp/project", "codex", "hud", null, undefined, null, false,
+      "omx-session-123", undefined, undefined, undefined, process.env,
     );
-    const leaderCmd = steps[0]?.args.at(-1);
-    assert.equal(typeof leaderCmd, "string");
-    assert.match(leaderCmd!, /runDetachedSessionPostLaunch/);
-    assert.match(leaderCmd!, /omx-session-123/);
-    assert.match(leaderCmd!, /\/tmp\/codex-home/);
-    assert.match(leaderCmd!, /\/tmp\/project\/\.codex-project/);
-    assert.match(leaderCmd!, /\/tmp\/project\/\.omx\/runtime\/codex-home\/omx-session-123/);
-    const helperIndex = leaderCmd!.indexOf("runDetachedSessionPostLaunch");
-    const signalGateIndex = leaderCmd!.indexOf('if [ "$status" -eq 0 ]');
-    assert.ok(helperIndex >= 0);
-    assert.ok(signalGateIndex >= 0);
-    assert.ok(
-      helperIndex < signalGateIndex,
-      "detached postLaunch helper must run before the signal-derived tmux kill-session gate",
-    );
+    const leaderCmd = steps[0]?.args.at(-1) ?? "";
+    assert.match(leaderCmd, /__detached-session-leader/);
+    assert.doesNotMatch(leaderCmd, /launch_lineage_token|directoryIdentity|FileHandle/);
   });
 
-  it("detached leader command keeps stdin open for the Codex child", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-stdin-"));
-    const fakeBin = join(cwd, "bin");
-    const stdinLogPath = join(cwd, "stdin.log");
-
-    try {
-      await mkdir(fakeBin, { recursive: true });
-      await writeFile(
-        join(fakeBin, "codex"),
-        `#!/bin/sh
-if IFS= read -r line; then
-  printf 'stdin:%s\n' "$line" > "${stdinLogPath}"
-else
-  printf 'stdin:EOF\n' > "${stdinLogPath}"
-fi
-`,
-      );
-      await chmod(join(fakeBin, "codex"), 0o755);
-      await writeFile(
-        join(fakeBin, "tmux"),
-        `#!/bin/sh
-case "$1" in
-  display-message)
-    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
-      printf '/tmp/tmux-test.sock\n'
-    else
-      printf '0\n'
-    fi
-    ;;
-  show-options)
-    printf 'off\n'
-    ;;
-  set-option|kill-session)
-    ;;
-esac
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "tmux"), 0o755);
-
-      const steps = buildDetachedSessionBootstrapSteps(
-        "omx-demo",
-        cwd,
-        buildTmuxPaneCommand("codex", [], "/bin/sh"),
-        "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
-      );
-      const leaderCmd = steps[0]?.args.at(-1);
-      assert.equal(typeof leaderCmd, "string");
-
-      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
-          HOME: cwd,
-        },
-        input: "hello from leader\n",
-        encoding: "utf-8",
-      });
-
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      const stdinLog = await readFile(stdinLogPath, "utf-8");
-      assert.match(stdinLog, /stdin:hello from leader/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("detached leader command preserves cwd and cleanup without shell-quote breakage", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-"));
-    const fakeBin = join(cwd, "bin");
-    const logPath = join(cwd, "leader.log");
-
-    try {
-      await mkdir(fakeBin, { recursive: true });
-      await writeFile(
-        join(fakeBin, "codex"),
-        `#!/bin/sh
-printf 'codex:%s\\n' "$*" >> "${logPath}"
-printf 'codex-pwd:%s\\n' "$(pwd)" >> "${logPath}"
-printf 'codex-bridge-env:%s\\n' "\${OMX_HERMES_MCP_BRIDGE-unset}" >> "${logPath}"
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "codex"), 0o755);
-      await writeFile(join(cwd, ".profile"), "cd ..\n");
-      await writeFile(
-        join(fakeBin, "tmux"),
-        `#!/bin/sh
-printf 'tmux:%s\\n' "$*" >> "${logPath}"
-case "$1" in
-  display-message)
-    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
-      printf '/tmp/tmux-test.sock\\n'
-    else
-      printf '0\\n'
-    fi
-    ;;
-  show-options)
-    printf 'off\\n'
-    ;;
-  set-option|kill-session)
-    ;;
-esac
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "tmux"), 0o755);
-
-      const steps = buildDetachedSessionBootstrapSteps(
-        "omx-demo",
-        cwd,
-        buildTmuxPaneCommand(
-          "codex",
-          ["--dangerously-bypass-approvals-and-sandbox"],
-          "/bin/sh",
-        ),
-        "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
-      );
-      const leaderCmd = steps[0]?.args.at(-1);
-      assert.equal(typeof leaderCmd, "string");
-
-      (await import("node:child_process")).execFileSync("/bin/sh", ["-c", leaderCmd!], {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
-          HOME: cwd,
-          OMX_HERMES_MCP_BRIDGE: "1",
-        },
-        stdio: "ignore",
-      });
-
-      const log = await readFile(logPath, "utf-8");
-      assert.match(log, /codex:--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(
-        normalizeDarwinTmpPath(log),
-        new RegExp(`codex-pwd:${escapeRegExp(normalizeDarwinTmpPath(cwd))}`),
-      );
-      assert.match(log, /codex-bridge-env:unset/);
-      assert.match(log, /tmux:display-message -p #\{socket_path\}/);
-      assert.match(log, /tmux:show-options -sv extended-keys/);
-      assert.match(log, /tmux:set-option -sq extended-keys always/);
-      assert.match(log, /tmux:set-option -sq extended-keys off/);
-      assert.match(log, /tmux:kill-session -t omx-demo/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("detached leader command preserves the detached tmux session on signal-derived exits", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-signal-"));
-    const fakeBin = join(cwd, "bin");
-    const logPath = join(cwd, "leader.log");
-
-    try {
-      await mkdir(fakeBin, { recursive: true });
-      await writeFile(
-        join(fakeBin, "codex"),
-        `#!/bin/sh
-printf 'codex:%s\\n' "$*" >> "${logPath}"
-exit 143
-`,
-      );
-      await chmod(join(fakeBin, "codex"), 0o755);
-      await writeFile(
-        join(fakeBin, "tmux"),
-        `#!/bin/sh
-printf 'tmux:%s\\n' "$*" >> "${logPath}"
-case "$1" in
-  display-message)
-    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
-      printf '/tmp/tmux-test.sock\\n'
-    else
-      printf '0\\n'
-    fi
-    ;;
-  show-options)
-    printf 'off\\n'
-    ;;
-  set-option|kill-session)
-    ;;
-esac
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "tmux"), 0o755);
-
-      const steps = buildDetachedSessionBootstrapSteps(
-        "omx-demo",
-        cwd,
-        buildTmuxPaneCommand(
-          "codex",
-          ["--dangerously-bypass-approvals-and-sandbox"],
-          "/bin/sh",
-        ),
-        "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
-      );
-      const leaderCmd = steps[0]?.args.at(-1);
-      assert.equal(typeof leaderCmd, "string");
-
-      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
-          HOME: cwd,
-        },
-        encoding: "utf-8",
-      });
-
-      assert.equal(result.status, 143);
-      const log = await readFile(logPath, "utf-8");
-      assert.match(log, /codex:--dangerously-bypass-approvals-and-sandbox/);
-      assert.match(log, /tmux:display-message -p #\{socket_path\}/);
-      assert.match(log, /tmux:show-options -sv extended-keys/);
-      assert.match(log, /tmux:set-option -sq extended-keys always/);
-      assert.match(log, /tmux:set-option -sq extended-keys off/);
-      assert.doesNotMatch(log, /tmux:kill-session -t omx-demo/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("detached leader command keeps child startup errors visible instead of killing the session", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-error-"));
-    const fakeBin = join(cwd, "bin");
-    const logPath = join(cwd, "leader.log");
-
-    try {
-      await mkdir(fakeBin, { recursive: true });
-      await writeFile(
-        join(fakeBin, "codex"),
-        `#!/bin/sh
-printf 'codex-stderr: unsupported startup flag\\n' >&2
-exit 42
-`,
-      );
-      await chmod(join(fakeBin, "codex"), 0o755);
-      await writeFile(
-        join(fakeBin, "tmux"),
-        `#!/bin/sh
-printf 'tmux:%s\\n' "$*" >> "${logPath}"
-case "$1" in
-  display-message)
-    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
-      printf '/tmp/tmux-test.sock\\n'
-    else
-      printf '0\\n'
-    fi
-    ;;
-  show-options)
-    printf 'off\\n'
-    ;;
-  set-option|kill-session)
-    ;;
-esac
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "tmux"), 0o755);
-
-      const steps = buildDetachedSessionBootstrapSteps(
-        "omx-demo",
-        cwd,
-        buildTmuxPaneCommand("codex", ["--bad-startup-flag"], "/bin/sh"),
-        "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
-      );
-      const leaderCmd = steps[0]?.args.at(-1);
-      assert.equal(typeof leaderCmd, "string");
-
-      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
-          HOME: cwd,
-        },
-        input: "\n",
-        encoding: "utf-8",
-      });
-
-      assert.equal(result.status, 42);
-      assert.match(result.stderr, /codex-stderr: unsupported startup flag/);
-      assert.match(result.stderr, /codex exited with code 42 during startup/);
-      assert.match(result.stderr, /detached tmux session is being kept open/);
-      const log = await readFile(logPath, "utf-8");
-      assert.doesNotMatch(log, /tmux:kill-session -t omx-demo/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("detached leader command keeps immediate zero-code exits visible instead of silently closing", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-zero-"));
-    const fakeBin = join(cwd, "bin");
-    const logPath = join(cwd, "leader.log");
-
-    try {
-      await mkdir(fakeBin, { recursive: true });
-      await writeFile(
-        join(fakeBin, "codex"),
-        `#!/bin/sh
-printf 'codex-started-then-quit\\n' >&2
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "codex"), 0o755);
-      await writeFile(
-        join(fakeBin, "tmux"),
-        `#!/bin/sh
-printf 'tmux:%s\\n' "$*" >> "${logPath}"
-case "$1" in
-  display-message)
-    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
-      printf '/tmp/tmux-test.sock\\n'
-    else
-      printf '0\\n'
-    fi
-    ;;
-  show-options)
-    printf 'off\\n'
-    ;;
-  set-option|kill-session)
-    ;;
-esac
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "tmux"), 0o755);
-
-      const steps = buildDetachedSessionBootstrapSteps(
-        "omx-demo",
-        cwd,
-        buildTmuxPaneCommand("codex", [], "/bin/sh"),
-        "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
-      );
-      const leaderCmd = steps[0]?.args.at(-1);
-      assert.equal(typeof leaderCmd, "string");
-
-      const result = (await import("node:child_process")).spawnSync("/bin/sh", ["-c", leaderCmd!], {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
-          HOME: cwd,
-        },
-        input: "\n",
-        encoding: "utf-8",
-      });
-
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.match(result.stderr, /codex-started-then-quit/);
-      assert.match(result.stderr, /codex exited immediately with code 0 during startup/);
-      assert.match(result.stderr, /detached tmux session is being kept open/);
-      const log = await readFile(logPath, "utf-8");
-      assert.match(log, /tmux:kill-session -t omx-demo/);
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("detached leader command terminates codex child on external SIGHUP", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-hup-"));
-    const fakeBin = join(cwd, "bin");
-    const pidFile = join(cwd, "codex.pid");
-    try {
-      await mkdir(fakeBin, { recursive: true });
-      await writeFile(
-        join(fakeBin, "codex"),
-        `#!/bin/sh
-echo $$ > "${pidFile}"
-trap '' HUP
-while true; do sleep 1; done
-`,
-      );
-      await chmod(join(fakeBin, "codex"), 0o755);
-      await writeFile(
-        join(fakeBin, "tmux"),
-        `#!/bin/sh
-case "$1" in
-  display-message)
-    if [ "$3" = '#{socket_path}' ] || [ "$4" = '#{socket_path}' ]; then
-      printf '/tmp/tmux-test.sock\\n'
-    else
-      printf '0\\n'
-    fi
-    ;;
-  show-options) printf 'off\\n' ;;
-  set-option|kill-session) ;;
-esac
-exit 0
-`,
-      );
-      await chmod(join(fakeBin, "tmux"), 0o755);
-
-      const steps = buildDetachedSessionBootstrapSteps(
-        "omx-demo",
-        cwd,
-        buildTmuxPaneCommand("codex", [], "/bin/sh"),
-        "'node' '/tmp/omx.js' 'hud' '--watch'",
-        null,
-      );
-      const leaderCmd = steps[0]?.args.at(-1);
-      assert.equal(typeof leaderCmd, "string");
-
-      const { spawn } = await import("node:child_process");
-      const child = spawn("/bin/sh", ["-c", `exec ${leaderCmd!}`], {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:/usr/bin:/bin`,
-          HOME: cwd,
-        },
-        stdio: "ignore",
-        detached: true,
-      });
-
-      try {
-        for (let i = 0; i < 50; i += 1) {
-          if (existsSync(pidFile)) break;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        assert.ok(existsSync(pidFile), "codex pid file not written");
-        const codexPid = Number.parseInt((await readFile(pidFile, "utf-8")).trim(), 10);
-        assert.ok(codexPid > 0, "codex pid must be positive");
-        assert.doesNotThrow(() => process.kill(codexPid, 0), "codex must be alive before signal");
-
-        const leaderExit = once(child, "exit");
-        process.kill(child.pid!, "SIGHUP");
-        await Promise.race([
-          leaderExit,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("leader did not exit after SIGHUP")), 3000),
-          ),
-        ]);
-        assert.throws(
-          () => process.kill(codexPid, 0),
-          (err: unknown) =>
-            typeof err === "object" &&
-            err !== null &&
-            "code" in err &&
-            (err as NodeJS.ErrnoException).code === "ESRCH",
-          "codex child must be terminated after leader SIGHUP",
-        );
-      } finally {
-        try {
-          process.kill(child.pid!, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
 
   it("withTmuxExtendedKeys enables tmux extended keys during codex launch and restores them afterwards", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-tmux-lease-wrapper-"));
@@ -5877,6 +5523,54 @@ describe("buildWindowsPromptCommand", () => {
       decoded,
       "$ErrorActionPreference = 'Stop'; & { & 'codex' '--dangerously-bypass-approvals-and-sandbox' '-c' 'model_reasoning_effort=\"high\"' 'it''s' }",
     );
+  });
+});
+
+describe("buildWindowsDetachedChildCommand", () => {
+  it("exits with the Codex child status instead of retaining an interactive shell", () => {
+    const result = buildWindowsDetachedChildCommand("codex", ["--model", "gpt-5"]);
+    const prefix = "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ";
+    assert.ok(result.startsWith(prefix));
+    assert.doesNotMatch(result, /-NoExit/);
+    assert.equal(
+      Buffer.from(result.slice(prefix.length), "base64").toString("utf16le"),
+      "$ErrorActionPreference = 'Stop'; & 'codex' '--model' 'gpt-5'; exit $LASTEXITCODE",
+    );
+  });
+});
+
+describe("Windows detached leader environment", () => {
+  it("serializes inherited parent values into the detached Windows leader command", () => {
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-test", "C:/project", "codex", "hud", null, undefined, null, true, "session-1",
+      undefined, undefined, undefined, {
+        PATH: "C:/runtime-shim;C:/parent/bin",
+        CUSTOM_VALUE: "retained",
+        CODEX_HOME: "C:/project/.codex-runtime",
+        CODEX_SQLITE_HOME: "C:/project/.codex-sqlite",
+        OMX_ROOT: "C:/project/.omx-run",
+        OMX_CODEX_LAUNCH_ID: "launch-id",
+        OMX_NOTIFY_TEMP_CONTRACT: "{\"active\":true}",
+        OMX_TEAM_WORKER_LAUNCH_ARGS: "[\"--model\",\"gpt-5\"]",
+        TMUX: "foreign",
+        TMUX_PANE: "%9",
+        TERM: "xterm-256color",
+      },
+    );
+    const command = steps[0]?.args.at(-1) ?? "";
+    const encodedPayload = command.match(/__detached-session-leader ''([^']+)''/)?.[1];
+    assert.ok(encodedPayload);
+    const payload = JSON.parse(Buffer.from(encodedPayload!, "base64url").toString("utf8"));
+    assert.deepEqual(payload.parentEnv, {
+      CODEX_HOME: "C:/project/.codex-runtime",
+      CODEX_SQLITE_HOME: "C:/project/.codex-sqlite",
+      CUSTOM_VALUE: "retained",
+      OMX_CODEX_LAUNCH_ID: "launch-id",
+      OMX_NOTIFY_TEMP_CONTRACT: "{\"active\":true}",
+      OMX_ROOT: "C:/project/.omx-run",
+      OMX_TEAM_WORKER_LAUNCH_ARGS: "[\"--model\",\"gpt-5\"]",
+      PATH: "C:/runtime-shim;C:/parent/bin",
+    });
   });
 });
 

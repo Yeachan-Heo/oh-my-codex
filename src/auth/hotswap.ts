@@ -9,6 +9,7 @@ import { buildRotationPlan, nextSlotAfter } from "./rotation.js";
 import { findLatestRolloutSession } from "./sessions.js";
 import { listSlots, markSlotQuota, readAuthMetadata, useSlot } from "./storage.js";
 import { isSessionPointerLaunchAbort } from "../hooks/session.js";
+import type { LaunchSessionBinding } from "../hooks/session.js";
 
 export interface PreparedHotswapCodexHome {
   codexHomeOverride?: string;
@@ -16,6 +17,11 @@ export interface PreparedHotswapCodexHome {
   projectLocalCodexHomeForCleanup?: string;
   runtimeCodexHomeForCleanup?: string;
 }
+
+export type HotswapCompletionResult =
+  | { kind: "success" }
+  | { kind: "degraded-success"; operations: readonly string[] }
+  | { kind: "failure"; operation: string; error: unknown };
 
 export interface HotswapLifecycle {
   prepareCodexHomeForLaunch: (cwd: string, sessionId: string, env: NodeJS.ProcessEnv) => Promise<PreparedHotswapCodexHome>;
@@ -26,10 +32,11 @@ export interface HotswapLifecycle {
     codexHomeOverride: string | undefined,
     enableNotifyFallbackAuthority: boolean,
     worktreeDirty: boolean,
-  ) => Promise<void>;
+  ) => Promise<{ binding: LaunchSessionBinding; completion: HotswapCompletionResult }>;
   postLaunch: (
     cwd: string,
     sessionId: string,
+    binding: LaunchSessionBinding,
     codexHomeOverride: string | undefined,
     enableNotifyFallbackAuthority: boolean,
     projectLocalCodexHomeForCleanup?: string,
@@ -243,9 +250,13 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
   const exhausted = new Set<string>();
   let resumeArgs: string[] | null = null;
   let skipPostLaunch = false;
+  let launchEstablished = false;
+  let launch: { binding: LaunchSessionBinding; completion: HotswapCompletionResult } | undefined;
   try {
     try {
-      await lifecycle.preLaunch(cwd, sessionId, notifyTempResult.contract, prepared.codexHomeOverride, true, false);
+      launch = await lifecycle.preLaunch(cwd, sessionId, notifyTempResult.contract, prepared.codexHomeOverride, true, false);
+      if (launch.completion.kind === "failure") throw launch.completion.error;
+    launchEstablished = true;
     } catch (err) {
       if (isSessionPointerLaunchAbort(err)) {
         skipPostLaunch = true;
@@ -318,13 +329,20 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
     process.stderr.write(`[omx auth] ${redactAuthSecrets(err)}\n`);
     return 1;
   } finally {
-    if (!skipPostLaunch) {
-      await lifecycle.postLaunch(cwd, sessionId, prepared.codexHomeOverride, true, prepared.projectLocalCodexHomeForCleanup).catch((err) => {
-        process.stderr.write(`[omx auth] postLaunch warning: ${redactAuthSecrets(err)}\n`);
-      });
+    let terminalCleanupFailed = false;
+    if (launchEstablished && !skipPostLaunch && launch) {
+      try {
+        await lifecycle.postLaunch(cwd, sessionId, launch.binding, prepared.codexHomeOverride, true, prepared.projectLocalCodexHomeForCleanup);
+      } catch (err) {
+        terminalCleanupFailed = true;
+        process.stderr.write(`[omx auth] postLaunch failed: ${redactAuthSecrets(err)}\n`);
+      }
     }
-    await lifecycle.cleanupRuntimeCodexHome(prepared.runtimeCodexHomeForCleanup, prepared.projectLocalCodexHomeForCleanup).catch((err) => {
+    try {
+      await lifecycle.cleanupRuntimeCodexHome(prepared.runtimeCodexHomeForCleanup, prepared.projectLocalCodexHomeForCleanup);
+    } catch (err) {
       process.stderr.write(`[omx auth] cleanup warning: ${redactAuthSecrets(err)}\n`);
-    });
+    }
+    if (terminalCleanupFailed) return 1;
   }
 }

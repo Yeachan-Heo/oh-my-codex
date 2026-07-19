@@ -306,6 +306,53 @@ describe('omx exec', () => {
     }
   });
 
+  it('archives a native live-to-dead exec binding and leaves cancel immediately usable', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exec-bound-stale-dead-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+      const testDir = dirname(fileURLToPath(import.meta.url));
+      const nativeHookPath = join(testDir, '..', '..', '..', 'dist', 'scripts', 'codex-native-hook.js');
+      await mkdir(join(home, '.codex'), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        [
+          '#!/bin/sh',
+          `printf '%s\\n' '{"hook_event_name":"SessionStart","session_id":"native-exec-stale-dead"}' | ${process.execPath} ${nativeHookPath}`,
+          'printf \'OMX-EXEC-OK\\n\'',
+        ].join('\n'),
+      );
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['exec', '--skip-git-repo-check', '-C', '.', 'Reply with exactly OMX-EXEC-OK'], {
+        HOME: home,
+        NODE_OPTIONS: '',
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /OMX-EXEC-OK/);
+      assert.doesNotMatch(result.stderr, /session archive failed|stale-dead|postLaunch failed/i);
+      assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), false);
+      assert.match(await readFile(join(wd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'), /native-exec-stale-dead/);
+
+      const cancel = runOmx(wd, ['cancel'], {
+        HOME: home,
+        NODE_OPTIONS: '',
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+      });
+      assert.equal(cancel.status, 0, cancel.error || cancel.stderr || cancel.stdout);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
   it('passes exec --help through to codex exec', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-exec-help-'));
     try {
