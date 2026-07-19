@@ -3295,12 +3295,14 @@ exit 1
   it('supports custom tail lines for generated raw inspect commands', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-tail-lines-'));
     const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
     const logs: string[] = [];
     const originalLog = console.log;
     try {
       process.chdir(wd);
       const config = await withoutTeamTestWorkerEnv(() => initTeamState('pane-tail-team', 'inspect worker panes', 'executor', 1, wd));
       config.workers[0]!.pane_id = '%51';
+      config.workers[0]!.pid = process.pid;
       const manifestPath = join(wd, '.omx', 'state', 'team', 'pane-tail-team', 'manifest.v2.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
         workers?: Array<{ pane_id?: string }>;
@@ -3317,6 +3319,16 @@ exit 1
         manifestPath,
         `${JSON.stringify(manifest, null, 2)}\n`,
       );
+      const tmuxPath = join(wd, 'tmux');
+      await writeFile(tmuxPath, `#!/bin/sh
+if [ "$1" = "display-message" ] && [ "$4" = "%51" ]; then
+  printf '%%51\\t0\\t${process.pid}\\t${config.tmux_pane_owner_id}\\n'
+  exit 0
+fi
+exit 1
+`);
+      await chmod(tmuxPath, 0o755);
+      process.env.PATH = `${wd}:${previousPath ?? ''}`;
 
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-tail-team', '--tail-lines', '600']));
@@ -3335,6 +3347,8 @@ exit 1
       assert.equal(payload.tail_lines, 550);
       assert.equal(payload.panes?.sparkshell_commands?.['worker-1'], 'omx sparkshell --tmux-pane %51 --tail-lines 550');
     } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
       console.log = originalLog;
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
