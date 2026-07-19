@@ -13,7 +13,7 @@ describe('modes/base multi-state compatibility', () => {
       await startMode('team', 'coordinate execution', 5, wd);
       await writeFile(
         join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({ session_id: 'sess-team-ralph' }),
+        JSON.stringify({ session_id: 'sess-team-ralph', cwd: wd, state_root: join(wd, '.omx', 'state') }),
       );
 
       await startMode('ralph', 'complete the approved plan', 5, wd);

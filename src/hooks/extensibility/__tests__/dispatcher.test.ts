@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { isHookPluginFeatureEnabled, dispatchHookEvent } from '../dispatcher.js';
 import { buildHookEvent } from '../events.js';
@@ -121,6 +122,114 @@ describe('dispatchHookEvent', () => {
       assert.equal(result.results.length, 1);
       assert.equal(result.results[0].ok, true);
       assert.equal(result.results[0].plugin, 'good');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards explicit stateRoot through the plugin runner to HUD reads', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-root-source-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-root-authority-'));
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      const sessionDir = join(stateRoot, 'sessions', 'sess-dispatch');
+      await mkdir(dir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateRoot, 'session.json'), JSON.stringify({ session_id: 'sess-dispatch', cwd, state_root: stateRoot }));
+      await writeFile(join(sessionDir, 'hud-state.json'), JSON.stringify({ turn_count: 7 }));
+      await writeFile(
+        join(dir, 'root-reader.mjs'),
+        `import { writeFile } from 'node:fs/promises';
+export async function onHookEvent(event, sdk) {
+  const hud = await sdk.omx.hud.read();
+  await writeFile(process.env.OMX_TEST_DISPATCH_OUTPUT, JSON.stringify(hud));
+}`,
+      );
+      const outputPath = join(cwd, 'dispatch-output.json');
+
+      const result = await dispatchHookEvent(buildHookEvent('session-start'), {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1', OMX_TEST_DISPATCH_OUTPUT: outputPath },
+      });
+
+      assert.equal(result.results[0]?.ok, true);
+      assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), { turn_count: 7 });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves plugin authority from options.env instead of ambient process.env', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-env-source-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-env-authority-'));
+    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-env-ambient-'));
+    const previousTeamRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousAllowlist = process.env.OMX_MCP_WORKDIR_ROOTS;
+    try {
+      process.env.OMX_TEAM_STATE_ROOT = ambientRoot;
+      process.env.OMX_MCP_WORKDIR_ROOTS = ambientRoot;
+      const dir = join(cwd, '.omx', 'hooks');
+      const sessionDir = join(stateRoot, 'sessions', 'sess-env');
+      await mkdir(dir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateRoot, 'session.json'), JSON.stringify({ session_id: 'sess-env', cwd, state_root: stateRoot }));
+      await writeFile(join(sessionDir, 'hud-state.json'), JSON.stringify({ turn_count: 8 }));
+      await writeFile(
+        join(dir, 'env-root-reader.mjs'),
+        `import { writeFile } from 'node:fs/promises';
+export async function onHookEvent(event, sdk) {
+  await writeFile(process.env.OMX_TEST_DISPATCH_OUTPUT, JSON.stringify(await sdk.omx.hud.read()));
+}`,
+      );
+      const outputPath = join(cwd, 'dispatch-output.json');
+      const result = await dispatchHookEvent(buildHookEvent('session-start', { session_id: 'sess-env' }), {
+        cwd,
+        env: {
+          ...process.env,
+          OMX_TEAM_STATE_ROOT: stateRoot,
+          OMX_MCP_WORKDIR_ROOTS: [cwd, stateRoot].join(delimiter),
+          OMX_HOOK_PLUGINS: '1',
+          OMX_TEST_DISPATCH_OUTPUT: outputPath,
+        },
+      });
+
+      assert.equal(result.results[0]?.ok, true);
+      assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), { turn_count: 8 });
+    } finally {
+      if (previousTeamRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamRoot;
+      if (previousAllowlist === undefined) delete process.env.OMX_MCP_WORKDIR_ROOTS;
+      else process.env.OMX_MCP_WORKDIR_ROOTS = previousAllowlist;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+      await rm(ambientRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null HUD state through the runner when the default state root is absent', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-missing-root-'));
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, 'missing-root-reader.mjs'),
+        `import { writeFile } from 'node:fs/promises';
+export async function onHookEvent(event, sdk) {
+  const hud = await sdk.omx.hud.read();
+  await writeFile(process.env.OMX_TEST_DISPATCH_OUTPUT, JSON.stringify(hud));
+}`,
+      );
+      const outputPath = join(cwd, 'dispatch-output.json');
+
+      const result = await dispatchHookEvent(buildHookEvent('session-start'), {
+        cwd,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1', OMX_TEST_DISPATCH_OUTPUT: outputPath },
+      });
+
+      assert.equal(result.results[0]?.ok, true);
+      assert.equal(JSON.parse(await readFile(outputPath, 'utf8')), null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -262,6 +371,7 @@ export async function onHookEvent() {}
 
   it('dedupes repeated native lifecycle hook dispatches for the same session/turn fingerprint', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-dedupe-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-dedupe-root-'));
     try {
       const dir = join(cwd, '.omx', 'hooks');
       await mkdir(dir, { recursive: true });
@@ -280,10 +390,12 @@ export async function onHookEvent() {}
 
       const first = await dispatchHookEvent(event, {
         cwd,
+        stateRoot,
         env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
       });
       const second = await dispatchHookEvent(event, {
         cwd,
+        stateRoot,
         env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
       });
 
@@ -294,8 +406,11 @@ export async function onHookEvent() {}
       assert.equal(second.enabled, true);
       assert.equal(second.reason, 'deduped');
       assert.equal(second.results.length, 0);
+      assert.equal(existsSync(join(stateRoot, 'sessions', 'sess-1', 'lifecycle-notif-state.json')), true);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'sessions', 'sess-1', 'lifecycle-notif-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
     }
   });
 });

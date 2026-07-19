@@ -4,6 +4,7 @@ import { appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { getPackageRoot } from "../../utils/package.js";
 import { omxRoot } from "../../utils/paths.js";
+import { getBaseStateDir } from "../../mcp/state-paths.js";
 import {
 	createLifecycleBroadcastFingerprint,
 	recordLifecycleHookBroadcastSent,
@@ -266,6 +267,7 @@ async function runPluginRunner(
 				pluginPath: plugin.path,
 				event,
 				sideEffectsEnabled,
+				stateRoot: options.stateRoot ?? getBaseStateDir(options.cwd),
 			}),
 		);
 		child.stdin.end();
@@ -310,6 +312,7 @@ export async function dispatchHookEvent(
 ): Promise<HookDispatchResult> {
 	const cwd = options.cwd || process.cwd();
 	const env = options.env || process.env;
+	const stateRoot = options.stateRoot ?? getBaseStateDir(cwd, env);
 	const runtimeHookDispatchEnabled =
 		shouldForceEnableRuntimeHookDispatch(event) || isHookPluginsEnabled(env);
 	const enabled = options.enabled ?? runtimeHookDispatchEnabled;
@@ -340,7 +343,7 @@ export async function dispatchHookEvent(
 	if (
 		dedupeFingerprint
 		&& !shouldSendLifecycleHookBroadcast(
-			join(omxRoot(cwd), "state"),
+			stateRoot,
 			event.session_id,
 			event.event,
 			dedupeFingerprint,
@@ -373,7 +376,7 @@ export async function dispatchHookEvent(
 		const result = await runPluginRunner(
 			plugin,
 			event,
-			{ ...options, cwd, env },
+			{ ...options, cwd, env, stateRoot },
 			sideEffectsEnabled,
 		);
 		summary.results.push(result);
@@ -394,7 +397,7 @@ export async function dispatchHookEvent(
 
 	if (dedupeFingerprint && summary.results.some((result) => result.ok)) {
 		recordLifecycleHookBroadcastSent(
-			join(omxRoot(cwd), "state"),
+			stateRoot,
 			event.session_id,
 			event.event,
 			dedupeFingerprint,
