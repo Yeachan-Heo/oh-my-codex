@@ -159,9 +159,8 @@ describe('CLI session-scoped state parity', () => {
         '--force',
       );
 
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.notEqual(cancelResult.status, 0);
       assert.match(cancelResult.stderr, /OMX_SESSION_ID is not bound to session\.json/);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
       assert.deepEqual(
         JSON.parse(await readFile(ralphPath, 'utf-8')),
         { active: true, current_phase: 'executing' },
@@ -263,8 +262,31 @@ describe('CLI session-scoped state parity', () => {
       await writeFile(outsidePath, state);
       await symlink(outsidePath, join(stateDir, 'team-state.json'));
       const result = runOmx(wd, 'cancel');
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.match(result.stdout, /No active modes to cancel\./);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /non-regular state target/);
+      assert.equal(await readFile(outsidePath, 'utf-8'), state);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked session authority directories', async () => {
+    if (process.platform === 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-session-root-symlink-'));
+    const outside = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-session-root-outside-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'session-root-link';
+      const outsidePath = join(outside, 'ralplan-state.json');
+      const state = JSON.stringify({ active: true, mode: 'ralplan', session_id: sessionId, current_phase: 'executing' }, null, 2);
+      await mkdir(join(stateDir, 'sessions'), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+      await writeFile(outsidePath, state);
+      await symlink(outside, join(stateDir, 'sessions', sessionId), 'dir');
+      const result = runOmx(wd, 'cancel');
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /symlinked authority component|unusable/);
       assert.equal(await readFile(outsidePath, 'utf-8'), state);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -287,8 +309,8 @@ describe('CLI session-scoped state parity', () => {
       await writeFile(contradictoryPath, contradictory);
       await writeFile(validPath, valid);
       const result = runOmx(wd, 'cancel');
-      assert.equal(result.status, 0, result.stderr || result.stdout);
-      assert.match(result.stdout, /No active modes to cancel\./);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /contradictory mode state/);
       assert.equal(await readFile(contradictoryPath, 'utf-8'), contradictory);
       assert.equal(await readFile(validPath, 'utf-8'), valid);
     } finally {
@@ -313,11 +335,35 @@ describe('CLI session-scoped state parity', () => {
       await writeFile(teamPath, rootTeamState);
 
       const cancelResult = runOmx(wd, 'cancel');
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.notEqual(cancelResult.status, 0);
+      assert.match(cancelResult.stderr, /Refusing partial cancellation/);
       assert.doesNotMatch(cancelResult.stdout, /Cancelled: team/);
       assert.equal(await readFile(malformedPath, 'utf-8'), malformedState);
       assert.equal(await readFile(teamPath, 'utf-8'), rootTeamState);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies wrong-typed and nested ownership contradictions transaction-wide', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-owner-evidence-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'owner-evidence-session';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const skillPath = join(sessionDir, 'skill-active-state.json');
+      const modePath = join(sessionDir, 'autopilot-state.json');
+      const skillState = JSON.stringify({ active: true, skill: 'autopilot', owner_codex_session_id: 42, active_skills: [{ skill: 'autopilot', active: true, owner_codex_session_id: 'foreign-owner' }] }, null, 2);
+      const modeState = JSON.stringify({ active: true, mode: 'autopilot', session_id: sessionId }, null, 2);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+      await writeFile(skillPath, skillState);
+      await writeFile(modePath, modeState);
+      const result = runOmx(wd, 'cancel');
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /contradictory owner_codex_session_id/);
+      assert.equal(await readFile(skillPath, 'utf-8'), skillState);
+      assert.equal(await readFile(modePath, 'utf-8'), modeState);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -523,8 +569,8 @@ describe('CLI session-scoped state parity', () => {
       })}\n`);
 
       const cancelResult = runOmxWithEnv(wd, { OMX_RUNS_DIR: runsRoot }, 'cancel');
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.notEqual(cancelResult.status, 0);
+      assert.match(cancelResult.stderr, /session\.json is present but unusable/);
       assert.doesNotMatch(cancelResult.stdout, /Cancelled: autopilot/);
       assert.equal(await readFile(foreignStatePath, 'utf-8'), foreignState);
     } finally {
@@ -591,8 +637,8 @@ describe('CLI session-scoped state parity', () => {
         FAKE_OMX_SESSION_ID: sessionId,
         FAKE_TMUX_SESSION_NAME: tmuxSessionName,
       }, 'cancel');
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.notEqual(cancelResult.status, 0);
+      assert.match(cancelResult.stderr, /detached run authority is invalid/);
       assert.equal(await readFile(statePath, 'utf-8'), state);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -634,8 +680,8 @@ describe('CLI session-scoped state parity', () => {
           FAKE_OMX_SESSION_ID: sessionId,
           FAKE_TMUX_SESSION_NAME: tmuxSessionName,
         }, 'cancel');
-        assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-        assert.match(cancelResult.stdout, /No active modes to cancel\./);
+        assert.notEqual(cancelResult.status, 0);
+        assert.match(cancelResult.stderr, /detached run (?:state )?authority is invalid/);
         assert.equal(await readFile(outsideStatePath, 'utf-8'), state);
       } finally {
         await rm(wd, { recursive: true, force: true });
@@ -672,8 +718,8 @@ describe('CLI session-scoped state parity', () => {
         FAKE_TMUX_COUNTER_FILE: counterPath,
         FAKE_TMUX_REPLACE_AFTER_FIRST: '1',
       }, 'cancel');
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.notEqual(cancelResult.status, 0);
+      assert.match(cancelResult.stderr, /detached run authority changed/);
       assert.equal(await readFile(statePath, 'utf-8'), state);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -709,8 +755,8 @@ describe('CLI session-scoped state parity', () => {
         FAKE_OMX_SESSION_ID: sessionId,
         FAKE_TMUX_SESSION_NAME: tmuxSessionName,
       }, 'cancel');
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.notEqual(cancelResult.status, 0);
+      assert.match(cancelResult.stderr, /Refusing partial cancellation/);
       assert.equal(await readFile(validPath, 'utf-8'), validState);
       assert.equal(await readFile(malformedPath, 'utf-8'), malformedState);
     } finally {
@@ -790,8 +836,8 @@ describe('CLI session-scoped state parity', () => {
         FAKE_OMX_SESSION_ID: sessionId,
         FAKE_TMUX_SESSION_NAME: tmuxSessionName,
       }, 'cancel');
-      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
-      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.notEqual(cancelResult.status, 0);
+      assert.match(cancelResult.stderr, /No active modes|multiple|authority/i);
       for (const state of states) {
         assert.equal(await readFile(state.path, 'utf-8'), state.content);
       }
@@ -1198,6 +1244,27 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('cancels linked ecomode before Ralph', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralph-ecomode-link-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-ecomode-link';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+      await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({ active: true, mode: 'ralph', session_id: sessionId, current_phase: 'executing', linked_ecomode: true }));
+      await writeFile(join(sessionDir, 'ecomode-state.json'), JSON.stringify({ active: true, mode: 'ecomode', session_id: sessionId, current_phase: 'executing' }));
+      const result = runOmx(wd, 'cancel');
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /Cancelled: ecomode/);
+      assert.match(result.stdout, /Cancelled: ralph/);
+      assert.equal(JSON.parse(await readFile(join(sessionDir, 'ecomode-state.json'), 'utf-8')).active, false);
+      assert.equal(JSON.parse(await readFile(join(sessionDir, 'ralph-state.json'), 'utf-8')).active, false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not mutate unrelated sessions when cancelling current session mode', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cross-session-'));
     try {
@@ -1240,7 +1307,7 @@ describe('CLI session-scoped state parity', () => {
       const sessionId = 'sess-stale-autopilot-mirror';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }, null, 2));
       await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({
         active: false,
         mode: 'autopilot',

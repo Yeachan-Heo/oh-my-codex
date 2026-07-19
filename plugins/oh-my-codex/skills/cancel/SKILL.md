@@ -327,21 +327,10 @@ Mode-specific subsections below describe same-scope dependency ordering only.
 - **Safe**: Only clears linked Ultrawork, preserves standalone Ultrawork
 - **Local-only**: Clears state files in `.omx/state/` directory
 - **Resume-friendly**: Autopilot state is preserved for seamless resume
-- **Team-aware**: Detects tmux-based teams and performs graceful shutdown with force-kill fallback
+- **Team-aware**: Team cancellation is permitted only when the selected state carries exact same-scope Team authority; unrelated Team artifacts and tmux sessions remain untouched.
 
 ## Tmux Team Cleanup
 
-When cancelling team mode, the cancel skill should:
+Cancellation MUST NOT enumerate or kill every `omx-team-*` session and MUST NOT recursively delete `.omx/state/team/`. Team shutdown requires the exact frozen Team root, internal name, session, leader pane, and runtime identity selected by the authorized state transition. When that proof is unavailable or changes, cancellation fails closed without signals, pane actions, overlay edits, or Team-state deletion.
 
-1. **Kill all team tmux sessions**: `tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omx-team-'` and kill each
-2. **Remove team state directories**: `rm -rf .omx/state/team/*/`
-3. **Strip AGENTS.md overlay**: Remove content between `<!-- OMX:TEAM:WORKER:START -->` and `<!-- OMX:TEAM:WORKER:END -->`
-
-### Force Clear Addition
-
-When `--force` is used, also clean up:
-```bash
-rm -rf .omx/state/team/                  # All team state
-# Kill all omx-team-* tmux sessions
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omx-team-' | while read s; do tmux kill-session -t "$s" 2>/dev/null; done
-```
+`--force` does not widen Team scope. It only enables exact-session native-stop cleanup after the same authority checks.

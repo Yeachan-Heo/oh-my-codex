@@ -1,9 +1,10 @@
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
 import { lstat, open, readFile } from 'fs/promises';
-import { constants as fsConstants } from 'fs';
+import { constants as fsConstants, lstatSync, readFileSync, realpathSync } from 'fs';
+import { join } from 'path';
 
 
-import { getStatePath, normalizeSessionId, resolveWritableStateScope } from '../mcp/state-paths.js';
+import { getBaseStateDir, getStatePath, normalizeSessionId, resolveWritableStateScope } from '../mcp/state-paths.js';
 
 
 
@@ -71,21 +72,53 @@ export async function ralplanCommand(
   );
 }
 
+function collectRoutingOwnerIds(baseStateDir: string, canonicalSessionId: string): Set<string> {
+  const ownerIds = new Set([canonicalSessionId]);
+  try {
+    const pointerPath = join(baseStateDir, 'session.json');
+    if (realpathSync(pointerPath) !== pointerPath || !lstatSync(pointerPath).isFile()) return ownerIds;
+    const pointer = JSON.parse(readFileSync(pointerPath, 'utf-8')) as Record<string, unknown>;
+    for (const field of ['session_id', 'native_session_id', 'codex_session_id', 'owner_omx_session_id', 'owner_codex_session_id']) {
+      const ownerId = normalizeSessionId(pointer[field]);
+      if (ownerId) ownerIds.add(ownerId);
+    }
+  } catch {}
+  return ownerIds;
+}
+
+
+function hasContradictoryRoutingOwner(state: Record<string, unknown>, ownerIds: Set<string>): boolean {
+  for (const field of ['session_id', 'owner_omx_session_id', 'owner_codex_session_id']) {
+    if (!Object.prototype.hasOwnProperty.call(state, field)) continue;
+    const ownerId = normalizeSessionId(state[field]);
+    if (!ownerId || !ownerIds.has(ownerId)) return true;
+  }
+  return false;
+}
+
 async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolean> {
   const ownerSessionId = normalizeSessionId(process.env.OMX_SESSION_ID);
   if (!ownerSessionId) return false;
   try {
     const scope = await resolveWritableStateScope(cwd);
-    if (scope.source !== 'session' || scope.sessionId !== ownerSessionId) return false;
-    const path = getStatePath('ralplan', cwd, ownerSessionId);
+    if (scope.source !== 'session' || !scope.sessionId) return false;
+    const baseStateDir = getBaseStateDir(cwd);
+    if (realpathSync(baseStateDir) !== baseStateDir) return false;
+    const sessionsDir = join(baseStateDir, 'sessions');
+    if (realpathSync(sessionsDir) !== sessionsDir || lstatSync(sessionsDir).isSymbolicLink()) return false;
+    const authorityDir = join(sessionsDir, scope.sessionId);
+    if (realpathSync(authorityDir) !== authorityDir || lstatSync(authorityDir).isSymbolicLink()) return false;
+    const ownerIds = collectRoutingOwnerIds(baseStateDir, scope.sessionId);
+    const path = getStatePath('ralplan', cwd, scope.sessionId);
     const fileStat = await lstat(path);
     if (!fileStat.isFile() || fileStat.isSymbolicLink()) return false;
     const originalContent = await readFile(path, 'utf-8');
     const state = JSON.parse(originalContent) as Record<string, unknown>;
+    if (hasContradictoryRoutingOwner(state, ownerIds)) return false;
     if (
       state.active !== true
       || state.mode !== 'ralplan'
-      || state.session_id !== ownerSessionId
+      || (state.session_id !== undefined && !ownerIds.has(normalizeSessionId(state.session_id) ?? ''))
       || state.current_phase !== 'planning'
       || state.planning_complete === true
       || state.ralplan_consensus_gate !== undefined

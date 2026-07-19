@@ -6904,20 +6904,27 @@ async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<Auth
 
     try {
       const canonicalRunDir = realpathSync(resolve(record.run_dir));
-      if (!isCanonicalPathWithin(canonicalRunsRoot, canonicalRunDir)) continue;
+      if (!isCanonicalPathWithin(canonicalRunsRoot, canonicalRunDir)) {
+        throw new Error("run directory escapes the authorized runs root");
+      }
       const stateDir = realpathSync(join(canonicalRunDir, ".omx", "state"));
-      if (!isCanonicalPathWithin(canonicalRunDir, stateDir)) continue;
+      if (!isCanonicalPathWithin(canonicalRunDir, stateDir)) {
+        throw new Error("state directory escapes the authorized run directory");
+      }
       const session = JSON.parse(await readFile(join(stateDir, "session.json"), "utf-8")) as Record<string, unknown>;
-      if (session.session_id !== record.session_id) continue;
+      if (session.session_id !== record.session_id) throw new Error("run session pointer changed");
       const sessionDir = realpathSync(join(stateDir, "sessions", record.session_id));
-      if (!isCanonicalPathWithin(stateDir, sessionDir)) continue;
+      if (!isCanonicalPathWithin(stateDir, sessionDir)) {
+        throw new Error("session directory escapes the authorized state directory");
+      }
       candidates.push({ sessionDir, sessionId: record.session_id, record });
-    } catch {
-      continue;
+    } catch (err) {
+      throw new Error(`Refusing cancellation because detached run authority is invalid: ${record.run_dir}.`, { cause: err });
     }
   }
 
-  if (candidates.length !== 1) return null;
+  if (candidates.length > 1) throw new Error("Refusing cancellation because multiple detached run authorities match.");
+  if (candidates.length === 0) return null;
   const [{ sessionDir, sessionId, record }] = candidates;
   const refs: ModeStateFileRef[] = [];
   const stateFiles = await readdir(sessionDir).catch(() => [] as string[]);
@@ -6926,19 +6933,78 @@ async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<Auth
     const path = join(sessionDir, file);
     try {
       const fileStat = lstatSync(path);
-      if (!fileStat.isFile() || fileStat.isSymbolicLink()) return null;
+      if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+        throw new Error(`Refusing cancellation through non-regular run state target: ${path}.`);
+      }
       const canonicalFile = realpathSync(path);
-      if (!isCanonicalPathWithin(sessionDir, canonicalFile)) return null;
+      if (!isCanonicalPathWithin(sessionDir, canonicalFile)) {
+        throw new Error(`Refusing cancellation outside authorized run session: ${path}.`);
+      }
       refs.push({
         mode: file.slice(0, -"-state.json".length),
         path: canonicalFile,
         scope: "session",
       });
-    } catch {
-      return null;
+    } catch (err) {
+      throw new Error(`Refusing cancellation because detached run state authority is invalid: ${path}.`, { cause: err });
     }
   }
   return { refs: refs.sort((a, b) => a.mode.localeCompare(b.mode)), sessionId, sessionDir, record };
+}
+
+function assertCancellationAuthorityPath(baseStateDir: string, authorityRoot: string): string {
+  const resolvedBase = resolve(baseStateDir);
+  const resolvedAuthority = resolve(authorityRoot);
+  const baseStat = lstatSync(resolvedBase);
+  if (!baseStat.isDirectory() || baseStat.isSymbolicLink() || realpathSync(resolvedBase) !== resolvedBase) {
+    throw new Error(`Refusing cancellation through symlinked state authority root: ${baseStateDir}.`);
+  }
+  if (!isCanonicalPathWithin(resolvedBase, resolvedAuthority, true)) {
+    throw new Error(`Refusing cancellation outside base state authority: ${authorityRoot}.`);
+  }
+  let current = resolvedBase;
+  const rel = relative(resolvedBase, resolvedAuthority);
+  for (const component of rel ? rel.split(/[\\/]+/) : []) {
+    current = join(current, component);
+    const componentStat = lstatSync(current);
+    if (!componentStat.isDirectory() || componentStat.isSymbolicLink() || realpathSync(current) !== current) {
+      throw new Error(`Refusing cancellation through symlinked authority component: ${current}.`);
+    }
+  }
+  return resolvedAuthority;
+}
+
+function collectCancellationOwnerIds(baseStateDir: string, sessionId?: string): Set<string> {
+  const ownerIds = new Set<string>();
+  if (sessionId) ownerIds.add(sessionId);
+  try {
+    const pointer = JSON.parse(readFileSync(join(baseStateDir, "session.json"), "utf-8")) as Record<string, unknown>;
+    for (const field of [
+      "session_id",
+      "native_session_id",
+      "codex_session_id",
+      "owner_omx_session_id",
+      "owner_codex_session_id",
+    ]) {
+      const normalized = normalizeSessionId(pointer[field]);
+      if (normalized) ownerIds.add(normalized);
+    }
+  } catch {}
+  return ownerIds;
+}
+
+function assertCancellationOwnerMetadata(
+  value: Record<string, unknown>,
+  ownerIds: Set<string>,
+  path: string,
+): void {
+  for (const ownerField of ["session_id", "owner_omx_session_id", "owner_codex_session_id"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(value, ownerField)) continue;
+    const owner = normalizeSessionId(value[ownerField]);
+    if (!owner || !ownerIds.has(owner)) {
+      throw new Error(`Refusing contradictory ${ownerField} in ${path}.`);
+    }
+  }
 }
 
 async function cancelModes(args: string[] = []): Promise<void> {
@@ -6954,10 +7020,12 @@ async function cancelModes(args: string[] = []): Promise<void> {
   const force = args.length === 1;
   try {
     const writableScope = await resolveWritableStateScope(cwd);
+    const baseStateDir = getBaseStateDir(cwd);
+    const expectedOwnerIds = collectCancellationOwnerIds(baseStateDir, writableScope.sessionId);
     const loadStates = async (
       refs: ModeStateFileRef[],
       authorityRoot: string,
-      expectedSessionId?: string,
+      ownerIds: Set<string> = expectedOwnerIds,
     ) => {
       const loaded = new Map<
         string,
@@ -6970,7 +7038,11 @@ async function cancelModes(args: string[] = []): Promise<void> {
           ino: number;
         }
       >();
-      const canonicalAuthorityRoot = realpathSync(authorityRoot);
+      if (refs.length === 0) return loaded;
+      const canonicalAuthorityRoot = assertCancellationAuthorityPath(
+        authorityRoot === writableScope.stateDir ? baseStateDir : authorityRoot,
+        authorityRoot,
+      );
       for (const ref of refs) {
         const fileStat = lstatSync(ref.path);
         if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
@@ -6997,10 +7069,12 @@ async function cancelModes(args: string[] = []): Promise<void> {
         if (typeof parsedState.mode === "string" && parsedState.mode !== ref.mode) {
           throw new Error(`Refusing contradictory mode state in ${ref.path}.`);
         }
-        for (const ownerField of ["session_id", "owner_omx_session_id"] as const) {
-          const owner = parsedState[ownerField];
-          if (typeof owner === "string" && owner !== expectedSessionId) {
-            throw new Error(`Refusing contradictory ${ownerField} in ${ref.path}.`);
+        assertCancellationOwnerMetadata(parsedState, ownerIds, ref.path);
+        if (Array.isArray(parsedState.active_skills)) {
+          for (const skill of parsedState.active_skills) {
+            if (skill && typeof skill === "object" && !Array.isArray(skill)) {
+              assertCancellationOwnerMetadata(skill as Record<string, unknown>, ownerIds, `${ref.path} active_skills`);
+            }
           }
         }
         loaded.set(ref.mode, {
@@ -7031,7 +7105,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
 
     let runSelection: AuthorizedRunStateSelection | null = null;
 
-    let states = await loadStates(targetRefs, writableScope.stateDir, writableScope.sessionId);
+    let states = await loadStates(targetRefs, writableScope.stateDir, expectedOwnerIds);
 
 
     const hasActiveWorkflowMode = (entries: typeof states): boolean =>
@@ -7045,7 +7119,8 @@ async function cancelModes(args: string[] = []): Promise<void> {
     ) {
       runSelection = await selectAuthorizedHookVisibleRunDirState(cwd);
       if (runSelection) {
-        const runDirStates = await loadStates(runSelection.refs, runSelection.sessionDir, runSelection.sessionId);
+        const runOwnerIds = new Set([runSelection.sessionId]);
+        const runDirStates = await loadStates(runSelection.refs, runSelection.sessionDir, runOwnerIds);
         if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
         else runSelection = null;
       }
@@ -7090,15 +7165,18 @@ async function cancelModes(args: string[] = []): Promise<void> {
       if (reportIfWasActive && wasActive && mode !== SKILL_ACTIVE_STATE_MODE) reported.add(mode);
     };
 
-    const ralphLinksUltrawork = (state: Record<string, unknown>): boolean =>
-      state.linked_ultrawork === true || state.linked_mode === "ultrawork";
+    const linkedRalphMode = (state: Record<string, unknown>): "ultrawork" | "ecomode" | undefined => {
+      if (state.linked_ultrawork === true || state.linked_mode === "ultrawork") return "ultrawork";
+      if (state.linked_ecomode === true || state.linked_mode === "ecomode") return "ecomode";
+      return undefined;
+    };
 
     const ralph = states.get("ralph");
     const hadActiveRalph = !!(ralph && ralph.state.active === true);
     if (ralph && ralph.state.active === true) {
+      const linkedMode = linkedRalphMode(ralph.state);
+      if (linkedMode) cancelMode(linkedMode, "cancelled", true);
       cancelMode("ralph", "cancelled", true);
-      if (ralphLinksUltrawork(ralph.state))
-        cancelMode("ultrawork", "cancelled", true);
     }
 
     if (!hadActiveRalph) {
@@ -7113,37 +7191,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
       }
     };
 
-    const writeFrozenEntry = async (entry: (typeof states extends Map<string, infer T> ? T : never)): Promise<void> => {
-      const handle = await open(entry.path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
-      try {
-        const currentStat = await handle.stat();
-        if (!currentStat.isFile() || currentStat.dev !== entry.dev || currentStat.ino !== entry.ino) {
-          throw new Error(`Refusing cancellation because state identity changed: ${entry.path}.`);
-        }
-        const currentContent = await handle.readFile({ encoding: "utf-8" });
-        if (currentContent !== entry.originalContent) {
-          throw new Error(`Refusing cancellation because state content changed: ${entry.path}.`);
-        }
-        const nextContent = JSON.stringify(entry.state, null, 2);
-        await handle.truncate(0);
-        await handle.write(nextContent, 0, "utf-8");
-        await handle.sync();
-        entry.originalContent = nextContent;
-      } finally {
-        await handle.close();
-      }
-    };
-
-
-    for (const [mode, entry] of states.entries()) {
-      if (!changed.has(mode)) continue;
-      assertRunAuthority();
-
-      await writeFrozenEntry(entry);
-
-    }
     if (force && currentSessionId) {
-      assertRunAuthority();
       const stopStateEntries = [...states.entries()].filter(([mode]) => mode === "native-stop");
       for (const [, entry] of stopStateEntries) {
         const sessions = entry.state.sessions && typeof entry.state.sessions === "object" && !Array.isArray(entry.state.sessions)
@@ -7152,9 +7200,60 @@ async function cancelModes(args: string[] = []): Promise<void> {
         if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, currentSessionId)) continue;
         delete sessions[currentSessionId];
         entry.state.sessions = sessions;
-        await writeFrozenEntry(entry);
         changed.add("native-stop");
       }
+    }
+
+    const orderedChanges = [...changed]
+      .sort((left, right) => {
+        if (left === "ralph") return 1;
+        if (right === "ralph") return -1;
+        return left.localeCompare(right);
+      })
+      .map((mode) => {
+        const entry = states.get(mode);
+        if (!entry) throw new Error(`Missing frozen cancellation entry for ${mode}.`);
+        return { mode, entry, nextContent: JSON.stringify(entry.state, null, 2) };
+      });
+    const opened: Array<{ mode: string; entry: (typeof states extends Map<string, infer T> ? T : never); nextContent: string; handle: Awaited<ReturnType<typeof open>> }> = [];
+    try {
+      for (const change of orderedChanges) {
+        assertRunAuthority();
+        const handle = await open(change.entry.path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+        const currentStat = await handle.stat();
+        const currentContent = await handle.readFile({ encoding: "utf-8" });
+        if (!currentStat.isFile() || currentStat.dev !== change.entry.dev || currentStat.ino !== change.entry.ino) {
+          await handle.close();
+          throw new Error(`Refusing cancellation because state identity changed: ${change.entry.path}.`);
+        }
+        if (currentContent !== change.entry.originalContent) {
+          await handle.close();
+          throw new Error(`Refusing cancellation because state content changed: ${change.entry.path}.`);
+        }
+        opened.push({ ...change, handle });
+      }
+
+      const committed: typeof opened = [];
+      try {
+        for (const openedEntry of opened) {
+          assertRunAuthority();
+          committed.push(openedEntry);
+          await openedEntry.handle.truncate(0);
+          await openedEntry.handle.write(openedEntry.nextContent, 0, "utf-8");
+          await openedEntry.handle.sync();
+        }
+      } catch (writeError) {
+        for (const committedEntry of committed.reverse()) {
+          try {
+            await committedEntry.handle.truncate(0);
+            await committedEntry.handle.write(committedEntry.entry.originalContent, 0, "utf-8");
+            await committedEntry.handle.sync();
+          } catch {}
+        }
+        throw writeError;
+      }
+    } finally {
+      await Promise.all(opened.map(({ handle }) => handle.close().catch(() => undefined)));
     }
 
     for (const mode of reported) {
@@ -7166,6 +7265,6 @@ async function cancelModes(args: string[] = []): Promise<void> {
     }
   } catch (err) {
     logCliOperationFailure(err);
-    console.log("No active modes to cancel.");
+    process.exitCode = 1;
   }
 }
