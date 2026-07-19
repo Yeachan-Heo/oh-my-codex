@@ -1,6 +1,5 @@
 import { cancelMode, readModeState, startMode, updateModeState } from '../modes/base.js';
-import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
-import { recordSubagentTurnForSession } from '../subagents/tracker.js';
+import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
   'draft',
@@ -186,72 +185,66 @@ async function recordRalplanSubagentTurn(
   }).catch(() => {});
 }
 
-function isApprovingNativeReviewPair(
+function isApprovingReviewPair(
   architectReview: RalplanReviewResult | undefined,
   criticReview: RalplanReviewResult | undefined,
+  requireNativeSubagents: boolean,
 ): boolean {
-  const architectThreadId = architectReview?.thread_id?.trim();
-  const criticThreadId = criticReview?.thread_id?.trim();
-  const architectSequence = architectReview?.sequence_index;
-  const criticSequence = criticReview?.sequence_index;
-  return architectReview?.verdict === 'approve'
-    && criticReview?.verdict === 'approve'
-    && architectReview.agent_role === 'architect'
-    && criticReview.agent_role === 'critic'
-    && architectReview.provenance_kind === 'native_subagent'
+  if (
+    architectReview?.verdict !== 'approve'
+    || criticReview?.verdict !== 'approve'
+    || architectReview.agent_role !== 'architect'
+    || criticReview.agent_role !== 'critic'
+  ) return false;
+  if (!requireNativeSubagents) return true;
+
+  const architectThreadId = architectReview.thread_id?.trim();
+  const criticThreadId = criticReview.thread_id?.trim();
+  return architectReview.provenance_kind === 'native_subagent'
     && criticReview.provenance_kind === 'native_subagent'
     && Boolean(architectThreadId)
     && Boolean(criticThreadId)
-    && architectThreadId !== criticThreadId
-    && typeof architectSequence === 'number'
-    && typeof criticSequence === 'number'
-    && Number.isFinite(architectSequence)
-    && Number.isFinite(criticSequence)
-    && architectSequence < criticSequence;
+    && architectThreadId !== criticThreadId;
+}
+
+function reviewBlocker(
+  architectReview: RalplanReviewResult | undefined,
+  criticReview: RalplanReviewResult | undefined,
+  requireNativeSubagents: boolean,
+  nativeEvidenceComplete = true,
+): string {
+  if (architectReview?.verdict !== 'approve') return 'architect_review_missing_or_not_approved';
+  if (criticReview?.verdict !== 'approve') return 'critic_review_missing_or_not_approved';
+  if (!isApprovingReviewPair(architectReview, criticReview, requireNativeSubagents) || !nativeEvidenceComplete) {
+    return 'native_subagent_consensus_evidence_missing';
+  }
+  return 'documented_host_consensus_receipt_unavailable';
+}
+
+async function hasCompletedNativeReviewEvidence(
+  cwd: string,
+  sessionId: string | undefined,
+  architectReview: RalplanReviewResult,
+  criticReview: RalplanReviewResult,
+): Promise<boolean> {
+  if (!sessionId?.trim()) return false;
+  const threads = (await readSubagentTrackingState(cwd)).sessions[sessionId]?.threads;
+  return Boolean(threads?.[architectReview.thread_id ?? '']?.completed_at && threads?.[criticReview.thread_id ?? '']?.completed_at);
 }
 
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
-  _options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean } = {},
+  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
-  if (
-    architectReviews.length === criticReviews.length
-    && isApprovingNativeReviewPair(latestArchitect, latestCritic)
-  ) {
-    const ralplanArchitectReview = {
-      ...latestArchitect!,
-      agent_role: 'architect' as const,
-      iteration: architectReviews.length,
-    };
-    const ralplanCriticReview = {
-      ...latestCritic!,
-      agent_role: 'critic' as const,
-      iteration: criticReviews.length,
-    };
-    return {
-      required: true,
-      complete: false,
-      sequence: ['architect-review', 'critic-review'],
-      planning_artifacts_are_not_consensus: true,
-      required_review_roles: ['architect', 'critic'],
-      ralplan_architect_review: ralplanArchitectReview,
-      ralplan_critic_review: ralplanCriticReview,
-      architect_review: ralplanArchitectReview,
-      critic_review: ralplanCriticReview,
-      blocked_reason: 'documented_host_consensus_receipt_unavailable',
-    };
-  }
-
   const ralplanArchitectReview = latestArchitect
     ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
     : null;
   const ralplanCriticReview = latestCritic
     ? { ...latestCritic, agent_role: 'critic' as const, iteration: criticReviews.length }
     : null;
-
   return {
     required: true,
     complete: false,
@@ -262,10 +255,9 @@ function buildRalplanConsensusGate(
     ralplan_critic_review: ralplanCriticReview,
     architect_review: ralplanArchitectReview,
     critic_review: ralplanCriticReview,
-    blocked_reason: 'documented_host_consensus_receipt_unavailable',
+    blocked_reason: reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete),
   };
 }
-
 
 function hasNativeSubagentEvidence(review: RalplanReviewResult): boolean {
   return review.provenance_kind === 'native_subagent';
@@ -274,21 +266,28 @@ function hasNativeSubagentEvidence(review: RalplanReviewResult): boolean {
 function normalizeReviewForLane(
   review: RalplanReviewResult,
   laneRole: 'architect' | 'critic',
+  requireNativeSubagents: boolean,
 ): RalplanReviewResult {
-  if (review.agent_role !== laneRole) {
-    throw new Error(`ralplan_${laneRole}_review_role_mismatch: expected agent_role=${laneRole}, received ${String(review.agent_role ?? 'missing')}`);
+  if (requireNativeSubagents) {
+    if (!review.agent_role) {
+      throw new Error(`ralplan_${laneRole}_review_role_missing: expected agent_role=${laneRole}`);
+    }
+    if (review.agent_role !== laneRole) {
+      throw new Error(`ralplan_${laneRole}_review_role_mismatch: expected agent_role=${laneRole}, received ${review.agent_role}`);
+    }
+    if (!hasNativeSubagentEvidence(review)) {
+      throw new Error(`ralplan_${laneRole}_review_provenance_invalid: expected provenance_kind=native_subagent`);
+    }
+    if (!review.thread_id?.trim()) {
+      throw new Error(`ralplan_${laneRole}_review_thread_missing: native_subagent review must declare thread_id`);
+    }
+  } else if (review.provenance_kind !== undefined && !hasNativeSubagentEvidence(review)) {
+    throw new Error(`ralplan_${laneRole}_review_provenance_invalid: adapted provenance cannot authorize a review lane`);
   }
-  if (!hasNativeSubagentEvidence(review)) {
-    throw new Error(`ralplan_${laneRole}_review_provenance_invalid: expected provenance_kind=native_subagent`);
-  }
-  if (!review.thread_id?.trim()) {
-    throw new Error(`ralplan_${laneRole}_review_thread_missing: native_subagent review must declare thread_id`);
-  }
-  return {
-    ...review,
-    agent_role: laneRole,
-  };
+  return { ...review, agent_role: laneRole };
 }
+
+
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
@@ -337,35 +336,6 @@ function assertRoleLaneReuse(
   }
 }
 
-function normalizeExecutionLane(lane: RalplanExecutionLane | undefined): 'ultragoal' | 'team' | 'ralph' | 'none' {
-  if (lane === 'team' || lane === 'ralph' || lane === 'none') return lane;
-  if (lane === 'ultragoal' || lane === 'conductor' || lane === 'execution') return 'ultragoal';
-  return 'none';
-}
-
-function buildRalplanHandoffArtifact(
-  consensusGate: RalplanConsensusGate,
-  options: { selectedExecutionLane?: RalplanExecutionLane; started: boolean },
-): Record<string, unknown> {
-  const selectedExecutionLane = normalizeExecutionLane(options.selectedExecutionLane);
-  return {
-    selected_execution_lane: selectedExecutionLane,
-    execution_handoff_status: selectedExecutionLane === 'none' ? 'planning_only_terminal' : options.started ? 'started' : 'selected_pending_start',
-    planning_only_terminal: selectedExecutionLane === 'none',
-    ralplan_consensus_gate: consensusGate,
-  };
-}
-
-async function startSelectedExecutionLane(
-  cwd: string,
-  task: string,
-  selectedExecutionLane: RalplanExecutionLane | undefined,
-): Promise<boolean> {
-  const lane = normalizeExecutionLane(selectedExecutionLane);
-  if (lane === 'none') return false;
-  await startMode(lane, task, 50, cwd);
-  return true;
-}
 
 async function updateRalplanState(
   cwd: string,
@@ -447,7 +417,7 @@ export async function runRalplanConsensus(
       const architectReview = normalizeReviewForLane(await executor.architectReview({
         ...iterationContext,
         draft,
-      }), 'architect');
+      }), 'architect', options.requireNativeSubagents === true);
       assertRoleLaneReuse(reusableRoleLanes.architect, architectReview, 'architect');
       architectReviews.push(architectReview);
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
@@ -518,7 +488,7 @@ export async function runRalplanConsensus(
         ...iterationContext,
         draft,
         architectReview,
-      }), 'critic');
+      }), 'critic', options.requireNativeSubagents === true);
       assertRoleLaneReuse(reusableRoleLanes.critic, criticReview, 'critic');
       criticReviews.push(criticReview);
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
@@ -531,7 +501,11 @@ export async function runRalplanConsensus(
       });
 
       const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
-      const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions);
+      const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews, {
+        ...gateOptions,
+        nativeEvidenceComplete: options.requireNativeSubagents !== true
+          || await hasCompletedNativeReviewEvidence(cwd, options.sessionId, architectReview, criticReview),
+      });
       await updateRalplanState(cwd, {
         iteration,
         current_phase: 'critic-review',
@@ -541,88 +515,10 @@ export async function runRalplanConsensus(
         review_history: reviewHistory,
       });
 
-      if (consensusGate.complete) {
-        const planningArtifacts = readPlanningArtifacts(cwd);
-        const planningComplete = isPlanningComplete(planningArtifacts);
-        if (!planningComplete) {
-          const error = 'ralplan_planning_artifacts_missing_after_consensus';
-          await updateRalplanState(cwd, {
-            active: false,
-            iteration,
-            current_phase: 'failed',
-            completed_at: new Date().toISOString(),
-            planning_complete: false,
-            latest_plan_path: latestPlanPath,
-            ralplan_consensus_gate: consensusGate,
-            status_message: 'Status: failed — ralplan consensus approved, but required PRD and test-spec planning artifacts are missing; do not hand off to execution.',
-            review_history: reviewHistory,
-            error,
-          });
-          return {
-            status: 'failed',
-            iteration,
-            phase: 'failed',
-            planningComplete: false,
-            drafts,
-            architectReviews,
-            criticReviews,
-            ralplanConsensusGate: consensusGate,
-            latestPlanPath,
-            artifacts: aggregatedArtifacts,
-            error,
-          };
-        }
 
-        await updateRalplanState(cwd, {
-          active: false,
-          iteration,
-          current_phase: 'complete',
-          completed_at: new Date().toISOString(),
-          planning_complete: true,
-          latest_plan_path: latestPlanPath,
-          ralplan_consensus_gate: consensusGate,
-          selected_execution_lane: normalizeExecutionLane(options.selectedExecutionLane),
-          handoff_artifacts: {
-            ralplan: buildRalplanHandoffArtifact(consensusGate, {
-              selectedExecutionLane: options.selectedExecutionLane,
-              started: false,
-            }),
-          },
-          status_message: normalizeExecutionLane(options.selectedExecutionLane) === 'none'
-            ? 'Status: complete — ralplan consensus approved, planning artifacts are ready, and no execution lane was selected.'
-            : 'Status: complete — ralplan consensus approved and planning artifacts are ready for execution handoff.',
-          review_history: reviewHistory,
-        });
-        const executionHandoffStarted = await startSelectedExecutionLane(cwd, options.task, options.selectedExecutionLane);
-        if (executionHandoffStarted) {
-          await updateRalplanState(cwd, {
-            handoff_artifacts: {
-              ralplan: buildRalplanHandoffArtifact(consensusGate, {
-                selectedExecutionLane: options.selectedExecutionLane,
-                started: true,
-              }),
-            },
-            status_message: `Status: complete — ralplan consensus approved and ${normalizeExecutionLane(options.selectedExecutionLane)} execution handoff started.`,
-          });
-        }
-        return {
-          status: 'completed',
-          iteration,
-          phase: 'complete',
-          planningComplete: true,
-          drafts,
-          architectReviews,
-          criticReviews,
-          ralplanConsensusGate: consensusGate,
-          latestPlanPath,
-          artifacts: aggregatedArtifacts,
-          selectedExecutionLane: options.selectedExecutionLane,
-          executionHandoffStarted,
-        };
-      }
-
-      if (isApprovingNativeReviewPair(architectReview, criticReview) || iteration >= maxIterations) {
-        const error = isApprovingNativeReviewPair(architectReview, criticReview)
+      if (consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable' || iteration >= maxIterations) {
+        const hostReceiptUnavailable = consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable';
+        const error = hostReceiptUnavailable
           ? 'documented_host_consensus_receipt_unavailable'
           : `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
         await updateRalplanState(cwd, {
@@ -636,7 +532,7 @@ export async function runRalplanConsensus(
           latest_critic_summary: criticReview.summary,
           ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
-          status_message: isApprovingNativeReviewPair(architectReview, criticReview)
+          status_message: hostReceiptUnavailable
             ? 'Status: failed — Architect and Critic lifecycle evidence cannot authorize a release without an official host consensus receipt verifier.'
             : `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,
