@@ -7,6 +7,7 @@
  */
 import {
   appendFile,
+  lstat as nodeLstat,
   mkdir as nodeMkdir,
   open,
   readFile as nodeReadFile,
@@ -306,6 +307,11 @@ export type PidProbeResult = 'alive' | 'dead' | 'indeterminate';
 export interface SessionPointerFsDependencies {
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   readdir(path: string): Promise<string[]>;
+  lstat(path: string): Promise<{
+    isDirectory(): boolean;
+    isFile(): boolean;
+    isSymbolicLink(): boolean;
+  }>;
   readFile(path: string, encoding: 'utf8'): Promise<string>;
   writeFile(path: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
   openAndSync(
@@ -316,6 +322,21 @@ export interface SessionPointerFsDependencies {
   rename(from: string, to: string): Promise<void>;
   unlink(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
+}
+
+
+export interface SessionPointerLockInspection {
+  status: 'absent' | 'live' | 'dead' | 'reused' | 'identity-indeterminate' | 'missing-owner' | 'malformed' | 'ambiguous' | 'unexpected' | 'symlink' | 'io-error';
+  lockPath: string;
+  evidenceSource: 'none' | 'owner.json' | 'owner-temp';
+  safeToRecover: boolean;
+}
+
+export interface SessionPointerLockRecovery extends SessionPointerLockInspection {
+  action: 'none' | 'quarantined';
+  recovered: boolean;
+  reason: string;
+  quarantinePath?: string;
 }
 
 /** @internal Test-only deterministic transaction seam; do not use outside session tests. */
@@ -338,6 +359,7 @@ const defaultFsDependencies: SessionPointerFsDependencies = {
   },
   readdir: async (path) => await nodeReaddir(path),
   readFile: async (path, encoding) => await nodeReadFile(path, encoding),
+  lstat: async (path) => await nodeLstat(path),
   writeFile: async (path, data, options) => {
     await nodeWriteFile(path, data, options);
   },
@@ -763,15 +785,15 @@ function isValidToken(value: unknown): value is string {
   return typeof value === 'string' && SESSION_POINTER_TOKEN_PATTERN.test(value);
 }
 
-async function inspectLockOwner(lockPath: string): Promise<{
+async function inspectLockOwnerFile(ownerPath: string, missingStatus: LockOwnerStatus = 'missing'): Promise<{
   status: LockOwnerStatus;
   owner?: SessionPointerLockOwnerV1;
 }> {
   let raw: string;
   try {
-    raw = await transactionDependencies.fs.readFile(join(lockPath, 'owner.json'), 'utf8');
+    raw = await transactionDependencies.fs.readFile(ownerPath, 'utf8');
   } catch (error) {
-    return isNotFound(error) ? { status: 'missing' } : { status: 'identity-indeterminate' };
+    return isNotFound(error) ? { status: missingStatus } : { status: 'identity-indeterminate' };
   }
 
   const owner = parseLockOwner(raw);
@@ -786,8 +808,6 @@ async function inspectLockOwner(lockPath: string): Promise<{
   if (pidStatus === 'dead') return { status: 'dead', owner };
   if (pidStatus !== 'alive') return { status: 'identity-indeterminate', owner };
 
-  // Without Linux immutable start metadata, a live PID cannot be proved to be
-  // the same process. Preserve the lock instead of guessing.
   if (owner.platform !== 'linux' || !isValidStartTicks(owner.pid_start_ticks)) {
     return { status: 'identity-indeterminate', owner };
   }
@@ -807,6 +827,151 @@ async function inspectLockOwner(lockPath: string): Promise<{
     return { status: 'identity-indeterminate', owner };
   }
   return { status: 'live', owner };
+}
+
+async function inspectLockOwner(lockPath: string): Promise<{
+  status: LockOwnerStatus;
+  owner?: SessionPointerLockOwnerV1;
+}> {
+  return await inspectLockOwnerFile(join(lockPath, 'owner.json'));
+}
+
+async function inspectSessionPointerLockAtContext(context: SessionPointerContext): Promise<SessionPointerLockInspection> {
+  const absent = (): SessionPointerLockInspection => ({ status: 'absent', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false });
+  let lockStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+  try {
+    lockStat = await transactionDependencies.fs.lstat(context.lockPath);
+  } catch (error) {
+    return isNotFound(error) ? absent() : { status: 'io-error', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false };
+  }
+  if (lockStat.isSymbolicLink()) return { status: 'symlink', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false };
+  if (!lockStat.isDirectory()) return { status: 'unexpected', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false };
+
+  let entries: string[];
+  try {
+    entries = await transactionDependencies.fs.readdir(context.lockPath);
+  } catch {
+    return { status: 'io-error', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false };
+  }
+  const tempEntries = entries.filter((entry) => /^owner\.([A-Za-z0-9_-]{16,128})\.tmp$/.test(entry));
+  const hasCanonical = entries.includes('owner.json');
+  if (entries.length === 0) return { status: 'missing-owner', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false };
+  if ((hasCanonical && entries.length !== 1) || (!hasCanonical && tempEntries.length !== 1) || entries.length !== 1) {
+    return { status: entries.length > 1 && (hasCanonical || tempEntries.length > 0) ? 'ambiguous' : 'unexpected', lockPath: context.lockPath, evidenceSource: 'none', safeToRecover: false };
+  }
+
+  const evidenceName = hasCanonical ? 'owner.json' : tempEntries[0];
+  const evidenceSource = hasCanonical ? 'owner.json' as const : 'owner-temp' as const;
+  const evidencePath = join(context.lockPath, evidenceName);
+  let evidenceStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+  try {
+    evidenceStat = await transactionDependencies.fs.lstat(evidencePath);
+  } catch {
+    return { status: 'io-error', lockPath: context.lockPath, evidenceSource, safeToRecover: false };
+  }
+  if (evidenceStat.isSymbolicLink()) return { status: 'symlink', lockPath: context.lockPath, evidenceSource, safeToRecover: false };
+  if (!evidenceStat.isFile()) return { status: 'unexpected', lockPath: context.lockPath, evidenceSource, safeToRecover: false };
+
+  const owner = await inspectLockOwnerFile(evidencePath, 'missing');
+  if (evidenceSource === 'owner-temp' && owner.owner?.token !== /^owner\.([A-Za-z0-9_-]{16,128})\.tmp$/.exec(evidenceName)?.[1]) {
+    return { status: 'malformed', lockPath: context.lockPath, evidenceSource, safeToRecover: false };
+  }
+  const status = owner.status === 'missing' ? 'io-error' : owner.status;
+  return {
+    status,
+    lockPath: context.lockPath,
+    evidenceSource,
+    safeToRecover: status === 'dead' && evidenceSource === 'owner-temp',
+  };
+}
+
+/** Inspect only exact, regular owner evidence in the selected pointer lock. */
+export async function inspectSessionPointerLock(cwd: string): Promise<SessionPointerLockInspection> {
+  return await inspectSessionPointerLockAtContext(resolveSessionPointerContext(cwd));
+}
+
+/** Explicitly quarantine only a dead, atomically claimed pointer lock; never force recovery. */
+export async function recoverSessionPointerLock(cwd: string): Promise<SessionPointerLockRecovery> {
+  const context = resolveSessionPointerContext(cwd);
+  const inspection = await inspectSessionPointerLockAtContext(context);
+  if (!inspection.safeToRecover) {
+    return { ...inspection, action: 'none', recovered: false, reason: inspection.status === 'absent' ? 'No session pointer lock exists.' : `Session pointer lock is not safe to recover (${inspection.status}).` };
+  }
+
+  let entries: string[];
+  try {
+    entries = await transactionDependencies.fs.readdir(context.lockPath);
+  } catch {
+    return { ...inspection, action: 'none', recovered: false, reason: 'Unable to re-read session pointer lock evidence.' };
+  }
+  const evidenceName = inspection.evidenceSource === 'owner.json' ? 'owner.json' : entries.find((entry) => /^owner\.([A-Za-z0-9_-]{16,128})\.tmp$/.test(entry));
+  if (!evidenceName || entries.length !== 1) {
+    return { ...inspection, action: 'none', recovered: false, reason: 'Session pointer lock evidence changed before recovery claim.' };
+  }
+  const owner = await inspectLockOwnerFile(join(context.lockPath, evidenceName));
+  if (owner.status !== 'dead' || !owner.owner) {
+    return { ...inspection, action: 'none', recovered: false, reason: 'Session pointer lock evidence changed before recovery claim.' };
+  }
+
+  let claimToken: string;
+  try {
+    claimToken = transactionDependencies.token();
+  } catch {
+    return { ...inspection, action: 'none', recovered: false, reason: 'Unable to create recovery claim token.' };
+  }
+  if (!isValidToken(claimToken)) return { ...inspection, action: 'none', recovered: false, reason: 'Recovery claim token is invalid.' };
+  const claimName = `owner.${owner.owner.token}.${claimToken}.recovery`;
+  const claimPath = join(context.lockPath, claimName);
+  try {
+    await transactionDependencies.fs.lstat(claimPath);
+    return { ...inspection, action: 'none', recovered: false, reason: 'Recovery claim path already exists.' };
+  } catch (error) {
+    if (!isNotFound(error)) return { ...inspection, action: 'none', recovered: false, reason: 'Unable to inspect recovery claim path.' };
+  }
+  try {
+    await transactionDependencies.fs.rename(join(context.lockPath, evidenceName), claimPath);
+  } catch {
+    return { ...inspection, action: 'none', recovered: false, reason: 'Session pointer lock evidence changed before recovery claim.' };
+  }
+
+  const claimed = await inspectSessionPointerLockAtContext(context);
+  let claimedEntries: string[];
+  try {
+    claimedEntries = await transactionDependencies.fs.readdir(context.lockPath);
+  } catch {
+    return { ...claimed, action: 'none', recovered: false, reason: 'Unable to revalidate recovery claim.' };
+  }
+  const claimOwner = await inspectLockOwnerFile(claimPath);
+  if (claimedEntries.length !== 1 || claimedEntries[0] !== claimName || claimOwner.status !== 'dead' || claimOwner.owner?.token !== owner.owner.token || claimed.status !== 'unexpected') {
+    return { ...claimed, action: 'none', recovered: false, reason: 'Recovery claim revalidation failed.' };
+  }
+
+  const quarantinePath = `${context.lockPath}.quarantine.${owner.owner.token}.${claimToken}`;
+  try {
+    await transactionDependencies.fs.lstat(quarantinePath);
+    return { ...claimed, action: 'none', recovered: false, reason: 'Recovery quarantine path already exists.' };
+  } catch (error) {
+    if (!isNotFound(error)) return { ...claimed, action: 'none', recovered: false, reason: 'Unable to inspect recovery quarantine path.' };
+  }
+  try {
+    await transactionDependencies.fs.rename(claimPath, quarantinePath);
+  } catch {
+    return { ...claimed, action: 'none', recovered: false, reason: 'Unable to quarantine the exact session pointer recovery claim.' };
+  }
+  try {
+    await transactionDependencies.fs.rmdir(context.lockPath);
+  } catch (error) {
+    if (!isNotFound(error)) {
+      return {
+        ...claimed,
+        action: 'none',
+        recovered: false,
+        reason: 'The exact recovery claim was quarantined, but the canonical lock directory was not empty.',
+        quarantinePath,
+      };
+    }
+  }
+  return { ...inspection, action: 'quarantined', recovered: true, reason: 'Dead session pointer lock was atomically claimed and quarantined.', quarantinePath };
 }
 
 interface HeldPointerLock {

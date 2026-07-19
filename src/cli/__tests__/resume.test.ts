@@ -662,32 +662,33 @@ fi | sort
     }
   });
 
-  it('passes resume --help through to codex instead of printing top-level omx help', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-cli-'));
+  it('prints read-only resume help without launching through a hostile incomplete pointer lock', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-help-'));
     try {
       const home = join(wd, 'home');
       const fakeBin = join(wd, 'bin');
       const fakeCodexPath = join(fakeBin, 'codex');
-      const fakePsPath = join(fakeBin, 'ps');
+      const codexLog = join(wd, 'codex.log');
+      const lockPath = join(wd, '.omx', 'state', 'session.json.lock');
 
       await mkdir(home, { recursive: true });
       await mkdir(fakeBin, { recursive: true });
-      await writeFile(fakeCodexPath, '#!/bin/sh\nprintf \'fake-codex:%s\\n\' \"$*\"\n');
+      await mkdir(lockPath, { recursive: true });
+      await writeFile(join(lockPath, 'owner.incomplete.tmp'), '{"incomplete":true}\n');
+      await writeFile(fakeCodexPath, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(codexLog)}\n`);
       await chmod(fakeCodexPath, 0o755);
-      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
-      await chmod(fakePsPath, 0o755);
 
       const result = runOmx(wd, ['resume', '--help'], {
         HOME: home,
         PATH: `${fakeBin}:/usr/bin:/bin`,
         OMX_AUTO_UPDATE: '0',
-        OMX_NOTIFY_FALLBACK: '0',
-        OMX_HOOK_DERIVED_SIGNALS: '0',
       });
 
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
-      assert.match(result.stdout, /fake-codex:resume --help\b/);
-      assert.doesNotMatch(result.stdout, /Unknown command: resume/);
+      assert.match(result.stdout, /Usage: omx resume/);
+      assert.match(result.stdout, /Read-only help does not prepare or launch/i);
+      await assert.rejects(readFile(codexLog, 'utf-8'), { code: 'ENOENT' });
+      assert.equal((await readdir(lockPath)).join(','), 'owner.incomplete.tmp');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

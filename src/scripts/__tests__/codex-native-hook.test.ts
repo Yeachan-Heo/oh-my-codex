@@ -19629,6 +19629,90 @@ PY`,
     }
   });
 
+  it("does not persist support or capacity poison from successful collaboration child output", async () => {
+    for (const toolName of [
+      "collaboration.spawn_agent",
+      "collaboration.list_agents",
+      "collaboration.followup_task",
+      "collaboration.wait_agent",
+    ]) {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-collaboration-success-"));
+      try {
+        await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PostToolUse",
+            cwd,
+            session_id: "sess-collaboration-success",
+            thread_id: "thread-collaboration-success",
+            tool_name: toolName,
+            tool_response: {
+              success: true,
+              status: "completed",
+              output: "Child completed. Optional packed plugin was unavailable, unsupported, and not found.",
+            },
+          },
+          { cwd },
+        );
+
+        const stateDir = join(cwd, ".omx", "state");
+        assert.equal(existsSync(join(stateDir, "native-subagent-support.json")), false, toolName);
+        assert.equal(existsSync(join(stateDir, "native-subagent-capacity-blocker.json")), false, toolName);
+
+        await dispatchCodexNativeHook({
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "sess-collaboration-success",
+          thread_id: "thread-collaboration-success",
+        }, { cwd });
+        assert.equal(existsSync(join(stateDir, "native-subagent-support.json")), false, `${toolName} restart`);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("does not persist legacy prose poison from non-spawn collaboration results", async () => {
+    for (const toolName of [
+      "collaboration.list_agents",
+      "collaboration.followup_task",
+      "collaboration.wait_agent",
+    ]) {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-collaboration-legacy-success-"));
+      try {
+        await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse",
+          cwd,
+          tool_name: toolName,
+          tool_response: "Successful result: optional dependency unavailable, unsupported, or not found.",
+        }, { cwd });
+        assert.equal(existsSync(join(cwd, ".omx", "state", "native-subagent-support.json")), false, toolName);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("does not persist native blockers from structured failures on unrelated tools", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-unrelated-structured-failure-"));
+    try {
+      await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd,
+        tool_name: "Bash",
+        tool_response: {
+          success: false,
+          status: "failed",
+          error: "optional plugin is unsupported and unavailable",
+        },
+      }, { cwd });
+      const stateDir = join(cwd, ".omx", "state");
+      assert.equal(existsSync(join(stateDir, "native-subagent-support.json")), false);
+      assert.equal(existsSync(join(stateDir, "native-subagent-capacity-blocker.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks close_agent cleanup after recent native subagent capacity exhaustion", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-close-block-"));
     try {

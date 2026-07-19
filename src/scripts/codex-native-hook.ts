@@ -133,6 +133,7 @@ import {
   isRoleRoutingUnavailableEvidence,
   isUnsupportedNativeSubagentEvidence,
   parseRoleIntentCorrelationToken,
+  parseNativeSubagentResultDisposition,
   resolveNativeSubagentSupportStatus,
   type NativeSubagentUnsupportedReason,
 } from "../leader/contract.js";
@@ -3496,42 +3497,20 @@ function readJsonSyncIfExists(path: string): Record<string, unknown> | null {
   }
 }
 
-function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value === undefined || value === null) return "";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
 
-function payloadEvidenceText(payload: CodexHookPayload): string {
-  return [
-    safeString(payload.tool_name),
-    stringifyUnknown(payload.tool_response),
-    stringifyUnknown(payload.response),
-    stringifyUnknown(payload.error),
-    stringifyUnknown(payload.message),
-  ].filter(Boolean).join("\n");
+function nativeSubagentResultDisposition(payload: CodexHookPayload) {
+  const toolName = safeString(payload.tool_name).trim();
+  const result = payload.tool_response ?? payload.response ?? payload.error ?? payload.message;
+  return parseNativeSubagentResultDisposition(toolName, result);
 }
 
 function isNativeSubagentCapacityFailure(payload: CodexHookPayload): boolean {
-  const evidence = payloadEvidenceText(payload);
-  if (!/\bagent thread limit reached\b/i.test(evidence)) return false;
-  const toolName = safeString(payload.tool_name).trim();
-  return !toolName || /(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName);
+  return nativeSubagentResultDisposition(payload).kind === "capacity";
 }
 
 function nativeSubagentFailureReason(payload: CodexHookPayload): NativeSubagentUnsupportedReason | null {
-  const evidence = payloadEvidenceText(payload);
-  const toolName = safeString(payload.tool_name).trim();
-  if (toolName && !/(?:spawn_agent|multi_agent|subagent|collab|agent)/i.test(toolName)) return null;
-  if (/\bagent thread limit reached\b/i.test(evidence)) return null;
-  if (/\bnative subagents? (?:unsupported|disabled|not enabled|unavailable|not found)\b/i.test(evidence)) return "native_subagents_unsupported";
-  if (/\bmulti_agent_v1\b/i.test(evidence) && /\b(?:unavailable|unknown tool|disabled|not enabled|not found|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
-  if (/\b(?:unknown tool|tool not found|not enabled|disabled|unavailable|unsupported)\b/i.test(evidence)) return "multi_agent_v1_unavailable";
-  return null;
+  const disposition = nativeSubagentResultDisposition(payload);
+  return disposition.kind === "unsupported" ? disposition.reason : null;
 }
 
 function summarizeNativeSubagentSupportFailure(text: string): string {
@@ -3556,7 +3535,7 @@ async function recordNativeSubagentSupportBlocker(
     ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
     ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
     ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
-    evidence: summarizeNativeSubagentSupportFailure(payloadEvidenceText(payload)),
+    evidence: summarizeNativeSubagentSupportFailure(nativeSubagentResultDisposition(payload).evidenceSummary),
     observed_at: nowIso,
     cwd,
   }, null, 2));
@@ -3604,7 +3583,7 @@ async function recordNativeSubagentCapacityBlocker(
     ...(readPayloadThreadId(payload) ? { thread_id: readPayloadThreadId(payload) } : {}),
     ...(readPayloadTurnId(payload) ? { turn_id: readPayloadTurnId(payload) } : {}),
     ...(safeString(payload.tool_name).trim() ? { tool_name: safeString(payload.tool_name).trim() } : {}),
-    error_summary: summarizeCapacityFailure(payloadEvidenceText(payload)),
+    error_summary: summarizeCapacityFailure(nativeSubagentResultDisposition(payload).evidenceSummary),
     observed_at: new Date(nowMs).toISOString(),
     expires_at: new Date(nowMs + NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS).toISOString(),
   };

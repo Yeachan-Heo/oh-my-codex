@@ -1842,6 +1842,20 @@ async function runLeaderNudgeTick(): Promise<boolean> {
     return false;
   }
 
+  const activeTeam = await resolveActiveTeamState();
+  if (!activeTeam.active) {
+    leaderNudgeRuns += 1;
+    lastLeaderNudge = {
+      enabled: true,
+      leader_only: true,
+      stale_threshold_ms: staleThresholdMs,
+      precomputed_leader_stale: false,
+      last_tick_at: startedIso,
+      last_error: `inactive_team:${activeTeam.reason}`,
+    };
+    return false;
+  }
+
   try {
     const preComputedLeaderStale = await isLeaderStale(stateDir, staleThresholdMs, Date.now());
     await maybeNudgeTeamLeader({

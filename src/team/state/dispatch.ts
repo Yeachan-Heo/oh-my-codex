@@ -21,6 +21,7 @@ export interface TeamDispatchRequest {
   trigger_message: string;
   intent?: TeamReminderIntent;
   message_id?: string;
+
   inbox_correlation_key?: string;
   transport_preference: TeamDispatchTransportPreference;
   fallback_allowed: boolean;
@@ -109,6 +110,7 @@ export function normalizeDispatchRequest(
     trigger_message: raw.trigger_message,
     intent: isTeamReminderIntent(raw.intent) ? raw.intent : undefined,
     message_id: typeof raw.message_id === 'string' && raw.message_id !== '' ? raw.message_id : undefined,
+
     inbox_correlation_key:
       typeof raw.inbox_correlation_key === 'string' && raw.inbox_correlation_key !== '' ? raw.inbox_correlation_key : undefined,
     transport_preference:
@@ -127,15 +129,23 @@ export function normalizeDispatchRequest(
   });
 }
 
+function sameMailboxWakeTarget(existing: TeamDispatchRequest, input: TeamDispatchRequestInput): boolean {
+  if (existing.status !== 'pending' && existing.status !== 'notified') return false;
+  if (existing.to_worker !== input.to_worker || existing.pane_id !== input.pane_id) return false;
+  if (existing.intent || input.intent) return existing.intent === input.intent;
+  // Legacy callers without structured intent may coalesce only identical
+  // directives; a changed directive can reflect a changed target boundary.
+  return existing.trigger_message === input.trigger_message;
+}
+
 function equivalentPendingDispatch(existing: TeamDispatchRequest, input: TeamDispatchRequestInput): boolean {
-  if (existing.status !== 'pending') return false;
   if (existing.kind !== input.kind) return false;
-  if (existing.to_worker !== input.to_worker) return false;
 
   if (input.kind === 'mailbox') {
-    return Boolean(input.message_id) && existing.message_id === input.message_id;
+    return sameMailboxWakeTarget(existing, input);
   }
 
+  if (existing.to_worker !== input.to_worker || existing.status !== 'pending') return false;
   if (input.kind === 'inbox' && input.inbox_correlation_key) {
     return existing.inbox_correlation_key === input.inbox_correlation_key;
   }
@@ -168,6 +178,15 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
   try {
     getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasBridgeDispatchCompat(cwd: string): boolean {
+  if (!isBridgeEnabled()) return false;
+  try {
+    return getDefaultBridge(resolveBridgeStateDir(cwd)).readCompatFile('dispatch.json') !== null;
   } catch {
     return false;
   }
@@ -246,7 +265,9 @@ export async function enqueueDispatchRequest(
   const queued = await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
     const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
     const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
-    if (existing) return { request: existing, deduped: true };
+    if (existing && (!isBridgeEnabled() || hasBridgeDispatchCompat(deps.cwd))) {
+      return { request: existing, deduped: true };
+    }
 
     const nowIso = new Date().toISOString();
     const request = normalizeDispatchRequest(
@@ -389,8 +410,6 @@ export async function markDispatchRequestDelivered(
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'delivered') return current;
-  // Mirror the terminal-state guard from markDispatchRequestNotified: failed
-  // dispatches cannot be promoted to delivered via the bridge side-channel.
   if (current.status === 'failed') return null;
   if (executeBridgeCommand(deps.cwd, { command: 'MarkDelivered', request_id: requestId })) {
     return await readDispatchRequest(requestId, deps) ?? current;

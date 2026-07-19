@@ -263,6 +263,7 @@ Usage:
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search and summarize local session history (--codex-home <path> escape hatch)
+                Includes session lock inspect/recover diagnostics
   omx url       Passive URL reader (read <url> --json)
   omx capabilities
                 Lock/check deterministic configured tool, skill, agent, and observation surfaces
@@ -460,6 +461,10 @@ type CliCommand =
   | "reasoning"
   | "codex-native-hook"
   | string;
+
+const RESUME_HELP = `Usage: omx resume [--project] [--codex-home <path>] [codex resume options]
+
+Read-only help does not prepare or launch a Codex session.`;
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
@@ -2829,9 +2834,19 @@ export async function main(args: string[]): Promise<void> {
     return;
   }
 
-  activateMadmaxIsolationIfNeeded(command, launchArgs, process.cwd(), process.env);
-
   try {
+    if (command === "session") {
+      await sessionCommand(args.slice(1));
+      return;
+    }
+
+    if (command === "resume" && launchArgs.some((arg) => arg === "--help" || arg === "-h")) {
+      console.log(RESUME_HELP);
+      return;
+    }
+
+    activateMadmaxIsolationIfNeeded(command, launchArgs, process.cwd(), process.env);
+
     switch (command) {
       case "launch":
         if (launchArgsRequestAuthHotswap(launchArgs)) {
@@ -2942,9 +2957,6 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "team":
         await teamCommand(args.slice(1), options);
-        break;
-      case "session":
-        await sessionCommand(args.slice(1));
         break;
       case "url":
         await urlCommand(args.slice(1));
