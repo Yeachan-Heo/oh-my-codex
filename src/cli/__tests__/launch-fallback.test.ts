@@ -114,10 +114,11 @@ exit "$status"
 async function createLaunchFixture(
   wd: string,
   tmuxScript: (tmuxLogPath: string) => string,
-): Promise<{ env: Record<string, string>; tmuxLogPath: string }> {
+): Promise<{ env: Record<string, string>; tmuxLogPath: string; leaderDonePath: string }> {
   const home = join(wd, 'home');
   const fakeBin = join(wd, 'bin');
   const tmuxLogPath = join(wd, 'tmux.log');
+  const leaderDonePath = join(wd, 'leader-done');
 
   await mkdir(home, { recursive: true });
   await mkdir(fakeBin, { recursive: true });
@@ -136,12 +137,15 @@ if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
   for last_arg do :; done
   pane=$(printf '%s' "$output" | sed -n '1p')
   TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+  leader_pid=$!
+  (while kill -0 "$leader_pid" 2>/dev/null; do sleep 0.02; done; printf done > ${JSON.stringify(join(wd, 'leader-done'))}) </dev/null >/dev/null 2>&1 &
 fi
 exit "$status"
 `);
 
   return {
     tmuxLogPath,
+    leaderDonePath,
     env: {
       HOME: home,
       PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -922,7 +926,7 @@ exit 0
       const repo = await createGitRepo(wd);
       const runs = join(wd, 'runs');
       const instanceMarker = join(wd, 'active-instance');
-      const { env, tmuxLogPath } = await createLaunchFixture(
+      const { env, tmuxLogPath, leaderDonePath } = await createLaunchFixture(
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
@@ -996,6 +1000,7 @@ exit 0
       assert.match(tmuxLog, /__detached-session-leader/);
       assert.match(tmuxLog, /-e OMXBOX_ACTIVE=1/);
       assert.match(tmuxLog, new RegExp(`-e OMX_SOURCE_CWD=${escapeRegExp(normalizeDarwinTmpPath(repo))}`));
+      await waitForPath(leaderDonePath);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1021,7 +1026,7 @@ exit 0
           tmux_pane_id: '%99',
         })}\n`,
       );
-      const { env, tmuxLogPath } = await createLaunchFixture(
+      const { env, tmuxLogPath, leaderDonePath } = await createLaunchFixture(
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
@@ -1079,6 +1084,7 @@ exit 0
 
       if (shouldSkipForSpawnPermissions(result.error)) return;
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      await waitForPath(leaderDonePath);
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.doesNotMatch(tmuxLog, /tmux:set-option .* -t user-owned-session .*history-limit/);
       assert.doesNotMatch(tmuxLog, /tmux:clear-history .*user-owned-session|tmux:clear-history .*%99/);
