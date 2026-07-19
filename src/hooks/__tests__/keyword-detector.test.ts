@@ -15,8 +15,10 @@ import {
   DEEP_INTERVIEW_INPUT_LOCK_MESSAGE,
   persistDeepInterviewModeState,
 } from '../keyword-detector.js';
-import { SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
+import { readSkillActiveState, SKILL_ACTIVE_STATE_FILE } from '../../state/skill-active.js';
 import { isUnderspecifiedForExecution, applyRalplanGate } from '../keyword-detector.js';
+import { neutralizeOwnedRoutingRalplan } from '../../ralplan/documented-leader-preflight.js';
+import { readActiveWorkflowModes } from '../../state/workflow-transition.js';
 import {
   EXPLICIT_SKILL_ALIASES,
   getExplicitSkillDefinition,
@@ -3315,6 +3317,29 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.active, true);
       assert.equal(modeState.current_phase, 'planning');
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('does not reactivate a neutralized routing-only Ralplan seed on plain continuation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-neutralized-ralplan-'));
+    const stateDir = join(cwd, '.omx', 'state'); const sessionId = 'sess-neutralized';
+    const previousSessionId = process.env.OMX_SESSION_ID;
+    try {
+      process.env.OMX_SESSION_ID = sessionId;
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: stateDir }));
+      assert.ok(await recordSkillActivation({ stateDir, sourceCwd: cwd, text: '$ralplan tighten the plan', sessionId, nowIso: '2026-02-25T00:00:00.000Z' }));
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const ralplanPath = join(sessionDir, 'ralplan-state.json'); const skillPath = join(sessionDir, SKILL_ACTIVE_STATE_FILE);
+      const [ralplanBefore, skillBefore] = await Promise.all([readFile(ralplanPath), readFile(skillPath)]);
+      assert.equal(await neutralizeOwnedRoutingRalplan(cwd), true);
+      assert.deepEqual(await readActiveWorkflowModes(cwd, sessionId), []);
+      assert.equal(await recordSkillActivation({ stateDir, sourceCwd: cwd, text: 'continue', sessionId, nowIso: '2026-02-25T00:00:01.000Z' }), null);
+      assert.deepEqual(await readFile(ralplanPath), ralplanBefore); assert.deepEqual(await readFile(skillPath), skillBefore);
+      assert.equal((await readSkillActiveState(skillPath))?.active, false);
+    } finally {
+      if (previousSessionId === undefined) delete process.env.OMX_SESSION_ID;
+      else process.env.OMX_SESSION_ID = previousSessionId;
       await rm(cwd, { recursive: true, force: true });
     }
   });

@@ -1,6 +1,7 @@
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { getAuthoritativeActiveStatePaths } from '../mcp/state-paths.js';
+import { readNeutralizedRoutingOverlay } from '../ralplan/documented-leader-preflight.js';
 
 export type DownstreamAuthority = 'plan_then_execute' | 'execute_now';
 
@@ -1001,7 +1002,8 @@ export async function readActiveWorkflowModes(
       if (!existsSync(candidatePath)) continue;
       try {
         const parsed = JSON.parse(await readFile(candidatePath, 'utf-8')) as { active?: unknown };
-        if (parsed.active === true) {
+        const overlay = mode === 'ralplan' ? await readNeutralizedRoutingOverlay(candidatePath, 'ralplan') : null;
+        if ((overlay ?? parsed).active === true) {
           activeModes.push(mode);
         }
         break;

@@ -24,6 +24,7 @@ import { readTeamModeConfig } from '../config/team-mode.js';
 import {
   SKILL_ACTIVE_STATE_FILE,
   listActiveSkills,
+  readSkillActiveState,
   writeSkillActiveStateCopiesForStateDir,
   type SkillActiveEntry,
 } from '../state/skill-active.js';
@@ -493,12 +494,7 @@ function releaseDeepInterviewInputLock(
 }
 
 async function readExistingSkillState(statePath: string): Promise<SkillActiveState | null> {
-  try {
-    const raw = await readFile(statePath, 'utf-8');
-    return JSON.parse(raw) as SkillActiveState;
-  } catch {
-    return null;
-  }
+  return await readSkillActiveState(statePath) as SkillActiveState | null;
 }
 
 function buildActiveSkills(state: SkillActiveState): SkillActiveEntry[] | undefined {

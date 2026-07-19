@@ -34,7 +34,7 @@ async function fixture(): Promise<Fixture> {
   await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: join(cwd, '.omx', 'state') }));
   // This is the keyword-detector producer shape: mode state has no source field; skill state carries keyword provenance.
   await writeFile(ralplanPath, JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'planning', started_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }));
-  await writeFile(skillPath, JSON.stringify({ version: 1, active: true, skill: 'ralplan', keyword: '$ralplan', phase: 'planning', activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, thread_id: 'thread', turn_id: 'turn', active_skills: [{ skill: 'ralplan', phase: 'planning', active: true, activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }] }));
+  await writeFile(skillPath, JSON.stringify({ version: 1, active: true, skill: 'ralplan', keyword: '$ralplan', phase: 'planning', activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, thread_id: 'thread', turn_id: 'turn', initialized_mode: 'ralplan', initialized_state_path: `.omx/state/sessions/${sessionId}/ralplan-state.json`, active_skills: [{ skill: 'ralplan', phase: 'planning', active: true, activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }] }));
   return { cwd, sessionId, directory, ralplanPath, skillPath, ralplan: await readFile(ralplanPath), skill: await readFile(skillPath) };
 }
 function pairDigest(f: Fixture): string { return digestBytes(f.ralplan, f.skill); }
@@ -117,6 +117,26 @@ describe('documented leader immutable neutralization generation', () => {
       assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
     }));
   }
+  for (const [field, value] of [
+    ['initialized_mode', 'team'],
+    ['initialized_state_path', '.omx/state/ralplan-state.json'],
+    ['initialized_state_path', '.omx/state/sessions/foreign/ralplan-state.json'],
+    ['version', '1'],
+    ['keyword', '$team'],
+    ['activated_at', []],
+    ['session_id', []],
+  ] as const) {
+    it(`keeps state active despite a forged generation with invalid skill ${field}`, async () => withFixture(async (f) => {
+      const skill = JSON.parse(await readFile(f.skillPath, 'utf8')); skill[field] = value; await writeFile(f.skillPath, JSON.stringify(skill));
+      await mintCommittedGeneration(f);
+      assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+    }));
+  }
+  it('keeps state active despite a forged generation missing initialization metadata', async () => withFixture(async (f) => {
+    const skill = JSON.parse(await readFile(f.skillPath, 'utf8')); delete skill.initialized_mode; delete skill.initialized_state_path; await writeFile(f.skillPath, JSON.stringify(skill));
+    await mintCommittedGeneration(f);
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+  }));
   it('makes stale generation inert after either canonical byte string changes', async () => withFixture(async (f) => {
     assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await writeFile(f.ralplanPath, Buffer.concat([f.ralplan, Buffer.from(' ')]));
     assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);

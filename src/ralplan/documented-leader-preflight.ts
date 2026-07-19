@@ -67,6 +67,12 @@ function object(bytes: Buffer): Record<string, unknown> | null {
 function digest(ralplan: Buffer, skill: Buffer): string {
   return createHash('sha256').update('ralplan-state.json\0').update(ralplan).update('\0skill-active-state.json\0').update(skill).digest('hex');
 }
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+function optionalNonEmptyStrings(state: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => !Object.prototype.hasOwnProperty.call(state, key) || isNonEmptyString(state[key]));
+}
 function ownerMatches(state: Record<string, unknown>, owners: Set<string>): boolean {
   for (const key of ['session_id', 'owner_omx_session_id', 'owner_codex_session_id']) {
     if (!Object.prototype.hasOwnProperty.call(state, key)) continue;
@@ -83,12 +89,18 @@ const ROUTING_ONLY_RALPLAN_KEYS = new Set([
   'session_id', 'owner_omx_session_id', 'owner_codex_session_id',
   'thread_id', 'turn_id', 'tmux_pane_id', 'tmux_pane_set_at', 'tmux_window_id',
 ]);
+const ROUTING_ONLY_RALPLAN_OPTIONAL_STRING_KEYS = [
+  'owner_omx_session_id', 'owner_codex_session_id', 'thread_id', 'turn_id', 'tmux_pane_id', 'tmux_pane_set_at', 'tmux_window_id',
+] as const;
 
 const ROUTING_ONLY_SKILL_KEYS = new Set([
   'version', 'active', 'skill', 'keyword', 'phase', 'activated_at', 'updated_at',
   'source', 'session_id', 'owner_omx_session_id', 'owner_codex_session_id',
   'thread_id', 'turn_id', 'active_skills', 'initialized_mode', 'initialized_state_path',
 ]);
+const ROUTING_ONLY_SKILL_OPTIONAL_STRING_KEYS = [
+  'owner_omx_session_id', 'owner_codex_session_id', 'thread_id', 'turn_id',
+] as const;
 
 const ROUTING_ONLY_SKILL_ENTRY_KEYS = new Set([
   'skill', 'phase', 'active', 'activated_at', 'updated_at',
@@ -99,29 +111,35 @@ function routingOnlyRalplan(state: Record<string, unknown>, owners: Set<string>)
   return state.active === true
     && state.mode === 'ralplan'
     && state.current_phase === 'planning'
+    && isNonEmptyString(state.started_at)
+    && isNonEmptyString(state.updated_at)
+    && Boolean(normalizeSessionId(state.session_id))
     && ownerMatches(state, owners)
+    && optionalNonEmptyStrings(state, ROUTING_ONLY_RALPLAN_OPTIONAL_STRING_KEYS)
     && hasOnlyKeys(state, ROUTING_ONLY_RALPLAN_KEYS);
 }
-function routingOnlySkill(state: Record<string, unknown>, owners: Set<string>): boolean {
-  if (state.active !== true || state.skill !== 'ralplan' || state.phase !== 'planning' || state.source !== 'keyword-detector' || !ownerMatches(state, owners) || !Array.isArray(state.active_skills) || state.active_skills.length !== 1 || !hasOnlyKeys(state, ROUTING_ONLY_SKILL_KEYS)) return false;
+function routingOnlySkill(state: Record<string, unknown>, owners: Set<string>, sessionId: string): boolean {
+  if (state.version !== 1 || state.active !== true || state.skill !== 'ralplan' || state.phase !== 'planning'
+    || (state.keyword !== '$ralplan' && state.keyword !== 'consensus plan') || state.source !== 'keyword-detector'
+    || state.initialized_mode !== 'ralplan' || state.initialized_state_path !== `.omx/state/sessions/${sessionId}/ralplan-state.json`
+    || !isNonEmptyString(state.activated_at) || !isNonEmptyString(state.updated_at)
+    || normalizeSessionId(state.session_id) !== sessionId || !ownerMatches(state, owners)
+    || !optionalNonEmptyStrings(state, ROUTING_ONLY_SKILL_OPTIONAL_STRING_KEYS)
+    || !Array.isArray(state.active_skills) || state.active_skills.length !== 1 || !hasOnlyKeys(state, ROUTING_ONLY_SKILL_KEYS)) return false;
   const entry = state.active_skills[0];
-  return Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
-    && (entry as Record<string, unknown>).skill === 'ralplan' && (entry as Record<string, unknown>).active === true
-    && ((entry as Record<string, unknown>).phase === 'planning' || (entry as Record<string, unknown>).phase === undefined)
-    && ownerMatches(entry as Record<string, unknown>, owners)
-    && hasOnlyKeys(entry as Record<string, unknown>, ROUTING_ONLY_SKILL_ENTRY_KEYS));
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const item = entry as Record<string, unknown>;
+  return item.skill === 'ralplan' && item.active === true && item.phase === 'planning'
+    && isNonEmptyString(item.activated_at) && isNonEmptyString(item.updated_at)
+    && normalizeSessionId(item.session_id) === sessionId && ownerMatches(item, owners)
+    && optionalNonEmptyStrings(item, ROUTING_ONLY_SKILL_OPTIONAL_STRING_KEYS)
+    && hasOnlyKeys(item, ROUTING_ONLY_SKILL_ENTRY_KEYS);
 }
 function routingOnlyPair(ralplan: Record<string, unknown>, skill: Record<string, unknown>, owners: Set<string>): boolean {
-  const ralplanSessionId = normalizeSessionId(ralplan.session_id);
-  const skillSessionId = normalizeSessionId(skill.session_id);
-  const skillEntry = Array.isArray(skill.active_skills) ? skill.active_skills[0] : undefined;
-  const skillEntrySessionId = skillEntry && typeof skillEntry === 'object' && !Array.isArray(skillEntry)
-    ? normalizeSessionId((skillEntry as Record<string, unknown>).session_id)
-    : undefined;
-  return Boolean(ralplanSessionId && skillSessionId && skillEntrySessionId
-    && ralplanSessionId === skillSessionId && skillSessionId === skillEntrySessionId && owners.has(ralplanSessionId))
-    && routingOnlyRalplan(ralplan, owners)
-    && routingOnlySkill(skill, owners);
+  const sessionId = normalizeSessionId(ralplan.session_id);
+  if (!sessionId || !owners.has(sessionId)) return false;
+  return routingOnlyRalplan(ralplan, owners)
+    && routingOnlySkill(skill, owners, sessionId);
 }
 function neutralized(state: Record<string, unknown>, kind: OverlayKind): Record<string, unknown> {
   const next: Record<string, unknown> = { ...state, active: false, phase: 'cancelled', current_phase: 'cancelled' };
