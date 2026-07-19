@@ -10,7 +10,7 @@ import { recordSkillActivation } from '../../hooks/keyword-detector.js';
 import {
   UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE, UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE,
   evaluateCodex01445PreToolUse, neutralizeOwnedRoutingRalplan, parseCodex01445AdaptedRoleIntentCommand,
-  RALPLAN_NEUTRALIZE_TEST_SEAM,
+  readNeutralizedRoutingOverlay, RALPLAN_NEUTRALIZE_TEST_SEAM,
 } from '../documented-leader-preflight.js';
 
 const command = (role: string) => `omx ralplan role-intent write --role ${role} --parent-thread "$CODEX_THREAD_ID" --json`;
@@ -214,4 +214,19 @@ describe('documented leader immutable neutralization generation', () => {
       assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
     }));
   }
+  it('ignores generations stored under a padded session-directory basename', async () => withFixture(async (f) => {
+    const paddedDirectory = join(f.cwd, '.omx', 'state', 'sessions', ` ${f.sessionId} `);
+    await mkdir(paddedDirectory, { recursive: true });
+    const padded: Fixture = {
+      ...f,
+      directory: paddedDirectory,
+      ralplanPath: join(paddedDirectory, 'ralplan-state.json'),
+      skillPath: join(paddedDirectory, 'skill-active-state.json'),
+    };
+    await writeFile(padded.ralplanPath, f.ralplan);
+    await writeFile(padded.skillPath, f.skill);
+    await mintCommittedGeneration(padded);
+    assert.equal(await readNeutralizedRoutingOverlay(padded.ralplanPath, 'ralplan'), null);
+    assert.equal(await readNeutralizedRoutingOverlay(padded.skillPath, 'skill'), null);
+  }));
 });

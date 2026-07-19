@@ -355,6 +355,26 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  ralplan-preflight-macos:
+    name: Ralplan preflight security (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    needs: [changes]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify Darwin descriptor-relative neutralization
+        run: |
+          node --test dist/ralplan/__tests__/documented-leader-preflight.test.js
+          node --test --test-name-pattern='does not reactivate a neutralized routing-only Ralplan seed' dist/hooks/__tests__/keyword-detector.test.js
+          node --test --test-name-pattern='does not advertise a neutralized Ralplan seed in SessionStart context' dist/scripts/__tests__/codex-native-hook.test.js
+
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.lane }})
     runs-on: ubuntu-latest
