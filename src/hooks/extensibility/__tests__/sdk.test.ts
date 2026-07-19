@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -421,6 +421,174 @@ exit 1
         });
       } finally {
         await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('honors explicit stateRoot when reading session-scoped HUD state', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-source-'));
+      const stateRoot = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-authority-'));
+      try {
+        await writeOmxStateFile(cwd, 'session.json', { session_id: 'stale-source', cwd });
+        await writeOmxStateFile(cwd, join('sessions', 'stale-source', 'hud-state.json'), {
+          last_turn_at: 'stale-source',
+          turn_count: 99,
+        });
+        await mkdir(join(stateRoot, 'sessions', 'sess-authority'), { recursive: true });
+        await writeFile(join(stateRoot, 'session.json'), JSON.stringify({
+          session_id: 'sess-authority',
+          cwd,
+          state_root: stateRoot,
+        }));
+        await writeFile(join(stateRoot, 'sessions', 'sess-authority', 'hud-state.json'), JSON.stringify({
+          last_turn_at: 'authoritative',
+          turn_count: 3,
+        }));
+
+        const sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: 'sess-authority' },
+        });
+        assert.deepEqual(await sdk.omx.hud.read(), {
+          last_turn_at: 'authoritative',
+          turn_count: 3,
+        });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('requires a usable pointer and bound hook session for explicit HUD reads', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-binding-source-'));
+      const stateRoot = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-binding-root-'));
+      try {
+        const sessionDir = join(stateRoot, 'sessions', 'sess-canonical');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'hud-state.json'), JSON.stringify({ turn_count: 4 }));
+        await writeFile(join(stateRoot, 'session.json'), JSON.stringify({
+          session_id: 'sess-canonical',
+          native_session_id: 'sess-native',
+          owner_codex_session_id: 'sess-owner-codex',
+          cwd,
+          state_root: stateRoot,
+        }));
+
+        let sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: 'sess-native' },
+        });
+        assert.deepEqual(await sdk.omx.hud.read(), { turn_count: 4 });
+
+        sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: 'sess-owner-codex' },
+        });
+        assert.deepEqual(await sdk.omx.hud.read(), { turn_count: 4 });
+
+        sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: '../invalid' },
+        });
+        assert.equal(await sdk.omx.hud.read(), null);
+
+        sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: 'sess-foreign' },
+        });
+        assert.equal(await sdk.omx.hud.read(), null);
+
+        await writeFile(join(stateRoot, 'session.json'), JSON.stringify({
+          session_id: 'sess-canonical',
+          cwd,
+          state_root: stateRoot,
+          pid: 2_147_483_647,
+        }));
+        sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: 'sess-canonical' },
+        });
+        assert.equal(await sdk.omx.hud.read(), null);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects invalid and symlink-escaped sessions under explicit stateRoot', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-containment-source-'));
+      const stateRoot = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-containment-root-'));
+      const outside = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-containment-outside-'));
+      try {
+        await writeFile(join(stateRoot, 'session.json'), JSON.stringify({ session_id: '../outside' }));
+        let sdk = createHookPluginSdk({ cwd, stateRoot, pluginName: 'test', event: makeEvent() });
+        assert.equal(await sdk.omx.hud.read(), null);
+
+        await mkdir(join(stateRoot, 'sessions'), { recursive: true });
+        await writeFile(join(outside, 'hud-state.json'), JSON.stringify({ turn_count: 99 }));
+        await symlink(outside, join(stateRoot, 'sessions', 'sess-escaped'), process.platform === 'win32' ? 'junction' : 'dir');
+        await writeFile(join(stateRoot, 'session.json'), JSON.stringify({ session_id: 'sess-escaped', cwd, state_root: stateRoot }));
+        sdk = createHookPluginSdk({ cwd, stateRoot, pluginName: 'test', event: { ...makeEvent(), session_id: 'sess-escaped' } });
+        assert.equal(await sdk.omx.hud.read(), null);
+
+        const crossSessionTarget = join(stateRoot, 'sessions', 'sess-cross-target');
+        await mkdir(crossSessionTarget, { recursive: true });
+        await writeFile(join(crossSessionTarget, 'hud-state.json'), JSON.stringify({ turn_count: 77 }));
+        await symlink(
+          crossSessionTarget,
+          join(stateRoot, 'sessions', 'sess-cross'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        await writeFile(join(stateRoot, 'session.json'), JSON.stringify({
+          session_id: 'sess-cross',
+          cwd,
+          state_root: stateRoot,
+        }));
+        sdk = createHookPluginSdk({
+          cwd,
+          stateRoot,
+          pluginName: 'test',
+          event: { ...makeEvent(), session_id: 'sess-cross' },
+        });
+        assert.equal(await sdk.omx.hud.read(), null);
+
+        if (process.platform !== 'win32') {
+          const fileSessionDir = join(stateRoot, 'sessions', 'sess-file-escaped');
+          await mkdir(fileSessionDir, { recursive: true });
+          await symlink(
+            join(outside, 'hud-state.json'),
+            join(fileSessionDir, 'hud-state.json'),
+            'file',
+          );
+          await writeFile(join(stateRoot, 'session.json'), JSON.stringify({ session_id: 'sess-file-escaped', cwd, state_root: stateRoot }));
+          sdk = createHookPluginSdk({ cwd, stateRoot, pluginName: 'test', event: { ...makeEvent(), session_id: 'sess-file-escaped' } });
+          assert.equal(await sdk.omx.hud.read(), null);
+
+          const siblingDir = join(stateRoot, 'sessions', 'sess-sibling');
+          const siblingTargetDir = join(stateRoot, 'sessions', 'sess-sibling-target');
+          await mkdir(siblingDir, { recursive: true });
+          await mkdir(siblingTargetDir, { recursive: true });
+          await writeFile(join(siblingTargetDir, 'hud-state.json'), JSON.stringify({ turn_count: 55 }));
+          await symlink(join(siblingTargetDir, 'hud-state.json'), join(siblingDir, 'hud-state.json'), 'file');
+          await writeFile(join(stateRoot, 'session.json'), JSON.stringify({ session_id: 'sess-sibling', cwd, state_root: stateRoot }));
+          sdk = createHookPluginSdk({ cwd, stateRoot, pluginName: 'test', event: { ...makeEvent(), session_id: 'sess-sibling' } });
+          assert.equal(await sdk.omx.hud.read(), null);
+        }
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+        await rm(stateRoot, { recursive: true, force: true });
+        await rm(outside, { recursive: true, force: true });
       }
     });
 

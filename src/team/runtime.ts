@@ -97,7 +97,11 @@ import {
   type TeamPolicy,
   type TeamDispatchRequest,
 } from './team-ops.js';
-import { commitTeamMembershipTaskTransaction, writeTeamManifestV2 as writeTeamManifestV2State } from './state.js';
+import {
+  commitTeamMembershipTaskTransaction,
+  teamContinuationRequiredDiagnostic,
+  writeTeamManifestV2 as writeTeamManifestV2State,
+} from './state.js';
 import {
   queueInboxInstruction,
   queueDirectMailboxMessage,
@@ -406,6 +410,14 @@ interface ShutdownOptions {
 export interface TeamShutdownSummary {
   commitHygieneArtifacts: TeamCommitHygieneArtifactPaths | null;
 }
+let terminalEpochStartedHookForTest: ((teamName: string, cwd: string, phase: TeamPhaseState) => Promise<void>) | null = null;
+
+export function setTerminalEpochStartedHookForTest(
+  hook: ((teamName: string, cwd: string, phase: TeamPhaseState) => Promise<void>) | null,
+): void {
+  terminalEpochStartedHookForTest = hook;
+}
+
 
 export function applyCreatedInteractiveSessionToConfig(
   config: TeamConfig,
@@ -4424,14 +4436,16 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
     cwd,
   });
   const mailboxDeliveryStartMs = performance.now();
-  const mailboxNotifiedByMessageId = await deliverPendingMailboxMessages(
-    sanitized,
-    config,
-    workers,
-    previousSnapshot?.mailboxNotifiedByMessageId ?? {},
-    dispatchPolicy,
-    cwd
-  );
+  const mailboxNotifiedByMessageId = phaseState.terminal_epoch
+    ? {}
+    : await deliverPendingMailboxMessages(
+        sanitized,
+        config,
+        workers,
+        previousSnapshot?.mailboxNotifiedByMessageId ?? {},
+        dispatchPolicy,
+        cwd,
+      );
   const mailboxDeliveryMs = performance.now() - mailboxDeliveryStartMs;
 
   // Prune ephemeral status messages from leader mailbox (TTL: 60s)
@@ -4506,8 +4520,13 @@ export async function assignTask(
   cwd: string,
 ): Promise<void> {
   const sanitized = sanitizeTeamName(teamName);
-  const task = await readTask(sanitized, taskId, cwd);
-  if (!task) throw new Error(`Task ${taskId} not found`);
+  return await withTeamTaskMembershipBarrier(sanitized, cwd, async () => {
+    const phaseState = await readTeamPhaseState(sanitized, cwd);
+    if (phaseState?.terminal_epoch || (phaseState && isTerminalPhase(phaseState.current_phase))) {
+      throw new Error(teamContinuationRequiredDiagnostic(phaseState));
+    }
+    const task = await readTask(sanitized, taskId, cwd);
+    if (!task) throw new Error(`Task ${taskId} not found`);
   const manifest = await readTeamManifestV2(sanitized, cwd);
   const governance = resolveGovernancePolicy(manifest?.governance);
 
@@ -4634,6 +4653,7 @@ export async function assignTask(
     if (reason === 'worker_notify_failed') throw new Error('worker_notify_failed');
     throw new Error(`worker_assignment_failed:${reason}`);
   }
+  });
 }
 
 /**
@@ -4741,27 +4761,17 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     manifest?.policy as Partial<TeamGovernance> | undefined,
   );
 
-  if (!force) {
-    const classification = await classifyShutdown({
+  const classification = await withTeamTaskMembershipBarrier(sanitized, cwd, async () => {
+    const current = await classifyShutdown({
       teamName: sanitized,
       cwd,
-      config,
+      config: config!,
       governance,
       confirmIssues,
     });
-    const { gate, dirtyWorkers, requiresIssueConfirmation, useCleanFastPath } = classification;
+    const { gate, requiresIssueConfirmation } = current;
 
-    await appendTeamEvent(
-      sanitized,
-      {
-        type: 'shutdown_gate',
-        worker: 'leader-fixed',
-        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed} cleanup_requires_all_workers_inactive=${governance.cleanup_requires_all_workers_inactive} dirty_workers=${dirtyWorkers.join('|') || 'none'} confirm_issues=${confirmIssues} clean_fast_path=${useCleanFastPath}`,
-      },
-      cwd,
-    ).catch(() => {});
-
-    if (!gate.allowed) {
+    if (!force && !gate.allowed) {
       if (requiresIssueConfirmation) {
         throw new Error(
           `shutdown_confirm_issues_required:failed=${gate.failed}:rerun=omx team shutdown ${sanitized} --confirm-issues`,
@@ -4772,19 +4782,52 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       );
     }
 
-    skipWorkerAcks = useCleanFastPath;
+    const now = new Date().toISOString();
+    const existingPhase = await readTeamPhaseState(sanitized, cwd);
+    const terminalReason = force ? 'forced_shutdown' : 'shutdown_gate_passed';
+    await writeTeamPhaseState(sanitized, {
+      current_phase: existingPhase?.current_phase ?? 'team-exec',
+      max_fix_attempts: existingPhase?.max_fix_attempts ?? 3,
+      current_fix_attempt: existingPhase?.current_fix_attempt ?? 0,
+      transitions: existingPhase?.transitions ?? [],
+      updated_at: now,
+      terminal_epoch: existingPhase?.terminal_epoch ?? now,
+      terminal_reason: existingPhase?.terminal_reason ?? terminalReason,
+      final_task_counts: {
+        total: gate.total,
+        pending: gate.pending,
+        blocked: gate.blocked,
+        in_progress: gate.in_progress,
+        completed: gate.completed,
+        failed: gate.failed,
+      },
+    }, cwd);
+    return current;
+  });
+  const terminalPhase = await readTeamPhaseState(sanitized, cwd);
+  if (terminalPhase && terminalEpochStartedHookForTest) {
+    await terminalEpochStartedHookForTest(sanitized, cwd, terminalPhase);
   }
+  const { gate, dirtyWorkers, useCleanFastPath } = classification;
+
+  await appendTeamEvent(
+    sanitized,
+    {
+      type: force ? 'shutdown_gate_forced' : 'shutdown_gate',
+      worker: 'leader-fixed',
+      reason: force
+        ? `force_bypass total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed}`
+        : `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed} cleanup_requires_all_workers_inactive=${governance.cleanup_requires_all_workers_inactive} dirty_workers=${dirtyWorkers.join('|') || 'none'} confirm_issues=${confirmIssues} clean_fast_path=${useCleanFastPath}`,
+    },
+    cwd,
+  ).catch(() => {});
 
   if (force) {
-    await appendTeamEvent(sanitized, {
-      type: 'shutdown_gate_forced',
-      worker: 'leader-fixed',
-      reason: 'force_bypass',
-    }, cwd).catch(() => {});
-
     // Explicit force means teardown now. Do not spend the graceful ack window
     // waiting for interactive panes or prompt workers that will be killed below.
     skipWorkerAcks = true;
+  } else {
+    skipWorkerAcks = useCleanFastPath;
   }
 
   const sessionName = config.tmux_session;

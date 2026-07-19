@@ -362,6 +362,16 @@ export interface TeamPhaseState {
   current_fix_attempt: number;
   transitions: Array<{ from: string; to: string; at: string; reason?: string }>;
   updated_at: string;
+  terminal_epoch?: string;
+  terminal_reason?: string;
+  final_task_counts?: {
+    total: number;
+    pending: number;
+    blocked: number;
+    in_progress: number;
+    completed: number;
+    failed: number;
+  };
 }
 
 export const DEFAULT_MAX_WORKERS = 20;

@@ -14,6 +14,16 @@ function sessionStatePath(cwd: string, sessionId: string): string {
   return getStatePath('ralplan', cwd, sessionId);
 }
 
+async function writeSessionPointer(cwd: string, sessionId: string): Promise<void> {
+  const stateDir = join(cwd, '.omx', 'state');
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+    session_id: sessionId,
+    cwd,
+    state_root: stateDir,
+  }));
+}
+
 async function readScopedRalplanState(cwd: string, sessionId: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(sessionStatePath(cwd, sessionId), 'utf-8'));
 }
@@ -131,7 +141,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-success';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const seenPhases: string[] = [];
       const result = await runRalplanConsensus({
@@ -367,7 +377,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-native-required-missing';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -407,7 +417,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-planner-as-architect';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -452,7 +462,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-native-missing-role';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
       await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
@@ -508,7 +518,7 @@ describe('ralplan runtime', () => {
     const criticCompletedAt = '2026-05-28T00:10:00.000Z';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
       await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
@@ -559,7 +569,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-native-bookkeeping-only';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -624,7 +634,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-native-required-ok';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
       await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
@@ -684,7 +694,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-adapted-required-ok';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
       await writeAdaptedSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
@@ -741,7 +751,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-native-same-thread';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
       await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
@@ -799,7 +809,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-architect-reject';
     try {
       await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
-      await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       let criticCalls = 0;
       const result = await runRalplanConsensus({
@@ -842,7 +852,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-loop';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const draftIterations: number[] = [];
       const criticVerdicts: string[] = [];
@@ -895,7 +905,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-architect-reject';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
       const plansDir = join(cwd, '.omx', 'plans');
       await mkdir(plansDir, { recursive: true });
       await writeFile(join(plansDir, 'prd-reject.md'), '# plan\n');
@@ -928,7 +938,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-mismatched-artifacts';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -962,7 +972,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-no-artifacts';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -996,7 +1006,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-fail';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -1028,7 +1038,7 @@ describe('ralplan runtime', () => {
     const sessionId = 'sess-ralplan-cancel';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
-      await writeFile(join(sessionStatePath(cwd, sessionId), '..', '..', '..', 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeSessionPointer(cwd, sessionId);
 
       await startMode('ralplan', 'cancel me', 2, cwd);
       await cancelRalplanConsensus(cwd);

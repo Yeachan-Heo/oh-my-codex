@@ -31,7 +31,7 @@ describe('CLI session-scoped state parity', () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-scope-'));
     try {
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
-      await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: 'sess1' }));
+      await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: 'sess1', cwd: wd, state_root: join(wd, '.omx', 'state') }));
       const scopedDir = join(wd, '.omx', 'state', 'sessions', 'sess1');
       await mkdir(scopedDir, { recursive: true });
       await writeFile(join(scopedDir, 'team-state.json'), JSON.stringify({
@@ -66,7 +66,7 @@ describe('CLI session-scoped state parity', () => {
       const ralphPath = join(sessionDir, 'ralph-state.json');
       const nativeStopPath = join(sessionDir, 'native-stop-state.json');
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
       await writeFile(ralphPath, JSON.stringify({ active: true, current_phase: 'executing' }));
       await writeFile(nativeStopPath, JSON.stringify({
         sessions: { [sessionId]: { last_signature: 'ralph-stop|pending' } },
@@ -102,7 +102,7 @@ describe('CLI session-scoped state parity', () => {
       const sessionId = 'sess-clear';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
       await writeFile(join(stateDir, 'deep-interview-state.json'), JSON.stringify({
         active: true,
         mode: 'deep-interview',
@@ -436,7 +436,7 @@ describe('CLI session-scoped state parity', () => {
       const ultragoalDir = join(wd, '.omx', 'ultragoal');
       await mkdir(sessionDir, { recursive: true });
       await mkdir(ultragoalDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
       await writeFile(join(sessionDir, 'ultragoal-state.json'), JSON.stringify({
         active: true,
         mode: 'ultragoal',
@@ -473,7 +473,7 @@ describe('CLI session-scoped state parity', () => {
       const sessionId = 'sess-link';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
 
       await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
         active: true,
@@ -514,7 +514,7 @@ describe('CLI session-scoped state parity', () => {
       const sessionB = join(stateDir, 'sessions', 'sessB');
       await mkdir(sessionA, { recursive: true });
       await mkdir(sessionB, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sessA' }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sessA', cwd: wd, state_root: stateDir }));
 
       await writeFile(join(sessionA, 'ralph-state.json'), JSON.stringify({
         active: true,
