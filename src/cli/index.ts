@@ -2414,12 +2414,6 @@ function readMadmaxDetachedActiveRecord(
       typeof parsed.tmux_session_name !== "string" ||
       !Array.isArray(parsed.argv) ||
       !parsed.argv.every((arg) => typeof arg === "string")
-      || typeof parsed.launch_nonce !== "string"
-      || typeof parsed.leader_pid !== "number"
-      || !Number.isSafeInteger(parsed.leader_pid)
-      || parsed.leader_pid <= 0
-      || typeof parsed.base_state_root !== "string"
-      || parsed.lifecycle_phase !== "ready"
     ) {
       return null;
     }
@@ -2438,10 +2432,10 @@ function readMadmaxDetachedActiveRecord(
       ...(typeof parsed.tmux_pane_pid === "number" ? { tmux_pane_pid: parsed.tmux_pane_pid } : {}),
 
       ...(typeof parsed.worktree_cwd === "string" ? { worktree_cwd: parsed.worktree_cwd } : {}),
-      launch_nonce: parsed.launch_nonce,
-      leader_pid: parsed.leader_pid,
-      base_state_root: parsed.base_state_root,
-      lifecycle_phase: parsed.lifecycle_phase,
+      ...(typeof parsed.launch_nonce === "string" ? { launch_nonce: parsed.launch_nonce } : {}),
+      ...(typeof parsed.leader_pid === "number" && Number.isSafeInteger(parsed.leader_pid) && parsed.leader_pid > 0 ? { leader_pid: parsed.leader_pid } : {}),
+      ...(typeof parsed.base_state_root === "string" ? { base_state_root: parsed.base_state_root } : {}),
+      ...(parsed.lifecycle_phase === "ready" || parsed.lifecycle_phase === "terminal" ? { lifecycle_phase: parsed.lifecycle_phase } : {}),
     };
   } catch {
     return null;
@@ -2486,16 +2480,19 @@ function queryMadmaxDetachedRuntimeBinding(record: MadmaxDetachedActiveRecord): 
   }
 }
 
+function hasMatchingMadmaxDetachedRuntimeBinding(record: MadmaxDetachedActiveRecord): boolean {
+  const binding = queryMadmaxDetachedRuntimeBinding(record);
+  return Boolean(binding
+    && binding.panePid === record.tmux_pane_pid
+    && binding.internalSessionId === record.tmux_internal_session_id
+    && binding.sessionCreated === record.tmux_session_created);
+}
+
 function isReusableMadmaxDetachedActiveRecord(record: MadmaxDetachedActiveRecord): boolean {
   if (record.lifecycle_phase !== "ready" || !record.leader_pid || !record.base_state_root || !record.launch_nonce) return false;
   try { process.kill(record.leader_pid, 0); } catch { return false; }
   try { if (realpathSync(record.base_state_root) !== record.base_state_root) return false; } catch { return false; }
-  const binding = queryMadmaxDetachedRuntimeBinding(record);
-  if (!binding) return false;
-  if (record.tmux_pane_pid !== undefined && binding.panePid !== record.tmux_pane_pid) return false;
-  if (record.tmux_internal_session_id !== undefined && binding.internalSessionId !== record.tmux_internal_session_id) return false;
-  if (record.tmux_session_created !== undefined && binding.sessionCreated !== record.tmux_session_created) return false;
-  return true;
+  return hasMatchingMadmaxDetachedRuntimeBinding(record);
 }
 
 
@@ -7295,7 +7292,7 @@ async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<Auth
     const record = readMadmaxDetachedActiveRecord(join(activeDir, file));
     if (!record || file !== `${record.context_key}.json`) continue;
     if (!record.session_id || normalizeSessionId(record.session_id) !== record.session_id) continue;
-    if (!isReusableMadmaxDetachedActiveRecord(record)) continue;
+    if (!hasMatchingMadmaxDetachedRuntimeBinding(record)) continue;
     if (
       canonicalizePathForRunDirMatch(record.source_cwd) !== canonicalCwd
       && (!record.worktree_cwd || canonicalizePathForRunDirMatch(record.worktree_cwd) !== canonicalCwd)
@@ -7585,7 +7582,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
     }
 
     const assertRunAuthority = (): void => {
-      if (runSelection && !isReusableMadmaxDetachedActiveRecord(runSelection.record)) {
+      if (runSelection && !hasMatchingMadmaxDetachedRuntimeBinding(runSelection.record)) {
         throw new Error("Refusing cancellation because detached run authority changed.");
       }
     };
