@@ -2854,7 +2854,13 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
       // A failed publication must not let the outer launcher destroy the
       // leader's finalization capability. Request a nonce-bound abort and
       // preserve all artifacts on timeout, malformed, or foreign reports.
-      const resolution = await deps.abortAndAwaitFinalization?.(releaseError);
+      let resolution: { acknowledged: boolean } | undefined;
+      try {
+        resolution = await deps.abortAndAwaitFinalization?.(releaseError);
+      } catch (abortError) {
+        released = true;
+        throw new AggregateError([releaseError, abortError], "detached release and abort publication both failed");
+      }
       if (!resolution?.acknowledged) released = true;
       throw releaseError;
     }
@@ -4479,6 +4485,7 @@ interface DetachedLeaderReport {
   paneId?: string;
   leaderPid?: number;
   error?: string;
+  finalized?: boolean;
 }
 
 function writeDetachedLeaderReport(path: string, report: DetachedLeaderReport): void {
@@ -5887,7 +5894,7 @@ async function runCodex(
               const report = readDetachedLeaderReport(releaseMarkerPath);
               if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId &&
                 report.sessionName === sessionName && report.leaderPid === detachedLeaderPid &&
-                (report.kind === "failed" || report.kind === "terminal")) return { acknowledged: true };
+                report.finalized === true && (report.kind === "failed" || report.kind === "terminal")) return { acknowledged: true };
               blockMs(20);
             }
             return { acknowledged: false };
@@ -5900,7 +5907,7 @@ async function runCodex(
             };
             await attempt("parent-env", async () => { if (detachedParentEnvFilePath) await rm(detachedParentEnvFilePath, { force: true }); });
             await attempt("runtime-codex-home", () => cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup));
-            await attempt("rollback", () => { rmSync(releaseMarkerPath, { force: true }); rmSync(`${releaseMarkerPath}.release`, { force: true }); });
+            await attempt("rollback", () => { rmSync(releaseMarkerPath, { force: true }); rmSync(`${releaseMarkerPath}.release`, { force: true }); rmSync(`${releaseMarkerPath}.abort`, { force: true }); });
             if (createdSession) {
               for (const step of buildDetachedSessionRollbackSteps(sessionName, null, null, null)) {
                 await attempt(`session:${step.name}`, () => { execTmuxFileSync(step.args, { stdio: "ignore" }); });
@@ -6217,7 +6224,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     await postLaunch(payload.cwd, payload.sessionId, binding, payload.codexHomeOverride, payload.preLaunchOptions.enableNotifyFallbackAuthority, payload.projectLocalCodexHomeForCleanup);
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "terminal", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
-      paneId: pane, leaderPid: process.pid,
+      paneId: pane, leaderPid: process.pid, finalized: true,
     });
     await cleanupRuntimeCodexHome(payload.runtimeCodexHomeForCleanup, payload.projectLocalCodexHomeForCleanup);
     if (ownedRecord) {
@@ -6244,7 +6251,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     }
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
-      leaderPid: process.pid, error: failure instanceof Error ? failure.message : String(failure),
+      leaderPid: process.pid, finalized, error: failure instanceof Error ? failure.message : String(failure),
     });
     throw failure;
   } finally {
