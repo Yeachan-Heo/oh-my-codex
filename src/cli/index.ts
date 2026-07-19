@@ -6869,6 +6869,18 @@ async function cancelModes(args: string[] = []): Promise<void> {
     };
 
     let states = await loadStates(await listModeStateFilesWithScopePreference(cwd));
+    // A current session owns cancellation once it has an active workflow mode.
+    // Root entries may still be compatibility reads, but must not be cancelled
+    // alongside a distinct active session workflow.
+    const hasActiveSessionWorkflowMode = writableScope.source === "session"
+      && [...states.entries()].some(
+        ([mode, entry]) => mode !== SKILL_ACTIVE_STATE_MODE
+          && entry.scope === "session"
+          && entry.state.active === true,
+      );
+    if (hasActiveSessionWorkflowMode) {
+      states = new Map([...states.entries()].filter(([, entry]) => entry.scope === "session"));
+    }
     const hasActiveWorkflowMode = (entries: typeof states): boolean =>
       [...entries.entries()].some(
         ([mode, entry]) => mode !== SKILL_ACTIVE_STATE_MODE && entry.state.active === true,

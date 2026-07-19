@@ -1,5 +1,5 @@
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
-import { cancelMode } from '../modes/base.js';
+
 
 export const RALPLAN_HELP = `omx ralplan - RALPLAN consensus support commands
 
@@ -24,7 +24,7 @@ export interface RalplanCommandDependencies {
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
   resolveInstalledRoleName?: typeof resolveInstalledRoleName;
-  cancelRalplan?: (cwd?: string) => Promise<void>;
+
 }
 
 export async function ralplanCommand(
@@ -40,7 +40,6 @@ export async function ralplanCommand(
   if (args[0] === 'preflight') {
     const json = args.length === 2 && args[1] === '--json';
     if ((args.length !== 1 && !json)) throw new Error(`Unknown ralplan preflight argument: ${args.slice(1).join(' ')}`);
-    await (deps.cancelRalplan ?? ((cwd?: string) => cancelMode('ralplan', cwd)))(process.cwd());
     const failure = { ok: false, reason: 'unsupported_documented_leader_proof' as const };
     if (json) stdout(JSON.stringify(failure));
     else stderr('ralplan preflight failed: unsupported_documented_leader_proof');

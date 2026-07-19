@@ -17,16 +17,13 @@ async function invoke(args: string[], deps: RalplanCommandDependencies = {}) {
 }
 
 describe('#3194 ralplan CLI unsupported-only surface', () => {
-  it('fails the explicit adapted-surface preflight and neutralizes routing-only Ralplan state', async () => {
+  it('fails the explicit adapted-surface preflight without mutating Ralplan state', async () => {
     let resolved = false;
-    let cancelled = false;
     const result = await invoke(['preflight', '--json'], {
       resolveInstalledRoleName: () => { resolved = true; return 'architect'; },
-      cancelRalplan: async () => { cancelled = true; },
     });
     assert.equal(result.exitCode, 1);
     assert.equal(resolved, false);
-    assert.equal(cancelled, true);
     assert.deepEqual(result.stderr, []);
     assert.deepEqual(JSON.parse(result.stdout.join('\n')), { ok: false, reason: 'unsupported_documented_leader_proof' });
   });

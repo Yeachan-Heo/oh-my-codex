@@ -95,6 +95,94 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('keeps root Team compatibility state read-only when current-session Ralplan owns cancellation', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-cross-mode-scope-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-ralplan-owner';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const ralplanPath = join(sessionDir, 'ralplan-state.json');
+      const teamPath = join(stateDir, 'team-state.json');
+      const skillActivePath = join(stateDir, 'skill-active-state.json');
+      const nativeStopPath = join(stateDir, 'native-stop-state.json');
+      const ralplanState = JSON.stringify({
+        active: true,
+        mode: 'ralplan',
+        current_phase: 'executing',
+      }, null, 2);
+      const rootTeamState = JSON.stringify({
+        active: true,
+        mode: 'team',
+        current_phase: 'team-exec',
+      }, null, 2);
+      const rootSkillActiveState = JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'team',
+        phase: 'team-exec',
+        active_skills: [{ skill: 'team', phase: 'team-exec', active: true }],
+      }, null, 2);
+      const rootNativeStopState = JSON.stringify({
+        sessions: { [sessionId]: { last_signature: 'team-stop|pending' } },
+      }, null, 2);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(ralplanPath, ralplanState);
+      await writeFile(teamPath, rootTeamState);
+      await writeFile(skillActivePath, rootSkillActiveState);
+      await writeFile(nativeStopPath, rootNativeStopState);
+
+      const cancelResult = runOmx(wd, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled: ralplan/);
+      assert.doesNotMatch(cancelResult.stdout, /Cancelled: team/);
+      assert.equal(JSON.parse(await readFile(ralplanPath, 'utf-8')).active, false);
+      assert.equal(await readFile(teamPath, 'utf-8'), rootTeamState);
+      assert.equal(await readFile(skillActivePath, 'utf-8'), rootSkillActiveState);
+      assert.equal(await readFile(nativeStopPath, 'utf-8'), rootNativeStopState);
+
+      await writeFile(ralplanPath, ralplanState);
+      const forceResult = runOmx(wd, 'cancel', '--force');
+      assert.equal(forceResult.status, 0, forceResult.stderr || forceResult.stdout);
+      assert.match(forceResult.stdout, /Cancelled: ralplan/);
+      assert.doesNotMatch(forceResult.stdout, /Cancelled: team/);
+      assert.equal(JSON.parse(await readFile(ralplanPath, 'utf-8')).active, false);
+      assert.equal(await readFile(teamPath, 'utf-8'), rootTeamState);
+      assert.equal(await readFile(skillActivePath, 'utf-8'), rootSkillActiveState);
+      assert.equal(await readFile(nativeStopPath, 'utf-8'), rootNativeStopState);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails Ralplan preflight without mutating unproven session state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralplan-preflight-scope-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-unproven-owner';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const ralplanPath = join(sessionDir, 'ralplan-state.json');
+      const ralplanState = JSON.stringify({
+        active: true,
+        mode: 'ralplan',
+        current_phase: 'starting',
+      }, null, 2);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(ralplanPath, ralplanState);
+
+      const preflightResult = runOmx(wd, 'ralplan', 'preflight', '--json');
+      assert.equal(preflightResult.status, 1, preflightResult.stderr || preflightResult.stdout);
+      assert.deepEqual(JSON.parse(preflightResult.stdout), {
+        ok: false,
+        reason: 'unsupported_documented_leader_proof',
+      });
+      assert.equal(await readFile(ralplanPath, 'utf-8'), ralplanState);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('status does not report a root fallback mode as active after current-session clear', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-session-clear-fallback-'));
     try {
