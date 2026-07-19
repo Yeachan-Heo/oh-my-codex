@@ -39,13 +39,13 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
    - Ground the task with pre-context intake and the deep-interview artifact.
    - Current ownership rule: Autopilot records `planning_routing` in state before heavy planning. When the Autopilot/main model resolves to a cheap/mini lane (for example `o4-mini`, `*-mini`, `*spark*`, or an explicitly cheap/economy/lite model name), the initial planning/decomposition owner is dedicated `[planner]`; otherwise `[main]` may keep ownership for backward compatibility. A configured `agentModels.planner` is an explicit opt-in that forces dedicated `[planner]` ownership even when `[main]` is not cheap/mini.
    - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts. If `planning_routing.owner` is `planner`, use the dedicated `[planner]` role for the initial Planner draft/decomposition before the Architect→Critic consensus gates.
-   - PRD/test-spec files alone are not completion evidence. Ralplan may hand off only after durable consensus evidence records a subsequent `Architect` approval first and a subsequent `Critic` approval second.
+   - PRD/test-spec files and local Architect→Critic approvals are lifecycle evidence, not completion or handoff authority. Ralplan may hand off only after an official host-issued receipt is verified through a documented non-user-mintable host surface; until then retain the reviews with `ralplan_consensus_gate.complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
    - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
    - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.
-   - Required handoff artifact: an approved plan/test spec plus `ralplan_consensus_gate` evidence suitable for `$ultragoal`.
+   - Required handoff artifact: planning artifacts, lifecycle-only Architect→Critic reviews, and a verified official host receipt authorizing `ralplan_consensus_gate.complete:true`. Without that receipt, remain in `ralplan` and report the host blocker.
 
 3. **Phase `ultragoal`** — durable implementation + verification loop
-   - Run `$ultragoal` from the approved ralplan artifacts.
+   - Run `$ultragoal` only from ralplan artifacts whose consensus gate is authorized by a verified official host receipt.
    - Ultragoal owns durable Codex goal handoffs, `.omx/ultragoal` ledger checkpoints, implementation, tests, build/lint/typecheck evidence, cleanup, and final review gate discipline.
    - Use `$team` only inside an active Ultragoal story when the story clearly benefits from coordinated parallel execution (for example independent file/module lanes, broad test matrix work, or multi-domain implementation). Team remains explicit and leader-owned; Ultragoal keeps the goal/ledger state.
    - Required handoff artifact: implementation evidence, changed-file summary, verification evidence, and Ultragoal ledger/checkpoint references suitable for `$code-review`.
@@ -182,7 +182,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 
 <Final_Checklist>
 - [ ] Phase `deep-interview` produced/updated clarified requirements or a concise spec
-- [ ] Phase `ralplan` produced/updated approved planning artifacts and durable sequential evidence from a subsequent `Architect` approval followed by a subsequent `Critic` approval
+- [ ] Phase `ralplan` produced/updated planning artifacts and preserved subsequent Architect→Critic approvals as lifecycle-only evidence; it advanced only with a verified official host receipt, or remained in `ralplan` with `complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
 - [ ] Phase `ultragoal` implemented and verified the plan with fresh evidence and durable ledger/checkpoint references
 - [ ] Phase `rework` was used for implementation-only review fixes when applicable, with findings scoped to a fresh code-review cycle
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed

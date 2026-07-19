@@ -19628,6 +19628,13 @@ export async function dispatchCodexNativeHook(
 ): Promise<NativeHookDispatchResult> {
   const hookEventName = readHookEventName(payload);
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
+  const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
+  if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
+    const denial = evaluateCodex01445PreToolUse(payload, {
+      resolveInstalledRoleName: (role: string) => resolveInstalledRoleName(role, undefined, cwd),
+    });
+    if (denial) return { hookEventName, omxEventName, skillState: null, outputJson: denial };
+  }
   if (hookEventName === "PostCompact" && process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1") {
     return {
       hookEventName,
@@ -19650,7 +19657,6 @@ export async function dispatchCodexNativeHook(
   const policyRoot = resolveConductorPolicyRoot(stateDir, cwd);
   const policyCwd = policyRoot.cwd;
 
-  const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   let skillState: SkillActiveState | null = null;
   let triageAdditionalContext: string | null = null;
   let goalWorkflowAdditionalContext: string | null = null;
@@ -19681,12 +19687,6 @@ export async function dispatchCodexNativeHook(
   }
   if (promptTurnContext?.status === "suppressed-target-child") {
     return { hookEventName, omxEventName, skillState: null, outputJson: null };
-  }
-  if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
-    const denial = evaluateCodex01445PreToolUse(payload, {
-      resolveInstalledRoleName: (role: string) => resolveInstalledRoleName(role, undefined, cwd),
-    });
-    if (denial) return { hookEventName, omxEventName, skillState: null, outputJson: denial };
   }
   if (hookEventName !== "Stop") {
     await mkdir(stateDir, { recursive: true });

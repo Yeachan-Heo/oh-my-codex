@@ -1,5 +1,3 @@
-import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
-import { neutralizeKeywordSeededRalplanState } from '../ralplan/documented-leader-preflight.js';
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
 
 
@@ -27,8 +25,6 @@ export interface RalplanCommandDependencies {
   cwd?: () => string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
-  resolveSessionScope?: typeof resolveRuntimeStateScope;
-  neutralizeKeywordSeededRalplanState?: typeof neutralizeKeywordSeededRalplanState;
   resolveInstalledRoleName?: typeof resolveInstalledRoleName;
 
 }
@@ -43,10 +39,6 @@ export async function ralplanCommand(args: string[], deps: RalplanCommandDepende
   if (args[0] === 'preflight') {
     const json = args.length === 2 && args[1] === '--json';
     if (args.length !== 1 && !json) throw new Error(`Unknown ralplan preflight argument: ${args.slice(1).join(' ')}`);
-    const cwd = (deps.cwd ?? process.cwd)();
-
-    const scope = await (deps.resolveSessionScope ?? resolveRuntimeStateScope)(cwd);
-    await (deps.neutralizeKeywordSeededRalplanState ?? neutralizeKeywordSeededRalplanState)(scope);
     emitRoleIntentFailure('unsupported_documented_leader_proof', json, stdout, stderr);
     return;
   }

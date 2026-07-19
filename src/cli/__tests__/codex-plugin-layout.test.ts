@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, link, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, sep } from 'node:path';
 import { buildMergedConfig } from '../../config/generator.js';
@@ -670,6 +670,50 @@ describe('official Codex plugin layout', () => {
         assert.equal(result.stdout, '');
         await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
       }
+    });
+  });
+
+  it('rejects unsafe plugin routing records without delegating and keeps Stop schema-safe', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const calledPath = join(cacheRoot, 'called.txt');
+      const commandPath = join(cacheRoot, 'record-called.sh');
+      await writeFile(commandPath, `#!/bin/sh\necho called > ${JSON.stringify(calledPath)}\nprintf '{}\\n'\n`, 'utf-8');
+      await chmod(commandPath, 0o755);
+      const routingDir = join(cacheRoot, '.omx-root', 'state', 'plugin-hook-routing');
+      const routingPath = join(routingDir, 'unsafe-routing.json');
+      const targetPath = join(cacheRoot, 'routing-target.json');
+      const environment = {
+        OMX_ROOT: join(cacheRoot, '.omx-root'),
+        OMX_ENTRY_PATH: omxBin,
+        OMX_CODEX_LAUNCH_ID: 'unsafe-routing',
+        OMX_NATIVE_HOOK_COMMAND: commandPath,
+      };
+      const validRecord = JSON.stringify({ routing: 'omx-plugin-hook-routing-only:v1', ownerSessionId: 'owner-session' });
+      await mkdir(routingDir, { recursive: true });
+      await writeFile(targetPath, validRecord, 'utf-8');
+
+      const cases: Array<[string, () => Promise<void>]> = [
+        ['malformed', async () => { await writeFile(routingPath, '{', 'utf-8'); }],
+        ['oversized', async () => { await writeFile(routingPath, 'x'.repeat(4097), 'utf-8'); }],
+        ['symlink', async () => { await symlink(targetPath, routingPath); }],
+        ['hardlink', async () => { await link(targetPath, routingPath); }],
+        ['replacement', async () => { await writeFile(routingPath, JSON.stringify({ routing: 'omx-plugin-hook-routing-only:v1', ownerSessionId: 'replacement-session' }), 'utf-8'); }],
+      ];
+      for (const [name, setup] of cases) {
+        await rm(routingPath, { force: true });
+        await setup();
+        const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'owner-session' }), environment);
+        assert.equal(result.status, 0, `${name}: ${result.stderr || result.stdout}`);
+        assert.equal(result.stdout, '', name);
+        await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' }, name);
+      }
+
+      await rm(routingPath, { force: true });
+      await writeFile(routingPath, '{', 'utf-8');
+      const stop = runPluginNativeHook(cachePluginRoot, JSON.stringify({ hook_event_name: 'Stop', session_id: 'owner-session' }), environment);
+      assert.equal(stop.status, 0, stop.stderr || stop.stdout);
+      assert.deepEqual(parseSingleJsonStdout(stop.stdout), {});
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
     });
   });
 

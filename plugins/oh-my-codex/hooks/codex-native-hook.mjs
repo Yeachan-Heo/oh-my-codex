@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { extname } from 'node:path';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +12,7 @@ const OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER = 'omx-plugin-hook-routing-only:v1';
 const MAX_WRAPPER_STDIN_BYTES = 1024 * 1024;
 const RAW_EVENT_SCAN_BYTES = 64 * 1024;
 const MAX_STOP_STDOUT_BYTES = 1024 * 1024;
+const MAX_ROUTING_RECORD_BYTES = 4 * 1024;
 const CODEX_HOOK_EVENT_NAMES = new Set([
   'SessionStart',
   'PreToolUse',
@@ -194,6 +195,28 @@ function isChildRoutingSessionStart(payload, ownerSessionId) {
   }
 }
 
+function readPinnedRoutingRecord(routingPath) {
+  let fd;
+  try {
+    const initial = lstatSync(routingPath);
+    if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1 || initial.size <= 0 || initial.size > MAX_ROUTING_RECORD_BYTES) return null;
+    fd = openSync(routingPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.size !== initial.size || opened.dev !== initial.dev || opened.ino !== initial.ino) return null;
+    const buffer = Buffer.alloc(opened.size);
+    if (readSync(fd, buffer, 0, buffer.length, 0) !== buffer.length) return null;
+    const current = lstatSync(routingPath);
+    const final = fstatSync(fd);
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || current.size !== opened.size || current.dev !== opened.dev || current.ino !== opened.ino || final.nlink !== 1 || final.size !== opened.size) return null;
+    const routing = JSON.parse(buffer.toString('utf8'));
+    return routing && typeof routing === 'object' && !Array.isArray(routing) ? routing : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch {}
+  }
+}
+
 // This is routing correlation only. It is intentionally unauthenticated and must
 // never be used as authorization or proof that a session is OMX-owned.
 function isPluginHookRoutingSession(input, payload) {
@@ -205,9 +228,9 @@ function isPluginHookRoutingSession(input, payload) {
   const routingPath = resolveLaunchRoutingPath(payload, launchId);
   try {
     if (existsSync(routingPath)) {
-      if (!lstatSync(routingPath).isFile()) return false;
-      const routing = JSON.parse(readFileSync(routingPath, 'utf8'));
-      const ownerSessionId = routing?.routing === OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER && isSafeRoutingSessionId(routing?.ownerSessionId)
+      const routing = readPinnedRoutingRecord(routingPath);
+      if (!routing) return false;
+      const ownerSessionId = routing.routing === OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER && isSafeRoutingSessionId(routing.ownerSessionId)
         ? routing.ownerSessionId
         : '';
       return ownerSessionId === sessionId || isChildRoutingSessionStart(payload, ownerSessionId);

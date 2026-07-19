@@ -267,8 +267,8 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
           typeof candidate.turn_count === 'number' && Number.isFinite(candidate.turn_count) && candidate.turn_count > 0 ? candidate.turn_count : 1,
         ...(typeof candidate.mode === 'string' && candidate.mode.trim().length > 0 ? { mode: candidate.mode } : {}),
         ...(typeof candidate.role === 'string' && candidate.role.trim().length > 0 ? { role: candidate.role.trim() } : {}),
-        ...(typeof candidate.provenance_kind === 'string' && candidate.provenance_kind.trim().length > 0
-          ? { provenance_kind: candidate.provenance_kind.trim() }
+        ...(candidate.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+          ? { provenance_kind: NATIVE_SUBAGENT_PROVENANCE }
           : {}),
         ...(typeof candidate.lane_id === 'string' && candidate.lane_id.trim().length > 0 ? { lane_id: candidate.lane_id.trim() } : {}),
         ...(typeof candidate.scope === 'string' && candidate.scope.trim().length > 0 ? { scope: candidate.scope.trim() } : {}),
@@ -839,10 +839,10 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
       : preservedCompletion),
     ...(input.mode?.trim() ? { mode: input.mode.trim() } : existingThread?.mode ? { mode: existingThread.mode } : {}),
     ...(input.role?.trim() ? { role: input.role.trim() } : existingThread?.role ? { role: existingThread.role } : {}),
-    ...(input.provenanceKind?.trim()
-      ? { provenance_kind: input.provenanceKind.trim() }
-      : existingThread?.provenance_kind
-        ? { provenance_kind: existingThread.provenance_kind }
+    ...(input.provenanceKind === NATIVE_SUBAGENT_PROVENANCE
+      ? { provenance_kind: NATIVE_SUBAGENT_PROVENANCE }
+      : existingThread?.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+        ? { provenance_kind: NATIVE_SUBAGENT_PROVENANCE }
         : {}),
     ...(input.laneId?.trim() ? { lane_id: input.laneId.trim() } : existingThread?.lane_id ? { lane_id: existingThread.lane_id } : {}),
     ...(input.scope?.trim() ? { scope: input.scope.trim() } : existingThread?.scope ? { scope: existingThread.scope } : {}),

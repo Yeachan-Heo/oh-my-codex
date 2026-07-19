@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { cancelMode, updateModeState } from '../base.js';
+import { cancelMode, updateAutopilotPipelineState, updateModeState } from '../base.js';
 
 async function writeAutopilotState(wd: string, state: Record<string, unknown>): Promise<void> {
   await mkdir(join(wd, '.omx', 'state'), { recursive: true });
@@ -195,17 +195,52 @@ describe('modes/base Autopilot gate integration', () => {
     }
   });
 
-  it('updateModeState does not persist user-supplied trustedPipelineProgress as state data', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-trusted-field-strip-'));
+  it('does not let serialized trustedPipelineProgress bypass the ralplan to ultragoal consensus gate', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-trusted-field-bypass-'));
     try {
-      await writeAutopilotState(wd, { current_phase: 'ultraqa' });
-      await updateModeState('autopilot', {
-        current_phase: 'ultraqa',
-        trustedPipelineProgress: true,
-      }, wd);
+      await writeAutopilotState(wd, {
+        current_phase: 'ralplan',
+        state: {
+          handoff_artifacts: {
+            ralplan: {
+              ralplan_consensus_gate: { complete: true, evidence_kind: 'codex_exec' },
+            },
+          },
+        },
+      });
+      await assert.rejects(
+        () => updateModeState('autopilot', {
+          current_phase: 'ultragoal',
+          trustedPipelineProgress: true,
+        }, wd),
+        /Cannot transition ralplan -> ultragoal/i,
+      );
 
       const raw = JSON.parse(await readFile(join(wd, '.omx', 'state', 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(raw.current_phase, 'ralplan');
       assert.equal(Object.prototype.hasOwnProperty.call(raw, 'trustedPipelineProgress'), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the orchestrator-only update path behind the ralplan to ultragoal consensus gate', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-orchestrator-consensus-'));
+    try {
+      await writeAutopilotState(wd, {
+        current_phase: 'ralplan',
+        state: {
+          handoff_artifacts: {
+            ralplan: {
+              ralplan_consensus_gate: { complete: true, evidence_kind: 'codex_exec' },
+            },
+          },
+        },
+      });
+      await assert.rejects(
+        () => updateAutopilotPipelineState({ current_phase: 'ultragoal' }, wd),
+        /Cannot transition ralplan -> ultragoal/i,
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

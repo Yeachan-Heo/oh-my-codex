@@ -5,7 +5,7 @@ description: Alias for $plan --consensus
 
 # Ralplan (Consensus Planning Alias)
 
-Ralplan is a shorthand alias for `$plan --consensus`. It triggers iterative planning with Planner, Architect, and Critic agents until consensus is reached, with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). Scholastic is available as a separate advisory native agent/persona for ontology-heavy planning evidence, but it is not part of the durable consensus gate.
+Ralplan is a shorthand alias for `$plan --consensus`. It drives Planner, Architect, and Critic planning and records their review lifecycle with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). That local lifecycle never authorizes an execution handoff: an official host-issued receipt verified through a documented non-user-mintable host surface is required. Scholastic is an advisory native agent/persona for ontology-heavy planning evidence, not part of the lifecycle.
 
 ## Usage
 
@@ -20,7 +20,7 @@ $ralplan "task description"
 
 ## Ontology-heavy review
 
-For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself remains the Planner → Architect → Critic consensus workflow and the durable gate remains Architect→Critic only.
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself records Architect→Critic lifecycle evidence only; neither those reviews nor Scholastic evidence is a durable execution authorization.
 
 ## Usage with interactive mode
 
@@ -62,11 +62,11 @@ The consensus workflow:
    d. Return to Critic evaluation
    e. Repeat this loop until Critic returns `APPROVE` or 5 iterations are reached
    f. If 5 iterations are reached without `APPROVE`, present the best version to the user
-6. On Critic approval *(--interactive only)*: If `--interactive` is set, use the structured question UI to present the plan with approval options (Approve durable goal execution via ultragoal / Approve and implement via team / Explicit Ralph fallback / Start specialized goal-mode follow-up / Request changes / Reject). Final plan must include ADR (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups), an explicit available-agent-types roster, concrete follow-up staffing guidance for `$ultragoal` and `$team`, plus an explicit `$ralph` fallback note when persistent single-owner verification is intentionally selected, suggested reasoning levels by lane, explicit `omx team` / `$team` launch hints, a concrete **team verification** path, and a product-facing **Goal-Mode Follow-up Suggestions** section. Recommend `$ultragoal` by default for goal-mode follow-up, use `$autoresearch-goal` instead when the context is a research project, and use `$performance-goal` instead when the context is an optimization or performance project. Otherwise, output the final plan and stop.
-7. *(--interactive only)* User chooses: Approve (`$ultragoal` durable goal execution, `$team`, explicit `$ralph` fallback, or a specialized goal-mode follow-up), Request changes, or Reject
-8. *(--interactive only)* On approval: invoke `$ultragoal` for default durable sequential execution, `$team` for parallel team execution, the selected specialized goal-mode follow-up (`$autoresearch-goal` or `$performance-goal`), or `$ralph` only when the user explicitly selects that fallback with the approved plan and matching success/evaluator context -- never implement directly. Preserve the explicit available-agent-types roster, reasoning-by-lane guidance, role/staffing allocation guidance, launch hints, and verification-path guidance from the approved plan for Ultragoal/team paths and any explicit Ralph fallback.
+6. On Critic approval *(--interactive only)*: present the plan for review, change requests, rejection, or selection of a **requested future execution lane**. A local Critic approval is lifecycle-only and must not offer or begin an execution handoff while the host receipt verifier is unavailable.
+7. *(--interactive only)* Record the user's planning disposition and any requested future execution lane; do not invoke `$ultragoal`, `$team`, `$ralph`, or another implementation lane without a verified official host receipt.
+8. On local Architect→Critic approval, preserve the plan and reviews with `ralplan_consensus_gate.complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`. Report the host blocker and stop rather than implementing directly.
 
-> **Important:** Steps 3 and 4 MUST run sequentially as role-specific subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`; only a completed, role-specific `Critic` approval can satisfy the durable gate.
+> **Important:** Steps 3 and 4 MUST run sequentially as role-specific subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`; their completed approvals establish local lifecycle evidence only and cannot satisfy the durable execution gate.
 
 ## Planning/Execution Boundary
 
@@ -75,7 +75,7 @@ The consensus workflow:
 The canonical flow is:
 
 ```
-$ralplan -> durable consensus artifact -> explicit execution lane -> $ultragoal | $team | $ralph
+$ralplan -> local Architect→Critic lifecycle evidence -> verified official host receipt -> explicit execution lane -> $ultragoal | $team | $ralph
 ```
 
 Before any execution lane begins, ralplan must emit terminal planning state (complete, paused, failed, or waiting for input) and the durable handoff record below. Do not continue from consensus planning into direct code edits in the same ralplan session.
@@ -97,7 +97,7 @@ Follow the Plan skill's full documentation for consensus mode details.
 
 ## Goal-Mode Follow-up Suggestions
 
-When ralplan outputs a final handoff or asks the user to choose a next lane, include product-facing goal-mode suggestions alongside the existing Ralph and team options:
+When a verified official host receipt permits an execution handoff, include product-facing goal-mode suggestions alongside the existing Ralph and team options. Until then, record any requested lane as non-executing planning guidance and keep `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
 
 - `$ultragoal` — **default goal-mode follow-up** for implementation or general goal-oriented follow-up plans that should become durable Codex/OMX goals with sequential completion tracking.
 - `$autoresearch-goal` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable.
@@ -183,11 +183,8 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
    - **Planner** creates initial plan (which files, what auth method, what tests)
    - **Architect** reviews for soundness
    - **Critic** validates quality and testability
-5. On consensus approval, user chooses execution path:
-   - **ultragoal**: default durable follow-up for sequential goal execution with ledger checkpoints
-   - **team**: coordinated parallel execution for stories that need multiple lanes, with evidence ready for Ultragoal checkpoints
-   - **ralph**: explicit single-owner fallback only when the user intentionally wants a persistent verification/completion loop instead of the default durable goal ledger
-6. Execution begins with a clear, bounded plan through the selected handoff path
+5. Architect and Critic approval completes the local planning lifecycle only. Persist `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"` and report the host blocker.
+6. Execution does not begin until a verified official host receipt authorizes the selected handoff path.
 
 ### Troubleshooting
 

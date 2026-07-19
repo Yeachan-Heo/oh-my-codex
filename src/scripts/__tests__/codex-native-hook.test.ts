@@ -34989,4 +34989,52 @@ describe('native UserPromptSubmit payload provenance', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+	it("denies canonical adapted role intent before hostile pointer states for raw and compiled hooks", async () => {
+		const expected = {
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: "unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.",
+			},
+		};
+		const payload = {
+			hook_event_name: "PreToolUse",
+			tool_name: "Bash",
+			tool_use_id: "hostile-pointer-role-intent",
+			tool_input: { command: 'omx ralplan role-intent write --role architect --parent-thread "$CODEX_THREAD_ID" --json' },
+		};
+		const cases: Array<[string, (stateDir: string, pointerPath: string, cwd: string) => Promise<void>]> = [
+			["malformed", async (_stateDir, pointerPath) => { await writeFile(pointerPath, "{", "utf8"); }],
+			["oversized", async (_stateDir, pointerPath) => { await writeFile(pointerPath, "x".repeat(2 * 1024 * 1024), "utf8"); }],
+			["unreadable", async (_stateDir, pointerPath) => { await mkdir(pointerPath); }],
+			["symlink", async (_stateDir, pointerPath, cwd) => {
+				const targetPath = join(cwd, "forged-session.json");
+				await writeFile(targetPath, '{"session_id":"forged"}', "utf8");
+				await symlink(targetPath, pointerPath);
+			}],
+			["replaced", async (_stateDir, pointerPath) => {
+				await writeFile(pointerPath, '{"session_id":"first"}', "utf8");
+				await rm(pointerPath);
+				await writeFile(pointerPath, '{"session_id":"replacement"}', "utf8");
+			}],
+		];
+		for (const [name, setup] of cases) {
+			const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-role-intent-${name}-`));
+			try {
+				const stateDir = join(cwd, ".omx", "state");
+				const pointerPath = join(stateDir, "session.json");
+				await mkdir(stateDir, { recursive: true });
+				await setup(stateDir, pointerPath, cwd);
+				const raw = await dispatchCodexNativeHook({ ...payload, cwd }, { cwd });
+				assert.deepEqual(raw.outputJson, expected, `${name} raw`);
+				assert.deepEqual((await readdir(stateDir)).sort(), ["session.json"], `${name} raw writes`);
+				const compiled = parseSingleJsonStdout(runNativeHookCli({ ...payload, cwd }, { cwd }));
+				assert.deepEqual(compiled, expected, `${name} compiled`);
+				assert.deepEqual((await readdir(stateDir)).sort(), ["session.json"], `${name} compiled writes`);
+			} finally {
+				await rm(cwd, { recursive: true, force: true });
+			}
+		}
+	});
 });

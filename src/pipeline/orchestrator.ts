@@ -10,7 +10,7 @@
  * - Non-clean review artifacts can drive a return to ralplan
  */
 
-import { startMode, readModeState, updateModeState, cancelMode } from '../modes/base.js';
+import { startMode, readModeState, updateAutopilotPipelineState, cancelMode } from '../modes/base.js';
 import { createDeepInterviewStage } from './stages/deep-interview.js';
 import { createRalplanStage } from './stages/ralplan.js';
 import { createUltragoalStage } from './stages/ultragoal.js';
@@ -75,7 +75,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     },
   };
 
-  await updateModeState(MODE_NAME, {
+  await updateAutopilotPipelineState({
     ...modeState,
     ...pipelineExtension,
     current_phase: config.stages[0].name,
@@ -124,12 +124,12 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
         Object.assign(handoffArtifactsByStage, { [stage.name]: skippedArtifacts });
       }
 
-      await updateModeState(MODE_NAME, {
+      await updateAutopilotPipelineState({
         current_phase: `${stage.name}:skipped`,
         pipeline_stage_index: i,
         pipeline_stage_results: { ...stageResults },
         handoff_artifacts: normalizeHandoffArtifactKeys(handoffArtifactsByStage),
-      } as Partial<PipelineModeStateExtension>, cwd, undefined, { trustedPipelineProgress: true });
+      } as Partial<PipelineModeStateExtension>, cwd);
 
       lastStageName = stage.name;
       previousResult = skippedResult;
@@ -137,11 +137,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     }
 
     // Update state to running
-    await updateModeState(MODE_NAME, {
+    await updateAutopilotPipelineState({
       current_phase: stage.name,
       pipeline_stage_index: i,
       iteration: i + 1,
-    } as Partial<PipelineModeStateExtension>, cwd, undefined, { trustedPipelineProgress: true });
+    } as Partial<PipelineModeStateExtension>, cwd);
 
     // Execute the stage
     let result: StageResult;
@@ -197,7 +197,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     const handoffArtifacts = normalizeHandoffArtifactKeys(handoffArtifactsByStage);
 
     // Persist stage result
-    await updateModeState(MODE_NAME, {
+    await updateAutopilotPipelineState({
       current_phase: shouldReturnToRalplan ? 'ralplan' : (result.status === 'completed' ? stage.name : `${stage.name}:${result.status}`),
       handoff_artifacts: handoffArtifacts,
       ...(stage.name === 'code-review' ? {
@@ -212,13 +212,13 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       } : {}),
       pipeline_stage_index: shouldReturnToRalplan ? findStageIndex(config.stages, 'ralplan') : i,
       pipeline_stage_results: { ...stageResults },
-    } as Partial<PipelineModeStateExtension>, cwd, undefined, { trustedPipelineProgress: true });
+    } as Partial<PipelineModeStateExtension>, cwd);
 
     // Bail on failure
     if (result.status === 'failed') {
       const duration_ms = Date.now() - startTime;
 
-      await updateModeState(MODE_NAME, {
+      await updateAutopilotPipelineState({
         active: false,
         current_phase: 'failed',
         completed_at: new Date().toISOString(),
@@ -242,7 +242,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
           : `Autopilot quality gates were not clean after ${reviewCycle} cycle(s).`;
         const duration_ms = Date.now() - startTime;
 
-        await updateModeState(MODE_NAME, {
+        await updateAutopilotPipelineState({
           active: false,
           current_phase: 'failed',
           completed_at: new Date().toISOString(),
@@ -275,7 +275,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   // All stages completed
   const duration_ms = Date.now() - startTime;
 
-  await updateModeState(MODE_NAME, {
+  await updateAutopilotPipelineState({
     active: false,
     current_phase: 'complete',
     completed_at: new Date().toISOString(),
@@ -284,7 +284,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     return_to_ralplan_reason: null,
     handoff_artifacts: normalizeHandoffArtifactKeys(handoffArtifactsByStage),
     pipeline_stage_results: { ...stageResults },
-  } as Partial<PipelineModeStateExtension>, cwd, undefined, { trustedPipelineProgress: true });
+  } as Partial<PipelineModeStateExtension>, cwd);
 
   return {
     status: 'completed',

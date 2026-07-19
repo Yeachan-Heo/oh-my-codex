@@ -40,7 +40,7 @@ export interface RalplanReviewResult {
   verdict: RalplanReviewVerdict;
   summary?: string;
   artifacts?: Record<string, unknown>;
-  provenance_kind?: 'native_subagent' | 'omx_adapted' | 'codex_exec';
+  provenance_kind?: 'native_subagent';
 
   session_id?: string;
   thread_id?: string;
@@ -186,6 +186,30 @@ async function recordRalplanSubagentTurn(
   }).catch(() => {});
 }
 
+function isApprovingNativeReviewPair(
+  architectReview: RalplanReviewResult | undefined,
+  criticReview: RalplanReviewResult | undefined,
+): boolean {
+  const architectThreadId = architectReview?.thread_id?.trim();
+  const criticThreadId = criticReview?.thread_id?.trim();
+  const architectSequence = architectReview?.sequence_index;
+  const criticSequence = criticReview?.sequence_index;
+  return architectReview?.verdict === 'approve'
+    && criticReview?.verdict === 'approve'
+    && architectReview.agent_role === 'architect'
+    && criticReview.agent_role === 'critic'
+    && architectReview.provenance_kind === 'native_subagent'
+    && criticReview.provenance_kind === 'native_subagent'
+    && Boolean(architectThreadId)
+    && Boolean(criticThreadId)
+    && architectThreadId !== criticThreadId
+    && typeof architectSequence === 'number'
+    && typeof criticSequence === 'number'
+    && Number.isFinite(architectSequence)
+    && Number.isFinite(criticSequence)
+    && architectSequence < criticSequence;
+}
+
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
@@ -194,17 +218,16 @@ function buildRalplanConsensusGate(
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
   if (
-    latestArchitect?.verdict === 'approve'
-    && latestCritic?.verdict === 'approve'
-    && architectReviews.length === criticReviews.length
+    architectReviews.length === criticReviews.length
+    && isApprovingNativeReviewPair(latestArchitect, latestCritic)
   ) {
     const ralplanArchitectReview = {
-      ...latestArchitect,
+      ...latestArchitect!,
       agent_role: 'architect' as const,
       iteration: architectReviews.length,
     };
     const ralplanCriticReview = {
-      ...latestCritic,
+      ...latestCritic!,
       agent_role: 'critic' as const,
       iteration: criticReviews.length,
     };
@@ -244,32 +267,26 @@ function buildRalplanConsensusGate(
 }
 
 
-function hasNativeOrThreadEvidence(review: RalplanReviewResult): boolean {
-  return review.provenance_kind === 'native_subagent'
-    || review.provenance_kind === 'omx_adapted'
-    || Boolean(review.thread_id?.trim())
-    || Boolean(review.native_session_id?.trim())
-    || Boolean(review.tracker_path?.trim());
+function hasNativeSubagentEvidence(review: RalplanReviewResult): boolean {
+  return review.provenance_kind === 'native_subagent';
 }
 
 function normalizeReviewForLane(
   review: RalplanReviewResult,
   laneRole: 'architect' | 'critic',
-  options: { requireNativeSubagents?: boolean },
-  sequenceIndex: number,
 ): RalplanReviewResult {
-  if (review.agent_role !== undefined && review.agent_role !== laneRole) {
-    throw new Error(`ralplan_${laneRole}_review_role_mismatch: expected agent_role=${laneRole}, received ${String(review.agent_role)}`);
+  if (review.agent_role !== laneRole) {
+    throw new Error(`ralplan_${laneRole}_review_role_mismatch: expected agent_role=${laneRole}, received ${String(review.agent_role ?? 'missing')}`);
   }
-  if (review.agent_role === undefined && (options.requireNativeSubagents || hasNativeOrThreadEvidence(review))) {
-    throw new Error(`ralplan_${laneRole}_review_role_missing: native or thread-backed ${laneRole} review must declare agent_role=${laneRole}`);
+  if (!hasNativeSubagentEvidence(review)) {
+    throw new Error(`ralplan_${laneRole}_review_provenance_invalid: expected provenance_kind=native_subagent`);
+  }
+  if (!review.thread_id?.trim()) {
+    throw new Error(`ralplan_${laneRole}_review_thread_missing: native_subagent review must declare thread_id`);
   }
   return {
     ...review,
     agent_role: laneRole,
-    ...(review.provenance_kind === 'native_subagent' || review.provenance_kind === 'omx_adapted'
-      ? {}
-      : { sequence_index: sequenceIndex }),
   };
 }
 
@@ -430,7 +447,7 @@ export async function runRalplanConsensus(
       const architectReview = normalizeReviewForLane(await executor.architectReview({
         ...iterationContext,
         draft,
-      }), 'architect', gateOptions, (iteration * 2) - 1);
+      }), 'architect');
       assertRoleLaneReuse(reusableRoleLanes.architect, architectReview, 'architect');
       architectReviews.push(architectReview);
       if (architectReview.artifacts) Object.assign(aggregatedArtifacts, architectReview.artifacts);
@@ -501,7 +518,7 @@ export async function runRalplanConsensus(
         ...iterationContext,
         draft,
         architectReview,
-      }), 'critic', gateOptions, iteration * 2);
+      }), 'critic');
       assertRoleLaneReuse(reusableRoleLanes.critic, criticReview, 'critic');
       criticReviews.push(criticReview);
       if (criticReview.artifacts) Object.assign(aggregatedArtifacts, criticReview.artifacts);
@@ -604,8 +621,8 @@ export async function runRalplanConsensus(
         };
       }
 
-      if (iteration >= maxIterations) {
-        const error = consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable'
+      if (isApprovingNativeReviewPair(architectReview, criticReview) || iteration >= maxIterations) {
+        const error = isApprovingNativeReviewPair(architectReview, criticReview)
           ? 'documented_host_consensus_receipt_unavailable'
           : `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
         await updateRalplanState(cwd, {
@@ -619,7 +636,7 @@ export async function runRalplanConsensus(
           latest_critic_summary: criticReview.summary,
           ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
-          status_message: consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable'
+          status_message: isApprovingNativeReviewPair(architectReview, criticReview)
             ? 'Status: failed — Architect and Critic lifecycle evidence cannot authorize a release without an official host consensus receipt verifier.'
             : `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,

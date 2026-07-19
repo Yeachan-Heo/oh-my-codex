@@ -211,6 +211,7 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
     hasArchitectThenCriticSequence(record)
     && isApproveReview(directArchitectReview, 'architect')
     && isApproveReview(directCriticReview, 'critic')
+    && hasDistinctNativeReviewThreads(directArchitectReview, directCriticReview)
     && isCriticNotBeforeArchitect(directArchitectReview, directCriticReview)
     && (
       !returnToRalplanCycle
@@ -240,6 +241,7 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
     if (
       isApproveReview(architectReview, 'architect')
       && isApproveReview(criticReview, 'critic')
+      && hasDistinctNativeReviewThreads(architectReview, criticReview)
       && isCriticNotBeforeArchitect(architectReview, criticReview)
       && (
         !returnToRalplanCycle
@@ -262,6 +264,7 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
     if (
       isApproveReview(architectReview, 'architect')
       && isApproveReview(criticReview, 'critic')
+      && hasDistinctNativeReviewThreads(architectReview, criticReview)
       && isCriticNotBeforeArchitect(architectReview, criticReview)
       && (
         !returnToRalplanCycle
@@ -294,6 +297,7 @@ function resolveDirectGate(record: Record<string, unknown>): ConsensusResolution
       && hasArchitectThenCriticSequence(gateRecord)
       && isApproveReview(architectReview, 'architect')
       && isApproveReview(criticReview, 'critic')
+      && hasDistinctNativeReviewThreads(architectReview, criticReview)
       && isCriticNotBeforeArchitect(architectReview, criticReview)
     ) {
       return {
@@ -313,6 +317,9 @@ function resolveDirectGate(record: Record<string, unknown>): ConsensusResolution
       }
       if (!isCriticNotBeforeArchitect(architectReview, criticReview)) {
         blockedDetails.push('direct review order is not proven strictly architect-before-critic');
+      }
+      if (!hasDistinctNativeReviewThreads(architectReview, criticReview)) {
+        blockedDetails.push('consensus reviews must use distinct native_subagent thread_id values');
       }
       if (blockedDetails.length > 0) {
         return {
@@ -445,7 +452,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function isApproveReview(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): value is Record<string, unknown> {
-  if (!value || value.agent_role !== agentRole) return false;
+  if (!value || value.agent_role !== agentRole || value.provenance_kind !== 'native_subagent') return false;
   if (value.verdict !== undefined && value.verdict !== 'approve') return false;
   if (value.status !== undefined && !isApprovedStatus(value.status)) {
     return false;
@@ -457,10 +464,22 @@ function isApproveReview(value: Record<string, unknown> | null, agentRole: 'arch
   return hasPositiveReviewApprovalSignal(value);
 }
 
+function hasDistinctNativeReviewThreads(
+  architectReview: Record<string, unknown> | null,
+  criticReview: Record<string, unknown> | null,
+): boolean {
+  const architectThreadId = typeof architectReview?.thread_id === 'string' ? architectReview.thread_id.trim() : '';
+  const criticThreadId = typeof criticReview?.thread_id === 'string' ? criticReview.thread_id.trim() : '';
+  return Boolean(architectThreadId) && Boolean(criticThreadId) && architectThreadId !== criticThreadId;
+}
+
 function reviewApprovalProblems(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): string[] {
   const issues: string[] = [];
   if (!value) return [`${agentRole} review is missing`];
   if (value.agent_role !== agentRole) issues.push(`${agentRole} review has agent_role=${String(value.agent_role || 'missing')}`);
+  if (value.provenance_kind !== 'native_subagent') {
+    issues.push(`${agentRole} review provenance_kind=${String(value.provenance_kind || 'missing')} is not native_subagent`);
+  }
   if (value.verdict !== undefined && value.verdict !== 'approve') {
     issues.push(`${agentRole} review verdict=${String(value.verdict)} is not approve`);
   }
@@ -506,7 +525,6 @@ function isCriticNotBeforeArchitect(
   criticReview: Record<string, unknown> | null,
 ): boolean {
   if (!architectReview || !criticReview) return false;
-  if (isTrackerBackedReview(architectReview) || isTrackerBackedReview(criticReview)) return true;
 
   const architectSequence = reviewSequenceValue(architectReview);
   const criticSequence = reviewSequenceValue(criticReview);
@@ -522,9 +540,6 @@ function isCriticNotBeforeArchitect(
   return architectTimestamp !== null && criticTimestamp !== null && criticTimestamp > architectTimestamp;
 }
 
-function isTrackerBackedReview(review: Record<string, unknown>): boolean {
-  return review.provenance_kind === 'native_subagent';
-}
 
 function reviewOrderValue(review: Record<string, unknown>): ReviewOrder | null {
   const sequence = reviewSequenceValue(review);

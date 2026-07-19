@@ -112,16 +112,10 @@ export function canAdvanceAutopilotRalplanToUltragoal(
       unsupportedNativeSubagentGuidance: unsupportedGuidance,
     };
   }
-  const nextStateEvidence = buildRalplanConsensusGateFromSources(
-    sourcesForState('next-autopilot-state', input.nextState),
-    options,
-  );
-  const evidence = nextStateEvidence.complete
-    || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview
-    || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing
-    || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable
-    ? nextStateEvidence
-    : buildRalplanConsensusGateFromSources(gateSources(input), options);
+  // Resolve both states as one ordered evidence set. The consensus resolver selects
+  // the freshest lifecycle record, including a newer invalid next-state record,
+  // while the invariant host-receipt blocker prevents every local record from authorizing execution.
+  const evidence = buildRalplanConsensusGateFromSources(gateSources(input), options);
   if (evidence.complete) {
     return {
       allowed: true,

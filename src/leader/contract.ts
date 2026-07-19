@@ -1,30 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
-export const NATIVE_SPAWN_TASK_NAME_PATTERN = /^[a-z0-9_]+$/;
-export const ROLE_INTENT_CORRELATION_TOKEN_PATTERN = /^[a-z0-9]+$/;
-export const ROLE_INTENT_SPAWN_TASK_NAME_PREFIX = 'omx_role_intent_';
-
-
-export function buildRoleIntentSpawnTaskName(correlationToken: string): string {
-  const normalizedCorrelationToken = correlationToken.trim();
-  if (!ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(normalizedCorrelationToken)) {
-    throw new Error('Invalid role-intent correlation token.');
-  }
-  return `${ROLE_INTENT_SPAWN_TASK_NAME_PREFIX}${normalizedCorrelationToken}`;
-}
-
-export function isAppCompatibleSpawnTaskName(taskName: string): boolean {
-  return NATIVE_SPAWN_TASK_NAME_PATTERN.test(taskName);
-}
-
-export function parseRoleIntentCorrelationToken(taskName: unknown): string | undefined {
-  if (typeof taskName !== 'string') return undefined;
-  if (!taskName.startsWith(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX)) return undefined;
-  const correlationToken = taskName.slice(ROLE_INTENT_SPAWN_TASK_NAME_PREFIX.length);
-  return ROLE_INTENT_CORRELATION_TOKEN_PATTERN.test(correlationToken) ? correlationToken : undefined;
-}
-
 // Canonical origin-workspace identity for adapted role-intent journals. Existing paths
 // resolve symlinks; nonexistent leaves retain their suffix beneath a canonical ancestor.
 export function canonicalizeOriginCwd(cwd: string | undefined): string | null {
