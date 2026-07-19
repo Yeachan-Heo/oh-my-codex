@@ -1,6 +1,8 @@
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
-import { readFile } from 'fs/promises';
-import { cancelMode } from '../modes/base.js';
+import { lstat, open, readFile } from 'fs/promises';
+import { constants as fsConstants } from 'fs';
+
+
 import { getStatePath, normalizeSessionId, resolveWritableStateScope } from '../mcp/state-paths.js';
 
 
@@ -75,7 +77,11 @@ async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolean> {
   try {
     const scope = await resolveWritableStateScope(cwd);
     if (scope.source !== 'session' || scope.sessionId !== ownerSessionId) return false;
-    const state = JSON.parse(await readFile(getStatePath('ralplan', cwd, ownerSessionId), 'utf-8')) as Record<string, unknown>;
+    const path = getStatePath('ralplan', cwd, ownerSessionId);
+    const fileStat = await lstat(path);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) return false;
+    const originalContent = await readFile(path, 'utf-8');
+    const state = JSON.parse(originalContent) as Record<string, unknown>;
     if (
       state.active !== true
       || state.mode !== 'ralplan'
@@ -85,8 +91,26 @@ async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolean> {
       || state.ralplan_consensus_gate !== undefined
       || (typeof state.iteration === 'number' && state.iteration > 0)
     ) return false;
-    await cancelMode('ralplan', cwd);
-    return true;
+    const handle = await open(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+    try {
+      const currentStat = await handle.stat();
+      if (currentStat.dev !== fileStat.dev || currentStat.ino !== fileStat.ino) return false;
+      if (await handle.readFile({ encoding: 'utf-8' }) !== originalContent) return false;
+      const now = new Date().toISOString();
+      const neutralized = {
+        ...state,
+        active: false,
+        current_phase: 'cancelled',
+        completed_at: now,
+        last_turn_at: now,
+      };
+      await handle.truncate(0);
+      await handle.write(JSON.stringify(neutralized, null, 2), 0, 'utf-8');
+      await handle.sync();
+      return true;
+    } finally {
+      await handle.close();
+    }
   } catch {
     return false;
   }

@@ -233,6 +233,69 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('rejects unsupported cancellation flags before mutation', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-flags-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const statePath = join(stateDir, 'team-state.json');
+      const state = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(statePath, state);
+      for (const args of [['--all'], ['--unknown'], ['--force', '--all']]) {
+        const result = runOmx(wd, 'cancel', ...args);
+        assert.notEqual(result.status, 0);
+        assert.equal(await readFile(statePath, 'utf-8'), state);
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked ordinary-scope state targets', async () => {
+    if (process.platform === 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-root-symlink-'));
+    const outside = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-root-symlink-outside-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const outsidePath = join(outside, 'team-state.json');
+      const state = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(outsidePath, state);
+      await symlink(outsidePath, join(stateDir, 'team-state.json'));
+      const result = runOmx(wd, 'cancel');
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /No active modes to cancel\./);
+      assert.equal(await readFile(outsidePath, 'utf-8'), state);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('denies contradictory selected session state transaction-wide', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-contradictory-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-contradictory';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const contradictoryPath = join(sessionDir, 'ralplan-state.json');
+      const validPath = join(sessionDir, 'autopilot-state.json');
+      const contradictory = JSON.stringify({ active: true, mode: 'team', session_id: 'foreign', current_phase: 'team-exec' }, null, 2);
+      const valid = JSON.stringify({ active: true, mode: 'autopilot', session_id: sessionId, current_phase: 'executing' }, null, 2);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
+      await writeFile(contradictoryPath, contradictory);
+      await writeFile(validPath, valid);
+      const result = runOmx(wd, 'cancel');
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /No active modes to cancel\./);
+      assert.equal(await readFile(contradictoryPath, 'utf-8'), contradictory);
+      assert.equal(await readFile(validPath, 'utf-8'), valid);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when owned session state is malformed', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-malformed-owner-'));
     try {
@@ -357,6 +420,13 @@ describe('CLI session-scoped state parity', () => {
       const sessionId = 'sess-proven-owner';
       const sessionDir = join(stateDir, 'sessions', sessionId);
       const ralplanPath = join(sessionDir, 'ralplan-state.json');
+      const rootTeamPath = join(stateDir, 'team-state.json');
+      const rootSkillPath = join(stateDir, 'skill-active-state.json');
+      const rootStopPath = join(stateDir, 'native-stop-state.json');
+      const rootTeam = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
+      const rootSkill = JSON.stringify({ active: true, skill: 'team', phase: 'team-exec' }, null, 2);
+      const rootStop = JSON.stringify({ sessions: { foreign: { pending: true } } }, null, 2);
+
       await mkdir(sessionDir, { recursive: true });
       await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
       await writeFile(ralplanPath, JSON.stringify({
@@ -365,6 +435,10 @@ describe('CLI session-scoped state parity', () => {
         session_id: sessionId,
         current_phase: 'planning',
       }, null, 2));
+      await writeFile(rootTeamPath, rootTeam);
+      await writeFile(rootSkillPath, rootSkill);
+      await writeFile(rootStopPath, rootStop);
+
 
       const preflightResult = runOmxWithEnv(wd, { OMX_SESSION_ID: sessionId }, 'ralplan', 'preflight', '--json');
       assert.equal(preflightResult.status, 1, preflightResult.stderr || preflightResult.stdout);
@@ -375,6 +449,9 @@ describe('CLI session-scoped state parity', () => {
       const state = JSON.parse(await readFile(ralplanPath, 'utf-8'));
       assert.equal(state.active, false);
       assert.equal(state.current_phase, 'cancelled');
+      assert.equal(await readFile(rootTeamPath, 'utf-8'), rootTeam);
+      assert.equal(await readFile(rootSkillPath, 'utf-8'), rootSkill);
+      assert.equal(await readFile(rootStopPath, 'utf-8'), rootStop);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

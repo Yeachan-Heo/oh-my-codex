@@ -6,8 +6,9 @@
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
-import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
+import { chmodSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+
+import { copyFile, cp, lstat, mkdir, open, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash, randomUUID } from "crypto";
 import {
@@ -6865,6 +6866,8 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
 interface AuthorizedRunStateSelection {
   refs: ModeStateFileRef[];
   sessionId: string;
+  sessionDir: string;
+
   record: MadmaxDetachedActiveRecord;
 }
 
@@ -6935,40 +6938,78 @@ async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<Auth
       return null;
     }
   }
-  return { refs: refs.sort((a, b) => a.mode.localeCompare(b.mode)), sessionId, record };
+  return { refs: refs.sort((a, b) => a.mode.localeCompare(b.mode)), sessionId, sessionDir, record };
 }
 
 async function cancelModes(args: string[] = []): Promise<void> {
-  const { writeFile, readFile } = await import("fs/promises");
+
   const cwd = process.cwd();
   const nowIso = new Date().toISOString();
-  const force = args.includes("--force");
+  if (args.length > 1 || args.some((arg) => arg !== "--force")) {
+    const unsupported = args.find((arg) => arg !== "--force") ?? args[1] ?? "";
+    throw new Error(unsupported === "--all"
+      ? "omx cancel --all is not supported; broad workspace cancellation requires a separate command."
+      : `Unknown cancel argument: ${unsupported}`);
+  }
+  const force = args.length === 1;
   try {
     const writableScope = await resolveWritableStateScope(cwd);
-    const loadStates = async (refs: ModeStateFileRef[]) => {
+    const loadStates = async (
+      refs: ModeStateFileRef[],
+      authorityRoot: string,
+      expectedSessionId?: string,
+    ) => {
       const loaded = new Map<
-      string,
-      {
-        path: string;
-        scope: "root" | "session";
-        state: Record<string, unknown>;
-      }
-    >();
-
+        string,
+        {
+          path: string;
+          scope: "root" | "session";
+          state: Record<string, unknown>;
+          originalContent: string;
+          dev: number;
+          ino: number;
+        }
+      >();
+      const canonicalAuthorityRoot = realpathSync(authorityRoot);
       for (const ref of refs) {
-        const content = await readFile(ref.path, "utf-8");
+        const fileStat = lstatSync(ref.path);
+        if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+          throw new Error(`Refusing cancellation through non-regular state target ${ref.path}.`);
+        }
+        const canonicalPath = realpathSync(ref.path);
+        const canonicalParent = realpathSync(dirname(ref.path));
+        if (!isCanonicalPathWithin(canonicalAuthorityRoot, canonicalParent, true)
+          || !isCanonicalPathWithin(canonicalAuthorityRoot, canonicalPath)) {
+          throw new Error(`Refusing cancellation outside authorized state root: ${ref.path}.`);
+        }
+        const content = await readFile(canonicalPath, "utf-8");
         let parsedState: Record<string, unknown>;
         try {
-          parsedState = JSON.parse(content) as Record<string, unknown>;
+          const parsed = JSON.parse(content) as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("state must be a JSON object");
+          }
+          parsedState = parsed as Record<string, unknown>;
         } catch (err) {
           logCliOperationFailure(err);
           throw new Error(`Refusing partial cancellation because ${ref.path} is malformed.`, { cause: err });
         }
-
+        if (typeof parsedState.mode === "string" && parsedState.mode !== ref.mode) {
+          throw new Error(`Refusing contradictory mode state in ${ref.path}.`);
+        }
+        for (const ownerField of ["session_id", "owner_omx_session_id"] as const) {
+          const owner = parsedState[ownerField];
+          if (typeof owner === "string" && owner !== expectedSessionId) {
+            throw new Error(`Refusing contradictory ${ownerField} in ${ref.path}.`);
+          }
+        }
         loaded.set(ref.mode, {
-          path: ref.path,
+          path: canonicalPath,
           scope: ref.scope,
           state: parsedState,
+          originalContent: content,
+          dev: fileStat.dev,
+          ino: fileStat.ino,
         });
       }
       return loaded;
@@ -6984,15 +7025,14 @@ async function cancelModes(args: string[] = []): Promise<void> {
         }))
       : await listModeStateFilesWithScopePreference(cwd, writableScope.sessionId);
     const hasPreferredSessionStateFiles = preferredRefs.some((ref) => ref.scope === "session");
+    const targetRefs = writableScope.source === "session"
+      ? preferredRefs.filter((ref) => ref.scope === "session")
+      : preferredRefs;
+
     let runSelection: AuthorizedRunStateSelection | null = null;
 
-    let states = await loadStates(preferredRefs);
-    // Once writable ownership resolves to a session, cancellation may only write
-    // that exact session directory. Root entries remain compatibility reads and
-    // malformed session state must never authorize broader mutation.
-    if (writableScope.source === "session") {
-      states = new Map([...states.entries()].filter(([, entry]) => entry.scope === "session"));
-    }
+    let states = await loadStates(targetRefs, writableScope.stateDir, writableScope.sessionId);
+
 
     const hasActiveWorkflowMode = (entries: typeof states): boolean =>
       [...entries.entries()].some(
@@ -7005,7 +7045,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
     ) {
       runSelection = await selectAuthorizedHookVisibleRunDirState(cwd);
       if (runSelection) {
-        const runDirStates = await loadStates(runSelection.refs);
+        const runDirStates = await loadStates(runSelection.refs, runSelection.sessionDir, runSelection.sessionId);
         if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
         else runSelection = null;
       }
@@ -7073,11 +7113,34 @@ async function cancelModes(args: string[] = []): Promise<void> {
       }
     };
 
+    const writeFrozenEntry = async (entry: (typeof states extends Map<string, infer T> ? T : never)): Promise<void> => {
+      const handle = await open(entry.path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+      try {
+        const currentStat = await handle.stat();
+        if (!currentStat.isFile() || currentStat.dev !== entry.dev || currentStat.ino !== entry.ino) {
+          throw new Error(`Refusing cancellation because state identity changed: ${entry.path}.`);
+        }
+        const currentContent = await handle.readFile({ encoding: "utf-8" });
+        if (currentContent !== entry.originalContent) {
+          throw new Error(`Refusing cancellation because state content changed: ${entry.path}.`);
+        }
+        const nextContent = JSON.stringify(entry.state, null, 2);
+        await handle.truncate(0);
+        await handle.write(nextContent, 0, "utf-8");
+        await handle.sync();
+        entry.originalContent = nextContent;
+      } finally {
+        await handle.close();
+      }
+    };
+
+
     for (const [mode, entry] of states.entries()) {
       if (!changed.has(mode)) continue;
       assertRunAuthority();
 
-      await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
+      await writeFrozenEntry(entry);
+
     }
     if (force && currentSessionId) {
       assertRunAuthority();
@@ -7089,7 +7152,7 @@ async function cancelModes(args: string[] = []): Promise<void> {
         if (!sessions || !Object.prototype.hasOwnProperty.call(sessions, currentSessionId)) continue;
         delete sessions[currentSessionId];
         entry.state.sessions = sessions;
-        await writeFile(entry.path, JSON.stringify(entry.state, null, 2));
+        await writeFrozenEntry(entry);
         changed.add("native-stop");
       }
     }
