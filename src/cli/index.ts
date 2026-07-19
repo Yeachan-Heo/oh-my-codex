@@ -3589,18 +3589,25 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       sessionModelInstructionsPath(cwd, sessionId),
     );
     const omxRootOverride = resolveOmxRootForLaunch(cwd, process.env);
-    const codexEnvBase = {
-      ...process.env,
-      ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
-      ...(sqliteHomeOverride ? { [CODEX_SQLITE_HOME_ENV]: sqliteHomeOverride } : {}),
-      ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
+    const omxBin = resolveOmxCliEntryPath({ argv1: process.argv[1], cwd, env: process.env });
+    if (!omxBin) throw new Error("Unable to resolve OMX launcher path for exec");
+    const hudRuntimeRoot = resolveHudRuntimeRootForLaunch(cwd, process.env);
+    const codexEnvBase = prependOmxRuntimeCommandShimToEnv(
+      cwd,
+      {
+        ...stripHermesMcpBridgeEnv(process.env),
+        ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
+        ...(sqliteHomeOverride ? { [CODEX_SQLITE_HOME_ENV]: sqliteHomeOverride } : {}),
+        ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
+      },
+      omxBin,
+    );
+    const codexEnv = {
+      ...codexEnvBase,
+      OMX_CODEX_LAUNCH_ID: randomUUID(),
+      ...buildHudRuntimeEnv({ sessionId, ...hudRuntimeRoot }).env,
+      ...(notifyTempContractRaw ? { [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw } : {}),
     };
-    const codexEnv = notifyTempContractRaw
-      ? {
-          ...codexEnvBase,
-          [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw,
-        }
-      : codexEnvBase;
     runCodexBlocking(cwd, codexArgs, codexEnv);
   } finally {
     await postLaunch(cwd, sessionId, codexHomeOverride, true, projectLocalCodexHomeForCleanup);

@@ -24,11 +24,13 @@ type PreToolUseDenial = typeof UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE
 export interface Codex01445PreToolUseDependencies {
   resolveInstalledRoleName: typeof resolveInstalledRoleName;
   platform: NodeJS.Platform;
+  documentedLeaderVerified: boolean;
 }
 
 const defaultDependencies: Codex01445PreToolUseDependencies = {
   resolveInstalledRoleName,
   platform: process.platform,
+  documentedLeaderVerified: false,
 };
 
 function readCommand(payload: Record<string, unknown>): string | undefined {
@@ -70,7 +72,6 @@ export function evaluateCodex01445PreToolUse(
   const dependencies = { ...defaultDependencies, ...overrides };
   const parsed = parseCodex01445AdaptedRoleIntentCommand(command, dependencies.platform);
   if (!parsed) return undefined;
-  return dependencies.resolveInstalledRoleName(parsed.role)
-    ? UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE
-    : UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
+  if (!dependencies.resolveInstalledRoleName(parsed.role)) return UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
+  return dependencies.documentedLeaderVerified ? undefined : UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE;
 }

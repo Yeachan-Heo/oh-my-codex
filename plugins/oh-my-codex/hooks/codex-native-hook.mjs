@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { createHmac, randomBytes } from 'node:crypto';
 import { extname } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -153,9 +155,66 @@ function resolveLaunchClaimPath(payload, launchId) {
 }
 
 function hookPayloadSessionId(input, payload) {
-  const parsedSessionId = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
+  const candidate = payload?.session_id ?? payload?.sessionId;
+  const parsedSessionId = typeof candidate === 'string' ? candidate.trim() : '';
   if (parsedSessionId) return parsedSessionId;
-  return extractTopLevelStringField(input.toString('utf8'), ['session_id', 'sessionId'])?.trim() ?? '';
+  return input && typeof input.toString === 'function'
+    ? extractTopLevelStringField(input.toString('utf8'), ['session_id', 'sessionId'])?.trim() ?? ''
+    : '';
+}
+
+function readOrCreateNativeAnchorKey() {
+  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
+  const keyPath = join(codexHome, '.omx', 'native-anchor-auth.key');
+  try {
+    if (existsSync(keyPath)) {
+      const key = readFileSync(keyPath);
+      return key.length === 32 ? key : null;
+    }
+    mkdirSync(dirname(keyPath), { recursive: true });
+    const key = randomBytes(32);
+    writeFileSync(keyPath, key, { mode: 0o600, flag: 'wx' });
+    return key;
+  } catch {
+    try {
+      const key = readFileSync(keyPath);
+      return key.length === 32 ? key : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function signLaunchClaim(key, launchId, sessionId) {
+  return createHmac('sha256', key).update(['launch-claim-v1', launchId, sessionId].join('\0')).digest('hex');
+}
+
+function isClaimedChildSessionStart(payload, claimedLeaderSessionId) {
+  if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SessionStart' || !claimedLeaderSessionId) return false;
+  const childSessionId = hookPayloadSessionId(null, payload);
+  const transcriptCandidate = payload?.transcript_path ?? payload?.transcriptPath;
+  const transcriptPath = typeof transcriptCandidate === 'string' ? transcriptCandidate.trim() : '';
+  if (!childSessionId || !transcriptPath) return false;
+  let fd;
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const buffer = Buffer.alloc(64 * 1024);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    const newline = buffer.subarray(0, bytes).indexOf(0x0a);
+    const firstLine = buffer.subarray(0, newline >= 0 ? newline : bytes).toString('utf8').trim();
+    const record = JSON.parse(firstLine);
+    const metadata = record?.type === 'session_meta' && record?.payload && typeof record.payload === 'object' ? record.payload : null;
+    const spawn = metadata?.source?.subagent?.thread_spawn;
+    const metadataIds = [metadata?.id, metadata?.session_id].filter((value) => value !== undefined);
+    return metadataIds.length > 0
+      && metadataIds.every((value) => value === childSessionId)
+      && spawn && typeof spawn === 'object'
+      && spawn.parent_thread_id === claimedLeaderSessionId;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch {}
+  }
 }
 
 function isOmxLauncherSession(input, payload) {
@@ -167,12 +226,17 @@ function isOmxLauncherSession(input, payload) {
   const claimPath = resolveLaunchClaimPath(payload, launchId);
 
   try {
+    const key = readOrCreateNativeAnchorKey();
+    if (!key) return false;
     if (existsSync(claimPath)) {
       const claimed = JSON.parse(readFileSync(claimPath, 'utf8'));
-      return claimed?.sessionId === sessionId;
+      const claimedSignature = typeof claimed?.sessionId === 'string' ? signLaunchClaim(key, launchId, claimed.sessionId) : '';
+      return claimed?.signature === claimedSignature
+        && (claimed.sessionId === sessionId || isClaimedChildSessionStart(payload, claimed.sessionId));
     }
+    const signature = signLaunchClaim(key, launchId, sessionId);
     mkdirSync(dirname(claimPath), { recursive: true });
-    writeFileSync(claimPath, `${JSON.stringify({ sessionId })}\n`, { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(claimPath, `${JSON.stringify({ sessionId, signature })}\n`, { encoding: 'utf8', mode: 0o600 });
     return true;
   } catch {
     return false;

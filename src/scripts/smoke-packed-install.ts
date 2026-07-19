@@ -4361,8 +4361,8 @@ PY`],
       stdio: 'pipe',
     });
     if (roleIntentCliResult.status === 0) throw new Error('installed #3194 role-intent CLI unexpectedly authorized an Architect receipt');
-    if (String(roleIntentCliResult.stdout || '') !== '{"ok":false,"reason":"unsupported_documented_leader_proof"}\n') {
-      throw new Error('installed #3194 role-intent CLI returned an unexpected denial');
+    if (String(roleIntentCliResult.stdout || '') !== '{"ok":false,"reason":"native_anchor_unavailable"}\n') {
+      throw new Error('installed #3212 role-intent CLI returned an unexpected unauthenticated-anchor denial');
     }
     if (existsSync(trackingPath)) throw new Error('installed #3194 role-intent CLI unexpectedly created tracker authority');
 
@@ -5065,6 +5065,21 @@ function smokeInstalledPluginHookLauncher(packageRoot: string, omxPath: string):
       session_id: sessionId,
       cwd: hookCwd,
       prompt: 'packed plugin non-Stop probe',
+    }, 0, '{"hookSpecificOutput":{"additionalContext":"pinned non-stop delegate"}}\n');
+    const childSessionId = `${sessionId}-child`;
+    const childTranscriptPath = join(hookCwd, 'packed-child-transcript.jsonl');
+    writeFileSync(childTranscriptPath, `${JSON.stringify({
+      type: 'session_meta',
+      payload: {
+        id: childSessionId,
+        source: { subagent: { thread_spawn: { parent_thread_id: sessionId, task_name: 'omx_role_intent_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } } },
+      },
+    })}\n`);
+    runProbe('claimed child SessionStart', {
+      hookEventName: 'SessionStart',
+      sessionId: childSessionId,
+      transcriptPath: childTranscriptPath,
+      cwd: hookCwd,
     }, 0, '{"hookSpecificOutput":{"additionalContext":"pinned non-stop delegate"}}\n');
     runProbe('Stop', {
       hook_event_name: 'Stop',

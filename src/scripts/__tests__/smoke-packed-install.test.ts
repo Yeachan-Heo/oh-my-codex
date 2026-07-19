@@ -1248,6 +1248,16 @@ test('packed install helpers freeze installed runtime and declaration reasoning 
   );
 });
 
+test('packed install retains authenticated native-anchor and exec launcher contracts', async () => {
+  const hookSource = await readFile(join(process.cwd(), 'src/scripts/codex-native-hook.ts'), 'utf8');
+  const cliSource = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf8');
+  assert.match(hookSource, /isVerifiedPluginLauncherClaim/);
+  assert.match(hookSource, /classifyNativeTranscriptProvenance/);
+  assert.match(hookSource, /native-pretooluse-transcript/);
+  assert.match(hookSource, /signNativeLeaderAttestation/);
+  assert.match(cliSource, /execWithOverlay[\s\S]+OMX_CODEX_LAUNCH_ID[\s\S]+buildHudRuntimeEnv\(\{ sessionId/);
+});
+
 test('packed install contract requires canonical/plugin Team skill parity and text', async () => {
   const canonical = await readFile(join(process.cwd(), 'skills/team/SKILL.md'));
   const pluginMirror = await readFile(join(process.cwd(), 'plugins/oh-my-codex/skills/team/SKILL.md'));

@@ -1,22 +1,37 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { getBaseStateDir } from '../../state/paths.js';
 import { canonicalizeOriginCwd } from '../../leader/contract.js';
-import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, recordSubagentTurn, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, attestLeaderThread, CrossProcessLockLostError, bindPendingRoleIntentUnderLock, buildSubagentResumeLedger, completeAdaptedRoleBinding, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, consumePendingRoleIntent, ensureLeaderAndRecordIntent, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, OMX_ADAPTED_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, recordPendingRoleIntent, selectReusableSubagentEntry, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
 import { subagentTrackingPath } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
+import { signNativeLeaderAttestation } from '../native-anchor-auth.js';
 const credentialDigest = (value: string) => createHash('sha256').update(value).digest('hex');
 const canonicalCorrelationToken = (value: string) => credentialDigest(value).slice(0, 32);
 const canonicalClaimantToken = (value: string) => {
   const digest = credentialDigest(value);
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 };
+
+function signedAttestation(cwd: string, sessionId: string, leaderThreadId: string, source = 'test') {
+  const previousCodexHome = process.env.CODEX_HOME;
+  const codexHome = join(cwd, '.codex-home');
+  mkdirSync(join(codexHome, '.omx'), { recursive: true });
+  writeFileSync(join(codexHome, '.omx', 'native-anchor-auth.key'), Buffer.alloc(32, 9));
+  process.env.CODEX_HOME = codexHome;
+  const nowMs = Date.now();
+  const signature = signNativeLeaderAttestation(sessionId, leaderThreadId, new Date(nowMs).toISOString(), source)!;
+  return {
+    input: { sessionId, leaderThreadId, source, signature, nowMs },
+    restore: () => previousCodexHome === undefined ? delete process.env.CODEX_HOME : process.env.CODEX_HOME = previousCodexHome,
+  };
+}
 
 interface PendingRoleIntentRecordWorkerInput {
   operation: 'record';
@@ -2305,6 +2320,93 @@ describe('subagents/tracker', () => {
       else process.env.OMX_STATE_ROOT = previousStateRoot;
       await rm(parent, { recursive: true, force: true });
       await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+  it('never authorizes one identity as both leader and subagent regardless of write order', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-leader-race-'));
+    const sharedAuth = signedAttestation(cwd, 'leader-session', 'shared-thread');
+    try {
+      await recordSubagentTurnForSession(cwd, { sessionId: 'foreign', threadId: 'shared-thread', kind: 'subagent' });
+      assert.deepEqual(attestLeaderThread(cwd, sharedAuth.input), { ok: false, reason: 'native_anchor_mismatch' });
+
+      const leaderNowMs = Date.now();
+      const leaderSource = 'test';
+      const leaderSignature = signNativeLeaderAttestation('leader-session', 'leader-thread', new Date(leaderNowMs).toISOString(), leaderSource)!;
+      assert.equal(attestLeaderThread(cwd, { sessionId: 'leader-session', leaderThreadId: 'leader-thread', source: leaderSource, signature: leaderSignature, nowMs: leaderNowMs }).ok, true);
+      await recordSubagentTurnForSession(cwd, { sessionId: 'foreign', threadId: 'leader-thread', kind: 'subagent' });
+      assert.deepEqual(ensureLeaderAndRecordIntent(cwd, {
+        role: 'architect', sessionId: 'leader-session', parentThreadId: 'leader-thread', correlationToken: canonicalCorrelationToken('race-token'),
+      }), { ok: false, reason: 'native_anchor_mismatch' });
+    } finally {
+      sharedAuth.restore();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('rejects malformed live intent tokens instead of returning unusable receipts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-malformed-reuse-'));
+    const auth = signedAttestation(cwd, 'session', 'leader');
+    try {
+      assert.equal(attestLeaderThread(cwd, auth.input).ok, true);
+      const trackerPath = subagentTrackingPath(cwd);
+      const state = JSON.parse(readFileSync(trackerPath, 'utf8'));
+      state.pending_role_intents = [{
+        role: 'architect', session_id: 'session', parent_thread_id: 'leader', correlation_token: 'malformed',
+        created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(), origin_cwd: canonicalizeOriginCwd(cwd),
+      }];
+      writeFileSync(trackerPath, `${JSON.stringify(state)}\n`);
+      assert.deepEqual(ensureLeaderAndRecordIntent(cwd, {
+        role: 'architect', sessionId: 'session', parentThreadId: 'leader', correlationToken: canonicalCorrelationToken('new-token'),
+      }), { ok: false, reason: 'invalid_correlation_token' });
+      const tokenA = canonicalCorrelationToken('token-a');
+      const tokenB = canonicalCorrelationToken('token-b');
+      state.pending_role_intents = [
+        { ...state.pending_role_intents[0], correlation_token: tokenA },
+        { ...state.pending_role_intents[0], correlation_token: tokenB },
+      ];
+      writeFileSync(trackerPath, `${JSON.stringify(state)}\n`);
+      assert.deepEqual(ensureLeaderAndRecordIntent(cwd, {
+        role: 'architect', sessionId: 'session', parentThreadId: 'leader', correlationToken: canonicalCorrelationToken('new-token'),
+      }), { ok: false, reason: 'single_flight_conflict' });
+    } finally {
+      auth.restore();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('replaces stale bound intents instead of reusing an unbindable receipt', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-subagent-stale-bound-'));
+    const auth = signedAttestation(cwd, 'session', 'leader');
+    try {
+      assert.equal(attestLeaderThread(cwd, auth.input).ok, true);
+      const trackerPath = subagentTrackingPath(cwd);
+      const state = JSON.parse(readFileSync(trackerPath, 'utf8'));
+      state.pending_role_intents = [{
+        role: 'architect',
+        session_id: 'session',
+        parent_thread_id: 'leader',
+        correlation_token: canonicalCorrelationToken('stale-token'),
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        origin_cwd: canonicalizeOriginCwd(cwd),
+        binding_state: 'bound',
+        binding_claimant_token: canonicalCorrelationToken('stale-claimant'),
+        bound_at: new Date().toISOString(),
+      }];
+      writeFileSync(trackerPath, `${JSON.stringify(state)}\n`);
+      const freshToken = canonicalCorrelationToken('fresh-token');
+      const result = ensureLeaderAndRecordIntent(cwd, {
+        role: 'architect', sessionId: 'session', parentThreadId: 'leader', correlationToken: freshToken,
+      });
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.equal(result.reused, false);
+      assert.equal(result.intent.correlation_token, freshToken);
+      const updated = JSON.parse(readFileSync(trackerPath, 'utf8'));
+      assert.equal(updated.pending_role_intents.length, 1);
+      assert.equal(updated.pending_role_intents[0].binding_state, undefined);
+      assert.equal(updated.pending_role_intents[0].correlation_token, freshToken);
+    } finally {
+      auth.restore();
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 });

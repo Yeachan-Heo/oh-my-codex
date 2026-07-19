@@ -17,13 +17,18 @@ import {
   type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
+  attestLeaderThread,
+  bindPendingRoleIntentUnderLock,
   isTrustedSubagentThread,
   readSubagentSessionSummary,
   readSubagentSessionLedger,
   readSubagentTrackingState,
+  readSubagentTrackingStateStrict,
+  recordSubagentTurn,
   recordSubagentTurnForSession,
   resolveInstalledRoleName,
 } from "../subagents/tracker.js";
+import { signNativeLeaderAttestation, verifyNativeLaunchClaim } from "../subagents/native-anchor-auth.js";
 import { readRoleRoutingMarker, writeRoleRoutingMarker } from "../subagents/role-routing-marker.js";
 import { evaluateCodex01445PreToolUse } from "../ralplan/documented-leader-preflight.js";
 import {
@@ -470,6 +475,63 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
   }
 }
 
+type NativeTranscriptProvenance = { kind: "verified-root" } | { kind: "verified-child" } | { kind: "unknown" } | { kind: "invalid" };
+
+function classifyNativeTranscriptProvenance(transcriptPath: string, nativeSessionId: string): NativeTranscriptProvenance {
+  if (!transcriptPath.trim()) return { kind: "unknown" };
+  try {
+    const firstRecord = safeObject(JSON.parse(readBoundedFirstLineSync(transcriptPath.trim()).trim()));
+    if (safeString(firstRecord.type) !== "session_meta") return { kind: "invalid" };
+    const metadata = safeObject(firstRecord.payload);
+    const expected = nativeSessionId.trim();
+    const ids = [metadata.session_id, metadata.id].filter((value) => value !== undefined).map((value) => safeString(value).trim());
+    if (!expected || ids.length === 0 || ids.some((value) => value !== expected)) return { kind: "invalid" };
+    if (metadata.source && typeof metadata.source === "object") {
+      const spawn = safeObject(safeObject(safeObject(metadata.source).subagent).thread_spawn);
+      return safeString(spawn.parent_thread_id).trim() ? { kind: "verified-child" } : { kind: "invalid" };
+    }
+    const source = safeString(metadata.source).trim().toLowerCase();
+    const originator = safeString(metadata.originator).trim().toLowerCase();
+    const threadSource = safeString(metadata.thread_source).trim().toLowerCase();
+    if (!source && !originator && !threadSource) return { kind: "unknown" };
+    return (source === "exec" || source === "interactive")
+      && (originator === "codex_exec" || originator === "codex")
+      && threadSource === "user"
+      ? { kind: "verified-root" }
+      : { kind: "invalid" };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function isVerifiedPluginLauncherClaim(cwd: string, nativeSessionId: string): boolean {
+  const launchId = safeString(process.env.OMX_CODEX_LAUNCH_ID).trim();
+  if (!launchId || !safeString(process.env.OMX_ENTRY_PATH).trim() || !/^[A-Za-z0-9._-]{1,128}$/.test(launchId)) return false;
+  const stateRoot = safeString(process.env.OMX_ROOT).trim() || join(cwd, ".omx");
+  const claimPath = join(stateRoot, "state", "plugin-hook-launches", `${launchId}.json`);
+  try {
+    const info = lstatSync(claimPath);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 4096) return false;
+    const claim = safeObject(JSON.parse(readFileSync(claimPath, "utf8")));
+    return safeString(claim.sessionId).trim() === nativeSessionId.trim()
+      && verifyNativeLaunchClaim(launchId, nativeSessionId.trim(), safeString(claim.signature).trim());
+  } catch {
+    return false;
+  }
+}
+
+
+function hasOnlyEmptyLeaderRoleCarriers(payload: CodexHookPayload): boolean {
+  const source = safeObject(payload.source);
+  const carriers = [safeObject(payload), safeObject(source.subagent), safeObject(safeObject(source.subagent).thread_spawn)];
+  return carriers.every((carrier) => ["agent_role", "agentRole", "agent_type", "agentType"].every((key) => !Object.prototype.hasOwnProperty.call(carrier, key) || (typeof carrier[key] === "string" && safeString(carrier[key]).trim() === "")));
+}
+
+async function isThreadTrackedAsSubagentFailClosed(cwd: string, threadId: string): Promise<boolean> {
+  const read = await readSubagentTrackingStateStrict(cwd);
+  return !read.ok || Object.values(read.state.sessions).some((session) => isTrustedSubagentThread(session, threadId));
+}
+
 async function recordNativeSubagentSessionStart(
   cwd: string,
   canonicalSessionId: string,
@@ -484,29 +546,59 @@ async function recordNativeSubagentSessionStart(
     canonicalSessionId.trim(),
     parentThreadId,
   ].filter(Boolean))];
+  let adaptedRole: string | undefined;
 
-  for (const sessionId of trackingSessionIds) {
-    if (parentThreadId && parentThreadId !== childThreadId) {
+  if (!metadata.agentRole && correlationSessionId && parentThreadId && metadata.correlationToken) {
+    const bound = bindPendingRoleIntentUnderLock(cwd, {
+      sessionId: correlationSessionId,
+      parentThreadId,
+      correlationToken: metadata.correlationToken,
+      requireAttestedLeader: true,
+    }, (state, intent) => {
+      let next = state;
+      for (const sessionId of trackingSessionIds) {
+        if (parentThreadId !== childThreadId) {
+          next = recordSubagentTurn(next, { sessionId, threadId: parentThreadId, kind: "leader" });
+        }
+        next = recordSubagentTurn(next, {
+          sessionId,
+          threadId: childThreadId,
+          kind: "subagent",
+          ...(parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
+          mode: intent.role,
+          role: intent.role,
+          provenanceKind: intent.provenanceKind,
+        });
+      }
+      return next;
+    });
+    adaptedRole = bound?.role;
+  }
+
+  if (!adaptedRole) {
+    for (const sessionId of trackingSessionIds) {
+      if (parentThreadId && parentThreadId !== childThreadId) {
+        await recordSubagentTurnForSession(cwd, {
+          sessionId,
+          threadId: parentThreadId,
+          kind: "leader",
+        }).catch(() => {});
+      }
       await recordSubagentTurnForSession(cwd, {
         sessionId,
-        threadId: parentThreadId,
-        kind: "leader",
+        threadId: childThreadId,
+        kind: "subagent",
+        ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
+        mode: metadata.agentRole,
       }).catch(() => {});
     }
-    await recordSubagentTurnForSession(cwd, {
-      sessionId,
-      threadId: childThreadId,
-      kind: "subagent",
-      ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
-      mode: metadata.agentRole,
-    }).catch(() => {});
+    refreshNativeSubagentRoleRoutingMarker(
+      cwd,
+      getBaseStateDir(cwd),
+      correlationSessionId,
+      parentThreadId,
+    );
   }
-  refreshNativeSubagentRoleRoutingMarker(
-    cwd,
-    getBaseStateDir(cwd),
-    correlationSessionId,
-    parentThreadId,
-  );
   await appendToLog(cwd, {
     event: "subagent_session_start",
     session_id: canonicalSessionId,
@@ -19640,19 +19732,6 @@ export async function dispatchCodexNativeHook(
 ): Promise<NativeHookDispatchResult> {
   const hookEventName = readHookEventName(payload);
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
-  if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
-    const denial = evaluateCodex01445PreToolUse(payload, {
-      resolveInstalledRoleName: (role) => resolveInstalledRoleName(role, undefined, cwd),
-    });
-    if (denial) {
-      return {
-        hookEventName,
-        omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
-        skillState: null,
-        outputJson: denial,
-      };
-    }
-  }
   if (hookEventName === "PostCompact" && process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1") {
     return {
       hookEventName,
@@ -19706,6 +19785,57 @@ export async function dispatchCodexNativeHook(
   }
   if (promptTurnContext?.status === "suppressed-target-child") {
     return { hookEventName, omxEventName, skillState: null, outputJson: null };
+  }
+  if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
+    const resolveRole = (role: string) => resolveInstalledRoleName(role, undefined, cwd);
+    const unverifiedRoleIntent = evaluateCodex01445PreToolUse(payload, {
+      resolveInstalledRoleName: resolveRole,
+      documentedLeaderVerified: false,
+    });
+    if (unverifiedRoleIntent) {
+      const unverifiedReason = safeString(safeObject(unverifiedRoleIntent.hookSpecificOutput).permissionDecisionReason);
+      if (!unverifiedReason.startsWith("unsupported_documented_leader_proof:")) {
+        return { hookEventName, omxEventName, skillState: null, outputJson: unverifiedRoleIntent };
+      }
+      const transcript = classifyNativeTranscriptProvenance(safeString(payload.transcript_path ?? payload.transcriptPath), nativeSessionId);
+      const payloadThreadId = readPayloadThreadId(payload);
+      const leaderThreadId = payloadThreadId || nativeSessionId;
+      const canonicalLeaderSessionId = safeString(currentSessionState?.session_id).trim();
+      const attestationNowMs = Date.now();
+      const attestationSource = "native-pretooluse-transcript";
+      const attestationSignature = signNativeLeaderAttestation(
+        canonicalLeaderSessionId,
+        leaderThreadId,
+        new Date(attestationNowMs).toISOString(),
+        attestationSource,
+      );
+      const documentedLeaderVerified = Boolean(
+        isVerifiedPluginLauncherClaim(cwd, nativeSessionId)
+        && transcript.kind === "verified-root"
+        && pointer.status === "usable"
+        && canonicalLeaderSessionId
+        && nativeSessionId
+        && safeString(currentSessionState?.native_session_id).trim() === nativeSessionId
+        && (!payloadThreadId || payloadThreadId === nativeSessionId)
+        && !payloadHasConflictingIdentityAliases(payload)
+        && hasOnlyEmptyLeaderRoleCarriers(payload)
+        && !hasSubagentThreadSpawnProvenance(payload)
+        && !(await isThreadTrackedAsSubagentFailClosed(cwd, leaderThreadId))
+        && attestationSignature
+        && attestLeaderThread(cwd, {
+          sessionId: canonicalLeaderSessionId,
+          leaderThreadId,
+          source: attestationSource,
+          signature: attestationSignature,
+          nowMs: attestationNowMs,
+        }).ok,
+      );
+      const denial = evaluateCodex01445PreToolUse(payload, {
+        resolveInstalledRoleName: resolveRole,
+        documentedLeaderVerified,
+      });
+      if (denial) return { hookEventName, omxEventName, skillState: null, outputJson: denial };
+    }
   }
   if (hookEventName !== "Stop") {
     await mkdir(stateDir, { recursive: true });
@@ -19818,6 +19948,7 @@ export async function dispatchCodexNativeHook(
   } else if (!canonicalSessionId) {
     canonicalSessionId = safeString(currentSessionState?.session_id).trim();
   }
+
 
   if (hookEventName === "Stop") {
     const stopPayloadSessionId = readPayloadSessionId(payload);

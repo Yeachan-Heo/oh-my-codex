@@ -337,6 +337,37 @@ describe('omx exec', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('provides interactive launcher identity parity to omx exec', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exec-launch-env-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const capturePath = join(wd, 'exec-env.json');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(fakeBin, 'codex'), [
+        '#!/bin/sh',
+        `exec "$NODE_BINARY" -e 'require("node:fs").writeFileSync(process.env.OMX_FAKE_CODEX_CAPTURE_PATH, JSON.stringify({ launchId: process.env.OMX_CODEX_LAUNCH_ID, entryPath: process.env.OMX_ENTRY_PATH, sessionId: process.env.OMX_SESSION_ID, omxRoot: process.env.OMX_ROOT, path: process.env.PATH }))'`,
+        '',
+      ].join('\n'));
+      await chmod(join(fakeBin, 'codex'), 0o755);
+      await writeFile(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+      await chmod(join(fakeBin, 'ps'), 0o755);
+      const result = runOmx(wd, ['exec', 'true'], {
+        HOME: home, NODE_OPTIONS: '', NODE_BINARY: process.execPath,
+        PATH: `${fakeBin}:/usr/bin:/bin`, OMX_AUTO_UPDATE: '0', OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_FAKE_CODEX_CAPTURE_PATH: capturePath,
+      });
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      const captured = JSON.parse(await readFile(capturePath, 'utf8')) as Record<string, string>;
+      assert.match(captured.launchId, /^[0-9a-f-]{36}$/i);
+      assert.match(captured.entryPath, /dist\/cli\/omx\.js$/);
+      assert.match(captured.sessionId, /^omx-/);
+      assert.ok(captured.path.split(':').some((entry) => entry.includes('.omx') && entry.includes('bin')));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('omx reasoning root validation', () => {
