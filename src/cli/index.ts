@@ -6882,7 +6882,11 @@ async function cancelModes(args: string[] = []): Promise<void> {
       [...entries.entries()].some(
         ([mode, entry]) => mode !== SKILL_ACTIVE_STATE_MODE && entry.state.active === true,
       );
-    if (!hasActiveWorkflowMode(states) && !hasPreferredSessionStateFiles) {
+    if (
+      writableScope.source === "root"
+      && !hasActiveWorkflowMode(states)
+      && !hasPreferredSessionStateFiles
+    ) {
       const runDirStates = await loadStates(await listHookVisibleRunDirStateRefs(cwd));
       if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
     }

@@ -295,6 +295,43 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('does not cancel a foreign hook-visible run-dir from session-owned scope', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-cancel-foreign-owner-'));
+    const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-cancel-foreign-runs-'));
+    try {
+      const ownerSessionId = 'sess-canonical-owner';
+      const foreignSessionId = 'sess-foreign-run';
+      const stateDir = join(wd, '.omx', 'state');
+      const runDir = join(runsRoot, 'run-foreign-session');
+      const runStateDir = join(runDir, '.omx', 'state');
+      const foreignSessionDir = join(runStateDir, 'sessions', foreignSessionId);
+      const foreignStatePath = join(foreignSessionDir, 'autopilot-state.json');
+      const foreignState = JSON.stringify({
+        active: true,
+        mode: 'autopilot',
+        current_phase: 'deep-interview',
+      }, null, 2);
+      await mkdir(join(stateDir, 'sessions', ownerSessionId), { recursive: true });
+      await mkdir(foreignSessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: ownerSessionId }));
+      await writeFile(join(runStateDir, 'session.json'), JSON.stringify({ session_id: foreignSessionId }));
+      await writeFile(foreignStatePath, foreignState);
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({
+        source_cwd: wd,
+        run_dir: runDir,
+      })}\n`);
+
+      const cancelResult = runOmxWithEnv(wd, { OMX_RUNS_DIR: runsRoot }, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.doesNotMatch(cancelResult.stdout, /Cancelled: autopilot/);
+      assert.equal(await readFile(foreignStatePath, 'utf-8'), foreignState);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(runsRoot, { recursive: true, force: true });
+    }
+  });
+
   it('cancels hook-visible run-dir session state when worktree state list-active is empty', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-cancel-worktree-'));
     const runsRoot = await mkdtemp(join(tmpdir(), 'omx-cli-run-dir-cancel-runs-'));
