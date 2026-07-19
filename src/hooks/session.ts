@@ -1442,6 +1442,7 @@ async function writePointerTransaction<T>(
   transition: (pointer: SessionPointerReadResult, context: SessionPointerContext) => T | Promise<T>,
   pointerState: (value: T) => SessionState,
   beforeCommit?: (context: SessionPointerContext) => Promise<void>,
+  afterCommit?: (context: SessionPointerContext) => Promise<void>,
 ): Promise<PointerTransactionResult<T>> {
   let context: SessionPointerContext;
   try {
@@ -1486,6 +1487,7 @@ async function writePointerTransaction<T>(
   );
   const pointerTempPath = `${context.sessionPath}.tmp-${lock.token}`;
   let pointerCommitted = false;
+  let pointerTempWritten = false;
 
   try {
     let pointer: SessionPointerReadResult;
@@ -1518,6 +1520,7 @@ async function writePointerTransaction<T>(
 
     const serialized = JSON.stringify(pointerState(next), null, 2);
     try {
+      pointerTempWritten = true;
       await transactionDependencies.fs.writeFile(pointerTempPath, serialized, { mode: 0o600, flag: 'wx' });
     } catch (error) {
       throw resolvedAbort(context, {
@@ -1548,7 +1551,23 @@ async function writePointerTransaction<T>(
     try {
       await transactionDependencies.fs.rename(pointerTempPath, context.sessionPath);
       pointerCommitted = true;
+      if (afterCommit) {
+        try {
+          await afterCommit(context);
+        } catch (error) {
+          const releaseFailures = await releasePointerLock(lock);
+          throw releaseFailureError([
+            {
+              operation: 'lock-release', phase: 'rename', ownership: 'uncertain',
+              message: `Selected state root identity changed after pointer publication: ${errorMessage(error)}`,
+              cause: error, evidencePath: context.sessionPath,
+            },
+            ...releaseFailures,
+          ], context, next);
+        }
+      }
     } catch (error) {
+      if (error instanceof CommittedLaunchBlockedError) throw error;
       throw resolvedAbort(context, {
         code: 'session_pointer_io_failure',
         operation: 'pointer-rename',
@@ -1575,9 +1594,7 @@ async function writePointerTransaction<T>(
         reason: `Session pointer transition failed before commit: ${errorMessage(error)}`,
         cause: error,
       });
-    const ownsPointerTemp = primary.operation === 'pointer-temp-write'
-      || primary.operation === 'pointer-fsync'
-      || primary.operation === 'pointer-rename';
+    const ownsPointerTemp = pointerTempWritten;
     throw await finalizePrecommitAbort(lock, primary, ownsPointerTemp ? pointerTempPath : undefined);
   }
 }
@@ -1680,6 +1697,7 @@ async function writeSessionStartTransition(
   requireLaunchLineageToken = false,
   requireAbsent = false,
   beforeCommit?: (context: SessionPointerContext) => Promise<void>,
+  afterCommit?: (context: SessionPointerContext) => Promise<void>,
 ): Promise<SessionState> {
   const requestedSessionId = normalizeSessionId(sessionId);
   const result = await writePointerTransaction(
@@ -1690,6 +1708,7 @@ async function writeSessionStartTransition(
     startPointerTransition(requestedSessionId ?? sessionId, options, requireLaunchLineageToken, requireAbsent),
     (state) => state,
     beforeCommit,
+    afterCommit,
   );
   await appendToLogAtContext(result.context, {
     event: 'session_start',
@@ -1815,30 +1834,34 @@ export async function establishLaunchSessionBinding(
   }
   const acquired = await acquireDirectoryCapability(context.baseStateDir, platform);
   const cleanup = (): EstablishmentCleanupEvidence => ({ capability: acquired.cleanup });
-  try {
-    const state = await writeSessionStartTransition(context.cwd, requestedSessionId, { ...options, context }, true, true, async (lockedContext) => {
-      if (acquired.identity.kind !== 'supported') return;
-      const retained = await acquired.lease.handle?.stat({ bigint: true });
-      if (!retained || !retained.isDirectory() || retained.dev !== acquired.identity.dev || retained.ino !== acquired.identity.ino) {
+  const revalidateSelectedRoot = async (lockedContext: SessionPointerContext): Promise<void> => {
+    if (acquired.identity.kind !== 'supported') return;
+    const retained = await acquired.lease.handle?.stat({ bigint: true });
+    if (!retained || !retained.isDirectory() || retained.dev !== acquired.identity.dev || retained.ino !== acquired.identity.ino) {
+      throw resolvedAbort(lockedContext, {
+        code: 'session_pointer_io_failure', operation: 'pointer-classify', candidateSessionId: normalizeSessionId(requestedSessionId),
+        lockPath: lockedContext.lockPath, reason: 'Selected state root identity changed during pointer publication.',
+      });
+    }
+    const canonical = await realpath(lockedContext.baseStateDir);
+    const fresh = await open(canonical, 'r');
+    try {
+      const stats = await fresh.stat({ bigint: true });
+      if (canonical !== acquired.canonicalRealpath || !stats.isDirectory() || stats.dev !== acquired.identity.dev || stats.ino !== acquired.identity.ino) {
         throw resolvedAbort(lockedContext, {
           code: 'session_pointer_io_failure', operation: 'pointer-classify', candidateSessionId: normalizeSessionId(requestedSessionId),
-          lockPath: lockedContext.lockPath, reason: 'Selected state root identity changed before pointer publication.',
+          lockPath: lockedContext.lockPath, reason: 'Selected state root was replaced during pointer publication.',
         });
       }
-      const canonical = await realpath(lockedContext.baseStateDir);
-      const fresh = await open(canonical, 'r');
-      try {
-        const stats = await fresh.stat({ bigint: true });
-        if (canonical !== acquired.canonicalRealpath || !stats.isDirectory() || stats.dev !== acquired.identity.dev || stats.ino !== acquired.identity.ino) {
-          throw resolvedAbort(lockedContext, {
-            code: 'session_pointer_io_failure', operation: 'pointer-classify', candidateSessionId: normalizeSessionId(requestedSessionId),
-            lockPath: lockedContext.lockPath, reason: 'Selected state root was replaced before pointer publication.',
-          });
-        }
-      } finally {
-        await fresh.close();
-      }
-    });
+    } finally {
+      await fresh.close();
+    }
+  };
+  try {
+    const state = await writeSessionStartTransition(
+      context.cwd, requestedSessionId, { ...options, context }, true, true,
+      revalidateSelectedRoot, revalidateSelectedRoot,
+    );
     const token = state.launch_lineage_token;
     if (!isValidToken(token)) {
       const close = await closeLease(acquired.lease, 'before-authorization');
