@@ -5875,7 +5875,7 @@ async function runCodex(
         const bootstrapSteps = buildDetachedSessionBootstrapSteps(
           sessionName, cwd, nativeWindows && detachedWindowsCodexCmd ? detachedWindowsCodexCmd : codexCmd,
           hudCmd, workerLaunchArgs, codexHomeOverride, notifyTempContractRaw, nativeWindows, sessionId,
-          projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, omxRootOverride, runtimeHookEnv,
+          projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, omxRootOverride, codexEnvWithNotify,
           sqliteHomeOverride, detachedParentEnvFilePath, inheritedWorkerModel, releaseMarkerPath,
           omxBin,
           {

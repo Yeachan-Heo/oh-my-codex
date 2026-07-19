@@ -5543,13 +5543,34 @@ describe("Windows detached leader environment", () => {
   it("serializes inherited parent values into the detached Windows leader command", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-test", "C:/project", "codex", "hud", null, undefined, null, true, "session-1",
-      undefined, undefined, undefined, { PATH: "C:/parent/bin", CUSTOM_VALUE: "retained", TMUX: "foreign" },
+      undefined, undefined, undefined, {
+        PATH: "C:/runtime-shim;C:/parent/bin",
+        CUSTOM_VALUE: "retained",
+        CODEX_HOME: "C:/project/.codex-runtime",
+        CODEX_SQLITE_HOME: "C:/project/.codex-sqlite",
+        OMX_ROOT: "C:/project/.omx-run",
+        OMX_CODEX_LAUNCH_ID: "launch-id",
+        OMX_NOTIFY_TEMP_CONTRACT: "{\"active\":true}",
+        OMX_TEAM_WORKER_LAUNCH_ARGS: "[\"--model\",\"gpt-5\"]",
+        TMUX: "foreign",
+        TMUX_PANE: "%9",
+        TERM: "xterm-256color",
+      },
     );
     const command = steps[0]?.args.at(-1) ?? "";
     const encodedPayload = command.match(/__detached-session-leader ''([^']+)''/)?.[1];
     assert.ok(encodedPayload);
     const payload = JSON.parse(Buffer.from(encodedPayload!, "base64url").toString("utf8"));
-    assert.deepEqual(payload.parentEnv, { CUSTOM_VALUE: "retained", PATH: "C:/parent/bin" });
+    assert.deepEqual(payload.parentEnv, {
+      CODEX_HOME: "C:/project/.codex-runtime",
+      CODEX_SQLITE_HOME: "C:/project/.codex-sqlite",
+      CUSTOM_VALUE: "retained",
+      OMX_CODEX_LAUNCH_ID: "launch-id",
+      OMX_NOTIFY_TEMP_CONTRACT: "{\"active\":true}",
+      OMX_ROOT: "C:/project/.omx-run",
+      OMX_TEAM_WORKER_LAUNCH_ARGS: "[\"--model\",\"gpt-5\"]",
+      PATH: "C:/runtime-shim;C:/parent/bin",
+    });
   });
 });
 
