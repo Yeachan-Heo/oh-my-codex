@@ -16,6 +16,7 @@ import { readJsonIfExists } from './state-io.js';
 import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, normalizeExactPaneId, sendPaneInput } from './team-tmux-guard.js';
 import { readTeamWorkersForIdleCheck } from './team-worker.js';
+import { registerTeamNotice, releaseTeamNoticeWake } from '../../team/notice-ledger.js';
 
 const STOP_NUDGE_COOLDOWN_MS = 30_000;
 const SOURCE_TYPE = 'worker_stop';
@@ -249,6 +250,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
   let tmuxSession = '';
   let leaderPaneId = '';
   let recordedShutdownSuppression = false;
+  let queuedNoticeRegistration = null;
   const recordShutdownSuppressionOnce = async () => {
     if (recordedShutdownSuppression) return;
     recordedShutdownSuppression = true;
@@ -356,10 +358,23 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };
   }
 
-  const prompt =
-    `[OMX] ${workerName} native Stop allowed. `
-    + `Run \`omx team status ${teamName}\`, read worker messages/results, then assign next task, reconcile completion, or shut down. `
-    + DEFAULT_MARKER;
+  const leaderBusy = paneHasActiveTask(paneGuard.paneCapture);
+  let prompt = `[OMX] ${workerName} native Stop allowed. Run \`omx team status ${teamName}\`, read worker messages/results, then assign next task, reconcile completion, or shut down. ${DEFAULT_MARKER}`;
+  if (leaderBusy) {
+    const noticeRegistration = await registerTeamNotice({
+      stateRoot: stateDir,
+      targetId: leaderPaneOwnerId,
+      teamName,
+      noticeClass: 'worker_stop',
+      generation: `${nowIso}:${workerName}`,
+      source: { kind: SOURCE_TYPE, detail: workerName },
+    }).catch(() => null);
+    if (!noticeRegistration?.queued || !noticeRegistration.prompt) {
+      return { ok: true, result: 'coalesced' };
+    }
+    prompt = `${noticeRegistration.prompt} ${DEFAULT_MARKER}`;
+    queuedNoticeRegistration = noticeRegistration;
+  }
 
     const leaderHasActiveTask = paneHasActiveTask(paneGuard.paneCapture);
     const sendResult = await sendPaneInput({
@@ -373,6 +388,7 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
       expectedHudPaneId: teamInfo.hudPaneId,
     });
     if (!sendResult.ok) throw new Error(sendResult.error || sendResult.reason || 'send_failed');
+    queuedNoticeRegistration = null;
     const deliveryMode = leaderHasActiveTask ? 'steered' : 'sent';
 
     const deliveryState = {
@@ -418,6 +434,9 @@ export async function maybeNudgeLeaderForAllowedWorkerStop({
     }).catch(() => {});
     return { ok: true, result: deliveryMode };
   } catch (err) {
+    if (queuedNoticeRegistration?.targetKey && queuedNoticeRegistration?.wakeId) {
+      await releaseTeamNoticeWake(stateDir, queuedNoticeRegistration.targetKey, queuedNoticeRegistration.wakeId).catch(() => {});
+    }
     if (!(await teamStateAllowsWorkerStopNudge(stateDir, teamName))) {
       await recordShutdownSuppressionOnce();
       return { ok: true, result: TEAM_SHUTDOWN_NO_INJECTION_REASON };

@@ -63,6 +63,7 @@ import {
   writeTeamLeaderAttention,
   writeTeamPhase,
 } from "../team/state.js";
+import { parseTeamNoticeLedgerPrompt, reconcileTeamNoticeLedger } from "../team/notice-ledger.js";
 import { omxNotepadPath, resolveProjectMemoryPath } from "../utils/paths.js";
 import { findGitLayout } from "../utils/git-layout.js";
 import {
@@ -19659,6 +19660,8 @@ export async function dispatchCodexNativeHook(
   let triageAdditionalContext: string | null = null;
   let goalWorkflowAdditionalContext: string | null = null;
   let ultragoalSteeringAdditionalContext: string | null = null;
+  let teamNoticeAdditionalContext: string | null = null;
+  let teamNoticeTargetKey: string | null = null;
   let promptClassification: KeywordInputClassification | null = null;
 
   const nativeSessionId = safeString(payload.session_id ?? payload.sessionId).trim();
@@ -19869,6 +19872,9 @@ export async function dispatchCodexNativeHook(
   if (hookEventName === "UserPromptSubmit") {
     const prompt = readPromptText(payload);
     if (!isSubagentPromptSubmit) {
+      teamNoticeTargetKey = parseTeamNoticeLedgerPrompt(prompt);
+    }
+    if (!isSubagentPromptSubmit) {
       promptClassification = classifyKeywordInput(prompt);
     }
     goalWorkflowAdditionalContext = allowPromptGlobalSideEffects
@@ -20047,6 +20053,31 @@ export async function dispatchCodexNativeHook(
       allowTeamWorkerSideEffects: false,
     });
   }
+  if (hookEventName === "UserPromptSubmit" && !isSubagentPromptSubmit && teamNoticeTargetKey) {
+    const reconciled = await reconcileTeamNoticeLedger({ stateRoot: stateDir, targetKey: teamNoticeTargetKey }).catch(() => null);
+    if (!reconciled || reconciled.context.length === 0) {
+      teamNoticeAdditionalContext = "OMX invalidated this queued Team wake immediately before model input because no active source-proven Team notices remain. Do not infer or reference a removed Team from the generic wake.";
+    } else {
+      const byTeam = new Map<string, Set<string>>();
+      for (const notice of reconciled.context) {
+        const classes = byTeam.get(notice.teamName) ?? new Set<string>();
+        classes.add(notice.noticeClass);
+        byTeam.set(notice.teamName, classes);
+      }
+      const entries = [...byTeam.entries()];
+      const visible = entries.slice(0, 12).map(([teamName, classes]) =>
+        `${teamName} (${[...classes].join(", ")}): run \`omx team status ${teamName}\`, read current messages/results, then assign, reconcile, or shut down.`
+      );
+      const overflow = entries.length > visible.length
+        ? `Also inspect the remaining ${entries.length - visible.length} active Team director${entries.length - visible.length === 1 ? "y" : "ies"} under .omx/state/team before concluding.`
+        : null;
+      teamNoticeAdditionalContext = [
+        `OMX reconciled ${reconciled.presented} queued Team notice generation(s) against current canonical state immediately before model input.`,
+        ...visible,
+        overflow,
+      ].filter(Boolean).join("\n");
+    }
+  }
 
   if (hookEventName === "PreCompact") {
     // Codex native PreCompact currently accepts only the common continuation fields.
@@ -20063,14 +20094,13 @@ export async function dispatchCodexNativeHook(
       })
       : isSubagentPromptSubmit
         ? null
-        : promptClassification
-          ? [
-            buildAdditionalContextMessage(promptClassification, skillState, cwd, payload),
-            ultragoalSteeringAdditionalContext,
-            goalWorkflowAdditionalContext,
-            triageAdditionalContext,
-          ].filter((entry): entry is string => Boolean(entry)).join("\n\n") || null
-          : null;
+        : [
+          teamNoticeAdditionalContext,
+          promptClassification ? buildAdditionalContextMessage(promptClassification, skillState, cwd, payload) : null,
+          ultragoalSteeringAdditionalContext,
+          goalWorkflowAdditionalContext,
+          triageAdditionalContext,
+        ].filter((entry): entry is string => Boolean(entry)).join("\n\n") || null;
     if (additionalContext) {
       outputJson = {
         hookSpecificOutput: {

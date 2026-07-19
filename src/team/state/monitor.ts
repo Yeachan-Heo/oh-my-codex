@@ -67,6 +67,16 @@ export interface TeamPhaseState {
   current_fix_attempt: number;
   transitions: Array<{ from: string; to: string; at: string; reason?: string }>;
   updated_at: string;
+  terminal_epoch?: string;
+  terminal_reason?: string;
+  final_task_counts?: {
+    total: number;
+    pending: number;
+    blocked: number;
+    in_progress: number;
+    completed: number;
+    failed: number;
+  };
 }
 
 interface MonitorDeps {
@@ -291,12 +301,25 @@ export async function readTeamPhase(teamName: string, cwd: string, teamPhasePath
     const parsed = JSON.parse(raw) as Partial<TeamPhaseState>;
     if (!parsed || typeof parsed !== 'object') return null;
     const currentPhase = typeof parsed.current_phase === 'string' ? parsed.current_phase : 'team-exec';
+    const finalTaskCounts = parsed.final_task_counts;
     return {
       current_phase: currentPhase,
       max_fix_attempts: typeof parsed.max_fix_attempts === 'number' ? parsed.max_fix_attempts : 3,
       current_fix_attempt: typeof parsed.current_fix_attempt === 'number' ? parsed.current_fix_attempt : 0,
       transitions: Array.isArray(parsed.transitions) ? parsed.transitions : [],
       updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : new Date().toISOString(),
+      terminal_epoch: typeof parsed.terminal_epoch === 'string' ? parsed.terminal_epoch : undefined,
+      terminal_reason: typeof parsed.terminal_reason === 'string' ? parsed.terminal_reason : undefined,
+      final_task_counts: finalTaskCounts && typeof finalTaskCounts === 'object'
+        ? {
+            total: typeof finalTaskCounts.total === 'number' ? finalTaskCounts.total : 0,
+            pending: typeof finalTaskCounts.pending === 'number' ? finalTaskCounts.pending : 0,
+            blocked: typeof finalTaskCounts.blocked === 'number' ? finalTaskCounts.blocked : 0,
+            in_progress: typeof finalTaskCounts.in_progress === 'number' ? finalTaskCounts.in_progress : 0,
+            completed: typeof finalTaskCounts.completed === 'number' ? finalTaskCounts.completed : 0,
+            failed: typeof finalTaskCounts.failed === 'number' ? finalTaskCounts.failed : 0,
+          }
+        : undefined,
     };
   } catch {
     return null;

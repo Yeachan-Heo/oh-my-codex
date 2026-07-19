@@ -26,6 +26,7 @@ import {
 	writeTeamLeaderAttention,
   writeWorkerIdentity,
 } from "../../team/state.js";
+import { registerTeamNotice } from "../../team/notice-ledger.js";
 import {
 	dispatchCodexNativeHook,
 	isCodexNativeHookMainModule,
@@ -23147,8 +23148,8 @@ PY`,
 
       assert.equal(result.outputJson, null);
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
-      assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-1 native Stop allowed/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
+      assert.match(tmuxLog, /send-keys -t %42 -l \[omx:team-notice-ledger:[a-f0-9]{24}\] Review current Team notices\./);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l .*worker-stop-team-busy-leader|send-keys -t %42 Tab/);
       const submits = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
       assert.equal(submits.length, 2, "busy worker-stop nudge should submit directly as steering, not queue via Tab");
       const nudgeState = JSON.parse(await readFile(join(workerDir, "worker-stop-nudge.json"), "utf-8"));
@@ -23344,8 +23345,8 @@ PY`,
 
       assert.equal(result.result, "steered");
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
-      assert.match(tmuxLog, /send-keys -t %42 -l \[OMX\] worker-2 native Stop allowed/);
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 Tab/);
+      assert.match(tmuxLog, /send-keys -t %42 -l \[omx:team-notice-ledger:[a-f0-9]{24}\] Review current Team notices\./);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l .*worker-2 native Stop allowed|send-keys -t %42 Tab/);
       const teamNudgeState = JSON.parse(await readFile(join(teamDir, "worker-stop-nudge.json"), "utf-8"));
       assert.equal(teamNudgeState.worker, "worker-2");
       assert.equal(teamNudgeState.delivery, "steered");
@@ -35315,6 +35316,54 @@ describe('native UserPromptSubmit payload provenance', () => {
       assert.equal(foreignChild.skillState, null);
       assert.equal(existsSync(join(stateDir, 'sessions', 'foreign-child', 'skill-active-state.json')), false);
       assert.equal(await readFile(join(stateDir, 'sessions', 'selected-root', 'sentinel.json'), 'utf-8'), sentinelBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("native Team notice ledger reconciliation", () => {
+  it("invalidates removed Teams before queued wake context reaches the model", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-team-notice-ledger-"));
+    const stateRoot = join(cwd, ".omx", "state");
+    try {
+      const session = await writeSessionStart(cwd, "sess-team-notice-ledger");
+      let wakePrompt = "";
+      for (const teamName of ["notice-live", "notice-removed"]) {
+        const teamDir = join(stateRoot, "team", teamName);
+        await mkdir(teamDir, { recursive: true });
+        await writeFile(join(teamDir, "config.json"), JSON.stringify({ team_name: teamName }));
+        const registration = await registerTeamNotice({
+          stateRoot,
+          targetId: "leader-shared",
+          teamName,
+          noticeClass: "mailbox",
+          generation: "1",
+          source: { kind: "test" },
+        });
+        wakePrompt ||= registration.prompt ?? "";
+      }
+      await rm(join(stateRoot, "team", "notice-removed"), { recursive: true, force: true });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "UserPromptSubmit",
+        cwd,
+        session_id: session.session_id,
+        prompt: `${wakePrompt} [OMX_TMUX_INJECT]`,
+      }, { cwd });
+      const context = String((result.outputJson?.hookSpecificOutput as { additionalContext?: unknown } | undefined)?.additionalContext ?? "");
+      assert.match(context, /notice-live \(mailbox\)/);
+      assert.doesNotMatch(context, /notice-removed/);
+
+      const replay = await dispatchCodexNativeHook({
+        hook_event_name: "UserPromptSubmit",
+        cwd,
+        session_id: session.session_id,
+        prompt: `${wakePrompt} [OMX_TMUX_INJECT]`,
+      }, { cwd });
+      const replayContext = String((replay.outputJson?.hookSpecificOutput as { additionalContext?: unknown } | undefined)?.additionalContext ?? "");
+      assert.match(replayContext, /notice-live \(mailbox\)/);
+      assert.doesNotMatch(replayContext, /notice-removed/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

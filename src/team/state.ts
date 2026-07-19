@@ -1714,6 +1714,12 @@ async function withMailboxLock<T>(
   return await withMailboxLockImpl(teamName, workerName, cwd, LOCK_STALE_MS, { teamDir, taskClaimLockDir, mailboxLockDir }, fn);
 }
 
+export function teamContinuationRequiredDiagnostic(phase: TeamPhaseState): string {
+  const epoch = phase.terminal_epoch ?? phase.updated_at;
+  const reason = phase.terminal_reason ?? `terminal_phase_${phase.current_phase}`;
+  return `team_continuation_required:terminal_epoch=${epoch}:reason=${reason}:action=reopen_or_start_continuation`;
+}
+
 // Create a task (auto-increment ID)
 export async function createTask(
   teamName: string,
@@ -1724,6 +1730,10 @@ export async function createTask(
     await recoverTeamMembershipTaskTransaction(teamName, cwd);
     const cfg = await readTeamConfig(teamName, cwd);
     if (!cfg) throw new Error(`Team ${teamName} not found`);
+    const phase = await readTeamPhase(teamName, cwd);
+    if (phase?.terminal_epoch || (phase && isTerminalPhase(phase.current_phase))) {
+      throw new Error(teamContinuationRequiredDiagnostic(phase));
+    }
 
     let nextNumeric = normalizeNextTaskId(cfg.next_task_id);
     const nextNumericFromDisk = await computeNextTaskIdFromDisk(teamName, cwd);
@@ -2485,6 +2495,16 @@ export interface TeamPhaseState {
   current_fix_attempt: number;
   transitions: Array<{ from: string; to: string; at: string; reason?: string }>;
   updated_at: string;
+  terminal_epoch?: string;
+  terminal_reason?: string;
+  final_task_counts?: {
+    total: number;
+    pending: number;
+    blocked: number;
+    in_progress: number;
+    completed: number;
+    failed: number;
+  };
 }
 
 export type TeamLeaderDecisionState = 'still_actionable' | 'done_waiting_on_leader' | 'stuck_waiting_on_leader';
