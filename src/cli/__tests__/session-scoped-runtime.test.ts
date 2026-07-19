@@ -9,6 +9,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { readModeState } from '../../modes/base.js';
 import { readSkillActiveState } from '../../state/skill-active.js';
+import { recordSkillActivation } from '../../hooks/keyword-detector.js';
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, '..', '..', '..');
@@ -478,24 +479,18 @@ describe('CLI session-scoped state parity', () => {
 
       await mkdir(sessionDir, { recursive: true });
       await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd, state_root: stateDir }));
-      const ralplanState = JSON.stringify({
-        active: true,
-        source: 'keyword-detector',
-        mode: 'ralplan',
-        session_id: sessionId,
-        current_phase: 'planning',
-      }, null, 2);
-      const sessionSkillState = JSON.stringify({
-        active: true,
-        source: 'keyword-detector',
-        skill: 'ralplan',
-        phase: 'planning',
-        current_phase: 'planning',
-        session_id: sessionId,
-        active_skills: [{ skill: 'ralplan', active: true, phase: 'planning', current_phase: 'planning', session_id: sessionId }],
-      }, null, 2);
-      await writeFile(ralplanPath, ralplanState);
-      await writeFile(sessionSkillPath, sessionSkillState);
+      const activated = await recordSkillActivation({
+        stateDir,
+        sourceCwd: wd,
+        text: '$ralplan continue issue #3212',
+        sessionId,
+        threadId: 'thread-preflight-owner',
+        turnId: 'turn-preflight-owner',
+        nowIso: '2026-07-19T00:00:00.000Z',
+      });
+      assert.ok(activated);
+      const ralplanState = await readFile(ralplanPath, 'utf-8');
+      const sessionSkillState = await readFile(sessionSkillPath, 'utf-8');
       await writeFile(rootTeamPath, rootTeam);
       await writeFile(rootSkillPath, rootSkill);
       await writeFile(rootStopPath, rootStop);

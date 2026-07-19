@@ -300,7 +300,7 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.status, 'failed');
       assert.equal(result.failedStage, 'ralplan');
       assert.equal(ralplanRuns, 2);
-      assert.equal(result.stageResults.ralplan.error, 'ralplan_consensus_evidence_missing');
+      assert.equal(result.stageResults.ralplan.error, 'documented_host_consensus_receipt_unavailable');
     });
 
     it('stops at ralplan before default quality gates when the host receipt is unavailable', async () => {
@@ -574,7 +574,7 @@ describe('Pipeline Orchestrator', () => {
 
       assert.equal(result.status, 'failed');
       assert.equal(result.stageResults.ralplan.status, 'failed');
-      assert.equal(result.stageResults.ralplan.error, 'ralplan_consensus_evidence_missing');
+      assert.equal(result.stageResults.ralplan.error, 'documented_host_consensus_receipt_unavailable');
       assert.equal(result.stageResults.after, undefined);
 
       const ext = await readPipelineState(tempDir);
@@ -603,7 +603,7 @@ describe('Pipeline Orchestrator', () => {
         name: 'ralplan-host-receipt-blocker',
         task: 'do not execute without host receipt',
         stages: [
-          makeStage('ralplan', { artifacts: { ralplanConsensusGate: blockedGate } }, { canSkip: () => true }),
+          makeStage('ralplan', { artifacts: { ralplanConsensusGate: blockedGate }, error: 'generic materialization failure' }, { canSkip: () => true }),
           {
             name: 'ultragoal',
             async run(): Promise<StageResult> {
@@ -626,6 +626,8 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.failedStage, 'ralplan');
       assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
       assert.equal(result.stageResults.ralplan.status, 'failed');
+      assert.equal(result.stageResults.ralplan.error, 'documented_host_consensus_receipt_unavailable');
+      assert.deepEqual(result.stageResults.ralplan.artifacts.documented_host_consensus_receipt_diagnostic, { prior_error: 'generic materialization failure' });
       assert.equal(result.stageResults.ultragoal, undefined);
       assert.equal(result.stageResults.ultraqa, undefined);
       assert.deepEqual(executionAttempts, []);
@@ -633,6 +635,19 @@ describe('Pipeline Orchestrator', () => {
       const ext = await readPipelineState(tempDir);
       const handoffs = ext?.handoff_artifacts as Record<string, unknown> | undefined;
       assert.deepEqual((handoffs?.ralplan as { ralplanConsensusGate?: unknown } | undefined)?.ralplanConsensusGate, blockedGate);
+    });
+    it('surfaces the host-receipt blocker over a generic executed Ralplan error', async () => {
+      const blockedGate = { blocked_reason: 'documented_host_consensus_receipt_unavailable' };
+      const result = await runPipeline({
+        name: 'ralplan-executed-host-receipt-blocker',
+        task: 'preserve the exact host receipt blocker',
+        stages: [makeStage('ralplan', { status: 'failed', artifacts: { ralplan_consensus_gate: blockedGate }, error: 'generic runtime failure' })],
+        cwd: tempDir,
+      });
+      assert.equal(result.status, 'failed');
+      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.stageResults.ralplan.error, 'documented_host_consensus_receipt_unavailable');
+      assert.deepEqual(result.stageResults.ralplan.artifacts.documented_host_consensus_receipt_diagnostic, { prior_error: 'generic runtime failure' });
     });
 
     it('fires onStageTransition callback', async () => {

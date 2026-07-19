@@ -27,6 +27,7 @@ import type {
 } from './types.js';
 
 const MODE_NAME = 'autopilot' as const;
+const DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE = 'documented_host_consensus_receipt_unavailable';
 
 // ---------------------------------------------------------------------------
 // Pipeline orchestrator
@@ -111,10 +112,10 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       let skippedArtifacts: Record<string, unknown> = {};
       let skippedError: string | undefined;
       if (stage.name === 'ralplan') {
-        const materialized = await stage.run(ctx);
+        const materialized = enforceRalplanHostReceiptBlocker(await stage.run(ctx), stage.name);
         skippedArtifacts = materialized.artifacts;
         if (isRalplanHostReceiptBlocked(stage.name, skippedArtifacts)) {
-          skippedError = materialized.error ?? 'documented_host_consensus_receipt_unavailable';
+          skippedError = materialized.error;
         }
       }
       const skippedResult: StageResult = {
@@ -180,13 +181,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       };
     }
 
-    if (isRalplanHostReceiptBlocked(stage.name, result.artifacts)) {
-      result = {
-        ...result,
-        status: 'failed',
-        error: result.error ?? 'documented_host_consensus_receipt_unavailable',
-      };
-    }
+    result = enforceRalplanHostReceiptBlocker(result, stage.name);
 
     stageResults[stage.name] = result;
 
@@ -401,6 +396,22 @@ function isRalplanHostReceiptBlocked(stageName: string, artifacts: Record<string
   const gateRecord = gate as Record<string, unknown>;
   return gateRecord.blockedReason === 'documented_host_consensus_receipt_unavailable'
     || gateRecord.blocked_reason === 'documented_host_consensus_receipt_unavailable';
+}
+function enforceRalplanHostReceiptBlocker(result: StageResult, stageName: string): StageResult {
+  if (!isRalplanHostReceiptBlocked(stageName, result.artifacts)) return result;
+  const previousError = result.error;
+  const artifacts = previousError && previousError !== DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE
+    ? {
+      ...result.artifacts,
+      documented_host_consensus_receipt_diagnostic: { prior_error: previousError },
+    }
+    : result.artifacts;
+  return {
+    ...result,
+    status: 'failed',
+    artifacts,
+    error: DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE,
+  };
 }
 
 function toHandoffArtifactKey(stageName: string): string {

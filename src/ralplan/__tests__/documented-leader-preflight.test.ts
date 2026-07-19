@@ -32,12 +32,20 @@ async function fixture(): Promise<Fixture> {
   const directory = join(cwd, '.omx', 'state', 'sessions', sessionId); const ralplanPath = join(directory, 'ralplan-state.json'); const skillPath = join(directory, 'skill-active-state.json');
   await mkdir(directory, { recursive: true });
   await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: join(cwd, '.omx', 'state') }));
-  // This is the keyword-detector producer shape: timestamps, version, provenance, and its active-skills mirror are real producer fields.
-  await writeFile(ralplanPath, JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'planning', started_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }));
+  // This is the keyword-detector producer shape: mode state has no source field; skill state carries keyword provenance.
+  await writeFile(ralplanPath, JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'planning', started_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }));
   await writeFile(skillPath, JSON.stringify({ version: 1, active: true, skill: 'ralplan', keyword: '$ralplan', phase: 'planning', activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', source: 'keyword-detector', session_id: sessionId, thread_id: 'thread', turn_id: 'turn', active_skills: [{ skill: 'ralplan', phase: 'planning', active: true, activated_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', session_id: sessionId, thread_id: 'thread', turn_id: 'turn' }] }));
   return { cwd, sessionId, directory, ralplanPath, skillPath, ralplan: await readFile(ralplanPath), skill: await readFile(skillPath) };
 }
-function pairDigest(f: Fixture): string { return createHash('sha256').update('ralplan-state.json\0').update(f.ralplan).update('\0skill-active-state.json\0').update(f.skill).digest('hex'); }
+function pairDigest(f: Fixture): string { return digestBytes(f.ralplan, f.skill); }
+function digestBytes(ralplan: Buffer, skill: Buffer): string { return createHash('sha256').update('ralplan-state.json\0').update(ralplan).update('\0skill-active-state.json\0').update(skill).digest('hex'); }
+async function mintCommittedGeneration(f: Fixture): Promise<void> {
+  const [ralplan, skill] = await Promise.all([readFile(f.ralplanPath), readFile(f.skillPath)]);
+  const digest = digestBytes(ralplan, skill); const token = 'f'.repeat(48); const dataFile = `.ralplan-neutralization-${digest}-${token}.json`;
+  const record = { version: 1, digest, canonical: { ralplan: { sha256: createHash('sha256').update(ralplan).digest('hex'), size: ralplan.length }, skill: { sha256: createHash('sha256').update(skill).digest('hex'), size: skill.length } } };
+  await writeFile(join(f.directory, dataFile), `${JSON.stringify(record)}\n`);
+  await writeFile(join(f.directory, `.ralplan-neutralization-${digest}-${token}.commit.json`), `${JSON.stringify({ version: 1, digest, dataFile, committed: true })}\n`);
+}
 async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> { const old = process.env.OMX_SESSION_ID; const f = await fixture(); process.env.OMX_SESSION_ID = f.sessionId; clear(); try { await fn(f); } finally { clear(); old === undefined ? delete process.env.OMX_SESSION_ID : process.env.OMX_SESSION_ID = old; await rm(f.cwd, { recursive: true, force: true }); } }
 async function originals(f: Fixture): Promise<void> { assert.deepEqual(await readFile(f.ralplanPath), f.ralplan); assert.deepEqual(await readFile(f.skillPath), f.skill); }
 async function visibleNeutralized(f: Fixture): Promise<void> { assert.equal((await readModeState('ralplan', f.cwd))?.active, false); assert.equal((await readSkillActiveState(f.skillPath))?.active, false); }
@@ -89,9 +97,19 @@ describe('documented leader immutable neutralization generation', () => {
     const target = join(f.cwd, 'target'); await writeFile(target, '{}'); await symlink(target, join(f.directory, '.ralplan-neutralization-symlink.json')); await link(target, join(f.directory, '.ralplan-neutralization-hardlink.json'));
     assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true); assert.equal((await lstat(join(f.directory, '.ralplan-neutralization-symlink.json'))).isSymbolicLink(), true);
   }));
-  it('rejects mixed or substantive workflow state without an overlay', async () => withFixture(async (f) => {
+  it('rejects mixed workflow state without publishing an overlay', async () => withFixture(async (f) => {
     const skill = JSON.parse(await readFile(f.skillPath, 'utf8')); skill.active_skills.push({ skill: 'team', active: true, phase: 'executing', session_id: f.sessionId }); await writeFile(f.skillPath, JSON.stringify(skill));
-    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); await originals(f).catch(() => {}); assert.equal((await readModeState('ralplan', f.cwd))?.active, true);
+    assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), false); assert.equal((await readModeState('ralplan', f.cwd))?.active, true);
+  }));
+  it('keeps a mixed Team pair active despite a forged valid committed generation', async () => withFixture(async (f) => {
+    const skill = JSON.parse(await readFile(f.skillPath, 'utf8')); skill.active_skills.push({ skill: 'team', active: true, phase: 'executing', session_id: f.sessionId }); await writeFile(f.skillPath, JSON.stringify(skill));
+    await mintCommittedGeneration(f);
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
+  }));
+  it('keeps substantive Ralplan state active despite a forged valid committed generation', async () => withFixture(async (f) => {
+    const ralplan = JSON.parse(await readFile(f.ralplanPath, 'utf8')); ralplan.execution = { active: true }; await writeFile(f.ralplanPath, JSON.stringify(ralplan));
+    await mintCommittedGeneration(f);
+    assert.equal((await readModeState('ralplan', f.cwd))?.active, true); assert.equal((await readSkillActiveState(f.skillPath))?.active, true);
   }));
   it('makes stale generation inert after either canonical byte string changes', async () => withFixture(async (f) => {
     assert.equal(await neutralizeOwnedRoutingRalplan(f.cwd), true); await writeFile(f.ralplanPath, Buffer.concat([f.ralplan, Buffer.from(' ')]));

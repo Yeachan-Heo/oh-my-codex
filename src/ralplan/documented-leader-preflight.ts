@@ -75,7 +75,7 @@ function ownerMatches(state: Record<string, unknown>, owners: Set<string>): bool
   return true;
 }
 function routingOnlyRalplan(state: Record<string, unknown>, owners: Set<string>): boolean {
-  if (state.active !== true || state.mode !== 'ralplan' || state.current_phase !== 'planning' || state.source !== 'keyword-detector' || !ownerMatches(state, owners)) return false;
+  if (state.active !== true || state.mode !== 'ralplan' || state.current_phase !== 'planning' || !ownerMatches(state, owners)) return false;
   return !['iteration', 'max_iterations', 'completed_at', 'review', 'handoff', 'execution', 'run_outcome', 'lifecycle_outcome', 'planning_complete'].some((key) => Object.prototype.hasOwnProperty.call(state, key));
 }
 function routingOnlySkill(state: Record<string, unknown>, owners: Set<string>): boolean {
@@ -86,6 +86,18 @@ function routingOnlySkill(state: Record<string, unknown>, owners: Set<string>): 
     && ((entry as Record<string, unknown>).phase === 'planning' || (entry as Record<string, unknown>).phase === undefined)
     && ownerMatches(entry as Record<string, unknown>, owners)
     && !['requested_skills', 'deferred_skills', 'transition_messages', 'input_lock'].some((key) => Object.prototype.hasOwnProperty.call(state, key)));
+}
+function routingOnlyPair(ralplan: Record<string, unknown>, skill: Record<string, unknown>, owners: Set<string>): boolean {
+  const ralplanSessionId = normalizeSessionId(ralplan.session_id);
+  const skillSessionId = normalizeSessionId(skill.session_id);
+  const skillEntry = Array.isArray(skill.active_skills) ? skill.active_skills[0] : undefined;
+  const skillEntrySessionId = skillEntry && typeof skillEntry === 'object' && !Array.isArray(skillEntry)
+    ? normalizeSessionId((skillEntry as Record<string, unknown>).session_id)
+    : undefined;
+  return Boolean(ralplanSessionId && skillSessionId && skillEntrySessionId
+    && ralplanSessionId === skillSessionId && skillSessionId === skillEntrySessionId && owners.has(ralplanSessionId))
+    && routingOnlyRalplan(ralplan, owners)
+    && routingOnlySkill(skill, owners);
 }
 function neutralized(state: Record<string, unknown>, kind: OverlayKind): Record<string, unknown> {
   const next: Record<string, unknown> = { ...state, active: false, phase: 'cancelled', current_phase: 'cancelled' };
@@ -130,17 +142,22 @@ async function readGeneration(directory: string, expectedDigest: string, ralplan
   }
   return null;
 }
-/** Returns an inert overlay only for the exact current canonical pair. */
+/** Returns an inert overlay only for the exact current canonical routing-only pair. */
 export async function readNeutralizedRoutingOverlay(path: string, kind: OverlayKind): Promise<Record<string, unknown> | null> {
   const directory = join(path, '..');
   const ralplanPath = kind === 'ralplan' ? path : join(directory, 'ralplan-state.json');
   const skillPath = kind === 'skill' ? path : join(directory, 'skill-active-state.json');
+  const sessionId = normalizeSessionId(basename(directory));
+  const baseStateDir = join(directory, '..', '..');
+  if (!sessionId || basename(join(directory, '..')) !== 'sessions') return null;
   const [ralplan, skill] = await Promise.all([readPinned(ralplanPath), readPinned(skillPath)]);
   if (!ralplan || !skill || basename(ralplanPath) !== 'ralplan-state.json' || basename(skillPath) !== 'skill-active-state.json') return null;
+  const canonicalRalplan = object(ralplan); const canonicalSkill = object(skill);
+  const owners = collectOwners(baseStateDir, sessionId);
+  if (!canonicalRalplan || !canonicalSkill || !routingOnlyPair(canonicalRalplan, canonicalSkill, owners)) return null;
   const generation = await readGeneration(directory, digest(ralplan, skill), ralplan, skill);
   if (!generation) return null;
-  const canonical = object(kind === 'ralplan' ? ralplan : skill);
-  return canonical ? neutralized(canonical, kind) : null;
+  return neutralized(kind === 'ralplan' ? canonicalRalplan : canonicalSkill, kind);
 }
 async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, fsConstants.O_RDONLY);
@@ -156,7 +173,7 @@ export async function neutralizeOwnedRoutingRalplan(cwd: string): Promise<boolea
     const [ralplanBytes, skillBytes] = await Promise.all([readPinned(getStatePath('ralplan', cwd, scope.sessionId)), readPinned(join(directory, 'skill-active-state.json'))]);
     if (!ralplanBytes || !skillBytes) return false;
     const ralplan = object(ralplanBytes); const skill = object(skillBytes);
-    if (!ralplan || !skill || !routingOnlyRalplan(ralplan, owners) || !routingOnlySkill(skill, owners)) return false;
+    if (!ralplan || !skill || !routingOnlyPair(ralplan, skill, owners)) return false;
     const pairDigest = digest(ralplanBytes, skillBytes);
     const record: Generation = { version: GENERATION_VERSION, digest: pairDigest, canonical: { ralplan: { sha256: createHash('sha256').update(ralplanBytes).digest('hex'), size: ralplanBytes.length }, skill: { sha256: createHash('sha256').update(skillBytes).digest('hex'), size: skillBytes.length } } };
     const bytes = Buffer.from(`${JSON.stringify(record)}\n`); const random = RALPLAN_NEUTRALIZE_TEST_SEAM.random ?? (() => randomBytes(24));
