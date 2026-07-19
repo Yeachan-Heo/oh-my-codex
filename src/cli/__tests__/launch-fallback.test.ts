@@ -1961,6 +1961,7 @@ exit 0
       );
 
       if (shouldSkipForSpawnPermissions(result.error)) return;
+      await waitForPath(`${fakeTmuxPath}.leader-done`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /\/bin\/sh/);
