@@ -322,14 +322,14 @@ describe('omx exec', () => {
         [
           '#!/bin/sh',
           `printf '%s\\n' '{"hook_event_name":"SessionStart","session_id":"native-exec-stale-dead"}' | ${process.execPath} ${nativeHookPath}`,
-          'printf \'fake-codex:%s\\n\' "$*"',
+          'printf \'OMX-EXEC-OK\\n\'',
         ].join('\n'),
       );
       await chmod(fakeCodexPath, 0o755);
       await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
       await chmod(fakePsPath, 0o755);
 
-      const result = runOmx(wd, ['exec', 'say hi'], {
+      const result = runOmx(wd, ['exec', '--skip-git-repo-check', '-C', '.', 'Reply with exactly OMX-EXEC-OK'], {
         HOME: home,
         NODE_OPTIONS: '',
         PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -338,6 +338,8 @@ describe('omx exec', () => {
         OMX_HOOK_DERIVED_SIGNALS: '0',
       });
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /OMX-EXEC-OK/);
+      assert.doesNotMatch(result.stderr, /session archive failed|stale-dead|postLaunch failed/i);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), false);
       assert.match(await readFile(join(wd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'), /native-exec-stale-dead/);
 

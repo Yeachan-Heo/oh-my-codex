@@ -266,6 +266,7 @@ Usage:
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search and summarize local session history (--codex-home <path> escape hatch)
+                Includes session lock inspect/recover diagnostics
   omx url       Passive URL reader (read <url> --json)
   omx capabilities
                 Lock/check deterministic configured tool, skill, agent, and observation surfaces
@@ -462,6 +463,10 @@ type CliCommand =
   | "reasoning"
   | "codex-native-hook"
   | string;
+
+const RESUME_HELP = `Usage: omx resume [--project] [--codex-home <path>] [codex resume options]
+
+Read-only help does not prepare or launch a Codex session.`;
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
@@ -2429,6 +2434,12 @@ function readMadmaxDetachedActiveRecord(
       typeof parsed.tmux_session_name !== "string" ||
       !Array.isArray(parsed.argv) ||
       !parsed.argv.every((arg) => typeof arg === "string")
+      || typeof parsed.launch_nonce !== "string"
+      || typeof parsed.leader_pid !== "number"
+      || !Number.isSafeInteger(parsed.leader_pid)
+      || parsed.leader_pid <= 0
+      || typeof parsed.base_state_root !== "string"
+      || parsed.lifecycle_phase !== "ready"
     ) {
       return null;
     }
@@ -2443,6 +2454,10 @@ function readMadmaxDetachedActiveRecord(
       ...(typeof parsed.session_id === "string" ? { session_id: parsed.session_id } : {}),
       ...(typeof parsed.tmux_pane_id === "string" ? { tmux_pane_id: parsed.tmux_pane_id } : {}),
       ...(typeof parsed.worktree_cwd === "string" ? { worktree_cwd: parsed.worktree_cwd } : {}),
+      launch_nonce: parsed.launch_nonce,
+      leader_pid: parsed.leader_pid,
+      base_state_root: parsed.base_state_root,
+      lifecycle_phase: parsed.lifecycle_phase,
     };
   } catch {
     return null;
@@ -2452,6 +2467,9 @@ function readMadmaxDetachedActiveRecord(
 function isReusableMadmaxDetachedActiveRecord(
   record: MadmaxDetachedActiveRecord,
 ): boolean {
+  if (record.lifecycle_phase !== "ready" || !record.leader_pid || !record.base_state_root || !record.launch_nonce) return false;
+  try { process.kill(record.leader_pid, 0); } catch { return false; }
+  try { if (realpathSync(record.base_state_root) !== record.base_state_root) return false; } catch { return false; }
   if (!detachedTmuxSessionExists(record.tmux_session_name)) return false;
   if (!record.session_id || !record.tmux_pane_id) return false;
   if (readTmuxSessionInstanceId(record.tmux_session_name) !== record.session_id) {
@@ -3011,9 +3029,19 @@ export async function main(args: string[]): Promise<void> {
 if (command !== "launch" && command !== "resume") {
   activateMadmaxIsolationIfNeeded(command, launchArgs, process.cwd(), process.env);
 }
-
-
   try {
+    if (command === "session") {
+      await sessionCommand(args.slice(1));
+      return;
+    }
+
+    if (command === "resume" && launchArgs.some((arg) => arg === "--help" || arg === "-h")) {
+      console.log(RESUME_HELP);
+      return;
+    }
+
+    activateMadmaxIsolationIfNeeded(command, launchArgs, process.cwd(), process.env);
+
     switch (command) {
       case "__detached-session-leader": {
         const payload = decodeDetachedLeaderPayload(launchArgs[0]);
@@ -3129,9 +3157,6 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "team":
         await teamCommand(args.slice(1), options);
-        break;
-      case "session":
-        await sessionCommand(args.slice(1));
         break;
       case "url":
         await urlCommand(args.slice(1));
@@ -4419,12 +4444,17 @@ function buildDetachedWindowsLeaderCommand(
 
 
 function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string): void {
+  mkdirSync(dirname(releaseMarkerPath), { recursive: true, mode: 0o700 });
   const tempPath = `${releaseMarkerPath}.${process.pid}.${randomUUID()}.tmp`;
   let fd: number | undefined;
   try {
     fd = openSync(tempPath, "wx", 0o600);
     writeFileSync(fd, `${nonce}\n`, "utf-8");
-    fsyncSync(fd);
+    try {
+      fsyncSync(fd);
+    } catch (error) {
+      if (!(process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM")) throw error;
+    }
     closeSync(fd);
     fd = undefined;
     renameSync(tempPath, releaseMarkerPath);
@@ -5754,7 +5784,7 @@ async function runCodex(
         }
       }
       const readyDeadline = Date.now() + 30_000;
-      while (!existsSync(releaseMarkerPath) && process.env.OMX_TEST_DETACHED_READY_BYPASS !== "1") {
+      while (!existsSync(releaseMarkerPath)) {
         if (Date.now() >= readyDeadline) throw new DetachedLaunchSafetyError("barrier-release", new Error("detached leader readiness timed out"), detachedPreflight.report);
         blockMs(20);
       }
@@ -5967,14 +5997,20 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     });
     if (payload.readyPath) publishDetachedReleaseMarker(payload.readyPath, payload.sessionId!);
     const child = spawn(process.platform === "win32" ? "powershell.exe" : "/bin/sh", process.platform === "win32" ? ["-NoProfile", "-Command", payload.codexCmd] : ["-c", payload.codexCmd], { cwd: payload.cwd, stdio: "inherit" });
-    let forwarded = false;
-    const forward = (signal: NodeJS.Signals): void => { if (forwarded || !child.pid) return; forwarded = true; try { child.kill(signal); } catch {} };
-    if (process.platform !== "win32") {
-      process.once("SIGINT", () => forward("SIGINT"));
-      process.once("SIGTERM", () => forward("SIGTERM"));
-      process.once("SIGHUP", () => forward("SIGHUP"));
-    }
+    let escalation: NodeJS.Timeout | undefined;
+    const forward = (signal: NodeJS.Signals): void => {
+      if (!child.pid) return;
+      try { child.kill(process.platform === "win32" ? "SIGTERM" : signal); } catch {}
+      if (!escalation) {
+        escalation = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 5_000);
+        escalation.unref();
+      }
+    };
+    process.once("SIGINT", () => forward("SIGINT"));
+    process.once("SIGTERM", () => forward("SIGTERM"));
+    process.once("SIGHUP", () => forward("SIGHUP"));
     const code = await new Promise<number | null>((resolveChild, rejectChild) => { child.once("error", rejectChild); child.once("exit", resolveChild); });
+    if (escalation) clearTimeout(escalation);
     process.exitCode = code ?? 1;
     await postLaunch(payload.cwd, payload.sessionId!, binding, undefined, false, payload.projectLocalCodexHomeForCleanup);
     await cleanupRuntimeCodexHome(payload.runtimeCodexHomeForCleanup, payload.projectLocalCodexHomeForCleanup);
@@ -5985,7 +6021,15 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     }
     if (payload.readyPath) rmSync(payload.readyPath, { force: true });
   } catch (error) {
-    if (!ownedRecord && payload.readyPath) rmSync(payload.readyPath, { force: true });
+    const finalization = await finalizeBoundOnce(binding, "detached-pre-release-failure", payload.cwd).catch(() => undefined);
+    if (finalization?.finalized && ownedRecord) {
+      try {
+        const bytes = readFileSync(activeRecordPath, "utf-8");
+        const digest = createHash("sha256").update(bytes).digest("hex");
+        if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
+      } catch {}
+    }
+    if (payload.readyPath) rmSync(payload.readyPath, { force: true });
     throw error;
   } finally {
     await closeLaunchSessionBindingOnce(binding);

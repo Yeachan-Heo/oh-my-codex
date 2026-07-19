@@ -34,7 +34,6 @@ function buildRunOmxEnv(envOverrides: Record<string, string>): NodeJS.ProcessEnv
   }
   return {
     ...env,
-    OMX_TEST_DETACHED_READY_BYPASS: '1',
     ...envOverrides,
   };
 }
