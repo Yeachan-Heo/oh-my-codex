@@ -11,10 +11,27 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, '..', '..', '..');
 const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
 
+function cleanOmxEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of [
+    'OMX_ROOT',
+    'OMX_STATE_ROOT',
+    'OMX_TEAM_STATE_ROOT',
+    'OMX_SESSION_ID',
+    'CODEX_SESSION_ID',
+    'SESSION_ID',
+    'OMX_RUNS_DIR',
+  ]) {
+    delete env[name];
+  }
+  return { ...env, ...overrides };
+}
+
 function runOmx(cwd: string, ...args: string[]) {
   return spawnSync(process.execPath, [omxBin, ...args], {
     cwd,
     encoding: 'utf-8',
+    env: cleanOmxEnv(),
   });
 }
 
@@ -22,7 +39,7 @@ function runOmxWithEnv(cwd: string, env: NodeJS.ProcessEnv, ...args: string[]) {
   return spawnSync(process.execPath, [omxBin, ...args], {
     cwd,
     encoding: 'utf-8',
-    env: { ...process.env, ...env },
+    env: cleanOmxEnv(env),
   });
 }
 
@@ -90,6 +107,62 @@ describe('CLI session-scoped state parity', () => {
         JSON.parse(await readFile(nativeStopPath, 'utf-8')),
         { sessions: { [sessionId]: { last_signature: 'ralph-stop|pending' } } },
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores ambient Codex session aliases that do not own writable cancellation', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-codex-session-mismatch-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const ownerSession = 'owner-session';
+      const foreignSession = 'foreign-codex-session';
+      const ownerPath = join(stateDir, 'sessions', ownerSession, 'ralplan-state.json');
+      const foreignPath = join(stateDir, 'sessions', foreignSession, 'team-state.json');
+      const ownerState = JSON.stringify({ active: true, mode: 'ralplan', current_phase: 'executing' }, null, 2);
+      const foreignState = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
+      await mkdir(dirname(ownerPath), { recursive: true });
+      await mkdir(dirname(foreignPath), { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: ownerSession }));
+      await writeFile(ownerPath, ownerState);
+      await writeFile(foreignPath, foreignState);
+
+      for (const environmentName of ['CODEX_SESSION_ID', 'SESSION_ID']) {
+        await writeFile(ownerPath, ownerState);
+        const cancelResult = runOmxWithEnv(wd, { [environmentName]: foreignSession }, 'cancel');
+        assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+        assert.match(cancelResult.stdout, /Cancelled: ralplan/);
+        assert.doesNotMatch(cancelResult.stdout, /Cancelled: team/);
+        assert.equal(JSON.parse(await readFile(ownerPath, 'utf-8')).active, false);
+        assert.equal(await readFile(foreignPath, 'utf-8'), foreignState);
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when owned session state is malformed', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-malformed-owner-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'malformed-owner';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const malformedPath = join(sessionDir, 'ralplan-state.json');
+      const teamPath = join(stateDir, 'team-state.json');
+      const malformedState = '{"active":true';
+      const rootTeamState = JSON.stringify({ active: true, mode: 'team', current_phase: 'team-exec' }, null, 2);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(malformedPath, malformedState);
+      await writeFile(teamPath, rootTeamState);
+
+      const cancelResult = runOmx(wd, 'cancel');
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /No active modes to cancel\./);
+      assert.doesNotMatch(cancelResult.stdout, /Cancelled: team/);
+      assert.equal(await readFile(malformedPath, 'utf-8'), malformedState);
+      assert.equal(await readFile(teamPath, 'utf-8'), rootTeamState);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

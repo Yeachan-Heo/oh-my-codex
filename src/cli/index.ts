@@ -6868,24 +6868,21 @@ async function cancelModes(args: string[] = []): Promise<void> {
       return loaded;
     };
 
-    let states = await loadStates(await listModeStateFilesWithScopePreference(cwd));
-    // A current session owns cancellation once it has an active workflow mode.
-    // Root entries may still be compatibility reads, but must not be cancelled
-    // alongside a distinct active session workflow.
-    const hasActiveSessionWorkflowMode = writableScope.source === "session"
-      && [...states.entries()].some(
-        ([mode, entry]) => mode !== SKILL_ACTIVE_STATE_MODE
-          && entry.scope === "session"
-          && entry.state.active === true,
-      );
-    if (hasActiveSessionWorkflowMode) {
+    const preferredRefs = await listModeStateFilesWithScopePreference(cwd, writableScope.sessionId);
+    const hasPreferredSessionStateFiles = preferredRefs.some((ref) => ref.scope === "session");
+    let states = await loadStates(preferredRefs);
+    // Once writable ownership resolves to a session, cancellation may only write
+    // that exact session directory. Root entries remain compatibility reads and
+    // malformed session state must never authorize broader mutation.
+    if (writableScope.source === "session") {
       states = new Map([...states.entries()].filter(([, entry]) => entry.scope === "session"));
     }
+
     const hasActiveWorkflowMode = (entries: typeof states): boolean =>
       [...entries.entries()].some(
         ([mode, entry]) => mode !== SKILL_ACTIVE_STATE_MODE && entry.state.active === true,
       );
-    if (!hasActiveWorkflowMode(states)) {
+    if (!hasActiveWorkflowMode(states) && !hasPreferredSessionStateFiles) {
       const runDirStates = await loadStates(await listHookVisibleRunDirStateRefs(cwd));
       if (hasActiveWorkflowMode(runDirStates)) states = runDirStates;
     }
