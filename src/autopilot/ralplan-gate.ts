@@ -119,6 +119,7 @@ export function canAdvanceAutopilotRalplanToUltragoal(
   const evidence = nextStateEvidence.complete
     || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview
     || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing
+    || nextStateEvidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable
     ? nextStateEvidence
     : buildRalplanConsensusGateFromSources(gateSources(input), options);
   if (evidence.complete) {
@@ -138,6 +139,9 @@ export function canAdvanceAutopilotRalplanToUltragoal(
 }
 
 function ralplanConsensusBlockedReason(evidence: RalplanConsensusGateEvidence): string {
+  if (evidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable) {
+    return 'documented_host_consensus_receipt_unavailable';
+  }
   if (evidence.blockedReason === RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing) {
     return 'ralplan consensus lacks tracker-backed native architect and critic lanes';
   }

@@ -347,7 +347,7 @@ describe('omx exec', () => {
       await mkdir(fakeBin, { recursive: true });
       await writeFile(join(fakeBin, 'codex'), [
         '#!/bin/sh',
-        `exec "$NODE_BINARY" -e 'require("node:fs").writeFileSync(process.env.OMX_FAKE_CODEX_CAPTURE_PATH, JSON.stringify({ launchId: process.env.OMX_CODEX_LAUNCH_ID, entryPath: process.env.OMX_ENTRY_PATH, sessionId: process.env.OMX_SESSION_ID, omxRoot: process.env.OMX_ROOT, path: process.env.PATH }))'`,
+        `exec "$NODE_BINARY" -e 'require("node:fs").writeFileSync(process.env.OMX_FAKE_CODEX_CAPTURE_PATH, JSON.stringify({ routingLaunchId: process.env.OMX_CODEX_LAUNCH_ID, entryPath: process.env.OMX_ENTRY_PATH, sessionId: process.env.OMX_SESSION_ID, omxRoot: process.env.OMX_ROOT, path: process.env.PATH }))'`,
         '',
       ].join('\n'));
       await chmod(join(fakeBin, 'codex'), 0o755);
@@ -360,7 +360,7 @@ describe('omx exec', () => {
       });
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       const captured = JSON.parse(await readFile(capturePath, 'utf8')) as Record<string, string>;
-      assert.match(captured.launchId, /^[0-9a-f-]{36}$/i);
+      assert.match(captured.routingLaunchId, /^[0-9a-f-]{36}$/i);
       assert.match(captured.entryPath, /dist\/cli\/omx\.js$/);
       assert.match(captured.sessionId, /^omx-/);
       assert.ok(captured.path.split(':').some((entry) => entry.includes('.omx') && entry.includes('bin')));

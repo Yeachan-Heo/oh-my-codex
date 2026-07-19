@@ -74,6 +74,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
           return {
             status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : 'failed',
             artifacts: {
+              ...runtimeResult.artifacts,
               plansDir: planningArtifacts.plansDir,
               specsDir: planningArtifacts.specsDir,
               task: ctx.task,
@@ -89,7 +90,6 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               architectReviews: runtimeResult.architectReviews,
               criticReviews: runtimeResult.criticReviews,
               ralplanConsensusGate: consensusGate,
-              ...runtimeResult.artifacts,
             },
             duration_ms: Date.now() - startTime,
             error: runtimeResult.error ?? (consensusComplete ? undefined : 'ralplan_consensus_evidence_missing'),
@@ -128,7 +128,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             ralplanConsensusGate: consensusGate,
             instruction: consensusComplete
               ? `Run RALPLAN consensus planning for: ${ctx.task}`
-              : `Remain in RALPLAN for: ${ctx.task}. Do not hand off to execution until durable Architect approval followed by Critic approval is recorded in ralplan state or handoff artifacts.`,
+              : `Remain in RALPLAN for: ${ctx.task}. Architect and Critic reviews are lifecycle evidence only; do not hand off to execution until an official host-issued receipt is verified through the documented non-user-mintable host surface. Until then record documented_host_consensus_receipt_unavailable.`,
           },
           duration_ms: Date.now() - startTime,
           error,

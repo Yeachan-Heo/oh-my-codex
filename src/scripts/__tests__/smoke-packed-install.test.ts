@@ -1248,13 +1248,11 @@ test('packed install helpers freeze installed runtime and declaration reasoning 
   );
 });
 
-test('packed install retains authenticated native-anchor and exec launcher contracts', async () => {
+test('packed install removes same-user native-anchor authentication', async () => {
   const hookSource = await readFile(join(process.cwd(), 'src/scripts/codex-native-hook.ts'), 'utf8');
   const cliSource = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf8');
-  assert.match(hookSource, /isVerifiedPluginLauncherClaim/);
-  assert.match(hookSource, /classifyNativeTranscriptProvenance/);
-  assert.match(hookSource, /native-pretooluse-transcript/);
-  assert.match(hookSource, /signNativeLeaderAttestation/);
+  assert.doesNotMatch(hookSource, /isVerifiedPluginLauncherClaim|classifyNativeTranscriptProvenance|signNativeLeaderAttestation|native-anchor-auth/);
+  assert.match(hookSource, /unsupported_documented_leader_proof/);
   assert.match(cliSource, /execWithOverlay[\s\S]+OMX_CODEX_LAUNCH_ID[\s\S]+buildHudRuntimeEnv\(\{ sessionId/);
 });
 
@@ -1318,6 +1316,7 @@ test('packed install plugin assertions enforce the packaged plugin contract', as
         "import { spawn } from 'node:child_process';",
         "import { join } from 'node:path';",
         "const OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER = 'omx-plugin-hook-launcher:v1';",
+        "const OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER = 'omx-plugin-hook-routing-only:v1';",
         "const hookDir = new URL('.', import.meta.url).pathname;",
         'function readPinnedLauncher() {',
         "  const launcherPath = join(hookDir, 'omx-command.json');",

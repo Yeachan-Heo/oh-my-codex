@@ -3729,7 +3729,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('emits terminal ralplan state before explicit ultragoal execution handoff', async () => {
+  it('keeps a locally approved ralplan active when the host consensus receipt verifier is unavailable', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-ultragoal-handoff-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -3754,6 +3754,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
           current_phase: 'complete',
           planning_complete: true,
           ralplan_consensus_gate: {
+            documented_host_consensus_receipt: { issuer: 'official-host', verdict: 'approve' },
             complete: true,
             sequence: ['architect-review', 'critic-review'],
             ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', approved: true },
@@ -3770,25 +3771,16 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-04-10T00:20:00.000Z',
       });
 
-      assert.equal(result?.transition_error, undefined);
-      assert.equal(result?.skill, 'ultragoal');
-      assert.equal(result?.transition_message, 'mode transiting: ralplan -> ultragoal');
-      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ultragoal']);
+      assert.notEqual(result?.skill, 'ultragoal');
+      assert.notEqual(result?.transition_message, 'mode transiting: ralplan -> ultragoal');
 
       const ralplan = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-ralplan-ultragoal', 'ralplan-state.json'), 'utf-8'),
-      ) as { active?: boolean; current_phase?: string; completed_at?: string; auto_completed_reason?: string };
-      assert.equal(ralplan.active, false);
-      assert.equal(ralplan.current_phase, 'completed');
-      assert.equal(ralplan.auto_completed_reason, 'mode transiting: ralplan -> ultragoal');
-      assert.ok(ralplan.completed_at);
-
-      const ultragoal = JSON.parse(
-        await readFile(join(stateDir, 'sessions', 'sess-ralplan-ultragoal', 'ultragoal-state.json'), 'utf-8'),
-      ) as { active?: boolean; mode?: string; current_phase?: string };
-      assert.equal(ultragoal.active, true);
-      assert.equal(ultragoal.mode, 'ultragoal');
-      assert.equal(ultragoal.current_phase, 'planning');
+      ) as { active?: boolean; current_phase?: string; auto_completed_reason?: string };
+      assert.equal(ralplan.active, true);
+      assert.equal(ralplan.current_phase, 'complete');
+      assert.notEqual(ralplan.auto_completed_reason, 'mode transiting: ralplan -> ultragoal');
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-ralplan-ultragoal', 'ultragoal-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -5643,7 +5635,7 @@ describe('applyRalplanGate', () => {
     }
   });
 
-  it('does not re-enter ralplan for a short approved team follow-up with durable consensus', async () => {
+  it('keeps short approved team follow-ups gated without an official host consensus receipt', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ko-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
@@ -5667,8 +5659,9 @@ describe('applyRalplanGate', () => {
       }));
 
       const result = applyRalplanGate(['team'], 'team으로 해줘', { cwd });
-      assert.equal(result.gateApplied, false);
-      assert.deepEqual(result.keywords, ['team']);
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
+      assert.equal(result.blockedReason, 'documented_host_consensus_receipt_unavailable');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -5710,12 +5703,13 @@ describe('applyRalplanGate', () => {
       const result = applyRalplanGate(['team'], 'team', { cwd, requireNativeSubagents: true });
       assert.equal(result.gateApplied, true);
       assert.deepEqual(result.keywords, ['ralplan']);
+      assert.equal(result.blockedReason, 'documented_host_consensus_receipt_unavailable');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('does not re-enter ralplan for a short approved ralph follow-up with durable consensus', async () => {
+  it('keeps short approved ralph follow-ups gated without an official host consensus receipt', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-gate-followup-ralph-'));
     try {
       const plansDir = join(cwd, '.omx', 'plans');
@@ -5739,8 +5733,9 @@ describe('applyRalplanGate', () => {
       }));
 
       const result = applyRalplanGate(['ralph'], 'ralph please', { cwd, priorSkill: 'ralplan' });
-      assert.equal(result.gateApplied, false);
-      assert.deepEqual(result.keywords, ['ralph']);
+      assert.equal(result.gateApplied, true);
+      assert.deepEqual(result.keywords, ['ralplan']);
+      assert.equal(result.blockedReason, 'documented_host_consensus_receipt_unavailable');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

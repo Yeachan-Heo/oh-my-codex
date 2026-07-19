@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
 import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
-import { hasDurableRalplanConsensusEvidenceForCwd } from '../ralplan/consensus-gate.js';
+import { buildRalplanConsensusGateForCwd, type RalplanConsensusBlockedReason } from '../ralplan/consensus-gate.js';
 import { getExplicitSkillDefinition, KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
 
 import { readTeamModeConfig } from '../config/team-mode.js';
@@ -4332,41 +4332,51 @@ export interface ApplyRalplanGateOptions {
   priorSkill?: string | null;
   requireNativeSubagents?: boolean;
 }
+export interface ApplyRalplanGateResult {
+  keywords: string[];
+  gateApplied: boolean;
+  gatedKeywords: string[];
+  blockedReason: RalplanConsensusBlockedReason | null;
+}
 
 export function applyRalplanGate(
   keywords: string[],
   text: string,
   options: ApplyRalplanGateOptions = {},
-): { keywords: string[]; gateApplied: boolean; gatedKeywords: string[] } {
+): ApplyRalplanGateResult {
   if (keywords.length === 0) {
-    return { keywords, gateApplied: false, gatedKeywords: [] };
+    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
   }
 
   // Don't gate if cancel is present (cancel always wins)
   if (keywords.includes('cancel')) {
-    return { keywords, gateApplied: false, gatedKeywords: [] };
+    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
   }
 
   // Don't gate if ralplan is already in the list
   if (keywords.includes('ralplan')) {
-    return { keywords, gateApplied: false, gatedKeywords: [] };
+    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
   }
 
   // Check if any execution keywords are present
   const executionKeywords = keywords.filter(k => EXECUTION_GATE_KEYWORDS.has(k));
   if (executionKeywords.length === 0) {
-    return { keywords, gateApplied: false, gatedKeywords: [] };
+    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
   }
 
   // Check if prompt is underspecified
   if (!isUnderspecifiedForExecution(text)) {
-    return { keywords, gateApplied: false, gatedKeywords: [] };
+    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
   }
 
-  const planningComplete = isPlanningComplete(readPlanningArtifacts(options.cwd ?? process.cwd()));
-  const consensusComplete = hasDurableRalplanConsensusEvidenceForCwd(options.cwd ?? process.cwd(), {
+  const cwd = options.cwd ?? process.cwd();
+  const planningComplete = isPlanningComplete(readPlanningArtifacts(cwd));
+  const consensusEvidence = buildRalplanConsensusGateForCwd(cwd, {
     requireNativeSubagents: options.requireNativeSubagents,
   });
+  const consensusComplete = consensusEvidence.complete;
+  const consensusBlockedFollowup = planningComplete
+    && executionKeywords.some((keyword) => keyword === 'team' || keyword === 'ralph');
   const shortFollowupBypasses = executionKeywords.filter((keyword) => {
     if (keyword !== 'team' && keyword !== 'ralph') return false;
     return isApprovedExecutionFollowupShortcut(
@@ -4379,7 +4389,7 @@ export function applyRalplanGate(
     );
   });
   if (shortFollowupBypasses.length > 0) {
-    return { keywords, gateApplied: false, gatedKeywords: [] };
+    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
   }
 
   // Gate: replace execution keywords with ralplan
@@ -4388,7 +4398,12 @@ export function applyRalplanGate(
     filtered.push('ralplan');
   }
 
-  return { keywords: filtered, gateApplied: true, gatedKeywords: executionKeywords };
+  return {
+    keywords: filtered,
+    gateApplied: true,
+    gatedKeywords: executionKeywords,
+    blockedReason: consensusBlockedFollowup ? consensusEvidence.blockedReason : null,
+  };
 }
 
 /**

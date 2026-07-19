@@ -1064,7 +1064,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('finalizes completed ralplan writes across root and current session state', async () => {
+  it('rejects a completed ralplan state transition when only local review lifecycle evidence is present', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-complete-'));
     try {
       const sessionId = 'sess-ralplan-complete';
@@ -1122,38 +1122,40 @@ describe('state operations directory initialization', () => {
         ralplan_consensus_gate: consensusGate,
       });
 
-      assert.equal(response.isError, undefined);
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootRalplan, sessionRalplan]) {
-        assert.equal(state.active, false);
-        assert.equal(state.current_phase, 'complete');
-        assert.equal(state.status, 'complete');
-        assert.equal(state.terminal_reason, 'consensus approved bounded no-op');
-        assert.equal((state.ralplan_consensus_gate as Record<string, unknown>).complete, true);
+        assert.equal(state.active, true);
+        assert.equal(state.current_phase, 'planning');
+        assert.equal(state.status, undefined);
         assert.equal(state.session_id, sessionId);
       }
 
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootSkill, sessionSkill]) {
-        assert.equal(state.active, false);
-        assert.equal(state.phase, 'complete');
-        assert.equal(state.terminal_reason, 'consensus approved bounded no-op');
-        assert.deepEqual(state.active_skills, []);
+        assert.equal(state.active, true);
+        assert.equal(state.phase, 'planning');
+        assert.deepEqual(state.active_skills, [{
+          skill: 'ralplan',
+          phase: 'planning',
+          active: true,
+          session_id: sessionId,
+        }]);
       }
-      assert.equal(sessionSkill.session_id, sessionId);
 
       const listed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
       });
-      assert.deepEqual(listed.payload, { active_modes: [] });
+      assert.deepEqual(listed.payload, { active_modes: ['ralplan'] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('finalizes ralplan when runtime tracker lags but workspace tracker has completed native reviews', async () => {
+  it('rejects a ralplan release when runtime and workspace trackers only provide local review lifecycle evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-runtime-lag-complete-'));
     const stateRoot = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-runtime-lag-root-'));
     try {
@@ -1224,13 +1226,12 @@ describe('state operations directory initialization', () => {
           ralplan_consensus_gate: consensusGate,
         });
 
-        assert.equal(response.isError, undefined);
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
         const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(sessionRalplan.active, false);
-        assert.equal(sessionRalplan.current_phase, 'complete');
-        assert.equal(sessionRalplan.status, 'complete');
-        assert.equal(sessionRalplan.terminal_reason, 'consensus approved despite runtime tracker lag');
-        assert.equal((sessionRalplan.ralplan_consensus_gate as Record<string, unknown>).complete, true);
+        assert.equal(sessionRalplan.active, true);
+        assert.equal(sessionRalplan.current_phase, 'planning');
+        assert.equal(sessionRalplan.status, undefined);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1268,7 +1269,7 @@ describe('state operations directory initialization', () => {
       });
 
       assert.equal(response.isError, true);
-      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /tracker-backed native architect and critic consensus evidence/);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(sessionRalplan.active, true);
       assert.equal(sessionRalplan.current_phase, 'planning');
@@ -1597,7 +1598,7 @@ describe('state operations directory initialization', () => {
       });
 
       assert.equal(response.isError, true);
-      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /tracker-backed native architect and critic consensus evidence/);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(sessionRalplan.active, true);
       assert.equal(sessionRalplan.current_phase, 'planning');
@@ -1607,7 +1608,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('reuses existing tracker-backed ralplan consensus when terminal writes omit gate payload', async () => {
+  it('rejects terminal writes that reuse existing local tracker review lifecycle evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-existing-consensus-'));
     try {
       const sessionId = 'sess-ralplan-existing-consensus';
@@ -1635,10 +1636,11 @@ describe('state operations directory initialization', () => {
         terminal_reason: 'existing tracker-backed consensus complete',
       });
 
-      assert.equal(response.isError, undefined);
+      assert.equal(response.isError, true);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(sessionRalplan.active, false);
-      assert.equal(sessionRalplan.current_phase, 'complete');
+      assert.equal(sessionRalplan.active, true);
+      assert.equal(sessionRalplan.current_phase, 'planning');
       const finalGate = sessionRalplan.ralplan_consensus_gate as Record<string, unknown>;
       assert.equal(finalGate.complete, true);
       assert.deepEqual(finalGate.required_review_roles, ['architect', 'critic']);
@@ -1649,7 +1651,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('finalizes completed ralplan updateModeState writes across root and current session state', async () => {
+  it('updateModeState rejects completed ralplan release without an official host receipt', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-complete-update-mode-'));
     try {
       const sessionId = 'sess-ralplan-complete-update-mode';
@@ -1689,43 +1691,48 @@ describe('state operations directory initialization', () => {
       await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify(staleSkillState, null, 2));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify(staleSkillState, null, 2));
 
-      await updateModeState('ralplan', {
-        active: false,
-        current_phase: 'complete',
-        terminal_reason: 'runtime consensus complete',
-        ralplan_consensus_gate: consensusGate,
-      }, wd);
+      await assert.rejects(
+        () => updateModeState('ralplan', {
+          active: false,
+          current_phase: 'complete',
+          terminal_reason: 'runtime consensus complete',
+          ralplan_consensus_gate: consensusGate,
+        }, wd),
+        /documented_host_consensus_receipt_unavailable/,
+      );
 
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootRalplan, sessionRalplan]) {
-        assert.equal(state.active, false);
-        assert.equal(state.current_phase, 'complete');
-        assert.equal(state.status, 'complete');
-        assert.equal(state.terminal_reason, 'runtime consensus complete');
-        assert.equal((state.ralplan_consensus_gate as Record<string, unknown>).complete, true);
+        assert.equal(state.active, true);
+        assert.equal(state.current_phase, 'planning');
+        assert.equal(state.status, undefined);
         assert.equal(state.session_id, sessionId);
       }
 
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootSkill, sessionSkill]) {
-        assert.equal(state.active, false);
-        assert.equal(state.phase, 'complete');
-        assert.equal(state.terminal_reason, 'runtime consensus complete');
-        assert.deepEqual(state.active_skills, []);
+        assert.equal(state.active, true);
+        assert.equal(state.phase, 'planning');
+        assert.deepEqual(state.active_skills, [{
+          skill: 'ralplan',
+          phase: 'planning',
+          active: true,
+          session_id: sessionId,
+        }]);
       }
 
       const rootListed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
       });
-      assert.deepEqual(rootListed.payload, { active_modes: [] });
+      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
 
       const sessionListed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
         session_id: sessionId,
       });
-      assert.deepEqual(sessionListed.payload, { active_modes: [] });
+      assert.deepEqual(sessionListed.payload, { active_modes: ['ralplan'] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1758,7 +1765,7 @@ describe('state operations directory initialization', () => {
             complete: true,
           },
         }, wd),
-        /architect and critic consensus evidence/,
+        /documented_host_consensus_receipt_unavailable/,
       );
 
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
@@ -1895,837 +1902,6 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('does not hide unrelated root detail state when ralplan terminalizes without canonical state', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-root-detail-only-'));
-    try {
-      const sessionId = 'sess-ralplan-root-detail-only';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      await mkdir(stateDir, { recursive: true });
-      await writeFile(join(stateDir, 'team-state.json'), JSON.stringify({
-        mode: 'team',
-        active: true,
-        current_phase: 'running',
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        state: {
-          session_id: sessionId,
-          ralplan_consensus_gate: consensusGate,
-        },
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(stateDir, 'skill-active-state.json')), false);
-
-      const listed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(listed.payload, { active_modes: ['team'] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves an unrelated active root ralplan when a session ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-root-'));
-    try {
-      const sessionId = 'sess-ralplan-preserve-root';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        active_skills: [
-          {
-            skill: 'ralplan',
-            phase: 'planning',
-            active: true,
-          },
-          {
-            skill: 'ralplan',
-            phase: 'planning',
-            active: true,
-            session_id: sessionId,
-          },
-        ],
-      }, null, 2));
-      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        status: 'complete',
-        terminal_reason: 'consensus approved bounded no-op',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(rootRalplan.active, true);
-      assert.equal(rootRalplan.current_phase, 'planning');
-      assert.equal(rootRalplan.session_id, undefined);
-
-      const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(sessionRalplan.active, false);
-      assert.equal(sessionRalplan.current_phase, 'complete');
-      assert.equal(sessionRalplan.session_id, sessionId);
-
-      const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
-        active: boolean;
-        skill: string;
-        phase: string;
-        active_skills?: Array<{ skill: string; session_id?: string }>;
-      };
-      assert.equal(rootSkill.active, true);
-      assert.equal(rootSkill.skill, 'ralplan');
-      assert.deepEqual(rootSkill.active_skills, [{ skill: 'ralplan', phase: 'planning', active: true }]);
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('does not hide a legacy active root ralplan detail state when a session ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-legacy-root-detail-'));
-    try {
-      const sessionId = 'sess-ralplan-legacy-root-detail';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(stateDir, 'skill-active-state.json')), false);
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('removes an empty session-only root mirror when a session ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-empty-root-mirror-'));
-    try {
-      const sessionId = 'sess-ralplan-empty-root-mirror';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(stateDir, 'skill-active-state.json')), false);
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves run_outcome-only root canonical tombstones when a session ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-root-tombstone-'));
-    try {
-      const sessionId = 'sess-ralplan-root-tombstone';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'team-state.json'), JSON.stringify({
-        mode: 'team',
-        active: true,
-        current_phase: 'running',
-      }, null, 2));
-      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'team',
-        run_outcome: 'finish',
-        active_skills: [{
-          skill: 'team',
-          active: true,
-        }],
-      }, null, 2));
-
-      const before = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(before.payload, { active_modes: [] });
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
-        active: boolean;
-        run_outcome?: string;
-      };
-      assert.equal(rootSkill.active, true);
-      assert.equal(rootSkill.run_outcome, 'finish');
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('removes terminal_reason-only active root canonical state when a session ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-terminal-reason-only-'));
-    try {
-      const sessionId = 'sess-ralplan-terminal-reason-only';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        terminal_reason: 'stale reason without terminal marker',
-        active_skills: [{
-          skill: 'ralplan',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-
-      const before = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(before.payload, { active_modes: ['ralplan'] });
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(stateDir, 'skill-active-state.json')), false);
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('removes non-terminal lifecycle_outcome root canonical state when a session ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-lifecycle-nonterminal-'));
-    try {
-      const sessionId = 'sess-ralplan-lifecycle-nonterminal';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        lifecycle_outcome: 'progress',
-        active_skills: [{
-          skill: 'ralplan',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-
-      const before = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(before.payload, { active_modes: ['ralplan'] });
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(stateDir, 'skill-active-state.json')), false);
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: [] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves unrelated active session skills when ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-preserve-'));
-    try {
-      const sessionId = 'sess-ralplan-preserve';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        cwd: wd,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'autoresearch-state.json'), JSON.stringify({
-        mode: 'autoresearch',
-        active: true,
-        current_phase: 'running',
-        session_id: sessionId,
-      }, null, 2));
-      const mixedSkillState = {
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        updated_at: '2026-06-30T00:00:00.000Z',
-        session_id: sessionId,
-        active_skills: [
-          {
-            skill: 'ralplan',
-            phase: 'planning',
-            active: true,
-            session_id: sessionId,
-          },
-          {
-            skill: 'autoresearch',
-            phase: 'running',
-            active: true,
-            session_id: sessionId,
-          },
-        ],
-      };
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify(mixedSkillState, null, 2));
-      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify(mixedSkillState, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        status: 'complete',
-        terminal_reason: 'consensus approved bounded no-op',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as {
-        active: boolean;
-        skill: string;
-        phase: string;
-        active_skills?: Array<{ skill: string; phase?: string; session_id?: string }>;
-      };
-      const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as {
-        active: boolean;
-        skill: string;
-        phase: string;
-        active_skills?: Array<{ skill: string; phase?: string; session_id?: string }>;
-      };
-      for (const state of [rootSkill, sessionSkill]) {
-        assert.equal(state.active, true);
-        assert.equal(state.skill, 'autoresearch');
-        assert.equal(state.phase, 'running');
-        assert.deepEqual(state.active_skills?.map((entry) => entry.skill), ['autoresearch']);
-        assert.deepEqual(state.active_skills?.map((entry) => entry.session_id), [sessionId]);
-      }
-
-      const listed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(listed.payload, { active_modes: ['autoresearch'] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('preserves same-session root mirror skills when session canonical state is partial', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-partial-session-skill-'));
-    try {
-      const sessionId = 'sess-ralplan-partial-session-skill';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
-        mode: 'team',
-        active: true,
-        current_phase: 'running',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [
-          {
-            skill: 'ralplan',
-            phase: 'planning',
-            active: true,
-            session_id: sessionId,
-          },
-          {
-            skill: 'team',
-            phase: 'running',
-            active: true,
-            session_id: sessionId,
-          },
-        ],
-      }, null, 2));
-      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }],
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as {
-        active: boolean;
-        skill: string;
-        phase: string;
-        session_id?: string;
-        active_skills?: Array<{ skill: string; phase?: string; session_id?: string }>;
-      };
-      assert.equal(sessionSkill.active, true);
-      assert.equal(sessionSkill.skill, 'team');
-      assert.equal(sessionSkill.phase, 'running');
-      assert.equal(sessionSkill.session_id, sessionId);
-      assert.deepEqual(sessionSkill.active_skills?.map((entry) => entry.skill), ['team']);
-      assert.deepEqual(sessionSkill.active_skills?.map((entry) => entry.session_id), [sessionId]);
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: ['team'] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('clears stale terminal phase aliases when preserving same-session root mirror skills', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-terminal-session-skill-'));
-    try {
-      const sessionId = 'sess-ralplan-terminal-session-skill';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
-        mode: 'team',
-        active: true,
-        current_phase: 'running',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'ralplan',
-        phase: 'planning',
-        session_id: sessionId,
-        active_skills: [
-          {
-            skill: 'ralplan',
-            phase: 'planning',
-            active: true,
-            session_id: sessionId,
-          },
-          {
-            skill: 'team',
-            active: true,
-            session_id: sessionId,
-          },
-        ],
-      }, null, 2));
-      await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: false,
-        skill: 'ralplan',
-        phase: 'blocked',
-        session_id: sessionId,
-        completed_at: '2026-06-30T00:00:00.000Z',
-        terminal_reason: 'stale terminal marker',
-        active_skills: [],
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as {
-        active: boolean;
-        skill: string;
-        phase: string;
-        completed_at?: string;
-        terminal_reason?: string;
-        active_skills?: Array<{ skill: string; phase?: string; session_id?: string }>;
-      };
-      assert.equal(sessionSkill.active, true);
-      assert.equal(sessionSkill.skill, 'team');
-      assert.equal(sessionSkill.phase, '');
-      assert.equal(sessionSkill.completed_at, undefined);
-      assert.equal(sessionSkill.terminal_reason, undefined);
-      assert.deepEqual(sessionSkill.active_skills?.map((entry) => entry.skill), ['team']);
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: ['team'] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('does not hide detail-only active session state when ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-session-detail-only-'));
-    try {
-      const sessionId = 'sess-ralplan-session-detail-only';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'autoresearch-state.json'), JSON.stringify({
-        mode: 'autoresearch',
-        active: true,
-        current_phase: 'running',
-        session_id: sessionId,
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
-
-      const listed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(listed.payload, { active_modes: ['autoresearch'] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
-
-  it('does not seed session canonical state from root-only skills when ralplan terminalizes', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-root-only-skill-'));
-    try {
-      const sessionId = 'sess-ralplan-root-only-skill';
-      const consensusGate = await writeNativeRalplanConsensusGate(wd, sessionId);
-      const stateDir = join(wd, '.omx', 'state');
-      const sessionDir = join(stateDir, 'sessions', sessionId);
-      await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'autoresearch-state.json'), JSON.stringify({
-        mode: 'autoresearch',
-        active: true,
-        current_phase: 'running',
-      }, null, 2));
-      await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify({
-        version: 1,
-        active: true,
-        skill: 'autoresearch',
-        phase: 'running',
-        active_skills: [{
-          skill: 'autoresearch',
-          phase: 'running',
-          active: true,
-        }],
-      }, null, 2));
-      await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
-        mode: 'ralplan',
-        active: true,
-        current_phase: 'planning',
-        session_id: sessionId,
-      }, null, 2));
-      await writeFile(join(sessionDir, 'team-state.json'), JSON.stringify({
-        mode: 'team',
-        active: true,
-        current_phase: 'running',
-        session_id: sessionId,
-      }, null, 2));
-
-      const response = await executeStateOperation('state_write', {
-        workingDirectory: wd,
-        session_id: sessionId,
-        mode: 'ralplan',
-        active: false,
-        current_phase: 'complete',
-        ralplan_consensus_gate: consensusGate,
-      });
-
-      assert.equal(response.isError, undefined);
-      assert.equal(existsSync(join(sessionDir, 'skill-active-state.json')), false);
-
-      const rootListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-      });
-      assert.deepEqual(rootListed.payload, { active_modes: ['autoresearch'] });
-
-      const sessionListed = await executeStateOperation('state_list_active', {
-        workingDirectory: wd,
-        session_id: sessionId,
-      });
-      assert.deepEqual(sessionListed.payload, { active_modes: ['team'] });
-    } finally {
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
 
   it('denies unsupported overlaps without writing the requested mode state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-deny-overlap-'));
@@ -4228,7 +3404,7 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /tracker-backed native architect and critic lanes/i);
+        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -4371,7 +3547,7 @@ describe('state operations directory initialization', () => {
 
           assert.equal(response.isError, true);
           const error = String((response.payload as { error?: string }).error || '');
-          assert.match(error, new RegExp(`${lane}.*verdict=iterate`, 'i'));
+          assert.match(error, /documented_host_consensus_receipt_unavailable/);
           const state = JSON.parse(
             await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
           ) as Record<string, unknown>;
@@ -4419,8 +3595,8 @@ describe('state operations directory initialization', () => {
 
         assert.equal(response.isError, true);
         const error = String((response.payload as { error?: string }).error || '');
-        assert.match(error, /subagent-tracking\.json/);
-        assert.match(error, /only reviews recorded in OMX subagent-tracking\.json count as native lanes/i);
+        assert.match(error, /documented_host_consensus_receipt_unavailable/);
+        assert.match(error, /official host consensus receipt verifier is unavailable/i);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -4465,7 +3641,7 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /tracker-backed native architect and critic lanes/i);
+        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -4501,7 +3677,7 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /ralplan consensus/i);
+        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -5209,7 +4385,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('allows Autopilot ralplan to ultragoal self-write with tracker-backed native consensus evidence', async () => {
+  it('denies Autopilot ralplan to ultragoal self-write with tracker-backed native lifecycle evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-native-allow-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -5243,11 +4419,12 @@ describe('state operations directory initialization', () => {
           current_phase: 'ultragoal',
         });
 
-        assert.equal(response.isError, undefined);
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
-        assert.equal(state.current_phase, 'ultragoal');
+        assert.equal(state.current_phase, 'ralplan');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });

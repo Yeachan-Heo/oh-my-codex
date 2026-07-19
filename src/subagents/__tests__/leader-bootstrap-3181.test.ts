@@ -35,6 +35,35 @@ describe('#3194 ordinary tracker behavior', () => {
     });
   });
 
+  it('retains typed native lifecycle observations while discarding historical authority artifacts', async () => {
+    await withCwd(async (cwd) => {
+      const path = subagentTrackingPath(cwd);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          'native-session': {
+            session_id: 'native-session',
+            leader_thread_id: 'native-leader',
+            leader_attested_at: '1970-01-01T00:00:00.000Z',
+            threads: {
+              'native-leader': { thread_id: 'native-leader', kind: 'leader' },
+              'native-child': { thread_id: 'native-child', kind: 'subagent', role: 'architect', provenance_kind: 'native_subagent' },
+            },
+          },
+        },
+        pending_role_intents: [{ role: 'architect', session_id: 'native-session' }],
+      }));
+
+      const session = (await readSubagentTrackingState(cwd)).sessions['native-session'];
+      assert.equal(session?.threads['native-child']?.role, 'architect');
+      assert.equal(session?.threads['native-child']?.provenance_kind, 'native_subagent');
+      assert.equal(isTrustedSubagentThread(session, 'native-leader'), false);
+      assert.equal(Object.hasOwn(session ?? {}, 'leader_attested_at'), false);
+      assert.equal(Object.hasOwn(await readSubagentTrackingState(cwd), 'pending_role_intents'), false);
+    });
+  });
+
   it('preserves ordinary Architect then Critic turn ordering', () => {
     const architect = recordSubagentTurn(createSubagentTrackingState(), {
       sessionId: 'synthetic-session', threadId: 'synthetic-architect', kind: 'subagent', role: 'architect', timestamp: new Date(0).toISOString(),

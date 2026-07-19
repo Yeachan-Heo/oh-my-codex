@@ -232,23 +232,25 @@ operator to clear incompatible state explicitly via `omx state ...` or the
 `omx_state.*` MCP tools before retrying. See
 `docs/contracts/multi-state-transition-contract.md`.
 
-## Codex 0.144.5: adapted Ralplan leader-proof boundary (#3194)
+## Codex 0.144.5 and same-user native-child boundary (#3194, #3212)
 
-Codex CLI **0.144.5** documented hook payloads do not provide a positive proof that a `PreToolUse` event belongs to the root leader required by adapted Ralplan. `session_id` is shared with parent context and is not root identity. The undocumented `thread_id`, session files, session pointers, transcript state, cwd, and the absence of child markers are never authority evidence. OMX therefore does not infer, repair, or synthesize leader identity from them.
+Codex CLI **0.144.5** documented hook payloads do not provide a positive proof that a `PreToolUse` event belongs to the root leader required by adapted Ralplan. Same-user native children are fully hostile: sandbox labels, environment, local files, session/thread IDs, pointers, transcripts, trackers, markers, task names, prompts, and absent child evidence are not authentication. OMX does not infer, repair, or synthesize authority from them.
 
-Typed native role routing remains the preferred path when the task surface exposes `agent_type`; this boundary does not disable that path. When native role routing reports `role_routing_unavailable`, Ralplan must run `omx ralplan preflight --json` before planner, reviewer, HUD, runtime, or adapted role-intent work. The command neutralizes any routing-only Ralplan selection state so Stop cannot treat it as authority, then fails closed with:
+Typed native role routing remains the preferred path when the task surface exposes `agent_type`. `agent_type`, `agent_role`, tracker fields, lifecycle records, and plugin launch routing are non-authoritative routing or diagnostic data; they can select or describe work but cannot release consensus. When native role routing reports `role_routing_unavailable`, Ralplan must run `omx ralplan preflight --json` before planner, reviewer, HUD, runtime, or adapted role-intent work. Preflight may neutralize only an exact current keyword-seeded Ralplan routing state; direct hook and CLI denials are zero-write. It then fails closed with:
 
 ```json
 {"ok":false,"reason":"unsupported_documented_leader_proof"}
 ```
 
-A canonical standalone `omx ralplan role-intent write --role <role> --parent-thread "$CODEX_THREAD_ID" --json` Bash command is also denied before pointer, ledger, tracker, or runtime work. For an installed role, the exact `PreToolUse` denial reason is:
+A canonical standalone `omx ralplan role-intent write --role <role> --parent-thread "$CODEX_THREAD_ID" --json` Bash command is denied before pointer, ledger, tracker, or runtime work. For an installed role, the exact `PreToolUse` denial reason is:
 
 ```text
 unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.
 ```
 
 The direct CLI result for an installed role is likewise `{"ok":false,"reason":"unsupported_documented_leader_proof"}`. An unknown role remains separately denied as `unknown_role`; it is not a fallback or an authority probe. Wrappers, assignments, compounds, redirects, malformed commands, unrelated tools, and typed native spawn payloads are outside this narrow hook boundary and retain their existing handling.
+
+Ralplan consensus additionally requires an official host-issued receipt verified through a documented host integration. No such integration exists today, so production consensus fails closed with `documented_host_consensus_receipt_unavailable`; native Architect/Critic lifecycle evidence alone cannot release `ralplan -> ultragoal`. The packaged plugin's `OMX_CODEX_LAUNCH_ID` and `plugin-hook-routing` record are a spoofable routing-only discriminator, not a secret, signed claim, or authority source. See [ADR 3194](./adr/3194-codex-01445-documented-leader-proof.md), [ADR 3212](./adr/3212-same-user-native-child-auth-boundary.md), and the [consensus gate contract](./contracts/ralplan-consensus-gate.md).
 
 
 ## UserPromptSubmit: session provenance

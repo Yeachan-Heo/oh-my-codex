@@ -1498,10 +1498,27 @@ function assertInstalledPluginHookLauncherContract(hookSource: string): void {
       /\.stdin\s*\.end\s*\(\s*input\s*\)/,
       'forward the hook input to the delegate stdin',
     ],
+    [
+      /['"]omx-plugin-hook-routing-only:v1['"]/,
+      'declare the routing-only discriminator contract',
+    ],
   ];
   for (const [pattern, requirement] of requiredShape) {
     if (!pattern.test(hookSource)) {
       throw new Error(`installed plugin native hook launcher must ${requirement}`);
+    }
+  }
+  for (const forbidden of [
+    /native-anchor-auth\.key/,
+    /\bcreateHmac\b/,
+    /\brandomBytes\b/,
+    /\bsignLaunchClaim\b/,
+    /\bplugin-hook-launches\b/,
+    /\bHMAC\b/i,
+    /signed.?claim/i,
+  ]) {
+    if (forbidden.test(hookSource)) {
+      throw new Error(`installed plugin native hook launcher retains forbidden authority path: ${forbidden.source}`);
     }
   }
 }
@@ -4313,9 +4330,9 @@ PY`],
       throw new Error('native hook blocked a positively classified native-child read-only operation');
     }
 
-    // #3194: the installed Codex 0.144.5 documented surface fails closed before
-    // authority state or an adapted role intent can be created.
-    const roleIntentCwd = join(smokeCwd, 'issue-3194-role-intent');
+    // #3194/#3212: the installed documented surface fails closed before any
+    // same-user-mintable authority state or adapted role intent can be created.
+    const roleIntentCwd = join(smokeCwd, 'issue-3212-role-intent');
     const roleIntentHome = join(roleIntentCwd, 'home');
     const roleIntentCodexHome = join(roleIntentCwd, 'codex-home');
     const roleIntentNativeSessionId = 'synthetic-3194-session';
@@ -4326,14 +4343,6 @@ PY`],
       HOME: roleIntentHome,
       CODEX_HOME: roleIntentCodexHome,
     };
-    const sessionStartResult = run(process.execPath, [realpathSync(hookScript)], {
-      cwd: roleIntentCwd,
-      env: roleIntentEnvironment,
-      input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: roleIntentCwd, session_id: roleIntentNativeSessionId }),
-    });
-    validateHookStdout('SessionStart', String(sessionStartResult.stdout || ''));
-    const trackingPath = join(roleIntentCwd, '.omx', 'state', 'subagent-tracking.json');
-    if (existsSync(trackingPath)) throw new Error('installed #3194 SessionStart unexpectedly created tracker authority');
 
     const preToolUseResult = run(process.execPath, [realpathSync(hookScript)], {
       cwd: roleIntentCwd,
@@ -4350,9 +4359,10 @@ PY`],
     });
     const preToolUseExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan."}}\n';
     if (String(preToolUseResult.stdout || '') !== preToolUseExpected) {
-      throw new Error('installed #3194 PreToolUse did not emit the exact unsupported denial');
+      throw new Error('installed #3212 PreToolUse did not emit the exact unsupported denial');
     }
-    if (existsSync(trackingPath)) throw new Error('installed #3194 PreToolUse unexpectedly created tracker authority');
+    const authorityStateRoot = join(roleIntentCwd, '.omx', 'state');
+    if (existsSync(authorityStateRoot)) throw new Error('installed #3212 PreToolUse created authority-sensitive state');
 
     const roleIntentCliResult = spawnSync(process.execPath, [realpathSync(join(packageRoot, 'dist', 'cli', 'omx.js')), 'ralplan', 'role-intent', 'write', '--role', 'architect', '--parent-thread', roleIntentNativeSessionId, '--json'], {
       cwd: roleIntentCwd,
@@ -4360,11 +4370,11 @@ PY`],
       encoding: 'utf-8',
       stdio: 'pipe',
     });
-    if (roleIntentCliResult.status === 0) throw new Error('installed #3194 role-intent CLI unexpectedly authorized an Architect receipt');
-    if (String(roleIntentCliResult.stdout || '') !== '{"ok":false,"reason":"native_anchor_unavailable"}\n') {
-      throw new Error('installed #3212 role-intent CLI returned an unexpected unauthenticated-anchor denial');
+    if (roleIntentCliResult.status === 0) throw new Error('installed #3212 role-intent CLI unexpectedly authorized an Architect request');
+    if (String(roleIntentCliResult.stdout || '') !== '{"ok":false,"reason":"unsupported_documented_leader_proof"}\n') {
+      throw new Error('installed #3212 role-intent CLI returned an unexpected fail-closed denial');
     }
-    if (existsSync(trackingPath)) throw new Error('installed #3194 role-intent CLI unexpectedly created tracker authority');
+    if (existsSync(authorityStateRoot)) throw new Error('installed #3212 role-intent CLI created authority-sensitive state');
 
     for (const [caseIndex, testCase] of PACKED_INSTALL_NATIVE_HOOK_REGRESSION_PROMPTS.entries()) {
       const caseCwd = join(smokeCwd, testCase.name);
@@ -5081,6 +5091,18 @@ function smokeInstalledPluginHookLauncher(packageRoot: string, omxPath: string):
       transcriptPath: childTranscriptPath,
       cwd: hookCwd,
     }, 0, '{"hookSpecificOutput":{"additionalContext":"pinned non-stop delegate"}}\n');
+    const routingPath = join(smokeRoot, '.omx-root', 'state', 'plugin-hook-routing', 'packed-plugin-hook-launch.json');
+    if (!existsSync(routingPath)) throw new Error('installed plugin launcher did not create its routing-only record');
+    assert.deepStrictEqual(JSON.parse(readFileSync(routingPath, 'utf-8')), {
+      routing: 'omx-plugin-hook-routing-only:v1',
+      ownerSessionId: sessionId,
+    }, 'installed plugin launcher routing record changed shape');
+    for (const forbiddenPath of [
+      join(smokeRoot, '.omx-root', 'native-anchor-auth.key'),
+      join(smokeRoot, '.omx-root', 'state', 'plugin-hook-launches'),
+    ]) {
+      if (existsSync(forbiddenPath)) throw new Error(`installed plugin launcher created forbidden authority state: ${forbiddenPath}`);
+    }
     runProbe('Stop', {
       hook_event_name: 'Stop',
       session_id: sessionId,

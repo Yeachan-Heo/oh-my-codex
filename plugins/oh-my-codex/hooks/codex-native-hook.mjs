@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { createHmac, randomBytes } from 'node:crypto';
 import { extname } from 'node:path';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const hookDir = dirname(fileURLToPath(import.meta.url));
 // sync-plugin-mirror verifies this stable marker; runtime behavior is tested separately.
 const OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER = 'omx-plugin-hook-launcher:v1';
+const OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER = 'omx-plugin-hook-routing-only:v1';
 const MAX_WRAPPER_STDIN_BYTES = 1024 * 1024;
 const RAW_EVENT_SCAN_BYTES = 64 * 1024;
 const MAX_STOP_STDOUT_BYTES = 1024 * 1024;
@@ -146,12 +145,12 @@ function sanitizeLaunchId(value) {
   return String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128);
 }
 
-function resolveLaunchClaimPath(payload, launchId) {
+function resolveLaunchRoutingPath(payload, launchId) {
   const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
   const stateRoot = typeof process.env.OMX_ROOT === 'string' && process.env.OMX_ROOT.trim()
     ? process.env.OMX_ROOT.trim()
     : join(cwd, '.omx');
-  return join(stateRoot, 'state', 'plugin-hook-launches', `${sanitizeLaunchId(launchId)}.json`);
+  return join(stateRoot, 'state', 'plugin-hook-routing', `${sanitizeLaunchId(launchId)}.json`);
 }
 
 function hookPayloadSessionId(input, payload) {
@@ -163,34 +162,12 @@ function hookPayloadSessionId(input, payload) {
     : '';
 }
 
-function readOrCreateNativeAnchorKey() {
-  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
-  const keyPath = join(codexHome, '.omx', 'native-anchor-auth.key');
-  try {
-    if (existsSync(keyPath)) {
-      const key = readFileSync(keyPath);
-      return key.length === 32 ? key : null;
-    }
-    mkdirSync(dirname(keyPath), { recursive: true });
-    const key = randomBytes(32);
-    writeFileSync(keyPath, key, { mode: 0o600, flag: 'wx' });
-    return key;
-  } catch {
-    try {
-      const key = readFileSync(keyPath);
-      return key.length === 32 ? key : null;
-    } catch {
-      return null;
-    }
-  }
+function isSafeRoutingSessionId(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256;
 }
 
-function signLaunchClaim(key, launchId, sessionId) {
-  return createHmac('sha256', key).update(['launch-claim-v1', launchId, sessionId].join('\0')).digest('hex');
-}
-
-function isClaimedChildSessionStart(payload, claimedLeaderSessionId) {
-  if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SessionStart' || !claimedLeaderSessionId) return false;
+function isChildRoutingSessionStart(payload, ownerSessionId) {
+  if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SessionStart' || !ownerSessionId) return false;
   const childSessionId = hookPayloadSessionId(null, payload);
   const transcriptCandidate = payload?.transcript_path ?? payload?.transcriptPath;
   const transcriptPath = typeof transcriptCandidate === 'string' ? transcriptCandidate.trim() : '';
@@ -209,7 +186,7 @@ function isClaimedChildSessionStart(payload, claimedLeaderSessionId) {
     return metadataIds.length > 0
       && metadataIds.every((value) => value === childSessionId)
       && spawn && typeof spawn === 'object'
-      && spawn.parent_thread_id === claimedLeaderSessionId;
+      && spawn.parent_thread_id === ownerSessionId;
   } catch {
     return false;
   } finally {
@@ -217,26 +194,26 @@ function isClaimedChildSessionStart(payload, claimedLeaderSessionId) {
   }
 }
 
-function isOmxLauncherSession(input, payload) {
-  const launchId = process.env.OMX_CODEX_LAUNCH_ID?.trim();
+// This is routing correlation only. It is intentionally unauthenticated and must
+// never be used as authorization or proof that a session is OMX-owned.
+function isPluginHookRoutingSession(input, payload) {
+  const launchId = sanitizeLaunchId(process.env.OMX_CODEX_LAUNCH_ID);
   const entryPath = process.env.OMX_ENTRY_PATH?.trim();
   const sessionId = hookPayloadSessionId(input, payload);
-  if (!launchId || !entryPath || !sessionId) return false;
+  if (!launchId || !entryPath || !isSafeRoutingSessionId(sessionId)) return false;
 
-  const claimPath = resolveLaunchClaimPath(payload, launchId);
-
+  const routingPath = resolveLaunchRoutingPath(payload, launchId);
   try {
-    const key = readOrCreateNativeAnchorKey();
-    if (!key) return false;
-    if (existsSync(claimPath)) {
-      const claimed = JSON.parse(readFileSync(claimPath, 'utf8'));
-      const claimedSignature = typeof claimed?.sessionId === 'string' ? signLaunchClaim(key, launchId, claimed.sessionId) : '';
-      return claimed?.signature === claimedSignature
-        && (claimed.sessionId === sessionId || isClaimedChildSessionStart(payload, claimed.sessionId));
+    if (existsSync(routingPath)) {
+      if (!lstatSync(routingPath).isFile()) return false;
+      const routing = JSON.parse(readFileSync(routingPath, 'utf8'));
+      const ownerSessionId = routing?.routing === OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER && isSafeRoutingSessionId(routing?.ownerSessionId)
+        ? routing.ownerSessionId
+        : '';
+      return ownerSessionId === sessionId || isChildRoutingSessionStart(payload, ownerSessionId);
     }
-    const signature = signLaunchClaim(key, launchId, sessionId);
-    mkdirSync(dirname(claimPath), { recursive: true });
-    writeFileSync(claimPath, `${JSON.stringify({ sessionId, signature })}\n`, { encoding: 'utf8', mode: 0o600 });
+    mkdirSync(dirname(routingPath), { recursive: true });
+    writeFileSync(routingPath, `${JSON.stringify({ routing: OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER, ownerSessionId: sessionId })}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return true;
   } catch {
     return false;
@@ -503,11 +480,11 @@ function parseSingleJsonObjectOutput(raw) {
 async function main() {
   const { input, oversized, totalBytes } = await readBoundedStdin({ drainOversized: true });
   const payload = parseHookPayload(input);
-  const launchedByOmx = isOmxLauncherSession(input, payload);
+  const routedByLaunchCorrelation = isPluginHookRoutingSession(input, payload);
   const isStop = detectStopHookInput(input);
   const isCompact = detectCompactHookInput(input);
 
-  if (!launchedByOmx) {
+  if (!routedByLaunchCorrelation) {
     writePlainCodexNoop(isStop);
     return;
   }

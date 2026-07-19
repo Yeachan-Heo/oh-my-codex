@@ -251,6 +251,9 @@ export async function reconcileWorkflowTransition(
   const currentModes = options.currentModes
     ? [...options.currentModes].filter(isTrackedWorkflowMode)
     : await visibleTrackedModes(cwd, sessionId, baseStateDir);
+  if (currentModes.includes('ralplan') && requestedMode !== 'ralplan') {
+    throw new Error(`Cannot transition ralplan -> ${requestedMode}: documented_host_consensus_receipt_unavailable. Official host consensus receipt verifier is unavailable.`);
+  }
   const decision = evaluateWorkflowTransition(currentModes, requestedMode);
 
   if (!decision.allowed) {

@@ -564,7 +564,7 @@ describe('Pipeline Orchestrator', () => {
       assert.ok(ran.includes('after-skip'));
     });
 
-    it('materializes ralplan consensus handoff artifacts when ralplan is skipped', async () => {
+    it('persists a blocked ralplan lifecycle artifact without advancing when the host receipt is unavailable', async () => {
       const plansDir = join(tempDir, '.omx', 'plans');
       const stateDir = join(tempDir, '.omx', 'state');
       await mkdir(plansDir, { recursive: true });
@@ -576,6 +576,7 @@ describe('Pipeline Orchestrator', () => {
         current_phase: 'complete',
         planning_complete: true,
         ralplan_consensus_gate: {
+          documented_host_consensus_receipt: { issuer: 'official-host', verdict: 'approve' },
           complete: true,
           ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect ok' },
           ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic ok' },
@@ -589,20 +590,21 @@ describe('Pipeline Orchestrator', () => {
         cwd: tempDir,
       });
 
-      assert.equal(result.status, 'completed');
-      assert.equal(result.stageResults.ralplan.status, 'skipped');
+      assert.equal(result.status, 'failed');
+      assert.equal(result.stageResults.ralplan.status, 'failed');
+      assert.equal(result.stageResults.ralplan.error, 'ralplan_consensus_evidence_missing');
+      assert.equal(result.stageResults.after, undefined);
 
       const ext = await readPipelineState(tempDir);
-      const handoffs = ext?.handoff_artifacts as Record<string, unknown>;
-      assert.ok(handoffs.ralplan, 'skipped ralplan handoff should remain visible');
-      assert.deepEqual(handoffs.ralplan_consensus_gate, {
-        complete: true,
-        sequence: ['architect-review', 'critic-review'],
-        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect ok' },
-        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic ok' },
-        source: join(tempDir, '.omx', 'state', 'ralplan-state.json'),
-        blockedReason: null,
-      });
+      const handoffs = ext?.handoff_artifacts as Record<string, unknown> | undefined;
+      const persistedRalplan = handoffs?.ralplan as { ralplanConsensusGate?: { complete?: boolean; blockedReason?: string } } | undefined;
+      assert.equal(persistedRalplan?.ralplanConsensusGate?.complete, false);
+      assert.equal(persistedRalplan?.ralplanConsensusGate?.blockedReason, 'documented_host_consensus_receipt_unavailable');
+      const gate = result.stageResults.ralplan.artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
+      assert.equal(gate.complete, false);
+      assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+      assert.ok(gate.ralplan_architect_review);
+      assert.ok(gate.ralplan_critic_review);
     });
 
     it('fires onStageTransition callback', async () => {

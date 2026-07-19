@@ -1,7 +1,6 @@
 import { cancelMode, readModeState, startMode, updateModeState } from '../modes/base.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 import { recordSubagentTurnForSession } from '../subagents/tracker.js';
-import { buildRalplanConsensusGateFromSources } from './consensus-gate.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
   'draft',
@@ -190,7 +189,7 @@ async function recordRalplanSubagentTurn(
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
-  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean } = {},
+  _options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
@@ -209,9 +208,9 @@ function buildRalplanConsensusGate(
       agent_role: 'critic' as const,
       iteration: criticReviews.length,
     };
-    const gate: RalplanConsensusGate = {
+    return {
       required: true,
-      complete: true,
+      complete: false,
       sequence: ['architect-review', 'critic-review'],
       planning_artifacts_are_not_consensus: true,
       required_review_roles: ['architect', 'critic'],
@@ -219,28 +218,10 @@ function buildRalplanConsensusGate(
       ralplan_critic_review: ralplanCriticReview,
       architect_review: ralplanArchitectReview,
       critic_review: ralplanCriticReview,
-      blocked_reason: null,
-    };
-    const evidenceGate = buildRalplanConsensusGateFromSources([{
-      source: 'runtime-result',
-      value: { ralplan_consensus_gate: gate },
-    }], {
-      cwd: options.cwd,
-      sessionId: options.sessionId,
-      requireNativeSubagents: options.requireNativeSubagents,
-    });
-    return {
-      ...gate,
-      complete: evidenceGate.complete,
-      blocked_reason: evidenceGate.complete ? null : evidenceGate.blockedReason,
+      blocked_reason: 'documented_host_consensus_receipt_unavailable',
     };
   }
 
-  const blockedReason = latestArchitect?.verdict !== 'approve'
-    ? 'architect_review_missing_or_not_approved'
-    : latestCritic?.verdict !== 'approve'
-      ? 'critic_review_missing_or_not_approved'
-      : 'missing_sequential_architect_then_critic_approval';
   const ralplanArchitectReview = latestArchitect
     ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
     : null;
@@ -258,7 +239,7 @@ function buildRalplanConsensusGate(
     ralplan_critic_review: ralplanCriticReview,
     architect_review: ralplanArchitectReview,
     critic_review: ralplanCriticReview,
-    blocked_reason: blockedReason,
+    blocked_reason: 'documented_host_consensus_receipt_unavailable',
   };
 }
 
@@ -624,7 +605,9 @@ export async function runRalplanConsensus(
       }
 
       if (iteration >= maxIterations) {
-        const error = `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
+        const error = consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable'
+          ? 'documented_host_consensus_receipt_unavailable'
+          : `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
         await updateRalplanState(cwd, {
           active: false,
           iteration,
@@ -636,7 +619,9 @@ export async function runRalplanConsensus(
           latest_critic_summary: criticReview.summary,
           ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
-          status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
+          status_message: consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable'
+            ? 'Status: failed — Architect and Critic lifecycle evidence cannot authorize a release without an official host consensus receipt verifier.'
+            : `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,
         });
         return {

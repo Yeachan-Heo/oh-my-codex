@@ -3602,9 +3602,11 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       },
       omxBin,
     );
+    // Correlates plugin hook routing only; it is not an authority token.
+    const pluginHookRoutingLaunchId = randomUUID();
     const codexEnv = {
       ...codexEnvBase,
-      OMX_CODEX_LAUNCH_ID: randomUUID(),
+      OMX_CODEX_LAUNCH_ID: pluginHookRoutingLaunchId,
       ...buildHudRuntimeEnv({ sessionId, ...hudRuntimeRoot }).env,
       ...(notifyTempContractRaw ? { [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw } : {}),
     };
@@ -5419,9 +5421,11 @@ function runCodex(
     },
     omxBin,
   );
+  // Correlates plugin hook routing only; it is not an authority token.
+  const pluginHookRoutingLaunchId = randomUUID();
   const codexEnvWithSession = {
     ...codexBaseEnv,
-    OMX_CODEX_LAUNCH_ID: randomUUID(),
+    OMX_CODEX_LAUNCH_ID: pluginHookRoutingLaunchId,
     ...buildHudRuntimeEnv({ sessionId }).env,
   };
   const codexEnv = workerLaunchArgs

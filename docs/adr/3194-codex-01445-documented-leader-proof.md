@@ -4,13 +4,13 @@
 
 ## Decision
 
-Treat adapted Ralplan role routing as unsupported on the documented Codex CLI 0.144.5 hook surface. The surface does not provide a documented, positive root-to-`PreToolUse` identity proof. When native role routing reports `role_routing_unavailable`, Ralplan runs an explicit fail-closed CLI preflight after keyword selection but before substantive planner/reviewer work, HUD/runtime activation, or adapted authority.
+Treat adapted Ralplan role routing as unsupported on the documented Codex CLI 0.144.5 hook surface. The surface does not provide a documented, positive root-to-`PreToolUse` identity proof. When native role routing reports `role_routing_unavailable`, Ralplan runs an explicit fail-closed CLI preflight after keyword selection but before substantive planner/reviewer work, HUD/runtime activation, or any adapted authority path.
 
-Keep typed native routing as the preferred path where the native spawn surface exposes `agent_type`: callers select an installed OMX role explicitly. On a role-routing-unavailable surface, the adapted role path is unavailable rather than silently weakened. Do not substitute prompt labels, inferred identities, or unvalidated carriers.
+Keep typed native routing as the preferred path where the native spawn surface exposes `agent_type`: callers select an installed OMX role explicitly. Typed routing and lifecycle fields are non-authoritative. On a role-routing-unavailable surface, the adapted role path is unavailable rather than silently weakened. Do not substitute prompt labels, inferred identities, or unvalidated carriers.
 
 ## Drivers
 
-- Adapted Ralplan needs to distinguish the root leader from child execution contexts before it can create a role intent.
+- A same-user child can forge every local adapted role-intent or attestation carrier.
 - Authorization must rely on documented, positive evidence rather than correlations or omissions.
 - A false positive would let child or ambiguous context acquire leader-only planning authority.
 - The implementation must fail before it creates workflow state or runtime side effects.
@@ -23,7 +23,7 @@ This ADR is limited to the documented Codex CLI **0.144.5** hook contract evalua
 
 ## Trust boundaries
 
-Structural routing carriers are routing data, not authority. The unsupported boundary is selected by the native task surface reporting `role_routing_unavailable`, not inferred from hook payload shape. Typed native `agent_type` routing remains enabled and unchanged.
+Structural routing carriers are routing/lifecycle data, not authority. The unsupported boundary is selected by the native task surface reporting `role_routing_unavailable`, not inferred from hook payload shape. Typed native `agent_type` routing remains enabled and unchanged, but cannot authorize consensus.
 
 ## Exact output contract
 
@@ -60,14 +60,14 @@ Failing closed only after the runtime surface identifies the adapted path is the
 
 ## Compatibility and migration
 
-Existing routing-capable callers continue to use explicit `agent_type` with an installed OMX role. Callers on role-routing-unavailable documented 0.144.5 surfaces run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`; they must use a Codex surface with documented root proof or a reviewed alternative workflow. There is no compatibility shim that turns old session/thread/pointer evidence into authority.
+Existing routing-capable callers continue to use explicit `agent_type` with an installed OMX role. Callers on role-routing-unavailable documented 0.144.5 surfaces run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`; they must use a Codex surface with documented root proof or a reviewed alternative workflow. There is no compatibility shim that turns old session/thread/pointer evidence, native anchors, signed claims, tracker state, or local artifacts into authority. See [ADR 3212](./3212-same-user-native-child-auth-boundary.md) for the same-user hostile boundary and consensus consequence.
 
 ## Consequences
 
 - Adapted Ralplan is unavailable when the native surface reports `role_routing_unavailable`.
 - Direct role-intent writes fail deterministically with `unsupported_documented_leader_proof` for installed roles.
-- Keyword routing may seed ordinary Ralplan selection state before the model can inspect the native task schema; that state is not authority. The explicit preflight neutralizes it before returning failure, so it cannot drive HUD/runtime or Stop enforcement. The direct hook denial creates no role intent, adapted tracker authority, routing marker, or reviewer work.
-- Typed native role-routing guidance remains valid where `agent_type` is exposed; it is not disabled by hook-payload heuristics.
+- Keyword routing may seed ordinary Ralplan selection state before the model can inspect the native task schema; that state is not authority. The explicit preflight neutralizes only an exact current keyword seed before returning failure. Direct hook and CLI denials are zero-write.
+- Typed native role-routing and lifecycle guidance remains valid where `agent_type` is exposed; it cannot release `ralplan -> ultragoal` without the official host receipt required by ADR 3212.
 
 ## Rollback
 
@@ -75,7 +75,7 @@ Rollback is removal of this unsupported-only gate and associated guidance only a
 
 ## Future enablement criterion
 
-Enable adapted Ralplan only when the official documentation for the target Codex version and hook/spawn surface defines a positive, stable binding from the current `PreToolUse` event to the root leader identity required by the workflow, and the implementation can validate that binding before any planner, state, HUD, runtime, or role-intent work. The evidence must distinguish root and child contexts without using undocumented IDs, pointer/transcript/cwd state, or absence-based inference.
+Enable a positive authority path only when official documentation for the target Codex version and hook/spawn surface defines a positive, stable binding from the current event to root identity and supplies a non-user-mintable official host consensus receipt channel. A reviewed implementation must verify the receipt directly through that official surface before planner, state, HUD, runtime, role-intent, or consensus-release work. The receipt must bind issuer, version, session, installed roles, distinct host threads, artifact digests, ordering, and replay protection; local JSON, environment, tracker, transcript, marker, pointer, or absence-based inference cannot substitute it.
 
 ## Follow-ups
 

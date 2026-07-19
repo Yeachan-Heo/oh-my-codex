@@ -89,9 +89,9 @@ Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handof
 - `planning_artifacts`: PRD/test-spec paths.
 - `ralplan_architect_review`: the completed Architect review with an approving verdict.
 - `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
-- `ralplan_consensus_gate.complete:true` only when both reviews are present, approving, and in the required Architect→Critic order.
+- `ralplan_consensus_gate.complete:true` only after an official host-issued receipt is verified through a documented non-user-mintable host surface. Architect/Critic reviews, trackers, artifacts, and local receipt-shaped fields remain lifecycle or trace evidence only; until the verifier exists, persist `complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
 
-If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Do not treat existing plan/test-spec files as permission to skip ralplan or start execution.
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Even after both reviews approve, they complete only the local review lifecycle; do not start execution until an official host receipt verifier authorizes the transition. Existing plan/test-spec files and local review artifacts are never permission to skip ralplan or execute.
 
 Follow the Plan skill's full documentation for consensus mode details.
 

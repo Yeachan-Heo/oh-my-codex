@@ -172,10 +172,7 @@ entering its `ralplan` child stage. Review/QA loopbacks should keep
 `autopilot-state.json` active and set `current_phase: "ralplan"` rather than
 starting standalone `ralplan` over Autopilot.
 
-Inside Autopilot, `ralplan` consensus also requires tracker-backed native
-subagent lane evidence for the Architect and Critic approvals. `codex_exec`
-outputs and authored planning artifacts remain trace evidence, but they do not
-prove that visible native subagent lanes ran.
+Inside Autopilot, `ralplan` consensus requires an official host-issued receipt verified through a documented host integration. No such verifier exists today, so production fails closed with `documented_host_consensus_receipt_unavailable`. Native Architect/Critic lanes, `codex_exec` outputs, trackers, and authored planning artifacts remain lifecycle or trace evidence only.
 
 ## Planning-like vs execution-like
 

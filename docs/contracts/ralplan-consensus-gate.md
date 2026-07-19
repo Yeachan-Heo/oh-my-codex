@@ -1,51 +1,41 @@
 # Ralplan Consensus Gate Contract
 
-The `ralplan -> ultragoal` transition requires durable Architect and Critic approval evidence from native subagent lanes. Advisory lanes such as Scholastic do not replace this gate.
+The `ralplan -> ultragoal` transition is fail-closed. Architect and Critic lifecycle evidence is useful diagnostic data, but cannot authorize a transition by itself.
 
-## Required review artifact fields
+## Authority boundary
 
-Each review artifact used by the gate must include:
+A successful transition requires a documented, versioned, official host-issued consensus receipt verified directly through an official host integration. The receipt must bind the exact transition session, installed Architect and Critic roles, distinct host thread identities, approved artifact digests, strict Architect-before-Critic order, issuer, version, and replay protection.
 
-- `agent_role`: `architect` or `critic`
-- `provenance_kind`: `native_subagent` from a routing-capable surface; `omx_adapted` is rejected on the documented Codex 0.144.5 boundary
-- `session_id`: the current transition session id, unless supplied by the transition context
-- `thread_id`: the native subagent thread id for that review lane
-- `tracker_path`: `.omx/state/subagent-tracking.json`
-
-The Architect and Critic reviews must approve in order and must refer to distinct native subagent threads.
-
-## Unsupported adapted provenance
-
-When the native tool reports `role_routing_unavailable`, Ralplan must fail its explicit preflight before review work. The consensus gate rejects `omx_adapted` review artifacts even when legacy tracker journals or `native-subagent-role-routing.json` markers remain after an upgrade. Prompt labels, task-name carriers, markers, pending intents, and historical adapted ledger records do not grant review authority. Typed `native_subagent` lanes remain subject to the tracker, completion, distinct-thread, role, and strict Architect-before-Critic checks below.
-
-## Required tracker schema
-
-`.omx/state/subagent-tracking.json` must contain the session and both review threads:
+No current official host receipt integration exists. Production consensus therefore returns the exact blocker:
 
 ```text
-sessions["<current_session_id>"].threads["<architect_thread_id>"].kind = "subagent"
-sessions["<current_session_id>"].threads["<critic_thread_id>"].kind = "subagent"
-both threads have completed_at
-architect and critic thread IDs are distinct
+documented_host_consensus_receipt_unavailable
 ```
 
-The transition session is the explicit transition `sessionId` when available; otherwise it is resolved from the review artifact `session_id` fields.
+The gate must not read a receipt from `.omx`, repository files, user-local files, environment variables, stdin, CLI arguments, transcripts, pointers, trackers, markers, task names, prompts, or review artifact fields. Those carriers are same-user writable and are not authority.
 
-## Failure diagnostics
+## Routing and lifecycle evidence
 
-Rejected transitions include a structured diagnostic object on `RalplanConsensusGateEvidence.diagnostic` and a rendered error with:
+Review artifacts can describe native lifecycle observations using:
 
-- expected tracker schema,
-- current session id used for lookup,
-- Architect/Critic thread ids,
-- whether the tracker session exists,
-- whether each thread exists,
-- each thread `kind`,
-- whether each thread has `completed_at`,
-- whether thread ids are distinct,
-- remediation steps,
-- this docs path.
+- `agent_role`: `architect` or `critic`
+- `provenance_kind`: `native_subagent`; `omx_adapted` is rejected
+- `session_id`: the transition session id
+- `thread_id`: the native lane thread id
+- `tracker_path`: `.omx/state/subagent-tracking.json`
 
-## Remediation
+`agent_type`, `agent_role`, `provenance_kind`, session/thread IDs, tracker roles/modes/completion, task names, routing markers, transcripts, and local review artifacts are routing, lifecycle, or diagnostic data only. A same-user child can forge them. They never satisfy the receipt requirement.
 
-Re-run native ralplan Architect/Critic reviews, or repair the review artifacts so `agent_role`, `provenance_kind`, `session_id`, `thread_id`, and `tracker_path` point to completed native subagent threads in the current tracker.
+Typed `native_subagent` Architect and Critic lanes may still be tracked for diagnostics. A valid lifecycle pair uses distinct threads, completed lanes, and Architect-before-Critic ordering. A roleless legacy lane, `omx_adapted` lane, pending/bound role intent, claimant token, leader attestation, or historical routing marker is inert and cannot release consensus.
+
+## Diagnostics
+
+When lifecycle evidence is present, the gate may render diagnostics for the expected tracker schema, current session, Architect/Critic thread IDs, session/thread existence, thread kinds, completion, distinctness, ordering, and remediation. These diagnostics explain lifecycle quality; they are not a receipt verifier.
+
+Every production result remains incomplete until the official verifier is available and validates a receipt. The unavailable result includes `blockedReason: "documented_host_consensus_receipt_unavailable"`.
+
+## Future enablement
+
+Enable a positive path only after official documentation specifies a non-user-mintable host receipt channel and OMX implements direct verification for that documented version and surface. Tests must prove that injected local JSON, environment, transcript, tracker, marker, and review artifacts cannot mint or substitute the receipt. Until then, preserve the fail-closed blocker and treat typed routing/lifecycle as non-authoritative.
+
+See [ADR 3212](../adr/3212-same-user-native-child-auth-boundary.md) and [ADR 3194](../adr/3194-codex-01445-documented-leader-proof.md).
