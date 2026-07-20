@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "brief": "Release 0.18.13 after all verification and dogfooding are complete. Choose 0.19.0 only if repository evidence shows breaking/public API changes requiring a minor release; otherwise prepare and release 0.18.13 as the next patch after 0.18.12. Do not tag, publish, push, merge, or perform irreversible release actions until verification is clean and the final release action is explicitly safe from repository context.\n\n@goal: Determine release version and scope\nInspect package metadata, changelog/release notes history, current repository changes, and recent commits/PR evidence to decide whether this is 0.18.13 or 0.19.0, and define the release scope.\n\n@goal: Prepare release artifacts\nUpdate versioned release artifacts for the selected version, including package metadata, changelog, release notes, readiness evidence, and any generated catalogs or mirrored bundles required by repository conventions.\n\n@goal: Verify and dogfood release candidate\nRun the focused and full verification lanes required for release readiness, including dogfooding the built CLI/package surfaces enough to prove the release candidate works.\n\n@goal: Complete safe release handoff\nProduce the final release readiness handoff with exact verification evidence and identify the remaining irreversible release command(s) that require maintainer execution or explicit approval.",
+  "gjcGoalMode": "aggregate",
+  "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+  "goals": [
+    {
+      "id": "G001",
+      "title": "Determine release version and scope",
+      "objective": "Inspect package metadata, changelog/release notes history, current repository changes, and recent commits/PR evidence to decide whether this is 0.18.13 or 0.19.0, and define the release scope.",
+      "status": "complete",
+      "createdAt": "2026-06-17T05:33:34.679Z",
+      "updatedAt": "2026-06-17T05:53:01.359Z",
+      "startedAt": "2026-06-17T05:33:46.202Z",
+      "completedAt": "2026-06-17T05:53:01.359Z",
+      "evidence": "Selected 0.18.13 as the release version. Evidence: package metadata remains 0.18.12, latest released tag is v0.18.12, post-release dev delta contains compatibility-preserving fixes/CI/docs/dependency bumps/additive session/setup/geobench work, no breaking package/bin/engine/schema or removed active command was found, open issue inventory is empty, and open PRs are fix/docs/warning/safety scoped. QA/red-team subagent 1-ReleaseScopeQa and architect review subagent 2-ReleaseScopeArchitectFast both approve 0.18.13 over 0.19.0.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "0b529536-0cec-4dd1-a458-c1805f47f11d",
+        "verifiedAt": "2026-06-17T05:53:01.359Z",
+        "goalId": "G001",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "f7b22aacf620e9cca4847d41384b6f7fb9e99f787b0c4fd5047f344f5db3b8b9",
+        "gjcGoalSnapshotHash": "a6dd1c4f7a13a586cc26d7b1cee8cc26f14c59bdc3683760f54a6c2e2c6fd4cd",
+        "planGeneration": "c14e79967f8d621ff67da7380d5d74e9a5d3132782d9d4565a23568a9f26a913",
+        "basis": {
+          "planHashBeforeCheckpoint": "978e21cce8637a75110b53da85bc9ca3ff852a5a8ddfaf0b5bb846fbc6a16cbf",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "4857ff90-4858-4c46-8989-76a310b23af5",
+          "goalUpdatedAtBeforeCheckpoint": "2026-06-17T05:53:01.359Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G001"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "ee0b846a663504c545d110bc77e9863580f5982b0d996b23c8cfbd8cf8b569ff"
+        },
+        "checkpointLedgerEventId": "f1488617-43bb-44df-b244-6cabb6a2b20e"
+      }
+    },
+    {
+      "id": "G002",
+      "title": "Prepare release artifacts",
+      "objective": "Update versioned release artifacts for the selected version, including package metadata, changelog, release notes, readiness evidence, and any generated catalogs or mirrored bundles required by repository conventions.",
+      "status": "complete",
+      "createdAt": "2026-06-17T05:33:34.679Z",
+      "updatedAt": "2026-06-17T06:10:00.324Z",
+      "startedAt": "2026-06-17T05:53:01.365Z",
+      "completedAt": "2026-06-17T06:10:00.324Z",
+      "evidence": "Prepared 0.18.13 release artifacts: package/package-lock/Cargo/Cargo.lock/plugin metadata are synced to 0.18.13; CHANGELOG, RELEASE_BODY, docs/release-notes-0.18.13.md, and docs/qa/release-readiness-0.18.13.md were created/updated; plugin/catalog generated mirrors were refreshed. Verification logs for build, version sync, native-agent verification, plugin-bundle verification, catalog check, and git diff check are in artifacts/release-0.18.13/logs. QA subagent 4-ReleaseArtifactsQa blocker about missing logs was resolved; architect subagent 3-ReleaseArtifactsReview approved artifacts.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "d9841ea3-9b50-4cfb-8775-d74aac6429e0",
+        "verifiedAt": "2026-06-17T06:10:00.324Z",
+        "goalId": "G002",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "32bb66c1e116983376058829953f3ea1da4924cebeb77fe00d7605415fd05df8",
+        "gjcGoalSnapshotHash": "91c1f202c79a30fd1a38561674e13c31b9c477d6368276515cdcec16b73268ab",
+        "planGeneration": "ca15e04ed4025a241cbc2906f8b8b3b42d8a8ace9d3a2b4059d43a8613ea3262",
+        "basis": {
+          "planHashBeforeCheckpoint": "6d6fa3845072756bb5ab2e73f092ba1219e1164b0dd443afaaf4c9ca184175b9",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "b60c6847-01c6-4612-9e1c-33dee18733a8",
+          "goalUpdatedAtBeforeCheckpoint": "2026-06-17T06:10:00.324Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G002"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "cae9069c0bc68e532c4d3556277f54f660a3c148710579c6b1b04dd28fc42abb"
+        },
+        "checkpointLedgerEventId": "430f18b4-3e50-40e3-9ec0-8be30f0d7ba3"
+      }
+    },
+    {
+      "id": "G003",
+      "title": "Verify and dogfood release candidate",
+      "objective": "Run the focused and full verification lanes required for release readiness, including dogfooding the built CLI/package surfaces enough to prove the release candidate works.",
+      "status": "complete",
+      "createdAt": "2026-06-17T05:33:34.679Z",
+      "updatedAt": "2026-06-17T07:21:48.199Z",
+      "startedAt": "2026-06-17T06:10:00.330Z",
+      "completedAt": "2026-06-17T07:21:48.199Z",
+      "evidence": "Verified and dogfooded the 0.18.13 release candidate. Evidence: npm run test:ci:compiled passed on clean rerun in artifacts/release-0.18.13/logs/test-ci-compiled-rerun.log; focused changed-surface tests passed after fixing session-search test isolation; check:no-unused, npm pack --dry-run, git diff --check, built CLI --version/help with real transcripts and replay artifacts, package version import, and packed install smoke all passed. Doctor dogfood surfaced a user-home hook migration issue documented as environment caveat. Final architect review 8-ReleaseVerificationFinalReview and executor QA 9-ReleaseVerificationFinalQa are clear.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "977ebfce-72cc-48b6-9af9-562e71801ff6",
+        "verifiedAt": "2026-06-17T07:21:48.199Z",
+        "goalId": "G003",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "ed7f8244cc7a4a0634ab77e3406b92fc64c6a6240d3ef751ae0902b9a523d7df",
+        "gjcGoalSnapshotHash": "5d67ec570d5464fb3df8180c1d58e5a258b2c047b5a92c7906019614729ade3c",
+        "planGeneration": "ffee3263870add4367850d8e33bf71cdace2732c187d08b8d7751392ce38220d",
+        "basis": {
+          "planHashBeforeCheckpoint": "6df4981160eb816df21e0c30c91ffab7319201ae73e22b2a89f7f84a1d415c4c",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "2bd0df50-30e9-4d7c-a7c7-f53bf30941b0",
+          "goalUpdatedAtBeforeCheckpoint": "2026-06-17T07:21:48.199Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G003"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "f4cd28b9a74c8efd72af21fda103db6aaca291c33bc1040bab672a9f187074d3"
+        },
+        "checkpointLedgerEventId": "9c66e1ab-3acd-49f4-8f04-fb72baf31e6c"
+      }
+    },
+    {
+      "id": "G004",
+      "title": "Complete safe release handoff",
+      "objective": "Produce the final release readiness handoff with exact verification evidence and identify the remaining irreversible release command(s) that require maintainer execution or explicit approval.",
+      "status": "complete",
+      "createdAt": "2026-06-17T05:33:34.679Z",
+      "updatedAt": "2026-06-17T07:41:20.816Z",
+      "startedAt": "2026-06-17T07:21:48.231Z",
+      "completedAt": "2026-06-17T07:41:20.816Z",
+      "evidence": "Completed the safe 0.18.13 release handoff. docs/qa/release-readiness-0.18.13.md now lists exact local verification evidence, corrected npm pack JSON metrics, full-suite rerun history, and the remaining irreversible/external maintainer actions: PR/push, CI, promotion, approved tag push, tag-triggered GitHub release workflow/native asset manifest, approved npm publication, and post-publication proof capture. Publication remains pending and is not claimed. Executor QA 11-ReleaseHandoffQa found no blockers; architect review 13-ReleaseHandoffReviewCorrected approved the corrected handoff.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "d77d0509-8b9d-4e62-ac67-d713ece9e53a",
+        "verifiedAt": "2026-06-17T07:41:20.816Z",
+        "goalId": "G004",
+        "receiptKind": "final-aggregate",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "5b2a623c6e44e7bbab1dc0daf4e09b8165fc021ac195ab6f4e9e4b978e7d73f2",
+        "gjcGoalSnapshotHash": "09ef04eaa8e972390ea137637ab9e6ca221f6fdf718e0deab2ccdef5441efda3",
+        "planGeneration": "9773eb652c2f3264ece1fd87eed464daf339f05e0eec1c0a4fb688b2b5efb3ee",
+        "basis": {
+          "planHashBeforeCheckpoint": "3d5140305482ea62239c53aa0b5672eba4e05602cb2e531d2db33f95a4c8d29a",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "13ff0150-9673-42dc-b016-26c6c294dee9",
+          "goalUpdatedAtBeforeCheckpoint": "2026-06-17T07:41:20.816Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G001",
+            "G002",
+            "G003",
+            "G004"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "655b08a8d606836c25a087a7e47fbdd03908cc4418977beac89485be53395930"
+        },
+        "checkpointLedgerEventId": "0776ee47-c738-4477-ae93-ae8dc39a82a6"
+      }
+    }
+  ],
+  "createdAt": "2026-06-17T05:33:34.679Z",
+  "updatedAt": "2026-06-17T07:41:20.816Z"
+}

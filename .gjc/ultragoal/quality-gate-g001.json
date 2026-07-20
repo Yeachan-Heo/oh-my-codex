@@ -1,0 +1,31 @@
+{
+  "aiSlopCleaner": {
+    "status": "passed",
+    "evidence": "Static anti-slop regression audit passed: obsolete fallback symbols useCompatibilityFallback, rootModeStateBelongsToSession, sanitizeInheritedSkillActiveBase, and filterRootEntriesForSession are absent; getReadScoped*/getCompatibilityReadScoped APIs are absent from HUD/overlay/native/transition/notify active paths; reviewer-identified notify tmux root fallback was removed and independently re-reviewed."
+  },
+  "verification": {
+    "status": "passed",
+    "commands": [
+      "npm run lint",
+      "npm run check:no-unused",
+      "npm run build",
+      "node --test dist/scripts/__tests__/notify-tmux-injection.test.js dist/scripts/__tests__/notify-state-io.test.js dist/hooks/__tests__/notify-hook-ralph-resume.test.js dist/state/__tests__/skill-active.test.js dist/mcp/__tests__/state-paths.test.js dist/hud/__tests__/state.test.js dist/hud/__tests__/reconcile.test.js dist/hud/__tests__/tmux.test.js dist/cli/__tests__/index.test.js dist/scripts/__tests__/codex-native-hook.test.js dist/state/__tests__/workflow-transition.test.js dist/mcp/__tests__/hermes-bridge.test.js"
+    ],
+    "evidence": "Current rerun evidence: npm run lint passed with Biome checking 691 files and no fixes; npm run check:no-unused passed with tsc -p tsconfig.no-unused.json; npm run build passed and rebuilt dist; focused node --test suite passed with tests 844, suites 65, pass 844, fail 0, duration_ms 27628.565209."
+  },
+  "codeReview": {
+    "recommendation": "APPROVE",
+    "architectStatus": "CLEAR",
+    "evidence": "Independent review gates are clean after the notify tmux fallback fix. Code-reviewer approval: agent 20-MinimalCodeReviewAfterFix found no remaining active root fallback leak in tmux-injection/state-io/skill-active. Architect approval: agent 21-ArchitectEvidenceGate reported architectureStatus CLEAR and blockers empty for state-paths, skill-active, hud/tmux, notify state-io, notify tmux-injection, and workflow-transition-reconcile.",
+    "independentReview": {
+      "codeReviewer": {
+        "agentRole": "code-reviewer",
+        "evidence": "20-MinimalCodeReviewAfterFix APPROVE: active mode selection in handleTmuxInjection and resolvePreferredModePane uses getScopedStateDirsForCurrentSession without includeRootFallback; state-io defaults includeRootFallback false; readVisibleAllowedModes uses session-specific canonical skill-active; skill-active returns null rather than root fallback when sessionPath is supplied; blockers empty."
+      },
+      "architect": {
+        "agentRole": "architect",
+        "evidence": "21-ArchitectEvidenceGate APPROVE/CLEAR: authoritative active dirs are separated from compatibility reads; canonical skill-active does not fall back to root for session reads; workflow-transition visible modes derive from canonical skill-active; HUD ownership requires matching session/leader constraints; notify state-io and tmux-injection use scoped-only active discovery; blockers empty."
+      }
+    }
+  }
+}
