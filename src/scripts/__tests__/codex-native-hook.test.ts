@@ -12514,6 +12514,7 @@ exit 0
 				["omx-cleanup-dry-run", "omx cleanup --dry-run"],
 				["gh-issue-list", "gh issue list --repo Yeachan-Heo/oh-my-codex"],
 				["rtk-version", "rtk --version"],
+				["omx-help-benign-locale-env", "LANG=C omx --help"],
 			] as const) {
 				await assertAllowed(label, await bash(command, label));
 			}
@@ -12525,6 +12526,9 @@ exit 0
 				["omx help with node preload", "NODE_OPTIONS='--require ./preload.cjs' omx --help", /NODE_OPTIONS|Deep-interview is active|preload|write intent/],
 				["omx state read with node import", "NODE_OPTIONS='--import ./preload.mjs' omx state read --json", /NODE_OPTIONS|Deep-interview is active|preload|write intent/],
 				["rtk version with node preload", "NODE_OPTIONS='--require ./preload.cjs' rtk --version", /NODE_OPTIONS|Deep-interview is active|preload|write intent/],
+				["omx help with PATH resolution override", "PATH=/attacker/bin omx --help", /PATH|Deep-interview is active|write intent/],
+				["rtk version with PATH resolution override", "PATH=/attacker/bin rtk --version", /PATH|Deep-interview is active|write intent/],
+				["omx state read with PATHEXT resolution override", "PATHEXT=.EVIL omx state read --json", /PATHEXT|Deep-interview is active|write intent/],
 				["omx help with dynamic env assignment", "OMX_QUESTION_RETURN_PANE=$(printf %42) omx --help", /Deep-interview is active|write intent|OMX_QUESTION_RETURN_PANE/],
 				["gh web launcher", "gh pr view 3240 --repo Yeachan-Heo/oh-my-codex --web", /gh|Deep-interview is active|write intent/],
 				["gh run watch polling", "gh run watch 123 --repo Yeachan-Heo/oh-my-codex", /gh|Deep-interview is active|write intent/],

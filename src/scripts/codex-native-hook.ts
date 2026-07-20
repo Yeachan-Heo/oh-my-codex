@@ -8711,6 +8711,13 @@ function isAllowedDeepInterviewCommandSpecificBash(
     || isAllowedVersionProbeCommand(command);
 }
 
+function isCommandResolutionSensitiveEnvironmentName(name: string): boolean {
+  // Variables that redirect where the shell resolves the executable itself.
+  // A leading PATH/PATHEXT override can point a bare `omx`/`rtk` at an
+  // attacker-controlled binary before the command-specific allow return.
+  return name === "PATH" || name === "PATHEXT";
+}
+
 function commandHasUnsafeLeadingRuntimeEnvironment(command: string): boolean {
   const segments = splitShellCommandSegments(
     stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command)),
@@ -8718,7 +8725,11 @@ function commandHasUnsafeLeadingRuntimeEnvironment(command: string): boolean {
   for (const segment of segments) {
     for (const word of tokenizeShellWords(segment)) {
       if (!isEnvironmentAssignmentWord(word)) break;
-      if (conductorRuntimeEnvironmentNameIsSensitive(shellAssignmentName(word))) return true;
+      const name = shellAssignmentName(word);
+      if (
+        conductorRuntimeEnvironmentNameIsSensitive(name)
+        || isCommandResolutionSensitiveEnvironmentName(name)
+      ) return true;
     }
   }
   return false;
