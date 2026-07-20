@@ -1243,9 +1243,21 @@ function commandHasPowerShellQuestionReturnPane(command: string): boolean {
 }
 
 function commandHasQuestionReturnPane(command: string): boolean {
-  if (hasInheritedQuestionReturnPaneBridge()) return true;
   if (commandHasPowerShellQuestionReturnPane(command)) return true;
-  return (tokenizeShellCommand(command) ?? []).some(isQuestionReturnPaneAssignment);
+  const tokens = tokenizeShellCommand(command) ?? [];
+  const localBridgeTokens = tokens.filter((token) => {
+    const equalsIndex = token.indexOf('=');
+    if (equalsIndex <= 0) return false;
+    const name = token.slice(0, equalsIndex);
+    return name === 'OMX_QUESTION_RETURN_PANE' || name === 'OMX_LEADER_PANE_ID';
+  });
+  if (localBridgeTokens.length > 0) {
+    // A command-local bridge assignment overrides the inherited environment for the
+    // invoked process, so its validity — not the inherited pane — governs the decision.
+    return localBridgeTokens.every(isQuestionReturnPaneAssignment);
+  }
+  if (hasInheritedQuestionReturnPaneBridge()) return true;
+  return tokens.some(isQuestionReturnPaneAssignment);
 }
 
 function commandInvokesOmxTeam(command: string): boolean {

@@ -12475,6 +12475,16 @@ exit 0
 				`OMX_QUESTION_RETURN_PANE=%42 omx question --input '{"question":"Question?","type":"single-answerable","options":[{"label":"A","value":"a"}],"allow_other":false,"source":"deep-interview"}' --json`,
 				"omx-question-bridged",
 			));
+			for (const [label, command] of [
+				["bridged question chained write", `OMX_QUESTION_RETURN_PANE=%42 omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json && printf x > src/generated.ts`],
+				["bridged question redirected", `OMX_QUESTION_RETURN_PANE=%42 omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json > .omx/context/question.json`],
+				["bridged question command substitution", `OMX_QUESTION_RETURN_PANE=%42 omx question --input "$(cat .omx/state/session.json)" --json`],
+				["bridged question process substitution", `OMX_QUESTION_RETURN_PANE=%42 omx question --input <(printf '{}') --json`],
+				["bridged question script execution", `OMX_QUESTION_RETURN_PANE=%42 bash -c 'omx question --input "{}" --json'`],
+				["bridged question state mutation", `OMX_QUESTION_RETURN_PANE=%42 omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json; omx state write --input '{"mode":"deep-interview","active":false}' --json`],
+			] as const) {
+				await assertDenied(label, await bash(command, label), /omx question|Deep-interview is active|src\/generated\.ts|write intent|state/);
+			}
 			await assertDenied("missing omx question bridge keeps bridge-specific denial", await bash(
 				`omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json`,
 				"omx-question-missing-bridge",
@@ -12483,6 +12493,14 @@ exit 0
 				process.env.OMX_QUESTION_RETURN_PANE = "not-a-pane";
 				try {
 					return await bash(`omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json`, "omx-question-invalid-bridge");
+				} finally {
+					delete process.env.OMX_QUESTION_RETURN_PANE;
+				}
+			})(), /OMX_QUESTION_RETURN_PANE=\$TMUX_PANE/);
+			await assertDenied("malformed inline bridge overrides inherited valid bridge", await (async () => {
+				process.env.OMX_QUESTION_RETURN_PANE = "%42";
+				try {
+					return await bash(`OMX_QUESTION_RETURN_PANE=not-a-pane omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json`, "omx-question-inline-invalid-overrides-inherited");
 				} finally {
 					delete process.env.OMX_QUESTION_RETURN_PANE;
 				}
@@ -12504,6 +12522,16 @@ exit 0
 				["chained mutation", "omx --help && printf x > src/generated.ts", /src\/generated\.ts|Deep-interview is active/],
 				["command substitution mutation", "omx --help $(printf x > src/generated.ts)", /src\/generated\.ts|Deep-interview is active/],
 				["process substitution mutation", "cat <(printf x > src/generated.ts)", /src\/generated\.ts|Deep-interview is active/],
+				["omx help with node preload", "NODE_OPTIONS='--require ./preload.cjs' omx --help", /NODE_OPTIONS|Deep-interview is active|preload|write intent/],
+				["omx state read with node import", "NODE_OPTIONS='--import ./preload.mjs' omx state read --json", /NODE_OPTIONS|Deep-interview is active|preload|write intent/],
+				["rtk version with node preload", "NODE_OPTIONS='--require ./preload.cjs' rtk --version", /NODE_OPTIONS|Deep-interview is active|preload|write intent/],
+				["omx help with dynamic env assignment", "OMX_QUESTION_RETURN_PANE=$(printf %42) omx --help", /Deep-interview is active|write intent|OMX_QUESTION_RETURN_PANE/],
+				["gh web launcher", "gh pr view 3240 --repo Yeachan-Heo/oh-my-codex --web", /gh|Deep-interview is active|write intent/],
+				["gh run watch polling", "gh run watch 123 --repo Yeachan-Heo/oh-my-codex", /gh|Deep-interview is active|write intent/],
+				["gh alias execution surface", "gh alias list", /gh|Deep-interview is active|write intent/],
+				["gh mutation variant", "gh pr checkout 3240 --repo Yeachan-Heo/oh-my-codex", /gh|Deep-interview is active|write intent/],
+				["gh dynamic repo value", "gh pr view 3240 --repo $(printf Yeachan-Heo/oh-my-codex)", /gh|Deep-interview is active|write intent/],
+				["gh output redirection", "gh pr view 3240 --repo Yeachan-Heo/oh-my-codex > .omx/context/pr.json", /gh|Deep-interview is active|write intent|.omx\/context/],
 				["wrapper smuggling", `env node --require ./preload.js dist/cli/omx.js state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: "sess-issue-3239", workingDirectory: cwd })}' --json`, /runtime wrapper|Deep-interview is active|write intent/],
 				["generated tmp script", "cat > .omx/tmp/run.sh <<'EOF'\necho unsafe\nEOF\nbash .omx/tmp/run.sh", /.omx\/tmp|generated-script|Deep-interview is active/],
 			] as const) {

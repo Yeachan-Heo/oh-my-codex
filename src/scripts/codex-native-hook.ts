@@ -8711,6 +8711,19 @@ function isAllowedDeepInterviewCommandSpecificBash(
     || isAllowedVersionProbeCommand(command);
 }
 
+function commandHasUnsafeLeadingRuntimeEnvironment(command: string): boolean {
+  const segments = splitShellCommandSegments(
+    stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command)),
+  );
+  for (const segment of segments) {
+    for (const word of tokenizeShellWords(segment)) {
+      if (!isEnvironmentAssignmentWord(word)) break;
+      if (conductorRuntimeEnvironmentNameIsSensitive(shellAssignmentName(word))) return true;
+    }
+  }
+  return false;
+}
+
 function isAllowedDeepInterviewBashWrite(
   cwd: string,
   command: string,
@@ -8718,6 +8731,15 @@ function isAllowedDeepInterviewBashWrite(
   sessionId = "",
   payload?: CodexHookPayload,
 ): boolean {
+  if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
+  const questionClassification = payload
+    ? classifyOmxQuestionPreToolUse(command, payload)
+    : { kind: "not-question" as const };
+  if (questionClassification.kind !== "not-question") {
+    // omx question is only permitted as a clean, standalone bridged invocation; any
+    // compound/redirect/substitution form is denied so it cannot smuggle a mutation.
+    return questionClassification.kind === "allowed" && isSingleLiteralShellInvocation(command);
+  }
   if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
@@ -10620,13 +10642,12 @@ function ghReadOnlyCommandHasStaticRemoteArguments(words: string[], commandIndex
     ["issue", ["list", "status", "view"]],
     ["pr", ["checks", "diff", "list", "status", "view"]],
     ["release", ["list", "view"]],
-    ["run", ["list", "view", "watch"]],
+    ["run", ["list", "view"]],
     ["repo", ["list", "view"]],
     ["gist", ["list", "view"]],
     ["workflow", ["list", "view"]],
     ["auth", ["status"]],
     ["config", ["get"]],
-    ["alias", ["list"]],
     ["extension", ["list"]],
   ]);
   if (!readOnly.get(command)?.includes(subcommand)) return false;
@@ -10636,7 +10657,7 @@ function ghReadOnlyCommandHasStaticRemoteArguments(words: string[], commandIndex
     "--head", "--branch", "--commit", "--workflow", "--app", "--user",
   ]);
   const flagOptions = new Set([
-    "--web", "--comments", "--files", "--patch", "--verbose", "--paginate",
+    "--comments", "--files", "--patch", "--verbose", "--paginate",
     "--archived", "--source", "--fork", "--public", "--private", "--internal",
     "--owner", "--all", "--compact",
   ]);
@@ -10677,9 +10698,9 @@ function ghCommandHasMutationIntent(words: string[], commandIndex: number): bool
   if (command === "api") return parseConductorStaticGhApiInvocation(words, commandIndex)?.mutationIntent ?? true;
   const readOnly = new Map<string, string[]>([
     ["issue", ["list", "status", "view"]], ["pr", ["checks", "diff", "list", "status", "view"]],
-    ["release", ["list", "view"]], ["run", ["list", "view", "watch"]], ["repo", ["list", "view"]],
+    ["release", ["list", "view"]], ["run", ["list", "view"]], ["repo", ["list", "view"]],
     ["gist", ["list", "view"]], ["workflow", ["list", "view"]],
-    ["auth", ["status"]], ["config", ["get"]], ["alias", ["list"]], ["extension", ["list"]],
+    ["auth", ["status"]], ["config", ["get"]], ["extension", ["list"]],
   ]);
   return !readOnly.get(command)?.includes(subcommand);
 }
