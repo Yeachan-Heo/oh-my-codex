@@ -274,6 +274,62 @@ async function writeSessionSkillActiveState(
 	);
 }
 
+
+async function writeIssue3239ActiveAutopilotDeepInterviewState(
+	cwd: string,
+	sessionId: string,
+	threadId: string,
+): Promise<void> {
+	const stateDir = join(cwd, ".omx", "state");
+	const sessionDir = join(stateDir, "sessions", sessionId);
+	await mkdir(sessionDir, { recursive: true });
+	await writeJson(join(stateDir, "session.json"), {
+		session_id: sessionId,
+		leader_thread_id: threadId,
+		cwd,
+	});
+	await writeJson(join(stateDir, "subagent-tracking.json"), {
+		schemaVersion: 1,
+		sessions: {
+			[sessionId]: {
+				session_id: sessionId,
+				leader_thread_id: threadId,
+				threads: {
+					[threadId]: { thread_id: threadId, kind: "leader" },
+				},
+			},
+		},
+	});
+	await writeJson(join(sessionDir, "skill-active-state.json"), {
+		version: 1,
+		active: true,
+		skill: "autopilot",
+		phase: "deep-interview",
+		session_id: sessionId,
+		thread_id: threadId,
+		active_skills: [
+			{ skill: "autopilot", phase: "deep-interview", active: true, session_id: sessionId, thread_id: threadId },
+		],
+	});
+	await writeJson(join(sessionDir, "autopilot-state.json"), {
+		active: true,
+		mode: "autopilot",
+		current_phase: "deep-interview",
+		session_id: sessionId,
+		thread_id: threadId,
+		workingDirectory: cwd,
+		deep_interview_gate: { status: "required" },
+	});
+	await writeJson(join(sessionDir, "deep-interview-state.json"), {
+		active: true,
+		mode: "deep-interview",
+		current_phase: "intent-first",
+		session_id: sessionId,
+		thread_id: threadId,
+		workingDirectory: cwd,
+	});
+}
+
 async function setTeamPaneIds(
 	cwd: string,
 	teamName: string,
@@ -12362,6 +12418,116 @@ exit 0
 			);
 			assert.equal(stateRepair.outputJson, null);
 		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+
+	it("issue #3239 permits command-specific safe operations during Autopilot deep-interview without relaxing mutation guards", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-issue-3239-deep-interview-"));
+		const originalQuestionReturnPane = process.env.OMX_QUESTION_RETURN_PANE;
+		const originalTmuxPane = process.env.TMUX_PANE;
+		try {
+			const sessionId = "sess-issue-3239";
+			const threadId = "thread-issue-3239";
+			const childThreadId = "thread-issue-3239-child";
+			await writeIssue3239ActiveAutopilotDeepInterviewState(cwd, sessionId, threadId);
+			await writeJson(join(cwd, ".omx", "state", "subagent-tracking.json"), {
+				schemaVersion: 1,
+				sessions: {
+					[sessionId]: {
+						session_id: sessionId,
+						leader_thread_id: threadId,
+						threads: {
+							[threadId]: { thread_id: threadId, kind: "leader" },
+							[childThreadId]: { thread_id: childThreadId, kind: "subagent", parent_thread_id: threadId },
+						},
+					},
+				},
+			});
+			await mkdir(join(cwd, "src"), { recursive: true });
+			await writeFile(join(cwd, "src", "runtime.ts"), "export const runtime = true;\n");
+			process.env.TMUX_PANE = "%42";
+			delete process.env.OMX_QUESTION_RETURN_PANE;
+
+			const dispatch = (toolName: string, toolInput: Record<string, unknown>, toolUseId: string) => dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: sessionId,
+				thread_id: threadId,
+				agent_id: threadId,
+				tool_name: toolName,
+				tool_use_id: toolUseId,
+				tool_input: toolInput,
+			}, { cwd });
+			const bash = (command: string, label: string) => dispatch("Bash", { command }, `tool-issue-3239-${label}`);
+			const assertAllowed = async (label: string, result: Awaited<ReturnType<typeof dispatchCodexNativeHook>>) => {
+				assert.equal(result.omxEventName, "pre-tool-use", label);
+				assert.equal(result.outputJson, null, label);
+			};
+			const assertDenied = async (label: string, result: Awaited<ReturnType<typeof dispatchCodexNativeHook>>, pattern?: RegExp) => {
+				assert.equal(result.omxEventName, "pre-tool-use", label);
+				assert.equal(result.outputJson?.decision, "block", label);
+				if (pattern) assert.match(JSON.stringify(result.outputJson), pattern, label);
+			};
+
+			await assertAllowed("valid attached-tmux omx question bridge", await bash(
+				`OMX_QUESTION_RETURN_PANE=%42 omx question --input '{"question":"Question?","type":"single-answerable","options":[{"label":"A","value":"a"}],"allow_other":false,"source":"deep-interview"}' --json`,
+				"omx-question-bridged",
+			));
+			await assertDenied("missing omx question bridge keeps bridge-specific denial", await bash(
+				`omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json`,
+				"omx-question-missing-bridge",
+			), /OMX_QUESTION_RETURN_PANE=\$TMUX_PANE/);
+			await assertDenied("invalid inherited bridge keeps bridge-specific denial", await (async () => {
+				process.env.OMX_QUESTION_RETURN_PANE = "not-a-pane";
+				try {
+					return await bash(`omx question --input '{"question":"Question?","options":["A"],"allow_other":false}' --json`, "omx-question-invalid-bridge");
+				} finally {
+					delete process.env.OMX_QUESTION_RETURN_PANE;
+				}
+			})(), /OMX_QUESTION_RETURN_PANE=\$TMUX_PANE/);
+			await assertAllowed("direct documented cancellation", await bash("omx cancel", "omx-cancel"));
+			await assertDenied("chained cancellation is not documented direct cancellation", await bash("printf ready && omx cancel", "omx-cancel-chained"), /Deep-interview is active|write intent|handoff|direct/);
+
+			for (const [label, command] of [
+				["omx-help", "omx --help"],
+				["omx-state-read", "omx state read --json"],
+				["omx-cleanup-dry-run", "omx cleanup --dry-run"],
+				["gh-issue-list", "gh issue list --repo Yeachan-Heo/oh-my-codex"],
+				["rtk-version", "rtk --version"],
+			] as const) {
+				await assertAllowed(label, await bash(command, label));
+			}
+
+			for (const [label, command, pattern] of [
+				["chained mutation", "omx --help && printf x > src/generated.ts", /src\/generated\.ts|Deep-interview is active/],
+				["command substitution mutation", "omx --help $(printf x > src/generated.ts)", /src\/generated\.ts|Deep-interview is active/],
+				["process substitution mutation", "cat <(printf x > src/generated.ts)", /src\/generated\.ts|Deep-interview is active/],
+				["wrapper smuggling", `env node --require ./preload.js dist/cli/omx.js state write --input '${JSON.stringify({ mode: "deep-interview", active: false, current_phase: "complete", session_id: "sess-issue-3239", workingDirectory: cwd })}' --json`, /runtime wrapper|Deep-interview is active|write intent/],
+				["generated tmp script", "cat > .omx/tmp/run.sh <<'EOF'\necho unsafe\nEOF\nbash .omx/tmp/run.sh", /.omx\/tmp|generated-script|Deep-interview is active/],
+			] as const) {
+				await assertDenied(label, await bash(command, label), pattern);
+			}
+
+			await assertDenied("native-child mutation", await dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: sessionId,
+				thread_id: childThreadId,
+				agent_id: childThreadId,
+				tool_name: "Bash",
+				tool_use_id: "tool-issue-3239-native-child",
+				tool_input: { command: "printf x > .omx/context/native-child.md" },
+			}, { cwd }), /OWNER_CONFIRMATION_REQUIRED|native child/);
+			await assertDenied("protected state raw write", await dispatch("Write", { file_path: ".omx/state/session.json", content: "{}\n" }, "tool-issue-3239-protected-state"), /Protected workflow state|Deep-interview is active/);
+			await assertDenied("implementation write", await dispatch("Edit", { file_path: "src/runtime.ts", old_string: "true", new_string: "false" }, "tool-issue-3239-implementation-write"), /Deep-interview is active .*implementation\/write tools are blocked/i);
+			await assertDenied("unknown tool", await dispatch("mcp__unknown__mutate", { path: ".omx/context/unknown.md" }, "tool-issue-3239-unknown-tool"), /not a recognized read-only or explicitly authorized deep-interview mutation transport/);
+		} finally {
+			if (originalQuestionReturnPane === undefined) delete process.env.OMX_QUESTION_RETURN_PANE;
+			else process.env.OMX_QUESTION_RETURN_PANE = originalQuestionReturnPane;
+			if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+			else process.env.TMUX_PANE = originalTmuxPane;
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});

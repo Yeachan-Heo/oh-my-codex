@@ -96,6 +96,7 @@ import {
   SLOPPY_FALLBACK_PHRASE_PATTERNS,
   buildNativePostToolUseOutput,
   buildNativePreToolUseOutput,
+  classifyOmxQuestionPreToolUse,
   commandInvokesApplyPatch,
   detectMcpTransportFailure,
   hasAnyPattern,
@@ -8625,12 +8626,99 @@ function commandEndsPlanningPhase(cwd: string, command: string): boolean {
   return payload ? isPlanningPhaseDeactivationPayload(payload) : true;
 }
 
+function isSingleLiteralShellInvocation(command: string): boolean {
+  const normalizedCommand = normalizeShellLineContinuations(command).trim();
+  if (!normalizedCommand) return false;
+  if (hasUnquotedShellControlOrRedirection(normalizedCommand)) return false;
+  if (hasUnquotedShellSubstitution(normalizedCommand)) return false;
+  if (hasDynamicNestedShellExecution(normalizedCommand)) return false;
+  return splitShellCommandSegments(stripHeredocBodiesForCommandScan(normalizedCommand)).length === 1;
+}
+
+function literalInvocationWords(command: string): string[] {
+  return tokenizeShellWords(normalizeShellLineContinuations(command).trim()).map(shellWordLiteral);
+}
+
+function skipLiteralLeadingAssignments(words: string[]): number {
+  let index = 0;
+  while (index < words.length && isEnvironmentAssignmentWord(words[index] ?? "")) index += 1;
+  return index;
+}
+
+function isDirectOmxCancelCommand(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
+  return commandNameFromShellWord(words[index] ?? "") === "omx"
+    && words[index + 1] === "cancel"
+    && words.slice(index + 2).every((word) => word === "");
+}
+
+function isAllowedOmxCleanupDryRunCommand(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
+  if (commandNameFromShellWord(words[index] ?? "") !== "omx") return false;
+  const args = words.slice(index + 1).filter(Boolean);
+  return args[0] === "cleanup"
+    && args.includes("--dry-run")
+    && args.every((arg, argIndex) => argIndex === 0 || arg === "--dry-run" || arg === "--json");
+}
+
+function isAllowedOmxReadOnlyCommand(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
+  if (commandNameFromShellWord(words[index] ?? "") !== "omx") return false;
+  const args = words.slice(index + 1).filter(Boolean);
+  if (args.length === 0) return false;
+  if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) return true;
+  if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
+  if (args[0] === "state" && ["read", "status"].includes(args[1] ?? "")) {
+    return args.slice(2).every((arg) => arg === "--json");
+  }
+  return isAllowedOmxCleanupDryRunCommand(command);
+}
+
+function isAllowedVersionProbeCommand(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
+  return commandNameFromShellWord(words[index] ?? "") === "rtk"
+    && words[index + 1] === "--version"
+    && words.slice(index + 2).every((word) => word === "");
+}
+
+function isAllowedGhReadOnlyCommand(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
+  return commandNameFromShellWord(words[index] ?? "") === "gh"
+    && !ghInvocationHasUnsafeHelperEnvironment(words, index)
+    && ghReadOnlyCommandHasStaticRemoteArguments(words, index)
+    && !ghCommandHasMutationIntent(words, index);
+}
+
+function isAllowedDeepInterviewCommandSpecificBash(
+  payload: CodexHookPayload,
+  command: string,
+): boolean {
+  const questionClassification = classifyOmxQuestionPreToolUse(command, payload);
+  if (questionClassification.kind === "allowed") return true;
+  return isDirectOmxCancelCommand(command)
+    || isAllowedOmxReadOnlyCommand(command)
+    || isAllowedGhReadOnlyCommand(command)
+    || isAllowedVersionProbeCommand(command);
+}
+
 function isAllowedDeepInterviewBashWrite(
   cwd: string,
   command: string,
   activeState?: Record<string, unknown>,
   sessionId = "",
+  payload?: CodexHookPayload,
 ): boolean {
+  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
@@ -9173,7 +9261,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   let blockedDetail = "implementation/write tools are blocked until an explicit handoff workflow is activated";
 
   if (toolName === "Bash") {
-    blocked = !isAllowedDeepInterviewBashWrite(cwd, command, activeState, sessionId);
+    blocked = !isAllowedDeepInterviewBashWrite(cwd, command, activeState, sessionId, payload);
     if (blocked) {
       blockedDetail = buildDeepInterviewBashBlockedDetail(cwd, command, sessionId);
     }
@@ -10524,10 +10612,57 @@ function ghIssueCreateHasStaticRemoteArguments(words: string[], commandIndex: nu
   return values.has("--title") && (values.has("--body") || values.has("--body-file"));
 }
 
+function ghReadOnlyCommandHasStaticRemoteArguments(words: string[], commandIndex: number): boolean {
+  const args = collectConductorInvocationWords(words, commandIndex);
+  const [command, subcommand] = ghCommandPath(words, commandIndex);
+  if (!command || !subcommand) return false;
+  const readOnly = new Map<string, string[]>([
+    ["issue", ["list", "status", "view"]],
+    ["pr", ["checks", "diff", "list", "status", "view"]],
+    ["release", ["list", "view"]],
+    ["run", ["list", "view", "watch"]],
+    ["repo", ["list", "view"]],
+    ["gist", ["list", "view"]],
+    ["workflow", ["list", "view"]],
+    ["auth", ["status"]],
+    ["config", ["get"]],
+    ["alias", ["list"]],
+    ["extension", ["list"]],
+  ]);
+  if (!readOnly.get(command)?.includes(subcommand)) return false;
+  const valueOptions = new Set([
+    "--repo", "-R", "--hostname", "--json", "--jq", "--template", "--limit",
+    "--state", "--label", "--assignee", "--author", "--search", "--base",
+    "--head", "--branch", "--commit", "--workflow", "--app", "--user",
+  ]);
+  const flagOptions = new Set([
+    "--web", "--comments", "--files", "--patch", "--verbose", "--paginate",
+    "--archived", "--source", "--fork", "--public", "--private", "--internal",
+    "--owner", "--all", "--compact",
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const rawWord = args[index] ?? "";
+    const word = shellWordLiteral(rawWord);
+    if (!word || word === "--" || isDynamicNestedCommandString(word) || /[$`\0]/.test(word)) return false;
+    if (!word.startsWith("-")) continue;
+    const option = word.includes("=") ? word.split("=", 1)[0] ?? "" : word;
+    if (flagOptions.has(option)) {
+      if (word.includes("=")) return false;
+      continue;
+    }
+    if (!valueOptions.has(option)) return false;
+    const parsed = ghStaticOptionValue(args, index, option, true);
+    if (!parsed) return false;
+    index = parsed.nextIndex;
+  }
+  return true;
+}
+
 function isPositivelyClassifiedGhCommand(words: string[], commandIndex: number): boolean {
   if (ghInvocationHasUnsafeHelperEnvironment(words, commandIndex)) return false;
   return ghApiHasStaticRemoteEndpoint(words, commandIndex)
-    || ghIssueCreateHasStaticRemoteArguments(words, commandIndex);
+    || ghIssueCreateHasStaticRemoteArguments(words, commandIndex)
+    || ghReadOnlyCommandHasStaticRemoteArguments(words, commandIndex);
 }
 
 function ghCommandUsesOnlyRemoteOptions(words: string[], commandIndex: number): boolean {
@@ -20401,7 +20536,13 @@ export async function dispatchCodexNativeHook(
       const preToolUseSessionId = sessionBinding.valid || preservesIdentitylessTeamWorkerExemption
         ? sessionBinding.canonicalSessionId
         : "";
-      outputJson = buildNativeUnknownRolePreToolUseOutput(payload, policyCwd)
+      const nativePreToolUseSpecificDeny = (() => {
+        if (safeString(payload.tool_name).trim() !== "Bash") return null;
+        const output = buildNativePreToolUseOutput(payload);
+        return output?.decision === "block" ? output : null;
+      })();
+      outputJson = nativePreToolUseSpecificDeny
+        ?? buildNativeUnknownRolePreToolUseOutput(payload, policyCwd)
         ?? await buildDeepInterviewPreToolUseBoundaryOutput(
           payload,
           policyCwd,

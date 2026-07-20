@@ -1296,27 +1296,46 @@ function buildNativeOmxTeamPreToolUseEnforcementOutput(
   };
 }
 
+export type OmxQuestionPreToolUseClassification =
+  | { kind: "not-question" }
+  | { kind: "allowed" }
+  | { kind: "denied"; output: Record<string, unknown> };
+
+export function classifyOmxQuestionPreToolUse(
+  command: string,
+  payload: CodexHookPayload,
+): OmxQuestionPreToolUseClassification {
+  if (!commandInvokesOmxQuestion(command)) return { kind: "not-question" };
+
+  if (isNativeOutsideTmuxSurface(payload)) {
+    return {
+      kind: "denied",
+      output: {
+        decision: "block",
+        reason: "omx question cannot be launched directly from Codex App/native outside-tmux Bash sessions.",
+        systemMessage: `omx question is blocked from Codex App/native outside-tmux Bash because no attached tmux pane is available. Use the native structured question tool when available, or ask exactly one concise plain-text question. Original command: ${command}`,
+      },
+    };
+  }
+
+  if (commandHasQuestionReturnPane(command)) return { kind: "allowed" };
+
+  return {
+    kind: "denied",
+    output: {
+      decision: "block",
+      reason: "omx question Bash invocations must preserve the leader pane return target.",
+      systemMessage: `omx question is blocked from Bash until the command preserves the leader pane with \`OMX_QUESTION_RETURN_PANE=$TMUX_PANE\` or an explicit \`%pane\` value. Original command: ${command}`,
+    },
+  };
+}
+
 function buildOmxQuestionPreToolUseEnforcementOutput(
   command: string,
   payload: CodexHookPayload,
 ): Record<string, unknown> | null {
-  if (!commandInvokesOmxQuestion(command)) return null;
-
-  if (isNativeOutsideTmuxSurface(payload)) {
-    return {
-      decision: "block",
-      reason: "omx question cannot be launched directly from Codex App/native outside-tmux Bash sessions.",
-      systemMessage: `omx question is blocked from Codex App/native outside-tmux Bash because no attached tmux pane is available. Use the native structured question tool when available, or ask exactly one concise plain-text question. Original command: ${command}`,
-    };
-  }
-
-  if (commandHasQuestionReturnPane(command)) return null;
-
-  return {
-    decision: "block",
-    reason: "omx question Bash invocations must preserve the leader pane return target.",
-    systemMessage: `omx question is blocked from Bash until the command preserves the leader pane with \`OMX_QUESTION_RETURN_PANE=$TMUX_PANE\` or an explicit \`%pane\` value. Original command: ${command}`,
-  };
+  const classification = classifyOmxQuestionPreToolUse(command, payload);
+  return classification.kind === "denied" ? classification.output : null;
 }
 
 export function buildNativePreToolUseOutput(
