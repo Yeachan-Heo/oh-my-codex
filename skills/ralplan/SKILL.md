@@ -104,6 +104,7 @@ When a verified official host receipt permits an execution handoff, include prod
 - `$performance-goal` — optimization/performance follow-up when the plan centers on speed, latency, throughput, memory, benchmark, or other measurable performance work.
 
 Keep `$team` as a first-class execution option and keep `$ralph` available only as an explicit fallback where appropriate: use Ultragoal as the default durable goal-mode follow-up, Team for coordinated parallel implementation, and Ralph only for intentionally selected persistent single-owner completion/verification pressure. For parallelizable durable-goal delivery, recommend `$ultragoal` + `$team` together: Ultragoal remains the leader-owned `.omx/ultragoal` ledger/Codex-goal wrapper while Team runs parallel lanes and returns checkpoint-ready evidence. Do not present Ralph as the recommended follow-up when durable goal tracking is needed; present Ultragoal as the superseding default, with Team for parallel delivery and Ralph only as an explicit fallback when its narrow persistence loop is specifically desired.
+Use the available-agent-types roster to produce explicit role/staffing allocation, reasoning-by-lane guidance, concrete launch hints (including `omx team` when parallel delivery is justified), and team verification responsibilities for any future receipt-authorized execution path.
 
 ## Pre-context Intake
 

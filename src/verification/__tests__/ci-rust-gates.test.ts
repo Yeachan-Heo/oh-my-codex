@@ -283,7 +283,7 @@ describe('CI Rust gates', () => {
 
     assert.match(
       workflow,
-      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build\]/,
+      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, build\]/,
     );
   });
 
@@ -307,6 +307,7 @@ describe('CI Rust gates', () => {
       'lint',
       'typecheck',
       'build-dist',
+      'ralplan-preflight-macos',
       'test',
       'coverage-team-critical',
       'ralph-persistence-gate',
@@ -315,7 +316,7 @@ describe('CI Rust gates', () => {
 
     assert.match(
       ciStatusJob,
-      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, test, coverage-team-critical, ralph-persistence-gate, build\]/,
+      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, build\]/,
     );
 
     for (const jobName of requiredJobs) {
