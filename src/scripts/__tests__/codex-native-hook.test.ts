@@ -4497,22 +4497,33 @@ PY`,
       assert.equal(existsSync(join(foreignCwd, ".omx", "state", "sessions", "native-unmatched-foreign-3138")), false);
       assert.equal(existsSync(join(foreignCwd, ".omx", "state", "skill-active-state.json")), false);
 
-      const foreignStop = await dispatchCodexNativeHook({
-        hook_event_name: "Stop",
+      const foreignStopPayload = {
+        hook_event_name: "Stop" as const,
         cwd: foreignCwd,
         session_id: "native-foreign-3138",
+      };
+      const foreignStop = await dispatchCodexNativeHook(foreignStopPayload, { cwd: foreignCwd });
+      assert.equal(foreignStop.outputJson, null);
+      const foreignReplay = await dispatchCodexNativeHook({
+        ...foreignStopPayload,
+        stop_hook_active: true,
       }, { cwd: foreignCwd });
-      assert.equal(foreignStop.outputJson?.decision, "block");
-      assert.equal(foreignStop.outputJson?.stopReason, "session_pointer_unusable");
+      assert.equal(foreignReplay.outputJson, null);
       assert.equal(existsSync(join(foreignCwd, ".omx", "state", "native-stop-state.json")), false);
 
-      const unmatchedStop = await dispatchCodexNativeHook({
-        hook_event_name: "Stop",
+      const unmatchedStopPayload = {
+        hook_event_name: "Stop" as const,
         cwd: conflictingCwd,
         session_id: "native-unmatched-stop-3138",
-      }, { cwd: conflictingCwd });
+      };
+      const unmatchedStop = await dispatchCodexNativeHook(unmatchedStopPayload, { cwd: conflictingCwd });
       assert.equal(unmatchedStop.outputJson?.decision, "block");
       assert.equal(unmatchedStop.outputJson?.stopReason, "session_scope_unmatched");
+      const unmatchedReplay = await dispatchCodexNativeHook({
+        ...unmatchedStopPayload,
+        stop_hook_active: true,
+      }, { cwd: conflictingCwd });
+      assert.equal(unmatchedReplay.outputJson, null);
       assert.equal(existsSync(join(conflictingCwd, ".omx", "state", "native-stop-state.json")), false);
     } finally {
       if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
@@ -27056,10 +27067,11 @@ PY`,
     }
   });
 
-  it("fails closed on Stop when session.json points to an identity-indeterminate owner", async () => {
+  it("bounds Stop replays when session.json points to an identity-indeterminate owner", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-current-session-ralph-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
+      const nativeStopStatePath = join(stateDir, "native-stop-state.json");
       await mkdir(join(stateDir, "sessions", "sess-dead"), { recursive: true });
       await writeJson(join(stateDir, "session.json"), {
         session_id: "sess-dead",
@@ -27078,7 +27090,7 @@ PY`,
         phase: "team-exec",
         active_skills: [{ skill: "team", phase: "team-exec", active: true, session_id: "sess-dead" }],
       });
-      await writeJson(join(stateDir, "native-stop-state.json"), {
+      await writeJson(nativeStopStatePath, {
         sessions: {
           "sess-dead": {
             last_signature: "ralph-stop|sess-dead|thread-1|no-message|verifying",
@@ -27086,21 +27098,61 @@ PY`,
           },
         },
       });
+      const nativeStopStateBefore = await readFile(nativeStopStatePath, "utf-8");
+      const payload = {
+        hook_event_name: "Stop" as const,
+        cwd,
+        session_id: "sess-dead",
+        thread_id: "thread-1",
+      };
 
-      const result = await dispatchCodexNativeHook(
+      const first = await dispatchCodexNativeHook(payload, { cwd });
+      const replay = await dispatchCodexNativeHook(
         {
-          hook_event_name: "Stop",
-          cwd,
-          session_id: "sess-dead",
-          thread_id: "thread-1",
+          ...payload,
           stop_hook_active: true,
         },
         { cwd },
       );
 
-      assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "session_pointer_unusable");
+      assert.equal(first.omxEventName, "stop");
+      assert.equal(first.outputJson?.decision, "block");
+      assert.equal(first.outputJson?.stopReason, "session_pointer_unusable");
+      assert.equal(replay.omxEventName, "stop");
+      assert.equal(replay.outputJson, null);
+      assert.equal(await readFile(nativeStopStatePath, "utf-8"), nativeStopStateBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds Stop replays when session.json is malformed", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-malformed-session-pointer-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, "session.json"), "{not-json");
+      const payload = {
+        hook_event_name: "Stop" as const,
+        cwd,
+        session_id: "sess-current",
+      };
+
+      const first = await dispatchCodexNativeHook(payload, { cwd });
+      const replay = await dispatchCodexNativeHook(
+        {
+          ...payload,
+          stop_hook_active: true,
+        },
+        { cwd },
+      );
+
+      assert.equal(first.omxEventName, "stop");
+      assert.equal(first.outputJson?.decision, "block");
+      assert.equal(first.outputJson?.stopReason, "session_pointer_unusable");
+      assert.equal(replay.omxEventName, "stop");
+      assert.equal(replay.outputJson, null);
+      assert.equal(existsSync(join(stateDir, "native-stop-state.json")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -27721,7 +27773,7 @@ PY`,
     }
   });
 
-  it("fails closed on Stop when session.json points to another worktree", async () => {
+  it("no-ops Stop when session.json points to another worktree", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-root-fallback-cwd-mismatch-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -27745,8 +27797,8 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "session_pointer_unusable");
+      assert.equal(result.outputJson, null);
+      assert.equal(existsSync(join(stateDir, "native-stop-state.json")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

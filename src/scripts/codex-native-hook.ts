@@ -20459,12 +20459,21 @@ export async function dispatchCodexNativeHook(
         stopReason: "session_pointer_unusable",
         reason: "OMX cannot authorize Stop without a writable session authority.",
       };
-      outputJson = {
-        decision: "block",
-        stopReason: failure.stopReason,
-        reason: failure.reason,
-        systemMessage: failure.reason,
-      };
+      const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
+      const pointerCannotAuthorizeThisCwd = pointer.status === "foreign-cwd";
+      // A foreign-cwd pointer belongs to another workspace, so it cannot authorize
+      // this Stop at all; other unusable pointers block once per Stop replay chain,
+      // then no-op when Codex marks the replay with stop_hook_active.
+      if (pointerCannotAuthorizeThisCwd || stopHookActive) {
+        outputJson = null;
+      } else {
+        outputJson = {
+          decision: "block",
+          stopReason: failure.stopReason,
+          reason: failure.reason,
+          systemMessage: failure.reason,
+        };
+      }
     }
   }
 
