@@ -21,15 +21,20 @@ pluggable multiplexer replacing OMX's tmux runtime) is out of scope.
 
 ## How it is wired (production path)
 
-The bridge is invoked from the single canonical hook seam,
-`dispatchHookEventRuntime` (`src/hooks/extensibility/runtime.ts`) — the same seam
-that already performs team-state side effects. Every native/derived lifecycle
-event (`session-start`, `run.heartbeat`, `blocked`, `needs-input`,
+The bridge is invoked from the single canonical hook seam, `dispatchHookEvent`
+(`src/hooks/extensibility/dispatcher.ts`) — the function **every** dispatch path
+funnels through (native Codex hooks via `dispatchHookEventRuntime`, team
+transitions via `src/team/runtime.ts` and `team-dispatch.ts`,
+`turn-complete`/`session-idle` via `notify-hook.ts`, derived events via
+`hook-derived-watcher.ts`, and the CLI hook path). Every native/derived/team
+lifecycle event (`session-start`, `run.heartbeat`, `blocked`, `needs-input`,
 `run.blocked_on_user`, `turn-complete`, `finished`, `failed`, `stop`,
-`session-end`, team transitions, …) flows through
-`reportHerdrLifecycleEvent` (`src/adapt/herdr/wiring.ts`), which maps it to a
-Herdr semantic state and reports it. On `session-start` it first reconciles any
-stale authority left by a crashed prior process.
+`session-end`, team transitions, …) reaches `reportHerdrLifecycleEvent`
+(`src/adapt/herdr/wiring.ts`), which maps it to a Herdr semantic state and
+reports it. The call is gated on a cheap `HERDR_ENV` check so there is zero
+import cost outside a Herdr pane, runs regardless of plugin enablement, and is
+fully best-effort. On `session-start` it first reconciles any stale authority
+left by a crashed prior process.
 
 Team transitions reach the same seam because `src/team/runtime.ts` and
 `src/hooks/notify-hook/team-dispatch.ts` emit their events through the dispatcher;
