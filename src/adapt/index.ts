@@ -21,6 +21,14 @@ import {
 	collectHermesEvidence,
 } from "./hermes.js";
 import {
+	applyHerdrEnvelope,
+	applyHerdrProbe,
+	applyHerdrStatus,
+	buildHerdrBootstrapMetadata,
+	buildHerdrRuntimeObservation,
+	collectHerdrEvidence,
+} from "./herdr.js";
+import {
 	buildOpenClawDoctorReport,
 	buildOpenClawEnvelope,
 	buildOpenClawProbeReport,
@@ -105,6 +113,9 @@ export async function buildAdaptEnvelopeForTarget(
 	now = new Date(),
 ): Promise<AdaptEnvelope> {
 	const envelope = buildAdaptEnvelope(cwd, target, now);
+	if (target === "herdr") {
+		return applyHerdrEnvelope(envelope, collectHerdrEvidence());
+	}
 	if (target !== "hermes") {
 		return envelope;
 	}
@@ -160,6 +171,9 @@ export async function buildAdaptProbeReportForTarget(
 	now = new Date(),
 ): Promise<AdaptProbeReport> {
 	const report = buildAdaptProbeReport(cwd, target, now);
+	if (target === "herdr") {
+		return applyHerdrProbe(report, collectHerdrEvidence());
+	}
 	if (target !== "hermes") {
 		return report;
 	}
@@ -222,6 +236,9 @@ export async function buildAdaptStatusReportForTarget(
 	now = new Date(),
 ): Promise<AdaptStatusReport> {
 	const report = buildAdaptStatusReport(cwd, target, now);
+	if (target === "herdr") {
+		return applyHerdrStatus(report, collectHerdrEvidence());
+	}
 	if (target !== "hermes") {
 		return report;
 	}
@@ -292,6 +309,28 @@ export async function buildAdaptDoctorReportForTarget(
 	now = new Date(),
 ): Promise<AdaptDoctorReport> {
 	const report = buildAdaptDoctorReport(cwd, target, now);
+	if (target === "herdr") {
+		const evidence = collectHerdrEvidence();
+		const runtime = buildHerdrRuntimeObservation(evidence);
+		const bootstrap = buildHerdrBootstrapMetadata();
+		const issues = report.issues.filter(
+			(issue) => issue.code !== "target_specific_logic_deferred",
+		);
+		if (!evidence.env.enabled) {
+			issues.push({
+				code: "herdr_pane_not_detected",
+				message:
+					"No Herdr pane detected (HERDR_ENV=1 + HERDR_PANE_ID absent); the opt-in bridge is inert.",
+			});
+		}
+		return {
+			...report,
+			summary:
+				"Herdr doctor reports Herdr pane detection plus OMX-owned adapter readiness; the bridge is opt-in and best-effort.",
+			issues,
+			nextSteps: [...bootstrap.nextSteps, `Herdr runtime: ${runtime.detail}`],
+		};
+	}
 	if (target !== "hermes") {
 		return report;
 	}
@@ -417,6 +456,24 @@ export async function initAdaptFoundationForTarget(
 	now = new Date(),
 ): Promise<AdaptInitResult> {
 	const result = initAdaptFoundation(cwd, target, write, now);
+	if (target === "herdr") {
+		const evidence = collectHerdrEvidence();
+		const envelope = applyHerdrEnvelope(result.envelope, evidence);
+		if (write) {
+			writeFileSync(
+				envelope.adapterPaths.envelopePath,
+				`${JSON.stringify(envelope, null, 2)}\n`,
+				"utf-8",
+			);
+		}
+		return {
+			...result,
+			envelope,
+			summary: write
+				? "Herdr adapter metadata was written under OMX-owned paths with Herdr pane detection evidence."
+				: "Herdr adapter metadata preview includes Herdr pane detection evidence; rerun with --write to materialize it.",
+		};
+	}
 	if (target !== "hermes") {
 		return result;
 	}

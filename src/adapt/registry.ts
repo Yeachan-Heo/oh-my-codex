@@ -96,6 +96,31 @@ const TARGET_DESCRIPTORS: Record<AdaptTarget, AdaptTargetDescriptor> = {
 			),
 		],
 	},
+	herdr: {
+		target: "herdr",
+		displayName: "Herdr",
+		summary:
+			"OMX-owned opt-in lifecycle/status bridge that reports OMX lifecycle and Team state to a containing Herdr pane via the documented Herdr socket/CLI API.",
+		followupHint:
+			"The Herdr bridge is opt-in and inert outside a Herdr pane; it is best-effort and never fails the OMX run. Phase 2 runtime backend is out of scope.",
+		capabilities: [
+			...FOUNDATION_CAPABILITIES,
+			capability(
+				"herdr-env-detection",
+				"Herdr pane detection",
+				"target-observed",
+				"stub",
+				"Detects HERDR_ENV=1, HERDR_PANE_ID, and HERDR_SOCKET_PATH exported by a containing Herdr pane.",
+			),
+			capability(
+				"lifecycle-status-bridge",
+				"Lifecycle/status bridge",
+				"shared-contract",
+				"stub",
+				"Maps OMX lifecycle/Team state to Herdr semantic states with monotonic per-source seq ordering and authority release on terminal states.",
+			),
+		],
+	},
 };
 
 export function listAdaptTargets(): AdaptTargetDescriptor[] {

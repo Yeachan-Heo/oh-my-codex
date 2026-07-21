@@ -20,6 +20,7 @@ Current targets:
 
 - `openclaw`
 - `hermes`
+- `herdr`
 
 Hermes follow-on behavior in this worktree:
 
@@ -47,3 +48,12 @@ Foundation constraints:
 - command-gateway readiness still requires `OMX_OPENCLAW_COMMAND=1`
 
 Hermes-specific evidence discovery uses `HERMES_HOME` plus an overrideable Hermes source root (`OMX_ADAPT_HERMES_ROOT`) so OMX can inspect an external runtime without vendoring or mutating it.
+
+Herdr follow-on behavior (issue #3241, Phase 1):
+
+- `probe`/`status`/`envelope`/`doctor` detect a containing Herdr pane via `HERDR_ENV=1`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`
+- the opt-in lifecycle/status bridge reports OMX lifecycle and Team state as Herdr semantic states (`working`/`blocked`/`idle`/`unknown`) using the documented `pane.report_agent` / `pane.release_agent` surfaces
+- reports use a single monotonically increasing per-source `seq` so stale reports cannot win, and authority is released on terminal states
+- the bridge is best-effort and non-blocking: a Herdr socket/CLI failure never fails the OMX run, and there is no behavior change outside a Herdr pane
+
+See [`docs/herdr-bridge.md`](./herdr-bridge.md) for the full Phase 1 design and the Phase 2 (runtime backend) boundary.

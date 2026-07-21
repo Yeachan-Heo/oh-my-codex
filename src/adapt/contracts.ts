@@ -1,6 +1,6 @@
 export const ADAPT_SCHEMA_VERSION = "1.0";
 
-export const ADAPT_TARGETS = ["openclaw", "hermes"] as const;
+export const ADAPT_TARGETS = ["openclaw", "hermes", "herdr"] as const;
 export type AdaptTarget = (typeof ADAPT_TARGETS)[number];
 
 export const ADAPT_SUBCOMMANDS = [
