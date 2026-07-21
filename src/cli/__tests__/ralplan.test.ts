@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { ralplanCommand, type RalplanCommandDependencies } from '../ralplan.js';
+import { RALPLAN_HELP, ralplanCommand, type RalplanCommandDependencies } from '../ralplan.js';
 
 async function invoke(args: string[], deps: RalplanCommandDependencies = {}) {
   const stdout: string[] = [];
@@ -17,6 +17,13 @@ async function invoke(args: string[], deps: RalplanCommandDependencies = {}) {
 }
 
 describe('#3194 ralplan CLI unsupported-only surface', () => {
+  it('documents only fail-closed adapted-authority diagnostics', () => {
+    assert.match(RALPLAN_HELP, /fail-closed adapted-authority diagnostics/);
+    assert.match(RALPLAN_HELP, /Required only when native role routing is unavailable and adapted Ralplan authority is requested/);
+    assert.match(RALPLAN_HELP, /Ordinary work remains under its own workflow gates/);
+    assert.match(RALPLAN_HELP, /Compatibility diagnostic only: installed roles are denied with unsupported_documented_leader_proof/);
+    assert.doesNotMatch(RALPLAN_HELP, /validated role intents/i);
+  });
   it('fails the explicit adapted-surface preflight without unproven mutation', async () => {
     let resolved = false;
     let neutralized = false;

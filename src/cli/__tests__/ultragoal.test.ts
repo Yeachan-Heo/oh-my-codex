@@ -230,6 +230,9 @@ describe('cli/ultragoal', () => {
         assert.equal(roleRoutingOutput.includes(buildRoleRoutingUnavailableGuidance(expectedRoleRoutingSupport)), true);
         assert.equal(roleRoutingOutput.includes(LEADER_CONDUCTOR_BLOCK), false);
         assert.equal(roleRoutingOutput.includes(buildUnsupportedNativeSubagentGuidance(unsupportedEvidence)), false);
+        assert.match(roleRoutingOutput, /When adapted Ralplan authority is requested, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`/);
+        assert.match(roleRoutingOutput, /Ordinary native sessions and ordinary work remain under their own workflow gates/);
+        assert.doesNotMatch(roleRoutingOutput, /Before Ralplan planner, reviewer, HUD, runtime, or delegation work/);
       } finally {
         if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
         else delete process.env.OMX_SESSION_ID;

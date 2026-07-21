@@ -2396,6 +2396,11 @@ describe("resolveCliInvocation", () => {
     assert.match(HELP, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
   });
 
+  it("scopes Ralplan authority preflight in top-level help", () => {
+    assert.match(HELP, /omx ralplan\s+Adapted Ralplan authority support; preflight applies only when native role routing is unavailable\s+and adapted Ralplan authority is requested/);
+    assert.doesNotMatch(HELP, /Record validated role intents/);
+  });
+
   it("advertises only the four supported root reasoning modes", () => {
     assert.match(HELP, /omx reasoning Show or set model reasoning effort \(low\|medium\|high\|xhigh\)/);
     assert.match(HELP, /--high\s+Launch Codex with high reasoning effort/);

@@ -277,7 +277,8 @@ Usage:
                 Alias for agents-init (lightweight AGENTS bootstrap only)
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
   omx ralph     Launch Codex with ralph persistence mode active
-  omx ralplan   Record validated role intents for adapted native subagent spawns
+  omx ralplan   Adapted Ralplan authority support; preflight applies only when native role routing is unavailable
+                and adapted Ralplan authority is requested; ordinary work remains under its own workflow gates
   omx ultragoal Create, resume, and checkpoint durable multi-goal plans over Codex goal mode
   omx performance-goal
                 Create, hand off, and gate evaluator-backed performance goals

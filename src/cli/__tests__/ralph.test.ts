@@ -290,8 +290,8 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /never omit `agent_type` for generic OMX work/);
     assert.match(instructions, /role_routing_unavailable/);
     assert.match(instructions, /do not fabricate `agent_type`/);
-    assert.match(instructions, /omx ralplan preflight --json/);
-    assert.match(instructions, /unsupported_documented_leader_proof/);
+    assert.match(instructions, /When it reports `role_routing_unavailable` and adapted Ralplan authority is requested, do not fabricate `agent_type`; run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`\. Ordinary work remains under its own workflow gates/);
+    assert.doesNotMatch(instructions, /Before Ralplan-originated planning, state, HUD, runtime, or delegation work/);
     assert.match(instructions, /never fake the role via a prompt label/i);
     assert.match(instructions, /use `reasoning_effort` instead of `tier`/);
     assert.match(instructions, /LOW -> `low`/);

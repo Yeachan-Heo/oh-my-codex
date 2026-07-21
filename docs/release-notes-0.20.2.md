@@ -8,6 +8,8 @@ Release date: 2026-07-16
 
 - **Authenticated Ralplan bootstrap** — a fresh authenticated App leader can write Ralplan role intent during its first turn. Durable leader attestation, atomic tracker-locked intent publication, single-flight behavior, restart recovery, and subagent/provenance exclusion fail closed on ambiguity (#3184; issue #3181).
 - **Native subagents and hooks** — App `spawn_agent` routing follows a surface-aware role contract; adapted-role tracker evidence and routing markers bind transactionally, recover after crashes, and clean abandoned cross-process lock artifacts (#3152, #3166; issue #3118). Recognized native children can stop without an auto-nudge (#3180).
+
+> **Current status / supersession (ADR 3212; applies to the authority claims above):** Local leader attestation and adapted role intent no longer authorize. Typed routing/tracker evidence are lifecycle/diagnostic only. On `role_routing_unavailable` adapted Ralplan authority attempts, installed role-intent/preflight fails closed with `unsupported_documented_leader_proof`. Consensus is unavailable with `documented_host_consensus_receipt_unavailable` absent an official host receipt.
 - **Provenance and notification correctness** — prompt session provenance is isolated between concurrent chats, fallback notification delivery deduplicates across processes, and canonical Ralplan ownership refuses ambiguous session aliases (#3168, #3165, #3158).
 - **Setup, Team, and state safety** — setup persists explicit root-local `AGENTS.md` merge policy, Team validates and honors explicit worker policy before tmux startup, and foreign stale transition mirrors cannot alter current workflow state (#3164, #3136, #3172).
 

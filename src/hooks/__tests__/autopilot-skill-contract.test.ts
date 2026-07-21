@@ -12,6 +12,13 @@ const ultragoalSkill = readFileSync(join(__dirname, '../../../skills/ultragoal/S
 const pipelineSkill = readFileSync(join(__dirname, '../../../skills/pipeline/SKILL.md'), 'utf-8');
 const skillsDocs = readFileSync(join(__dirname, '../../../docs/skills.html'), 'utf-8');
 const gettingStartedDocs = readFileSync(join(__dirname, '../../../docs/getting-started.html'), 'utf-8');
+const guidanceRoot = join(__dirname, '../../..');
+const authorityGuidanceSurfaces = [
+  'docs/codex-native-hooks.md',
+  'docs/adr/3194-codex-01445-documented-leader-proof.md',
+  'skills/ralplan/SKILL.md',
+  'plugins/oh-my-codex/skills/ralplan/SKILL.md',
+] as const;
 
 describe('autopilot skill default Ultragoal contract', () => {
   it('makes deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa the recommended/default contract', () => {
@@ -101,11 +108,29 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(ralplanSkill, /do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt/i);
     assert.match(ralplanSkill, /do not ask the Architect subagent to perform the Critic gate/i);
     // Surface-aware role contract (#3118): agent_type is mandatory only where the
-    // native surface exposes role routing; otherwise the adapted role-intent pass
-    // carries the validated role via a correlation token, never a prompt label.
+    // native surface exposes role routing. Without it, ordinary work proceeds under
+    // its own workflow gates; adapted Ralplan authority remains fail-closed.
     assert.match(ralplanSkill, /When the native surface exposes `agent_type` role routing/i);
-    assert.match(ralplanSkill, /role[_ -]?routing[_ -]?unavailable/i);
-    assert.match(ralplanSkill, /omx ralplan role-intent write/i);
+    assert.match(ralplanSkill, /Run `omx ralplan preflight --json` only when the native task surface reports `role_routing_unavailable` and this workflow attempts adapted Ralplan Planner, Architect, or Critic authority, adapted role-intent, or adapted consensus authority/i);
+    assert.match(ralplanSkill, /unsupported_documented_leader_proof/i);
+    assert.doesNotMatch(ralplanSkill, /Before substantive planning, reviewer delegation, HUD\/runtime activation, or adapted-role work/i);
+  });
+
+  it('keeps documented-leader preflight capability-scoped across public guidance', () => {
+    for (const path of authorityGuidanceSurfaces) {
+      const content = readFileSync(join(guidanceRoot, path), 'utf-8');
+      assert.match(content, /role_routing_unavailable/);
+      assert.match(content, /adapted Ralplan/i);
+      assert.match(content, /Ordinary native planning[\s\S]*outside this preflight boundary/i);
+      assert.doesNotMatch(content, /before (substantive )?planning, reviewer delegation, HUD\/runtime activation/i);
+    }
+
+    for (const path of ['docs/release-notes-0.20.2.md', 'docs/release-notes-0.20.3.md', 'CHANGELOG.md', 'RELEASE_BODY.md']) {
+      const content = readFileSync(join(guidanceRoot, path), 'utf-8');
+      assert.match(content, /Current status \/ supersession/);
+      assert.match(content, /unsupported_documented_leader_proof/);
+      assert.match(content, /documented_host_consensus_receipt_unavailable/);
+    }
   });
 
   it('documents ralplan consensus completion in pipeline and public docs', () => {

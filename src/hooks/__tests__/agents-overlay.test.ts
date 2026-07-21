@@ -69,11 +69,13 @@ describe("generateOverlay", () => {
     const overlay = await generateOverlay(tempDir, "native-subagent-routing");
     assert.match(overlay, /\*\*Native Subagent Routing:\*\*/);
     assert.match(overlay, /When the native surface exposes `agent_type` role routing, set `agent_type` to an installed OMX role and never omit it for OMX work/i);
-    assert.match(overlay, /role_routing_unavailable/i);
+    assert.match(overlay, /When it reports `role_routing_unavailable` and adapted Ralplan authority is requested/i);
     assert.match(overlay, /do not fabricate `agent_type`/i);
     assert.match(overlay, /omx ralplan preflight --json/i);
     assert.match(overlay, /unsupported_documented_leader_proof/i);
+    assert.match(overlay, /Ordinary work remains under its own workflow gates/i);
     assert.match(overlay, /never fake the role via a prompt label/i);
+    assert.doesNotMatch(overlay, /before Ralplan planning, state, HUD, runtime, or delegation work, run `omx ralplan preflight --json`/i);
   });
 
   it("includes the team orchestrator overlay only when orchestration mode is team", async () => {

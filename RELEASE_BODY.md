@@ -7,6 +7,8 @@
 - Reasoning effort can be capped per agent through the team model contract (#3143).
 - Team validates exact live tmux panes before explicit lifecycle effects and preserves pane ownership through startup, scaling, rollback, recovery, and teardown, with durable failure-atomic membership/scaling transactions and pane-pid-bound notify dispatch (#3153; issue #3121).
 - Ralplan requires strict direct review order, fails closed without documented leader proof, attests the reconciled leader in `PreToolUse`, and resolves the App leader-proof regression by parsing collaboration results structurally (#3186, #3196, #3187, #3218; issues #3194, #3181, #3204).
+
+> **Current status / supersession (ADR 3212):** Local leader attestation and adapted role intent no longer authorize. Typed routing/tracker evidence are lifecycle/diagnostic only. On `role_routing_unavailable` adapted Ralplan authority attempts, installed role-intent/preflight fails closed with `unsupported_documented_leader_proof`. Consensus is unavailable with `documented_host_consensus_receipt_unavailable` absent an official host receipt.
 - Team mailbox wakeups are coalesced with every wake acknowledged (#3217; issue #3195), and exact session pointer lock recovery is added (#3215; issue #3203).
 - Native child write identity is hardened across the native hook, code-intel, and wiki MCP surfaces (#3135; issue #3127), and the configuration generator reconciles duplicate project trust tables idempotently (#3201; issue #3199).
 - The plugin native hook returns structured responses for oversized tool-hook payloads (#3211), and Windows regular-file `fsync` `EPERM` is tolerated across hooks, uninstall, and the native hook (#3191).

@@ -1,11 +1,14 @@
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
 import { neutralizeOwnedRoutingRalplan } from '../ralplan/documented-leader-preflight.js';
 
-export const RALPLAN_HELP = `omx ralplan - RALPLAN consensus support commands
+export const RALPLAN_HELP = `omx ralplan - fail-closed adapted-authority diagnostics
 
 Usage:
   omx ralplan preflight [--json]
+                Required only when native role routing is unavailable and adapted Ralplan authority is requested.
+                Ordinary work remains under its own workflow gates.
   omx ralplan role-intent write --role <role> --parent-thread <id> [--session <id>] [--ttl-ms <n>] [--json]
+                Compatibility diagnostic only: installed roles are denied with unsupported_documented_leader_proof.
 `;
 
 type RoleIntentFailureReason = 'unknown_role' | 'unsupported_documented_leader_proof';

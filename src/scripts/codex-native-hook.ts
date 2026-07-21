@@ -3548,7 +3548,7 @@ function buildNativeUnknownRolePreToolUseOutput(
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        "Use an installed OMX role for native agent_type/agent_role dispatch. When the surface reports role_routing_unavailable, do not fabricate agent_type; run `omx ralplan preflight --json` before Ralplan planning, state, HUD, runtime, or delegation work and stop on `unsupported_documented_leader_proof`.",
+        "Use an installed OMX role for native agent_type/agent_role dispatch. When the surface reports role_routing_unavailable and adapted Ralplan authority is requested, do not fabricate agent_type; run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`. Ordinary work remains under its own workflow gates.",
     },
   };
 }
@@ -20156,13 +20156,13 @@ export async function dispatchCodexNativeHook(
         resolvedNativeSessionId = safeString(sessionState.native_session_id).trim() || nativeSessionId;
         allowImplicitSessionSideEffects = true;
         stopAuthorizationFailure = null;
-        // #3181: leader attestation is intentionally NOT performed here. This branch is
+        // #3181: adapted Ralplan authority is intentionally NOT evaluated here. This branch is
         // reached whenever readNativeSubagentSessionStartMetadata() returns null, which
         // conflates a genuine root start with an unreadable/malformed child transcript, so
-        // it cannot positively classify a leader (a legitimate leader may also carry no
-        // transcript). Leader attestation is performed only on the strictly-gated fresh
-        // leader PreToolUse path below, which fires before the first in-turn role-intent
-        // write. Fail closed here rather than risk a false-leader adoption.
+        // it cannot positively classify a documented leader (a legitimate leader may also carry no
+        // transcript). The strictly-gated PreToolUse denial path below evaluates adapted Ralplan
+        // authority before the first in-turn role-intent write. Fail closed here rather than risk
+        // a false-leader adoption.
       } catch (error) {
         if (
           ownerState

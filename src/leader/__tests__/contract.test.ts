@@ -168,15 +168,16 @@ describe('leader conductor contract', () => {
     assert.equal(markerEvidence.evidenceSummary, marker.evidence);
   });
 
-  it('renders role-routing guidance that fails closed without adapted authority', () => {
+  it('renders role-routing guidance that fails closed only for adapted Ralplan authority', () => {
     const guidance = buildRoleRoutingUnavailableGuidance({
       status: 'role_routing_unavailable',
       source: 'persisted_role_routing_marker',
       evidenceSummary: 'spawn tool accepted no native role routing',
     });
-    assert.match(guidance, /omx ralplan preflight --json/);
-    assert.match(guidance, /unsupported_documented_leader_proof/);
+    assert.match(guidance, /When adapted Ralplan authority is requested, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`/);
+    assert.match(guidance, /Ordinary native sessions and ordinary work remain under their own workflow gates/);
     assert.match(guidance, /Do not fabricate agent_type/);
+    assert.doesNotMatch(guidance, /Before Ralplan planner, reviewer, HUD, runtime, or delegation work/);
     assert.doesNotMatch(guidance, /PROCEED|role-intent ledger/);
     assert.match(guidance, /Evidence: spawn tool accepted no native role routing/);
     assert.match(LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK, /reviewed alternative workflow/);

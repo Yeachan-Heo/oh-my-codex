@@ -34595,6 +34595,14 @@ describe("#3118 native role contract", () => {
 
 			assert.equal(result.outputJson?.decision, "block");
 			assert.equal(result.outputJson?.reason, unknownRoleReason);
+			const additionalContext = String(
+				(result.outputJson?.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? "",
+			);
+			assert.match(additionalContext, /When the surface reports role_routing_unavailable and adapted Ralplan authority is requested/i);
+			assert.match(additionalContext, /omx ralplan preflight --json/);
+			assert.match(additionalContext, /unsupported_documented_leader_proof/);
+			assert.match(additionalContext, /Ordinary work remains under its own workflow gates/i);
+			assert.doesNotMatch(additionalContext, /before Ralplan planning, state, HUD, runtime, or delegation work/i);
 		});
 	});
 

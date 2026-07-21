@@ -1926,11 +1926,13 @@ describe("omx setup install mode behavior", () => {
 						config,
 						/When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work/i,
 					);
-					assert.match(config, /role_routing_unavailable/i);
+					assert.match(config, /When it reports `role_routing_unavailable` and adapted Ralplan authority is requested/i);
 					assert.match(config, /do not fabricate `agent_type`/i);
 					assert.match(config, /omx ralplan preflight --json/i);
 					assert.match(config, /unsupported_documented_leader_proof/i);
+					assert.match(config, /Ordinary work remains under its own workflow gates/i);
 					assert.match(config, /never fake the role via a prompt label/i);
+					assert.doesNotMatch(config, /before Ralplan planning, state, HUD, runtime, or delegation work, run `omx ralplan preflight --json`/i);
 					assert.doesNotMatch(config, /Native subagents live in \.codex\/agents/);
 					assert.doesNotMatch(config, /Treat installed prompts as narrower execution surfaces/);
 					assert.match(config, /^plugin_hooks = true$/m);
@@ -2106,8 +2108,11 @@ describe("omx setup install mode behavior", () => {
 						config,
 						/When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work/i,
 					);
-					assert.match(config, /role_routing_unavailable/i);
+					assert.match(config, /When it reports `role_routing_unavailable` and adapted Ralplan authority is requested/i);
+					assert.match(config, /Ordinary work remains under its own workflow gates/i);
 					assert.match(config, /omx ralplan preflight --json/i);
+					assert.match(config, /unsupported_documented_leader_proof/i);
+					assert.doesNotMatch(config, /before Ralplan planning, state, HUD, runtime, or delegation work, run `omx ralplan preflight --json`/i);
 					assert.equal(
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,
