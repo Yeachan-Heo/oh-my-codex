@@ -20,8 +20,8 @@ export interface HerdrWiringResult {
 
 /**
  * Production entry point that reports a canonical OMX lifecycle event to the
- * containing Herdr pane. Called from `dispatchHookEventRuntime`, so every
- * native/derived lifecycle event flows through it. Best-effort and
+ * containing Herdr pane. Called from `dispatchHookEvent` (the single seam every
+ * native/derived/team/notify dispatch path funnels through). Best-effort and
  * non-blocking: any failure is swallowed and never affects the OMX run, and it
  * is a complete no-op outside a Herdr pane.
  */

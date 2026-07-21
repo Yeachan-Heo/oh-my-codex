@@ -312,6 +312,22 @@ export async function dispatchHookEvent(
 ): Promise<HookDispatchResult> {
 	const cwd = options.cwd || process.cwd();
 	const env = options.env || process.env;
+
+	// Opt-in Herdr lifecycle/status bridge (issue #3241). This is the single seam
+	// every dispatch path funnels through, so it covers native, derived, team,
+	// and notify events. Gated on a cheap env check so there is zero import cost
+	// outside a Herdr pane; best-effort and non-blocking — a Herdr failure never
+	// affects the OMX run and it runs regardless of plugin enablement.
+	if (env.HERDR_ENV === "1") {
+		try {
+			const { reportHerdrLifecycleEvent } = await import(
+				"../../adapt/herdr/wiring.js"
+			);
+			await reportHerdrLifecycleEvent({ cwd, event });
+		} catch {
+			// swallow: opt-in best-effort bridge
+		}
+	}
 	const stateRoot = options.stateRoot ?? getBaseStateDir(cwd, env);
 	const runtimeHookDispatchEnabled =
 		shouldForceEnableRuntimeHookDispatch(event) || isHookPluginsEnabled(env);
