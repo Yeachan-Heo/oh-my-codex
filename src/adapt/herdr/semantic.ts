@@ -59,14 +59,12 @@ const IDLE_EVENTS = new Set<string>([
 
 /**
  * OMX lifecycle events after which OMX should release `omx:runtime` authority so
- * Herdr can safely return to its normal Codex screen detection.
+ * Herdr can safely return to its normal Codex screen detection. Only whole-
+ * session shutdown releases authority; per-run `finished`/`failed` map to `idle`
+ * without releasing, because a single run ending does not mean OMX has left the
+ * pane.
  */
-const TERMINAL_EVENTS = new Set<string>([
-	"finished",
-	"failed",
-	"stop",
-	"session-end",
-]);
+const TERMINAL_EVENTS = new Set<string>(["stop", "session-end"]);
 
 export interface HerdrStateMapping {
 	state: HerdrSemanticState;

@@ -493,3 +493,27 @@ export async function initAdaptFoundationForTarget(
 			: "Hermes adapter metadata preview includes external ACP/gateway/session-store evidence; rerun with --write to materialize it.",
 	};
 }
+// Herdr lifecycle/status bridge (issue #3241, Phase 1) — reusable runtime bridge
+// plus the production wiring entry point invoked from the hook dispatcher.
+export {
+	HerdrBridge,
+	createHerdrBridge,
+	HERDR_BRIDGE_SOURCE,
+	HERDR_BRIDGE_AGENT,
+	type HerdrBridgeOptions,
+	type HerdrBridgeOutcome,
+} from "./herdr/bridge.js";
+export {
+	reportHerdrLifecycleEvent,
+	type HerdrWiringInput,
+	type HerdrWiringResult,
+} from "./herdr/wiring.js";
+export {
+	mapTeamStateToRollup,
+	type TeamStateInput,
+	type TeamWorkerStateInput,
+} from "./herdr/team-map.js";
+export {
+	detectHerdrEnv,
+	type HerdrEnv,
+} from "./herdr/transport.js";

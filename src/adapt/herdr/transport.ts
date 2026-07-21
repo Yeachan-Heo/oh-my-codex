@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { statSync } from "node:fs";
 import { createConnection } from "node:net";
+import { isAbsolute } from "node:path";
 import type { HerdrSemanticState } from "./semantic.js";
 
 /**
@@ -15,9 +17,7 @@ export interface HerdrEnv {
 	binPath: string | null;
 }
 
-export function detectHerdrEnv(
-	env: NodeJS.ProcessEnv = process.env,
-): HerdrEnv {
+export function detectHerdrEnv(env: NodeJS.ProcessEnv = process.env): HerdrEnv {
 	const paneId = nonEmpty(env.HERDR_PANE_ID);
 	const enabled = env.HERDR_ENV === "1" && paneId !== null;
 	return {
@@ -40,13 +40,7 @@ export interface HerdrAgentReport {
 	agent: string;
 	state: HerdrSemanticState;
 	message?: string;
-	/**
-	 * Monotonically increasing per-source sequence. Herdr accepts but ignores a
-	 * report whose seq is <= the last accepted seq for the same source, so stale
-	 * reports cannot overwrite newer state.
-	 */
 	seq: number;
-	/** Display-only metadata tokens (pane.report_metadata). */
 	metadata?: Record<string, string>;
 }
 
@@ -75,10 +69,7 @@ type ExecFileFn = (
 	callback: (error: Error | null) => void,
 ) => void;
 
-/**
- * Build argv for `herdr pane report-agent`. argv is passed directly to execFile
- * (no shell), so pane ids, messages, and metadata cannot inject shell syntax.
- */
+/** Build argv for `herdr pane report-agent` (no shell; execFile argv array). */
 export function buildReportAgentArgs(report: HerdrAgentReport): string[] {
 	const args = [
 		"pane",
@@ -111,6 +102,21 @@ export function buildReleaseAgentArgs(report: HerdrReleaseReport): string[] {
 	];
 }
 
+/**
+ * Trust-pin the Herdr binary: only an absolute path to an existing regular file
+ * is accepted. A bare `herdr` (PATH-resolved) is never used, to avoid PATH
+ * hijack. Returns the trusted absolute path or null.
+ */
+export function resolveTrustedHerdrBin(binPath: string | null | undefined): string | null {
+	const candidate = typeof binPath === "string" ? binPath.trim() : "";
+	if (candidate.length === 0 || !isAbsolute(candidate)) return null;
+	try {
+		return statSync(candidate).isFile() ? candidate : null;
+	} catch {
+		return null;
+	}
+}
+
 export interface CliTransportOptions {
 	binPath?: string | null;
 	/** Injectable for tests; defaults to node:child_process execFile. */
@@ -119,16 +125,16 @@ export interface CliTransportOptions {
 }
 
 /**
- * Argv-safe CLI transport. Uses the Herdr binary resolved from HERDR_BIN_PATH
- * (falling back to `herdr` on PATH) and never shells out.
+ * Argv-safe CLI transport. Requires a trust-pinned absolute Herdr binary; never
+ * shells out and never falls back to a PATH-resolved `herdr`.
  */
 export class CliHerdrTransport implements HerdrTransport {
 	readonly kind = "cli" as const;
-	private readonly bin: string;
+	private readonly bin: string | null;
 	private readonly execFileFn: ExecFileFn;
 
 	constructor(options: CliTransportOptions = {}) {
-		this.bin = options.binPath?.trim() ? options.binPath.trim() : "herdr";
+		this.bin = resolveTrustedHerdrBin(options.binPath);
 		this.execFileFn =
 			options.execFileFn ??
 			((file, args, cb) => {
@@ -136,6 +142,11 @@ export class CliHerdrTransport implements HerdrTransport {
 					cb(err),
 				);
 			});
+	}
+
+	/** True only when a trust-pinned binary is available. */
+	get available(): boolean {
+		return this.bin !== null;
 	}
 
 	reportAgent(report: HerdrAgentReport): Promise<HerdrTransportResult> {
@@ -148,6 +159,15 @@ export class CliHerdrTransport implements HerdrTransport {
 
 	private run(args: string[], op: string): Promise<HerdrTransportResult> {
 		return new Promise((resolve) => {
+			if (!this.bin) {
+				resolve({
+					ok: false,
+					transport: "cli",
+					detail: `herdr ${op} skipped`,
+					error: "no trust-pinned herdr binary (HERDR_BIN_PATH must be an absolute existing file)",
+				});
+				return;
+			}
 			this.execFileFn(this.bin, args, (error) => {
 				if (error) {
 					resolve({
@@ -170,35 +190,54 @@ export interface SocketRequest {
 	params: Record<string, unknown>;
 }
 
-export type SocketWriter = (
-	socketPath: string,
-	request: SocketRequest,
-) => Promise<void>;
-
-export interface SocketTransportOptions {
-	socketPath: string;
-	/** Injectable for tests; defaults to a newline-delimited JSON Unix socket write. */
-	writer?: SocketWriter;
-	timeoutMs?: number;
+export interface SocketResponse {
+	id?: string;
+	result?: unknown;
+	error?: { code?: string; message?: string } | string;
 }
 
 /**
- * Raw Herdr socket transport. Herdr uses newline-delimited JSON over a local
- * Unix domain socket; method names use dot notation (pane.report_agent,
- * pane.release_agent). See herdr.dev/docs/socket-api.
+ * Send one request and await the correlated response. Implementations must only
+ * resolve `ok` when Herdr accepted the request (a matching `{id,result}`),
+ * reject on `{id,error}`, and enforce bounded framing/timeout/backpressure.
+ */
+export type SocketExchange = (
+	socketPath: string,
+	request: SocketRequest,
+) => Promise<SocketResponse>;
+
+export interface SocketTransportOptions {
+	socketPath: string;
+	/** Injectable request/response exchange; defaults to a real Unix-socket NDJSON round-trip. */
+	exchange?: SocketExchange;
+	timeoutMs?: number;
+	maxFrameBytes?: number;
+}
+
+const DEFAULT_MAX_FRAME_BYTES = 256 * 1024;
+
+/**
+ * Raw Herdr socket transport with request/response correlation. Herdr uses
+ * newline-delimited JSON over a local Unix domain socket; method names use dot
+ * notation (pane.report_agent, pane.release_agent). Success is only reported
+ * when a correlated `{id,result}` reply is received (Herdr acceptance), not when
+ * bytes flush.
  */
 export class SocketHerdrTransport implements HerdrTransport {
 	readonly kind = "socket" as const;
 	private readonly socketPath: string;
-	private readonly writer: SocketWriter;
+	private readonly exchange: SocketExchange;
 	private counter = 0;
 
 	constructor(options: SocketTransportOptions) {
 		this.socketPath = options.socketPath;
-		this.writer =
-			options.writer ??
+		this.exchange =
+			options.exchange ??
 			((socketPath, request) =>
-				writeNdjsonRequest(socketPath, request, options.timeoutMs ?? 5000));
+				ndjsonExchange(socketPath, request, {
+					timeoutMs: options.timeoutMs ?? 5000,
+					maxFrameBytes: options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES,
+				}));
 	}
 
 	reportAgent(report: HerdrAgentReport): Promise<HerdrTransportResult> {
@@ -212,17 +251,16 @@ export class SocketHerdrTransport implements HerdrTransport {
 		if (report.message !== undefined && report.message.length > 0) {
 			params.message = report.message;
 		}
+		if (report.metadata && Object.keys(report.metadata).length > 0) {
+			params.tokens = report.metadata;
+		}
 		return this.send("pane.report_agent", params, "report-agent");
 	}
 
 	releaseAgent(report: HerdrReleaseReport): Promise<HerdrTransportResult> {
 		return this.send(
 			"pane.release_agent",
-			{
-				pane_id: report.paneId,
-				source: report.source,
-				seq: report.seq,
-			},
+			{ pane_id: report.paneId, source: report.source, seq: report.seq },
 			"release-agent",
 		);
 	}
@@ -234,13 +272,33 @@ export class SocketHerdrTransport implements HerdrTransport {
 	): Promise<HerdrTransportResult> {
 		this.counter += 1;
 		const request: SocketRequest = {
-			id: `omx-${op}-${this.counter}`,
+			id: `omx-${op}-${process.pid}-${this.counter}`,
 			method,
 			params,
 		};
 		try {
-			await this.writer(this.socketPath, request);
-			return { ok: true, transport: "socket", detail: `${method} ok` };
+			const response = await this.exchange(this.socketPath, request);
+			if (response.id !== undefined && response.id !== request.id) {
+				return {
+					ok: false,
+					transport: "socket",
+					detail: `${method} response id mismatch`,
+					error: `expected ${request.id}, got ${response.id}`,
+				};
+			}
+			if (response.error !== undefined) {
+				const message =
+					typeof response.error === "string"
+						? response.error
+						: (response.error.message ?? response.error.code ?? "herdr error");
+				return {
+					ok: false,
+					transport: "socket",
+					detail: `${method} rejected`,
+					error: message,
+				};
+			}
+			return { ok: true, transport: "socket", detail: `${method} accepted` };
 		} catch (error) {
 			return {
 				ok: false,
@@ -252,28 +310,70 @@ export class SocketHerdrTransport implements HerdrTransport {
 	}
 }
 
-function writeNdjsonRequest(
+interface NdjsonExchangeOptions {
+	timeoutMs: number;
+	maxFrameBytes: number;
+}
+
+/**
+ * Real Unix-socket NDJSON request/response: write one request line, then read
+ * reply lines with a bounded buffer, parse each NDJSON line, and resolve on the
+ * first line whose `id` matches (or the first parseable object when the reply
+ * carries no id). Enforces a total-buffer cap (backpressure/oversized-frame
+ * guard) and a hard timeout.
+ */
+function ndjsonExchange(
 	socketPath: string,
 	request: SocketRequest,
-	timeoutMs: number,
-): Promise<void> {
+	options: NdjsonExchangeOptions,
+): Promise<SocketResponse> {
 	return new Promise((resolve, reject) => {
 		const socket = createConnection(socketPath);
 		let settled = false;
-		const done = (err?: Error) => {
+		let buffer = "";
+
+		const done = (err?: Error, value?: SocketResponse) => {
 			if (settled) return;
 			settled = true;
 			socket.destroy();
 			if (err) reject(err);
-			else resolve();
+			else resolve(value ?? {});
 		};
-		socket.setTimeout(timeoutMs, () => done(new Error("herdr socket timeout")));
+
+		socket.setTimeout(options.timeoutMs, () =>
+			done(new Error("herdr socket timeout")),
+		);
 		socket.on("error", (err) => done(err));
+		socket.on("close", () => done(new Error("herdr socket closed before reply")));
 		socket.on("connect", () => {
 			socket.write(`${JSON.stringify(request)}\n`, (err) => {
 				if (err) done(err);
-				else done();
 			});
+		});
+		socket.on("data", (chunk: Buffer) => {
+			buffer += chunk.toString("utf-8");
+			if (Buffer.byteLength(buffer, "utf-8") > options.maxFrameBytes) {
+				done(new Error("herdr response exceeded max frame bytes"));
+				return;
+			}
+			let newlineIndex = buffer.indexOf("\n");
+			while (newlineIndex !== -1) {
+				const line = buffer.slice(0, newlineIndex).trim();
+				buffer = buffer.slice(newlineIndex + 1);
+				if (line.length > 0) {
+					let parsed: SocketResponse | null = null;
+					try {
+						parsed = JSON.parse(line) as SocketResponse;
+					} catch {
+						parsed = null;
+					}
+					if (parsed && (parsed.id === undefined || parsed.id === request.id)) {
+						done(undefined, parsed);
+						return;
+					}
+				}
+				newlineIndex = buffer.indexOf("\n");
+			}
 		});
 	});
 }

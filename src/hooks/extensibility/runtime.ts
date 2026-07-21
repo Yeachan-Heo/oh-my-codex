@@ -10,6 +10,15 @@ async function handleNativeStopTeamLeaderAttention(input: HookRuntimeDispatchInp
   await markOwnedTeamsLeaderStopObserved(input.cwd, sessionId, input.event.timestamp, 'native_stop');
 }
 
+async function reportHerdrLifecycle(input: HookRuntimeDispatchInput): Promise<void> {
+  try {
+    const { reportHerdrLifecycleEvent } = await import('../../adapt/herdr/wiring.js');
+    await reportHerdrLifecycleEvent({ cwd: input.cwd, event: input.event });
+  } catch {
+    // Opt-in, best-effort bridge: a Herdr failure never affects the OMX run.
+  }
+}
+
 export async function dispatchHookEventRuntime(input: HookRuntimeDispatchInput): Promise<HookRuntimeDispatchResult> {
   const enabled = input.event.source === 'native' || input.event.source === 'derived'
     ? true
@@ -30,6 +39,7 @@ export async function dispatchHookEventRuntime(input: HookRuntimeDispatchInput):
   }
 
   await handleNativeStopTeamLeaderAttention(input);
+  await reportHerdrLifecycle(input);
 
   const result = await dispatchHookEvent(input.event, {
     cwd: input.cwd,

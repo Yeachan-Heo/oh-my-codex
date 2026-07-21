@@ -3,6 +3,11 @@ import type {
 	HookEventName,
 } from "../../hooks/extensibility/types.js";
 import {
+	clearAuthority,
+	recordAuthority,
+} from "./authority.js";
+import { sanitizeMessage, sanitizeMetadata } from "./sanitize.js";
+import {
 	type HerdrRollupInput,
 	type HerdrSemanticState,
 	type HerdrStateMapping,
@@ -10,6 +15,7 @@ import {
 	mapHookEventToHerdrState,
 	rollupTeamState,
 } from "./semantic.js";
+import { nextSeq as durableNextSeq } from "./seq-store.js";
 import {
 	CliHerdrTransport,
 	type HerdrEnv,
@@ -27,14 +33,23 @@ export interface HerdrBridgeOptions {
 	transport?: HerdrTransport;
 	source?: string;
 	agent?: string;
-	/** Optional best-effort logger; never throws into the OMX run. */
+	/** Injectable seq provider; defaults to the durable cross-process store. */
+	seqFn?: (source: string) => number;
+	/** Base dir for the durable seq/authority stores (tests). */
+	stateBaseDir?: string;
+	/**
+	 * Returns true when an OMX workflow other than this one remains active, so
+	 * release must be suppressed. Defaults to "nothing else active".
+	 */
+	workflowActiveFn?: () => boolean;
+	/** Best-effort logger; never throws into the OMX run. */
 	logger?: (message: string, meta?: Record<string, unknown>) => void;
+	/** Session id recorded on the authority record for crash reconciliation. */
+	sessionId?: string;
 }
 
 export interface HerdrBridgeOutcome {
-	/** True when the bridge attempted a report/release (i.e. inside Herdr). */
 	attempted: boolean;
-	/** True when the underlying transport call succeeded. */
 	ok: boolean;
 	skipped: boolean;
 	reason: string;
@@ -47,28 +62,38 @@ export interface HerdrBridgeOutcome {
 /**
  * Opt-in, best-effort OMX -> Herdr lifecycle/status bridge.
  *
- * Guarantees (issue #3241):
- * - No behavior change outside a detected Herdr pane (every op is a no-op when
- *   `env.enabled` is false).
- * - Ordered: a single monotonically increasing per-source seq is used for both
- *   report and release, so stale reports cannot win.
+ * - No behavior change outside a detected Herdr pane.
+ * - Ordered: seq comes from a durable cross-process per-source store, so stale
+ *   reports cannot win across concurrent hook processes or restarts.
  * - Non-blocking / failure-isolated: transport errors are captured and returned,
- *   never thrown, so a Herdr failure cannot fail the OMX run.
+ *   never thrown.
+ * - Release is gated on remaining active workflows and records/clears authority
+ *   for crash reconciliation.
  */
 export class HerdrBridge {
 	private readonly env: HerdrEnv;
 	private readonly transport: HerdrTransport | null;
 	private readonly source: string;
 	private readonly agent: string;
+	private readonly seqFn: (source: string) => number;
+	private readonly workflowActiveFn: () => boolean;
+	private readonly stateBaseDir?: string;
+	private readonly sessionId?: string;
 	private readonly logger?: HerdrBridgeOptions["logger"];
-	private seq = 0;
 	private released = false;
+	private authorityRecorded = false;
 
 	constructor(options: HerdrBridgeOptions = {}) {
 		this.env = options.env ?? detectHerdrEnv();
 		this.source = options.source ?? HERDR_BRIDGE_SOURCE;
 		this.agent = options.agent ?? HERDR_BRIDGE_AGENT;
+		this.stateBaseDir = options.stateBaseDir;
+		this.sessionId = options.sessionId;
 		this.logger = options.logger;
+		this.seqFn =
+			options.seqFn ??
+			((source) => durableNextSeq(source, { baseDir: this.stateBaseDir }));
+		this.workflowActiveFn = options.workflowActiveFn ?? (() => false);
 		this.transport = this.env.enabled
 			? (options.transport ?? defaultTransport(this.env))
 			: (options.transport ?? null);
@@ -78,17 +103,14 @@ export class HerdrBridge {
 		return this.env.enabled;
 	}
 
-	/** Next monotonic sequence value; shared across report and release. */
 	private nextSeq(): number {
-		this.seq += 1;
-		return this.seq;
+		return this.seqFn(this.source);
 	}
 
 	private skip(reason: string): HerdrBridgeOutcome {
 		return { attempted: false, ok: false, skipped: true, reason };
 	}
 
-	/** Report a Herdr semantic state directly. */
 	async reportState(
 		state: HerdrSemanticState,
 		options: { message?: string; metadata?: Record<string, string> } = {},
@@ -97,17 +119,20 @@ export class HerdrBridge {
 			return this.skip("herdr-not-detected");
 		}
 		const seq = this.nextSeq();
+		const message = sanitizeMessage(options.message);
+		const metadata = sanitizeMetadata(options.metadata);
 		try {
 			const result = await this.transport.reportAgent({
 				paneId: this.env.paneId,
 				source: this.source,
 				agent: this.agent,
 				state,
-				message: options.message,
-				metadata: options.metadata,
+				message,
+				metadata,
 				seq,
 			});
-			if (!result.ok) this.log("herdr report failed", { state, seq, result });
+			if (result.ok) this.ensureAuthorityRecorded();
+			else this.log("herdr report failed", { state, seq, result });
 			return {
 				attempted: true,
 				ok: result.ok,
@@ -118,7 +143,6 @@ export class HerdrBridge {
 				transport: result,
 			};
 		} catch (error) {
-			// Failure isolation: never propagate into the OMX run.
 			const message = error instanceof Error ? error.message : String(error);
 			this.log("herdr report threw", { state, seq, error: message });
 			return {
@@ -132,10 +156,6 @@ export class HerdrBridge {
 		}
 	}
 
-	/**
-	 * Map an OMX hook lifecycle event to a Herdr state and report it. If the
-	 * event is terminal, release Herdr authority afterward.
-	 */
 	async reportHookEvent(
 		event: HookEventEnvelope | HookEventName | string,
 		options: { message?: string; metadata?: Record<string, string> } = {},
@@ -153,7 +173,6 @@ export class HerdrBridge {
 		return outcome;
 	}
 
-	/** Report an authoritative Team rollup state. */
 	async reportTeamRollup(
 		input: HerdrRollupInput,
 		options: { metadata?: Record<string, string> } = {},
@@ -167,8 +186,9 @@ export class HerdrBridge {
 	}
 
 	/**
-	 * Release `omx:runtime` authority so Herdr returns to normal Codex screen
-	 * detection. Idempotent and safe to call on shutdown/exit.
+	 * Release `omx:runtime` authority. Suppressed while another OMX workflow
+	 * remains active (a single terminal event must not release authority for
+	 * still-running workflows). Clears the authority record on release.
 	 */
 	async release(): Promise<HerdrBridgeOutcome> {
 		if (!this.env.enabled || !this.env.paneId || !this.transport) {
@@ -176,6 +196,14 @@ export class HerdrBridge {
 		}
 		if (this.released) {
 			return { attempted: false, ok: true, skipped: true, reason: "already-released" };
+		}
+		if (this.workflowActiveFn()) {
+			return {
+				attempted: false,
+				ok: true,
+				skipped: true,
+				reason: "workflow-still-active",
+			};
 		}
 		const seq = this.nextSeq();
 		try {
@@ -185,6 +213,7 @@ export class HerdrBridge {
 				seq,
 			});
 			this.released = true;
+			this.clearAuthorityRecord();
 			if (!result.ok) this.log("herdr release failed", { seq, result });
 			return {
 				attempted: true,
@@ -198,8 +227,8 @@ export class HerdrBridge {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.log("herdr release threw", { seq, error: message });
-			// Mark released so shutdown does not spin retrying a broken transport.
 			this.released = true;
+			this.clearAuthorityRecord();
 			return {
 				attempted: true,
 				ok: false,
@@ -208,6 +237,34 @@ export class HerdrBridge {
 				seq,
 				released: true,
 			};
+		}
+	}
+
+	private ensureAuthorityRecorded(): void {
+		if (this.authorityRecorded || !this.env.paneId) return;
+		this.authorityRecorded = true;
+		try {
+			recordAuthority(
+				{
+					pane_id: this.env.paneId,
+					source: this.source,
+					owner_pid: process.pid,
+					session_id: this.sessionId,
+				},
+				{ baseDir: this.stateBaseDir },
+			);
+		} catch (error) {
+			this.log("herdr authority record failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	private clearAuthorityRecord(): void {
+		try {
+			clearAuthority({ baseDir: this.stateBaseDir });
+		} catch {
+			// best-effort
 		}
 	}
 
@@ -227,9 +284,6 @@ function defaultTransport(env: HerdrEnv): HerdrTransport {
 	return new CliHerdrTransport({ binPath: env.binPath });
 }
 
-/** Convenience factory honoring the opt-in environment gate. */
-export function createHerdrBridge(
-	options: HerdrBridgeOptions = {},
-): HerdrBridge {
+export function createHerdrBridge(options: HerdrBridgeOptions = {}): HerdrBridge {
 	return new HerdrBridge(options);
 }

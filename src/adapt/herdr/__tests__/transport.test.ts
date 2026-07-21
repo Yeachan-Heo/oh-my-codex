@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execPath } from "node:process";
 import { describe, it } from "node:test";
 import {
 	CliHerdrTransport,
@@ -6,7 +7,9 @@ import {
 	buildReleaseAgentArgs,
 	buildReportAgentArgs,
 	detectHerdrEnv,
+	resolveTrustedHerdrBin,
 	type SocketRequest,
+	type SocketResponse,
 } from "../transport.js";
 
 describe("herdr env detection", () => {
@@ -22,48 +25,28 @@ describe("herdr env detection", () => {
 			false,
 		);
 	});
-
-	it("captures socket and bin paths", () => {
-		const env = detectHerdrEnv({
-			HERDR_ENV: "1",
-			HERDR_PANE_ID: "w1:p1",
-			HERDR_SOCKET_PATH: "/tmp/herdr.sock",
-			HERDR_BIN_PATH: "/usr/bin/herdr",
-		});
-		assert.equal(env.paneId, "w1:p1");
-		assert.equal(env.socketPath, "/tmp/herdr.sock");
-		assert.equal(env.binPath, "/usr/bin/herdr");
-	});
 });
 
 describe("herdr CLI argv builders", () => {
 	it("builds shell-free, ordered report-agent argv with seq", () => {
-		const args = buildReportAgentArgs({
-			paneId: "w1:p1",
-			source: "omx:runtime",
-			agent: "codex",
-			state: "working",
-			message: "team: 3 workers active",
-			seq: 7,
-		});
-		assert.deepEqual(args, [
-			"pane",
-			"report-agent",
-			"w1:p1",
-			"--source",
-			"omx:runtime",
-			"--agent",
-			"codex",
-			"--state",
-			"working",
-			"--seq",
-			"7",
-			"--message",
-			"team: 3 workers active",
-		]);
+		assert.deepEqual(
+			buildReportAgentArgs({
+				paneId: "w1:p1",
+				source: "omx:runtime",
+				agent: "codex",
+				state: "working",
+				message: "team: 3 workers active",
+				seq: 7,
+			}),
+			[
+				"pane", "report-agent", "w1:p1", "--source", "omx:runtime",
+				"--agent", "codex", "--state", "working", "--seq", "7",
+				"--message", "team: 3 workers active",
+			],
+		);
 	});
 
-	it("omits an empty message and keeps injection-prone text as one argv token", () => {
+	it("keeps injection-prone text as one argv token and omits empty message", () => {
 		const args = buildReportAgentArgs({
 			paneId: "w1:p1; rm -rf /",
 			source: "omx:runtime",
@@ -71,7 +54,6 @@ describe("herdr CLI argv builders", () => {
 			state: "idle",
 			seq: 1,
 		});
-		// The dangerous pane id stays a single argv element; execFile never shells.
 		assert.equal(args[2], "w1:p1; rm -rf /");
 		assert.ok(!args.includes("--message"));
 	});
@@ -84,16 +66,46 @@ describe("herdr CLI argv builders", () => {
 	});
 });
 
-describe("CliHerdrTransport", () => {
-	it("invokes the injected execFile with the herdr binary and reports ok", async () => {
-		const calls: Array<{ file: string; args: string[] }> = [];
+describe("trust-pinned CLI resolution", () => {
+	it("accepts only an absolute existing file", () => {
+		assert.equal(resolveTrustedHerdrBin(execPath), execPath); // node binary is absolute+exists
+		assert.equal(resolveTrustedHerdrBin("herdr"), null); // bare PATH name rejected
+		assert.equal(resolveTrustedHerdrBin("/nonexistent/herdr"), null);
+		assert.equal(resolveTrustedHerdrBin(undefined), null);
+	});
+
+	it("does not execFile when no trusted binary is available", async () => {
+		let called = false;
 		const transport = new CliHerdrTransport({
-			binPath: "/opt/herdr",
-			execFileFn: (file, args, cb) => {
-				calls.push({ file, args });
+			binPath: "herdr",
+			execFileFn: (_f, _a, cb) => {
+				called = true;
 				cb(null);
 			},
 		});
+		assert.equal(transport.available, false);
+		const result = await transport.reportAgent({
+			paneId: "w1:p1",
+			source: "omx:runtime",
+			agent: "codex",
+			state: "working",
+			seq: 1,
+		});
+		assert.equal(result.ok, false);
+		assert.equal(called, false);
+		assert.match(result.error ?? "", /trust-pinned/);
+	});
+
+	it("invokes execFile with a trusted absolute binary", async () => {
+		const calls: string[][] = [];
+		const transport = new CliHerdrTransport({
+			binPath: execPath,
+			execFileFn: (_f, args, cb) => {
+				calls.push(args);
+				cb(null);
+			},
+		});
+		assert.equal(transport.available, true);
 		const result = await transport.reportAgent({
 			paneId: "w1:p1",
 			source: "omx:runtime",
@@ -102,65 +114,72 @@ describe("CliHerdrTransport", () => {
 			seq: 1,
 		});
 		assert.equal(result.ok, true);
-		assert.equal(calls[0].file, "/opt/herdr");
-		assert.equal(calls[0].args[1], "report-agent");
-	});
-
-	it("captures execFile errors without throwing", async () => {
-		const transport = new CliHerdrTransport({
-			execFileFn: (_file, _args, cb) => cb(new Error("herdr not found")),
-		});
-		const result = await transport.releaseAgent({
-			paneId: "w1:p1",
-			source: "omx:runtime",
-			seq: 1,
-		});
-		assert.equal(result.ok, false);
-		assert.match(result.error ?? "", /herdr not found/);
+		assert.equal(calls[0][1], "report-agent");
 	});
 });
 
-describe("SocketHerdrTransport", () => {
-	it("writes dot-notation NDJSON requests with seq", async () => {
-		const requests: SocketRequest[] = [];
-		const transport = new SocketHerdrTransport({
-			socketPath: "/tmp/herdr.sock",
-			writer: async (_path, request) => {
-				requests.push(request);
-			},
+describe("SocketHerdrTransport request/response correlation", () => {
+	function transportWith(
+		exchange: (path: string, req: SocketRequest) => Promise<SocketResponse>,
+	) {
+		return new SocketHerdrTransport({ socketPath: "/tmp/h.sock", exchange });
+	}
+
+	it("reports ok only on a correlated success reply and sends dot-notation + seq", async () => {
+		const seen: SocketRequest[] = [];
+		const transport = transportWith(async (_p, req) => {
+			seen.push(req);
+			return { id: req.id, result: { type: "pane_info" } };
 		});
-		await transport.reportAgent({
+		const result = await transport.reportAgent({
 			paneId: "w1:p1",
 			source: "omx:runtime",
 			agent: "codex",
 			state: "blocked",
 			message: "needs input",
 			seq: 4,
+			metadata: { summary: "review" },
 		});
-		await transport.releaseAgent({
+		assert.equal(result.ok, true);
+		assert.equal(seen[0].method, "pane.report_agent");
+		assert.equal(seen[0].params.seq, 4);
+		assert.equal(seen[0].params.message, "needs input");
+		assert.deepEqual(seen[0].params.tokens, { summary: "review" });
+	});
+
+	it("reports NOT ok when Herdr returns an error reply", async () => {
+		const transport = transportWith(async (_p, req) => ({
+			id: req.id,
+			error: { code: "not_found", message: "pane not found" },
+		}));
+		const result = await transport.releaseAgent({
 			paneId: "w1:p1",
 			source: "omx:runtime",
 			seq: 5,
 		});
-		assert.equal(requests[0].method, "pane.report_agent");
-		assert.deepEqual(requests[0].params, {
-			pane_id: "w1:p1",
-			source: "omx:runtime",
-			agent: "codex",
-			state: "blocked",
-			seq: 4,
-			message: "needs input",
-		});
-		assert.equal(requests[1].method, "pane.release_agent");
-		assert.equal(requests[1].params.seq, 5);
+		assert.equal(result.ok, false);
+		assert.match(result.error ?? "", /pane not found/);
 	});
 
-	it("captures writer errors without throwing", async () => {
-		const transport = new SocketHerdrTransport({
-			socketPath: "/tmp/herdr.sock",
-			writer: async () => {
-				throw new Error("ECONNREFUSED");
-			},
+	it("reports NOT ok on id mismatch", async () => {
+		const transport = transportWith(async () => ({
+			id: "someone-else",
+			result: {},
+		}));
+		const result = await transport.reportAgent({
+			paneId: "w1:p1",
+			source: "omx:runtime",
+			agent: "codex",
+			state: "idle",
+			seq: 1,
+		});
+		assert.equal(result.ok, false);
+		assert.match(result.detail, /mismatch/);
+	});
+
+	it("captures exchange errors (timeout/backpressure) without throwing", async () => {
+		const transport = transportWith(async () => {
+			throw new Error("herdr socket timeout");
 		});
 		const result = await transport.reportAgent({
 			paneId: "w1:p1",
@@ -170,6 +189,6 @@ describe("SocketHerdrTransport", () => {
 			seq: 1,
 		});
 		assert.equal(result.ok, false);
-		assert.match(result.error ?? "", /ECONNREFUSED/);
+		assert.match(result.error ?? "", /timeout/);
 	});
 });

@@ -53,16 +53,16 @@ describe("herdr semantic mapping", () => {
 		}
 	});
 
-	it("only flags authority-terminal events as terminal", () => {
-		assert.equal(mapHookEventToHerdrState("finished").terminal, true);
-		assert.equal(mapHookEventToHerdrState("failed").terminal, true);
+	it("only flags whole-session shutdown events as authority-terminal", () => {
 		assert.equal(mapHookEventToHerdrState("stop").terminal, true);
 		assert.equal(mapHookEventToHerdrState("session-end").terminal, true);
-		// idle-but-not-terminal: a completed turn does not release authority.
+		// per-run outcomes map to idle but do NOT release authority
+		assert.equal(mapHookEventToHerdrState("finished").terminal, false);
+		assert.equal(mapHookEventToHerdrState("failed").terminal, false);
 		assert.equal(mapHookEventToHerdrState("turn-complete").terminal, false);
 		assert.equal(mapHookEventToHerdrState("session-idle").terminal, false);
-		assert.equal(isTerminalHookEvent("finished"), true);
-		assert.equal(isTerminalHookEvent("turn-complete"), false);
+		assert.equal(isTerminalHookEvent("stop"), true);
+		assert.equal(isTerminalHookEvent("finished"), false);
 	});
 
 	it("accepts a hook envelope object", () => {
