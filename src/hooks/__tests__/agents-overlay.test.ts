@@ -73,6 +73,9 @@ describe("generateOverlay", () => {
     assert.match(overlay, /do not fabricate `agent_type`/i);
     assert.match(overlay, /omx ralplan preflight --json/i);
     assert.match(overlay, /unsupported_documented_leader_proof/i);
+    assert.match(overlay, /Ralplan-originated action that requires adapted role authority/i);
+    assert.match(overlay, /Do not apply that gate to unrelated guarded install\/sync, status\/health checks, or runtime work/i);
+    assert.doesNotMatch(overlay, /before Ralplan planning, state, HUD, runtime, or delegation work/i);
     assert.match(overlay, /never fake the role via a prompt label/i);
   });
 

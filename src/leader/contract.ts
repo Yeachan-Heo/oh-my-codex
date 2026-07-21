@@ -127,7 +127,8 @@ export const LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK = [
 export const LEADER_CONDUCTOR_ROLE_ROUTING_DEGRADE_BLOCK = [
   'Native role routing is unavailable in this environment.',
   'Do not fabricate agent_type or use adapted role intents, task-name carriers, markers, or prompt labels as authority.',
-  'Before Ralplan planner, reviewer, HUD, runtime, or delegation work, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`.',
+  'Before any Ralplan-originated action requiring adapted role authority, run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`.',
+  'Do not apply this gate to unrelated guarded install/sync, status/health, or runtime work; those flows retain their own safety gates.',
   'Use a surface with installed typed agent_type routing or a reviewed alternative workflow.',
 ].join(' ');
 

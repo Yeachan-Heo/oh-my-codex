@@ -1930,6 +1930,9 @@ describe("omx setup install mode behavior", () => {
 					assert.match(config, /do not fabricate `agent_type`/i);
 					assert.match(config, /omx ralplan preflight --json/i);
 					assert.match(config, /unsupported_documented_leader_proof/i);
+					assert.match(config, /Ralplan-originated action that requires adapted role authority/i);
+					assert.match(config, /Do not apply that gate to unrelated guarded install\/sync, status\/health checks, or runtime work/i);
+					assert.doesNotMatch(config, /before Ralplan planning, state, HUD, runtime, or delegation work/i);
 					assert.match(config, /never fake the role via a prompt label/i);
 					assert.doesNotMatch(config, /Native subagents live in \.codex\/agents/);
 					assert.doesNotMatch(config, /Treat installed prompts as narrower execution surfaces/);
@@ -2108,6 +2111,8 @@ describe("omx setup install mode behavior", () => {
 					);
 					assert.match(config, /role_routing_unavailable/i);
 					assert.match(config, /omx ralplan preflight --json/i);
+					assert.match(config, /Ralplan-originated action that requires adapted role authority/i);
+					assert.doesNotMatch(config, /before Ralplan planning, state, HUD, runtime, or delegation work/i);
 					assert.equal(
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,

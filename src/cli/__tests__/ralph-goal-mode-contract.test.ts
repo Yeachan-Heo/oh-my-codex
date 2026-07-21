@@ -31,6 +31,8 @@ describe('ralph goal mode integration contract', () => {
     assert.match(ralphSkill, /do not fabricate `agent_type`/);
     assert.match(ralphSkill, /omx ralplan preflight --json/);
     assert.match(ralphSkill, /unsupported_documented_leader_proof/);
+    assert.match(ralphSkill, /Ralplan-originated action requiring adapted role authority/);
+    assert.match(ralphSkill, /Do not apply this gate to unrelated guarded install\/sync, status\/health checks, or runtime work/);
     assert.match(ralphSkill, /prompt labels/);
     assert.doesNotMatch(ralphSkill, /delegate\(role=/);
     assert.doesNotMatch(ralphSkill, /delegate\(executor/);

@@ -4,7 +4,7 @@
 
 ## Decision
 
-Treat adapted Ralplan role routing as unsupported on the documented Codex CLI 0.144.5 hook surface. The surface does not provide a documented, positive root-to-`PreToolUse` identity proof. When native role routing reports `role_routing_unavailable`, Ralplan runs an explicit fail-closed CLI preflight after keyword selection but before substantive planner/reviewer work, HUD/runtime activation, or any adapted authority path.
+Treat adapted Ralplan role routing as unsupported on the documented Codex CLI 0.144.5 hook surface. The surface does not provide a documented, positive root-to-`PreToolUse` identity proof. When native role routing reports `role_routing_unavailable`, Ralplan runs an explicit fail-closed CLI preflight after keyword selection but before any Ralplan-originated action requiring adapted role authority, including adapted planner/reviewer delegation, role-intent writes, or consensus-release authority. The gate does not govern unrelated guarded install/sync, status/health, or runtime work; those flows retain their own safety gates.
 
 Keep typed native routing as the preferred path where the native spawn surface exposes `agent_type`: callers select an installed OMX role explicitly. Typed routing and lifecycle fields are non-authoritative. On a role-routing-unavailable surface, the adapted role path is unavailable rather than silently weakened. Do not substitute prompt labels, inferred identities, or unvalidated carriers.
 
@@ -75,7 +75,7 @@ Rollback is removal of this unsupported-only gate and associated guidance only a
 
 ## Future enablement criterion
 
-Enable a positive authority path only when official documentation for the target Codex version and hook/spawn surface defines a positive, stable binding from the current event to root identity and supplies a non-user-mintable official host consensus receipt channel. A reviewed implementation must verify the receipt directly through that official surface before planner, state, HUD, runtime, role-intent, or consensus-release work. The receipt must bind issuer, version, session, installed roles, distinct host threads, artifact digests, ordering, and replay protection; local JSON, environment, tracker, transcript, marker, pointer, or absence-based inference cannot substitute it.
+Enable a positive authority path only when official documentation for the target Codex version and hook/spawn surface defines a positive, stable binding from the current event to root identity and supplies a non-user-mintable official host consensus receipt channel. A reviewed implementation must verify the receipt directly through that official surface before adapted planner/reviewer delegation, role-intent, or consensus-release work. The receipt must bind issuer, version, session, installed roles, distinct host threads, artifact digests, ordering, and replay protection; local JSON, environment, tracker, transcript, marker, pointer, or absence-based inference cannot substitute it.
 
 ## Follow-ups
 

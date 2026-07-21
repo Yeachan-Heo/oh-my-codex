@@ -176,6 +176,9 @@ describe('leader conductor contract', () => {
     });
     assert.match(guidance, /omx ralplan preflight --json/);
     assert.match(guidance, /unsupported_documented_leader_proof/);
+    assert.match(guidance, /Ralplan-originated action requiring adapted role authority/);
+    assert.match(guidance, /Do not apply this gate to unrelated guarded install\/sync, status\/health, or runtime work/);
+    assert.doesNotMatch(guidance, /Before Ralplan planner, reviewer, HUD, runtime, or delegation work/);
     assert.match(guidance, /Do not fabricate agent_type/);
     assert.doesNotMatch(guidance, /PROCEED|role-intent ledger/);
     assert.match(guidance, /Evidence: spawn tool accepted no native role routing/);

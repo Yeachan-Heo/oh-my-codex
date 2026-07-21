@@ -89,6 +89,9 @@ describe('config generator', () => {
       assert.match(toml, /do not fabricate `agent_type`/i);
       assert.match(toml, /omx ralplan preflight --json/i);
       assert.match(toml, /unsupported_documented_leader_proof/i);
+      assert.match(toml, /Ralplan-originated action that requires adapted role authority/i);
+      assert.match(toml, /Do not apply that gate to unrelated guarded install\/sync, status\/health checks, or runtime work/i);
+      assert.doesNotMatch(toml, /before Ralplan planning, state, HUD, runtime, or delegation work/i);
       assert.match(toml, /never fake the role via a prompt label/i);
       assert.match(toml, /Treat installed prompts as narrower execution surfaces under AGENTS\.md authority/);
       assert.match(toml, new RegExp(`^developer_instructions = "${OMX_DEVELOPER_INSTRUCTIONS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"$`, 'm'));
