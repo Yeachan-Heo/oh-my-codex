@@ -4631,14 +4631,14 @@ PY`,
         cwd: conflictingCwd,
         session_id: "native-unmatched-stop-3138",
       };
-      const unmatchedStop = await dispatchCodexNativeHook(unmatchedStopPayload, { cwd: conflictingCwd });
-      assert.equal(unmatchedStop.outputJson?.decision, "block");
-      assert.equal(unmatchedStop.outputJson?.stopReason, "session_scope_unmatched");
-      const unmatchedReplay = await dispatchCodexNativeHook({
-        ...unmatchedStopPayload,
-        stop_hook_active: true,
-      }, { cwd: conflictingCwd });
-      assert.equal(unmatchedReplay.outputJson, null);
+      const unmatchedOutputs = await Promise.all(
+        Array.from({ length: 3 }, () => dispatchCodexNativeHook(unmatchedStopPayload, { cwd: conflictingCwd })),
+      );
+      assert.deepEqual(unmatchedOutputs.map((result) => result.outputJson), [null, null, null]);
+      const unmatchedCliResult = runNativeHookCliResult(unmatchedStopPayload, { cwd: conflictingCwd });
+      assert.equal(unmatchedCliResult.status, 0, unmatchedCliResult.stderr || unmatchedCliResult.stdout);
+      assert.equal(unmatchedCliResult.stderr, "");
+      assert.deepEqual(parseSingleJsonStdout(unmatchedCliResult.stdout), {});
       assert.equal(existsSync(join(conflictingCwd, ".omx", "state", "native-stop-state.json")), false);
     } finally {
       if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
@@ -25561,7 +25561,7 @@ PY`,
     }
   });
 
-  it("fails closed on Stop when a session-scoped team id is not bound to session.json", async () => {
+  it("silently ignores Stop when a session-scoped team id is not bound to session.json", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-session-mismatch-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -25591,9 +25591,7 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "session_scope_unmatched");
-      assert.match(String(result.outputJson?.reason ?? ""), /sess-live-team/);
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -27507,7 +27505,7 @@ PY`,
     }
   });
 
-  it("fails closed on Stop when a session-scoped Ralph id is not bound to session.json", async () => {
+  it("silently ignores Stop when a session-scoped Ralph id is not bound to session.json", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralph-session-mismatch-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -27529,9 +27527,7 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "session_scope_unmatched");
-      assert.match(String(result.outputJson?.reason ?? ""), /sess-live-ralph/);
+      assert.equal(result.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

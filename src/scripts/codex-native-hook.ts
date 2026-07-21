@@ -20757,10 +20757,11 @@ export async function dispatchCodexNativeHook(
       };
       const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
       const pointerCannotAuthorizeThisCwd = pointer.status === "foreign-cwd";
-      // A foreign-cwd pointer belongs to another workspace, so it cannot authorize
-      // this Stop at all; other unusable pointers block once per Stop replay chain,
-      // then no-op when Codex marks the replay with stop_hook_active.
-      if (pointerCannotAuthorizeThisCwd || stopHookActive) {
+      const unmatchedStopSession = failure.stopReason === "session_scope_unmatched";
+      // An unmatched payload or foreign-cwd pointer cannot authorize continuation.
+      // Return no output so Codex cannot reinterpret an authorization diagnostic as
+      // a new action request. Other unusable pointers retain their bounded replay behavior.
+      if (pointerCannotAuthorizeThisCwd || unmatchedStopSession || stopHookActive) {
         outputJson = null;
       } else {
         outputJson = {
