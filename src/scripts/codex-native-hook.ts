@@ -20173,6 +20173,7 @@ export async function dispatchCodexNativeHook(
           resolvedNativeSessionId = ownerState.native_session_id ?? nativeSessionId;
           allowImplicitSessionSideEffects = true;
           allowGlobalSideEffects = false;
+          skipCanonicalSessionStartContext = true;
           stopAuthorizationFailure = null;
         } else {
           if (!isSessionPointerLaunchAbort(error)) throw error;

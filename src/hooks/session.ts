@@ -2195,7 +2195,7 @@ function nativeSessionOwnerTransition(
       || normalizeSessionId(existing.native_session_id) !== nativeSessionId
       || existing.platform !== platform
       || !isSessionStateAuthoritativeForCwd(existing, context.cwd)
-      || !sameProcessIdentity(existing, pid, platform, linuxIdentity)
+      || existing.pid !== pid
     )) {
       throw ownerConflictAbort(context, nativeSessionId, existing);
     }
