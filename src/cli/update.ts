@@ -440,7 +440,7 @@ interface DeferredUpdatePayload {
 export function runDeferredGlobalUpdate(
   cwd: string,
   spawnProcess: SpawnLike = spawn,
-  _platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = process.platform,
   parentPid = process.pid,
   ownership?: PackageManagerOwnership,
 ): RunDeferredUpdateResult {
@@ -451,7 +451,7 @@ export function runDeferredGlobalUpdate(
   try {
     mkdirSync(dirname(logPath), { recursive: true });
     const stage = mkdtempSync(join(tmpdir(), 'omx-update-'));
-    chmodSync(stage, 0o700);
+    if (platform !== 'win32') chmodSync(stage, 0o700);
     const payloadPath = join(stage, 'transaction.json');
     const payload: DeferredUpdatePayload = { cwd, logPath, parentPid, ownership, setupArgs: resolveSetupRefreshArgs(cwd) };
     const serialized = JSON.stringify(payload);
@@ -459,7 +459,7 @@ export function runDeferredGlobalUpdate(
     const canonicalStage = realpathSync(stage);
     const canonicalPayload = realpathSync(payloadPath);
     const payloadStat = lstatSync(payloadPath);
-    if (canonicalPayload !== join(canonicalStage, 'transaction.json') || payloadStat.isSymbolicLink() || !payloadStat.isFile() || (payloadStat.mode & 0o077) !== 0) throw new Error('Deferred update payload is not a canonical owner-only staged file.');
+    if (canonicalPayload !== join(canonicalStage, 'transaction.json') || payloadStat.isSymbolicLink() || !payloadStat.isFile() || (platform !== 'win32' && (payloadStat.mode & 0o077) !== 0)) throw new Error('Deferred update payload is not a canonical owner-only staged file.');
     const bundledWorker = join(dirname(fileURLToPath(import.meta.url)), 'update-worker.js');
     const workerCandidate = existsSync(bundledWorker) ? bundledWorker : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'cli', 'update-worker.js');
     const workerPath = realpathSync(workerCandidate);

@@ -155,8 +155,21 @@ function resolveInstalledNpmCommand(dependencies: Pick<PackageManagerOwnershipDe
     const path = platformPath(dependencies.platform);
     const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
     if (path.basename(packageRoot) !== 'oh-my-codex') return null;
-    const script = dependencies.realpath(path.join(path.dirname(packageRoot), 'npm', 'bin', 'npm-cli.js'));
-    return { kind: 'node-script', command: dependencies.realpath(dependencies.currentNodeExecutable), commandArgs: [script] };
+    const node = dependencies.realpath(dependencies.currentNodeExecutable);
+    const candidates = dependencies.platform === 'win32'
+      ? [
+        path.join(path.dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+        path.join(path.dirname(packageRoot), 'npm', 'bin', 'npm-cli.js'),
+      ]
+      : [path.join(path.dirname(packageRoot), 'npm', 'bin', 'npm-cli.js')];
+    for (const candidate of candidates) {
+      try {
+        return { kind: 'node-script', command: node, commandArgs: [dependencies.realpath(candidate)] };
+      } catch {
+        // Try the next supported installed-npm layout; never use PATH.
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -264,6 +277,20 @@ function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependenc
   }
 }
 
+function inferBunInstallRoot(command: string | null, platform: NodeJS.Platform): string | undefined {
+  if (!command) return undefined;
+  const path = platformPath(platform);
+  try {
+    const binDirectory = path.dirname(command);
+    return path.basename(binDirectory).toLowerCase() === 'bin'
+      && /^bun(?:\.exe)?$/i.test(path.basename(command))
+      ? path.dirname(binDirectory)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function resolvePackageManagerOwnership(dependencies: Partial<PackageManagerOwnershipDependencies> = {}): Promise<PackageManagerOwnership | null> {
   const resolved: PackageManagerOwnershipDependencies = {
     currentExecutable: process.argv[1] ?? '', currentPackageRoot: process.cwd(), currentNodeExecutable: process.execPath,
@@ -274,6 +301,9 @@ export async function resolvePackageManagerOwnership(dependencies: Partial<Packa
     platform: process.platform, environment: process.env, ...dependencies,
     resolveNpmCommand: dependencies.resolveNpmCommand ?? resolveNpmCommand,
   };
+  if (!resolved.bunInstallRoot) {
+    resolved.bunInstallRoot = inferBunInstallRoot(resolved.resolveBunCommand(), resolved.platform);
+  }
   if (!resolved.currentExecutable) return null;
   const stamp = await resolved.readInstallStamp();
   const managers: PackageManager[] = stamp?.package_manager ? [stamp.package_manager] : ['npm', 'bun'];

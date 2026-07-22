@@ -1678,7 +1678,7 @@ describe('package-manager ownership', () => {
     assert.deepEqual(npmCommand, {
       kind: 'node-script',
       command: 'C:\\Program Files\\nodejs\\node.exe',
-      commandArgs: ['C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\npm\\bin\\npm-cli.js'],
+      commandArgs: ['C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js'],
     });
     assert.equal(ownership?.manager, 'npm');
   });
@@ -1726,6 +1726,30 @@ describe('package-manager ownership', () => {
       environment: {},
       realpath: (path) => path,
     });
+    assert.deepEqual(ownership, {
+      manager: 'bun',
+      bunCommand: 'C:\\Users\\alice\\.bun\\bin\\bun.exe',
+      bunGlobalBin: 'C:\\Users\\alice\\.bun\\bin',
+      bunInstallRoot: 'C:\\Users\\alice\\.bun',
+      npmPrefix: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
+      globalInstallRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
+      packageRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex',
+      environment: { BUN_INSTALL: 'C:\\Users\\alice\\.bun' },
+    });
+  });
+
+  it('derives a fresh Bun installation root from its canonical executable without ambient PATH lookup', async () => {
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: 'C:\\Users\\alice\\.bun\\bin' }),
+      platform: 'win32',
+      currentExecutable: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex\\dist\\cli\\omx.js',
+      currentPackageRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex',
+      bunInstallRoot: undefined,
+      resolveBunCommand: () => 'C:\\Users\\alice\\.bun\\bin\\bun.exe',
+      environment: {},
+      realpath: (path) => path,
+    });
+
     assert.deepEqual(ownership, {
       manager: 'bun',
       bunCommand: 'C:\\Users\\alice\\.bun\\bin\\bun.exe',
