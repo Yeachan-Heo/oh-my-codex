@@ -1423,6 +1423,29 @@ describe('post-update setup refresh handoff', () => {
     assert.equal(receivedTimeout, undefined);
   });
 
+  it('passes only the frozen ownership environment to the immediate setup child', () => {
+    const frozenEnvironment: NodeJS.ProcessEnv = {
+      CODEX_HOME: '/frozen/codex-home',
+      OMX_SKIP_NATIVE_AGENT_REFRESH: '1',
+    };
+    let receivedEnvironment: NodeJS.ProcessEnv | undefined;
+
+    const result = spawnInstalledSetupRefresh(
+      '/tmp/omx.js',
+      '/tmp/project',
+      ((_command, _args, options) => {
+        receivedEnvironment = options?.env;
+        return { status: 0, error: undefined };
+      }) as typeof import('node:child_process').spawnSync,
+      process.execPath,
+      frozenEnvironment,
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(receivedEnvironment, frozenEnvironment);
+    assert.equal(receivedEnvironment?.OMX_SKIP_NATIVE_AGENT_REFRESH, '1');
+  });
+
   it('passes persisted plugin setup choices to the updated CLI refresh', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-plugin-refresh-'));
     const received: Array<{ command: string; args: string[] }> = [];

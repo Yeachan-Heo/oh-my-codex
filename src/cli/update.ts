@@ -688,10 +688,11 @@ export function spawnInstalledSetupRefresh(
   cwd: string,
   spawnProcess: SpawnSyncLike = spawnSync,
   command = process.execPath,
+  environment: NodeJS.ProcessEnv = process.env,
 ): RunSetupRefreshResult {
   const result = spawnProcess(command, [cliEntry, ...resolveSetupRefreshArgs(cwd)], {
     cwd,
-    env: process.env,
+    env: environment,
     stdio: 'inherit',
     windowsHide: true,
   });
@@ -716,7 +717,13 @@ async function runSetupRefresh(cwd: string, ownership?: PackageManagerOwnership)
   if (!cliEntry) {
     return { ok: false, stderr: `Unable to validate the updated OMX CLI entry under ${join(ownership.globalInstallRoot, PACKAGE_NAME)}.` };
   }
-  return spawnInstalledSetupRefresh(cliEntry, cwd, spawnSync, process.execPath);
+  return spawnInstalledSetupRefresh(
+    cliEntry,
+    cwd,
+    spawnSync,
+    process.execPath,
+    { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' },
+  );
 }
 
 async function executeUpdate(
