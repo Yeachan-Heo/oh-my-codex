@@ -1528,6 +1528,8 @@ async function readActiveRalphState(
 
 function readParentPid(pid: number): number | null {
   try {
+    if (process.platform === "win32") return null;
+
     if (process.platform === "linux") {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
       const commandEnd = stat.lastIndexOf(")");
@@ -1552,6 +1554,8 @@ function readParentPid(pid: number): number | null {
 
 function readProcessCommand(pid: number): string {
   try {
+    if (process.platform === "win32") return "";
+
     if (process.platform === "linux") {
       return readFileSync(`/proc/${pid}/cmdline`, "utf-8")
         .replace(/\u0000+/g, " ")
@@ -1568,13 +1572,88 @@ function readProcessCommand(pid: number): string {
   }
 }
 
+interface ProcessLineageEntry {
+  pid: number;
+  command: string;
+  name?: string;
+}
+
+interface WindowsProcessRecord {
+  ProcessId?: unknown;
+  ParentProcessId?: unknown;
+  CommandLine?: unknown;
+  Name?: unknown;
+}
+
+const WINDOWS_PROCESS_TABLE_TIMEOUT_MS = 5_000;
+const WINDOWS_PROCESS_TABLE_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+
+function readWindowsProcessLineage(startPid: number): ProcessLineageEntry[] | null {
+  if (!Number.isInteger(startPid) || startPid <= 1) return null;
+
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,Name | ConvertTo-Json -Compress",
+      ],
+      {
+        encoding: "utf-8",
+        windowsHide: true,
+        timeout: WINDOWS_PROCESS_TABLE_TIMEOUT_MS,
+        maxBuffer: WINDOWS_PROCESS_TABLE_MAX_BUFFER_BYTES,
+      },
+    );
+    const parsed = JSON.parse(output) as unknown;
+    const records = Array.isArray(parsed) ? parsed : [parsed];
+    const processTable = new Map<number, { parentPid: number | null; command: string; name: string }>();
+
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const processRecord = record as WindowsProcessRecord;
+      const pid = safePositiveInteger(processRecord.ProcessId);
+      const parentPid = safePositiveInteger(processRecord.ParentProcessId);
+      const command = safeString(processRecord.CommandLine).trim()
+        || safeString(processRecord.Name).trim();
+      const name = safeString(processRecord.Name).trim();
+      if (pid === null || !command) continue;
+      processTable.set(pid, { parentPid, command, name });
+    }
+
+    const lineage: ProcessLineageEntry[] = [];
+    let currentPid = startPid;
+    for (let i = 0; i < 6 && currentPid > 1; i += 1) {
+      const current = processTable.get(currentPid);
+      if (!current) break;
+      lineage.push({ pid: currentPid, command: current.command, name: current.name });
+      if (!current.parentPid || current.parentPid === currentPid) break;
+      currentPid = current.parentPid;
+    }
+    return lineage.length > 0 ? lineage : null;
+  } catch {
+    return null;
+  }
+}
+
 function looksLikeShellCommand(command: string): boolean {
-  return /(^|[\/\s])(bash|zsh|sh|dash|fish|ksh)(\s|$)/i.test(command);
+  return /(^|[\\/\s])(bash|zsh|sh|dash|fish|ksh|powershell(?:\.exe)?|pwsh(?:\.exe)?|cmd(?:\.exe)?)(\s|$)/i.test(command);
 }
 
 function looksLikeCodexCommand(command: string): boolean {
   if (/codex-native-hook(?:\.js)?/i.test(command)) return false;
-  return /\bcodex(?:\.js)?\b/i.test(command);
+  return /(^|[\\/\s"'])codex(?:\.exe|\.js)?(?=$|[\s"'])/i.test(command);
+}
+
+function looksLikeCodexProcess(entry: ProcessLineageEntry): boolean {
+  const name = safeString(entry.name).trim();
+  if (/^codex(?:\.exe)?$/i.test(name)) return true;
+  if (name && looksLikeShellCommand(name)) return false;
+  return looksLikeCodexCommand(entry.command);
 }
 
 export function resolveSessionOwnerPidFromAncestry(
@@ -1582,22 +1661,31 @@ export function resolveSessionOwnerPidFromAncestry(
   options: {
     readParentPid?: (pid: number) => number | null;
     readProcessCommand?: (pid: number) => string;
+    readProcessLineage?: (pid: number) => ProcessLineageEntry[] | null;
+    platform?: NodeJS.Platform;
   } = {},
 ): number | null {
   const readParent = options.readParentPid ?? readParentPid;
   const readCommand = options.readProcessCommand ?? readProcessCommand;
-  const lineage: Array<{ pid: number; command: string }> = [];
-  let currentPid = startPid;
+  const platform = options.platform ?? process.platform;
+  let lineage: ProcessLineageEntry[] = [];
 
-  for (let i = 0; i < 6 && Number.isInteger(currentPid) && currentPid > 1; i += 1) {
-    const command = readCommand(currentPid);
-    lineage.push({ pid: currentPid, command });
-    const nextPid = readParent(currentPid);
-    if (!nextPid || nextPid === currentPid) break;
-    currentPid = nextPid;
+  if (options.readProcessLineage) {
+    lineage = options.readProcessLineage(startPid) ?? [];
+  } else if (platform === "win32" && !options.readParentPid && !options.readProcessCommand) {
+    lineage = readWindowsProcessLineage(startPid) ?? [];
+  } else {
+    let currentPid = startPid;
+    for (let i = 0; i < 6 && Number.isInteger(currentPid) && currentPid > 1; i += 1) {
+      const command = readCommand(currentPid);
+      lineage.push({ pid: currentPid, command });
+      const nextPid = readParent(currentPid);
+      if (!nextPid || nextPid === currentPid) break;
+      currentPid = nextPid;
+    }
   }
 
-  const codexAncestor = lineage.find((entry) => looksLikeCodexCommand(entry.command));
+  const codexAncestor = lineage.find(looksLikeCodexProcess);
   if (codexAncestor) return codexAncestor.pid;
 
   if (lineage.length >= 2 && looksLikeShellCommand(lineage[0]?.command || "")) {

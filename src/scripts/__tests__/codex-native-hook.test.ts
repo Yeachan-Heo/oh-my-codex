@@ -6661,6 +6661,32 @@ PY`,
     assert.equal(resolved, 1100);
   });
 
+  it("resolves the Codex owner from Windows process lineage without Unix ps", () => {
+    const resolved = resolveSessionOwnerPidFromAncestry(1700, {
+      platform: "win32",
+      readProcessLineage: () => [
+        {
+          pid: 1700,
+          name: "powershell.exe",
+          command: 'powershell.exe -File "C:\\Users\\user\\.codex\\hooks\\omx-native-hook-windows-shim.ps1"',
+        },
+        {
+          pid: 19072,
+          name: "pwsh.exe",
+          command: 'pwsh.exe -Command "verify expected codex.exe owner"',
+        },
+        {
+          pid: 14440,
+          name: "codex.exe",
+          command: '"C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\codex.exe"',
+        },
+        { pid: 14400, name: "node.exe", command: "node.exe codex.js" },
+      ],
+    });
+
+    assert.equal(resolved, 14440);
+  });
+
   it("records keyword activation from UserPromptSubmit payloads", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-"));
     try {
