@@ -62,7 +62,10 @@ async function validateManager(ownership: PackageManagerOwnership): Promise<bool
     try { return root !== null && prefix !== null && await realpath(root) === ownership.globalInstallRoot && await realpath(prefix) === ownership.npmPrefix; } catch { return false; }
   }
   const bin = output(spawnSync(ownership.bunCommand, ['pm', 'bin', '-g'], { ...installOptions, env: ownership.environment }));
-  try { return bin !== null && await realpath(bin) === ownership.bunGlobalBin; } catch { return false; }
+  try {
+    if (bin === null || await realpath(bin) !== ownership.bunGlobalBin) return false;
+    return !ownership.bunInstallRoot || (typeof ownership.environment.BUN_INSTALL === 'string' && await realpath(ownership.environment.BUN_INSTALL) === ownership.bunInstallRoot);
+  } catch { return false; }
 }
 async function validateOwnership(ownership: PackageManagerOwnership): Promise<string | null> {
   if (!await validateManager(ownership)) return null;
