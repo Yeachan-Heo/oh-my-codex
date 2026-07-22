@@ -1253,16 +1253,18 @@ describe('deferred update worker', () => {
     const stage = join(root, 'stage');
     const payloadPath = join(stage, 'transaction.json');
     const capturePath = join(root, 'setup-capture.json');
+    const codexHome = join(root, 'codex-home');
+    const stampPath = join(codexHome, '.omx', 'install-state.json');
     const npmCliPath = join(root, 'npm-cli.js');
     const cliPath = join(packageRoot, 'dist', 'cli.js');
     const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
 
     try {
       await mkdir(dirname(cliPath), { recursive: true });
-      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ bin: { omx: 'dist/cli.js' } }));
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
       await writeFile(cliPath, [
-        "import { writeFileSync } from 'node:fs';",
-        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), skip: process.env.OMX_SKIP_NATIVE_AGENT_REFRESH }));",
+        "import { existsSync, writeFileSync } from 'node:fs';",
+        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), skip: process.env.OMX_SKIP_NATIVE_AGENT_REFRESH, stampPresent: existsSync(process.env.OMX_UPDATE_STAMP_PATH) }));",
       ].join('\n'));
       await writeFile(npmCliPath, [
         "const args = process.argv.slice(2);",
@@ -1281,6 +1283,8 @@ describe('deferred update worker', () => {
           OMX_UPDATE_CAPTURE_PATH: capturePath,
           OMX_UPDATE_GLOBAL_ROOT: globalRoot,
           OMX_UPDATE_PREFIX: root,
+          CODEX_HOME: codexHome,
+          OMX_UPDATE_STAMP_PATH: stampPath,
         },
       };
       const serialized = JSON.stringify({ cwd: root, logPath: join(root, 'update.log'), parentPid: 999999, ownership, setupArgs: ['setup', '--scope', 'project'] });
@@ -1295,7 +1299,25 @@ describe('deferred update worker', () => {
       assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), {
         args: ['setup', '--scope', 'project'],
         skip: '1',
+        stampPresent: false,
       });
+      const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
+        installed_version: string;
+        setup_completed_version: string;
+        install_channel: string;
+        install_source: string;
+        package_manager: string;
+        updated_at: string;
+      };
+      assert.deepEqual({ ...stamp, updated_at: undefined }, {
+        installed_version: '0.14.1',
+        setup_completed_version: '0.14.1',
+        install_channel: 'stable',
+        install_source: 'oh-my-codex@latest',
+        package_manager: 'npm',
+        updated_at: undefined,
+      });
+      assert.match(stamp.updated_at, /^\d{4}-\d{2}-\d{2}T/);
       await assert.rejects(readFile(payloadPath), { code: 'ENOENT' });
       await assert.rejects(readFile(stage), { code: 'ENOENT' });
     } finally {
@@ -1555,6 +1577,14 @@ describe('package-manager ownership', () => {
     });
   });
 
+  it('freezes CODEX_HOME for deferred setup and update finalization', async () => {
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('npm', { npm: '/configured/node_modules' }),
+      environment: { CODEX_HOME: '/configured/codex-home' },
+    });
+    assert.deepEqual(ownership?.environment, { CODEX_HOME: '/configured/codex-home' });
+  });
+
   it('resolves a normal npm Node-shebang launch from its installed npm CLI without lifecycle provenance', async () => {
     let npmCommand: Extract<PackageManagerOwnership, { manager: 'npm' }>['npmCommand'] | undefined;
     const ownership = await resolvePackageManagerOwnership({
@@ -1595,6 +1625,31 @@ describe('package-manager ownership', () => {
     }), null, 'missing installed npm CLI must fail closed');
   });
 
+  it('resolves the installed npm CLI with Windows path semantics for a standard global npm layout', async () => {
+    let npmCommand: Extract<PackageManagerOwnership, { manager: 'npm' }>['npmCommand'] | undefined;
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('npm', { npm: 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules' }),
+      platform: 'win32',
+      currentExecutable: 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\oh-my-codex\\dist\\cli\\omx.js',
+      currentPackageRoot: 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\oh-my-codex',
+      currentNodeExecutable: 'C:\\Program Files\\nodejs\\node.exe',
+      resolveNpmCommand: () => null,
+      resolveNpmGlobalInstallRoot: (command) => {
+        npmCommand = command;
+        return 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules';
+      },
+      resolveNpmPrefix: () => 'C:\\Users\\alice\\AppData\\Roaming\\npm',
+      environment: {},
+    });
+
+    assert.deepEqual(npmCommand, {
+      kind: 'node-script',
+      command: 'C:\\Program Files\\nodejs\\node.exe',
+      commandArgs: ['C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\npm\\bin\\npm-cli.js'],
+    });
+    assert.equal(ownership?.manager, 'npm');
+  });
+
   it('resolves a normal Bun Node-shebang launch only from its configured install root and matching shim', async () => {
     const ownership = await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
@@ -1615,7 +1670,7 @@ describe('package-manager ownership', () => {
       npmPrefix: '/fake/bun/install/global/node_modules',
       globalInstallRoot: '/fake/bun/install/global/node_modules',
       packageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
-      environment: {},
+      environment: { BUN_INSTALL: '/fake/bun' },
     });
     assert.equal(await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
@@ -1646,11 +1701,11 @@ describe('package-manager ownership', () => {
       npmPrefix: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
       globalInstallRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
       packageRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex',
-      environment: {},
+      environment: { BUN_INSTALL: 'C:\\Users\\alice\\.bun' },
     });
   });
 
-  it('preserves custom Bun bin and shim ownership when BUN_INSTALL is unavailable', async () => {
+  it('rejects Bun shim evidence when BUN_INSTALL cannot bind the command and global target', async () => {
     let npmCalls = 0;
     const ownership = await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/configured/bun/bin' }),
@@ -1659,27 +1714,12 @@ describe('package-manager ownership', () => {
       currentPackageRoot: '/links/package',
       realpath: (path: string) => {
         if (path === '/missing/developer-bun') throw new Error('missing BUN_INSTALL');
-        return ({
-          '/configured/bun/bin': '/canonical/bun/bin',
-          '/configured/runtime/bun': '/canonical/runtime/bun',
-          '/canonical/bun/bin/omx': '/isolated/global/oh-my-codex/dist/cli/omx.js',
-          '/canonical/bun/bin/bun': '/canonical/bun/bin/bun',
-          '/links/omx.js': '/isolated/global/oh-my-codex/dist/cli/omx.js',
-          '/links/package': '/isolated/global/oh-my-codex',
-        } as Record<string, string>)[path] ?? path;
+        return path;
       },
       resolveNpmGlobalInstallRoot: () => { npmCalls += 1; return null; },
     });
-    assert.deepEqual(ownership, {
-      manager: 'bun',
-      bunCommand: '/canonical/runtime/bun',
-      bunGlobalBin: '/canonical/bun/bin',
-      globalInstallRoot: '/isolated/global',
-      packageRoot: '/isolated/global/oh-my-codex',
-      npmPrefix: '/isolated/global',
-      environment: {},
-    });
-    assert.equal(npmCalls, 0, 'Bun ownership must not invoke npm.');
+    assert.equal(ownership, null);
+    assert.equal(npmCalls, 0, 'A stamped Bun candidate must not fall back to npm.');
   });
 
   it('fails closed for missing, ambiguous, stale, or non-shim Bun ownership evidence', async () => {
@@ -1699,6 +1739,14 @@ describe('package-manager ownership', () => {
       resolveBunGlobalBin: () => '/configured/bun/bin',
       realpath: (path) => path,
     }), null);
+    assert.equal(await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
+      currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      bunInstallRoot: '/fake/bun',
+      resolveBunCommand: () => '/other/bun',
+      environment: {},
+    }), null, 'Bun executable provenance must bind to the configured installation target.');
   });
 
   it('uses the frozen Bun command for stable and deferred updates and rejects Bun dev before spawning', async () => {
@@ -1706,10 +1754,11 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: '/configured/runtime/bun',
       bunGlobalBin: '/configured/bun/bin',
+      bunInstallRoot: '/configured/bun',
       globalInstallRoot: '/configured/node_modules',
       packageRoot: '/configured/node_modules/oh-my-codex',
       npmPrefix: '/configured',
-      environment: { OMX_UPDATE_TEST: '1' },
+      environment: { OMX_UPDATE_TEST: '1', BUN_INSTALL: '/configured/bun' },
     };
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnProcess = ((command: string, args: string[]) => {
@@ -1719,6 +1768,16 @@ describe('package-manager ownership', () => {
     assert.deepEqual(runGlobalUpdate('oh-my-codex@latest', spawnProcess, 'linux', owner), { ok: true, stderr: '' });
     assert.deepEqual(calls, [{ command: '/configured/runtime/bun', args: ['add', '--global', '--ignore-scripts', 'oh-my-codex@latest'] }]);
     calls.length = 0;
+    const incompleteOwner: PackageManagerOwnership = {
+      ...owner,
+      bunInstallRoot: undefined,
+      environment: { OMX_UPDATE_TEST: '1' },
+    };
+    assert.deepEqual(runGlobalUpdate('oh-my-codex@latest', spawnProcess, 'linux', incompleteOwner), {
+      ok: false,
+      stderr: 'The package-manager ownership transaction is incomplete.',
+    });
+    assert.deepEqual(calls, []);
     assert.deepEqual(runGlobalUpdate('github:Yeachan-Heo/oh-my-codex#dev', spawnProcess, 'linux', owner), {
       ok: false, stderr: 'Bun dev updates are not yet supported',
     });

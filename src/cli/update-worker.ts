@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import { isAbsolute, join, relative } from 'node:path';
 import { runNpmCommand, type PackageManagerOwnership } from './package-manager-ownership.js';
+import { writeUserInstallStamp } from '../scripts/postinstall-advisory.js';
+import { omxUserInstallStampPath } from '../utils/paths.js';
 
 type DeferredUpdatePayload = { cwd: string; logPath: string; parentPid: number; ownership: PackageManagerOwnership; setupArgs: string[] };
 const PACKAGE_NAME = 'oh-my-codex';
@@ -61,15 +63,32 @@ async function validateManager(ownership: PackageManagerOwnership): Promise<bool
     const prefix = output(runNpmCommand(ownership.npmCommand, ['prefix', '-g'], { ...installOptions, env: ownership.environment }));
     try { return root !== null && prefix !== null && await realpath(root) === ownership.globalInstallRoot && await realpath(prefix) === ownership.npmPrefix; } catch { return false; }
   }
+  if (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot) return false;
   const bin = output(spawnSync(ownership.bunCommand, ['pm', 'bin', '-g'], { ...installOptions, env: ownership.environment }));
   try {
-    if (bin === null || await realpath(bin) !== ownership.bunGlobalBin) return false;
-    return !ownership.bunInstallRoot || (typeof ownership.environment.BUN_INSTALL === 'string' && await realpath(ownership.environment.BUN_INSTALL) === ownership.bunInstallRoot);
+    return bin !== null
+      && await realpath(bin) === ownership.bunGlobalBin
+      && await realpath(ownership.environment.BUN_INSTALL) === ownership.bunInstallRoot;
   } catch { return false; }
 }
 async function validateOwnership(ownership: PackageManagerOwnership): Promise<string | null> {
   if (!await validateManager(ownership)) return null;
   return validatePackage(ownership);
+}
+
+async function finalizeSuccessfulUpdate(ownership: PackageManagerOwnership): Promise<void> {
+  const manifest = JSON.parse(await readFile(join(ownership.packageRoot, 'package.json'), 'utf-8')) as { version?: string };
+  if (typeof manifest.version !== 'string' || manifest.version.trim() === '') {
+    throw new Error('Updated package version is unavailable for deferred update finalization.');
+  }
+  await writeUserInstallStamp({
+    installed_version: manifest.version.trim().replace(/^v/i, ''),
+    setup_completed_version: manifest.version.trim().replace(/^v/i, ''),
+    install_channel: 'stable',
+    install_source: installSource,
+    package_manager: ownership.manager,
+    updated_at: new Date().toISOString(),
+  }, omxUserInstallStampPath(ownership.environment.CODEX_HOME));
 }
 
 async function main(): Promise<void> {
@@ -102,6 +121,7 @@ async function main(): Promise<void> {
     if (!cliEntry) throw new Error('Frozen manager, package root, or bin ownership validation failed after update.');
     const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: { ...payload.ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'inherit', windowsHide: true });
     if (setup.error || setup.status !== 0) throw new Error(setup.error?.message || `setup exited ${setup.status}`);
+    await finalizeSuccessfulUpdate(payload.ownership);
   } catch (error) {
     if (payload) await appendFile(payload.logPath, `[omx] Deferred update failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

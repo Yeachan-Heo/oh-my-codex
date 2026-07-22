@@ -362,7 +362,7 @@ export function runGlobalUpdate(
   if (!ownership) {
     return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
   }
-  if (!ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand)) {
+  if (!ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand) || (ownership.manager === 'bun' && (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot))) {
     return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.' };
   }
   const result = ownership.manager === 'bun'
@@ -448,7 +448,7 @@ export function runDeferredGlobalUpdate(
   ownership?: PackageManagerOwnership,
 ): RunDeferredUpdateResult {
   const logPath = join(cwd, '.omx', 'logs', formatUpdateLogPath());
-  if (!ownership || !ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand)) {
+  if (!ownership || !ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand) || (ownership.manager === 'bun' && (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot))) {
     return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.', logPath };
   }
   try {
