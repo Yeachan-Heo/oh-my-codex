@@ -1,9 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   isInstallVersionBump,
   isNewerVersion,
@@ -1404,6 +1407,90 @@ describe('runDeferredGlobalUpdate', () => {
       "& 'omx tool' 'setup' '--scope' 'user project' '--mcp' 'none''; echo pwned #' '--flag' ''",
     );
   });
+
+
+describe('deferred update worker', () => {
+  it('retains refresh suppression and removes the verified staging directory after execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-'));
+    const globalRoot = join(root, 'global');
+    const packageRoot = join(globalRoot, PACKAGE_NAME);
+    const stage = join(root, 'stage');
+    const payloadPath = join(stage, 'transaction.json');
+    const capturePath = join(root, 'setup-capture.json');
+    const npmCliPath = join(root, 'npm-cli.js');
+    const cliPath = join(packageRoot, 'dist', 'cli.js');
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
+
+    try {
+      await mkdir(dirname(cliPath), { recursive: true });
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ bin: { omx: 'dist/cli.js' } }));
+      await writeFile(cliPath, [
+        "import { writeFileSync } from 'node:fs';",
+        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), skip: process.env.OMX_SKIP_NATIVE_AGENT_REFRESH }));",
+      ].join('\n'));
+      await writeFile(npmCliPath, [
+        "const args = process.argv.slice(2);",
+        "if (args[0] === 'root') process.stdout.write(process.env.OMX_UPDATE_GLOBAL_ROOT + '\\n');",
+        "else if (args[0] === 'prefix') process.stdout.write(process.env.OMX_UPDATE_PREFIX + '\\n');",
+      ].join('\n'));
+      await mkdir(stage, { recursive: true });
+      await chmod(stage, 0o700);
+      const ownership: PackageManagerOwnership = {
+        manager: 'npm',
+        npmCommand: { kind: 'node-script', command: process.execPath, commandArgs: [npmCliPath] },
+        npmPrefix: root,
+        globalInstallRoot: globalRoot,
+        packageRoot,
+        environment: {
+          OMX_UPDATE_CAPTURE_PATH: capturePath,
+          OMX_UPDATE_GLOBAL_ROOT: globalRoot,
+          OMX_UPDATE_PREFIX: root,
+        },
+      };
+      const serialized = JSON.stringify({ cwd: root, logPath: join(root, 'update.log'), parentPid: 999999, ownership, setupArgs: ['setup', '--scope', 'project'] });
+      await writeFile(payloadPath, serialized, { mode: 0o600 });
+      const digest = (contents: string | Buffer) => createHash('sha256').update(contents).digest('hex');
+      const result = spawnSync(process.execPath, [workerPath, payloadPath, digest(serialized), digest(await readFile(workerPath))], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), {
+        args: ['setup', '--scope', 'project'],
+        skip: '1',
+      });
+      await assert.rejects(readFile(payloadPath), { code: 'ENOENT' });
+      await assert.rejects(readFile(stage), { code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a worker whose frozen identity digest no longer matches', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-integrity-'));
+    const stage = join(root, 'stage');
+    const payloadPath = join(stage, 'transaction.json');
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
+
+    try {
+      await mkdir(stage, { recursive: true });
+      await chmod(stage, 0o700);
+      const serialized = '{}';
+      await writeFile(payloadPath, serialized, { mode: 0o600 });
+      const digest = (contents: string) => createHash('sha256').update(contents).digest('hex');
+      const result = spawnSync(process.execPath, [workerPath, payloadPath, digest(serialized), digest('different worker')], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+
+      assert.equal(result.status, 1);
+      assert.equal(existsSync(join(root, 'update.log')), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 });
 
 describe('post-update setup refresh handoff', () => {

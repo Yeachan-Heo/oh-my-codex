@@ -7,6 +7,7 @@ import { runNpmCommand, type PackageManagerOwnership } from './package-manager-o
 type DeferredUpdatePayload = { cwd: string; logPath: string; parentPid: number; ownership: PackageManagerOwnership; setupArgs: string[] };
 const PACKAGE_NAME = 'oh-my-codex';
 const installSource = `${PACKAGE_NAME}@latest`;
+const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 const installOptions: SpawnSyncOptions = { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true };
 
 function within(root: string, path: string): boolean {
@@ -36,7 +37,11 @@ async function canonicalRegularFile(path: string, stage: string): Promise<string
 async function ownerOnlyStage(stage: string): Promise<boolean> {
   try {
     const stat = await lstat(stage);
-    return stat.isDirectory() && !stat.isSymbolicLink() && (stat.mode & 0o077) === 0 && (typeof process.getuid !== 'function' || stat.uid === process.getuid());
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    // Windows does not expose POSIX mode/uid ownership through Node's stat data.
+    // The per-user temp directory and signed payload protect the Windows stage.
+    return process.platform === 'win32'
+      || ((stat.mode & 0o077) === 0 && (typeof process.getuid !== 'function' || stat.uid === process.getuid()));
   } catch { return false; }
 }
 async function validatePackage(ownership: PackageManagerOwnership): Promise<string | null> {
@@ -69,15 +74,17 @@ async function main(): Promise<void> {
   const expectedDigest = process.argv[3];
   let payload: DeferredUpdatePayload | null = null;
   let stagedPayload: string | null = null;
+  let stagedDirectory: string | null = null;
   try {
     const expectedWorkerDigest = process.argv[4];
     if (!payloadPath || !expectedDigest || !expectedWorkerDigest) throw new Error('Frozen transaction payload is missing.');
     const workerPath = await canonicalRegularFile(process.argv[1] ?? '', await realpath(join(process.argv[1] ?? '', '..')));
     if (!workerPath || digest(await readFile(workerPath, 'utf-8')) !== expectedWorkerDigest) throw new Error('Frozen update worker identity changed before execution.');
     const stage = await realpath(join(payloadPath, '..'));
-    if (!await ownerOnlyStage(stage)) throw new Error('Frozen transaction staging directory is not owner-only.');
+    if (!await ownerOnlyStage(stage)) throw new Error('Frozen transaction staging directory is not an owner-only stage.');
+    stagedDirectory = stage;
     stagedPayload = await canonicalRegularFile(payloadPath, stage);
-    if (!stagedPayload) throw new Error('Frozen transaction payload is not an owner-only regular staged file.');
+    if (!stagedPayload) throw new Error('Frozen transaction payload is not a regular canonical staged file.');
     const serialized = await readFile(stagedPayload, 'utf-8');
     if (digest(serialized) !== expectedDigest) throw new Error('Frozen transaction payload fingerprint changed before execution.');
     payload = JSON.parse(serialized) as DeferredUpdatePayload;
@@ -90,13 +97,14 @@ async function main(): Promise<void> {
     if (result.error || result.status !== 0) throw new Error(String(result.stderr || result.error?.message || 'controller install failed'));
     const cliEntry = await validateOwnership(payload.ownership);
     if (!cliEntry) throw new Error('Frozen manager, package root, or bin ownership validation failed after update.');
-    const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: payload.ownership.environment, stdio: 'inherit', windowsHide: true });
+    const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: { ...payload.ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'inherit', windowsHide: true });
     if (setup.error || setup.status !== 0) throw new Error(setup.error?.message || `setup exited ${setup.status}`);
   } catch (error) {
     if (payload) await appendFile(payload.logPath, `[omx] Deferred update failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   } finally {
-    if (stagedPayload) await rm(stagedPayload, { force: true }).catch(() => undefined);
+    if (stagedDirectory) await rm(stagedDirectory, { recursive: true, force: true }).catch(() => undefined);
+    else if (stagedPayload) await rm(stagedPayload, { force: true }).catch(() => undefined);
   }
 }
 void main();
