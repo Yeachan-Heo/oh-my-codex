@@ -1768,6 +1768,51 @@ describe('package-manager ownership', () => {
     }), null, 'missing Bun command provenance must fail closed');
   });
 
+  it('resolves an unstamped Bun install after confirming its canonical shim and configured root', async () => {
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies(undefined, { bunBin: '/fake/bun/bin' }),
+      currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      bunInstallRoot: '/fake/bun',
+      resolveBunCommand: () => '/fake/bun/bin/bun',
+      environment: {},
+      realpath: (path) => (({
+        '/fake/bun/bin/omx': '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      } as Record<string, string>)[path] ?? path),
+    });
+
+    assert.deepEqual(ownership, {
+      manager: 'bun',
+      bunCommand: '/fake/bun/bin/bun',
+      bunGlobalBin: '/fake/bun/bin',
+      bunInstallRoot: '/fake/bun',
+      npmPrefix: '/fake/bun/install/global/node_modules',
+      globalInstallRoot: '/fake/bun/install/global/node_modules',
+      packageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      environment: { BUN_INSTALL: '/fake/bun' },
+    });
+  });
+
+  it('fails closed when unstamped npm and Bun ownership both validate', async () => {
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies(undefined, {
+        npm: '/fake/bun/install/global/node_modules',
+        bunBin: '/fake/bun/bin',
+      }),
+      currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      bunInstallRoot: '/fake/bun',
+      resolveBunCommand: () => '/fake/bun/bin/bun',
+      resolveNpmPrefix: () => '/fake/bun/install/global',
+      environment: {},
+      realpath: (path) => (({
+        '/fake/bun/bin/omx': '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      } as Record<string, string>)[path] ?? path),
+    });
+
+    assert.equal(ownership, null);
+  });
+
   it('uses platform-correct canonical paths for a Windows Bun .cmd shim', async () => {
     const ownership = await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: 'C:\\Users\\alice\\.bun\\bin' }),
@@ -1834,13 +1879,6 @@ describe('package-manager ownership', () => {
 
   it('fails closed for missing, ambiguous, stale, or non-shim Bun ownership evidence', async () => {
     assert.equal(await resolvePackageManagerOwnership(ownershipDependencies(undefined, {})), null);
-    assert.equal(await resolvePackageManagerOwnership({
-      ...ownershipDependencies(undefined, { npm: '/configured/node_modules', bunBin: '/configured/bun/bin' }),
-      realpath: (path) => (({
-        '/configured/bun/bin/omx': executable,
-        '/configured/bun/bin/bun': '/configured/bun/bin/bun',
-      } as Record<string, string>)[path] ?? path),
-    }), null);
     assert.equal(await resolvePackageManagerOwnership(ownershipDependencies('bun', {
       npm: '/configured/node_modules',
     })), null);

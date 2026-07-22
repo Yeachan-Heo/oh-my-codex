@@ -275,24 +275,7 @@ function matchesCurrentInstall(root: string, dependencies: Pick<PackageManagerOw
   }
 }
 
-function hasAmbiguousBunShimEvidence(dependencies: Pick<PackageManagerOwnershipDependencies, 'currentExecutable' | 'platform' | 'realpath' | 'resolveBunGlobalBin' | 'resolveBunCommand'>): boolean {
-  try {
-    const commandHint = dependencies.resolveBunCommand();
-    if (!commandHint) return false;
-    const path = platformPath(dependencies.platform);
-    const command = dependencies.realpath(commandHint);
-    if (!/^bun(?:\.exe)?$/i.test(path.basename(command))) return false;
-    const globalBinHint = dependencies.resolveBunGlobalBin(command);
-    if (!globalBinHint) return false;
-    const globalBin = dependencies.realpath(globalBinHint);
-    const shimName = dependencies.platform === 'win32' ? 'omx.cmd' : 'omx';
-    const shim = dependencies.realpath(path.join(globalBin, shimName));
-    const executable = dependencies.realpath(dependencies.currentExecutable);
-    return pathsEqual(shim, executable, dependencies.platform);
-  } catch {
-    return false;
-  }
-}
+
 
 function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependencies, 'bunInstallRoot' | 'currentExecutable' | 'currentPackageRoot' | 'environment' | 'platform' | 'realpath' | 'resolveBunGlobalBin' | 'resolveBunCommand'>): Extract<PackageManagerOwnership, { manager: 'bun' }> | null {
   try {
@@ -358,7 +341,6 @@ export async function resolvePackageManagerOwnership(dependencies: Partial<Packa
   if (!resolved.currentExecutable) return null;
   const stamp = await resolved.readInstallStamp();
   const managers: PackageManager[] = stamp?.package_manager ? [stamp.package_manager] : ['npm', 'bun'];
-  if (!stamp?.package_manager && hasAmbiguousBunShimEvidence(resolved)) return null;
   const candidates: PackageManagerOwnership[] = [];
   for (const manager of managers) {
     if (manager === 'bun') {
