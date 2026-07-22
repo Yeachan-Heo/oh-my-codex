@@ -1,5 +1,5 @@
 import { realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { UserInstallStamp } from '../scripts/postinstall-advisory.js';
 
@@ -23,6 +23,8 @@ export type PackageManagerOwnership =
     manager: 'bun';
     bunCommand: string;
     bunGlobalBin: string;
+    /** Canonical configured BUN_INSTALL root when it defines this install. */
+    bunInstallRoot?: string;
     npmPrefix: string;
     globalInstallRoot: string;
     packageRoot: string;
@@ -100,7 +102,7 @@ export function resolveBunGlobalBin(command: string, spawnProcess: SpawnSyncLike
 
 /** Only accept Bun provenance from the current runtime, lifecycle launcher, or configured install root, never PATH. */
 export function resolveBunCommand(): string | null {
-  const candidates = [process.execPath, process.env.npm_execpath, process.env.BUN_INSTALL && join(process.env.BUN_INSTALL, 'bin', 'bun')]
+  const candidates = [process.execPath, process.env.npm_execpath, process.env.BUN_INSTALL && join(process.env.BUN_INSTALL, 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun')]
     .filter((value): value is string => Boolean(value));
   for (const candidate of candidates) {
     try {
@@ -124,14 +126,19 @@ function resolveInstalledNpmCommand(dependencies: Pick<PackageManagerOwnershipDe
   }
 }
 
-function resolveInstalledBunCommand(dependencies: Pick<PackageManagerOwnershipDependencies, 'bunInstallRoot' | 'currentPackageRoot' | 'realpath'>): string | null {
+function platformPath(platform: NodeJS.Platform): typeof posix {
+  return platform === 'win32' ? win32 : posix;
+}
+
+function resolveInstalledBunCommand(dependencies: Pick<PackageManagerOwnershipDependencies, 'bunInstallRoot' | 'currentPackageRoot' | 'platform' | 'realpath'>): string | null {
   if (!dependencies.bunInstallRoot) return null;
   try {
+    const path = platformPath(dependencies.platform);
     const installRoot = dependencies.realpath(dependencies.bunInstallRoot);
     const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
-    if (packageRoot !== join(installRoot, 'install', 'global', 'node_modules', 'oh-my-codex')) return null;
-    const command = dependencies.realpath(join(installRoot, 'bin', 'bun'));
-    return /^bun(?:\.exe)?$/i.test(basename(command)) ? command : null;
+    if (packageRoot !== path.join(installRoot, 'install', 'global', 'node_modules', 'oh-my-codex')) return null;
+    const command = dependencies.realpath(path.join(installRoot, 'bin', dependencies.platform === 'win32' ? 'bun.exe' : 'bun'));
+    return /^bun(?:\.exe)?$/i.test(path.basename(command)) ? command : null;
   } catch {
     return null;
   }
@@ -139,15 +146,15 @@ function resolveInstalledBunCommand(dependencies: Pick<PackageManagerOwnershipDe
 
 function transactionEnvironment(source: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
-  for (const key of ['HOME', 'PATH', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'USERPROFILE']) {
+  for (const key of ['HOME', 'PATH', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'USERPROFILE', 'BUN_INSTALL']) {
     if (source?.[key]) environment[key] = source[key];
   }
   return environment;
 }
 
-function isPathWithin(path: string, root: string): boolean {
-  const relation = relative(root, path);
-  return relation === '' || (!relation.startsWith('..') && !isAbsolute(relation));
+function isPathWithin(path: string, root: string, platform: NodeJS.Platform = process.platform): boolean {
+  const relation = platformPath(platform).relative(root, path);
+  return relation === '' || (!relation.startsWith('..') && !platformPath(platform).isAbsolute(relation));
 }
 
 function matchesCurrentInstall(root: string, dependencies: Pick<PackageManagerOwnershipDependencies, 'currentExecutable' | 'currentPackageRoot' | 'realpath'>): string | null {
@@ -163,6 +170,7 @@ function matchesCurrentInstall(root: string, dependencies: Pick<PackageManagerOw
 
 function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependencies, 'bunInstallRoot' | 'currentExecutable' | 'currentPackageRoot' | 'environment' | 'platform' | 'realpath' | 'resolveBunGlobalBin' | 'resolveBunCommand'>): Extract<PackageManagerOwnership, { manager: 'bun' }> | null {
   try {
+    const path = platformPath(dependencies.platform);
     const command = dependencies.resolveBunCommand() ?? resolveInstalledBunCommand(dependencies);
     if (!command) return null;
     const bunCommand = dependencies.realpath(command);
@@ -171,10 +179,29 @@ function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependenc
     const bunGlobalBin = dependencies.realpath(configuredBin);
     const executable = dependencies.realpath(dependencies.currentExecutable);
     const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
+    let bunInstallRoot: string | undefined;
+    if (dependencies.bunInstallRoot) {
+      try {
+        const configuredInstallRoot = dependencies.realpath(dependencies.bunInstallRoot);
+        if (packageRoot === path.join(configuredInstallRoot, 'install', 'global', 'node_modules', 'oh-my-codex')) bunInstallRoot = configuredInstallRoot;
+      } catch {
+        // A configured bin and canonical shim can independently prove ownership.
+      }
+    }
     const shimName = dependencies.platform === 'win32' ? 'omx.cmd' : 'omx';
-    if (dependencies.realpath(join(bunGlobalBin, shimName)) !== executable) return null;
-    if (basename(packageRoot) !== 'oh-my-codex' || !isPathWithin(executable, packageRoot)) return null;
-    return { manager: 'bun', bunCommand, bunGlobalBin, npmPrefix: dirname(packageRoot), globalInstallRoot: dirname(packageRoot), packageRoot, environment: transactionEnvironment(dependencies.environment) };
+    const shim = dependencies.realpath(path.join(bunGlobalBin, shimName));
+    if (path.basename(packageRoot) !== 'oh-my-codex' || !isPathWithin(executable, packageRoot, dependencies.platform)) return null;
+    if (dependencies.platform === 'win32') {
+      // A Windows .cmd shim is a separate file, so its canonical location is the ownership evidence.
+      if (!isPathWithin(shim, bunGlobalBin, dependencies.platform)) return null;
+    } else if (shim !== executable) {
+      return null;
+    }
+    return {
+      manager: 'bun', bunCommand, bunGlobalBin, ...(bunInstallRoot ? { bunInstallRoot } : {}),
+      npmPrefix: path.dirname(packageRoot), globalInstallRoot: path.dirname(packageRoot), packageRoot,
+      environment: transactionEnvironment(dependencies.environment),
+    };
   } catch {
     return null;
   }

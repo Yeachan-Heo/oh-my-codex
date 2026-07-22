@@ -1604,7 +1604,7 @@ describe('package-manager ownership', () => {
       npmPrefix: '/fake/bun/install/global/node_modules',
       globalInstallRoot: '/fake/bun/install/global/node_modules',
       packageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
-      environment: { BUN_INSTALL: '/fake/bun' },
+      environment: {},
     });
     assert.equal(await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
@@ -1613,56 +1613,60 @@ describe('package-manager ownership', () => {
       resolveBunCommand: () => null,
       bunInstallRoot: undefined,
       environment: {},
-    }), null, 'missing configured Bun install root must fail closed');
+    }), null, 'missing Bun command provenance must fail closed');
   });
 
-  it('uses canonical BUN_INSTALL layout and an independent .cmd shim on Windows', async () => {
+  it('uses platform-correct canonical paths for a Windows Bun .cmd shim', async () => {
     const ownership = await resolvePackageManagerOwnership({
-      ...ownershipDependencies('bun', { bunBin: 'C:/Users/alice/.bun/bin' }),
+      ...ownershipDependencies('bun', { bunBin: 'C:\\Users\\alice\\.bun\\bin' }),
       platform: 'win32',
-      bunInstallRoot: 'C:/Users/alice/.bun',
-      currentExecutable: 'C:/Users/alice/.bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
-      currentPackageRoot: 'C:/Users/alice/.bun/install/global/node_modules/oh-my-codex',
+      bunInstallRoot: 'C:\\Users\\alice\\.bun',
+      currentExecutable: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex\\dist\\cli\\omx.js',
+      currentPackageRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex',
+      resolveBunCommand: () => null,
       environment: {},
       realpath: (path) => path,
     });
     assert.deepEqual(ownership, {
       manager: 'bun',
-      bunCommand: '/configured/runtime/bun',
-      bunGlobalBin: 'C:/Users/alice/.bun/bin',
-      bunInstallRoot: 'C:/Users/alice/.bun',
-      npmPrefix: 'C:/Users/alice/.bun/install/global/node_modules',
-      globalInstallRoot: 'C:/Users/alice/.bun/install/global/node_modules',
-      packageRoot: 'C:/Users/alice/.bun/install/global/node_modules/oh-my-codex',
-      environment: { BUN_INSTALL: 'C:/Users/alice/.bun' },
+      bunCommand: 'C:\\Users\\alice\\.bun\\bin\\bun.exe',
+      bunGlobalBin: 'C:\\Users\\alice\\.bun\\bin',
+      bunInstallRoot: 'C:\\Users\\alice\\.bun',
+      npmPrefix: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
+      globalInstallRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
+      packageRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules\\oh-my-codex',
+      environment: {},
     });
   });
 
-  it('freezes Bun ownership from its configured bin and canonical omx shim without inferring a package root', async () => {
+  it('preserves custom Bun bin and shim ownership when BUN_INSTALL is unavailable', async () => {
     let npmCalls = 0;
     const ownership = await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/configured/bun/bin' }),
+      bunInstallRoot: '/missing/developer-bun',
       currentExecutable: '/links/omx.js',
       currentPackageRoot: '/links/package',
-      realpath: (path: string) => (({
-        '/configured/bun/bin': '/canonical/bun/bin',
-        '/configured/runtime/bun': '/canonical/runtime/bun',
-        '/canonical/bun/bin/omx': '/isolated/global/oh-my-codex/dist/cli/omx.js',
-        '/canonical/bun/bin/bun': '/canonical/bun/bin/bun',
-        '/links/omx.js': '/isolated/global/oh-my-codex/dist/cli/omx.js',
-        '/links/package': '/isolated/global/oh-my-codex',
-      } as Record<string, string>)[path] ?? path),
+      realpath: (path: string) => {
+        if (path === '/missing/developer-bun') throw new Error('missing BUN_INSTALL');
+        return ({
+          '/configured/bun/bin': '/canonical/bun/bin',
+          '/configured/runtime/bun': '/canonical/runtime/bun',
+          '/canonical/bun/bin/omx': '/isolated/global/oh-my-codex/dist/cli/omx.js',
+          '/canonical/bun/bin/bun': '/canonical/bun/bin/bun',
+          '/links/omx.js': '/isolated/global/oh-my-codex/dist/cli/omx.js',
+          '/links/package': '/isolated/global/oh-my-codex',
+        } as Record<string, string>)[path] ?? path;
+      },
       resolveNpmGlobalInstallRoot: () => { npmCalls += 1; return null; },
     });
     assert.deepEqual(ownership, {
       manager: 'bun',
       bunCommand: '/canonical/runtime/bun',
       bunGlobalBin: '/canonical/bun/bin',
-      bunInstallRoot: process.env.BUN_INSTALL,
       globalInstallRoot: '/isolated/global',
       packageRoot: '/isolated/global/oh-my-codex',
       npmPrefix: '/isolated/global',
-      environment: { BUN_INSTALL: process.env.BUN_INSTALL },
+      environment: {},
     });
     assert.equal(npmCalls, 0, 'Bun ownership must not invoke npm.');
   });
