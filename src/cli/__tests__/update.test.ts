@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,6 @@ import {
   maybeCheckAndPromptUpdate,
   readUserInstallStamp,
   resolveAutoUpdateMode,
-  resolveGlobalInstallRoot,
   resolveInstalledCliEntry,
   formatDeferredSetupCommand,
   resolveSetupRefreshArgs,
@@ -607,218 +606,44 @@ describe('maybeCheckAndPromptUpdate', () => {
   });
 });
 
-describe('direct npm spawn fallback', () => {
-  function spawnErrorResult(code: string) {
-    const error = Object.assign(new Error(`spawnSync npm ${code}`), { code });
-    return { status: null, signal: null, error, stdout: '', stderr: '', output: [null, '', ''], pid: 0 };
-  }
-
-  function enoentResult() {
-    return spawnErrorResult('ENOENT');
-  }
-
-  function einvalResult() {
-    return spawnErrorResult('EINVAL');
-  }
-
+describe('frozen package-manager update ownership', () => {
   function okResult(stdout = '') {
     return { status: 0, signal: null, error: undefined, stdout, stderr: '', output: [null, stdout, ''], pid: 0 };
   }
 
-  it('falls back to npm.cmd for win32 global installs when direct npm spawn returns ENOENT', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const result = runGlobalUpdate(
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        return command === 'npm' ? enoentResult() : okResult();
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
-    assert.deepEqual(calls[0].args, ['install', '-g', 'oh-my-codex@latest']);
-    assert.deepEqual(calls[1].args, ['install', '-g', 'oh-my-codex@latest']);
-  });
-
-  it('falls back through cmd.exe when win32 npm.cmd cannot be spawned', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const result = runGlobalUpdate(
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        if (command === 'npm') return enoentResult();
-        if (command === 'npm.cmd') return einvalResult();
-        return okResult();
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd', 'cmd.exe']);
-    assert.deepEqual(calls[0].args, ['install', '-g', 'oh-my-codex@latest']);
-    assert.deepEqual(calls[1].args, ['install', '-g', 'oh-my-codex@latest']);
-    assert.deepEqual(calls[2].args, ['/d', '/s', '/c', 'npm', 'install', '-g', 'oh-my-codex@latest']);
-  });
-
-  it('uses cmd.exe for win32 global installs when direct npm returns EINVAL', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const result = runGlobalUpdate(
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        return command === 'npm' ? einvalResult() : okResult();
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.command), ['npm', 'cmd.exe']);
-    assert.deepEqual(calls[1].args, ['/d', '/s', '/c', 'npm', 'install', '-g', 'oh-my-codex@latest']);
-  });
-
-  it('does not shell-wrap non-target win32 npm operations when npm.cmd returns EINVAL', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const root = resolveGlobalInstallRoot(
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        if (command === 'npm') return enoentResult();
-        if (command === 'npm.cmd') return einvalResult();
-        return okResult('unexpected');
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(root, null);
-    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
-    assert.deepEqual(calls[0].args, ['root', '-g']);
-    assert.deepEqual(calls[1].args, ['root', '-g']);
-  });
-
-  it('keeps the direct npm path when it succeeds', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const result = runGlobalUpdate(
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        return okResult();
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.command), ['npm']);
-    assert.deepEqual(calls[0].args, ['install', '-g', 'oh-my-codex@latest']);
-  });
-
-  it('does not fall back to npm.cmd for non-Windows ENOENT failures', () => {
+  it('rejects legacy unowned update calls without selecting an ambient manager', () => {
     const calls: string[] = [];
-
-    const result = runGlobalUpdate(
-      ((command: string) => {
-        calls.push(command);
-        return enoentResult();
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'linux',
-    );
+    const result = runGlobalUpdate(((command: string) => {
+      calls.push(command);
+      return okResult();
+    }) as unknown as typeof import('node:child_process').spawnSync);
 
     assert.equal(result.ok, false);
-    assert.match(result.stderr, /ENOENT/);
-    assert.deepEqual(calls, ['npm']);
+    assert.match(result.stderr, /validated package-manager ownership/);
+    assert.deepEqual(calls, []);
   });
 
+  it('uses only the selected frozen npm command for dev packaging and installation', () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const owner: PackageManagerOwnership = {
+      ...frozenNpmOwnership,
+      npmCommand: { kind: 'node-script', command: '/configured/node', commandArgs: ['/configured/npm-cli.js'] },
+    };
+    const result = runGlobalUpdate('github:Yeachan-Heo/oh-my-codex#dev', ((command: string, args: readonly string[]) => {
+      calls.push({ command, args: [...args] });
+      return command === 'git' ? { ...okResult(), stdout: args[0] === 'rev-parse' ? '1234567890abcdef\n' : '' } : okResult();
+    }) as typeof import('node:child_process').spawnSync, 'win32', owner);
 
-  it('packs the dev branch from a local checkout instead of globally installing the git dependency spec', () => {
-    const originalNpmLocation = process.env.npm_config_location;
-    const calls: Array<{ command: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }> = [];
-
-    process.env.npm_config_location = 'global';
-
-    try {
-      const result = runGlobalUpdate(
-        'github:Yeachan-Heo/oh-my-codex#dev',
-        ((command: string, args: readonly string[], options?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
-          calls.push({ command, args: args as string[], cwd: options?.cwd, env: options?.env });
-          if (command === 'git' && args[0] === 'clone') {
-            mkdirSync(String(args[args.length - 1]), { recursive: true });
-          }
-          if (command === 'git' && args[0] === 'rev-parse') {
-            return okResult('1234567890abcdef\n');
-          }
-          if (command === 'npm' && args[0] === 'pack') {
-            writeFileSync(join(options?.cwd ?? process.cwd(), 'oh-my-codex-0.18.9.tgz'), 'packed');
-            return okResult(JSON.stringify([{ filename: 'oh-my-codex-0.18.9.tgz' }]));
-          }
-          return okResult();
-        }) as unknown as typeof import('node:child_process').spawnSync,
-        'linux',
-      );
-
-      assert.equal(result.ok, true);
-      assert.deepEqual(calls.map((call) => [call.command, ...call.args.slice(0, 3)]), [
-        ['git', 'clone', '--depth', '1'],
-        ['git', 'rev-parse', 'HEAD'],
-        ['npm', 'install', '--global=false', '--location=project'],
-        ['npm', 'run', 'prepack'],
-        ['npm', 'pack', '--ignore-scripts', '--json'],
-        ['npm', 'install', '-g', join(calls[2].cwd ?? '', 'oh-my-codex-0.18.9.tgz')],
-      ]);
-      const dependencyInstall = calls.find((call) => call.command === 'npm' && call.args[0] === 'install' && call.args.includes('--include=dev'));
-      assert.equal(dependencyInstall?.env?.npm_config_global, 'false');
-      assert.equal(dependencyInstall?.env?.npm_config_location, 'project');
-      assert.equal(calls.some((call) => call.args.includes('github:Yeachan-Heo/oh-my-codex#dev')), false);
-    } finally {
-      if (typeof originalNpmLocation === 'string') {
-        process.env.npm_config_location = originalNpmLocation;
-      } else {
-        delete process.env.npm_config_location;
-      }
+    assert.equal(result.ok, false);
+    assert.match(result.stderr, /npm pack did not produce/);
+    assert.deepEqual(calls.map((call) => call.command), [
+      'git', 'git', '/configured/node', '/configured/node', '/configured/node',
+    ]);
+    for (const call of calls.slice(2)) {
+      assert.deepEqual(call.args.slice(0, 1), ['/configured/npm-cli.js']);
     }
   });
 
-  it('does not use cmd.exe for win32 dev-channel npm packaging when npm.cmd returns EINVAL', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const result = runGlobalUpdate(
-      'github:Yeachan-Heo/oh-my-codex#dev',
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        if (command === 'git' && args[0] === 'clone') {
-          mkdirSync(String(args[args.length - 1]), { recursive: true });
-          return okResult();
-        }
-        if (command === 'git' && args[0] === 'rev-parse') return okResult('1234567890abcdef\n');
-        if (command === 'npm') return enoentResult();
-        if (command === 'npm.cmd') return einvalResult();
-        return okResult();
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(result.ok, false);
-    assert.match(result.stderr, /EINVAL/);
-    assert.deepEqual(calls.map((call) => call.command), ['git', 'git', 'npm', 'npm.cmd']);
-    assert.equal(calls.some((call) => call.command === 'cmd.exe'), false);
-  });
-
-  it('falls back to npm.cmd for win32 global-root lookup when direct npm spawn returns ENOENT', () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-
-    const root = resolveGlobalInstallRoot(
-      ((command: string, args: readonly string[]) => {
-        calls.push({ command, args: args as string[] });
-        return command === 'npm' ? enoentResult() : okResult('C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\r\n');
-      }) as unknown as typeof import('node:child_process').spawnSync,
-      'win32',
-    );
-
-    assert.equal(root, 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules');
-    assert.deepEqual(calls.map((call) => call.command), ['npm', 'npm.cmd']);
-    assert.deepEqual(calls[0].args, ['root', '-g']);
-    assert.deepEqual(calls[1].args, ['root', '-g']);
-  });
 });
 
 describe('runImmediateUpdate', () => {
@@ -1775,10 +1600,11 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: '/fake/bun/bin/bun',
       bunGlobalBin: '/fake/bun/bin',
+      bunInstallRoot: '/fake/bun',
       npmPrefix: '/fake/bun/install/global/node_modules',
       globalInstallRoot: '/fake/bun/install/global/node_modules',
       packageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
-      environment: {},
+      environment: { BUN_INSTALL: '/fake/bun' },
     });
     assert.equal(await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
@@ -1788,6 +1614,28 @@ describe('package-manager ownership', () => {
       bunInstallRoot: undefined,
       environment: {},
     }), null, 'missing configured Bun install root must fail closed');
+  });
+
+  it('uses canonical BUN_INSTALL layout and an independent .cmd shim on Windows', async () => {
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: 'C:/Users/alice/.bun/bin' }),
+      platform: 'win32',
+      bunInstallRoot: 'C:/Users/alice/.bun',
+      currentExecutable: 'C:/Users/alice/.bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: 'C:/Users/alice/.bun/install/global/node_modules/oh-my-codex',
+      environment: {},
+      realpath: (path) => path,
+    });
+    assert.deepEqual(ownership, {
+      manager: 'bun',
+      bunCommand: '/configured/runtime/bun',
+      bunGlobalBin: 'C:/Users/alice/.bun/bin',
+      bunInstallRoot: 'C:/Users/alice/.bun',
+      npmPrefix: 'C:/Users/alice/.bun/install/global/node_modules',
+      globalInstallRoot: 'C:/Users/alice/.bun/install/global/node_modules',
+      packageRoot: 'C:/Users/alice/.bun/install/global/node_modules/oh-my-codex',
+      environment: { BUN_INSTALL: 'C:/Users/alice/.bun' },
+    });
   });
 
   it('freezes Bun ownership from its configured bin and canonical omx shim without inferring a package root', async () => {
@@ -1810,10 +1658,11 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: '/canonical/runtime/bun',
       bunGlobalBin: '/canonical/bun/bin',
+      bunInstallRoot: process.env.BUN_INSTALL,
       globalInstallRoot: '/isolated/global',
       packageRoot: '/isolated/global/oh-my-codex',
       npmPrefix: '/isolated/global',
-      environment: {},
+      environment: { BUN_INSTALL: process.env.BUN_INSTALL },
     });
     assert.equal(npmCalls, 0, 'Bun ownership must not invoke npm.');
   });
