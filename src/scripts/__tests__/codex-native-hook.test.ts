@@ -12808,6 +12808,16 @@ exit 0
 			})(), /OMX_QUESTION_RETURN_PANE=\$TMUX_PANE/);
 			await assertAllowed("direct documented cancellation", await bash("omx cancel", "omx-cancel"));
 			await assertDenied("chained cancellation is not documented direct cancellation", await bash("printf ready && omx cancel", "omx-cancel-chained"), /Deep-interview is active|write intent|handoff|direct/);
+			await assertDenied("force cancellation is ralplan/conductor-only", await bash("omx cancel --force", "omx-cancel-force"), /Deep-interview is active|write intent|handoff|direct/);
+			await assertDenied("bom lookalike is not direct cancellation", await bash("\ufeffomx cancel", "omx-cancel-bom"), /Deep-interview is active|write intent|handoff|direct/);
+			await assertDenied("inherited bash startup poisons direct cancellation", await (async () => {
+				process.env.BASH_ENV = "/tmp/prelude.sh";
+				try {
+					return await bash("omx cancel", "omx-cancel-bash-env");
+				} finally {
+					delete process.env.BASH_ENV;
+				}
+			})(), /Deep-interview is active|write intent|handoff|direct/);
 
 			for (const [label, command] of [
 				["omx-help", "omx --help"],
@@ -21099,6 +21109,26 @@ PY`,
       ] as const) {
         const impostor = await bash(command);
         assert.equal(impostor.outputJson?.decision, "block", label);
+      }
+
+      // Inherited execution-context overrides must deny even the byte-exact
+      // command: the exemption proves the text, not the runtime that will
+      // execute it (Bash sources $BASH_ENV first, imported functions shadow
+      // the omx executable, and Node loader env preloads code).
+      for (const [label, envName, envValue] of [
+        ["inherited bash startup file", "BASH_ENV", "/tmp/prelude.sh"],
+        ["imported omx function shadow", "BASH_FUNC_omx%%", "() { printf owned > src/pwned.ts; }"],
+        ["inherited node loader override", "NODE_OPTIONS", "--require=./payload.cjs"],
+      ] as const) {
+        const previousValue = process.env[envName];
+        process.env[envName] = envValue;
+        try {
+          const poisoned = await bash("omx cancel");
+          assert.equal(poisoned.outputJson?.decision, "block", label);
+        } finally {
+          if (previousValue === undefined) delete process.env[envName];
+          else process.env[envName] = previousValue;
+        }
       }
 
       const stateClear = await bash("omx state clear --force --mode ralplan --json");
@@ -31466,6 +31496,22 @@ PY`,
       ] as const) {
         const impostor = await bash(command);
         assert.equal(impostor.outputJson?.decision, "block", label);
+      }
+
+      for (const [label, envName, envValue] of [
+        ["inherited bash startup file", "BASH_ENV", "/tmp/prelude.sh"],
+        ["imported omx function shadow", "BASH_FUNC_omx%%", "() { printf owned > src/pwned.ts; }"],
+        ["inherited node loader override", "NODE_OPTIONS", "--require=./payload.cjs"],
+      ] as const) {
+        const previousValue = process.env[envName];
+        process.env[envName] = envValue;
+        try {
+          const poisoned = await bash("omx cancel");
+          assert.equal(poisoned.outputJson?.decision, "block", label);
+        } finally {
+          if (previousValue === undefined) delete process.env[envName];
+          else process.env[envName] = previousValue;
+        }
       }
 
       const stateClear = await bash("omx state clear --force --mode ultragoal --json");

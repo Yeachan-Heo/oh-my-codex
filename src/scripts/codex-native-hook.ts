@@ -8765,13 +8765,40 @@ function isAllowedGhReadOnlyCommand(command: string): boolean {
 function isAllowedDeepInterviewCommandSpecificBash(
   payload: CodexHookPayload,
   command: string,
+  cwd = process.cwd(),
 ): boolean {
   const questionClassification = classifyOmxQuestionPreToolUse(command, payload);
   if (questionClassification.kind === "allowed") return true;
-  return (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command))
-    || isAllowedOmxReadOnlyCommand(command)
+  // A command shaped like direct cancellation must never fall through to a
+  // generic allowance: when the trusted execution context cannot be proven,
+  // the exemption denies rather than degrading to the ordinary benign path.
+  if (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command)) {
+    return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
+  }
+  return isAllowedOmxReadOnlyCommand(command)
     || isAllowedGhReadOnlyCommand(command)
     || isAllowedVersionProbeCommand(command);
+}
+
+// The direct-cancel exemption authorizes a state-changing recovery command
+// ahead of the normal mutation analysis, so it must independently prove the
+// execution context cannot substitute different code for the validated text:
+// no unsafe inherited Bash startup (`BASH_ENV`) or conductor shell state
+// (imported handlers, unsafe options, untrusted absolute commands), no
+// imported `omx` shell function shadow, no inherited Node loader/output
+// overrides, and no command-resolution/runtime environment assignments. This
+// mirrors the established conductor/state-transport safety model instead of
+// inventing a parallel one.
+const DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES = [
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+];
+
+function directOmxCancelCommandHasTrustedExecutionContext(command: string, cwd: string): boolean {
+  if (commandHasUnsafeConductorShellState(command, cwd)) return false;
+  if (safeString(process.env["BASH_FUNC_omx%%"]).trim() !== "") return false;
+  if (DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES.some((name) => safeString(process.env[name]).trim() !== "")) return false;
+  return !commandHasUnsafeLeadingRuntimeEnvironment(command);
 }
 
 function isCommandResolutionSensitiveEnvironmentName(name: string): boolean {
@@ -8814,7 +8841,7 @@ function isAllowedDeepInterviewBashWrite(
     // compound/redirect/substitution form is denied so it cannot smuggle a mutation.
     return questionClassification.kind === "allowed" && isSingleLiteralShellInvocation(command);
   }
-  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command)) return true;
+  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command, cwd)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
@@ -8975,7 +9002,9 @@ function isAllowedRalplanBashWrite(
   command: string,
   activeState: Record<string, unknown>,
   sessionId: string,
-  rawCommand = command,
+  // Authorizing evaluators must receive the untrimmed payload command
+  // explicitly; only diagnostic callers may reuse the analyzed command here.
+  rawCommand: string,
 ): boolean {
   // Session-scoped cancellation is the owning session's documented recovery
   // surface: it terminalizes workflow state without touching planning
@@ -8985,7 +9014,9 @@ function isAllowedRalplanBashWrite(
   // is byte-identical to the analyzed command, so neither a presented
   // cancellation nor a lossy normalization seam can smuggle a different
   // executable, preload code, or redirect a state tree.
-  if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) return true;
+  if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) {
+    return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
+  }
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
@@ -18085,7 +18116,9 @@ function evaluateConductorBashWrite(
   depth = 0,
   authoritativeSessionId = "",
   policyCwd = cwd,
-  rawCommand = command,
+  // Authorizing evaluators must receive the untrimmed payload command
+  // explicitly; only diagnostic callers may reuse the analyzed command here.
+  rawCommand: string,
 ): { allowed: boolean; blockedDetail?: string } {
   // Session-scoped cancellation is the owning session's documented recovery
   // surface across planning workflows (parity with the ralplan/deep-interview
@@ -18094,7 +18127,11 @@ function evaluateConductorBashWrite(
   // the analyzed command, so neither a presented cancellation nor a lossy
   // normalization seam can smuggle a different executable, preload code, or
   // redirect a state tree.
-  if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) return { allowed: true };
+  if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) {
+    return directOmxCancelCommandHasTrustedExecutionContext(command, cwd)
+      ? { allowed: true }
+      : { allowed: false, blockedDetail: "direct cancellation execution context is not trusted: inherited Bash startup, imported omx function, or Node loader environment overrides present" };
+  }
   const commandWithHeredocBodies = normalizeShellLineContinuations(command);
   const normalizedCommand = stripHeredocBodiesForCommandScan(commandWithHeredocBodies);
   if (authoritativeSessionId && !conductorStateWriteTransportIsBoundToActiveSession(commandWithHeredocBodies, authoritativeSessionId, policyCwd)) {
@@ -18282,7 +18319,7 @@ function isExactConductorMetadataRoot(cwd: string, target: string): boolean {
 
 
 function buildConductorBashBlockedDetail(cwd: string, command: string): string {
-  return evaluateConductorBashWrite(cwd, command).blockedDetail
+  return evaluateConductorBashWrite(cwd, command, 0, "", cwd, command).blockedDetail
     ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
