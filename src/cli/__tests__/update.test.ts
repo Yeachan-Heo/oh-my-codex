@@ -1261,7 +1261,7 @@ describe('deferred update worker', () => {
 
     try {
       await mkdir(dirname(cliPath), { recursive: true });
-      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: PACKAGE_NAME, version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
       await writeFile(cliPath, [
         "import { existsSync, writeFileSync } from 'node:fs';",
         "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), skip: process.env.OMX_SKIP_NATIVE_AGENT_REFRESH, stampPresent: existsSync(process.env.OMX_UPDATE_STAMP_PATH) }));",
@@ -1319,6 +1319,16 @@ describe('deferred update worker', () => {
       });
       assert.match(stamp.updated_at, /^\d{4}-\d{2}-\d{2}T/);
       await assert.rejects(readFile(payloadPath), { code: 'ENOENT' });
+      await assert.rejects(readFile(stage), { code: 'ENOENT' });
+      await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'unexpected-package', version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
+      await mkdir(stage, { recursive: true });
+      await chmod(stage, 0o700);
+      await writeFile(payloadPath, serialized, { mode: 0o600 });
+      const rejected = spawnSync(process.execPath, [workerPath, payloadPath, digest(serialized), digest(await readFile(workerPath))], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+      assert.equal(rejected.status, 1, rejected.stderr);
       await assert.rejects(readFile(stage), { code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });

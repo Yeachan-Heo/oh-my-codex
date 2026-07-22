@@ -1,7 +1,7 @@
 import { appendFile, lstat, readFile, realpath, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, win32 } from 'node:path';
 import { runNpmCommand, type PackageManagerOwnership } from './package-manager-ownership.js';
 import { writeUserInstallStamp } from '../scripts/postinstall-advisory.js';
 import { omxUserInstallStampPath } from '../utils/paths.js';
@@ -11,6 +11,12 @@ const PACKAGE_NAME = 'oh-my-codex';
 const installSource = `${PACKAGE_NAME}@latest`;
 const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 const installOptions: SpawnSyncOptions = { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true };
+
+function pathsEqual(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase()
+    : left === right;
+}
 
 function within(root: string, path: string): boolean {
   const relation = relative(root, path);
@@ -49,10 +55,13 @@ async function ownerOnlyStage(stage: string): Promise<boolean> {
 async function validatePackage(ownership: PackageManagerOwnership): Promise<string | null> {
   try {
     const packageRoot = await realpath(join(ownership.globalInstallRoot, PACKAGE_NAME));
-    if (packageRoot !== ownership.packageRoot) return null;
-    const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf-8')) as { bin?: string | Record<string, string> };
+    if (!pathsEqual(packageRoot, ownership.packageRoot)) return null;
+    const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf-8')) as {
+      name?: string;
+      bin?: string | Record<string, string>;
+    };
     const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.omx;
-    if (typeof bin !== 'string' || !bin.trim() || isAbsolute(bin)) return null;
+    if (manifest.name !== PACKAGE_NAME || typeof bin !== 'string' || !bin.trim() || isAbsolute(bin)) return null;
     const entry = await realpath(join(packageRoot, bin));
     return within(packageRoot, entry) ? entry : null;
   } catch { return null; }
@@ -61,14 +70,14 @@ async function validateManager(ownership: PackageManagerOwnership): Promise<bool
   if (ownership.manager === 'npm') {
     const root = output(runNpmCommand(ownership.npmCommand, ['root', '-g'], { ...installOptions, env: ownership.environment }));
     const prefix = output(runNpmCommand(ownership.npmCommand, ['prefix', '-g'], { ...installOptions, env: ownership.environment }));
-    try { return root !== null && prefix !== null && await realpath(root) === ownership.globalInstallRoot && await realpath(prefix) === ownership.npmPrefix; } catch { return false; }
+    try { return root !== null && prefix !== null && pathsEqual(await realpath(root), ownership.globalInstallRoot) && pathsEqual(await realpath(prefix), ownership.npmPrefix); } catch { return false; }
   }
   if (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot) return false;
   const bin = output(spawnSync(ownership.bunCommand, ['pm', 'bin', '-g'], { ...installOptions, env: ownership.environment }));
   try {
     return bin !== null
-      && await realpath(bin) === ownership.bunGlobalBin
-      && await realpath(ownership.environment.BUN_INSTALL) === ownership.bunInstallRoot;
+      && pathsEqual(await realpath(bin), ownership.bunGlobalBin)
+      && pathsEqual(await realpath(ownership.environment.BUN_INSTALL), ownership.bunInstallRoot);
   } catch { return false; }
 }
 async function validateOwnership(ownership: PackageManagerOwnership): Promise<string | null> {
