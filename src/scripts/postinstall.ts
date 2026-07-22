@@ -85,9 +85,6 @@ export async function runPostinstall(
     ...(typeof existingStamp?.setup_completed_version === "string"
       ? { setup_completed_version: existingStamp.setup_completed_version }
       : {}),
-    ...(existingStamp?.package_manager === "npm" || existingStamp?.package_manager === "bun"
-      ? { package_manager: existingStamp.package_manager }
-      : {}),
     updated_at: new Date().toISOString(),
   });
 

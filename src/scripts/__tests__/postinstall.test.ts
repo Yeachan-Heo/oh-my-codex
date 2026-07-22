@@ -24,7 +24,7 @@ describe("isGlobalInstallLifecycle", () => {
 });
 
 describe("runPostinstall", () => {
-  it("preserves Bun provenance across bumped global installs while printing an explicit opt-in setup hint", async () => {
+  it("clears stale Bun provenance for a global replacement while printing an explicit opt-in setup hint", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-postinstall-"));
     const stampPath = join(root, ".codex", ".omx", "install-state.json");
     const logs: string[] = [];
@@ -53,7 +53,7 @@ describe("runPostinstall", () => {
       };
       assert.equal(stamp.installed_version, "0.14.1");
       assert.equal(stamp.setup_completed_version, "0.14.0");
-      assert.equal(stamp.package_manager, "bun");
+      assert.equal(stamp.package_manager, undefined);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -91,7 +91,7 @@ describe("runPostinstall", () => {
     }
   });
 
-  it("does not infer package-manager provenance from a Bun user agent", async () => {
+  it("does not infer Bun provenance from a Bun user agent", async () => {
     let writtenStamp: { package_manager?: "npm" | "bun" } | undefined;
 
     const result = await runPostinstall({

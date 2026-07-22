@@ -348,7 +348,8 @@ export async function resolvePackageManagerOwnership(dependencies: Partial<Packa
   }
   if (!resolved.currentExecutable) return null;
   const stamp = await resolved.readInstallStamp();
-  const managers: PackageManager[] = stamp?.package_manager ? [stamp.package_manager] : ['npm', 'bun'];
+  // The stamp only prioritizes a probe; each candidate requires live ownership proof.
+  const managers: PackageManager[] = stamp?.package_manager === 'bun' ? ['bun', 'npm'] : ['npm', 'bun'];
   const candidates: PackageManagerOwnership[] = [];
   for (const manager of managers) {
     if (manager === 'bun') {

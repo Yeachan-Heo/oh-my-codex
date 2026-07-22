@@ -1715,6 +1715,14 @@ describe('package-manager ownership', () => {
     });
   });
 
+  it('recovers an npm owner from a stale Bun stamp without deleting the stamp', async () => {
+    const ownership = await resolvePackageManagerOwnership(ownershipDependencies('bun', {
+      npm: '/configured/node_modules',
+    }));
+
+    assert.equal(ownership?.manager, 'npm');
+  });
+
   it('freezes CODEX_HOME for deferred setup and update finalization', async () => {
     const ownership = await resolvePackageManagerOwnership({
       ...ownershipDependencies('npm', { npm: '/configured/node_modules' }),
@@ -1866,24 +1874,42 @@ describe('package-manager ownership', () => {
     });
   });
 
-  it('fails closed when unstamped npm and Bun ownership both validate', async () => {
+  it('recovers a Bun owner from a stale npm stamp without deleting the stamp', async () => {
     const ownership = await resolvePackageManagerOwnership({
-      ...ownershipDependencies(undefined, {
-        npm: '/fake/bun/install/global/node_modules',
-        bunBin: '/fake/bun/bin',
-      }),
+      ...ownershipDependencies('npm', { bunBin: '/fake/bun/bin' }),
       currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
       currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
       bunInstallRoot: '/fake/bun',
       resolveBunCommand: () => '/fake/bun/bin/bun',
-      resolveNpmPrefix: () => '/fake/bun/install/global',
       environment: {},
       realpath: (path) => (({
         '/fake/bun/bin/omx': '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
       } as Record<string, string>)[path] ?? path),
     });
 
-    assert.equal(ownership, null);
+    assert.equal(ownership?.manager, 'bun');
+  });
+
+  it('fails closed when npm and Bun ownership both validate, even with a manager stamp', async () => {
+    for (const stamp of [undefined, 'npm', 'bun'] as const) {
+      const ownership = await resolvePackageManagerOwnership({
+        ...ownershipDependencies(stamp, {
+          npm: '/fake/bun/install/global/node_modules',
+          bunBin: '/fake/bun/bin',
+        }),
+        currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+        currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+        bunInstallRoot: '/fake/bun',
+        resolveBunCommand: () => '/fake/bun/bin/bun',
+        resolveNpmPrefix: () => '/fake/bun/install/global',
+        environment: {},
+        realpath: (path) => (({
+          '/fake/bun/bin/omx': '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+        } as Record<string, string>)[path] ?? path),
+      });
+
+      assert.equal(ownership, null);
+    }
   });
 
   it('uses platform-correct canonical paths for a Windows Bun .cmd shim', async () => {
@@ -1949,14 +1975,14 @@ describe('package-manager ownership', () => {
       resolveNpmGlobalInstallRoot: () => { npmCalls += 1; return null; },
     });
     assert.equal(ownership, null);
-    assert.equal(npmCalls, 0, 'A stamped Bun candidate must not fall back to npm.');
+    assert.equal(npmCalls, 1, 'A stale stamp cannot suppress independent live ownership validation.');
   });
 
   it('fails closed for missing, ambiguous, stale, or non-shim Bun ownership evidence', async () => {
     assert.equal(await resolvePackageManagerOwnership(ownershipDependencies(undefined, {})), null);
-    assert.equal(await resolvePackageManagerOwnership(ownershipDependencies('bun', {
+    assert.equal((await resolvePackageManagerOwnership(ownershipDependencies('bun', {
       npm: '/configured/node_modules',
-    })), null);
+    })))?.manager, 'npm', 'a stale Bun stamp must yield to one uniquely validated npm owner');
     assert.equal(await resolvePackageManagerOwnership({
       ...ownershipDependencies('bun', { bunBin: '/configured/bun/bin' }),
       resolveBunGlobalBin: () => '/configured/bun/bin',
