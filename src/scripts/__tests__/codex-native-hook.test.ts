@@ -12806,16 +12806,31 @@ exit 0
 					delete process.env.OMX_QUESTION_RETURN_PANE;
 				}
 			})(), /OMX_QUESTION_RETURN_PANE=\$TMUX_PANE/);
-			await assertAllowed("direct documented cancellation", await bash("omx cancel", "omx-cancel"));
+			await assertAllowed("direct documented cancellation", await (async () => {
+				const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+				const trustedBinDir = await mkdtemp(join(tmpdir(), "omx-di-trusted-bin-"));
+				await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
+				const inheritedPath = process.env.PATH;
+				process.env.PATH = `${trustedBinDir}:/usr/bin:/bin`;
+				try {
+					return await bash("omx cancel", "omx-cancel");
+				} finally {
+					if (inheritedPath === undefined) delete process.env.PATH;
+					else process.env.PATH = inheritedPath;
+					await rm(trustedBinDir, { recursive: true, force: true });
+				}
+			})());
 			await assertDenied("chained cancellation is not documented direct cancellation", await bash("printf ready && omx cancel", "omx-cancel-chained"), /Deep-interview is active|write intent|handoff|direct/);
 			await assertDenied("force cancellation is ralplan/conductor-only", await bash("omx cancel --force", "omx-cancel-force"), /Deep-interview is active|write intent|handoff|direct/);
 			await assertDenied("bom lookalike is not direct cancellation", await bash("\ufeffomx cancel", "omx-cancel-bom"), /Deep-interview is active|write intent|handoff|direct/);
 			await assertDenied("inherited bash startup poisons direct cancellation", await (async () => {
+				const previousBashEnv = process.env.BASH_ENV;
 				process.env.BASH_ENV = "/tmp/prelude.sh";
 				try {
 					return await bash("omx cancel", "omx-cancel-bash-env");
 				} finally {
-					delete process.env.BASH_ENV;
+					if (previousBashEnv === undefined) delete process.env.BASH_ENV;
+					else process.env.BASH_ENV = previousBashEnv;
 				}
 			})(), /Deep-interview is active|write intent|handoff|direct/);
 
@@ -21064,8 +21079,31 @@ PY`,
         tool_input: { command },
       }, { cwd });
 
-      assert.equal((await bash("omx cancel")).outputJson, null);
-      assert.equal((await bash("omx cancel --force")).outputJson, null);
+      // The exemption also requires the bare `omx` token to resolve to the
+      // hook package's canonical CLI under the inherited PATH, so positives
+      // and impostor denials run under a proven-trusted resolution to stay
+      // discriminating (a denial must not pass merely because the ambient
+      // PATH was untrusted).
+      const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+      const trustedPackageBin = join(cwd, "node_modules", ".bin", "omx");
+      await mkdir(dirname(trustedPackageBin), { recursive: true });
+      await symlink(workspacePackageCli, trustedPackageBin);
+      const trustedPackagePath = `${dirname(trustedPackageBin)}:/usr/bin:/bin`;
+      const bashTrusted = async (command: string) => {
+        const inheritedPath = process.env.PATH;
+        process.env.PATH = trustedPackagePath;
+        try {
+          return await bash(command);
+        } finally {
+          if (inheritedPath === undefined) delete process.env.PATH;
+          else process.env.PATH = inheritedPath;
+        }
+      };
+
+      assert.equal((await bashTrusted("omx cancel")).outputJson, null);
+      assert.equal((await bashTrusted("omx cancel --force")).outputJson, null);
+      assert.equal((await bash("omx cancel")).outputJson?.decision, "block",
+        "ambient non-package omx resolution is not trusted");
 
       const chained = await bash("omx cancel --force && rm -rf x");
       assert.equal(chained.outputJson?.decision, "block");
@@ -21107,7 +21145,7 @@ PY`,
         ["byte-order-mark lookalike executable", "\ufeffomx cancel"],
         ["carriage-return suffix lookalike", "omx cancel\r"],
       ] as const) {
-        const impostor = await bash(command);
+        const impostor = await bashTrusted(command);
         assert.equal(impostor.outputJson?.decision, "block", label);
       }
 
@@ -21119,15 +21157,35 @@ PY`,
         ["inherited bash startup file", "BASH_ENV", "/tmp/prelude.sh"],
         ["imported omx function shadow", "BASH_FUNC_omx%%", "() { printf owned > src/pwned.ts; }"],
         ["inherited node loader override", "NODE_OPTIONS", "--require=./payload.cjs"],
+        ["inherited openssl config", "OPENSSL_CONF", "/tmp/evil.cnf"],
+        ["inherited dynamic loader preload", "LD_PRELOAD", "/tmp/payload.so"],
       ] as const) {
         const previousValue = process.env[envName];
         process.env[envName] = envValue;
         try {
-          const poisoned = await bash("omx cancel");
+          const poisoned = await bashTrusted("omx cancel");
           assert.equal(poisoned.outputJson?.decision, "block", label);
         } finally {
           if (previousValue === undefined) delete process.env[envName];
           else process.env[envName] = previousValue;
+        }
+      }
+
+      // A PATH-shadowed omx (a different executable resolving first) is not
+      // the validated cancellation program and must deny even byte-exact text.
+      const shadowBinDir = join(cwd, "shadow-bin");
+      await mkdir(shadowBinDir, { recursive: true });
+      await writeFile(join(shadowBinDir, "omx"), "#!/bin/sh\ntouch src/path-shadow-owned.ts\n", "utf-8");
+      await chmod(join(shadowBinDir, "omx"), 0o755);
+      {
+        const inheritedPath = process.env.PATH;
+        process.env.PATH = `${shadowBinDir}:${trustedPackagePath}`;
+        try {
+          const shadowed = await bash("omx cancel");
+          assert.equal(shadowed.outputJson?.decision, "block", "PATH-shadowed omx executable");
+        } finally {
+          if (inheritedPath === undefined) delete process.env.PATH;
+          else process.env.PATH = inheritedPath;
         }
       }
 
@@ -31481,8 +31539,26 @@ PY`,
         tool_input: { command },
       }, { cwd });
 
-      assert.equal((await bash("omx cancel")).outputJson, null);
-      assert.equal((await bash("omx cancel --force")).outputJson, null);
+      const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+      const trustedPackageBin = join(cwd, "node_modules", ".bin", "omx");
+      await mkdir(dirname(trustedPackageBin), { recursive: true });
+      await symlink(workspacePackageCli, trustedPackageBin);
+      const trustedPackagePath = `${dirname(trustedPackageBin)}:/usr/bin:/bin`;
+      const bashTrusted = async (command: string) => {
+        const inheritedPath = process.env.PATH;
+        process.env.PATH = trustedPackagePath;
+        try {
+          return await bash(command);
+        } finally {
+          if (inheritedPath === undefined) delete process.env.PATH;
+          else process.env.PATH = inheritedPath;
+        }
+      };
+
+      assert.equal((await bashTrusted("omx cancel")).outputJson, null);
+      assert.equal((await bashTrusted("omx cancel --force")).outputJson, null);
+      assert.equal((await bash("omx cancel")).outputJson?.decision, "block",
+        "ambient non-package omx resolution is not trusted");
 
       for (const [label, command] of [
         ["openssl config injection", "OPENSSL_CONF=/tmp/evil.cnf omx cancel"],
@@ -31494,7 +31570,7 @@ PY`,
         ["carriage-return suffix lookalike", "omx cancel\r"],
         ["unicode nbsp separator", "omx\u00a0cancel"],
       ] as const) {
-        const impostor = await bash(command);
+        const impostor = await bashTrusted(command);
         assert.equal(impostor.outputJson?.decision, "block", label);
       }
 
@@ -31502,15 +31578,33 @@ PY`,
         ["inherited bash startup file", "BASH_ENV", "/tmp/prelude.sh"],
         ["imported omx function shadow", "BASH_FUNC_omx%%", "() { printf owned > src/pwned.ts; }"],
         ["inherited node loader override", "NODE_OPTIONS", "--require=./payload.cjs"],
+        ["inherited openssl config", "OPENSSL_CONF", "/tmp/evil.cnf"],
+        ["inherited dynamic loader preload", "LD_PRELOAD", "/tmp/payload.so"],
       ] as const) {
         const previousValue = process.env[envName];
         process.env[envName] = envValue;
         try {
-          const poisoned = await bash("omx cancel");
+          const poisoned = await bashTrusted("omx cancel");
           assert.equal(poisoned.outputJson?.decision, "block", label);
         } finally {
           if (previousValue === undefined) delete process.env[envName];
           else process.env[envName] = previousValue;
+        }
+      }
+
+      const shadowBinDir = join(cwd, "shadow-bin");
+      await mkdir(shadowBinDir, { recursive: true });
+      await writeFile(join(shadowBinDir, "omx"), "#!/bin/sh\ntouch src/path-shadow-owned.ts\n", "utf-8");
+      await chmod(join(shadowBinDir, "omx"), 0o755);
+      {
+        const inheritedPath = process.env.PATH;
+        process.env.PATH = `${shadowBinDir}:${trustedPackagePath}`;
+        try {
+          const shadowed = await bash("omx cancel");
+          assert.equal(shadowed.outputJson?.decision, "block", "PATH-shadowed omx executable");
+        } finally {
+          if (inheritedPath === undefined) delete process.env.PATH;
+          else process.env.PATH = inheritedPath;
         }
       }
 

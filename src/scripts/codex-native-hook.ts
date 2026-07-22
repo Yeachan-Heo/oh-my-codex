@@ -8785,20 +8785,27 @@ function isAllowedDeepInterviewCommandSpecificBash(
 // execution context cannot substitute different code for the validated text:
 // no unsafe inherited Bash startup (`BASH_ENV`) or conductor shell state
 // (imported handlers, unsafe options, untrusted absolute commands), no
-// imported `omx` shell function shadow, no inherited Node loader/output
-// overrides, and no command-resolution/runtime environment assignments. This
-// mirrors the established conductor/state-transport safety model instead of
-// inventing a parallel one.
+// imported `omx` shell function shadow, no inherited Node loader/OpenSSL
+// startup overrides, no inherited dynamic-loader controls, no
+// command-resolution/runtime environment assignments — and the bare `omx`
+// token must resolve to the hook package's own canonical CLI under the
+// inherited PATH, never to a PATH-shadowed or repository lookalike
+// executable. This reuses the established conductor executable-resolution
+// and runtime-startup safety model instead of inventing a parallel one.
 const DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES = [
   "NODE_OPTIONS",
   "NODE_EXTRA_CA_CERTS",
+  "OPENSSL_CONF",
 ];
 
 function directOmxCancelCommandHasTrustedExecutionContext(command: string, cwd: string): boolean {
   if (commandHasUnsafeConductorShellState(command, cwd)) return false;
   if (safeString(process.env["BASH_FUNC_omx%%"]).trim() !== "") return false;
   if (DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES.some((name) => safeString(process.env[name]).trim() !== "")) return false;
-  return !commandHasUnsafeLeadingRuntimeEnvironment(command);
+  if (commandHasUnsafeDynamicLoaderEnvironment(command)) return false;
+  if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
+  const words = tokenizeConductorShellWords(command);
+  return conductorCommandResolvesTrustedPackageCli(words, 0, 0, createConductorRuntimeShellState(cwd), cwd);
 }
 
 function isCommandResolutionSensitiveEnvironmentName(name: string): boolean {
