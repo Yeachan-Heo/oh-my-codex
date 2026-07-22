@@ -3706,11 +3706,18 @@ function isFreshNativeSubagentCapacityBlocker(
   return !blockerSessionId || !payloadSessionId || blockerSessionId === payloadSessionId;
 }
 
+// Batched payloads embed recipient names inside serialized input, so the
+// substring scan must also recognize the flattened close_agent delivery form
+// (`collaborationclose_agent`); dotted forms already carry a word boundary
+// before close_agent. This is a recognition heuristic for the capacity close
+// guard only: matching here can only make the guard block, never authorize.
+const NATIVE_CLOSE_AGENT_REQUEST_PATTERN = /\b(?:close_agent|collaborationclose_agent)\b/i;
+
 function inputContainsCloseAgentRequest(value: unknown): boolean {
-  if (typeof value === "string") return /\bclose_agent\b/i.test(value);
+  if (typeof value === "string") return NATIVE_CLOSE_AGENT_REQUEST_PATTERN.test(value);
   if (!value || typeof value !== "object") return false;
   try {
-    return /\bclose_agent\b/i.test(JSON.stringify(value));
+    return NATIVE_CLOSE_AGENT_REQUEST_PATTERN.test(JSON.stringify(value));
   } catch {
     return false;
   }
@@ -8680,40 +8687,21 @@ function skipLiteralLeadingAssignments(words: string[]): number {
 }
 
 // Direct cancellation is recognized from the RAW command string with a
-// deliberately tiny ASCII grammar, not from normalized shell tokens:
-// quote/escape provenance decides whether a leading word is an assignment or
-// the executable, so a quoted or escaped pseudo-assignment such as
-// 'X=./payload' must never be skipped as a benign prefix, and shell control
-// grammar (`;`, `&`, `|`, redirection, `$()`, backticks) inside an assignment
-// value must never be skipped either. Separators are ASCII space/tab only and
-// the executable must be exactly lowercase `omx`, so the scanner's word
-// boundaries and executable identity are the shell's (no ECMAScript \s
-// Unicode whitespace, BOM, CR/LF, or case folding). OMX root/session
-// selectors are rejected so a presented cancellation cannot be redirected at
-// a different state tree.
-const DIRECT_OMX_CANCEL_LEADING_ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=[A-Za-z0-9_\-.,:\/+@%=]+$/;
-const DIRECT_OMX_CANCEL_REJECTED_ASSIGNMENT_NAMES = new Set([
-  "omx_root",
-  "omx_state_root",
-  "omx_team_state_root",
-  "omx_session_id",
-]);
-
+// deliberately tiny ASCII grammar: exactly `omx cancel` (plus the ralplan-only
+// `--force`) with optional ASCII space/tab padding. No leading environment
+// assignments are accepted at all — runtime startup/configuration variables
+// are an open-ended namespace (PATH, NODE_OPTIONS, OPENSSL_CONF, ...) and a
+// denylist cannot prove the invoked program is the unmodified OMX
+// cancellation path. No quotes, backslashes, shell operators, path-qualified
+// or case-folded executables, and no CR/LF/NUL/BOM/NBSP/Unicode whitespace:
+// the scanner's word boundaries and executable identity are exactly the
+// shell's, so a presented cancellation cannot smuggle a different executable,
+// preload code, or redirect a state tree.
 function isDirectOmxCancelCommand(command: string, options: { allowForce?: boolean } = {}): boolean {
-  // ASCII horizontal whitespace and printable characters only: no CR/LF/NUL,
-  // no BOM/NBSP/Unicode whitespace, no case-folded executable spelling.
   if (!/^[\x09\x20-\x7E]*$/.test(command)) return false;
   const words = command.replace(/^[ \t]+|[ \t]+$/g, "").split(/[ \t]+/).filter(Boolean);
-  let index = 0;
-  while (index < words.length) {
-    const assignment = DIRECT_OMX_CANCEL_LEADING_ASSIGNMENT_PATTERN.exec(words[index] ?? "");
-    if (!assignment) break;
-    if (DIRECT_OMX_CANCEL_REJECTED_ASSIGNMENT_NAMES.has((assignment[1] ?? "").toLowerCase())) return false;
-    index += 1;
-  }
-  const rest = words.slice(index);
-  if (rest[0] !== "omx" || rest[1] !== "cancel") return false;
-  const args = rest.slice(2);
+  if (words[0] !== "omx" || words[1] !== "cancel") return false;
+  const args = words.slice(2);
   return args.length === 0 || (options.allowForce === true && args.length === 1 && args[0] === "--force");
 }
 
@@ -8979,11 +8967,10 @@ function isAllowedRalplanBashWrite(
   // Session-scoped cancellation is the owning session's documented recovery
   // surface: it terminalizes workflow state without touching planning
   // artifacts, so it stays available while ralplan is active (parity with the
-  // deep-interview boundary). The allow is limited to the bare `omx` token and
-  // rejects command-resolution/runtime environment overrides so a presented
-  // cancellation cannot smuggle a different executable or preload code.
-  if (isDirectOmxCancelCommand(command, { allowForce: true })
-    && !commandHasUnsafeLeadingRuntimeEnvironment(command)) return true;
+  // deep-interview boundary). The allow admits only the exact bare
+  // `omx cancel [--force]` invocation, so a presented cancellation cannot
+  // smuggle a different executable, preload code, or redirect a state tree.
+  if (isDirectOmxCancelCommand(command, { allowForce: true })) return true;
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
@@ -18084,6 +18071,12 @@ function evaluateConductorBashWrite(
   authoritativeSessionId = "",
   policyCwd = cwd,
 ): { allowed: boolean; blockedDetail?: string } {
+  // Session-scoped cancellation is the owning session's documented recovery
+  // surface across planning workflows (parity with the ralplan/deep-interview
+  // boundaries). The allow admits only the exact bare `omx cancel [--force]`
+  // invocation, so a presented cancellation cannot smuggle a different
+  // executable, preload code, or redirect a state tree.
+  if (isDirectOmxCancelCommand(command, { allowForce: true })) return { allowed: true };
   const commandWithHeredocBodies = normalizeShellLineContinuations(command);
   const normalizedCommand = stripHeredocBodiesForCommandScan(commandWithHeredocBodies);
   if (authoritativeSessionId && !conductorStateWriteTransportIsBoundToActiveSession(commandWithHeredocBodies, authoritativeSessionId, policyCwd)) {

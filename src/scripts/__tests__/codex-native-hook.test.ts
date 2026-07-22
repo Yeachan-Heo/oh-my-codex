@@ -21056,7 +21056,6 @@ PY`,
 
       assert.equal((await bash("omx cancel")).outputJson, null);
       assert.equal((await bash("omx cancel --force")).outputJson, null);
-      assert.equal((await bash("FOO=bar omx cancel --force")).outputJson, null);
 
       const chained = await bash("omx cancel --force && rm -rf x");
       assert.equal(chained.outputJson?.decision, "block");
@@ -21064,7 +21063,14 @@ PY`,
       const unknownFlag = await bash("omx cancel --json");
       assert.equal(unknownFlag.outputJson?.decision, "block");
 
+      // The direct-cancel grammar admits no leading environment assignments at
+      // all: runtime startup/configuration variables are an open-ended
+      // namespace (PATH, NODE_OPTIONS, OPENSSL_CONF, OMX_* state selectors),
+      // so every prefixed form is denied rather than denylisted one by one.
       for (const [label, command] of [
+        ["benign-looking env prefix", "FOO=bar omx cancel --force"],
+        ["multi env prefix", "A=1 B=2 omx cancel"],
+        ["openssl config injection", "OPENSSL_CONF=/tmp/evil.cnf omx cancel"],
         ["path override", "PATH=/tmp/attacker omx cancel"],
         ["node preload override", "NODE_OPTIONS=--require=./payload.cjs omx cancel"],
         ["path-qualified impostor", "/tmp/omx cancel --force"],
@@ -21245,6 +21251,45 @@ PY`,
 
       assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(JSON.stringify(result.outputJson), /Do not call multi_agent_v1\.close_agent/);
+      assert.match(JSON.stringify(result.outputJson), /do not batch close_agent through multi_tool_use\.parallel/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks parallel close_agent cleanup with flattened nested recipients after native capacity exhaustion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-capacity-parallel-close-flattened-"));
+    try {
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-parallel-close-flattened",
+          thread_id: "thread-subagent-capacity-parallel-close-flattened",
+          tool_name: "collaborationspawn_agent",
+          tool_response: "agent thread limit reached",
+        },
+        { cwd },
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-subagent-capacity-parallel-close-flattened",
+          thread_id: "thread-subagent-capacity-parallel-close-flattened",
+          tool_name: "multi_tool_use.parallel",
+          tool_input: {
+            tool_uses: [
+              { recipient_name: "collaborationclose_agent", parameters: { target: "stale-1" } },
+              { recipient_name: "collaborationclose_agent", parameters: { target: "stale-2" } },
+            ],
+          },
+        },
+        { cwd },
+      );
+
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
       assert.match(JSON.stringify(result.outputJson), /do not batch close_agent through multi_tool_use\.parallel/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -31379,6 +31424,57 @@ PY`,
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /Main-root Conductor mode is active \(ultragoal phase: planning\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows session-scoped omx cancel under active ultragoal conductor while impostors stay blocked", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-conductor-cancel-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-ultragoal-conductor-cancel";
+      const leaderThreadId = "thread-ultragoal-conductor-cancel";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        native_session_id: leaderThreadId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: leaderThreadId, threads: { [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" } } } } });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+      });
+
+      const bash = (command: string) => dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        agent_id: leaderThreadId,
+        tool_name: "Bash",
+        tool_input: { command },
+      }, { cwd });
+
+      assert.equal((await bash("omx cancel")).outputJson, null);
+      assert.equal((await bash("omx cancel --force")).outputJson, null);
+
+      for (const [label, command] of [
+        ["openssl config injection", "OPENSSL_CONF=/tmp/evil.cnf omx cancel"],
+        ["path override", "PATH=/tmp/attacker omx cancel"],
+        ["path-qualified impostor", "/tmp/omx cancel --force"],
+        ["chained cancellation", "omx cancel --force && rm -rf x"],
+        ["omx root override", "OMX_ROOT=/tmp/other omx cancel"],
+      ] as const) {
+        const impostor = await bash(command);
+        assert.equal(impostor.outputJson?.decision, "block", label);
+      }
+
+      const stateClear = await bash("omx state clear --force --mode ultragoal --json");
+      assert.equal(stateClear.outputJson?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
