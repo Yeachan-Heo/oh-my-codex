@@ -6,11 +6,12 @@
  * launch-time cadence so a user request always checks npm immediately.
  */
 
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
-import { dirname, join } from 'path';
+import { readFile, writeFile, mkdir, realpath } from 'fs/promises';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { dirname, join, relative, isAbsolute } from 'path';
 import { tmpdir } from 'os';
 import { spawn, spawnSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { createInterface } from 'readline/promises';
 import { getPackageRoot } from '../utils/package.js';
 import {
@@ -20,6 +21,7 @@ import {
 import {
   packageManagerOwnershipError,
   resolvePackageManagerOwnership,
+  runNpmCommand,
   type PackageManagerOwnership,
 } from './package-manager-ownership.js';
 import {
@@ -190,28 +192,37 @@ function spawnNpmSync(
   return result;
 }
 
-function spawnGlobalNpmInstallSync(
+function runLegacyNpmGlobalUpdate(
+  spawnProcess: SpawnSyncLike,
+  platform: NodeJS.Platform,
+): RunGlobalUpdateResult {
+  const args = ['install', '-g', STABLE_INSTALL_SOURCE];
+  const options: SpawnSyncOptions = {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true,
+  };
+  let result = spawnProcess('npm', args, options);
+  if (platform === 'win32' && isSpawnErrorCode(result.error, ['ENOENT'])) {
+    result = spawnProcess('npm.cmd', args, options);
+  }
+  if (platform === 'win32' && isSpawnErrorCode(result.error, ['EINVAL'])) {
+    result = spawnProcess('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
+  }
+  if (result.error) return { ok: false, stderr: result.error.message };
+  if (result.status !== 0) return commandFailure(result.stderr, result.status, 'npm install -g');
+  return { ok: true, stderr: '' };
+}
+
+function stableInstallArgs(ownership: PackageManagerOwnership, installSource: string): string[] {
+  return ['install', '--global', '--ignore-scripts', '--no-audit', '--no-progress', '--prefix', ownership.npmPrefix!, installSource];
+}
+
+function runFrozenNpmInstall(
+  ownership: Extract<PackageManagerOwnership, { manager: 'npm' }>,
   installSource: string,
   options: SpawnSyncOptions,
-  spawnProcess: SpawnSyncLike = spawnSync,
-  platform: NodeJS.Platform = process.platform,
+  spawnProcess: SpawnSyncLike,
 ): ReturnType<SpawnSyncLike> {
-  const args = ['install', '-g', installSource];
-  const result = spawnProcess('npm', args, options);
-  if (platform !== 'win32' || !isSpawnErrorCode(result.error, ['ENOENT', 'EINVAL'])) {
-    return result;
-  }
-
-  if (isSpawnErrorCode(result.error, ['ENOENT'])) {
-    const cmdShimResult = spawnProcess('npm.cmd', args, options);
-    if (!isSpawnErrorCode(cmdShimResult.error, ['ENOENT', 'EINVAL'])) {
-      return cmdShimResult;
-    }
-  }
-
-  // Some Windows/npm shim layouts reject direct npm/npm.cmd spawn with EINVAL;
-  // cmd.exe can still resolve and run npm from the user's configured PATH.
-  return spawnProcess('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
+  return runNpmCommand(ownership.npmCommand!, stableInstallArgs(ownership, installSource), options, spawnProcess);
 }
 
 function commandFailure(stderr: unknown, status: number | null, label: string): RunGlobalUpdateResult {
@@ -377,24 +388,29 @@ export function runGlobalUpdate(
   const spawnProcess = legacySpawnFirst
     ? installSourceOrSpawnProcess
     : typeof spawnProcessOrPlatform === 'function' ? spawnProcessOrPlatform : spawnSync;
-  const resolvedPlatform = legacySpawnFirst
-    ? typeof spawnProcessOrPlatform === 'string' ? spawnProcessOrPlatform : platform
-    : typeof spawnProcessOrPlatform === 'string' ? spawnProcessOrPlatform : platform;
+  const resolvedPlatform = typeof spawnProcessOrPlatform === 'string' ? spawnProcessOrPlatform : platform;
+  if (legacySpawnFirst) return runLegacyNpmGlobalUpdate(spawnProcess, resolvedPlatform);
   if (installSource === DEV_INSTALL_SOURCE) {
     return ownership?.manager === 'bun'
       ? { ok: false, stderr: 'Bun dev updates are not yet supported' }
       : runDevGlobalUpdate(spawnProcess, resolvedPlatform);
   }
-  const result = ownership?.manager === 'bun'
-    ? spawnProcess(ownership.bunCommand, ['add', '-g', installSource], {
-      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true,
+  if (!ownership) {
+    return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
+  }
+  if (!ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand)) {
+    return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.' };
+  }
+  const result = ownership.manager === 'bun'
+    ? spawnProcess(ownership.bunCommand, stableInstallArgs(ownership, installSource), {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true, env: ownership.environment!,
     })
-    : spawnGlobalNpmInstallSync(installSource, {
-      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true,
-    }, spawnProcess, resolvedPlatform);
+    : runFrozenNpmInstall(ownership, installSource, {
+      encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true, env: ownership.environment!,
+    }, spawnProcess);
   if (result.error) return { ok: false, stderr: result.error.message };
   if (result.status !== 0) {
-    return { ok: false, stderr: String(result.stderr || '').trim() || `${ownership?.manager === 'bun' ? 'bun' : 'npm'} exited ${result.status}` };
+    return { ok: false, stderr: String(result.stderr || '').trim() || `${ownership.manager} exited ${result.status}` };
   }
   return { ok: true, stderr: '' };
 }
@@ -429,112 +445,68 @@ export function resolveSetupRefreshArgs(cwd: string): string[] {
 }
 
 function quotePosixShellArg(value: string): string {
-  if (value === '') return "''";
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return value === '' ? "''" : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function quotePowerShellArg(value: string): string {
-  return `'${value.replace(/'/g, `''`)}'`;
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
+/** Compatibility formatter retained for existing callers; deferred updates use update-worker instead. */
 export function formatDeferredSetupCommand(
   platform: NodeJS.Platform,
   command: string,
   args: string[],
 ): string {
   const argv = [command, ...args];
-  if (platform === 'win32') {
-    return `& ${argv.map(quotePowerShellArg).join(' ')}`;
-  }
-  return argv.map(quotePosixShellArg).join(' ');
+  return platform === 'win32'
+    ? `& ${argv.map(quotePowerShellArg).join(' ')}`
+    : argv.map(quotePosixShellArg).join(' ');
 }
 
 function formatUpdateLogPath(date = new Date()): string {
   return `update-${date.toISOString().replace(/[:.]/g, '-')}.log`;
 }
 
+interface DeferredUpdatePayload {
+  cwd: string;
+  logPath: string;
+  parentPid: number;
+  ownership: PackageManagerOwnership;
+  setupArgs: string[];
+}
+
 export function runDeferredGlobalUpdate(
   cwd: string,
   spawnProcess: SpawnLike = spawn,
-  platform: NodeJS.Platform = process.platform,
+  _platform: NodeJS.Platform = process.platform,
   parentPid = process.pid,
   ownership?: PackageManagerOwnership,
 ): RunDeferredUpdateResult {
   const logPath = join(cwd, '.omx', 'logs', formatUpdateLogPath());
-  // Snapshot the current setup delivery mode when the update is scheduled.
-  // The detached process runs after this CLI exits, so the refresh should replay
-  // the setup mode that was active when the user accepted/scheduled the update.
-  const setupArgs = resolveSetupRefreshArgs(cwd);
-  const setupCommand = ownership?.manager === 'bun'
-    ? formatDeferredSetupCommand(platform, ownership.bunCommand, [join(ownership.packageRoot, 'dist', 'cli', 'omx.js'), ...setupArgs])
-    : ownership
-      ? formatDeferredSetupCommand(platform, process.execPath, [join(ownership.globalInstallRoot, PACKAGE_NAME, 'dist', 'cli', 'omx.js'), ...setupArgs])
-      : formatDeferredSetupCommand(platform, 'omx', setupArgs);
-
+  if (!ownership || !ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand)) {
+    return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.', logPath };
+  }
   try {
     mkdirSync(dirname(logPath), { recursive: true });
-
-    const installCommand = ownership?.manager === 'bun'
-      ? formatDeferredSetupCommand(platform, ownership.bunCommand, ['add', '-g', `${PACKAGE_NAME}@latest`])
-      : `npm install -g ${PACKAGE_NAME}@latest`;
-    const env = {
-      ...process.env,
-      OMX_DEFERRED_UPDATE_LOG: logPath,
-      OMX_DEFERRED_UPDATE_PARENT_PID: String(parentPid),
-      [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1',
-    };
-
-    const command = platform === 'win32' ? 'powershell.exe' : 'sh';
-    const args = platform === 'win32'
-      ? [
-          '-NoProfile',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-Command',
-          [
-            '$ErrorActionPreference = "Continue"',
-            '$log = $env:OMX_DEFERRED_UPDATE_LOG',
-            '$parentPid = [int]$env:OMX_DEFERRED_UPDATE_PARENT_PID',
-            'while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }',
-            `${installCommand} *>> $log`,
-            `if ($LASTEXITCODE -eq 0) { ${setupCommand} *>> $log }`,
-          ].join('; '),
-        ]
-      : [
-          '-c',
-          [
-            'while kill -0 "$OMX_DEFERRED_UPDATE_PARENT_PID" 2>/dev/null; do sleep 1; done',
-            `${installCommand} >> "$OMX_DEFERRED_UPDATE_LOG" 2>&1`,
-            `if [ "$?" -eq 0 ]; then ${setupCommand} >> "$OMX_DEFERRED_UPDATE_LOG" 2>&1; fi`,
-          ].join('; '),
-        ];
-
-    const child = spawnProcess(command, args, {
-      cwd,
-      detached: true,
-      env,
-      stdio: 'ignore',
-      windowsHide: true,
+    const payloadPath = join(dirname(logPath), `${formatUpdateLogPath()}.payload.json`);
+    const payload: DeferredUpdatePayload = { cwd, logPath, parentPid, ownership, setupArgs: resolveSetupRefreshArgs(cwd) };
+    writeFileSync(payloadPath, JSON.stringify(payload), { encoding: 'utf-8', mode: 0o600 });
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), 'update-worker.js');
+    const child = spawnProcess(process.execPath, [workerPath, payloadPath], {
+      cwd, detached: true, env: { ...ownership.environment!, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'ignore', windowsHide: true,
     });
     child.once('error', (error) => {
       try {
-        appendFileSync(
-          logPath,
-          `[omx] Deferred update launcher failed: ${error.message}\n`,
-          'utf-8',
-        );
+        appendFileSync(logPath, `[omx] Deferred update launcher failed: ${error.message}\n`, 'utf-8');
       } catch {
-        // The startup path must remain non-fatal even when diagnostics cannot be persisted.
+        // The scheduler must not become fatal when diagnostics cannot be persisted.
       }
     });
     child.unref();
     return { ok: true, stderr: '', logPath };
   } catch (error) {
-    return {
-      ok: false,
-      stderr: error instanceof Error ? error.message : String(error),
-      logPath,
-    };
+    return { ok: false, stderr: error instanceof Error ? error.message : String(error), logPath };
   }
 }
 
@@ -728,30 +700,37 @@ async function getInstalledRevisionAfterUpdate(ownership?: PackageManagerOwnersh
   }
 }
 
+async function resolveCliEntryWithinPackage(packageRoot: string, relativePath: string): Promise<string | null> {
+  if (relativePath.trim() === '' || isAbsolute(relativePath)) return null;
+  try {
+    const cliEntry = await realpath(join(packageRoot, relativePath));
+    const relation = relative(packageRoot, cliEntry);
+    return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation) ? cliEntry : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function resolveInstalledCliEntry(globalInstallRoot: string): Promise<string | null> {
   const packageRoot = join(globalInstallRoot, PACKAGE_NAME);
-  const packageJsonPath = join(packageRoot, 'package.json');
-  let cliRelativePath = join('dist', 'cli', 'omx.js');
-
+  let packageRootRealpath: string;
   try {
-    const content = await readFile(packageJsonPath, 'utf-8');
-    const pkg = JSON.parse(content) as PackageManifest;
-    if (typeof pkg.bin === 'string' && pkg.bin.trim() !== '') {
-      cliRelativePath = pkg.bin;
-    } else if (
-      pkg.bin &&
-      typeof pkg.bin === 'object' &&
-      typeof pkg.bin.omx === 'string' &&
-      pkg.bin.omx.trim() !== ''
-    ) {
-      cliRelativePath = pkg.bin.omx;
-    }
+    packageRootRealpath = await realpath(packageRoot);
   } catch {
-    // Fall back to the published contract used in package.json today.
+    return null;
   }
-
-  const cliEntry = join(packageRoot, cliRelativePath);
-  return existsSync(cliEntry) ? cliEntry : null;
+  try {
+    const content = await readFile(join(packageRootRealpath, 'package.json'), 'utf-8');
+    const pkg = JSON.parse(content) as PackageManifest;
+    const cliRelativePath = typeof pkg.bin === 'string'
+      ? pkg.bin
+      : pkg.bin && typeof pkg.bin === 'object' ? pkg.bin.omx : undefined;
+    return typeof cliRelativePath === 'string'
+      ? resolveCliEntryWithinPackage(packageRootRealpath, cliRelativePath)
+      : null;
+  } catch {
+    return resolveCliEntryWithinPackage(packageRootRealpath, join('dist', 'cli', 'omx.js'));
+  }
 }
 
 export function spawnInstalledSetupRefresh(
@@ -782,23 +761,12 @@ export function spawnInstalledSetupRefresh(
 }
 
 async function runSetupRefresh(cwd: string, ownership?: PackageManagerOwnership): Promise<RunSetupRefreshResult> {
-  const globalInstallRoot = ownership?.globalInstallRoot ?? resolveGlobalInstallRoot();
-  if (!globalInstallRoot) {
-    return {
-      ok: false,
-      stderr: `Unable to resolve the ${ownership?.manager ?? 'npm'} global install root after updating.`,
-    };
-  }
-
-  const cliEntry = await resolveInstalledCliEntry(globalInstallRoot);
+  if (!ownership || !ownership.packageRoot) return { ok: false, stderr: 'A frozen package-manager ownership transaction is required for setup refresh.' };
+  const cliEntry = await resolveInstalledCliEntry(ownership.globalInstallRoot);
   if (!cliEntry) {
-    return {
-      ok: false,
-      stderr: `Unable to find the updated OMX CLI entry under ${join(globalInstallRoot, PACKAGE_NAME)}.`,
-    };
+    return { ok: false, stderr: `Unable to validate the updated OMX CLI entry under ${join(ownership.globalInstallRoot, PACKAGE_NAME)}.` };
   }
-
-  return spawnInstalledSetupRefresh(cliEntry, cwd, spawnSync, ownership?.manager === 'bun' ? ownership.bunCommand : process.execPath);
+  return spawnInstalledSetupRefresh(cliEntry, cwd, spawnSync, process.execPath);
 }
 
 async function executeUpdate(
