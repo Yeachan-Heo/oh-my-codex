@@ -1,8 +1,8 @@
 import { appendFile, lstat, readFile, realpath, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
-import { isAbsolute, join, relative, win32 } from 'node:path';
-import { isCompletePackageManagerOwnership, runNpmCommand, type PackageManagerOwnership } from './package-manager-ownership.js';
+import { isAbsolute, join, relative } from 'node:path';
+import { isCompletePackageManagerOwnership, runNpmCommand, validatePackageManagerOwnership, type PackageManagerOwnership } from './package-manager-ownership.js';
 import { writeUserInstallStamp } from '../scripts/postinstall-advisory.js';
 import { omxUserInstallStampPath } from '../utils/paths.js';
 
@@ -12,22 +12,30 @@ const installSource = `${PACKAGE_NAME}@latest`;
 const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 const installOptions: SpawnSyncOptions = { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true };
 
-function pathsEqual(left: string, right: string): boolean {
-  return process.platform === 'win32'
-    ? win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase()
-    : left === right;
-}
 
 function within(root: string, path: string): boolean {
   const relation = relative(root, path);
   return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation);
 }
 function digest(contents: string): string { return createHash('sha256').update(contents).digest('hex'); }
-function output(result: ReturnType<typeof spawnSync>): string | null { return result.error || result.status !== 0 ? null : String(result.stdout || '').trim() || null; }
 function installArgs(ownership: PackageManagerOwnership): string[] {
   return ownership.manager === 'bun'
     ? ['add', '--global', '--ignore-scripts', installSource]
     : ['install', '--global', '--ignore-scripts', '--no-audit', '--no-progress', '--prefix', ownership.npmPrefix, installSource];
+}
+
+function isDeferredUpdatePayload(value: unknown): value is DeferredUpdatePayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  return typeof payload.cwd === 'string'
+    && Boolean(payload.cwd)
+    && typeof payload.logPath === 'string'
+    && Boolean(payload.logPath)
+    && Number.isSafeInteger(payload.parentPid)
+    && (payload.parentPid as number) > 0
+    && Array.isArray(payload.setupArgs)
+    && payload.setupArgs.every((arg) => typeof arg === 'string')
+    && isCompletePackageManagerOwnership(payload.ownership);
 }
 async function waitForParent(parentPid: number): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -51,38 +59,6 @@ async function ownerOnlyStage(stage: string): Promise<boolean> {
     return process.platform === 'win32'
       || ((stat.mode & 0o077) === 0 && (typeof process.getuid !== 'function' || stat.uid === process.getuid()));
   } catch { return false; }
-}
-async function validatePackage(ownership: PackageManagerOwnership): Promise<string | null> {
-  try {
-    const packageRoot = await realpath(join(ownership.globalInstallRoot, PACKAGE_NAME));
-    if (!pathsEqual(packageRoot, ownership.packageRoot)) return null;
-    const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf-8')) as {
-      name?: string;
-      bin?: string | Record<string, string>;
-    };
-    const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.omx;
-    if (manifest.name !== PACKAGE_NAME || typeof bin !== 'string' || !bin.trim() || isAbsolute(bin)) return null;
-    const entry = await realpath(join(packageRoot, bin));
-    return within(packageRoot, entry) ? entry : null;
-  } catch { return null; }
-}
-async function validateManager(ownership: PackageManagerOwnership): Promise<boolean> {
-  if (ownership.manager === 'npm') {
-    const root = output(runNpmCommand(ownership.npmCommand, ['root', '-g'], { ...installOptions, env: ownership.environment }));
-    const prefix = output(runNpmCommand(ownership.npmCommand, ['prefix', '-g'], { ...installOptions, env: ownership.environment }));
-    try { return root !== null && prefix !== null && pathsEqual(await realpath(root), ownership.globalInstallRoot) && pathsEqual(await realpath(prefix), ownership.npmPrefix); } catch { return false; }
-  }
-  if (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot) return false;
-  const bin = output(spawnSync(ownership.bunCommand, ['pm', 'bin', '-g'], { ...installOptions, env: ownership.environment }));
-  try {
-    return bin !== null
-      && pathsEqual(await realpath(bin), ownership.bunGlobalBin)
-      && pathsEqual(await realpath(ownership.environment.BUN_INSTALL), ownership.bunInstallRoot);
-  } catch { return false; }
-}
-async function validateOwnership(ownership: PackageManagerOwnership): Promise<string | null> {
-  if (!await validateManager(ownership)) return null;
-  return validatePackage(ownership);
 }
 
 async function finalizeSuccessfulUpdate(ownership: PackageManagerOwnership): Promise<void> {
@@ -118,15 +94,16 @@ async function main(): Promise<void> {
     if (!stagedPayload) throw new Error('Frozen transaction payload is not a regular canonical staged file.');
     const serialized = await readFile(stagedPayload, 'utf-8');
     if (digest(serialized) !== expectedDigest) throw new Error('Frozen transaction payload fingerprint changed before execution.');
-    payload = JSON.parse(serialized) as DeferredUpdatePayload;
-    if (!isCompletePackageManagerOwnership(payload.ownership)) throw new Error('Frozen transaction payload is incomplete.');
+    const parsedPayload: unknown = JSON.parse(serialized);
+    if (!isDeferredUpdatePayload(parsedPayload)) throw new Error('Frozen transaction payload is incomplete.');
+    payload = parsedPayload;
     await waitForParent(payload.parentPid);
-    if (!await validateOwnership(payload.ownership)) throw new Error('Frozen manager, package root, or bin ownership validation failed before update.');
+    if (!await validatePackageManagerOwnership(payload.ownership)) throw new Error('Frozen manager, package root, or bin ownership validation failed before update.');
     const result = payload.ownership.manager === 'npm'
       ? runNpmCommand(payload.ownership.npmCommand, installArgs(payload.ownership), { ...installOptions, env: payload.ownership.environment })
       : spawnSync(payload.ownership.bunCommand, installArgs(payload.ownership), { ...installOptions, env: payload.ownership.environment });
     if (result.error || result.status !== 0) throw new Error(String(result.stderr || result.error?.message || 'controller install failed'));
-    const cliEntry = await validateOwnership(payload.ownership);
+    const cliEntry = await validatePackageManagerOwnership(payload.ownership);
     if (!cliEntry) throw new Error('Frozen manager, package root, or bin ownership validation failed after update.');
     const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: { ...payload.ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'inherit', windowsHide: true });
     if (setup.error || setup.status !== 0) throw new Error(setup.error?.message || `setup exited ${setup.status}`);

@@ -24,6 +24,7 @@ import {
   packageManagerOwnershipError,
   resolvePackageManagerOwnership,
   runNpmCommand,
+  validatePackageManagerOwnership,
   type PackageManagerOwnership,
 } from './package-manager-ownership.js';
 import {
@@ -448,9 +449,10 @@ export function runDeferredGlobalUpdate(
   if (!isCompletePackageManagerOwnership(ownership)) {
     return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.', logPath };
   }
+  let stage: string | undefined;
   try {
     mkdirSync(dirname(logPath), { recursive: true });
-    const stage = mkdtempSync(join(tmpdir(), 'omx-update-'));
+    stage = mkdtempSync(join(tmpdir(), 'omx-update-'));
     if (platform !== 'win32') chmodSync(stage, 0o700);
     const payloadPath = join(stage, 'transaction.json');
     const payload: DeferredUpdatePayload = { cwd, logPath, parentPid, ownership, setupArgs: resolveSetupRefreshArgs(cwd) };
@@ -458,14 +460,24 @@ export function runDeferredGlobalUpdate(
     writeFileSync(payloadPath, serialized, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
     const canonicalStage = realpathSync(stage);
     const canonicalPayload = realpathSync(payloadPath);
+    const stageStat = lstatSync(stage);
     const payloadStat = lstatSync(payloadPath);
-    if (canonicalPayload !== join(canonicalStage, 'transaction.json') || payloadStat.isSymbolicLink() || !payloadStat.isFile() || (platform !== 'win32' && (payloadStat.mode & 0o077) !== 0)) throw new Error('Deferred update payload is not a canonical owner-only staged file.');
+    if (
+      !stageStat.isDirectory()
+      || stageStat.isSymbolicLink()
+      || (platform !== 'win32' && ((stageStat.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && stageStat.uid !== process.getuid())))
+      || canonicalPayload !== join(canonicalStage, 'transaction.json')
+      || payloadStat.isSymbolicLink()
+      || !payloadStat.isFile()
+      || (platform !== 'win32' && (payloadStat.mode & 0o077) !== 0)
+    ) throw new Error('Deferred update payload is not a canonical owner-only staged file.');
     const bundledWorker = join(dirname(fileURLToPath(import.meta.url)), 'update-worker.js');
     const workerCandidate = existsSync(bundledWorker) ? bundledWorker : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'cli', 'update-worker.js');
     const workerPath = realpathSync(workerCandidate);
     if (lstatSync(workerCandidate).isSymbolicLink() || !lstatSync(workerPath).isFile()) throw new Error('Deferred update worker is not a regular canonical file.');
     const payloadFingerprint = createHash('sha256').update(readFileSync(canonicalPayload)).digest('hex');
     const workerFingerprint = createHash('sha256').update(readFileSync(workerPath)).digest('hex');
+    const stagedDirectory = stage;
     const child = spawnProcess(process.execPath, [workerPath, payloadPath, payloadFingerprint, workerFingerprint], {
       cwd, detached: true, env: { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'ignore', windowsHide: true,
     });
@@ -475,10 +487,23 @@ export function runDeferredGlobalUpdate(
       } catch {
         // The scheduler must not become fatal when diagnostics cannot be persisted.
       }
+      try {
+        rmSync(stagedDirectory, { recursive: true, force: true });
+      } catch {
+        // The asynchronous launcher failure must not throw into the caller.
+      }
     });
     child.unref();
+    stage = undefined;
     return { ok: true, stderr: '', logPath };
   } catch (error) {
+    if (stage) {
+      try {
+        rmSync(stage, { recursive: true, force: true });
+      } catch {
+        // Preserve the original scheduling failure when cleanup cannot complete.
+      }
+    }
     return { ok: false, stderr: error instanceof Error ? error.message : String(error), logPath };
   }
 }
@@ -713,9 +738,9 @@ export function spawnInstalledSetupRefresh(
 
 async function runSetupRefresh(cwd: string, ownership?: PackageManagerOwnership): Promise<RunSetupRefreshResult> {
   if (!ownership || !ownership.packageRoot) return { ok: false, stderr: 'A frozen package-manager ownership transaction is required for setup refresh.' };
-  const cliEntry = await resolveInstalledCliEntry(ownership.globalInstallRoot);
+  const cliEntry = await validatePackageManagerOwnership(ownership);
   if (!cliEntry) {
-    return { ok: false, stderr: `Unable to validate the updated OMX CLI entry under ${join(ownership.globalInstallRoot, PACKAGE_NAME)}.` };
+    return { ok: false, stderr: `Frozen manager, package root, or bin ownership validation failed before setup refresh under ${join(ownership.globalInstallRoot, PACKAGE_NAME)}.` };
   }
   return spawnInstalledSetupRefresh(
     cliEntry,

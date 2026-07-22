@@ -1152,6 +1152,35 @@ describe('runDeferredGlobalUpdate', () => {
     }
   });
 
+  it('removes the frozen staged payload when the detached launcher emits an error', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-deferred-update-launcher-error-'));
+    let payloadPath = '';
+
+    try {
+      const result = runDeferredGlobalUpdate(
+        cwd,
+        ((_command, args) => {
+          payloadPath = String((args as readonly string[])[1]);
+          return {
+            once(event: string, listener: (error: Error) => void) {
+              if (event === 'error') listener(new Error('launcher failed'));
+              return this;
+            },
+            unref() {},
+          } as unknown as ReturnType<typeof import('node:child_process').spawn>;
+        }) as typeof import('node:child_process').spawn,
+        'linux',
+        12345,
+        frozenNpmOwnership,
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(existsSync(payloadPath), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves plugin setup delivery mode for deferred post-update refreshes', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-deferred-update-plugin-'));
     const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
@@ -1354,6 +1383,30 @@ describe('deferred update worker', () => {
 
       assert.equal(result.status, 1);
       assert.equal(existsSync(join(root, 'update.log')), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a signed deferred payload with an invalid parent transaction boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-payload-'));
+    const stage = join(root, 'stage');
+    const payloadPath = join(stage, 'transaction.json');
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
+
+    try {
+      await mkdir(stage, { recursive: true });
+      await chmod(stage, 0o700);
+      const serialized = JSON.stringify({ cwd: root, logPath: join(root, 'update.log'), parentPid: 0, setupArgs: [], ownership: frozenNpmOwnership });
+      await writeFile(payloadPath, serialized, { mode: 0o600 });
+      const digest = (contents: string | Buffer) => createHash('sha256').update(contents).digest('hex');
+      const result = spawnSync(process.execPath, [workerPath, payloadPath, digest(serialized), digest(await readFile(workerPath))], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+
+      assert.equal(result.status, 1, result.stderr);
+      await assert.rejects(readFile(stage), { code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

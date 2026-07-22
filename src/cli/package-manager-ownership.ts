@@ -1,4 +1,5 @@
-import { realpathSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, posix, win32 } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { UserInstallStamp } from '../scripts/postinstall-advisory.js';
@@ -66,6 +67,51 @@ export function isCompletePackageManagerOwnership(ownership: unknown): ownership
   return false;
 }
 
+/** Revalidate the frozen manager, root, package, and bin before transaction advancement. */
+export async function validatePackageManagerOwnership(
+  ownership: PackageManagerOwnership,
+): Promise<string | null> {
+  if (!isCompletePackageManagerOwnership(ownership)) return null;
+  try {
+    const globalInstallRoot = realpathSync(ownership.globalInstallRoot);
+    const packageRoot = realpathSync(ownership.packageRoot);
+    if (
+      pathsEqual(globalInstallRoot, packageRoot)
+      || !pathsEqual(realpathSync(join(globalInstallRoot, 'oh-my-codex')), packageRoot)
+      || !isPathWithin(packageRoot, globalInstallRoot)
+    ) return null;
+    if (ownership.manager === 'npm') {
+      const root = commandResult(ownership.npmCommand, ['root', '-g'], spawnSync, { ...rootOptions, env: ownership.environment });
+      const prefix = commandResult(ownership.npmCommand, ['prefix', '-g'], spawnSync, { ...rootOptions, env: ownership.environment });
+      if (
+        !root || !prefix
+        || !pathsEqual(realpathSync(root), globalInstallRoot)
+        || !pathsEqual(realpathSync(prefix), ownership.npmPrefix)
+        || !isPathWithin(globalInstallRoot, realpathSync(prefix))
+      ) return null;
+    } else {
+      if (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot) return null;
+      const result = spawnSync(ownership.bunCommand, ['pm', 'bin', '-g'], { ...rootOptions, env: ownership.environment });
+      const bin = result.error || result.status !== 0 ? null : String(result.stdout || '').trim() || null;
+      if (
+        !bin
+        || !pathsEqual(realpathSync(bin), ownership.bunGlobalBin)
+        || !pathsEqual(realpathSync(ownership.bunInstallRoot), ownership.bunInstallRoot)
+      ) return null;
+    }
+    const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf-8')) as {
+      name?: string;
+      bin?: string | Record<string, string>;
+    };
+    const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.omx;
+    if (manifest.name !== 'oh-my-codex' || typeof bin !== 'string' || !bin.trim() || isAbsolute(bin)) return null;
+    const entry = realpathSync(join(packageRoot, bin));
+    return lstatSync(entry).isFile() && isPathWithin(entry, packageRoot) ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface PackageManagerOwnershipDependencies {
   currentExecutable: string;
   currentPackageRoot: string;
@@ -96,8 +142,13 @@ export function runNpmCommand(
   return spawnProcess(npmCommand.command, [...npmCommand.commandArgs, ...args], options);
 }
 
-function commandResult(command: NpmCommand, args: string[], spawnProcess: SpawnSyncLike): string | null {
-  const result = runNpmCommand(command, args, rootOptions, spawnProcess);
+function commandResult(
+  command: NpmCommand,
+  args: string[],
+  spawnProcess: SpawnSyncLike,
+  options: SpawnSyncOptions = rootOptions,
+): string | null {
+  const result = runNpmCommand(command, args, options, spawnProcess);
   return result.error || result.status !== 0 ? null : String(result.stdout || '').trim() || null;
 }
 
