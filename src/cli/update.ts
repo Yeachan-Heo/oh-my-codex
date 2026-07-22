@@ -171,47 +171,6 @@ async function getCurrentVersion(): Promise<string | null> {
   }
 }
 
-function isSpawnErrorCode(error: unknown, codes: string[]): boolean {
-  return Boolean(
-    error &&
-    typeof error === 'object' &&
-    'code' in error &&
-    codes.includes(String((error as NodeJS.ErrnoException).code)),
-  );
-}
-
-function spawnNpmSync(
-  args: string[],
-  options: SpawnSyncOptions,
-  spawnProcess: SpawnSyncLike = spawnSync,
-  platform: NodeJS.Platform = process.platform,
-): ReturnType<SpawnSyncLike> {
-  const result = spawnProcess('npm', args, options);
-  if (platform === 'win32' && isSpawnErrorCode(result.error, ['ENOENT'])) {
-    return spawnProcess('npm.cmd', args, options);
-  }
-  return result;
-}
-
-function runLegacyNpmGlobalUpdate(
-  spawnProcess: SpawnSyncLike,
-  platform: NodeJS.Platform,
-): RunGlobalUpdateResult {
-  const args = ['install', '-g', STABLE_INSTALL_SOURCE];
-  const options: SpawnSyncOptions = {
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true,
-  };
-  let result = spawnProcess('npm', args, options);
-  if (platform === 'win32' && isSpawnErrorCode(result.error, ['ENOENT'])) {
-    result = spawnProcess('npm.cmd', args, options);
-  }
-  if (platform === 'win32' && isSpawnErrorCode(result.error, ['EINVAL'])) {
-    result = spawnProcess('cmd.exe', ['/d', '/s', '/c', 'npm', ...args], options);
-  }
-  if (result.error) return { ok: false, stderr: result.error.message };
-  if (result.status !== 0) return commandFailure(result.stderr, result.status, 'npm install -g');
-  return { ok: true, stderr: '' };
-}
 
 function stableInstallArgs(ownership: PackageManagerOwnership, installSource: string): string[] {
   return ownership.manager === 'bun'
@@ -237,8 +196,8 @@ function commandFailure(stderr: unknown, status: number | null, label: string): 
 }
 
 function runDevGlobalUpdate(
+  ownership: Extract<PackageManagerOwnership, { manager: 'npm' }>,
   spawnProcess: SpawnSyncLike = spawnSync,
-  platform: NodeJS.Platform = process.platform,
 ): RunGlobalUpdateResult {
   const tempRoot = mkdtempSync(join(tmpdir(), 'omx-dev-update-'));
   const checkoutDir = join(tempRoot, 'checkout');
@@ -277,7 +236,8 @@ function runDevGlobalUpdate(
       ? String(clonedRevision).slice(0, 12)
       : null;
 
-    const installResult = spawnNpmSync(
+    const installResult = runNpmCommand(
+      ownership.npmCommand,
       [
         'install',
         '--global=false',
@@ -293,17 +253,17 @@ function runDevGlobalUpdate(
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: DEV_UPDATE_TIMEOUT_MS,
         windowsHide: true,
-        env: { ...process.env, npm_config_global: 'false', npm_config_location: 'project' },
+        env: { ...ownership.environment, npm_config_global: 'false', npm_config_location: 'project' },
       },
       spawnProcess,
-      platform,
     );
     if (installResult.error) return { ok: false, stderr: installResult.error.message };
     if (installResult.status !== 0) {
       return commandFailure(installResult.stderr, installResult.status, 'npm install --include=dev');
     }
 
-    const prepackResult = spawnNpmSync(
+    const prepackResult = runNpmCommand(
+      ownership.npmCommand,
       ['run', 'prepack'],
       {
         cwd: checkoutDir,
@@ -311,16 +271,17 @@ function runDevGlobalUpdate(
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: DEV_UPDATE_TIMEOUT_MS,
         windowsHide: true,
+        env: ownership.environment,
       },
       spawnProcess,
-      platform,
     );
     if (prepackResult.error) return { ok: false, stderr: prepackResult.error.message };
     if (prepackResult.status !== 0) {
       return commandFailure(prepackResult.stderr, prepackResult.status, 'npm run prepack');
     }
 
-    const packResult = spawnNpmSync(
+    const packResult = runNpmCommand(
+      ownership.npmCommand,
       ['pack', '--ignore-scripts', '--json'],
       {
         cwd: checkoutDir,
@@ -328,9 +289,9 @@ function runDevGlobalUpdate(
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: DEV_UPDATE_TIMEOUT_MS,
         windowsHide: true,
+        env: ownership.environment,
       },
       spawnProcess,
-      platform,
     );
     if (packResult.error) return { ok: false, stderr: packResult.error.message };
     if (packResult.status !== 0) {
@@ -351,16 +312,17 @@ function runDevGlobalUpdate(
       return { ok: false, stderr: 'npm pack did not produce an installable tarball.' };
     }
 
-    const globalInstallResult = spawnNpmSync(
-      ['install', '-g', tarballPath],
+    const globalInstallResult = runNpmCommand(
+      ownership.npmCommand,
+      ['install', '--global', '--ignore-scripts', '--no-audit', '--no-progress', '--prefix', ownership.npmPrefix, tarballPath],
       {
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: DEV_UPDATE_TIMEOUT_MS,
         windowsHide: true,
+        env: ownership.environment,
       },
       spawnProcess,
-      platform,
     );
     if (globalInstallResult.error) {
       return { ok: false, stderr: globalInstallResult.error.message };
@@ -383,20 +345,19 @@ function runDevGlobalUpdate(
 export function runGlobalUpdate(
   installSourceOrSpawnProcess: string | SpawnSyncLike = STABLE_INSTALL_SOURCE,
   spawnProcessOrPlatform: SpawnSyncLike | NodeJS.Platform = spawnSync,
-  platform: NodeJS.Platform = process.platform,
+  _platform: NodeJS.Platform = process.platform,
   ownership?: PackageManagerOwnership,
 ): RunGlobalUpdateResult {
-  const legacySpawnFirst = typeof installSourceOrSpawnProcess === 'function';
-  const installSource = legacySpawnFirst ? STABLE_INSTALL_SOURCE : installSourceOrSpawnProcess;
-  const spawnProcess = legacySpawnFirst
-    ? installSourceOrSpawnProcess
-    : typeof spawnProcessOrPlatform === 'function' ? spawnProcessOrPlatform : spawnSync;
-  const resolvedPlatform = typeof spawnProcessOrPlatform === 'string' ? spawnProcessOrPlatform : platform;
-  if (legacySpawnFirst) return runLegacyNpmGlobalUpdate(spawnProcess, resolvedPlatform);
+  if (typeof installSourceOrSpawnProcess === 'function') {
+    return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
+  }
+  const installSource = installSourceOrSpawnProcess;
+  const spawnProcess = typeof spawnProcessOrPlatform === 'function' ? spawnProcessOrPlatform : spawnSync;
   if (installSource === DEV_INSTALL_SOURCE) {
-    return ownership?.manager === 'bun'
+    if (!ownership) return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
+    return ownership.manager === 'bun'
       ? { ok: false, stderr: 'Bun dev updates are not yet supported' }
-      : runDevGlobalUpdate(spawnProcess, resolvedPlatform);
+      : runDevGlobalUpdate(ownership, spawnProcess);
   }
   if (!ownership) {
     return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
@@ -666,32 +627,9 @@ function resolveUpdateCheckBaseline(
   return currentVersion;
 }
 
-export function resolveGlobalInstallRoot(
-  spawnProcess: SpawnSyncLike = spawnSync,
-  platform: NodeJS.Platform = process.platform,
-): string | null {
-  const result = spawnNpmSync(
-    ['root', '-g'],
-    {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 15000,
-      windowsHide: true,
-    },
-    spawnProcess,
-    platform,
-  );
-
-  if (result.error || result.status !== 0) {
-    return null;
-  }
-
-  const root = String(result.stdout || '').trim();
-  return root === '' ? null : root;
-}
 
 async function getInstalledVersionAfterUpdate(ownership?: PackageManagerOwnership): Promise<string | null> {
-  const globalInstallRoot = ownership?.globalInstallRoot ?? resolveGlobalInstallRoot();
+  const globalInstallRoot = ownership?.globalInstallRoot;
   if (!globalInstallRoot) return null;
   try {
     const content = await readFile(join(globalInstallRoot, PACKAGE_NAME, 'package.json'), 'utf-8');
@@ -703,7 +641,7 @@ async function getInstalledVersionAfterUpdate(ownership?: PackageManagerOwnershi
 }
 
 async function getInstalledRevisionAfterUpdate(ownership?: PackageManagerOwnership): Promise<string | null> {
-  const globalInstallRoot = ownership?.globalInstallRoot ?? resolveGlobalInstallRoot();
+  const globalInstallRoot = ownership?.globalInstallRoot;
   if (!globalInstallRoot) return null;
   try {
     const content = await readFile(join(globalInstallRoot, PACKAGE_NAME, 'package.json'), 'utf-8');
@@ -805,9 +743,10 @@ async function executeUpdate(
     nowMs = Date.now(),
   } = options;
   const channelConfig = resolveUpdateChannelConfig(channel);
-  const usesNativeTransaction = dependencies.runGlobalUpdate === defaultUpdateDependencies.runGlobalUpdate
-    && dependencies.runDeferredGlobalUpdate === defaultUpdateDependencies.runDeferredGlobalUpdate
-    && dependencies.runSetupRefresh === defaultUpdateDependencies.runSetupRefresh;
+  const usesNativeTransaction = immediate
+    ? dependencies.runGlobalUpdate === defaultUpdateDependencies.runGlobalUpdate
+      || dependencies.runSetupRefresh === defaultUpdateDependencies.runSetupRefresh
+    : dependencies.runDeferredGlobalUpdate === defaultUpdateDependencies.runDeferredGlobalUpdate;
   const ownership = usesNativeTransaction
     ? await dependencies.resolvePackageManagerOwnership()
     : null;

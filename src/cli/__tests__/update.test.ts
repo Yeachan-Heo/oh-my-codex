@@ -623,6 +623,17 @@ describe('frozen package-manager update ownership', () => {
     assert.deepEqual(calls, []);
   });
 
+  it('requires ownership when the native updater remains selected beside an explicit setup seam', async () => {
+    const result = await runImmediateUpdate('/tmp/omx-unowned-update', {
+      getCurrentVersion: async () => '0.14.0',
+      fetchLatestVersion: async () => '0.14.1',
+      resolvePackageManagerOwnership: async () => null,
+      runSetupRefresh: async () => ({ ok: true, stderr: '' }),
+    });
+
+    assert.equal(result.status, 'failed');
+  });
+
   it('uses only the selected frozen npm command for dev packaging and installation', () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const owner: PackageManagerOwnership = {
