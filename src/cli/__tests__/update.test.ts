@@ -24,6 +24,7 @@ import {
   writeUserInstallStamp,
 } from '../update.js';
 import {
+  resolveBunGlobalBin,
   resolvePackageManagerOwnership,
   type PackageManagerOwnership,
 } from '../package-manager-ownership.js';
@@ -1762,7 +1763,7 @@ describe('package-manager ownership', () => {
     }), null, 'missing installed npm CLI must fail closed');
   });
 
-  it('resolves the installed npm CLI with Windows path semantics for a standard global npm layout', async () => {
+  it('resolves npm from the selected global OMX root before a Node runtime sibling on Windows', async () => {
     let npmCommand: Extract<PackageManagerOwnership, { manager: 'npm' }>['npmCommand'] | undefined;
     const ownership = await resolvePackageManagerOwnership({
       ...ownershipDependencies('npm', { npm: 'C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules' }),
@@ -1782,7 +1783,7 @@ describe('package-manager ownership', () => {
     assert.deepEqual(npmCommand, {
       kind: 'node-script',
       command: 'C:\\Program Files\\nodejs\\node.exe',
-      commandArgs: ['C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js'],
+      commandArgs: ['C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\npm\\bin\\npm-cli.js'],
     });
     assert.equal(ownership?.manager, 'npm');
   });
@@ -1803,6 +1804,7 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: '/fake/bun/bin/bun',
       bunGlobalBin: '/fake/bun/bin',
+      bunShim: '/fake/bun/bin/omx',
       bunInstallRoot: '/fake/bun',
       npmPrefix: '/fake/bun/install/global/node_modules',
       globalInstallRoot: '/fake/bun/install/global/node_modules',
@@ -1817,6 +1819,25 @@ describe('package-manager ownership', () => {
       bunInstallRoot: undefined,
       environment: {},
     }), null, 'missing Bun command provenance must fail closed');
+  });
+
+  it('queries Bun global-bin under the frozen configured environment', () => {
+    const calls: Array<{ command: string; args: string[]; environment: NodeJS.ProcessEnv | undefined }> = [];
+    const bin = resolveBunGlobalBin(
+      '/fake/bun/bin/bun',
+      { BUN_INSTALL: '/fake/bun', PATH: '/frozen/path' },
+      ((command, args, options) => {
+        calls.push({ command, args: args as string[], environment: options?.env });
+        return { status: 0, stdout: '/fake/bun/bin\n', stderr: '', error: undefined } as ReturnType<typeof import('node:child_process').spawnSync>;
+      }) as typeof import('node:child_process').spawnSync,
+    );
+
+    assert.equal(bin, '/fake/bun/bin');
+    assert.deepEqual(calls, [{
+      command: '/fake/bun/bin/bun',
+      args: ['pm', 'bin', '-g'],
+      environment: { BUN_INSTALL: '/fake/bun', PATH: '/frozen/path' },
+    }]);
   });
 
   it('resolves an unstamped Bun install after confirming its canonical shim and configured root', async () => {
@@ -1836,6 +1857,7 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: '/fake/bun/bin/bun',
       bunGlobalBin: '/fake/bun/bin',
+      bunShim: '/fake/bun/bin/omx',
       bunInstallRoot: '/fake/bun',
       npmPrefix: '/fake/bun/install/global/node_modules',
       globalInstallRoot: '/fake/bun/install/global/node_modules',
@@ -1879,6 +1901,7 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: 'C:\\Users\\alice\\.bun\\bin\\bun.exe',
       bunGlobalBin: 'C:\\Users\\alice\\.bun\\bin',
+      bunShim: 'C:\\Users\\alice\\.bun\\bin\\omx.cmd',
       bunInstallRoot: 'C:\\Users\\alice\\.bun',
       npmPrefix: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
       globalInstallRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
@@ -1903,6 +1926,7 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: 'C:\\Users\\alice\\.bun\\bin\\bun.exe',
       bunGlobalBin: 'C:\\Users\\alice\\.bun\\bin',
+      bunShim: 'C:\\Users\\alice\\.bun\\bin\\omx.cmd',
       bunInstallRoot: 'C:\\Users\\alice\\.bun',
       npmPrefix: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
       globalInstallRoot: 'C:\\Users\\alice\\.bun\\install\\global\\node_modules',
@@ -1953,6 +1977,7 @@ describe('package-manager ownership', () => {
       manager: 'bun',
       bunCommand: '/configured/runtime/bun',
       bunGlobalBin: '/configured/bun/bin',
+      bunShim: '/configured/bun/bin/omx',
       bunInstallRoot: '/configured/bun',
       globalInstallRoot: '/configured/node_modules',
       packageRoot: '/configured/node_modules/oh-my-codex',
@@ -2010,6 +2035,7 @@ describe('package-manager ownership', () => {
         manager: 'bun',
         bunCommand: '/untrusted/bun-launcher',
         bunGlobalBin: '',
+        bunShim: '',
         bunInstallRoot: '/configured/bun',
         globalInstallRoot: '/configured/node_modules',
         packageRoot: '/configured/node_modules/oh-my-codex',

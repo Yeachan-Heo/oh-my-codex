@@ -1,6 +1,6 @@
 import { lstatSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { basename, isAbsolute, join, posix, win32 } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, win32 } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { UserInstallStamp } from '../scripts/postinstall-advisory.js';
 
@@ -24,6 +24,7 @@ export type PackageManagerOwnership =
     manager: 'bun';
     bunCommand: string;
     bunGlobalBin: string;
+    bunShim: string;
     /** Canonical configured BUN_INSTALL root when it defines this install. */
     bunInstallRoot?: string;
     npmPrefix: string;
@@ -60,6 +61,8 @@ export function isCompletePackageManagerOwnership(ownership: unknown): ownership
       && Boolean(candidate.bunCommand)
       && typeof candidate.bunGlobalBin === 'string'
       && Boolean(candidate.bunGlobalBin)
+      && typeof candidate.bunShim === 'string'
+      && Boolean(candidate.bunShim)
       && typeof candidate.bunInstallRoot === 'string'
       && Boolean(candidate.bunInstallRoot)
       && environment.BUN_INSTALL === candidate.bunInstallRoot;
@@ -106,6 +109,12 @@ export async function validatePackageManagerOwnership(
     const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.omx;
     if (manifest.name !== 'oh-my-codex' || typeof bin !== 'string' || !bin.trim() || isAbsolute(bin)) return null;
     const entry = realpathSync(join(packageRoot, bin));
+    if (ownership.manager === 'bun' && (
+      !pathsEqual(realpathSync(dirname(ownership.bunShim)), ownership.bunGlobalBin)
+      || (basename(ownership.bunShim).toLowerCase().endsWith('.cmd')
+        ? (!lstatSync(ownership.bunShim).isFile() || !isPathWithin(realpathSync(ownership.bunShim), ownership.bunGlobalBin))
+        : !pathsEqual(realpathSync(ownership.bunShim), entry))
+    )) return null;
     return lstatSync(entry).isFile() && isPathWithin(entry, packageRoot) ? entry : null;
   } catch {
     return null;
@@ -117,7 +126,7 @@ export interface PackageManagerOwnershipDependencies {
   currentPackageRoot: string;
   readInstallStamp: () => Promise<UserInstallStamp | null>;
   realpath: (path: string) => string;
-  resolveBunGlobalBin: (command: string) => string | null;
+  resolveBunGlobalBin: (command: string, environment: NodeJS.ProcessEnv) => string | null;
   resolveBunCommand: () => string | null;
   resolveNpmCommand: () => NpmCommand | null;
   resolveNpmGlobalInstallRoot: (command: NpmCommand) => string | null;
@@ -180,9 +189,9 @@ export function resolveNpmPrefix(
   return command ? commandResult(command, ['prefix', '-g'], spawnProcess) : null;
 }
 
-/** Bun's configured global bin must be queried through its validated executable. */
-export function resolveBunGlobalBin(command: string, spawnProcess: SpawnSyncLike = spawnSync): string | null {
-  const result = spawnProcess(command, ['pm', 'bin', '-g'], rootOptions);
+/** Bun's configured global bin must be queried through its validated executable and frozen environment. */
+export function resolveBunGlobalBin(command: string, environment: NodeJS.ProcessEnv = process.env, spawnProcess: SpawnSyncLike = spawnSync): string | null {
+  const result = spawnProcess(command, ['pm', 'bin', '-g'], { ...rootOptions, env: environment });
   return result.error || result.status !== 0 ? null : String(result.stdout || '').trim() || null;
 }
 
@@ -201,23 +210,21 @@ export function resolveBunCommand(): string | null {
   return null;
 }
 
-function resolveInstalledNpmCommand(dependencies: Pick<PackageManagerOwnershipDependencies, 'currentNodeExecutable' | 'currentPackageRoot' | 'platform' | 'realpath'>): NpmCommand | null {
+function resolveInstalledNpmCommand(dependencies: Pick<PackageManagerOwnershipDependencies, 'currentNodeExecutable' | 'platform' | 'realpath'>, globalInstallRoot: string): NpmCommand | null {
   try {
     const path = platformPath(dependencies.platform);
-    const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
-    if (path.basename(packageRoot) !== 'oh-my-codex') return null;
     const node = dependencies.realpath(dependencies.currentNodeExecutable);
-    const candidates = dependencies.platform === 'win32'
-      ? [
-        path.join(path.dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-        path.join(path.dirname(packageRoot), 'npm', 'bin', 'npm-cli.js'),
-      ]
-      : [path.join(path.dirname(packageRoot), 'npm', 'bin', 'npm-cli.js')];
+    const candidates = [
+      path.join(globalInstallRoot, 'npm', 'bin', 'npm-cli.js'),
+      ...(dependencies.platform === 'win32'
+        ? [path.join(path.dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js')]
+        : []),
+    ];
     for (const candidate of candidates) {
       try {
         return { kind: 'node-script', command: node, commandArgs: [dependencies.realpath(candidate)] };
       } catch {
-        // Try the next supported installed-npm layout; never use PATH.
+        // Try the runtime's supported npm layout only after the selected global root.
       }
     }
     return null;
@@ -282,19 +289,21 @@ function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependenc
     if (!dependencies.bunInstallRoot) return null;
     const path = platformPath(dependencies.platform);
     const bunInstallRoot = dependencies.realpath(dependencies.bunInstallRoot);
-    const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
-    if (!pathsEqual(packageRoot, path.join(bunInstallRoot, 'install', 'global', 'node_modules', 'oh-my-codex'), dependencies.platform)) return null;
+    const globalInstallRoot = dependencies.realpath(path.join(bunInstallRoot, 'install', 'global', 'node_modules'));
+    const packageRoot = matchesCurrentInstall(globalInstallRoot, dependencies);
+    if (!packageRoot) return null;
     const expectedCommand = dependencies.realpath(path.join(bunInstallRoot, 'bin', dependencies.platform === 'win32' ? 'bun.exe' : 'bun'));
     if (!/^bun(?:\.exe)?$/i.test(path.basename(expectedCommand))) return null;
     const resolvedCommand = dependencies.resolveBunCommand();
     const bunCommand = resolvedCommand ? dependencies.realpath(resolvedCommand) : resolveInstalledBunCommand(dependencies);
     if (!bunCommand || !pathsEqual(bunCommand, expectedCommand, dependencies.platform)) return null;
-    const configuredBin = dependencies.resolveBunGlobalBin(bunCommand);
+    const environment = { ...transactionEnvironment(dependencies.environment), BUN_INSTALL: bunInstallRoot };
+    const configuredBin = dependencies.resolveBunGlobalBin(bunCommand, environment);
     if (!configuredBin) return null;
     const bunGlobalBin = dependencies.realpath(configuredBin);
+    const bunShim = path.join(bunGlobalBin, dependencies.platform === 'win32' ? 'omx.cmd' : 'omx');
+    const shim = dependencies.realpath(bunShim);
     const executable = dependencies.realpath(dependencies.currentExecutable);
-    const shimName = dependencies.platform === 'win32' ? 'omx.cmd' : 'omx';
-    const shim = dependencies.realpath(path.join(bunGlobalBin, shimName));
     if (!isPathWithin(executable, packageRoot, dependencies.platform)) return null;
     if (dependencies.platform === 'win32') {
       if (!isPathWithin(shim, bunGlobalBin, dependencies.platform)) return null;
@@ -302,9 +311,8 @@ function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependenc
       return null;
     }
     return {
-      manager: 'bun', bunCommand, bunGlobalBin, bunInstallRoot,
-      npmPrefix: path.dirname(packageRoot), globalInstallRoot: path.dirname(packageRoot), packageRoot,
-      environment: { ...transactionEnvironment(dependencies.environment), BUN_INSTALL: bunInstallRoot },
+      manager: 'bun', bunCommand, bunGlobalBin, bunShim, bunInstallRoot,
+      npmPrefix: globalInstallRoot, globalInstallRoot, packageRoot, environment,
     };
   } catch {
     return null;
@@ -348,7 +356,12 @@ export async function resolvePackageManagerOwnership(dependencies: Partial<Packa
       if (ownership) candidates.push(ownership);
       continue;
     }
-    const npmCommand = resolved.resolveNpmCommand() ?? resolveInstalledNpmCommand(resolved);
+    const lifecycleNpmCommand = resolved.resolveNpmCommand();
+    const selectedGlobalInstallRoot = resolved.realpath(platformPath(resolved.platform).dirname(resolved.currentPackageRoot));
+    const selectedPackageRoot = matchesCurrentInstall(selectedGlobalInstallRoot, resolved);
+    const npmCommand = lifecycleNpmCommand ?? (selectedPackageRoot
+      ? resolveInstalledNpmCommand(resolved, selectedGlobalInstallRoot)
+      : null);
     if (!npmCommand) continue;
     try {
       const globalInstallRoot = resolved.realpath(resolved.resolveNpmGlobalInstallRoot(npmCommand) ?? '');
