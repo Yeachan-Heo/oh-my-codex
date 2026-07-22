@@ -1,0 +1,48 @@
+{
+  "$schema": "./policy-schema.json",
+  "contractRevision": 8,
+  "commandContractSha256": "4cacc4a13de4f6d53c54c9237aa4c1df6b9582cf824aa19d4911e12a57d447df",
+  "scope": "Deterministic model of command shadows already present before launch; post-launch replacement and race conditions are out of scope.",
+  "windowsPathExtensions": [".com", ".exe", ".bat", ".cmd"],
+  "approvedNestedNpmRunEdges": [
+    "npm run build",
+    "npm run verify:native-agents",
+    "npm run sync:plugin",
+    "npm run verify:plugin-bundle",
+    "npm run clean:native-package-assets"
+  ],
+  "scenarios": [
+    {
+      "id": "clean-path",
+      "command": "npm",
+      "pathDirectories": ["C:\\Program Files\\nodejs"],
+      "existingCommands": ["C:\\Program Files\\nodejs\\npm.cmd"],
+      "expectedResolution": "C:\\Program Files\\nodejs\\npm.cmd",
+      "expectedDisposition": "ALLOW"
+    },
+    {
+      "id": "earlier-cmd-shadow",
+      "command": "npm",
+      "pathDirectories": ["C:\\disposable\\shadow", "C:\\Program Files\\nodejs"],
+      "existingCommands": ["C:\\disposable\\shadow\\npm.cmd", "C:\\Program Files\\nodejs\\npm.cmd"],
+      "expectedResolution": "C:\\disposable\\shadow\\npm.cmd",
+      "expectedDisposition": "REJECT_SHADOW"
+    },
+    {
+      "id": "extension-precedence-shadow",
+      "command": "npm",
+      "pathDirectories": ["C:\\disposable\\shadow", "C:\\Program Files\\nodejs"],
+      "existingCommands": ["C:\\disposable\\shadow\\npm.bat", "C:\\disposable\\shadow\\npm.cmd", "C:\\Program Files\\nodejs\\npm.cmd"],
+      "expectedResolution": "C:\\disposable\\shadow\\npm.bat",
+      "expectedDisposition": "REJECT_SHADOW"
+    },
+    {
+      "id": "missing-command",
+      "command": "npm",
+      "pathDirectories": ["C:\\disposable\\empty"],
+      "existingCommands": [],
+      "expectedResolution": null,
+      "expectedDisposition": "REJECT_UNRESOLVED"
+    }
+  ]
+}

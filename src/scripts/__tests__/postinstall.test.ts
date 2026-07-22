@@ -24,7 +24,7 @@ describe("isGlobalInstallLifecycle", () => {
 });
 
 describe("runPostinstall", () => {
-  it("records the installed version and prints an explicit opt-in setup hint for bumped global installs", async () => {
+  it("preserves Bun provenance across bumped global installs while printing an explicit opt-in setup hint", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-postinstall-"));
     const stampPath = join(root, ".codex", ".omx", "install-state.json");
     const logs: string[] = [];
@@ -37,6 +37,7 @@ describe("runPostinstall", () => {
         readStamp: async () => ({
           installed_version: "0.14.0",
           setup_completed_version: "0.14.0",
+          package_manager: "bun",
           updated_at: "2026-04-20T00:00:00.000Z",
         }),
         writeStamp: async (stamp) => writeUserInstallStamp(stamp, stampPath),
@@ -48,9 +49,11 @@ describe("runPostinstall", () => {
       const stamp = JSON.parse(await readFile(stampPath, "utf-8")) as {
         installed_version: string;
         setup_completed_version: string;
+        package_manager?: string;
       };
       assert.equal(stamp.installed_version, "0.14.1");
       assert.equal(stamp.setup_completed_version, "0.14.0");
+      assert.equal(stamp.package_manager, "bun");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -86,6 +89,25 @@ describe("runPostinstall", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("does not infer package-manager provenance from a Bun user agent", async () => {
+    let writtenStamp: { package_manager?: "npm" | "bun" } | undefined;
+
+    const result = await runPostinstall({
+      env: {
+        npm_config_global: "true",
+        npm_config_user_agent: "bun/1.2.0 npm/? node/v22.0.0 linux x64",
+      },
+      getCurrentVersion: async () => "0.14.1",
+      readStamp: async () => null,
+      writeStamp: async (stamp) => {
+        writtenStamp = stamp;
+      },
+    });
+
+    assert.equal(result.status, "hinted");
+    assert.equal(writtenStamp?.package_manager, undefined);
   });
 
   it("skips local installs", async () => {

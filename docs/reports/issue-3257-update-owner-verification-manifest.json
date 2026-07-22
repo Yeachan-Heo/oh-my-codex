@@ -1,0 +1,53 @@
+{
+  "issue": 3257,
+  "phase": "Phase-0 feasibility harness",
+  "revision": 8,
+  "revisionSha256": "6de6d7f89f4be3cbe0dcb7b7780ffad753065871cffacd569cd4a5be9a8d0b4d",
+  "commandContractSha256": "4cacc4a13de4f6d53c54c9237aa4c1df6b9582cf824aa19d4911e12a57d447df",
+  "runtimeContract": "Node is the only runtime contract. npm and Windows behavior remain supported.",
+  "reviewChain": [
+    { "revision": 6, "reviewer": "Revision", "artifact": "stage-06-revision.md", "sha256": "1e4d9a1c34bba7e81e25398996b714a54b4607546fed67d79b2f4c86b9ff868d" },
+    { "revision": 6, "reviewer": "Architect", "artifact": "stage-06-architect.md", "sha256": "8e9bf50fbe22c771c26db8cfd144361f7d8531570304b48626be8653900b783b" },
+    { "revision": 6, "reviewer": "Critic", "artifact": "stage-06-critic.md", "sha256": "f77a034f411fdbba6c83bd61f0e8863adfdeaf2b79b41bcbf9f6c0d7842a66d9" },
+    { "revision": 7, "reviewer": "Revision", "artifact": "stage-07-revision.md", "sha256": "3fa478b0c27057fcd6d5fd5971208bc502dbf915f82f4f0c1bb0e3cda748a3e7" },
+    { "revision": 7, "reviewer": "Architect", "artifact": "stage-07-architect.md", "sha256": "cb6ed4ebbb99703e198fc7b52d89fd675ac2a32330c9a2fb89722f89c915d940" },
+    { "revision": 7, "reviewer": "Critic", "artifact": "stage-07-critic.md", "sha256": "51038b96a030c6e7b48e6dff6d3255c9fcb94841be02c22dd08672fbd1249bc9" }
+  ],
+  "installProfiles": {
+    "stable": {
+      "name": "CONTROLLER_INSTALL_ENV_V1.windows",
+      "argv": ["install", "--global", "--ignore-scripts", "--no-audit", "--no-progress", "--prefix", "<FROZEN_PREFIX>", "oh-my-codex@latest"],
+      "scriptExecution": "SUPPRESSED",
+      "empiricalExecution": "NOT_EXECUTED",
+      "ownerReview": "REQUIRED"
+    },
+    "dev": {
+      "name": "CONTROLLER_INSTALL_ENV_V1.posix",
+      "argv": ["install", "--global", "--ignore-scripts", "--no-audit", "--no-progress", "--prefix", "<FROZEN_PREFIX>", "<VALIDATED_ABSOLUTE_CONTAINED_TARBALL>"],
+      "scriptExecution": "SUPPRESSED",
+      "empiricalExecution": "NOT_EXECUTED",
+      "ownerReview": "REQUIRED"
+    }
+  },
+  "externalLifecycleVectors": [
+    { "profile": "EXTERNAL_GLOBAL_ENV_V1.enabled", "lifecycleExecution": "NOT_EXECUTED", "ownerReview": "REQUIRED" },
+    { "profile": "EXTERNAL_GLOBAL_ENV_V1.suppressed", "lifecycleExecution": "NOT_EXECUTED", "ownerReview": "REQUIRED" }
+  ],
+  "advisoryClosureRule": "A receipt is advisory only. Closure requires owner review of all NOT_EXECUTED evidence and must not infer product execution, package-manager ownership, or lifecycle safety.",
+  "residualWindowsThreatModel": {
+    "covered": "Deterministic resolution of existing pre-launch .com, .exe, .bat, and .cmd shadows in PATH order.",
+    "excluded": "Post-launch replacement, TOCTOU races, PATH mutation after launch, and any command execution.",
+    "residualRisk": "Owner review required; Bun must own the transaction or fail closed, and Bun dev must fail unsupported."
+  },
+  "candidateEvidence": {
+    "harness": "docs/reports/issue-3257/windows-command-harness/harness.mjs",
+    "dispatcher": "docs/reports/issue-3257/windows-command-harness/dispatcher.cmd",
+    "corpus": "docs/reports/issue-3257/windows-command-harness/resolution-corpus.json",
+    "empiricalStatus": "NOT_EXECUTED",
+    "ownerReview": "REQUIRED"
+  },
+  "ownerGate": {
+    "status": "REQUIRED",
+    "requiredBeforeClosure": ["Owner review", "Empirical execution evidence", "Bun transaction-or-fail-closed evidence", "Bun dev unsupported-failure evidence"]
+  }
+}

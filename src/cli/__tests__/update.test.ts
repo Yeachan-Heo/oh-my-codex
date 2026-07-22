@@ -21,6 +21,10 @@ import {
   spawnInstalledSetupRefresh,
   writeUserInstallStamp,
 } from '../update.js';
+import {
+  resolvePackageManagerOwnership,
+  type PackageManagerOwnership,
+} from '../package-manager-ownership.js';
 
 const PACKAGE_NAME = 'oh-my-codex';
 
@@ -1567,6 +1571,112 @@ describe('persisted merge policy update replay', () => {
         assert.match(calls[0]?.args.at(-1) ?? '', /--no-merge-agents/);
         assert.doesNotMatch(calls[0]?.args.at(-1) ?? '', /--force/);
       }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('package-manager ownership', () => {
+  const executable = '/configured/node_modules/oh-my-codex/dist/cli/omx.js';
+  const packageRoot = '/configured/node_modules/oh-my-codex';
+
+  function ownershipDependencies(stamp: 'npm' | 'bun' | undefined, roots: { npm?: string; bunBin?: string }) {
+    return {
+      currentExecutable: executable,
+      currentPackageRoot: packageRoot,
+      readInstallStamp: async () => stamp
+        ? { installed_version: '0.20.3', updated_at: '2026-07-22T00:00:00.000Z', package_manager: stamp }
+        : null,
+      realpath: (path: string) => path,
+      resolveNpmGlobalInstallRoot: () => roots.npm ?? null,
+      resolveBunGlobalBin: () => roots.bunBin ?? null,
+    };
+  }
+
+  it('selects a validated npm owner from isolated roots', async () => {
+    assert.deepEqual(await resolvePackageManagerOwnership(ownershipDependencies('npm', {
+      npm: '/configured/node_modules',
+    })), { manager: 'npm', globalInstallRoot: '/configured/node_modules' });
+  });
+
+  it('freezes Bun ownership from its configured bin and canonical omx shim without inferring a package root', async () => {
+    let npmCalls = 0;
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: '/configured/bun/bin' }),
+      currentExecutable: '/links/omx.js',
+      currentPackageRoot: '/links/package',
+      realpath: (path: string) => (({
+        '/configured/bun/bin': '/canonical/bun/bin',
+        '/canonical/bun/bin/omx': '/isolated/global/oh-my-codex/dist/cli/omx.js',
+        '/canonical/bun/bin/bun': '/canonical/bun/bin/bun',
+        '/links/omx.js': '/isolated/global/oh-my-codex/dist/cli/omx.js',
+        '/links/package': '/isolated/global/oh-my-codex',
+      } as Record<string, string>)[path] ?? path),
+      resolveNpmGlobalInstallRoot: () => { npmCalls += 1; return null; },
+    });
+    assert.deepEqual(ownership, {
+      manager: 'bun',
+      bunCommand: '/canonical/bun/bin/bun',
+      bunGlobalBin: '/canonical/bun/bin',
+      globalInstallRoot: '/isolated/global',
+      packageRoot: '/isolated/global/oh-my-codex',
+    });
+    assert.equal(npmCalls, 0, 'Bun ownership must not invoke npm.');
+  });
+
+  it('fails closed for missing, ambiguous, stale, or non-shim Bun ownership evidence', async () => {
+    assert.equal(await resolvePackageManagerOwnership(ownershipDependencies(undefined, {})), null);
+    assert.equal(await resolvePackageManagerOwnership({
+      ...ownershipDependencies(undefined, { npm: '/configured/node_modules', bunBin: '/configured/bun/bin' }),
+      realpath: (path) => (({
+        '/configured/bun/bin/omx': executable,
+        '/configured/bun/bin/bun': '/configured/bun/bin/bun',
+      } as Record<string, string>)[path] ?? path),
+    }), null);
+    assert.equal(await resolvePackageManagerOwnership(ownershipDependencies('bun', {
+      npm: '/configured/node_modules',
+    })), null);
+    assert.equal(await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: '/configured/bun/bin' }),
+      resolveBunGlobalBin: () => '/configured/bun/bin',
+      realpath: (path) => path,
+    }), null);
+  });
+
+  it('uses the frozen Bun command for stable and deferred updates and rejects Bun dev before spawning', async () => {
+    const owner: PackageManagerOwnership = {
+      manager: 'bun',
+      bunCommand: '/configured/bun/bin/bun',
+      bunGlobalBin: '/configured/bun/bin',
+      globalInstallRoot: '/configured/node_modules',
+      packageRoot: '/configured/node_modules/oh-my-codex',
+    };
+    const calls: string[] = [];
+    const spawnProcess = ((command: string) => {
+      calls.push(command);
+      return { status: 0, stdout: '', stderr: '' };
+    }) as typeof import('node:child_process').spawnSync;
+    assert.deepEqual(runGlobalUpdate('oh-my-codex@latest', spawnProcess, 'linux', owner), { ok: true, stderr: '' });
+    assert.deepEqual(calls, ['/configured/bun/bin/bun']);
+    calls.length = 0;
+    assert.deepEqual(runGlobalUpdate('github:Yeachan-Heo/oh-my-codex#dev', spawnProcess, 'linux', owner), {
+      ok: false, stderr: 'Bun dev updates are not yet supported',
+    });
+    assert.deepEqual(calls, []);
+
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-deferred-bun-'));
+    try {
+      const deferredCalls: Array<{ command: string; args: string[] }> = [];
+      const deferred = runDeferredGlobalUpdate(cwd, ((command, args) => {
+        deferredCalls.push({ command, args: args as string[] });
+        return { once() { return this; }, unref() {} } as unknown as ReturnType<typeof import('node:child_process').spawn>;
+      }) as typeof import('node:child_process').spawn, 'linux', 12345, owner);
+      assert.equal(deferred.ok, true);
+      assert.equal(deferredCalls[0]?.command, 'sh');
+      assert.match(deferredCalls[0]?.args.at(-1) ?? '', /'\/configured\/bun\/bin\/bun' 'add' '-g' 'oh-my-codex@latest'/);
+      assert.match(deferredCalls[0]?.args.at(-1) ?? '', /'\/configured\/bun\/bin\/bun' '\/configured\/node_modules\/oh-my-codex\/dist\/cli\/omx\.js' 'setup'/);
+      assert.doesNotMatch(deferredCalls[0]?.args.at(-1) ?? '', /npm install -g|\bbun add -g/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

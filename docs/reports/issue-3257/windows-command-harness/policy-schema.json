@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Issue 3257 Phase-0 Windows command harness policy",
+  "type": "object",
+  "required": ["contractRevision", "commandContractSha256", "scope", "windowsPathExtensions", "approvedNestedNpmRunEdges", "scenarios"],
+  "properties": {
+    "contractRevision": { "const": 8 },
+    "commandContractSha256": { "const": "4cacc4a13de4f6d53c54c9237aa4c1df6b9582cf824aa19d4911e12a57d447df" },
+    "scope": { "type": "string", "minLength": 1 },
+    "windowsPathExtensions": {
+      "const": [".com", ".exe", ".bat", ".cmd"]
+    },
+    "approvedNestedNpmRunEdges": {
+      "const": [
+        "npm run build",
+        "npm run verify:native-agents",
+        "npm run sync:plugin",
+        "npm run verify:plugin-bundle",
+        "npm run clean:native-package-assets"
+      ]
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "command", "pathDirectories", "existingCommands", "expectedResolution", "expectedDisposition"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "command": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "pathDirectories": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "existingCommands": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "expectedResolution": { "type": ["string", "null"] },
+          "expectedDisposition": { "enum": ["ALLOW", "REJECT_SHADOW", "REJECT_UNRESOLVED"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
