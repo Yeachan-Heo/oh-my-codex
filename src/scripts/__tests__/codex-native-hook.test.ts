@@ -21090,23 +21090,15 @@ PY`,
         ["uppercase executable", "OMX cancel"],
         ["unicode nbsp separator", "omx\u00a0cancel"],
         ["newline between words", "omx\ncancel"],
+        // Byte-form lookalikes: the raw payload command is not byte-identical
+        // to the trim-normalized command, so the direct-cancel exemption can
+        // never fire and the omx-mutation analysis denies the command. This
+        // asserts observable denial, not merely failure of one helper.
+        ["byte-order-mark lookalike executable", "\ufeffomx cancel"],
+        ["carriage-return suffix lookalike", "omx cancel\r"],
       ] as const) {
         const impostor = await bash(command);
         assert.equal(impostor.outputJson?.decision, "block", label);
-      }
-
-      // The direct-cancel scanner also rejects BOM and CR byte forms, so these
-      // never receive the cancellation exemption. They remain observable as
-      // ordinary unrecognized Bash invocations: the generic write-intent path
-      // sees no mutation in a nonexistent `\ufeffomx` executable or a
-      // `cancel\r` argument, which is the standard posture for unknown
-      // commands and not a cancellation authorization.
-      for (const [label, command] of [
-        ["byte-order-mark prefix", "\ufeffomx cancel"],
-        ["carriage-return suffix", "omx cancel\r"],
-      ] as const) {
-        const unrecognized = await bash(command);
-        assert.equal(unrecognized.outputJson, null, label);
       }
 
       const stateClear = await bash("omx state clear --force --mode ralplan --json");
@@ -31468,6 +31460,9 @@ PY`,
         ["path-qualified impostor", "/tmp/omx cancel --force"],
         ["chained cancellation", "omx cancel --force && rm -rf x"],
         ["omx root override", "OMX_ROOT=/tmp/other omx cancel"],
+        ["byte-order-mark lookalike executable", "\ufeffomx cancel"],
+        ["carriage-return suffix lookalike", "omx cancel\r"],
+        ["unicode nbsp separator", "omx\u00a0cancel"],
       ] as const) {
         const impostor = await bash(command);
         assert.equal(impostor.outputJson?.decision, "block", label);

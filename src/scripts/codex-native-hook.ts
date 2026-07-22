@@ -4193,6 +4193,15 @@ function readPreToolUseCommand(payload: CodexHookPayload): string {
   return safeString(toolInput.command).trim();
 }
 
+// Authorization decisions whose security contract depends on exact bytes
+// (currently only the direct `omx cancel` exemption) must compare against the
+// unmodified command string: ECMAScript trim() removes BOM/NBSP/CR and other
+// non-shell whitespace, so a trimmed command can normalize a different
+// executable name (e.g. `\uFEFFomx`) into the exact `omx` token.
+function readPreToolUseRawCommand(payload: CodexHookPayload): string {
+  return safeString(safeObject(payload.tool_input).command);
+}
+
 function readPreToolUsePathCandidates(payload: CodexHookPayload): string[] {
   const input = safeObject(payload.tool_input);
   const candidates = [
@@ -8687,16 +8696,19 @@ function skipLiteralLeadingAssignments(words: string[]): number {
 }
 
 // Direct cancellation is recognized from the RAW command string with a
-// deliberately tiny ASCII grammar: exactly `omx cancel` (plus the ralplan-only
-// `--force`) with optional ASCII space/tab padding. No leading environment
-// assignments are accepted at all — runtime startup/configuration variables
-// are an open-ended namespace (PATH, NODE_OPTIONS, OPENSSL_CONF, ...) and a
-// denylist cannot prove the invoked program is the unmodified OMX
-// cancellation path. No quotes, backslashes, shell operators, path-qualified
-// or case-folded executables, and no CR/LF/NUL/BOM/NBSP/Unicode whitespace:
-// the scanner's word boundaries and executable identity are exactly the
-// shell's, so a presented cancellation cannot smuggle a different executable,
-// preload code, or redirect a state tree.
+// deliberately tiny ASCII grammar: exactly `omx cancel` (plus `--force` only
+// at the ralplan/Conductor callsites; deep-interview stays plain-cancel) with
+// optional ASCII space/tab padding. No leading environment assignments are
+// accepted at all — runtime startup/configuration variables are an open-ended
+// namespace (PATH, NODE_OPTIONS, OPENSSL_CONF, ...) and a denylist cannot
+// prove the invoked program is the unmodified OMX cancellation path. No
+// quotes, backslashes, shell operators, path-qualified or case-folded
+// executables, and no CR/LF/NUL/BOM/NBSP/Unicode whitespace: the scanner's
+// word boundaries and executable identity are exactly the shell's, so a
+// presented cancellation cannot smuggle a different executable, preload code,
+// or redirect a state tree. Callers must also prove the raw payload command
+// equals the analyzed command, because a lossy trim seam would otherwise
+// normalize a lookalike executable (e.g. `\uFEFFomx`) into the exact token.
 function isDirectOmxCancelCommand(command: string, options: { allowForce?: boolean } = {}): boolean {
   if (!/^[\x09\x20-\x7E]*$/.test(command)) return false;
   const words = command.replace(/^[ \t]+|[ \t]+$/g, "").split(/[ \t]+/).filter(Boolean);
@@ -8756,7 +8768,7 @@ function isAllowedDeepInterviewCommandSpecificBash(
 ): boolean {
   const questionClassification = classifyOmxQuestionPreToolUse(command, payload);
   if (questionClassification.kind === "allowed") return true;
-  return isDirectOmxCancelCommand(command)
+  return (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command))
     || isAllowedOmxReadOnlyCommand(command)
     || isAllowedGhReadOnlyCommand(command)
     || isAllowedVersionProbeCommand(command);
@@ -8963,14 +8975,17 @@ function isAllowedRalplanBashWrite(
   command: string,
   activeState: Record<string, unknown>,
   sessionId: string,
+  rawCommand = command,
 ): boolean {
   // Session-scoped cancellation is the owning session's documented recovery
   // surface: it terminalizes workflow state without touching planning
   // artifacts, so it stays available while ralplan is active (parity with the
   // deep-interview boundary). The allow admits only the exact bare
-  // `omx cancel [--force]` invocation, so a presented cancellation cannot
-  // smuggle a different executable, preload code, or redirect a state tree.
-  if (isDirectOmxCancelCommand(command, { allowForce: true })) return true;
+  // `omx cancel [--force]` invocation, and only when the raw payload command
+  // is byte-identical to the analyzed command, so neither a presented
+  // cancellation nor a lossy normalization seam can smuggle a different
+  // executable, preload code, or redirect a state tree.
+  if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) return true;
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
@@ -9229,7 +9244,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
   if (toolName === "Bash") {
-    blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId);
+    blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId, readPreToolUseRawCommand(payload));
     if (blocked) {
       blockedDetail = buildRalplanBashBlockedDetail(cwd, command, sessionId);
     }
@@ -9499,7 +9514,7 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
   if (toolName === "Bash") {
     const command = readPreToolUseCommand(payload);
     blocked = commandEndsPlanningPhase(cwd, command)
-      || !isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId);
+      || !isAllowedRalplanBashWrite(cwd, command, ralplanState, rootSessionId, readPreToolUseRawCommand(payload));
   } else if (
     mutationTransport === "state"
     && (
@@ -18070,13 +18085,16 @@ function evaluateConductorBashWrite(
   depth = 0,
   authoritativeSessionId = "",
   policyCwd = cwd,
+  rawCommand = command,
 ): { allowed: boolean; blockedDetail?: string } {
   // Session-scoped cancellation is the owning session's documented recovery
   // surface across planning workflows (parity with the ralplan/deep-interview
   // boundaries). The allow admits only the exact bare `omx cancel [--force]`
-  // invocation, so a presented cancellation cannot smuggle a different
-  // executable, preload code, or redirect a state tree.
-  if (isDirectOmxCancelCommand(command, { allowForce: true })) return { allowed: true };
+  // invocation, and only when the raw payload command is byte-identical to
+  // the analyzed command, so neither a presented cancellation nor a lossy
+  // normalization seam can smuggle a different executable, preload code, or
+  // redirect a state tree.
+  if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) return { allowed: true };
   const commandWithHeredocBodies = normalizeShellLineContinuations(command);
   const normalizedCommand = stripHeredocBodiesForCommandScan(commandWithHeredocBodies);
   if (authoritativeSessionId && !conductorStateWriteTransportIsBoundToActiveSession(commandWithHeredocBodies, authoritativeSessionId, policyCwd)) {
@@ -18355,7 +18373,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
 
   if (toolName === "Bash") {
     const shellMutations = extractConductorBashMutations(command, cwd, policyCwd);
-    const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd);
+    const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd, readPreToolUseRawCommand(payload));
     blocked = !bashEvaluation.allowed;
     const canonicalStateCommand = canonicalizeOmxStateTransportCommand(command);
     const bashStateOperations = collectOmxStateCommandOperations(canonicalStateCommand, "write");
