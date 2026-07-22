@@ -2,7 +2,7 @@ import { appendFile, lstat, readFile, realpath, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import { isAbsolute, join, relative, win32 } from 'node:path';
-import { runNpmCommand, type PackageManagerOwnership } from './package-manager-ownership.js';
+import { isCompletePackageManagerOwnership, runNpmCommand, type PackageManagerOwnership } from './package-manager-ownership.js';
 import { writeUserInstallStamp } from '../scripts/postinstall-advisory.js';
 import { omxUserInstallStampPath } from '../utils/paths.js';
 
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     const serialized = await readFile(stagedPayload, 'utf-8');
     if (digest(serialized) !== expectedDigest) throw new Error('Frozen transaction payload fingerprint changed before execution.');
     payload = JSON.parse(serialized) as DeferredUpdatePayload;
-    if (!payload.ownership || !payload.ownership.packageRoot || !payload.ownership.environment) throw new Error('Frozen transaction payload is incomplete.');
+    if (!isCompletePackageManagerOwnership(payload.ownership)) throw new Error('Frozen transaction payload is incomplete.');
     await waitForParent(payload.parentPid);
     if (!await validateOwnership(payload.ownership)) throw new Error('Frozen manager, package root, or bin ownership validation failed before update.');
     const result = payload.ownership.manager === 'npm'

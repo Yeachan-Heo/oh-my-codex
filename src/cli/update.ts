@@ -20,6 +20,7 @@ import {
   resolvePersistedSetupMergeAgents,
 } from './setup-preferences.js';
 import {
+  isCompletePackageManagerOwnership,
   packageManagerOwnershipError,
   resolvePackageManagerOwnership,
   runNpmCommand,
@@ -353,17 +354,13 @@ export function runGlobalUpdate(
   }
   const installSource = installSourceOrSpawnProcess;
   const spawnProcess = typeof spawnProcessOrPlatform === 'function' ? spawnProcessOrPlatform : spawnSync;
+  if (!ownership || !isCompletePackageManagerOwnership(ownership)) {
+    return { ok: false, stderr: ownership ? 'The package-manager ownership transaction is incomplete.' : 'A validated package-manager ownership transaction is required before installing.' };
+  }
   if (installSource === DEV_INSTALL_SOURCE) {
-    if (!ownership) return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
     return ownership.manager === 'bun'
       ? { ok: false, stderr: 'Bun dev updates are not yet supported' }
       : runDevGlobalUpdate(ownership, spawnProcess);
-  }
-  if (!ownership) {
-    return { ok: false, stderr: 'A validated package-manager ownership transaction is required before installing.' };
-  }
-  if (!ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand) || (ownership.manager === 'bun' && (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot))) {
-    return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.' };
   }
   const result = ownership.manager === 'bun'
     ? spawnProcess(ownership.bunCommand, stableInstallArgs(ownership, installSource), {
@@ -448,7 +445,7 @@ export function runDeferredGlobalUpdate(
   ownership?: PackageManagerOwnership,
 ): RunDeferredUpdateResult {
   const logPath = join(cwd, '.omx', 'logs', formatUpdateLogPath());
-  if (!ownership || !ownership.npmPrefix || !ownership.packageRoot || !ownership.environment || (ownership.manager === 'npm' && !ownership.npmCommand) || (ownership.manager === 'bun' && (!ownership.bunInstallRoot || ownership.environment.BUN_INSTALL !== ownership.bunInstallRoot))) {
+  if (!isCompletePackageManagerOwnership(ownership)) {
     return { ok: false, stderr: 'The package-manager ownership transaction is incomplete.', logPath };
   }
   try {

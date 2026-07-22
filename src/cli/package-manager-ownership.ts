@@ -31,6 +31,41 @@ export type PackageManagerOwnership =
     environment: NodeJS.ProcessEnv;
   };
 
+/** Reject incomplete or malformed serialized ownership before any package-manager spawn. */
+export function isCompletePackageManagerOwnership(ownership: unknown): ownership is PackageManagerOwnership {
+  if (!ownership || typeof ownership !== 'object' || Array.isArray(ownership)) return false;
+  const candidate = ownership as Record<string, unknown>;
+  if (
+    typeof candidate.npmPrefix !== 'string' || !candidate.npmPrefix
+    || typeof candidate.globalInstallRoot !== 'string' || !candidate.globalInstallRoot
+    || typeof candidate.packageRoot !== 'string' || !candidate.packageRoot
+    || !candidate.environment || typeof candidate.environment !== 'object' || Array.isArray(candidate.environment)
+  ) return false;
+  if (candidate.manager === 'npm') {
+    const command = candidate.npmCommand;
+    if (!command || typeof command !== 'object' || Array.isArray(command)) return false;
+    const npmCommand = command as Record<string, unknown>;
+    const commandArgs = npmCommand.commandArgs;
+    return npmCommand.kind === 'node-script'
+      && typeof npmCommand.command === 'string'
+      && Boolean(npmCommand.command)
+      && Array.isArray(commandArgs)
+      && commandArgs.length > 0
+      && commandArgs.every((arg: unknown) => typeof arg === 'string' && Boolean(arg));
+  }
+  if (candidate.manager === 'bun') {
+    const environment = candidate.environment as Record<string, unknown>;
+    return typeof candidate.bunCommand === 'string'
+      && Boolean(candidate.bunCommand)
+      && typeof candidate.bunGlobalBin === 'string'
+      && Boolean(candidate.bunGlobalBin)
+      && typeof candidate.bunInstallRoot === 'string'
+      && Boolean(candidate.bunInstallRoot)
+      && environment.BUN_INSTALL === candidate.bunInstallRoot;
+  }
+  return false;
+}
+
 export interface PackageManagerOwnershipDependencies {
   currentExecutable: string;
   currentPackageRoot: string;

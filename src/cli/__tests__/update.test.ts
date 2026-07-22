@@ -1810,4 +1810,45 @@ describe('package-manager ownership', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('rejects malformed frozen npm and Bun ownership before spawning a manager or deferred worker', async () => {
+    const malformedOwners: PackageManagerOwnership[] = [
+      {
+        ...frozenNpmOwnership,
+        npmCommand: { kind: 'node-script', command: '/untrusted/npm-launcher', commandArgs: [] },
+      },
+      {
+        manager: 'bun',
+        bunCommand: '/untrusted/bun-launcher',
+        bunGlobalBin: '',
+        bunInstallRoot: '/configured/bun',
+        globalInstallRoot: '/configured/node_modules',
+        packageRoot: '/configured/node_modules/oh-my-codex',
+        npmPrefix: '/configured',
+        environment: { BUN_INSTALL: '/configured/bun' },
+      },
+    ];
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-malformed-frozen-ownership-'));
+    try {
+      for (const ownership of malformedOwners) {
+        const managerCalls: string[] = [];
+        const result = runGlobalUpdate('oh-my-codex@latest', ((command: string) => {
+          managerCalls.push(command);
+          return { status: 0, signal: null, error: undefined, stdout: '', stderr: '', output: [null, '', ''], pid: 0 };
+        }) as typeof import('node:child_process').spawnSync, 'linux', ownership);
+        assert.deepEqual(result, { ok: false, stderr: 'The package-manager ownership transaction is incomplete.' });
+        assert.deepEqual(managerCalls, []);
+
+        const workerCalls: string[] = [];
+        const deferred = runDeferredGlobalUpdate(cwd, ((command) => {
+          workerCalls.push(command);
+          return { once() { return this; }, unref() {} } as unknown as ReturnType<typeof import('node:child_process').spawn>;
+        }) as typeof import('node:child_process').spawn, 'linux', 12345, ownership);
+        assert.deepEqual(deferred.ok, false);
+        assert.deepEqual(workerCalls, []);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
