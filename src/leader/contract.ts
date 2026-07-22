@@ -329,6 +329,27 @@ function reasonFromCapabilityRecord(record: Record<string, unknown> | null): Nat
   return nativeSubagents === false ? 'native_subagents_unsupported' : 'multi_agent_v1_unavailable';
 }
 
+// Codex CLI can deliver the known dotted collaboration tool names in a
+// flattened form (the namespace dot is dropped), e.g. `collaboration.spawn_agent`
+// arrives as `collaborationspawn_agent`. Canonicalize ONLY the finite known
+// flattened names back to their dotted form so transport classification,
+// spawn/result recognition, and capability detection all key on one canonical
+// name. Unknown flattened names pass through unchanged and stay fail-closed.
+// Callers keep the original received name for diagnostics and persisted evidence.
+const FLATTENED_NATIVE_COLLABORATION_TOOL_NAMES: ReadonlyMap<string, string> = new Map([
+  ['collaborationspawn_agent', 'collaboration.spawn_agent'],
+  ['collaborationclose_agent', 'collaboration.close_agent'],
+  ['collaborationlist_agents', 'collaboration.list_agents'],
+  ['collaborationfollowup_task', 'collaboration.followup_task'],
+  ['collaborationwait_agent', 'collaboration.wait_agent'],
+  ['collaborationsend_message', 'collaboration.send_message'],
+  ['collaborationinterrupt_agent', 'collaboration.interrupt_agent'],
+]);
+
+export function canonicalizeNativeCollaborationToolName(name: string): string {
+  return FLATTENED_NATIVE_COLLABORATION_TOOL_NAMES.get(name) ?? name;
+}
+
 const NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN = /(?:^|\.)spawn_agent$/;
 
 // Recognizes native delegation spawn tools across terminology drift: bare
@@ -336,13 +357,15 @@ const NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN = /(?:^|\.)spawn_agent$/;
 // the current Codex App `collaboration.spawn_agent`, plus the legacy `task`
 // alias. The suffix anchor keeps `respawn_agent`/`spawn_agentx` from matching.
 export function isNativeSubagentSpawnToolName(name: string): boolean {
-  return NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN.test(name) || name === 'task';
+  const canonical = canonicalizeNativeCollaborationToolName(name);
+  return NATIVE_SUBAGENT_SPAWN_TOOL_PATTERN.test(canonical) || canonical === 'task';
 }
 
 const NATIVE_SUBAGENT_RESULT_TOOL_PATTERN = /(?:^|\.)(?:spawn_agent|list_agents|followup_task|wait_agent)$/;
 
 export function isNativeSubagentResultToolName(name: string): boolean {
-  return NATIVE_SUBAGENT_RESULT_TOOL_PATTERN.test(name) || name === 'task';
+  const canonical = canonicalizeNativeCollaborationToolName(name);
+  return NATIVE_SUBAGENT_RESULT_TOOL_PATTERN.test(canonical) || canonical === 'task';
 }
 
 function availableToolsEvidence(payload: Record<string, unknown> | null): NativeSubagentSupportEvidence | null {

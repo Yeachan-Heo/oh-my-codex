@@ -18,12 +18,15 @@ import {
   NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
   buildRoleRoutingUnavailableGuidance,
   buildUnsupportedNativeSubagentGuidance,
+  isNativeSubagentResultToolName,
+  isNativeSubagentSpawnToolName,
   isRoleRoutingUnavailableEvidence,
   isUnsupportedNativeSubagentEvidence,
   isUnsupportedNativeSubagentEvidenceForScope,
   type RoleRoutingUnavailableMarker,
   resolveNativeSubagentSupportStatus,
   parseNativeSubagentResultDisposition,
+  canonicalizeNativeCollaborationToolName,
   canonicalizeOriginCwd,
 } from '../contract.js';
 
@@ -233,6 +236,76 @@ describe('leader conductor contract', () => {
         persistedCapacityBlocker: { reason: 'agent_thread_limit_reached', expires_at: '2026-07-12T00:00:00.000Z' },
       }).reason,
       'agent_thread_limit_reached',
+    );
+  });
+
+  it('canonicalizes only the finite known flattened collaboration tool names', () => {
+    const known = new Map([
+      ['collaborationspawn_agent', 'collaboration.spawn_agent'],
+      ['collaborationclose_agent', 'collaboration.close_agent'],
+      ['collaborationlist_agents', 'collaboration.list_agents'],
+      ['collaborationfollowup_task', 'collaboration.followup_task'],
+      ['collaborationwait_agent', 'collaboration.wait_agent'],
+      ['collaborationsend_message', 'collaboration.send_message'],
+      ['collaborationinterrupt_agent', 'collaboration.interrupt_agent'],
+    ]);
+    for (const [flattened, dotted] of known) {
+      assert.equal(canonicalizeNativeCollaborationToolName(flattened), dotted);
+      assert.equal(canonicalizeNativeCollaborationToolName(dotted), dotted);
+    }
+    // Unknown or near-miss flattened names pass through unchanged (fail-closed).
+    for (const name of ['collaborationbogus_thing', 'collaborationspawn_agentx', 'xcollaborationspawn_agent', 'collaborationlist_agent', 'collaborationspawnagent', 'collaboration']) {
+      assert.equal(canonicalizeNativeCollaborationToolName(name), name);
+    }
+  });
+
+  it('recognizes flattened known collaboration spawn and result tool names', () => {
+    assert.equal(isNativeSubagentSpawnToolName('collaborationspawn_agent'), true);
+    for (const toolName of ['collaborationspawn_agent', 'collaborationlist_agents', 'collaborationfollowup_task', 'collaborationwait_agent']) {
+      assert.equal(isNativeSubagentResultToolName(toolName), true, toolName);
+    }
+    // close/send/interrupt keep dotted parity: they are not spawn or result tools.
+    for (const toolName of ['collaborationclose_agent', 'collaborationsend_message', 'collaborationinterrupt_agent']) {
+      assert.equal(isNativeSubagentSpawnToolName(toolName), false, toolName);
+      assert.equal(isNativeSubagentResultToolName(toolName), false, toolName);
+    }
+    // Unknown flattened names remain unrecognized.
+    for (const toolName of ['collaborationbogus_thing', 'collaborationspawn_agentx', 'collaborationlist_agent']) {
+      assert.equal(isNativeSubagentSpawnToolName(toolName), false, toolName);
+      assert.equal(isNativeSubagentResultToolName(toolName), false, toolName);
+    }
+  });
+
+  it('detects native subagent support from flattened available_tools names', () => {
+    assert.equal(
+      resolveNativeSubagentSupportStatus({ payload: { available_tools: ['Read', 'collaborationspawn_agent'] } }).status,
+      'supported',
+    );
+    assert.equal(
+      resolveNativeSubagentSupportStatus({ payload: { available_tools: [{ name: 'collaborationspawn_agent' }] } }).status,
+      'supported',
+    );
+    const companionsOnly = resolveNativeSubagentSupportStatus({
+      payload: { available_tools: ['collaborationfollowup_task', 'collaborationwait_agent'] },
+    });
+    assert.equal(companionsOnly.status, 'unknown');
+  });
+
+  it('parses flattened collaboration result dispositions like their dotted forms', () => {
+    for (const toolName of ['collaborationspawn_agent', 'collaborationlist_agents', 'collaborationfollowup_task', 'collaborationwait_agent']) {
+      assert.equal(
+        parseNativeSubagentResultDisposition(toolName, { success: true, status: 'completed', error: null }).kind,
+        'success',
+        toolName,
+      );
+    }
+    assert.equal(
+      parseNativeSubagentResultDisposition('collaborationspawn_agent', 'collab spawn failed: agent thread limit reached').kind,
+      'capacity',
+    );
+    assert.equal(
+      parseNativeSubagentResultDisposition('collaborationspawn_agent', 'unknown tool is unavailable').kind,
+      'unsupported',
     );
   });
 

@@ -20823,6 +20823,294 @@ PY`,
     }
   });
 
+  const writeFlattenedCollaborationRalplanFixture = async (cwd: string) => {
+    const stateDir = join(cwd, ".omx", "state");
+    const sessionId = "sess-flattened-collab-ralplan";
+    const leaderThreadId = "thread-flattened-collab-ralplan-leader";
+    const sessionDir = join(stateDir, "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeJson(join(stateDir, "session.json"), {
+      session_id: sessionId,
+      native_session_id: leaderThreadId,
+      cwd,
+    });
+    await writeJson(join(sessionDir, "skill-active-state.json"), {
+      version: 1,
+      active: true,
+      skill: "autopilot",
+      phase: "ralplan",
+      session_id: sessionId,
+      thread_id: leaderThreadId,
+      active_skills: [{
+        skill: "autopilot",
+        phase: "ralplan",
+        active: true,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+      }],
+    });
+    await writeJson(join(sessionDir, "autopilot-state.json"), {
+      active: true,
+      mode: "autopilot",
+      current_phase: "ralplan",
+      started_at: "2026-07-22T00:00:00.000Z",
+      updated_at: "2026-07-22T00:10:00.000Z",
+      session_id: sessionId,
+      thread_id: leaderThreadId,
+    });
+    await writeJson(join(stateDir, "subagent-tracking.json"), {
+      schemaVersion: 1,
+      sessions: {
+        [sessionId]: {
+          session_id: sessionId,
+          leader_thread_id: leaderThreadId,
+          updated_at: "2026-07-22T00:10:00.000Z",
+          threads: {
+            [leaderThreadId]: {
+              thread_id: leaderThreadId,
+              kind: "leader",
+              first_seen_at: "2026-07-22T00:00:00.000Z",
+              last_seen_at: "2026-07-22T00:10:00.000Z",
+              turn_count: 1,
+            },
+          },
+        },
+      },
+    });
+    return { sessionId, leaderThreadId, stateDir };
+  };
+
+  it("allows flattened known collaboration tools under active ralplan while unknown flattened names stay blocked", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-ralplan-"));
+    try {
+      const { sessionId, leaderThreadId } = await writeFlattenedCollaborationRalplanFixture(cwd);
+      for (const [tool_name, tool_input] of [
+        ["collaborationspawn_agent", { agent_type: "planner", message: "draft the plan" }],
+        ["collaborationlist_agents", {}],
+        ["collaborationfollowup_task", {}],
+        ["collaborationwait_agent", {}],
+        ["collaborationsend_message", {}],
+        ["collaborationinterrupt_agent", {}],
+        ["collaborationclose_agent", {}],
+      ] as const) {
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: leaderThreadId,
+          tool_name,
+          tool_input,
+        }, { cwd });
+        assert.equal(result.outputJson, null, tool_name);
+      }
+
+      const blocked = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        tool_name: "collaborationbogus_thing",
+        tool_input: {},
+      }, { cwd });
+      assert.equal(blocked.outputJson?.decision, "block");
+      const reason = String(blocked.outputJson?.reason ?? "");
+      assert.match(reason, /not a recognized read-only or explicitly authorized planning mutation transport/);
+      assert.match(reason, /collaborationbogus_thing/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("denies unknown typed roles dispatched through flattened spawn names", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-unknown-role-"));
+    try {
+      const { sessionId, leaderThreadId } = await writeFlattenedCollaborationRalplanFixture(cwd);
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        tool_name: "collaborationspawn_agent",
+        tool_input: { agent_type: "definitely-not-an-installed-role", message: "x" },
+      }, { cwd });
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(String(result.outputJson?.reason ?? ""), /unknown or not installed/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records native blockers from flattened collaboration spawn failures with the original tool name", async () => {
+    const capacityCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-capacity-"));
+    try {
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd: capacityCwd,
+        session_id: "sess-flattened-capacity",
+        thread_id: "thread-flattened-capacity",
+        turn_id: "turn-flattened-capacity",
+        tool_name: "collaborationspawn_agent",
+        tool_response: "collab spawn failed: agent thread limit reached",
+      }, { cwd: capacityCwd });
+      assert.equal(result.outputJson, null);
+      const blocker = JSON.parse(
+        await readFile(join(capacityCwd, ".omx", "state", "native-subagent-capacity-blocker.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(blocker.tool_name, "collaborationspawn_agent");
+      assert.match(String(blocker.error_summary), /agent thread limit reached/);
+    } finally {
+      await rm(capacityCwd, { recursive: true, force: true });
+    }
+
+    const supportCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-support-"));
+    try {
+      await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd: supportCwd,
+        session_id: "sess-flattened-support",
+        thread_id: "thread-flattened-support",
+        turn_id: "turn-flattened-support",
+        tool_name: "collaborationspawn_agent",
+        tool_response: { error: "unknown tool: collaborationspawn_agent is unavailable" },
+      }, { cwd: supportCwd });
+      const blocker = JSON.parse(
+        await readFile(join(supportCwd, ".omx", "state", "native-subagent-support.json"), "utf-8"),
+      ) as Record<string, unknown>;
+      assert.equal(blocker.tool_name, "collaborationspawn_agent");
+    } finally {
+      await rm(supportCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist support or capacity poison from successful flattened collaboration child output", async () => {
+    for (const toolName of [
+      "collaborationspawn_agent",
+      "collaborationlist_agents",
+      "collaborationfollowup_task",
+      "collaborationwait_agent",
+    ]) {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-success-"));
+      try {
+        await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-flattened-success",
+          thread_id: "thread-flattened-success",
+          tool_name: toolName,
+          tool_response: {
+            success: true,
+            status: "completed",
+            output: "Child completed. Optional packed plugin was unavailable, unsupported, and not found.",
+          },
+        }, { cwd });
+        const stateDir = join(cwd, ".omx", "state");
+        assert.equal(existsSync(join(stateDir, "native-subagent-support.json")), false, toolName);
+        assert.equal(existsSync(join(stateDir, "native-subagent-capacity-blocker.json")), false, toolName);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("blocks flattened close_agent cleanup after recent native subagent capacity exhaustion", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-capacity-close-block-"));
+    try {
+      await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd,
+        session_id: "sess-flattened-capacity-close-block",
+        thread_id: "thread-flattened-capacity-close-block",
+        turn_id: "turn-flattened-capacity-close-block",
+        tool_name: "collaborationspawn_agent",
+        tool_response: "collab spawn failed: agent thread limit reached",
+      }, { cwd });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "sess-flattened-capacity-close-block",
+        thread_id: "thread-flattened-capacity-close-block",
+        tool_name: "collaborationclose_agent",
+        tool_input: { target: "019ecc36-stale" },
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /capacity/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows session-scoped omx cancel under active ralplan without weakening state guards", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-ralplan-cancel-"));
+    try {
+      const { sessionId, leaderThreadId } = await writeFlattenedCollaborationRalplanFixture(cwd);
+      const bash = (command: string) => dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        tool_name: "Bash",
+        tool_input: { command },
+      }, { cwd });
+
+      assert.equal((await bash("omx cancel")).outputJson, null);
+      assert.equal((await bash("omx cancel --force")).outputJson, null);
+      assert.equal((await bash("FOO=bar omx cancel --force")).outputJson, null);
+
+      const chained = await bash("omx cancel --force && rm -rf x");
+      assert.equal(chained.outputJson?.decision, "block");
+
+      const unknownFlag = await bash("omx cancel --json");
+      assert.equal(unknownFlag.outputJson?.decision, "block");
+
+      for (const [label, command] of [
+        ["path override", "PATH=/tmp/attacker omx cancel"],
+        ["node preload override", "NODE_OPTIONS=--require=./payload.cjs omx cancel"],
+        ["path-qualified impostor", "/tmp/omx cancel --force"],
+        ["relative-path impostor", "./omx cancel"],
+        ["quoted pseudo-assignment", "'X=./payload' omx cancel"],
+        ["escaped pseudo-assignment", "X\\=./payload omx cancel"],
+        ["omx root override", "OMX_ROOT=/tmp/other omx cancel"],
+        ["omx state root override", "OMX_STATE_ROOT=/tmp/other omx cancel"],
+        ["omx team state root override", "OMX_TEAM_STATE_ROOT=/tmp/other omx cancel"],
+        ["omx session override", "OMX_SESSION_ID=other-session omx cancel"],
+        ["quoted executable", "\"omx\" cancel"],
+        ["semicolon operator in assignment", "FOO=bar;./payload omx cancel"],
+        ["command substitution in assignment", "FOO=$(./payload) omx cancel"],
+        ["backtick substitution in assignment", "FOO=`./payload` omx cancel"],
+        ["redirection in assignment", "FOO=bar>src/pwned omx cancel"],
+        ["and-operator in assignment", "FOO=bar&&./payload omx cancel"],
+        ["uppercase executable", "OMX cancel"],
+        ["unicode nbsp separator", "omx\u00a0cancel"],
+        ["newline between words", "omx\ncancel"],
+      ] as const) {
+        const impostor = await bash(command);
+        assert.equal(impostor.outputJson?.decision, "block", label);
+      }
+
+      // The direct-cancel scanner also rejects BOM and CR byte forms, so these
+      // never receive the cancellation exemption. They remain observable as
+      // ordinary unrecognized Bash invocations: the generic write-intent path
+      // sees no mutation in a nonexistent `\ufeffomx` executable or a
+      // `cancel\r` argument, which is the standard posture for unknown
+      // commands and not a cancellation authorization.
+      for (const [label, command] of [
+        ["byte-order-mark prefix", "\ufeffomx cancel"],
+        ["carriage-return suffix", "omx cancel\r"],
+      ] as const) {
+        const unrecognized = await bash(command);
+        assert.equal(unrecognized.outputJson, null, label);
+      }
+
+      const stateClear = await bash("omx state clear --force --mode ralplan --json");
+      assert.equal(stateClear.outputJson?.decision, "block");
+      assert.match(String(stateClear.outputJson?.reason ?? ""), /Autopilot planning is active \(phase: ralplan\)/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not persist native blockers from structured failures on unrelated tools", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-unrelated-structured-failure-"));
     try {

@@ -133,6 +133,7 @@ import {
   authorizeConductorAction,
   buildRoleRoutingUnavailableGuidance,
   buildUnsupportedNativeSubagentGuidance,
+  canonicalizeNativeCollaborationToolName,
   classifyConductorArtifactKind,
   isNativeSubagentSpawnToolName,
   isRoleRoutingUnavailableEvidence,
@@ -3716,7 +3717,7 @@ function inputContainsCloseAgentRequest(value: unknown): boolean {
 }
 
 function isCloseAgentToolUse(payload: CodexHookPayload): boolean {
-  const toolName = safeString(payload.tool_name).trim();
+  const toolName = canonicalizeNativeCollaborationToolName(safeString(payload.tool_name).trim());
   if (/\bclose_agent\b/i.test(toolName)) return true;
   if (/multi_tool_use\.parallel/i.test(toolName) && inputContainsCloseAgentRequest(payload.tool_input)) return true;
   return inputContainsCloseAgentRequest(payload.tool_input) && /multi_agent|agent|tool_use/i.test(toolName);
@@ -4886,10 +4887,12 @@ function classifyPreToolUseMutationTransport(
   if (READ_ONLY_PRETOOLUSE_TOOL_NAMES.has(toolName) || READ_ONLY_PRETOOLUSE_MCP_TOOL_NAMES.has(toolName)) {
     return "read-only";
   }
+  const canonicalToolName = canonicalizeNativeCollaborationToolName(toolName);
+
   if (
-    CONDUCTOR_ORCHESTRATION_TOOL_NAMES.has(toolName)
-    || toolName.startsWith("collaboration.")
-    || toolName.startsWith("multi_agent_v1.")
+    CONDUCTOR_ORCHESTRATION_TOOL_NAMES.has(canonicalToolName)
+    || canonicalToolName.startsWith("collaboration.")
+    || canonicalToolName.startsWith("multi_agent_v1.")
     || toolName.startsWith("mcp__omx_team__")
     || toolName.startsWith("mcp__omx_ultragoal__")
   ) {
@@ -8676,13 +8679,42 @@ function skipLiteralLeadingAssignments(words: string[]): number {
   return index;
 }
 
-function isDirectOmxCancelCommand(command: string): boolean {
-  if (!isSingleLiteralShellInvocation(command)) return false;
-  const words = literalInvocationWords(command);
-  const index = skipLiteralLeadingAssignments(words);
-  return commandNameFromShellWord(words[index] ?? "") === "omx"
-    && words[index + 1] === "cancel"
-    && words.slice(index + 2).every((word) => word === "");
+// Direct cancellation is recognized from the RAW command string with a
+// deliberately tiny ASCII grammar, not from normalized shell tokens:
+// quote/escape provenance decides whether a leading word is an assignment or
+// the executable, so a quoted or escaped pseudo-assignment such as
+// 'X=./payload' must never be skipped as a benign prefix, and shell control
+// grammar (`;`, `&`, `|`, redirection, `$()`, backticks) inside an assignment
+// value must never be skipped either. Separators are ASCII space/tab only and
+// the executable must be exactly lowercase `omx`, so the scanner's word
+// boundaries and executable identity are the shell's (no ECMAScript \s
+// Unicode whitespace, BOM, CR/LF, or case folding). OMX root/session
+// selectors are rejected so a presented cancellation cannot be redirected at
+// a different state tree.
+const DIRECT_OMX_CANCEL_LEADING_ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=[A-Za-z0-9_\-.,:\/+@%=]+$/;
+const DIRECT_OMX_CANCEL_REJECTED_ASSIGNMENT_NAMES = new Set([
+  "omx_root",
+  "omx_state_root",
+  "omx_team_state_root",
+  "omx_session_id",
+]);
+
+function isDirectOmxCancelCommand(command: string, options: { allowForce?: boolean } = {}): boolean {
+  // ASCII horizontal whitespace and printable characters only: no CR/LF/NUL,
+  // no BOM/NBSP/Unicode whitespace, no case-folded executable spelling.
+  if (!/^[\x09\x20-\x7E]*$/.test(command)) return false;
+  const words = command.replace(/^[ \t]+|[ \t]+$/g, "").split(/[ \t]+/).filter(Boolean);
+  let index = 0;
+  while (index < words.length) {
+    const assignment = DIRECT_OMX_CANCEL_LEADING_ASSIGNMENT_PATTERN.exec(words[index] ?? "");
+    if (!assignment) break;
+    if (DIRECT_OMX_CANCEL_REJECTED_ASSIGNMENT_NAMES.has((assignment[1] ?? "").toLowerCase())) return false;
+    index += 1;
+  }
+  const rest = words.slice(index);
+  if (rest[0] !== "omx" || rest[1] !== "cancel") return false;
+  const args = rest.slice(2);
+  return args.length === 0 || (options.allowForce === true && args.length === 1 && args[0] === "--force");
 }
 
 function isAllowedOmxCleanupDryRunCommand(command: string): boolean {
@@ -8944,6 +8976,14 @@ function isAllowedRalplanBashWrite(
   activeState: Record<string, unknown>,
   sessionId: string,
 ): boolean {
+  // Session-scoped cancellation is the owning session's documented recovery
+  // surface: it terminalizes workflow state without touching planning
+  // artifacts, so it stays available while ralplan is active (parity with the
+  // deep-interview boundary). The allow is limited to the bare `omx` token and
+  // rejects command-resolution/runtime environment overrides so a presented
+  // cancellation cannot smuggle a different executable or preload code.
+  if (isDirectOmxCancelCommand(command, { allowForce: true })
+    && !commandHasUnsafeLeadingRuntimeEnvironment(command)) return true;
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
