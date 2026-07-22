@@ -29,7 +29,7 @@ import {
 const PACKAGE_NAME = 'oh-my-codex';
 const frozenNpmOwnership: PackageManagerOwnership = {
   manager: 'npm',
-  npmCommand: { kind: 'direct', command: 'npm' },
+  npmCommand: { kind: 'node-script', command: process.execPath, commandArgs: ['/configured/npm-cli.js'] },
   npmPrefix: '/configured',
   globalInstallRoot: '/configured/node_modules',
   packageRoot: '/configured/node_modules/oh-my-codex',
@@ -1247,9 +1247,9 @@ describe('runImmediateUpdate failure diagnostics', () => {
 
       assert.equal(result.status, 'failed');
       assert.equal(refreshCalls, 0);
-      assert.match(logs.join('\n'), /Update failed while running npm install -g oh-my-codex@latest/);
+      assert.match(logs.join('\n'), /Update failed while running the selected npm transaction \(npm install -g oh-my-codex@latest\)/);
       assert.match(logs.join('\n'), /npm stderr: EPERM: file is locked/);
-      assert.match(logs.join('\n'), /npm install -g oh-my-codex@latest && omx setup/);
+      assert.match(logs.join('\n'), /ownership-safe recovery command: omx update/);
     } finally {
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
@@ -1613,7 +1613,7 @@ describe('package-manager ownership', () => {
       resolveNpmGlobalInstallRoot: () => roots.npm ?? null,
       resolveBunGlobalBin: () => roots.bunBin ?? null,
       resolveBunCommand: () => '/configured/runtime/bun',
-      resolveNpmCommand: () => ({ kind: 'direct' as const, command: 'npm' as const }),
+      resolveNpmCommand: () => ({ kind: 'node-script' as const, command: '/canonical/node', commandArgs: ['/canonical/npm-cli.js'] }),
       resolveNpmPrefix: () => '/configured',
       environment: { OMX_UPDATE_TEST: '1' },
     };
@@ -1624,11 +1624,11 @@ describe('package-manager ownership', () => {
       npm: '/configured/node_modules',
     })), {
       manager: 'npm',
-      npmCommand: { kind: 'direct', command: 'npm' },
+      npmCommand: { kind: 'node-script', command: '/canonical/node', commandArgs: ['/canonical/npm-cli.js'] },
       npmPrefix: '/configured',
       globalInstallRoot: '/configured/node_modules',
       packageRoot: '/configured/node_modules/oh-my-codex',
-      environment: { OMX_UPDATE_TEST: '1' },
+      environment: {},
     });
   });
 
@@ -1655,7 +1655,7 @@ describe('package-manager ownership', () => {
       globalInstallRoot: '/isolated/global',
       packageRoot: '/isolated/global/oh-my-codex',
       npmPrefix: '/isolated/global',
-      environment: { OMX_UPDATE_TEST: '1' },
+      environment: {},
     });
     assert.equal(npmCalls, 0, 'Bun ownership must not invoke npm.');
   });
@@ -1689,13 +1689,13 @@ describe('package-manager ownership', () => {
       npmPrefix: '/configured',
       environment: { OMX_UPDATE_TEST: '1' },
     };
-    const calls: string[] = [];
-    const spawnProcess = ((command: string) => {
-      calls.push(command);
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnProcess = ((command: string, args: string[]) => {
+      calls.push({ command, args });
       return { status: 0, stdout: '', stderr: '' };
     }) as typeof import('node:child_process').spawnSync;
     assert.deepEqual(runGlobalUpdate('oh-my-codex@latest', spawnProcess, 'linux', owner), { ok: true, stderr: '' });
-    assert.deepEqual(calls, ['/configured/runtime/bun']);
+    assert.deepEqual(calls, [{ command: '/configured/runtime/bun', args: ['add', '--global', '--ignore-scripts', 'oh-my-codex@latest'] }]);
     calls.length = 0;
     assert.deepEqual(runGlobalUpdate('github:Yeachan-Heo/oh-my-codex#dev', spawnProcess, 'linux', owner), {
       ok: false, stderr: 'Bun dev updates are not yet supported',

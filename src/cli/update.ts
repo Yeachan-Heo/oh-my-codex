@@ -7,9 +7,10 @@
  */
 
 import { readFile, writeFile, mkdir, realpath } from 'fs/promises';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, relative, isAbsolute } from 'path';
 import { tmpdir } from 'os';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline/promises';
@@ -213,7 +214,9 @@ function runLegacyNpmGlobalUpdate(
 }
 
 function stableInstallArgs(ownership: PackageManagerOwnership, installSource: string): string[] {
-  return ['install', '--global', '--ignore-scripts', '--no-audit', '--no-progress', '--prefix', ownership.npmPrefix!, installSource];
+  return ownership.manager === 'bun'
+    ? ['add', '--global', '--ignore-scripts', installSource]
+    : ['install', '--global', '--ignore-scripts', '--no-audit', '--no-progress', '--prefix', ownership.npmPrefix, installSource];
 }
 
 function runFrozenNpmInstall(
@@ -222,7 +225,7 @@ function runFrozenNpmInstall(
   options: SpawnSyncOptions,
   spawnProcess: SpawnSyncLike,
 ): ReturnType<SpawnSyncLike> {
-  return runNpmCommand(ownership.npmCommand!, stableInstallArgs(ownership, installSource), options, spawnProcess);
+  return runNpmCommand(ownership.npmCommand, stableInstallArgs(ownership, installSource), options, spawnProcess);
 }
 
 function commandFailure(stderr: unknown, status: number | null, label: string): RunGlobalUpdateResult {
@@ -489,12 +492,24 @@ export function runDeferredGlobalUpdate(
   }
   try {
     mkdirSync(dirname(logPath), { recursive: true });
-    const payloadPath = join(dirname(logPath), `${formatUpdateLogPath()}.payload.json`);
+    const stage = mkdtempSync(join(tmpdir(), 'omx-update-'));
+    chmodSync(stage, 0o700);
+    const payloadPath = join(stage, 'transaction.json');
     const payload: DeferredUpdatePayload = { cwd, logPath, parentPid, ownership, setupArgs: resolveSetupRefreshArgs(cwd) };
-    writeFileSync(payloadPath, JSON.stringify(payload), { encoding: 'utf-8', mode: 0o600 });
-    const workerPath = join(dirname(fileURLToPath(import.meta.url)), 'update-worker.js');
-    const child = spawnProcess(process.execPath, [workerPath, payloadPath], {
-      cwd, detached: true, env: { ...ownership.environment!, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'ignore', windowsHide: true,
+    const serialized = JSON.stringify(payload);
+    writeFileSync(payloadPath, serialized, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    const canonicalStage = realpathSync(stage);
+    const canonicalPayload = realpathSync(payloadPath);
+    const payloadStat = lstatSync(payloadPath);
+    if (canonicalPayload !== join(canonicalStage, 'transaction.json') || payloadStat.isSymbolicLink() || !payloadStat.isFile() || (payloadStat.mode & 0o077) !== 0) throw new Error('Deferred update payload is not a canonical owner-only staged file.');
+    const bundledWorker = join(dirname(fileURLToPath(import.meta.url)), 'update-worker.js');
+    const workerCandidate = existsSync(bundledWorker) ? bundledWorker : join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'cli', 'update-worker.js');
+    const workerPath = realpathSync(workerCandidate);
+    if (lstatSync(workerCandidate).isSymbolicLink() || !lstatSync(workerPath).isFile()) throw new Error('Deferred update worker is not a regular canonical file.');
+    const payloadFingerprint = createHash('sha256').update(readFileSync(canonicalPayload)).digest('hex');
+    const workerFingerprint = createHash('sha256').update(readFileSync(workerPath)).digest('hex');
+    const child = spawnProcess(process.execPath, [workerPath, payloadPath, payloadFingerprint, workerFingerprint], {
+      cwd, detached: true, env: { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'ignore', windowsHide: true,
     });
     child.once('error', (error) => {
       try {
@@ -519,7 +534,7 @@ function formatDeferredUpdateFailure(
     '[omx] Failed to schedule the deferred update.',
     stderr.trim() ? `[omx] scheduler error: ${stderr.trim()}` : undefined,
     logPath ? `[omx] Intended log: ${logPath}` : undefined,
-    `[omx] You can retry manually with: ${manager === 'bun' ? 'bun add -g' : 'npm install -g'} oh-my-codex@latest && omx setup`,
+    `[omx] Retry with the selected ${manager} owner through: omx update`,
   ].filter((line): line is string => typeof line === 'string').join('\n');
 }
 
@@ -540,10 +555,10 @@ function summarizeUpdateFailure(
   }
   const installCommand = `${manager === 'bun' ? 'bun add -g' : 'npm install -g'} ${installSource}`;
   return [
-    `[omx] Update failed while running ${installCommand}.`,
+    `[omx] Update failed while running the selected ${manager} transaction (${installCommand}).`,
     details ? `[omx] ${manager} stderr: ${details}` : undefined,
     logPath ? `[omx] Full log: ${logPath}` : undefined,
-    `[omx] You can retry manually with: ${installCommand} && omx setup`,
+    '[omx] Retry through the ownership-safe recovery command: omx update',
   ].filter((line): line is string => typeof line === 'string').join('\n');
 }
 
