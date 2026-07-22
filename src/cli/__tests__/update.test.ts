@@ -1279,7 +1279,8 @@ describe('deferred update worker', () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-'));
     const globalRoot = join(root, 'global');
     const packageRoot = join(globalRoot, PACKAGE_NAME);
-    const stage = join(root, 'stage');
+    const stage = join(root, 'omx-update-stage');
+
     const payloadPath = join(stage, 'transaction.json');
     const capturePath = join(root, 'setup-capture.json');
     const codexHome = join(root, 'codex-home');
@@ -1366,7 +1367,8 @@ describe('deferred update worker', () => {
 
   it('rejects a worker whose frozen identity digest no longer matches', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-integrity-'));
-    const stage = join(root, 'stage');
+    const stage = join(root, 'omx-update-integrity');
+
     const payloadPath = join(stage, 'transaction.json');
     const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
 
@@ -1390,7 +1392,8 @@ describe('deferred update worker', () => {
 
   it('rejects a signed deferred payload with an invalid parent transaction boundary', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-payload-'));
-    const stage = join(root, 'stage');
+    const stage = join(root, 'omx-update-payload');
+
     const payloadPath = join(stage, 'transaction.json');
     const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
 
@@ -1406,7 +1409,55 @@ describe('deferred update worker', () => {
       });
 
       assert.equal(result.status, 1, result.stderr);
-      await assert.rejects(readFile(stage), { code: 'ENOENT' });
+      assert.equal(await readFile(payloadPath, 'utf-8'), serialized);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a noncanonical payload path without removing its owner-only directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-noncanonical-'));
+    const stage = join(root, 'omx-update-noncanonical');
+    const payloadPath = join(stage, 'unrelated.json');
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
+
+    try {
+      await mkdir(stage, { recursive: true });
+      await chmod(stage, 0o700);
+      const serialized = '{}';
+      await writeFile(payloadPath, serialized, { mode: 0o600 });
+      const digest = (contents: string | Buffer) => createHash('sha256').update(contents).digest('hex');
+      const result = spawnSync(process.execPath, [workerPath, payloadPath, digest(serialized), digest(await readFile(workerPath))], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(await readFile(payloadPath, 'utf-8'), serialized);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an owner-only directory outside the scheduler staging namespace', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-foreign-stage-'));
+    const stage = join(root, 'foreign-stage');
+    const payloadPath = join(stage, 'transaction.json');
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'update-worker.js');
+
+    try {
+      await mkdir(stage, { recursive: true });
+      await chmod(stage, 0o700);
+      const serialized = '{}';
+      await writeFile(payloadPath, serialized, { mode: 0o600 });
+      const digest = (contents: string | Buffer) => createHash('sha256').update(contents).digest('hex');
+      const result = spawnSync(process.execPath, [workerPath, payloadPath, digest(serialized), digest(await readFile(workerPath))], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(await readFile(payloadPath, 'utf-8'), serialized);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

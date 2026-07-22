@@ -1,7 +1,8 @@
 import { appendFile, lstat, readFile, realpath, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
-import { isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
+
 import { isCompletePackageManagerOwnership, runNpmCommand, validatePackageManagerOwnership, type PackageManagerOwnership } from './package-manager-ownership.js';
 import { writeUserInstallStamp } from '../scripts/postinstall-advisory.js';
 import { omxUserInstallStampPath } from '../utils/paths.js';
@@ -55,7 +56,7 @@ async function ownerOnlyStage(stage: string): Promise<boolean> {
     const stat = await lstat(stage);
     if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
     // Windows does not expose POSIX mode/uid ownership through Node's stat data.
-    // The per-user temp directory and signed payload protect the Windows stage.
+    // Its per-user temp location is combined with canonical stage and frozen-payload validation.
     return process.platform === 'win32'
       || ((stat.mode & 0o077) === 0 && (typeof process.getuid !== 'function' || stat.uid === process.getuid()));
   } catch { return false; }
@@ -80,7 +81,7 @@ async function main(): Promise<void> {
   const payloadPath = process.argv[2];
   const expectedDigest = process.argv[3];
   let payload: DeferredUpdatePayload | null = null;
-  let stagedPayload: string | null = null;
+
   let stagedDirectory: string | null = null;
   try {
     const expectedWorkerDigest = process.argv[4];
@@ -88,15 +89,20 @@ async function main(): Promise<void> {
     const workerPath = await canonicalRegularFile(process.argv[1] ?? '', await realpath(join(process.argv[1] ?? '', '..')));
     if (!workerPath || digest(await readFile(workerPath, 'utf-8')) !== expectedWorkerDigest) throw new Error('Frozen update worker identity changed before execution.');
     const stage = await realpath(join(payloadPath, '..'));
-    if (!await ownerOnlyStage(stage)) throw new Error('Frozen transaction staging directory is not an owner-only stage.');
-    stagedDirectory = stage;
-    stagedPayload = await canonicalRegularFile(payloadPath, stage);
-    if (!stagedPayload) throw new Error('Frozen transaction payload is not a regular canonical staged file.');
+    if (!await ownerOnlyStage(stage) || !basename(stage).startsWith('omx-update-')) {
+      throw new Error('Frozen transaction staging directory is not an owner-only update stage.');
+    }
+    const stagedPayload = await canonicalRegularFile(payloadPath, stage);
+
+    if (!stagedPayload || stagedPayload !== join(stage, 'transaction.json')) {
+      throw new Error('Frozen transaction payload is not the canonical staged transaction file.');
+    }
     const serialized = await readFile(stagedPayload, 'utf-8');
     if (digest(serialized) !== expectedDigest) throw new Error('Frozen transaction payload fingerprint changed before execution.');
     const parsedPayload: unknown = JSON.parse(serialized);
     if (!isDeferredUpdatePayload(parsedPayload)) throw new Error('Frozen transaction payload is incomplete.');
     payload = parsedPayload;
+    stagedDirectory = stage;
     await waitForParent(payload.parentPid);
     if (!await validatePackageManagerOwnership(payload.ownership)) throw new Error('Frozen manager, package root, or bin ownership validation failed before update.');
     const result = payload.ownership.manager === 'npm'
@@ -113,7 +119,6 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   } finally {
     if (stagedDirectory) await rm(stagedDirectory, { recursive: true, force: true }).catch(() => undefined);
-    else if (stagedPayload) await rm(stagedPayload, { force: true }).catch(() => undefined);
   }
 }
 void main();
