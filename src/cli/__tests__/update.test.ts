@@ -1632,6 +1632,77 @@ describe('package-manager ownership', () => {
     });
   });
 
+  it('resolves a normal npm Node-shebang launch from its installed npm CLI without lifecycle provenance', async () => {
+    let npmCommand: Extract<PackageManagerOwnership, { manager: 'npm' }>['npmCommand'] | undefined;
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('npm', { npm: '/fake/npm/lib/node_modules' }),
+      currentExecutable: '/fake/npm/lib/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/npm/lib/node_modules/oh-my-codex',
+      currentNodeExecutable: '/fake/npm/bin/node',
+      resolveNpmCommand: () => null,
+      resolveNpmGlobalInstallRoot: (command) => {
+        npmCommand = command;
+        return '/fake/npm/lib/node_modules';
+      },
+      resolveNpmPrefix: () => '/fake/npm',
+      environment: {},
+    });
+    assert.deepEqual(npmCommand, {
+      kind: 'node-script', command: '/fake/npm/bin/node', commandArgs: ['/fake/npm/lib/node_modules/npm/bin/npm-cli.js'],
+    });
+    assert.deepEqual(ownership, {
+      manager: 'npm',
+      npmCommand: npmCommand!,
+      npmPrefix: '/fake/npm',
+      globalInstallRoot: '/fake/npm/lib/node_modules',
+      packageRoot: '/fake/npm/lib/node_modules/oh-my-codex',
+      environment: {},
+    });
+    assert.equal(await resolvePackageManagerOwnership({
+      ...ownershipDependencies('npm', { npm: '/fake/npm/lib/node_modules' }),
+      currentExecutable: '/fake/npm/lib/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/npm/lib/node_modules/oh-my-codex',
+      currentNodeExecutable: '/fake/npm/bin/node',
+      resolveNpmCommand: () => null,
+      realpath: (path) => {
+        if (path.endsWith('/npm/bin/npm-cli.js')) throw new Error('missing npm CLI');
+        return path;
+      },
+      environment: {},
+    }), null, 'missing installed npm CLI must fail closed');
+  });
+
+  it('resolves a normal Bun Node-shebang launch only from its configured install root and matching shim', async () => {
+    const ownership = await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
+      currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      bunInstallRoot: '/fake/bun',
+      resolveBunCommand: () => null,
+      environment: {},
+      realpath: (path) => (({
+        '/fake/bun/bin/omx': '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      } as Record<string, string>)[path] ?? path),
+    });
+    assert.deepEqual(ownership, {
+      manager: 'bun',
+      bunCommand: '/fake/bun/bin/bun',
+      bunGlobalBin: '/fake/bun/bin',
+      npmPrefix: '/fake/bun/install/global/node_modules',
+      globalInstallRoot: '/fake/bun/install/global/node_modules',
+      packageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      environment: {},
+    });
+    assert.equal(await resolvePackageManagerOwnership({
+      ...ownershipDependencies('bun', { bunBin: '/fake/bun/bin' }),
+      currentExecutable: '/fake/bun/install/global/node_modules/oh-my-codex/dist/cli/omx.js',
+      currentPackageRoot: '/fake/bun/install/global/node_modules/oh-my-codex',
+      resolveBunCommand: () => null,
+      bunInstallRoot: undefined,
+      environment: {},
+    }), null, 'missing configured Bun install root must fail closed');
+  });
+
   it('freezes Bun ownership from its configured bin and canonical omx shim without inferring a package root', async () => {
     let npmCalls = 0;
     const ownership = await resolvePackageManagerOwnership({

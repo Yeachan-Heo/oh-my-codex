@@ -41,6 +41,8 @@ export interface PackageManagerOwnershipDependencies {
   resolveNpmPrefix: (command: NpmCommand) => string | null;
   platform: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
+  currentNodeExecutable: string;
+  bunInstallRoot?: string;
 }
 
 const rootOptions: SpawnSyncOptions = {
@@ -96,18 +98,43 @@ export function resolveBunGlobalBin(command: string, spawnProcess: SpawnSyncLike
   return result.error || result.status !== 0 ? null : String(result.stdout || '').trim() || null;
 }
 
-/** Only accept Bun provenance from the current runtime or lifecycle launcher, never PATH. */
+/** Only accept Bun provenance from the current runtime, lifecycle launcher, or configured install root, never PATH. */
 export function resolveBunCommand(): string | null {
-  const candidates = [process.execPath, process.env.npm_execpath].filter((value): value is string => Boolean(value));
+  const candidates = [process.execPath, process.env.npm_execpath, process.env.BUN_INSTALL && join(process.env.BUN_INSTALL, 'bin', 'bun')]
+    .filter((value): value is string => Boolean(value));
   for (const candidate of candidates) {
     try {
       const resolved = realpathSync(candidate);
       if (/^bun(?:\.exe)?$/i.test(basename(resolved))) return resolved;
     } catch {
-      // A lifecycle hint must be a real Bun executable to be trusted.
+      // A provenance hint must be a real Bun executable to be trusted.
     }
   }
   return null;
+}
+
+function resolveInstalledNpmCommand(dependencies: Pick<PackageManagerOwnershipDependencies, 'currentNodeExecutable' | 'currentPackageRoot' | 'realpath'>): NpmCommand | null {
+  try {
+    const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
+    if (basename(packageRoot) !== 'oh-my-codex') return null;
+    const script = dependencies.realpath(join(dirname(packageRoot), 'npm', 'bin', 'npm-cli.js'));
+    return { kind: 'node-script', command: dependencies.realpath(dependencies.currentNodeExecutable), commandArgs: [script] };
+  } catch {
+    return null;
+  }
+}
+
+function resolveInstalledBunCommand(dependencies: Pick<PackageManagerOwnershipDependencies, 'bunInstallRoot' | 'currentPackageRoot' | 'realpath'>): string | null {
+  if (!dependencies.bunInstallRoot) return null;
+  try {
+    const installRoot = dependencies.realpath(dependencies.bunInstallRoot);
+    const packageRoot = dependencies.realpath(dependencies.currentPackageRoot);
+    if (packageRoot !== join(installRoot, 'install', 'global', 'node_modules', 'oh-my-codex')) return null;
+    const command = dependencies.realpath(join(installRoot, 'bin', 'bun'));
+    return /^bun(?:\.exe)?$/i.test(basename(command)) ? command : null;
+  } catch {
+    return null;
+  }
 }
 
 function transactionEnvironment(source: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
@@ -134,9 +161,9 @@ function matchesCurrentInstall(root: string, dependencies: Pick<PackageManagerOw
   }
 }
 
-function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependencies, 'currentExecutable' | 'currentPackageRoot' | 'environment' | 'platform' | 'realpath' | 'resolveBunGlobalBin' | 'resolveBunCommand'>): Extract<PackageManagerOwnership, { manager: 'bun' }> | null {
+function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependencies, 'bunInstallRoot' | 'currentExecutable' | 'currentPackageRoot' | 'environment' | 'platform' | 'realpath' | 'resolveBunGlobalBin' | 'resolveBunCommand'>): Extract<PackageManagerOwnership, { manager: 'bun' }> | null {
   try {
-    const command = dependencies.resolveBunCommand();
+    const command = dependencies.resolveBunCommand() ?? resolveInstalledBunCommand(dependencies);
     if (!command) return null;
     const bunCommand = dependencies.realpath(command);
     const configuredBin = dependencies.resolveBunGlobalBin(bunCommand);
@@ -155,11 +182,13 @@ function resolveBunOwnership(dependencies: Pick<PackageManagerOwnershipDependenc
 
 export async function resolvePackageManagerOwnership(dependencies: Partial<PackageManagerOwnershipDependencies> = {}): Promise<PackageManagerOwnership | null> {
   const resolved: PackageManagerOwnershipDependencies = {
-    currentExecutable: process.argv[1] ?? '', currentPackageRoot: process.cwd(), readInstallStamp: async () => null,
-    realpath: (path) => realpathSync(path), resolveBunGlobalBin, resolveBunCommand, resolveNpmCommand,
+    currentExecutable: process.argv[1] ?? '', currentPackageRoot: process.cwd(), currentNodeExecutable: process.execPath,
+    bunInstallRoot: process.env.BUN_INSTALL,
+    readInstallStamp: async () => null, realpath: (path) => realpathSync(path), resolveBunGlobalBin, resolveBunCommand,
     resolveNpmGlobalInstallRoot: (command) => resolveNpmGlobalInstallRoot(spawnSync, process.platform, command),
     resolveNpmPrefix: (command) => resolveNpmPrefix(spawnSync, process.platform, command),
     platform: process.platform, environment: process.env, ...dependencies,
+    resolveNpmCommand: dependencies.resolveNpmCommand ?? resolveNpmCommand,
   };
   if (!resolved.currentExecutable) return null;
   const stamp = await resolved.readInstallStamp();
@@ -171,7 +200,7 @@ export async function resolvePackageManagerOwnership(dependencies: Partial<Packa
       if (ownership) candidates.push(ownership);
       continue;
     }
-    const npmCommand = resolved.resolveNpmCommand();
+    const npmCommand = resolved.resolveNpmCommand() ?? resolveInstalledNpmCommand(resolved);
     if (!npmCommand) continue;
     try {
       const globalInstallRoot = resolved.realpath(resolved.resolveNpmGlobalInstallRoot(npmCommand) ?? '');
