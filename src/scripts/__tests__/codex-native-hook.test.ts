@@ -845,7 +845,7 @@ describe("codex native hook config", () => {
 	});
 });
 
-describe("codex native hook dispatch", () => {
+describe("codex native hook dispatch", { concurrency: false }, () => {
 	it("treats space-containing argv entry paths as the main module", () => {
 		const entryPath = "/tmp/omx native/codex-native-hook.js";
 
