@@ -1,5 +1,5 @@
-import { createReadStream, createWriteStream, readFileSync } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { createReadStream, readFileSync } from 'node:fs';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createGunzip } from 'node:zlib';
 import { PassThrough, Readable } from 'node:stream';
@@ -219,15 +219,20 @@ export async function writeSelectedNativeArchiveMember(archivePath: string, memb
   if (!selected) throw archiveError('archive_binary_missing', member);
   if (selected.size <= 0) throw archiveError('archive_binary_empty', member);
   const source = await streamSelectedNativeArchiveMember(archivePath, member);
+  const chunks: Buffer[] = [];
   let size = 0;
-  source.on('data', (chunk: Buffer) => { size += chunk.length; });
+  for await (const chunk of source) {
+    const bytes = Buffer.from(chunk);
+    chunks.push(bytes);
+    size += bytes.length;
+  }
   await mkdir(dirname(destinationPath), { recursive: true });
   try {
-    await pipeline(source, createWriteStream(destinationPath, { flags: 'wx' }));
     if (size !== selected.size) throw archiveError('archive_binary_size_mismatch', member);
+    await writeFile(destinationPath, Buffer.concat(chunks), { flag: 'wx' });
     return size;
   } catch (error) {
-    await rm(destinationPath, { force: true });
+    await rm(destinationPath, { force: true, maxRetries: 5, retryDelay: 50 });
     throw error;
   }
 }

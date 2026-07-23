@@ -596,7 +596,7 @@ describe('native archive policy', () => {
       ], 'omx-api'));
       assert.throws(() => selectNativeArchiveBinary([{ rawName: 'omx-api', normalizedName: 'omx-api', path: 'omx-api', type: 'file', size: 0 }], 'omx-api'));
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await rm(wd, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 });

@@ -271,10 +271,34 @@ export function resolveFallbackShellArgv(
   return [env.ComSpec?.trim() || 'cmd.exe', '/d', '/s', '/c', script];
 }
 
+function stripSparkShellWrapperOptions(args: readonly string[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index]!;
+    if (token === '--') return [...args.slice(index + 1)];
+    if (token === '--json' || token === '--since-last' || token.startsWith('--cache=')) {
+      index += 1;
+      continue;
+    }
+    if (token === '--budget' || token === '--cache-ttl-ms' || token === '--team' || token === '--worker') {
+      if (args[index + 1] === undefined) throw new Error(`${token} requires a value.\n${SPARKSHELL_USAGE}`);
+      index += 2;
+      continue;
+    }
+    if (token.startsWith('--budget=') || token.startsWith('--cache-ttl-ms=') || token.startsWith('--team=') || token.startsWith('--worker=')) {
+      index += 1;
+      continue;
+    }
+    return [...args.slice(index)];
+  }
+  return [];
+}
+
 export function parseSparkShellFallbackInvocation(
   args: readonly string[],
   options: ParseSparkShellFallbackOptions = {},
 ): SparkShellFallbackInvocation {
+  args = stripSparkShellWrapperOptions(args);
   if (args.length === 0) {
     throw new Error(`Missing command to run.\n${SPARKSHELL_USAGE}`);
   }

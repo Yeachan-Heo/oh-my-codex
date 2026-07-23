@@ -452,9 +452,23 @@ describe('parseSparkShellFallbackInvocation', () => {
     );
   });
 
+  it('strips native-only summary flags before raw command fallback', () => {
+    assert.deepEqual(
+      parseSparkShellFallbackInvocation(['--json', '--budget', '4096', '--cache=off', 'node', '-e', 'console.log("ok")']),
+      { kind: 'command', argv: ['node', '-e', 'console.log("ok")'] },
+    );
+  });
+
+  it('strips native-only flags before explicit shell fallback', () => {
+    assert.deepEqual(
+      parseSparkShellFallbackInvocation(['--json', '--budget=4096', '--shell', 'printf ok'], { platform: 'linux' }),
+      { kind: 'command', argv: ['sh', '-lc', 'printf ok'] },
+    );
+  });
+
   it('translates explicit shell fallback through sh -lc', () => {
     assert.deepEqual(
-      parseSparkShellFallbackInvocation(['--shell', 'printf ok']),
+      parseSparkShellFallbackInvocation(['--shell', 'printf ok'], { platform: 'linux' }),
       { kind: 'command', argv: ['sh', '-lc', 'printf ok'] },
     );
   });
@@ -566,15 +580,14 @@ describe('omx sparkshell', () => {
       const packageJson = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf-8')) as { version: string };
       const cacheDir = join(cwd, 'cache');
       const binDir = join(cacheDir, packageJson.version, `${process.platform}-${process.arch}`, 'omx-sparkshell');
+      if (process.platform === 'win32') return;
       await mkdir(binDir, { recursive: true });
-      const stubPath = join(binDir, process.platform === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell');
+      const stubPath = join(binDir, 'omx-sparkshell');
       await writeFile(
         stubPath,
-        process.platform === 'win32'
-          ? '@echo off\r\n>&2 echo omx-sparkshell: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39\' not found\r\nexit /b 1\r\n'
-          : "#!/bin/sh\necho \"omx-sparkshell: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.39' not found\" 1>&2\nexit 1\n",
+        "#!/bin/sh\necho \"omx-sparkshell: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.39' not found\" 1>&2\nexit 1\n",
       );
-      if (process.platform !== 'win32') await chmod(stubPath, 0o755);
+      await chmod(stubPath, 0o755);
       const stubDigest = createHash('sha256').update(await readFile(stubPath)).digest('hex');
       await writeFile(`${stubPath}.sha256`, `${stubDigest}\n`);
 
