@@ -1,7 +1,8 @@
 # Multi-state transition compatibility contract
 
-This document freezes the first-pass peer workflow state model for the approved
-multi-state compatibility rollout from `.omx/plans/prd-multi-state-compat.md`.
+This document defines the peer workflow state model introduced by the approved
+multi-state compatibility rollout from `.omx/plans/prd-multi-state-compat.md`
+and records later-approved overlap extensions.
 
 ## Canonical sources of truth
 
@@ -15,13 +16,20 @@ fields such as `skill` or `phase` may remain as compatibility metadata, but they
 must not override the authoritative active set when multiple workflow members
 are live.
 
-## Approved first-pass combinations
+## First-pass combinations and later extensions
 
-Allowed active-set shapes in this rollout are intentionally narrow:
+The first-pass rollout approved these intentionally narrow active-set shapes:
 
 - standalone single-workflow state for tracked workflows
 - `team + ralph`
 - `team + ultrawork`
+
+A later approval added this pairwise overlap:
+
+- `team + ultragoal`
+
+For `team + ultragoal`, Ultragoal retains leader-owned durable goal and ledger
+state while Team supplies parallel execution evidence.
 
 The resulting active set is peer state. Neither member is semantically primary
 just because it was activated first or happens to occupy the legacy top-level
@@ -109,8 +117,10 @@ Implementation should be considered complete only when tests prove:
 1. canonical active state can hold a multi-entry active set
 2. `team + ralph` is allowed in both activation orders
 3. `team + ultrawork` is allowed in both activation orders
-4. unsupported overlaps deny without mutation
-5. denial messages mention both `omx state` and `omx_state.*`
-6. HUD / overlay / stop-hook consumers honor the combined set consistently
-7. `autopilot` and `autoresearch` still reject unsupported overlap attempts; Autopilot review-driven planning loopbacks keep `autopilot` active and update its `current_phase` to `ralplan` instead of starting standalone `ralplan`
-8. `deep-interview -> ralplan` is evidence-gated: answered or handoff-cleared question obligations alone do not complete deep-interview, and Autopilot `ralplan -> ultragoal` remains blocked with `documented_host_consensus_receipt_unavailable` until an official non-user-mintable host receipt verifier exists; native lanes, trackers, `codex_exec`, and artifact approvals are non-authoritative.
+4. `team + ultragoal` is allowed in both activation orders and persists both peers in session-scoped canonical state
+5. `ultrawork` can join `team + ultragoal` without auto-completing either peer
+6. unsupported overlaps deny without mutation
+7. denial messages mention both `omx state` and `omx_state.*`
+8. HUD / overlay / stop-hook consumers honor the combined set consistently
+9. `autopilot` and `autoresearch` still reject unsupported overlap attempts; Autopilot review-driven planning loopbacks keep `autopilot` active and update its `current_phase` to `ralplan` instead of starting standalone `ralplan`
+10. `deep-interview -> ralplan` is evidence-gated: answered or handoff-cleared question obligations alone do not complete deep-interview, and Autopilot `ralplan -> ultragoal` remains blocked with `documented_host_consensus_receipt_unavailable` until an official non-user-mintable host receipt verifier exists; native lanes, trackers, `codex_exec`, and artifact approvals are non-authoritative.
