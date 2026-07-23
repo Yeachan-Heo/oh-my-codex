@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import {
 	chmod,
@@ -2176,6 +2176,26 @@ PY`,
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
+	});
+
+	it("drains oversized stdin without breaking the parent writer pipe", async () => {
+		const child = spawn(process.execPath, [nativeHookScriptPath()], {
+			stdio: ["pipe", "ignore", "ignore"],
+		});
+		const payload = JSON.stringify({
+			hook_event_name: "UserPromptSubmit",
+			prompt: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES * 2),
+		});
+		const exitCode = new Promise<number | null>((resolve) => {
+			child.once("close", resolve);
+		});
+		const writeError = await new Promise<Error | null>((resolve) => {
+			child.stdin.once("error", resolve);
+			child.stdin.end(payload, () => resolve(null));
+		});
+
+		assert.equal(writeError, null);
+		assert.equal(await exitCode, 0);
 	});
 
 	it("blocks oversized Stop stdin when current session autopilot is active", async () => {

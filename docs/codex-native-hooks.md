@@ -29,6 +29,10 @@ Project-scoped resume and search discovery include generated runtime homes under
 
 `omx doctor` can confirm that these files exist and are shaped correctly. It does not prove that the same shell/profile can complete an authenticated Codex request; use `codex login status` plus a real `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"` smoke test for that boundary.
 
+The native hook CLI retains at most 1 MiB of stdin for parsing. It still drains
+the complete stream when that limit is exceeded so Codex can finish writing the
+event payload without receiving `EPIPE`.
+
 ## Ownership split
 
 - **Plugin-scoped Codex hooks**: `plugins/oh-my-codex/hooks/hooks.json` for plugin installs on Codex versions with `[features].plugin_hooks`

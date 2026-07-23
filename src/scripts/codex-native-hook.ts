@@ -21013,8 +21013,7 @@ async function readStdinJson(): Promise<NativeHookCliReadResult> {
       const remaining = Math.max(0, MAX_NATIVE_STDIN_JSON_BYTES - (totalBytes - buffer.byteLength));
       if (remaining > 0) chunks.push(Buffer.from(buffer.subarray(0, remaining)));
       oversized = true;
-      process.stdin.destroy();
-      break;
+      continue;
     }
     chunks.push(buffer);
   }
