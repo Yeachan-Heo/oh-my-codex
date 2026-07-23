@@ -1,6 +1,6 @@
 import { describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -2477,12 +2477,71 @@ exit 0
         leaderPid: ready.leaderPid,
         paneId: '%3202',
         finalized: true,
+        exitStatus: 0,
       });
       assert.equal(existsSync(join(wd, '.omx', 'state', 'session.json')), false);
       assert.equal(existsSync(join(wd, '.omx', 'state', 'detached-active-record.json')), false);
       assert.equal(existsSync(readyPath), true);
       await rm(readyPath, { force: true });
       assert.match(await readFile(join(wd, '.omx', 'logs', 'session-history.jsonl'), 'utf-8'), new RegExp(sessionId));
+    } finally {
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    }
+  });
+
+  it('returns the attached client to the shell with the child status after a normal detached child exit', async (t) => {
+    if (!skipUnlessPrivateRealTmux(t)) return;
+    if (process.platform === 'win32') { t.skip('PTY launch harness requires posix script(1)'); return; }
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-detached-e2e-'));
+    try {
+      await withTempTmuxSession(async (fixture) => {
+        const home = join(wd, 'home');
+        const bin = join(wd, 'bin');
+        await mkdir(home, { recursive: true });
+        await mkdir(bin, { recursive: true });
+        // The PTY is required for detached attach behavior, but it would also
+        // trigger OMX's unrelated one-time interactive star prompt. Mark it
+        // handled so this harness deterministically exercises only launch exit.
+        await mkdir(join(home, '.omx', 'state'), { recursive: true });
+        await writeFile(join(home, '.omx', 'state', 'star-prompt.json'), '{"prompted_at":"2026-01-01T00:00:00.000Z"}\n');
+        await fixture.createPathShim(bin);
+        const omxBin = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'cli', 'omx.js');
+        const runPtyLaunch = (childExitStatus: number, remainOnExit: string): { status: number | null; output: string } => {
+          writeFileSync(join(bin, 'codex'), `#!/bin/sh\nsleep 1\nexit ${childExitStatus}\n`, { mode: 0o755 });
+          // Simulate a user tmux config that would retain the dead leader pane.
+          fixture.run(['set-option', '-g', 'remain-on-exit', remainOnExit]);
+          const envPrefix = [
+            `HOME=${JSON.stringify(home)}`,
+            `PATH=${JSON.stringify(bin)}:$PATH`,
+            'OMX_AUTO_UPDATE=0',
+            'OMX_NOTIFY_FALLBACK=0',
+            'OMX_HOOK_DERIVED_SIGNALS=0',
+            'TERM=xterm-256color',
+          ].map((kv) => `export ${kv}`).join('; ');
+          const result = spawnSync(
+            'script',
+            ['-q', '-e', '-c', `${envPrefix}; cd ${JSON.stringify(wd)} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(omxBin)} --tmux ${JSON.stringify('e2e prompt')}`, '/dev/null'],
+            {
+              encoding: 'utf-8',
+              timeout: 120_000,
+              killSignal: 'SIGKILL',
+              env: buildRunOmxEnv({ TMUX: '', TMUX_PANE: '' }),
+            },
+          );
+          return { status: result.status, output: `${result.stdout || ''}\n${result.stderr || ''}` };
+        };
+        const listOmxSessions = (): string[] => fixture.run(['list-sessions', '-F', '#{session_name}'])
+          .split('\n')
+          .filter((name) => name.startsWith('omx-') && name !== fixture.sessionName);
+
+        const zero = runPtyLaunch(0, 'on');
+        assert.equal(zero.status, 0, `zero-status attached launch must return to the shell successfully:\n${zero.output}`);
+        assert.deepEqual(listOmxSessions(), [], 'zero-status exit must destroy the owned detached session despite remain-on-exit=on');
+
+        const seven = runPtyLaunch(7, 'failed');
+        assert.equal(seven.status, 7, `nonzero child status must propagate to the invoking shell:\n${seven.output}`);
+        assert.deepEqual(listOmxSessions(), [], 'nonzero exit must destroy the owned detached session despite remain-on-exit=failed');
+      });
     } finally {
       await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }

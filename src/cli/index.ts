@@ -4708,6 +4708,8 @@ interface DetachedLeaderReport {
   leaderPid?: number;
   error?: string;
   finalized?: boolean;
+  exitStatus?: number;
+  hud?: DetachedHudAuthority;
 }
 
 function writeDetachedLeaderReport(path: string, report: DetachedLeaderReport): void {
@@ -4747,12 +4749,72 @@ function readDetachedLeaderReport(path: string): DetachedLeaderReport | undefine
       typeof report.nonce !== "string" || typeof report.sessionId !== "string" || typeof report.sessionName !== "string") return undefined;
     if (report.paneId !== undefined && typeof report.paneId !== "string") return undefined;
     if (report.leaderPid !== undefined && (!Number.isSafeInteger(report.leaderPid) || Number(report.leaderPid) <= 0)) return undefined;
+    if (report.exitStatus !== undefined && (!Number.isSafeInteger(report.exitStatus) || Number(report.exitStatus) < 0 || Number(report.exitStatus) > 255)) return undefined;
     return report as unknown as DetachedLeaderReport;
   } catch { return undefined; }
 }
 
-function publishDetachedReleaseMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string, leaderPid: number): void {
-  writeDetachedLeaderReport(`${releaseMarkerPath}.release`, { version: 1, kind: "release", nonce, sessionId, sessionName, leaderPid });
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function publishDetachedReleaseMarker(
+  releaseMarkerPath: string,
+  nonce: string,
+  sessionId: string,
+  sessionName: string,
+  leaderPid: number,
+  hud?: DetachedHudAuthority,
+): void {
+  writeDetachedLeaderReport(`${releaseMarkerPath}.release`, {
+    version: 1, kind: "release", nonce, sessionId, sessionName, leaderPid, ...(hud ? { hud } : {}),
+  });
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function applyDetachedTerminalExitStatus(
+  releaseMarkerPath: string,
+  expected: { nonce: string; sessionId: string; sessionName: string; leaderPid: number },
+): boolean {
+  const report = readDetachedLeaderReport(releaseMarkerPath);
+  if (!report || report.kind !== "terminal" || report.finalized !== true) return false;
+  if (report.nonce !== expected.nonce || report.sessionId !== expected.sessionId ||
+      report.sessionName !== expected.sessionName || report.leaderPid !== expected.leaderPid) return false;
+  if (typeof report.exitStatus !== "number") return false;
+  process.exitCode = report.exitStatus;
+  return true;
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function probeExactDetachedSessionExists(authority: DetachedLeaderAuthority | null): boolean | undefined {
+  if (!authority) return undefined;
+  try {
+    // A retained dead pane (remain-on-exit) keeps its pid/topology, so prove
+    // liveness first: a dead leader with no valid terminal report is a failure,
+    // never a manual detach.
+    const paneDead = execTmuxFileSync(
+      ["display-message", "-p", "-t", authority.paneId, "#{pane_dead}"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    if (paneDead === "1") return false;
+    if (paneDead !== "0") return undefined;
+    // Re-capture the exact leader-pane topology the bootstrap authority recorded.
+    // A matching recapture proves the owned session and its leader survive (manual
+    // detach); a destroyed session, recycled pane id, or tmux error fails closed.
+    const current = captureDetachedLeaderAuthority(authority.paneId, authority.sessionName, authority.ownerId);
+    return current.panePid === authority.panePid && current.sessionId === authority.sessionId
+      && current.sessionCreated === authority.sessionCreated && current.windowId === authority.windowId
+      && current.windowIndex === authority.windowIndex;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function resolveDetachedAttachExitStatus(
+  releaseMarkerPath: string,
+  expected: { nonce: string; sessionId: string; sessionName: string; leaderPid: number },
+  probe: { exactSessionExists: () => boolean | undefined },
+): "applied" | "manual-detach" | "protocol-failure" {
+  if (applyDetachedTerminalExitStatus(releaseMarkerPath, expected)) return "applied";
+  return probe.exactSessionExists() === true ? "manual-detach" : "protocol-failure";
 }
 
 function publishDetachedAbortMarker(releaseMarkerPath: string, nonce: string, sessionId: string, sessionName: string, leaderPid: number): void {
@@ -6049,6 +6111,7 @@ async function runCodex(
     let detachedParentEnvFilePath: string | undefined;
     let detachedLeaderPaneId: string | null = null;
     let detachedLeaderAuthority: DetachedLeaderAuthority | null = null;
+    let detachedHudAuthority: DetachedHudAuthority | null = null;
     let detachedLeaderPid: number | null = null;
 
     let attachStep: DetachedSessionTmuxStep | null = null;
@@ -6086,14 +6149,18 @@ async function runCodex(
               runDetachedLeaderMutation(authority, step.args, false);
               runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
               runDetachedLeaderMutation(authority, ["set-option", "-pq", "-t", authority.paneId, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
+              // #3266: the owned leader pane must close with its process so a normal
+              // child exit destroys the session naturally even when the user's tmux
+              // config inherits remain-on-exit=on/failed.
+              runDetachedLeaderMutation(authority, ["set-option", "-pq", "-t", authority.paneId, "remain-on-exit", "off"]);
               continue;
             }
             if (step.name !== "split-and-capture-hud-pane") {
               throw new Error(`unexpected detached bootstrap mutation: ${step.name}`);
             }
-            const hudAuthority = runDetachedLeaderSplit(authority, step.args);
+            detachedHudAuthority = runDetachedLeaderSplit(authority, step.args);
             for (const finalizeStep of buildDetachedSessionFinalizeSteps(
-              authority.sessionName, hudAuthority.paneId, authority.windowIndex, process.env.OMX_MOUSE !== "0",
+              authority.sessionName, detachedHudAuthority.paneId, authority.windowIndex, process.env.OMX_MOUSE !== "0",
               nativeWindows, detachedPreflight.shouldAttach, authority.paneId,
             )) {
               if (finalizeStep.name === "attach-session") { attachStep = finalizeStep; continue; }
@@ -6104,7 +6171,7 @@ async function runCodex(
                 "schedule-delayed-resize",
                 "reconcile-hud-resize",
               ]).has(finalizeStep.name);
-              if (targetsHudPane) runDetachedHudMutation(authority, hudAuthority, guardDetachedHudDeferredMutation(authority, hudAuthority, finalizeStep.args));
+              if (targetsHudPane) runDetachedHudMutation(authority, detachedHudAuthority, guardDetachedHudDeferredMutation(authority, detachedHudAuthority, finalizeStep.args));
               else runDetachedLeaderMutation(authority, finalizeStep.args);
             }
           } catch (error) {
@@ -6113,7 +6180,7 @@ async function runCodex(
         }
         return undefined;
       };
-      await executeDetachedLaunchStateMachine(
+      const launchTerminal = await executeDetachedLaunchStateMachine(
         { preflight: detachedPreflight },
         {
           establish: bootstrapLeader,
@@ -6171,7 +6238,7 @@ async function runCodex(
           finalizeSetupFailure: async () => {},
           releaseBarrier: async () => {
             if (!detachedLeaderPid) throw new Error("detached leader PID missing before release");
-            publishDetachedReleaseMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName, detachedLeaderPid);
+            publishDetachedReleaseMarker(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName, detachedLeaderPid, detachedHudAuthority ?? undefined);
           },
           abortAndAwaitFinalization: async () => {
             // The leader has the retained binding. Publishing abort is the only
@@ -6227,6 +6294,21 @@ async function runCodex(
           },
         },
       );
+      if (launchTerminal.kind === "attached" && detachedLeaderPid) {
+        // #3266: propagate the finalized detached child's exit status to the invoking shell.
+        // A rejected status protocol is only benign when the exact owned session
+        // provably survives (manual detach); a destroyed or ambiguous session with
+        // no authenticated finalized status is a protocol failure, never silent success.
+        const attachResolution = resolveDetachedAttachExitStatus(
+          releaseMarkerPath,
+          { nonce: detachedLaunchNonce, sessionId, sessionName, leaderPid: detachedLeaderPid },
+          { exactSessionExists: () => probeExactDetachedSessionExists(detachedLeaderAuthority) },
+        );
+        if (attachResolution === "protocol-failure") {
+          process.stderr.write("[omx] detached session ended without an authenticated finalized terminal status; treating the launch as failed.\n");
+          if (!process.exitCode) process.exitCode = 1;
+        }
+      }
       return { postLaunchHandledExternally: true };
     };
 
@@ -6428,11 +6510,40 @@ function decodeDetachedLeaderPayload(encoded: string | undefined): DetachedLeade
   };
 }
 
+function parseDetachedHudAuthorityProof(value: unknown): DetachedHudAuthority | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const proof = value as Record<string, unknown>;
+  if (typeof proof.paneId !== "string" || !/^%[0-9]+$/.test(proof.paneId)) return undefined;
+  if (typeof proof.panePid !== "number" || !Number.isSafeInteger(proof.panePid) || proof.panePid <= 0) return undefined;
+  if (typeof proof.sessionId !== "string" || !/^\$[0-9]+$/.test(proof.sessionId)) return undefined;
+  if (typeof proof.windowId !== "string" || !/^@[0-9]+$/.test(proof.windowId)) return undefined;
+  if (typeof proof.operationMarker !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(proof.operationMarker)) return undefined;
+  return { paneId: proof.paneId, panePid: proof.panePid, sessionId: proof.sessionId, windowId: proof.windowId, operationMarker: proof.operationMarker };
+}
+
+function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLeaderPayload, hudProof: DetachedHudAuthority | undefined): void {
+  // #3266: on a normal child exit, kill exactly the bootstrap-proven OMX HUD pane so
+  // the leader pane becomes the last live pane and the owned session closes naturally,
+  // returning the attached client to its shell. Fail-closed: any doubt means zero mutations.
+  // Contract: only the proven HUD is removed. A pane the user added to the detached
+  // session is deliberately preserved, which intentionally keeps that session (and any
+  // attached client) alive; natural closure and shell return happen only when no other
+  // panes remain.
+  if (!hudProof) return;
+  try {
+    const leaderAuthority = captureDetachedLeaderAuthority(leaderPaneId, payload.sessionName, payload.sessionId);
+    runDetachedHudMutation(leaderAuthority, hudProof, ["kill-pane", "-t", hudProof.paneId]);
+  } catch (error) {
+    logCliOperationFailure(error);
+  }
+}
+
 async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise<void> {
   for (const [key, value] of Object.entries(payload.parentEnv ?? {})) process.env[key] = value;
   const established = await establishPreLaunchBinding(payload.cwd, payload.sessionId);
   const binding = established.binding;
   let ownedRecord: DetachedActiveRecordOwnership | undefined;
+  let detachedHudProof: DetachedHudAuthority | undefined;
   const nonce = payload.readyPath?.split(".").at(-2) || payload.sessionId;
   const contextKey = process.env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
   const activeRecordPath = contextKey
@@ -6488,7 +6599,10 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       while (true) {
         if (interrupted) throw new Error(`detached leader interrupted before release: ${interrupted}`);
         const release = readDetachedLeaderReport(releasePath);
-        if (release?.kind === "release" && release.nonce === nonce && release.sessionId === payload.sessionId && release.sessionName === payload.sessionName && release.leaderPid === process.pid) break;
+        if (release?.kind === "release" && release.nonce === nonce && release.sessionId === payload.sessionId && release.sessionName === payload.sessionName && release.leaderPid === process.pid) {
+          detachedHudProof = parseDetachedHudAuthorityProof(release.hud);
+          break;
+        }
         const abort = readDetachedLeaderReport(abortPath);
         if (abort?.kind === "abort" && abort.nonce === nonce && abort.sessionId === payload.sessionId && abort.sessionName === payload.sessionName && abort.leaderPid === process.pid) {
           throw new Error("detached launch aborted before release");
@@ -6553,12 +6667,16 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "terminal", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
       paneId: pane, leaderPid: process.pid, finalized: true,
+      ...(typeof process.exitCode === "number" ? { exitStatus: process.exitCode } : {}),
     });
     await cleanupRuntimeCodexHome(payload.runtimeCodexHomeForCleanup, payload.projectLocalCodexHomeForCleanup);
     if (ownedRecord) {
       const bytes = readFileSync(activeRecordPath, "utf-8");
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (bytes === ownedRecord.bytes && digest === ownedRecord.digest) rmSync(activeRecordPath, { force: true });
+    }
+    if (!externalInterrupt && outcome.signal === null) {
+      teardownDetachedOwnedHudPane(pane, payload, detachedHudProof);
     }
   } catch (error) {
     let failure: unknown = error;
