@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 function readCiWorkflow(): string {
   const workflowPath = join(process.cwd(), '.github', 'workflows', 'ci.yml');
   assert.equal(existsSync(workflowPath), true, `missing workflow: ${workflowPath}`);
-  return readFileSync(workflowPath, 'utf-8');
+  return readFileSync(workflowPath, 'utf-8').replace(/\r\n/g, '\n');
 }
 
 function jobBlock(workflow: string, jobName: string): string {

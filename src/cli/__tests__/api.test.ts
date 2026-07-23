@@ -227,17 +227,10 @@ describe('omx api', () => {
   it('preserves child stdout, stderr, and exit code through the JS bridge', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-api-bridge-'));
     try {
-      const binDir = join(cwd, 'bin');
-      const stubPath = join(binDir, process.platform === 'win32' ? 'omx-api.cmd' : 'omx-api');
-      await mkdir(binDir, { recursive: true });
-      if (process.platform === 'win32') {
-        await writeFile(stubPath, '@echo off\r\necho api-stdout\r\n>&2 echo api-stderr\r\nexit /b 7\r\n');
-      } else {
-        await writeFile(stubPath, '#!/bin/sh\necho api-stdout\necho api-stderr 1>&2\nexit 7\n');
-        await chmod(stubPath, 0o755);
-      }
+      const stubPath = join(cwd, 'api-stub.cjs');
+      await writeFile(stubPath, 'process.stdout.write("api-stdout\\n"); process.stderr.write("api-stderr\\n"); process.exit(7);\n');
 
-      const result = runOmx(cwd, ['api', 'generate', 'text', 'hello'], { OMX_API_BIN: stubPath });
+      const result = runOmx(cwd, ['api', stubPath], { OMX_API_BIN: process.execPath });
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
       assert.equal(result.status, 7, result.stderr || result.stdout);

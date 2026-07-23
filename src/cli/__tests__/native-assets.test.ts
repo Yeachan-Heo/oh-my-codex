@@ -268,9 +268,9 @@ describe('native asset helpers', () => {
           arch: 'x64',
         });
 
-        assert.equal(hydrated, resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
+        assert.equal(hydrated, await realpath(resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
           OMX_NATIVE_CACHE_DIR: cacheDir,
-        }, 'musl'));
+        }, 'musl')));
         assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated\n');
       } finally {
         await server.close();
@@ -341,9 +341,9 @@ describe('native asset helpers', () => {
           arch: 'x64',
         });
 
-        assert.equal(hydrated, resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
+        assert.equal(hydrated, await realpath(resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
           OMX_NATIVE_CACHE_DIR: cacheDir,
-        }, 'musl'));
+        }, 'musl')));
         assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated-nested\n');
       } finally {
         await server.close();
@@ -460,13 +460,14 @@ describe('managed native binary inspection', () => {
         expectedLock: 'valid-owner-record',
         setup: async () => {
           await mkdir(dirname(binaryPath), { recursive: true });
+          const canonicalBinaryPath = join(await realpath(dirname(binaryPath)), 'omx-sparkshell');
           await writeFile(lockPath, `${JSON.stringify({
             version: 1,
             token: '00000000-0000-4000-8000-000000000000',
             pid: 1,
             hostname: 'test-host',
             started_at: '2026-01-01T00:00:00.000Z',
-            binary_path: binaryPath,
+            binary_path: canonicalBinaryPath,
           })}\n`);
         },
       },
@@ -502,7 +503,7 @@ describe('managed native binary inspection', () => {
         if (testCase.expected === 'verified') assert.equal(inspected.path, await realpath(binaryPath));
         if (testCase.expectedLock) {
           assert.equal(inspected.lock?.classification, testCase.expectedLock, testCase.name);
-          assert.equal(inspected.lock?.owner?.binary_path, binaryPath, testCase.name);
+          assert.equal(inspected.lock?.owner?.binary_path, join(await realpath(dirname(binaryPath)), 'omx-sparkshell'), testCase.name);
         }
       }
     } finally {

@@ -542,24 +542,11 @@ describe('omx sparkshell', () => {
   it('preserves child stdout, stderr, and exit code through the JS bridge', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-sparkshell-bridge-'));
     try {
-      const binDir = join(cwd, 'bin');
-      const stubPath = join(binDir, process.platform === 'win32' ? 'omx-sparkshell.cmd' : 'omx-sparkshell');
-      await mkdir(binDir, { recursive: true });
-      if (process.platform === 'win32') {
-        await writeFile(
-          stubPath,
-          '@echo off\r\necho spark-stdout\r\n>&2 echo spark-stderr\r\nexit /b 7\r\n',
-        );
-      } else {
-        await writeFile(
-          stubPath,
-          '#!/bin/sh\necho spark-stdout\necho spark-stderr 1>&2\nexit 7\n',
-        );
-        await chmod(stubPath, 0o755);
-      }
+      const stubPath = join(cwd, 'sparkshell-stub.cjs');
+      await writeFile(stubPath, 'process.stdout.write("spark-stdout\\n"); process.stderr.write("spark-stderr\\n"); process.exit(7);\n');
 
-      const result = runOmx(cwd, ['sparkshell', 'git', 'status'], {
-        OMX_SPARKSHELL_BIN: stubPath,
+      const result = runOmx(cwd, ['sparkshell', stubPath], {
+        OMX_SPARKSHELL_BIN: process.execPath,
       });
       if (shouldSkipForSpawnPermissions(result.error)) return;
 
