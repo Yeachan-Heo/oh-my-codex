@@ -1,7 +1,7 @@
-import { createReadStream, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { createGunzip } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { decompress } from '@napi-rs/lzma/xz';
@@ -42,9 +42,9 @@ function entry(rawName: string, type: NativeArchiveEntryType, size: number): Nat
 }
 
 async function tarInput(archivePath: string, format: 'tar.xz' | 'tar.gz'): Promise<Readable> {
-  if (format === 'tar.gz') return createReadStream(archivePath).pipe(createGunzip());
   try {
-    return Readable.from(await decompress(readFileSync(archivePath)));
+    const archive = readFileSync(archivePath);
+    return Readable.from(format === 'tar.gz' ? gunzipSync(archive) : await decompress(archive));
   } catch (error) {
     throw archiveError('archive_inspection_failed', error instanceof Error ? error.message : archivePath);
   }
