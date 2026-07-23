@@ -1903,6 +1903,53 @@ describe('state operations directory initialization', () => {
   });
 
 
+  it('persists supported team and ultragoal overlaps in either activation order', async () => {
+    const scenarios = [
+      { sessionId: 'sess-team-ultragoal', order: ['team', 'ultragoal'] },
+      { sessionId: 'sess-ultragoal-team', order: ['ultragoal', 'team'] },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-${scenario.sessionId}-`));
+      try {
+        for (const mode of scenario.order) {
+          const written = await executeStateOperation('state_write', {
+            workingDirectory: wd,
+            session_id: scenario.sessionId,
+            mode,
+            active: true,
+            current_phase: 'running',
+          });
+          assert.equal(written.isError, undefined, `${scenario.order.join(' -> ')} should allow ${mode}`);
+        }
+
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', scenario.sessionId);
+        const teamState = JSON.parse(
+          await readFile(join(sessionDir, 'team-state.json'), 'utf-8'),
+        ) as { active?: boolean };
+        const ultragoalState = JSON.parse(
+          await readFile(join(sessionDir, 'ultragoal-state.json'), 'utf-8'),
+        ) as { active?: boolean };
+        const canonical = JSON.parse(
+          await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8'),
+        ) as { active_skills?: Array<{ skill: string; active?: boolean }> };
+
+        assert.equal(teamState.active, true);
+        assert.equal(ultragoalState.active, true);
+        assert.deepEqual(
+          canonical.active_skills?.map((entry) => entry.skill),
+          [...scenario.order],
+        );
+        assert.deepEqual(
+          canonical.active_skills?.map((entry) => entry.active),
+          [true, true],
+        );
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('denies unsupported overlaps without writing the requested mode state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-deny-overlap-'));
     try {

@@ -780,6 +780,7 @@ export type WorkflowTransitionKind = 'allow' | 'overlap' | 'auto-complete' | 'de
 
 const ALLOWED_OVERLAP_PAIRS = new Set([
   'ralph|team',
+  'team|ultragoal',
 ]);
 
 const AUTO_COMPLETE_TRANSITIONS = new Set([
