@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -17,9 +17,11 @@ import {
   isRepositoryCheckout,
   resolveCachedNativeBinaryCandidatePaths,
   resolveCachedNativeBinaryPath,
+  loadNativeReleaseManifest,
   type NativeReleaseManifest,
   resolveNativeReleaseAssetCandidates,
   resolveNativeReleaseBaseUrl,
+  setNativeAssetsTestHooksForTests,
 } from '../native-assets.js';
 import {
   assertSafeNativeArchiveEntries,
@@ -91,6 +93,53 @@ async function writeManagedBinary(binaryPath: string, contents = 'native-binary'
 async function writeManagedSidecar(binaryPath: string, contents: string): Promise<void> {
   await mkdir(dirname(binaryPath), { recursive: true });
   await writeFile(`${binaryPath}.sha256`, contents);
+}
+
+async function createHydrationFixture(): Promise<{
+  wd: string;
+  cacheDir: string;
+  env: NodeJS.ProcessEnv;
+  expectedPath: string;
+  cleanup: () => Promise<void>;
+}> {
+  const wd = await mkdtemp(join(tmpdir(), 'omx-native-hydrate-race-'));
+  const cacheDir = join(wd, 'cache');
+  const assetRoot = join(wd, 'assets');
+  await mkdir(assetRoot, { recursive: true });
+  await writeFile(join(wd, 'package.json'), JSON.stringify({
+    version: '0.8.15',
+    repository: { url: 'git+https://github.com/Yeachan-Heo/oh-my-codex.git' },
+  }));
+  const archive = await makeTar([{ name: 'omx-sparkshell', data: Buffer.from('#!/bin/sh\necho hydrated\n') }]);
+  const archiveName = 'omx-sparkshell-x86_64-unknown-linux-musl.tar.gz';
+  await writeFile(join(assetRoot, archiveName), archive);
+  const server = await startStaticServer(assetRoot);
+  const manifest = {
+    manifest_version: 1,
+    version: '0.8.15',
+    tag: 'v0.8.15',
+    assets: [{
+      product: 'omx-sparkshell', version: '0.8.15', platform: 'linux', arch: 'x64',
+      target: 'x86_64-unknown-linux-musl', libc: 'musl', archive: archiveName,
+      binary: 'omx-sparkshell', binary_path: 'omx-sparkshell', sha256: sha256(archive), size: archive.length,
+      download_url: `${server.baseUrl}/${archiveName}`,
+    }],
+  };
+  await writeFile(join(assetRoot, 'native-release-manifest.json'), JSON.stringify(manifest));
+  const env = {
+    OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+    OMX_NATIVE_CACHE_DIR: cacheDir,
+  };
+  return {
+    wd,
+    cacheDir,
+    env,
+    expectedPath: resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', env, 'musl'),
+    cleanup: async () => {
+      await server.close();
+      await rm(wd, { recursive: true, force: true });
+    },
+  };
 }
 
 
@@ -194,6 +243,42 @@ describe('native asset helpers', () => {
         'omx-sparkshell-x86_64-unknown-linux-gnu.tar.gz',
       ],
     );
+  });
+
+  it('loads the published v0.20.3 manifest shape while selecting only hydratable sibling products', async () => {
+    const publishedV0203Manifest = {
+      manifest_version: 1,
+      version: '0.20.3',
+      tag: 'v0.20.3',
+      generated_at: '2026-07-19T14:27:37.972Z',
+      assets: [
+        {
+          product: 'omx-api', version: '0.20.3', platform: 'win32', arch: 'x64', target: 'x86_64-pc-windows-msvc',
+          archive: 'omx-api-x86_64-pc-windows-msvc.zip', binary: 'omx-api', binary_path: 'omx-api.exe',
+          sha256: 'b08ef0f6b09978755b554b1c7a7b37989723c360136f91d27cdcbf3c4abadae7', size: 478927,
+          download_url: 'https://github.com/Yeachan-Heo/oh-my-codex/releases/download/v0.20.3/omx-api-x86_64-pc-windows-msvc.zip',
+        },
+        {
+          product: 'omx-runtime', version: '0.20.3', platform: 'win32', arch: 'x64', target: 'x86_64-pc-windows-msvc',
+          archive: 'omx-runtime-x86_64-pc-windows-msvc.zip', binary: 'omx-runtime', binary_path: 'omx-runtime.exe',
+          sha256: '52cfc795467c2971ac19ceafb9686f83691375b6fa15ee02b5465839d98c6909', size: 466657,
+          download_url: 'https://github.com/Yeachan-Heo/oh-my-codex/releases/download/v0.20.3/omx-runtime-x86_64-pc-windows-msvc.zip',
+        },
+      ],
+    };
+    const loadedManifest = await loadNativeReleaseManifest(process.cwd(), '0.20.3', {
+      OMX_NATIVE_MANIFEST_URL: `data:application/json,${encodeURIComponent(JSON.stringify(publishedV0203Manifest))}`,
+    });
+    const candidates = resolveNativeReleaseAssetCandidates(
+      loadedManifest,
+      'omx-api',
+      '0.20.3',
+      'win32',
+      'x64',
+    );
+    assert.deepEqual(candidates.map((asset) => [asset.product, asset.binary, asset.binary_path]), [
+      ['omx-api', 'omx-api', 'omx-api.exe'],
+    ]);
   });
 
   it('derives GitHub release base url from package.json repository + version', async () => {
@@ -380,6 +465,56 @@ describe('native asset helpers', () => {
       }
     } finally {
       await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('converges concurrent hydrators from an absent cache tree without publication leftovers', async () => {
+    const fixture = await createHydrationFixture();
+    try {
+      const options = { packageRoot: fixture.wd, env: fixture.env, platform: 'linux' as const, arch: 'x64' };
+      const [first, second] = await Promise.all([
+        hydrateNativeBinary('omx-sparkshell', options),
+        hydrateNativeBinary('omx-sparkshell', options),
+      ]);
+      assert.equal(first, await realpath(fixture.expectedPath));
+      assert.equal(second, await realpath(fixture.expectedPath));
+      assert.deepEqual(
+        (await readdir(dirname(fixture.expectedPath))).sort(),
+        ['omx-sparkshell', 'omx-sparkshell.sha256'],
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('fails closed when a parent mkdir races with a symlink swap', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await createHydrationFixture();
+    const attackerDirectory = join(fixture.wd, 'attacker');
+    let swapped = false;
+    const resetHooks = setNativeAssetsTestHooksForTests({
+      beforeCreateParent: async (path) => {
+        if (path !== join(fixture.cacheDir, '0.8.15') || swapped) return;
+        swapped = true;
+        await mkdir(attackerDirectory);
+        await symlink(attackerDirectory, path);
+      },
+    });
+    try {
+      await assert.rejects(
+        () => hydrateNativeBinary('omx-sparkshell', {
+          packageRoot: fixture.wd,
+          env: fixture.env,
+          platform: 'linux',
+          arch: 'x64',
+        }),
+        /cache descendant is unsafe/,
+      );
+      assert.equal(swapped, true);
+      assert.deepEqual(await readdir(attackerDirectory), []);
+    } finally {
+      resetHooks();
+      await fixture.cleanup();
     }
   });
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { inspectNativeArchive, selectNativeArchiveBinary } from '../native-assets/archive.js';
 import {
   nativeTargetMapping,
@@ -72,7 +72,12 @@ const planPath = arg('--plan');
 const artifactsDir = arg('--artifacts-dir');
 const outPath = arg('--out');
 const releaseBaseUrl = arg('--release-base-url');
-const requireProducts = (arg('--require-products') || '').split(',').map((value) => value.trim()).filter(Boolean);
+const requestedProducts = (arg('--require-products') || '').split(',').map((value) => value.trim()).filter(Boolean);
+// A product preflight denotes a full cargo-dist release. omx-runtime is released with
+// that bundle but is intentionally not a runtime-hydratable product.
+const requireProducts = requestedProducts.length === 0
+  ? []
+  : [...new Set([...requestedProducts, 'omx-runtime'])];
 if (!planPath || !artifactsDir || !outPath || !releaseBaseUrl) usage();
 
 const plan = JSON.parse(readFileSync(resolve(planPath), 'utf-8')) as Plan;
@@ -114,7 +119,7 @@ for (const artifact of Object.values(plan.artifacts)) {
     target,
     ...(mapping.libc ? { libc: mapping.libc } : {}),
     archive: artifact.name,
-    binary: basename(binary.path),
+    binary: release.app_name,
     binary_path: binary.path,
     sha256: expectedSha256,
     size: statSync(archivePath).size,

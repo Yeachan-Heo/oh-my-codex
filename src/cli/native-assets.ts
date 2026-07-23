@@ -323,6 +323,19 @@ function sameFile(left: FileIdentity, right: FileIdentity): boolean { return lef
 function errno(error: unknown): string | undefined { return (error as NodeJS.ErrnoException).code; }
 function uuid(): string { return crypto.randomUUID(); }
 function absent(error: unknown): boolean { return errno(error) === 'ENOENT'; }
+interface NativeAssetsTestHooks {
+  beforeCreateParent?(path: string): Promise<void>;
+}
+
+let nativeAssetsTestHooks: NativeAssetsTestHooks | undefined;
+
+/** Test-only seam for deterministic cache-parent creation races. */
+export function setNativeAssetsTestHooksForTests(hooks: NativeAssetsTestHooks | undefined): () => void {
+  const previousHooks = nativeAssetsTestHooks;
+  nativeAssetsTestHooks = hooks;
+  return () => { nativeAssetsTestHooks = previousHooks; };
+}
+
 
 function lockWaitMs(env: NodeJS.ProcessEnv): number {
   const configured = env[NATIVE_LOCK_WAIT_MS_ENV]?.trim();
@@ -381,7 +394,12 @@ async function validateDescendant(path: string, canonicalRoot: string, createPar
     } catch (error) {
       if (!absent(error)) throw error;
       if (!createParents || isLeaf) continue;
-      await mkdir(current, { mode: 0o700 });
+      await nativeAssetsTestHooks?.beforeCreateParent?.(current);
+      try {
+        await mkdir(current, { mode: 0o700 });
+      } catch (error) {
+        if (errno(error) !== 'EEXIST') throw error;
+      }
       const created = await lstat(current);
       if (!created.isDirectory() || created.isSymbolicLink()) throw new Error(`[native-assets] cache descendant is unsafe: ${current}`);
     }

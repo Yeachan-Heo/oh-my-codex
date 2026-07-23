@@ -127,6 +127,45 @@ describe('verify-native-release-assets', () => {
     }
   });
 
+  it('accepts full-release siblings with logical Windows binary names and executable paths', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-verify-native-release-full-'));
+    try {
+      const apiArchive = 'omx-api-x86_64-pc-windows-msvc.zip';
+      const runtimeArchive = 'omx-runtime-x86_64-pc-windows-msvc.zip';
+      const apiBytes = await zipArchive([{ name: 'omx-api.exe', data: Buffer.from('api') }]);
+      const runtimeBytes = await zipArchive([{ name: 'omx-runtime.exe', data: Buffer.from('runtime') }]);
+      await writeFile(join(wd, apiArchive), apiBytes);
+      await writeFile(join(wd, runtimeArchive), runtimeBytes);
+      const asset = (product: string, archive: string, binaryPath: string, content: Buffer) => ({
+        product,
+        version: '0.20.3',
+        platform: 'win32',
+        arch: 'x64',
+        target: 'x86_64-pc-windows-msvc',
+        archive,
+        binary: product,
+        binary_path: binaryPath,
+        sha256: sha256(content),
+        size: content.length,
+        download_url: `https://example.invalid/${archive}`,
+      });
+      const manifestPath = join(wd, 'native-release-manifest.json');
+      await writeFile(manifestPath, JSON.stringify({
+        manifest_version: 1,
+        version: '0.20.3',
+        tag: 'v0.20.3',
+        assets: [
+          asset('omx-api', apiArchive, 'omx-api.exe', apiBytes),
+          asset('omx-runtime', runtimeArchive, 'omx-runtime.exe', runtimeBytes),
+        ],
+      }));
+      const result = verify(manifestPath, wd);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects unsafe unrelated paths and links before selecting a binary', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-verify-native-release-unsafe-'));
     try {

@@ -28,9 +28,13 @@ export interface NativeTargetMapping {
   libc?: string;
 }
 
-export const NATIVE_PRODUCTS = ['omx-explore-harness', 'omx-sparkshell', 'omx-api'] as const;
+/** Products that must be accepted by release-manifest generation and verification. */
+export const NATIVE_RELEASE_PRODUCTS = ['omx-explore-harness', 'omx-sparkshell', 'omx-api', 'omx-runtime'] as const;
 
-const NATIVE_PRODUCT_SET = new Set<string>(NATIVE_PRODUCTS);
+/** Products exposed through the runtime hydration APIs. */
+export const NATIVE_HYDRATABLE_PRODUCTS = ['omx-explore-harness', 'omx-sparkshell', 'omx-api'] as const;
+
+const NATIVE_RELEASE_PRODUCT_SET = new Set<string>(NATIVE_RELEASE_PRODUCTS);
 const NATIVE_ARCHIVE_SUFFIXES = ['.tar.xz', '.tar.gz', '.zip'] as const;
 
 function nativeArchiveSuffix(basename: string): string | undefined {
@@ -53,9 +57,14 @@ function archiveHintMismatch(asset: NativeReleaseAssetPolicyInput, basename: str
   return false;
 }
 
-export function nativeProductBinaryName(product: string, platform: string): string | undefined {
-  if (!NATIVE_PRODUCT_SET.has(product)) return undefined;
-  return `${product}${platform === 'win32' ? '.exe' : ''}`;
+export function nativeProductBinaryName(product: string): string | undefined {
+  if (!NATIVE_RELEASE_PRODUCT_SET.has(product)) return undefined;
+  return product;
+}
+
+export function nativeProductBinaryPath(product: string, platform: string): string | undefined {
+  const binary = nativeProductBinaryName(product);
+  return binary && `${binary}${platform === 'win32' ? '.exe' : ''}`;
 }
 
 const TARGET_MAPPINGS: Readonly<Record<string, NativeTargetMapping>> = {
@@ -146,13 +155,14 @@ export function validateNativeReleaseManifest(manifest: NativeReleaseManifestPol
       || (mapping.platform === 'linux' ? asset.libc !== mapping.libc : asset.libc !== undefined)) {
       throw policyError('manifest_target_mismatch', asset.target || asset.archive);
     }
-    const expectedBinary = nativeProductBinaryName(asset.product, asset.platform);
-    if (!expectedBinary || asset.binary !== expectedBinary) {
+    const expectedBinary = nativeProductBinaryName(asset.product);
+    const expectedBinaryPath = nativeProductBinaryPath(asset.product, asset.platform);
+    if (!expectedBinary || !expectedBinaryPath || asset.binary !== expectedBinary) {
       throw policyError('manifest_binary_product_mismatch', asset.binary);
     }
 
     const binaryPath = normalizeNativeArchivePath(asset.binary_path, 'file');
-    if (binaryPath !== asset.binary_path || binaryPath.split('/').at(-1) !== expectedBinary) {
+    if (binaryPath !== asset.binary_path || binaryPath.split('/').at(-1) !== expectedBinaryPath) {
       throw policyError('manifest_binary_basename_mismatch', asset.binary_path);
     }
 
