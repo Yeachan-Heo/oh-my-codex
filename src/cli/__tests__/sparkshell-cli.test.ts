@@ -247,7 +247,7 @@ describe('resolveSparkShellBinaryPath', () => {
             target: process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-musl',
             ...(process.platform === 'win32' ? {} : { libc: 'musl' }),
             archive: archiveName,
-            binary: process.platform === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell',
+            binary: 'omx-sparkshell',
             binary_path: process.platform === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell',
             sha256: checksum,
             size: archiveBuffer.length,

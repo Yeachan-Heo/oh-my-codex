@@ -491,10 +491,11 @@ describe('native asset helpers', () => {
     if (process.platform === 'win32') return;
     const fixture = await createHydrationFixture();
     const attackerDirectory = join(fixture.wd, 'attacker');
+    const canonicalCacheDir = join(await realpath(dirname(fixture.cacheDir)), 'cache');
     let swapped = false;
     const resetHooks = setNativeAssetsTestHooksForTests({
       beforeCreateParent: async (path) => {
-        if (path !== join(fixture.cacheDir, '0.8.15') || swapped) return;
+        if (path !== join(canonicalCacheDir, '0.8.15') || swapped) return;
         swapped = true;
         await mkdir(attackerDirectory);
         await symlink(attackerDirectory, path);
