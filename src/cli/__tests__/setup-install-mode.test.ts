@@ -8,6 +8,7 @@ import {
 	mkdir,
 	mkdtemp,
 	readFile,
+	readlink,
 	readdir,
 	rm,
 	symlink,
@@ -1287,7 +1288,7 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("invalidates old versioned plugin cache dirs while materializing the current cache", async () => {
+	it("replaces old versioned plugin caches with compatibility links to the current cache", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -1299,7 +1300,16 @@ describe("omx setup install mode behavior", () => {
 					});
 
 					const currentCacheDir = await packagedPluginCacheDir(codexHomeDir);
-					assert.equal(existsSync(oldCacheDir), false);
+					assert.equal((await lstat(oldCacheDir)).isSymbolicLink(), true);
+					assert.equal(await readlink(oldCacheDir), basename(currentCacheDir));
+					assert.equal(
+						existsSync(join(oldCacheDir, "hooks", "codex-native-hook.mjs")),
+						true,
+					);
+					const oldVersionEntry = (
+						await readdir(dirname(oldCacheDir), { withFileTypes: true })
+					).find((entry) => entry.name === basename(oldCacheDir));
+					assert.equal(oldVersionEntry?.isDirectory(), false);
 					assert.equal(existsSync(join(currentCacheDir, ".codex-plugin", "plugin.json")), true);
 					assert.equal(existsSync(join(currentCacheDir, "hooks", "hooks.json")), true);
 					assert.equal(existsSync(join(currentCacheDir, "hooks", "codex-native-hook.mjs")), true);
@@ -1307,7 +1317,10 @@ describe("omx setup install mode behavior", () => {
 					assert.equal(existsSync(join(currentCacheDir, "skills", "ask", "SKILL.md")), true);
 					assert.match(output, /Invalidated 1 stale Codex plugin discovery cache entry/);
 					assert.match(output, /Installed local Codex plugin cache/);
-					assert.doesNotMatch(output, /Retained .* old versioned Codex plugin cache/);
+					assert.match(
+						output,
+						/Linked 1 retired versioned Codex plugin cache entry to the current cache/,
+					);
 				});
 			});
 		} finally {

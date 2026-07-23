@@ -16,6 +16,7 @@ import {
 	rm,
 	open,
 	chmod,
+	symlink,
 } from "fs/promises";
 
 import { join, dirname, relative, basename, isAbsolute, sep, win32 } from "path";
@@ -2868,6 +2869,42 @@ interface PluginDiscoveryCacheRefreshResult {
 	staleDirs: string[];
 }
 
+async function createPluginCacheCompatibilityLinks(
+	staleDirs: string[],
+	currentCacheDir: string,
+): Promise<string[]> {
+	const currentCacheParent = dirname(currentCacheDir);
+	const currentVersion = basename(currentCacheDir);
+	const linkedDirs: string[] = [];
+
+	for (const staleDir of staleDirs) {
+		if (
+			dirname(staleDir) !== currentCacheParent ||
+			basename(staleDir) === currentVersion ||
+			existsSync(staleDir)
+		) {
+			continue;
+		}
+
+		const target = process.platform === "win32"
+			? currentCacheDir
+			: currentVersion;
+		try {
+			await symlink(
+				target,
+				staleDir,
+				process.platform === "win32" ? "junction" : "dir",
+			);
+			linkedDirs.push(staleDir);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST") throw error;
+		}
+	}
+
+	return linkedDirs;
+}
+
 async function refreshOmxPluginDiscoveryCache(
 	pkgRoot: string,
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
@@ -4444,12 +4481,28 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			preflightMarketplace,
 			{ dryRun, teamMode: resolvedTeamMode },
 		);
+		const pluginCacheDir = pluginCacheMaterialize.cacheDir;
+		const pluginCacheCompatibilityLinks =
+			!dryRun &&
+			pluginCacheDir !== undefined &&
+			(pluginCacheMaterialize.status === "materialized" ||
+				pluginCacheMaterialize.status === "unchanged")
+				? await createPluginCacheCompatibilityLinks(
+						pluginCacheRefresh.staleDirs,
+						pluginCacheDir,
+					)
+				: [];
 		if (pluginCacheMaterialize.status === "materialized") {
 			console.log(
 				`  ${dryRun ? "Would install" : "Installed"} local Codex plugin cache for ${OMX_LOCAL_MARKETPLACE_NAME}/${OMX_PLUGIN_NAME} at ${pluginCacheMaterialize.cacheDir}.`,
 			);
 		} else if (pluginCacheMaterialize.status === "unchanged") {
 			console.log("  Local Codex plugin cache already exposes packaged OMX skills.");
+		}
+		if (pluginCacheCompatibilityLinks.length > 0) {
+			console.log(
+				`  Linked ${pluginCacheCompatibilityLinks.length} retired versioned Codex plugin cache entr${pluginCacheCompatibilityLinks.length === 1 ? "y" : "ies"} to the current cache so active sessions keep resolving PLUGIN_ROOT.`,
+			);
 		}
 		if (
 			pluginCacheMaterialize.status === "materialized" ||
