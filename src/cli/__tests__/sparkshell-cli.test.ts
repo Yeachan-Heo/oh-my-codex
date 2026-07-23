@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   isSparkShellNativeCompatibilityFailure,
   nestedRepoLocalSparkShellBinaryPath,
+  packagedSparkShellBinaryPath,
   packagedSparkShellBinaryCandidatePaths,
   parseSparkShellFallbackInvocation,
   repoLocalSparkShellBinaryPath,
@@ -19,6 +20,7 @@ import {
   resolveSparkShellBinaryPathWithHydration,
   runSparkShellBinary,
 } from '../sparkshell.js';
+import { resolveCachedNativeBinaryChecksumPath } from '../native-assets.js';
 import { buildCapturePaneArgv as buildNotificationCapturePaneArgv } from '../../notifications/tmux-detector.js';
 
 function runOmx(
@@ -217,6 +219,33 @@ describe('resolveSparkShellBinaryPath', () => {
       } finally {
         await server.close();
       }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('skips an empty cached binary in favor of a usable packaged binary', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-sparkshell-invalid-cache-'));
+    try {
+      const cacheDir = join(wd, 'cache');
+      const cachedBinary = join(cacheDir, '0.8.15', 'linux-x64-musl', 'omx-sparkshell', 'omx-sparkshell');
+      const packagedBinary = packagedSparkShellBinaryPath(wd, 'linux', 'x64', 'musl');
+      await writeFile(join(wd, 'package.json'), JSON.stringify({ version: '0.8.15' }));
+      await mkdir(dirname(cachedBinary), { recursive: true });
+      await writeFile(cachedBinary, '');
+      await mkdir(dirname(packagedBinary), { recursive: true });
+      await writeFile(packagedBinary, '#!/bin/sh\n');
+
+      assert.equal(
+        await resolveSparkShellBinaryPathWithHydration({
+          packageRoot: wd,
+          platform: 'linux',
+          arch: 'x64',
+          linuxLibcPreference: ['musl', 'glibc'],
+          env: { OMX_NATIVE_CACHE_DIR: cacheDir, OMX_NATIVE_AUTO_FETCH: '0' },
+        }),
+        packagedBinary,
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -536,6 +565,10 @@ describe('omx sparkshell', () => {
           : "#!/bin/sh\necho \"omx-sparkshell: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.39' not found\" 1>&2\nexit 1\n",
       );
       if (process.platform !== 'win32') await chmod(stubPath, 0o755);
+      await writeFile(
+        resolveCachedNativeBinaryChecksumPath(stubPath),
+        `${createHash('sha256').update(await readFile(stubPath)).digest('hex')}\n`,
+      );
 
       const result = runOmx(cwd, ['sparkshell', 'node', '-e', 'process.stdout.write("raw-fallback\\n")'], {
         OMX_NATIVE_CACHE_DIR: cacheDir,

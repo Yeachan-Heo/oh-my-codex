@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,7 @@ import {
   resolveApiBinaryPathWithHydration,
   runApiBinary,
 } from '../api.js';
+import { resolveCachedNativeBinaryChecksumPath } from '../native-assets.js';
 
 function runOmx(
   cwd: string,
@@ -101,8 +103,13 @@ describe('resolveApiBinaryPath', () => {
       const cachedDir = join(cacheDir, '0.8.15', 'linux-x64-musl', 'omx-api');
       const cachedBinary = join(cachedDir, 'omx-api');
       await mkdir(cachedDir, { recursive: true });
-      await writeFile(cachedBinary, '#!/bin/sh\n');
+      const cachedContent = '#!/bin/sh\n';
+      await writeFile(cachedBinary, cachedContent);
       await chmod(cachedBinary, 0o755);
+      await writeFile(
+        resolveCachedNativeBinaryChecksumPath(cachedBinary),
+        `${createHash('sha256').update(cachedContent).digest('hex')}\n`,
+      );
 
       assert.equal(
         await resolveApiBinaryPathWithHydration({
@@ -118,6 +125,8 @@ describe('resolveApiBinaryPath', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+
 });
 
 describe('runApiBinary', () => {

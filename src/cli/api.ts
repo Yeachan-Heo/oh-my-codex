@@ -12,6 +12,7 @@ import {
   API_BIN_ENV as API_BIN_ENV_SHARED,
   getPackageVersion,
   hydrateNativeBinary,
+  isVerifiedCachedNativeBinary,
   resolveCachedNativeBinaryCandidatePaths,
   resolveLinuxNativeLibcPreference,
 } from './native-assets.js';
@@ -154,7 +155,7 @@ export async function resolveApiBinaryPathWithHydration(
       ? (linuxLibcPreference ?? resolveLinuxNativeLibcPreference({ env }))
       : undefined,
   })) {
-    if (exists(cached)) return cached;
+    if (exists(cached) && await isVerifiedCachedNativeBinary(cached)) return cached;
   }
 
   for (const packaged of packagedApiBinaryCandidatePaths(packageRoot, platform, arch, env, linuxLibcPreference)) {

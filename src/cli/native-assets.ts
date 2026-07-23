@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, createWriteStream, existsSync, readdirSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { spawnPlatformCommandSync } from '../utils/platform-command.js';
@@ -200,6 +200,35 @@ export function resolveCachedNativeBinaryCandidatePaths(
   return [...new Set(candidates)];
 }
 
+export function resolveCachedNativeBinaryChecksumPath(binaryPath: string): string {
+  return `${binaryPath}.sha256`;
+}
+
+type CachedNativeBinaryState = 'missing' | 'invalid' | 'legacy' | 'verified';
+
+async function inspectCachedNativeBinary(binaryPath: string): Promise<CachedNativeBinaryState> {
+  try {
+    const binaryStat = await stat(binaryPath);
+    if (!binaryStat.isFile() || binaryStat.size === 0) return 'invalid';
+  } catch {
+    return 'missing';
+  }
+
+  const checksumPath = resolveCachedNativeBinaryChecksumPath(binaryPath);
+  if (!existsSync(checksumPath)) return 'legacy';
+  try {
+    const expectedDigest = (await readFile(checksumPath, 'utf-8')).trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(expectedDigest)) return 'invalid';
+    return await sha256ForFile(binaryPath) === expectedDigest ? 'verified' : 'invalid';
+  } catch {
+    return 'invalid';
+  }
+}
+
+export async function isVerifiedCachedNativeBinary(binaryPath: string): Promise<boolean> {
+  return await inspectCachedNativeBinary(binaryPath) === 'verified';
+}
+
 export function resolveNativeReleaseAssetCandidates(
   manifest: NativeReleaseManifest,
   product: NativeProduct,
@@ -318,6 +347,42 @@ async function findExtractedBinaryPath(rootDir: string, binaryPath: string): Pro
   return undefined;
 }
 
+async function publishCachedNativeBinary(
+  sourcePath: string,
+  destinationPath: string,
+  platform: NodeJS.Platform,
+): Promise<void> {
+  const destinationDir = dirname(destinationPath);
+  await mkdir(destinationDir, { recursive: true });
+  const tempPath = join(
+    destinationDir,
+    `.${basename(destinationPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  const checksumPath = resolveCachedNativeBinaryChecksumPath(destinationPath);
+  const checksumTempPath = `${tempPath}.sha256`;
+  try {
+    await copyFile(sourcePath, tempPath);
+    if (platform !== 'win32') chmodSync(tempPath, 0o755);
+    await writeFile(checksumTempPath, `${await sha256ForFile(tempPath)}\n`, { mode: 0o600 });
+
+    for (const publishedPath of [destinationPath, checksumPath]) {
+      try {
+        if ((await stat(publishedPath)).isDirectory()) {
+          await rm(publishedPath, { recursive: true, force: true });
+        }
+      } catch {
+        // Missing paths and unreadable stale entries are handled by rename below.
+      }
+    }
+
+    await rename(tempPath, destinationPath);
+    await rename(checksumTempPath, checksumPath);
+  } finally {
+    await rm(tempPath, { force: true });
+    await rm(checksumTempPath, { force: true });
+  }
+}
+
 export async function hydrateNativeBinary(
   product: NativeProduct,
   options: HydrateNativeBinaryOptions = {},
@@ -329,26 +394,29 @@ export async function hydrateNativeBinary(
     arch = process.arch,
   } = options;
 
-  if (env[NATIVE_AUTO_FETCH_ENV]?.trim() === '0') return undefined;
   if (!['linux', 'darwin', 'win32'].includes(platform)) return undefined;
   if (!['x64', 'arm64'].includes(arch)) return undefined;
 
   const version = await getPackageVersion(packageRoot);
+  let legacyCachedBinaryPath: string | undefined;
   for (const cachedBinaryPath of resolveCachedNativeBinaryCandidatePaths(product, version, platform, arch, env)) {
-    if (existsSync(cachedBinaryPath)) return cachedBinaryPath;
+    const cacheState = await inspectCachedNativeBinary(cachedBinaryPath);
+    if (cacheState === 'verified') return cachedBinaryPath;
+    if (cacheState === 'legacy') legacyCachedBinaryPath ??= cachedBinaryPath;
   }
+  if (env[NATIVE_AUTO_FETCH_ENV]?.trim() === '0') return legacyCachedBinaryPath;
 
   let manifest: NativeReleaseManifest;
   try {
     manifest = await loadNativeReleaseManifest(packageRoot, version, env);
   } catch (error) {
-    if (isUnavailableManifestError(error)) return undefined;
+    if (isUnavailableManifestError(error)) return legacyCachedBinaryPath;
     throw error;
   }
   const assets = resolveNativeReleaseAssetCandidates(manifest, product, version, platform, arch, {
     linuxLibcPreference: platform === 'linux' ? resolveLinuxNativeLibcPreference({ env }) : undefined,
   });
-  if (assets.length === 0) return undefined;
+  if (assets.length === 0) return legacyCachedBinaryPath;
 
   const tempRoot = await mkdtemp(join(tmpdir(), `${product}-${platform}-${arch}-`));
   const extractDir = join(tempRoot, 'extract');
@@ -382,15 +450,14 @@ export async function hydrateNativeBinary(
           throw new Error(`[native-assets] extracted archive missing expected binary ${asset.binary_path}`);
         }
 
-        await mkdir(dirname(cachedBinaryPath), { recursive: true });
-        await copyFile(extractedBinaryPath, cachedBinaryPath);
-        if (platform !== 'win32') chmodSync(cachedBinaryPath, 0o755);
+        await publishCachedNativeBinary(extractedBinaryPath, cachedBinaryPath, platform);
         return cachedBinaryPath;
       } catch (error) {
-        if (index < assets.length - 1 && isUnavailableArchiveError(error)) {
+        if (isUnavailableArchiveError(error)) {
           await rm(archivePath, { force: true });
           await rm(extractDir, { recursive: true, force: true });
-          continue;
+          if (index < assets.length - 1) continue;
+          if (legacyCachedBinaryPath) return legacyCachedBinaryPath;
         }
         throw error;
       }

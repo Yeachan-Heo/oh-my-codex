@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,7 @@ import {
   inferNativeAssetLibc,
   isRepositoryCheckout,
   resolveCachedNativeBinaryCandidatePaths,
+  resolveCachedNativeBinaryChecksumPath,
   resolveCachedNativeBinaryPath,
   type NativeReleaseManifest,
   resolveNativeReleaseAssetCandidates,
@@ -218,6 +219,69 @@ describe('native asset helpers', () => {
           OMX_NATIVE_CACHE_DIR: cacheDir,
         }, 'musl'));
         assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated\n');
+
+        const cached = await hydrateNativeBinary('omx-sparkshell', {
+          packageRoot: wd,
+          env: {
+            OMX_NATIVE_MANIFEST_URL: 'http://127.0.0.1:1/unreachable-manifest.json',
+            OMX_NATIVE_CACHE_DIR: cacheDir,
+          },
+          platform: 'linux',
+          arch: 'x64',
+        });
+        assert.equal(cached, hydrated, 'expected a verified cache hit without another manifest request');
+
+        await writeFile(hydrated!, '');
+        assert.equal(
+          await hydrateNativeBinary('omx-sparkshell', {
+            packageRoot: wd,
+            env: {
+              OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+              OMX_NATIVE_CACHE_DIR: cacheDir,
+            },
+            platform: 'linux',
+            arch: 'x64',
+          }),
+          hydrated,
+        );
+        assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated\n');
+
+        await rm(resolveCachedNativeBinaryChecksumPath(hydrated!), { force: true });
+        await writeFile(hydrated!, '#!/bin/sh\nech');
+        assert.equal(
+          await hydrateNativeBinary('omx-sparkshell', {
+            packageRoot: wd,
+            env: {
+              OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+              OMX_NATIVE_CACHE_DIR: cacheDir,
+            },
+            platform: 'linux',
+            arch: 'x64',
+          }),
+          hydrated,
+        );
+        assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated\n');
+
+        await rm(hydrated!, { force: true });
+        await mkdir(hydrated!);
+        assert.equal(
+          await hydrateNativeBinary('omx-sparkshell', {
+            packageRoot: wd,
+            env: {
+              OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+              OMX_NATIVE_CACHE_DIR: cacheDir,
+            },
+            platform: 'linux',
+            arch: 'x64',
+          }),
+          hydrated,
+        );
+        assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho hydrated\n');
+        assert.deepEqual(
+          await readdir(join(hydrated!, '..')),
+          ['omx-sparkshell', 'omx-sparkshell.sha256'],
+          'expected atomic cache publication to leave no temporary files behind',
+        );
       } finally {
         await server.close();
       }
@@ -316,6 +380,85 @@ describe('native asset helpers', () => {
           arch: 'x64',
         });
         assert.equal(hydrated, undefined);
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a non-empty legacy cache entry when the manifest is unavailable', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-native-hydrate-legacy-offline-'));
+    try {
+      await writeFile(join(wd, 'package.json'), JSON.stringify({
+        version: '0.8.15',
+        repository: { url: 'git+https://github.com/Yeachan-Heo/oh-my-codex.git' },
+      }));
+      const cacheDir = join(wd, 'cache');
+      const cachedBinary = resolveCachedNativeBinaryPath('omx-sparkshell', '0.8.15', 'linux', 'x64', {
+        OMX_NATIVE_CACHE_DIR: cacheDir,
+      }, 'musl');
+      await mkdir(join(cachedBinary, '..'), { recursive: true });
+      await writeFile(cachedBinary, '#!/bin/sh\necho legacy\n');
+
+      assert.equal(
+        await hydrateNativeBinary('omx-sparkshell', {
+          packageRoot: wd,
+          env: {
+            OMX_NATIVE_AUTO_FETCH: '0',
+            OMX_NATIVE_CACHE_DIR: cacheDir,
+          },
+          platform: 'linux',
+          arch: 'x64',
+        }),
+        cachedBinary,
+      );
+
+      const missingRoot = join(wd, 'missing-assets');
+      await mkdir(missingRoot, { recursive: true });
+      const server = await startStaticServer(missingRoot);
+      try {
+        assert.equal(
+          await hydrateNativeBinary('omx-sparkshell', {
+            packageRoot: wd,
+            env: {
+              OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+              OMX_NATIVE_CACHE_DIR: cacheDir,
+            },
+            platform: 'linux',
+            arch: 'x64',
+          }),
+          cachedBinary,
+        );
+
+        await writeFile(join(missingRoot, 'native-release-manifest.json'), JSON.stringify({
+          version: '0.8.15',
+          assets: [{
+            product: 'omx-sparkshell',
+            version: '0.8.15',
+            platform: 'linux',
+            arch: 'x64',
+            libc: 'musl',
+            archive: 'missing.tar.gz',
+            binary: 'omx-sparkshell',
+            binary_path: 'omx-sparkshell',
+            sha256: '0'.repeat(64),
+            download_url: `${server.baseUrl}/missing.tar.gz`,
+          }],
+        }));
+        assert.equal(
+          await hydrateNativeBinary('omx-sparkshell', {
+            packageRoot: wd,
+            env: {
+              OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+              OMX_NATIVE_CACHE_DIR: cacheDir,
+            },
+            platform: 'linux',
+            arch: 'x64',
+          }),
+          cachedBinary,
+        );
       } finally {
         await server.close();
       }

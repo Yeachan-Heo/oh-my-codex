@@ -14,6 +14,7 @@ import {
   SPARKSHELL_BIN_ENV as SPARKSHELL_BIN_ENV_SHARED,
   getPackageVersion,
   hydrateNativeBinary,
+  isVerifiedCachedNativeBinary,
   resolveLinuxNativeLibcPreference,
   resolveCachedNativeBinaryCandidatePaths,
 } from './native-assets.js';
@@ -160,7 +161,7 @@ export async function resolveSparkShellBinaryPathWithHydration(
       ? (linuxLibcPreference ?? resolveLinuxNativeLibcPreference({ env }))
       : undefined,
   })) {
-    if (exists(cached)) return cached;
+    if (exists(cached) && await isVerifiedCachedNativeBinary(cached)) return cached;
   }
 
   for (const packaged of packagedSparkShellBinaryCandidatePaths(packageRoot, platform, arch, env, linuxLibcPreference)) {
