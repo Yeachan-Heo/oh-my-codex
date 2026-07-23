@@ -12811,7 +12811,7 @@ exit 0
 				const trustedBinDir = await mkdtemp(join(tmpdir(), "omx-di-trusted-bin-"));
 				await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
 				const inheritedPath = process.env.PATH;
-				process.env.PATH = `${trustedBinDir}:/usr/bin:/bin`;
+				process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}`;
 				try {
 					return await bash("omx cancel", "omx-cancel");
 				} finally {
@@ -21130,7 +21130,7 @@ PY`,
       const trustedPackageBin = join(cwd, "node_modules", ".bin", "omx");
       await mkdir(dirname(trustedPackageBin), { recursive: true });
       await symlink(workspacePackageCli, trustedPackageBin);
-      const trustedPackagePath = `${dirname(trustedPackageBin)}:/usr/bin:/bin`;
+      const trustedPackagePath = `${dirname(trustedPackageBin)}:${dirname(process.execPath)}`;
       const bashTrusted = async (command: string) => {
         const inheritedPath = process.env.PATH;
         process.env.PATH = trustedPackagePath;
@@ -31590,7 +31590,7 @@ PY`,
       const trustedPackageBin = join(cwd, "node_modules", ".bin", "omx");
       await mkdir(dirname(trustedPackageBin), { recursive: true });
       await symlink(workspacePackageCli, trustedPackageBin);
-      const trustedPackagePath = `${dirname(trustedPackageBin)}:/usr/bin:/bin`;
+      const trustedPackagePath = `${dirname(trustedPackageBin)}:${dirname(process.execPath)}`;
       const bashTrusted = async (command: string) => {
         const inheritedPath = process.env.PATH;
         process.env.PATH = trustedPackagePath;
