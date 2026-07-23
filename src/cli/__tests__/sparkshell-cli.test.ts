@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
@@ -599,7 +599,8 @@ describe('omx sparkshell', () => {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.equal(result.stdout, 'raw-fallback\n');
       assert.match(result.stderr, /cause=.*GLIBC_2\.39/i);
-      assert.match(result.stderr, new RegExp(`path=${stubPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      const canonicalStubPath = await realpath(stubPath);
+      assert.match(result.stderr, new RegExp(`path=${canonicalStubPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(result.stderr, /state=glibc-incompatible/i);
       assert.match(result.stderr, /remediation=/i);
     } finally {

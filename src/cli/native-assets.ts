@@ -344,7 +344,10 @@ function lockRecord(token: string, binaryPath: string): string {
 
 
 function canonicalDescendantPath(path: string, configuredRoot: string, canonicalRoot: string): string {
-  const rel = relative(resolve(configuredRoot), resolve(path));
+  const resolvedPath = resolve(path);
+  const canonicalRelative = relative(canonicalRoot, resolvedPath);
+  if (canonicalRelative && canonicalRelative !== '..' && !canonicalRelative.startsWith(`..${sep}`)) return resolvedPath;
+  const rel = relative(resolve(configuredRoot), resolvedPath);
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('[native-assets] cache path escapes configured root');
   return join(canonicalRoot, rel);
 }

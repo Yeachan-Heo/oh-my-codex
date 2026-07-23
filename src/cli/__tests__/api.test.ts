@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -115,7 +115,7 @@ describe('resolveApiBinaryPath', () => {
           linuxLibcPreference: ['musl', 'glibc'],
           env: { OMX_NATIVE_CACHE_DIR: cacheDir, OMX_NATIVE_AUTO_FETCH: '0' },
         }),
-        cachedBinary,
+        await realpath(cachedBinary),
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });

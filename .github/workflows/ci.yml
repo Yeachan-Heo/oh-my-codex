@@ -557,7 +557,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Download prebuilt dist artifact
         uses: actions/download-artifact@v8
         with:

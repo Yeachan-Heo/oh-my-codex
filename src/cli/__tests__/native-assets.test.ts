@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -499,7 +499,7 @@ describe('managed native binary inspection', () => {
         await testCase.setup();
         const inspected = await inspectManagedNativeBinary(binaryPath, env);
         assert.equal(inspected.state, testCase.expected, testCase.name);
-        if (testCase.expected === 'verified') assert.equal(inspected.path, binaryPath);
+        if (testCase.expected === 'verified') assert.equal(inspected.path, await realpath(binaryPath));
         if (testCase.expectedLock) {
           assert.equal(inspected.lock?.classification, testCase.expectedLock, testCase.name);
           assert.equal(inspected.lock?.owner?.binary_path, binaryPath, testCase.name);
