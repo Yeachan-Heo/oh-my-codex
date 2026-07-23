@@ -8786,10 +8786,11 @@ function isAllowedDeepInterviewCommandSpecificBash(
 // no unsafe inherited Bash startup (`BASH_ENV`) or conductor shell state
 // (imported handlers, unsafe options, untrusted absolute commands), no
 // imported `omx` shell function shadow, no inherited Node loader/OpenSSL
-// startup overrides, no inherited dynamic-loader controls, no
-// command-resolution/runtime environment assignments — and the bare `omx`
-// token must resolve to the hook package's own canonical CLI under the
-// inherited PATH, never to a PATH-shadowed or repository lookalike
+// startup overrides, no inherited Node filesystem-output controls (coverage,
+// compile cache, report/redirect destinations), no inherited dynamic-loader
+// controls, no command-resolution/runtime environment assignments — and the
+// bare `omx` token must resolve to the hook package's own canonical CLI
+// under the inherited PATH, never to a PATH-shadowed or repository lookalike
 // executable. This reuses the established conductor executable-resolution
 // and runtime-startup safety model instead of inventing a parallel one.
 const DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES = [
@@ -8801,7 +8802,8 @@ const DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES = [
 function directOmxCancelCommandHasTrustedExecutionContext(command: string, cwd: string): boolean {
   if (commandHasUnsafeConductorShellState(command, cwd)) return false;
   if (safeString(process.env["BASH_FUNC_omx%%"]).trim() !== "") return false;
-  if (DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES.some((name) => safeString(process.env[name]).trim() !== "")) return false;
+  const unsafeInheritedNames = [...DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES, ...CONDUCTOR_NODE_OUTPUT_ENVIRONMENT_NAMES];
+  if (unsafeInheritedNames.some((name) => safeString(process.env[name]).trim() !== "")) return false;
   if (commandHasUnsafeDynamicLoaderEnvironment(command)) return false;
   if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
   const words = tokenizeConductorShellWords(command);
