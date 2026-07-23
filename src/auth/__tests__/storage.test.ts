@@ -5,7 +5,13 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicWriteFile, addSlotFromAuthFile, listSlots, readAuthMetadata, useSlot } from "../storage.js";
-import { resolveLiveAuthPath, resolveOmxAuthDir, resolveSlotPath, validateSlotName } from "../paths.js";
+import {
+  resolveAuthMetadataPath,
+  resolveLiveAuthPath,
+  resolveOmxAuthDir,
+  resolveSlotPath,
+  validateSlotName,
+} from "../paths.js";
 
 async function tempHome(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "omx-auth-storage-"));
@@ -90,6 +96,45 @@ describe("auth slot storage", () => {
       );
       assert.equal(await readFile(target, "utf-8"), "original\n");
       assert.equal(existsSync(`${target}.tmp`), false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps live auth unchanged when slot metadata is malformed", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, ".codex", "auth.json");
+      await mkdir(join(home, ".codex"), { recursive: true });
+      await mkdir(resolveOmxAuthDir(home), { recursive: true });
+      await writeFile(live, '{"access_token":"original"}\n');
+      await writeFile(resolveSlotPath("work", home), '{"access_token":"replacement"}\n');
+      await writeFile(resolveAuthMetadataPath(home), "{not-json\n");
+
+      await assert.rejects(useSlot("work", live, home));
+
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"original"}\n');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps live auth unchanged when slot metadata contains an invalid slot", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, ".codex", "auth.json");
+      await mkdir(join(home, ".codex"), { recursive: true });
+      await mkdir(resolveOmxAuthDir(home), { recursive: true });
+      await writeFile(live, '{"access_token":"original"}\n');
+      await writeFile(resolveSlotPath("work", home), '{"access_token":"replacement"}\n');
+      await writeFile(
+        resolveAuthMetadataPath(home),
+        `${JSON.stringify({ version: 1, slots: [{ slot: "../invalid" }] })}\n`,
+      );
+
+      await assert.rejects(useSlot("work", live, home), /invalid auth slot name/);
+
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"original"}\n');
     } finally {
       await rm(home, { recursive: true, force: true });
     }
