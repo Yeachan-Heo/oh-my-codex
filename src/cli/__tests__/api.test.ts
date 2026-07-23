@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   nestedRepoLocalApiBinaryPath,
@@ -39,6 +40,9 @@ function shouldSkipForSpawnPermissions(err?: string): boolean {
   return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
 }
 
+const fixturePackageRoot = join(tmpdir(), 'omx-api-package-root');
+
+
 describe('resolveApiBinaryPath', () => {
   it('prefers OMX_API_BIN override', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-api-override-'));
@@ -58,36 +62,34 @@ describe('resolveApiBinaryPath', () => {
 
   it('checks Linux musl packaged paths before glibc and legacy paths', () => {
     assert.deepEqual(
-      packagedApiBinaryCandidatePaths('/repo', 'linux', 'x64', {}, ['musl', 'glibc']),
+      packagedApiBinaryCandidatePaths(fixturePackageRoot, 'linux', 'x64', {}, ['musl', 'glibc']),
       [
-        '/repo/bin/native/linux-x64-musl/omx-api',
-        '/repo/bin/native/linux-x64-glibc/omx-api',
-        '/repo/bin/native/linux-x64/omx-api',
+        join(fixturePackageRoot, 'bin', 'native', 'linux-x64-musl', 'omx-api'),
+        join(fixturePackageRoot, 'bin', 'native', 'linux-x64-glibc', 'omx-api'),
+        join(fixturePackageRoot, 'bin', 'native', 'linux-x64', 'omx-api'),
       ],
     );
   });
 
   it('falls back from packaged binary to repo-local build artifact', () => {
-    const packageRoot = '/repo';
-    const repoLocal = repoLocalApiBinaryPath(packageRoot);
+    const repoLocal = repoLocalApiBinaryPath(fixturePackageRoot);
     assert.equal(
-      resolveApiBinaryPath({ packageRoot, exists: (path) => path === repoLocal }),
+      resolveApiBinaryPath({ packageRoot: fixturePackageRoot, exists: (path) => path === repoLocal }),
       repoLocal,
     );
   });
 
   it('falls back to nested repo-local native build artifact when present', () => {
-    const packageRoot = '/repo';
-    const nestedRepoLocal = nestedRepoLocalApiBinaryPath(packageRoot);
+    const nestedRepoLocal = nestedRepoLocalApiBinaryPath(fixturePackageRoot);
     assert.equal(
-      resolveApiBinaryPath({ packageRoot, exists: (path) => path === nestedRepoLocal }),
+      resolveApiBinaryPath({ packageRoot: fixturePackageRoot, exists: (path) => path === nestedRepoLocal }),
       nestedRepoLocal,
     );
   });
 
   it('throws with checked paths when neither packaged nor repo-local binary exists', () => {
     assert.throws(
-      () => resolveApiBinaryPath({ packageRoot: '/repo', exists: () => false }),
+      () => resolveApiBinaryPath({ packageRoot: fixturePackageRoot, exists: () => false }),
       /native binary not found/,
     );
   });
@@ -103,6 +105,7 @@ describe('resolveApiBinaryPath', () => {
       await mkdir(cachedDir, { recursive: true });
       await writeFile(cachedBinary, '#!/bin/sh\n');
       await chmod(cachedBinary, 0o755);
+      await writeFile(`${cachedBinary}.sha256`, `${createHash('sha256').update('#!/bin/sh\n').digest('hex')}\n`, { mode: 0o600 });
 
       assert.equal(
         await resolveApiBinaryPathWithHydration({
@@ -114,6 +117,53 @@ describe('resolveApiBinaryPath', () => {
         }),
         cachedBinary,
       );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the first rejected cache entry instead of an earlier missing candidate', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-api-rejected-cache-'));
+    try {
+      await writeFile(join(cwd, 'package.json'), JSON.stringify({ version: '0.8.15' }));
+      const cacheDir = join(cwd, 'cache');
+      const rejected = join(cacheDir, '0.8.15', 'linux-x64-glibc', 'omx-api', 'omx-api');
+      await mkdir(dirname(rejected), { recursive: true });
+      await writeFile(rejected, 'unverified');
+      await assert.rejects(
+        () => resolveApiBinaryPathWithHydration({
+          packageRoot: cwd,
+          platform: 'linux',
+          arch: 'x64',
+          linuxLibcPreference: ['musl', 'glibc'],
+          env: { OMX_NATIVE_CACHE_DIR: cacheDir, OMX_NATIVE_AUTO_FETCH: '0' },
+        }),
+        (error: Error) => error.message.includes(rejected) && error.message.includes('legacy-unverified'),
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a sidecarless managed cache binary and falls through to the packaged authority', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-api-sidecarless-'));
+    try {
+      await writeFile(join(cwd, 'package.json'), JSON.stringify({ version: '0.8.15' }));
+      const cacheDir = join(cwd, 'cache');
+      const cachedDir = join(cacheDir, '0.8.15', 'linux-x64-musl', 'omx-api');
+      const cachedBinary = join(cachedDir, 'omx-api');
+      const packaged = join(cwd, 'bin', 'native', 'linux-x64-musl', 'omx-api');
+      await mkdir(cachedDir, { recursive: true });
+      await mkdir(dirname(packaged), { recursive: true });
+      await writeFile(cachedBinary, '#!/bin/sh\necho untrusted\n');
+      await writeFile(packaged, '#!/bin/sh\necho packaged\n');
+      assert.equal(await resolveApiBinaryPathWithHydration({
+        packageRoot: cwd,
+        platform: 'linux',
+        arch: 'x64',
+        linuxLibcPreference: ['musl'],
+        env: { OMX_NATIVE_CACHE_DIR: cacheDir, OMX_NATIVE_AUTO_FETCH: '0' },
+      }), packaged);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

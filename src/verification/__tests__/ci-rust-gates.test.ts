@@ -26,6 +26,13 @@ function assertJobIf(workflow: string, jobName: string, expected: RegExp): void 
   assert.match(jobBlock(workflow, jobName), expected, `${jobName} should have the expected lane predicate`);
 }
 
+type GitHubJobResult = 'success' | 'failure' | 'cancelled' | 'skipped';
+
+function satisfiesCiStatusContract(result: GitHubJobResult, active: boolean): boolean {
+  return active ? result === 'success' : result === 'success' || result === 'skipped';
+}
+
+
 function classifyChangedPaths(paths: string[]): Record<string, string> {
   const workflow = readCiWorkflow();
   const changesJob = jobBlock(workflow, 'changes');
@@ -263,10 +270,50 @@ describe('CI Rust gates', () => {
     assert.doesNotMatch(testJob, /^\s+npm run build$/m);
   });
 
+  it('defines the native-cache-integrity matrix and aggregate-status contract exactly', () => {
+    const workflow = readCiWorkflow();
+    const nativeCacheJob = jobBlock(workflow, 'native-cache-integrity');
+    const ciStatusJob = jobBlock(workflow, 'ci-status');
+
+    assert.match(nativeCacheJob, /^    runs-on:\s*\$\{\{ matrix\.os \}\}$/m);
+    assert.match(nativeCacheJob, /^    timeout-minutes:\s*30$/m);
+    assert.match(nativeCacheJob, /^    needs:\s*\[changes, build-dist\]$/m);
+    assert.match(nativeCacheJob, /^    if: \$\{\{ needs\.changes\.outputs\.full_suite == 'true' \|\| needs\.changes\.outputs\.ts_changed == 'true' \|\| needs\.changes\.outputs\.native_changed == 'true' \|\| needs\.changes\.outputs\.shared_config_changed == 'true' \}\}$/m);
+    assert.match(nativeCacheJob, /strategy:\s*\n\s+fail-fast:\s*false\s*\n\s+matrix:\s*\n\s+os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
+    assert.match(nativeCacheJob, /uses:\s*actions\/checkout@v7/);
+    assert.match(nativeCacheJob, /uses:\s*actions\/setup-node@v7\s*\n\s+with:\s*\n\s+node-version:\s*20\s*\n\s+cache:\s*npm/);
+    assert.match(nativeCacheJob, /run:\s*npm ci/);
+    assert.match(nativeCacheJob, /name:\s*Download prebuilt dist artifact\s*\n\s+uses:\s*actions\/download-artifact@v8\s*\n\s+with:\s*\n\s+name:\s*ci-dist-node20\s*\n\s+path:\s*dist/);
+    assert.match(nativeCacheJob, /node --test\s*\\\n\s+dist\/cli\/__tests__\/native-assets\.test\.js\s*\\\n\s+dist\/cli\/__tests__\/sparkshell-cli\.test\.js\s*\\\n\s+dist\/cli\/__tests__\/api\.test\.js\s*\\\n\s+dist\/scripts\/__tests__\/verify-native-release-assets\.test\.js\s*\\\n\s+dist\/verification\/__tests__\/native-release-manifest\.test\.js\s*\\\n\s+dist\/verification\/__tests__\/explore-harness-release-workflow\.test\.js\s*\\\n\s+dist\/verification\/__tests__\/ci-rust-gates\.test\.js/);
+
+    assert.match(ciStatusJob, /^    if: always\(\)$/m);
+    assert.match(ciStatusJob, /^    needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build\]$/m);
+    assert.match(ciStatusJob, /NATIVE_CACHE_INTEGRITY_RESULT: \$\{\{ needs\.native-cache-integrity\.result \}\}/);
+    assert.match(ciStatusJob, /if \[\[ "\$FULL_SUITE" == "true" \]\] \|\| bool_any "\$TS_CHANGED" "\$NATIVE_CHANGED" "\$SHARED_CONFIG_CHANGED"; then native_cache_integrity_active=true; fi/);
+    assert.match(ciStatusJob, /check_job native-cache-integrity "\$NATIVE_CACHE_INTEGRITY_RESULT" "\$native_cache_integrity_active"/);
+  });
+
+  it('models CI-status active and inactive result semantics deterministically', () => {
+    const cases: Array<{ active: boolean; result: GitHubJobResult; accepted: boolean }> = [
+      { active: true, result: 'success', accepted: true },
+      { active: true, result: 'failure', accepted: false },
+      { active: true, result: 'cancelled', accepted: false },
+      { active: true, result: 'skipped', accepted: false },
+      { active: false, result: 'skipped', accepted: true },
+      { active: false, result: 'success', accepted: true },
+      { active: false, result: 'failure', accepted: false },
+      { active: false, result: 'cancelled', accepted: false },
+    ];
+
+    for (const { active, result, accepted } of cases) {
+      assert.equal(satisfiesCiStatusContract(result, active), accepted, `active=${active} result=${result}`);
+    }
+  });
+
   it('uses npm package caching without skipping clean dependency installs', () => {
     const workflow = readCiWorkflow();
 
-    for (const jobName of ['lint', 'typecheck', 'build-dist', 'test', 'coverage-team-critical', 'ralph-persistence-gate', 'build']) {
+    for (const jobName of ['lint', 'typecheck', 'build-dist', 'test', 'coverage-team-critical', 'ralph-persistence-gate', 'native-cache-integrity', 'build']) {
       const job = jobBlock(workflow, jobName);
 
       assert.match(job, /uses:\s*actions\/setup-node@v7/);
@@ -283,7 +330,7 @@ describe('CI Rust gates', () => {
 
     assert.match(
       workflow,
-      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, build\]/,
+      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build\]/,
     );
   });
 
@@ -311,12 +358,13 @@ describe('CI Rust gates', () => {
       'test',
       'coverage-team-critical',
       'ralph-persistence-gate',
+      'native-cache-integrity',
       'build',
     ];
 
     assert.match(
       ciStatusJob,
-      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, build\]/,
+      /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build\]/,
     );
 
     for (const jobName of requiredJobs) {
@@ -333,6 +381,8 @@ describe('CI Rust gates', () => {
     assert.match(ciStatusJob, /ts_active=false/);
     assert.match(ciStatusJob, /dist_active=false/);
     assert.match(ciStatusJob, /build_active=false/);
+    assert.match(ciStatusJob, /native_cache_integrity_active=false/);
+    assert.match(ciStatusJob, /check_job native-cache-integrity "\$NATIVE_CACHE_INTEGRITY_RESULT" "\$native_cache_integrity_active"/);
     assert.match(ciStatusJob, /All required CI checks passed for active lanes/);
   });
 
@@ -368,6 +418,7 @@ describe('CI Rust gates', () => {
       'test',
       'coverage-team-critical',
       'ralph-persistence-gate',
+      'native-cache-integrity',
       'build',
       'ci-status',
     ]) {

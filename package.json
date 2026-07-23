@@ -95,13 +95,20 @@
   "dependencies": {
     "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@napi-rs/lzma": "1.4.1",
+    "tar-stream": "2.2.0",
+    "yauzl": "3.4.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
     "@types/node": "^26.0.0",
+    "@types/tar-stream": "2.2.3",
+    "@types/yauzl": "2.10.3",
+    "@types/yazl": "2.4.5",
     "c8": "^11.0.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "yazl": "3.3.1"
   },
   "overrides": {
     "ajv": ">=8.18.0",

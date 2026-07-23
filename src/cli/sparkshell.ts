@@ -16,6 +16,7 @@ import {
   hydrateNativeBinary,
   resolveLinuxNativeLibcPreference,
   resolveCachedNativeBinaryCandidatePaths,
+  inspectManagedNativeBinary,
 } from './native-assets.js';
 
 const OMX_SPARKSHELL_BIN_ENV = SPARKSHELL_BIN_ENV_SHARED;
@@ -155,12 +156,15 @@ export async function resolveSparkShellBinaryPathWithHydration(
   }
 
   const version = await getPackageVersion(packageRoot);
+  let rejectedCache: { path: string; state: string } | undefined;
   for (const cached of resolveCachedNativeBinaryCandidatePaths('omx-sparkshell', version, platform, arch, env, {
     linuxLibcPreference: platform === 'linux'
       ? (linuxLibcPreference ?? resolveLinuxNativeLibcPreference({ env }))
       : undefined,
   })) {
-    if (exists(cached)) return cached;
+    const inspected = await inspectManagedNativeBinary(cached, env);
+    if (inspected.state === 'verified') return inspected.path!;
+    if (inspected.state !== 'missing') rejectedCache ??= { path: cached, state: inspected.state };
   }
 
   for (const packaged of packagedSparkShellBinaryCandidatePaths(packageRoot, platform, arch, env, linuxLibcPreference)) {
@@ -178,7 +182,8 @@ export async function resolveSparkShellBinaryPathWithHydration(
 
   throw new Error(
     `[sparkshell] native binary not found. Checked cached/native candidates under ${packageRoot}, ${repoLocal}, and ${nestedRepoLocal}. `
-      + `Reconnect to the network so OMX can fetch the release asset, or set ${OMX_SPARKSHELL_BIN_ENV} to override the path.`
+      + `${rejectedCache ? `Rejected managed cache entry ${rejectedCache.path} (${rejectedCache.state}). ` : ''}`
+      + `Reconnect to the network so OMX can fetch the release asset, or set ${OMX_SPARKSHELL_BIN_ENV} to override the path.`,
   );
 }
 
@@ -231,7 +236,17 @@ interface SparkShellFallbackInvocation {
 }
 
 interface RunSparkShellFallbackOptions {
+  cause?: unknown;
+  nativePath?: string;
+  state?: string;
   announce?: boolean;
+}
+
+function sanitizeFallbackDiagnostic(value: unknown): string {
+  return String(value instanceof Error ? value.message : value ?? 'unknown')
+    .replace(/[\r\n\t\0]/g, ' ')
+    .replace(/[^\x20-\x7e]/g, '?')
+    .slice(0, 500);
 }
 
 interface ParseSparkShellFallbackOptions {
@@ -333,10 +348,10 @@ export function parseSparkShellFallbackInvocation(
 }
 
 function runSparkShellFallback(args: readonly string[], options: RunSparkShellFallbackOptions = {}): void {
-  const { announce = true } = options;
+  const { announce = true, cause = 'native sidecar unavailable', nativePath = 'native-resolution', state = 'unavailable' } = options;
   const invocation = parseSparkShellFallbackInvocation(args);
   if (announce) {
-    process.stderr.write('[sparkshell] native sidecar unavailable; falling back to raw command execution without summary support.\n');
+    process.stderr.write(`[sparkshell] native sidecar unavailable; cause=${sanitizeFallbackDiagnostic(cause)}; path=${sanitizeFallbackDiagnostic(nativePath)}; state=${sanitizeFallbackDiagnostic(state)}; remediation=install a compatible native sidecar, reconnect for hydration, or set ${OMX_SPARKSHELL_BIN_ENV}. Falling back to raw command execution without summary support.\n`);
   }
   const result = spawnSync(invocation.argv[0], invocation.argv.slice(1), {
     cwd: process.cwd(),
@@ -379,7 +394,7 @@ export async function sparkshellCommand(args: string[]): Promise<void> {
     binaryPath = await resolveSparkShellBinaryPathWithHydration();
   } catch (error) {
     if (!hasExplicitOverride) {
-      runSparkShellFallback(args);
+      runSparkShellFallback(args, { cause: error, state: 'resolution-failed' });
       return;
     }
     throw error;
@@ -390,7 +405,7 @@ export async function sparkshellCommand(args: string[]): Promise<void> {
     const errno = result.error as NodeJS.ErrnoException;
     const kind = classifySpawnError(errno);
     if (!hasExplicitOverride && (kind === 'missing' || kind === 'blocked')) {
-      runSparkShellFallback(args);
+      runSparkShellFallback(args, { cause: errno, nativePath: binaryPath, state: kind });
       return;
     }
     if (kind === 'missing') {
@@ -403,8 +418,11 @@ export async function sparkshellCommand(args: string[]): Promise<void> {
   }
 
   if (!hasExplicitOverride && isSparkShellNativeCompatibilityFailure(result)) {
-    process.stderr.write('[sparkshell] GLIBC-incompatible native sidecar detected; falling back to raw command execution without summary support.\n');
-    runSparkShellFallback(args, { announce: false });
+    runSparkShellFallback(args, {
+      cause: result.stderr || 'GLIBC-incompatible native sidecar',
+      nativePath: binaryPath,
+      state: 'glibc-incompatible',
+    });
     return;
   }
 

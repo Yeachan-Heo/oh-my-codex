@@ -1,68 +1,76 @@
 #!/usr/bin/env node
-import { readFileSync, statSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { inspectNativeArchive, selectNativeArchiveBinary } from '../native-assets/archive.js';
+import {
+  validateNativeReleaseManifest,
+  type NativeReleaseManifestPolicyInput,
+} from '../native-assets/policy.js';
 
-function usage(): void {
+function usage(): never {
   console.error('Usage: node scripts/verify-native-release-assets.mjs --manifest <path> --artifacts-dir <dir>');
   process.exit(1);
 }
+
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
-  if (index === -1) return undefined;
-  return process.argv[index + 1];
+  return index === -1 ? undefined : process.argv[index + 1];
 }
+
 function walk(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...walk(full));
-    else files.push(full);
+    else if (entry.isFile()) files.push(full);
   }
   return files;
 }
+
 function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function archiveContainsBinary(members: string[], binaryPath: string): boolean {
-  return members.includes(binaryPath)
-    || members.some((member) => member.endsWith(`/${binaryPath}`))
-    || members.some((member) => member.replace(/\\/g, '/').endsWith(`/${binaryPath.replace(/\\/g, '/')}`));
+function basenameIndex(files: string[]): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const file of files) {
+    const name = file.split(/[\\/]/).at(-1)!;
+    if (result.has(name)) throw new Error(`duplicate artifact basename: ${name}`);
+    result.set(name, file);
+  }
+  return result;
 }
 
 const manifestPath = arg('--manifest');
 const artifactsDir = arg('--artifacts-dir');
 if (!manifestPath || !artifactsDir) usage();
 
-interface ManifestAsset {
-  archive: string;
-  size?: number;
-  sha256: string;
-  binary_path: string;
-}
-
-const manifest = JSON.parse(readFileSync(resolve(manifestPath!), 'utf-8')) as { assets: ManifestAsset[] };
-const byName = new Map(walk(resolve(artifactsDir!)).map((file) => [file.split('/').pop()!, file]));
-
+const manifest = JSON.parse(readFileSync(resolve(manifestPath), 'utf-8')) as NativeReleaseManifestPolicyInput;
+if (manifest.tag !== `v${manifest.version}`) throw new Error('manifest tag/version mismatch');
+validateNativeReleaseManifest(manifest);
+if (manifest.assets.length === 0) throw new Error('release manifest must declare at least one native archive');
+const byName = basenameIndex(walk(resolve(artifactsDir)));
+const manifestArchives = new Set<string>();
 for (const asset of manifest.assets) {
+  if (!/\.(?:tar\.xz|tar\.gz|zip)$/i.test(asset.archive)) throw new Error(`unsupported native archive format: ${asset.archive}`);
+  if (manifestArchives.has(asset.archive)) throw new Error(`duplicate manifest archive: ${asset.archive}`);
+  manifestArchives.add(asset.archive);
   const archivePath = byName.get(asset.archive);
   if (!archivePath) throw new Error(`missing archive ${asset.archive}`);
-  if (typeof asset.size === 'number' && statSync(archivePath).size !== asset.size) {
+  const expectedSize = asset.size;
+  if (!Number.isSafeInteger(expectedSize) || expectedSize === undefined || expectedSize <= 0 || statSync(archivePath).size !== expectedSize) {
     throw new Error(`size mismatch for ${asset.archive}`);
   }
-  if (sha256(archivePath) !== asset.sha256) {
+  if (!/^[a-f0-9]{64}$/i.test(asset.sha256) || sha256(archivePath) !== asset.sha256.toLowerCase()) {
     throw new Error(`checksum mismatch for ${asset.archive}`);
   }
-  const list = asset.archive.endsWith('.zip')
-    ? spawnSync('python3', ['-c', 'import sys, zipfile; z=zipfile.ZipFile(sys.argv[1]); print("\\n".join(z.namelist()))', archivePath], { encoding: 'utf-8' })
-    : spawnSync('tar', ['-tf', archivePath], { encoding: 'utf-8' });
-  if (list.status !== 0) throw new Error(`unable to inspect archive ${asset.archive}: ${list.stderr || list.stdout}`);
-  const members = String(list.stdout || '').split(/\r?\n/).filter(Boolean);
-  if (!archiveContainsBinary(members, asset.binary_path)) {
-    throw new Error(`archive ${asset.archive} is missing ${asset.binary_path}`);
-  }
+  const entries = await inspectNativeArchive(archivePath);
+  selectNativeArchiveBinary(entries, asset.binary_path);
 }
 
+const archiveFiles = [...byName.keys()].filter((name) => /\.(?:tar\.xz|tar\.gz|zip)$/i.test(name));
+for (const archive of archiveFiles) {
+  if (!manifestArchives.has(archive)) throw new Error(`archive is not declared by manifest: ${archive}`);
+}
 console.log(`[native-release-assets] verified ${manifest.assets.length} assets`);

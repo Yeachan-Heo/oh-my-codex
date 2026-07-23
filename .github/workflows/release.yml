@@ -179,13 +179,22 @@ jobs:
         run: |
           dist plan --output-format=json > dist-plan.json
           mkdir -p release-assets
-          find release-artifacts -type f \( -name '*.tar.xz' -o -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} release-assets/ \;
+          while IFS= read -r -d '' source; do
+            destination="release-assets/$(basename "$source")"
+            if [[ -e "$destination" || -L "$destination" ]]; then
+              echo "release asset basename collision: $source -> $destination" >&2
+              exit 1
+            fi
+            cp -- "$source" "$destination"
+          done < <(find release-artifacts -type f \( -name '*.tar.xz' -o -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -print0)
           node dist/scripts/generate-native-release-manifest.js \
             --plan dist-plan.json \
             --artifacts-dir release-assets \
             --out release-assets/native-release-manifest.json \
             --release-base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
             --require-products "omx-api,omx-explore-harness,omx-sparkshell"
+      - name: Verify release archives and manifest
+        run: node dist/scripts/verify-native-release-assets.js --manifest release-assets/native-release-manifest.json --artifacts-dir release-assets
       - name: Upload release asset bundle for follow-up jobs
         uses: actions/upload-artifact@v4
         with:

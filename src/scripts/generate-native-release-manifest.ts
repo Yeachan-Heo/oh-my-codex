@@ -1,16 +1,22 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
+import { inspectNativeArchive, selectNativeArchiveBinary } from '../native-assets/archive.js';
+import {
+  nativeTargetMapping,
+  validateNativeReleaseManifest,
+  type NativeReleaseAssetPolicyInput,
+} from '../native-assets/policy.js';
 
-function usage(): void {
+function usage(): never {
   console.error('Usage: node scripts/generate-native-release-manifest.mjs --plan <path> --artifacts-dir <dir> --out <path> --release-base-url <url> [--require-products a,b]');
   process.exit(1);
 }
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
-  if (index === -1) return undefined;
-  return process.argv[index + 1];
+  return index === -1 ? undefined : process.argv[index + 1];
 }
 
 function walk(dir: string): string[] {
@@ -18,41 +24,30 @@ function walk(dir: string): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...walk(full));
-    else files.push(full);
+    else if (entry.isFile()) files.push(full);
   }
   return files;
 }
 
-function parseChecksum(raw: string): string {
-  return String(raw).trim().split(/\s+/)[0];
+function sha256(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-interface TripleMapping {
-  platform: string;
-  arch: string;
-  libc?: string;
+function checksum(raw: string, artifact: string): string {
+  const value = raw.trim().split(/\s+/)[0] || '';
+  if (!/^[a-f0-9]{64}$/i.test(value)) throw new Error(`invalid SHA-256 sidecar for ${artifact}`);
+  return value.toLowerCase();
 }
 
-function mapTriple(triple: string): TripleMapping | undefined {
-  switch (triple) {
-    case 'x86_64-unknown-linux-gnu': return { platform: 'linux', arch: 'x64', libc: 'glibc' };
-    case 'aarch64-unknown-linux-gnu': return { platform: 'linux', arch: 'arm64', libc: 'glibc' };
-    case 'x86_64-unknown-linux-musl': return { platform: 'linux', arch: 'x64', libc: 'musl' };
-    case 'aarch64-unknown-linux-musl': return { platform: 'linux', arch: 'arm64', libc: 'musl' };
-    case 'x86_64-apple-darwin': return { platform: 'darwin', arch: 'x64' };
-    case 'aarch64-apple-darwin': return { platform: 'darwin', arch: 'arm64' };
-    case 'x86_64-pc-windows-msvc': return { platform: 'win32', arch: 'x64' };
-    case 'aarch64-pc-windows-msvc': return { platform: 'win32', arch: 'arm64' };
-    default: return undefined;
+function basenameIndex(files: string[]): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const file of files) {
+    const name = file.split(/[\\/]/).at(-1)!;
+    if (result.has(name)) throw new Error(`duplicate artifact basename: ${name}`);
+    result.set(name, file);
   }
+  return result;
 }
-
-const planPath = arg('--plan');
-const artifactsDir = arg('--artifacts-dir');
-const outPath = arg('--out');
-const releaseBaseUrl = arg('--release-base-url');
-const requireProducts = (arg('--require-products') || '').split(',').map((value) => value.trim()).filter(Boolean);
-if (!planPath || !artifactsDir || !outPath || !releaseBaseUrl) usage();
 
 interface PlanArtifact {
   kind: string;
@@ -73,75 +68,79 @@ interface Plan {
   announcement_tag: string;
 }
 
-interface ManifestAsset {
-  product: string;
-  version: string;
-  platform: string;
-  arch: string;
-  target: string;
-  libc?: string;
-  archive: string;
-  binary: string;
-  binary_path: string;
-  sha256: string;
-  size: number;
-  download_url: string;
+const planPath = arg('--plan');
+const artifactsDir = arg('--artifacts-dir');
+const outPath = arg('--out');
+const releaseBaseUrl = arg('--release-base-url');
+const requireProducts = (arg('--require-products') || '').split(',').map((value) => value.trim()).filter(Boolean);
+if (!planPath || !artifactsDir || !outPath || !releaseBaseUrl) usage();
+
+const plan = JSON.parse(readFileSync(resolve(planPath), 'utf-8')) as Plan;
+if (!/^v[^\s/]+$/.test(plan.announcement_tag)) throw new Error('announcement tag must be a v-prefixed release version');
+const version = plan.announcement_tag.slice(1);
+if (!Array.isArray(plan.releases) || plan.releases.length === 0 || plan.releases.some((release) => release.app_version !== version)) {
+  throw new Error(`release versions must exactly match announcement tag ${plan.announcement_tag}`);
 }
 
-const plan = JSON.parse(readFileSync(resolve(planPath!), 'utf-8')) as Plan;
-const files = walk(resolve(artifactsDir!));
-const byName = new Map(files.map((file) => [file.split('/').pop()!, file]));
-const assets: ManifestAsset[] = [];
-
+const byName = basenameIndex(walk(resolve(artifactsDir)));
+const assets: NativeReleaseAssetPolicyInput[] = [];
 for (const artifact of Object.values(plan.artifacts)) {
   if (artifact.kind !== 'executable-zip') continue;
-  const triple = artifact.target_triples?.[0];
-  const mapped = triple ? mapTriple(triple) : undefined;
-  if (!mapped) continue;
-  const executable = (artifact.assets || []).find((asset) => asset.kind === 'executable');
-  if (!executable) continue;
+  if (!Array.isArray(artifact.target_triples) || artifact.target_triples.length !== 1) {
+    throw new Error(`expected exactly one target triple for ${artifact.name}`);
+  }
+  const target = artifact.target_triples[0]!;
+  const mapping = nativeTargetMapping(target);
+  if (!mapping) throw new Error(`unsupported native target ${target}`);
+  if (!/\.(?:tar\.xz|tar\.gz|zip)$/i.test(artifact.name)) throw new Error(`unsupported native archive format: ${artifact.name}`);
+  const executable = artifact.assets?.filter((asset) => asset.kind === 'executable') ?? [];
+  if (executable.length !== 1) throw new Error(`expected exactly one executable for ${artifact.name}`);
+  const binary = executable[0]!;
   const archivePath = byName.get(artifact.name);
   const checksumPath = byName.get(artifact.checksum);
-  if (!archivePath || !checksumPath) {
-    throw new Error(`missing artifact files for ${artifact.name}`);
-  }
-
-  const release = plan.releases.find((item) => item.app_name === executable.name || item.app_name === executable.id?.split('-exe-')[0]);
-  const version = release?.app_version || plan.announcement_tag.replace(/^v/, '');
+  if (!archivePath || !checksumPath) throw new Error(`missing artifact files for ${artifact.name}`);
+  if (statSync(archivePath).size <= 0 || statSync(checksumPath).size <= 0) throw new Error(`empty artifact file for ${artifact.name}`);
+  const expectedSha256 = checksum(readFileSync(checksumPath, 'utf-8'), artifact.name);
+  if (sha256(archivePath) !== expectedSha256) throw new Error(`checksum mismatch for ${artifact.name}`);
+  const archiveEntries = await inspectNativeArchive(archivePath);
+  selectNativeArchiveBinary(archiveEntries, binary.path);
+  const release = plan.releases.find((item) => item.app_name === binary.name || item.app_name === binary.id?.split('-exe-')[0]);
+  if (!release || release.app_version !== version) throw new Error(`missing coherent release metadata for ${artifact.name}`);
   assets.push({
-    product: executable.name,
+    product: release.app_name,
     version,
-    platform: mapped.platform,
-    arch: mapped.arch,
-    target: triple!,
-    ...(mapped.libc ? { libc: mapped.libc } : {}),
+    platform: mapping.platform,
+    arch: mapping.arch,
+    target,
+    ...(mapping.libc ? { libc: mapping.libc } : {}),
     archive: artifact.name,
-    binary: executable.name,
-    binary_path: executable.path,
-    sha256: parseChecksum(readFileSync(checksumPath, 'utf-8')),
+    binary: basename(binary.path),
+    binary_path: binary.path,
+    sha256: expectedSha256,
     size: statSync(archivePath).size,
-    download_url: `${releaseBaseUrl!.replace(/\/$/, '')}/${artifact.name}`,
+    download_url: `${releaseBaseUrl.replace(/\/$/, '')}/${artifact.name}`,
   });
 }
 
 const manifest = {
   manifest_version: 1,
-  version: plan.announcement_tag.replace(/^v/, ''),
+  version,
   tag: plan.announcement_tag,
   generated_at: new Date().toISOString(),
   assets: assets.sort((a, b) => {
-    const keyCompare = `${a.product}-${a.platform}-${a.arch}`.localeCompare(`${b.product}-${b.platform}-${b.arch}`);
-    if (keyCompare !== 0) return keyCompare;
-    const libcOrder: Record<string, number> = { musl: 0, glibc: 1 };
-    const libcCompare = (libcOrder[a.libc ?? ''] ?? 2) - (libcOrder[b.libc ?? ''] ?? 2);
-    if (libcCompare !== 0) return libcCompare;
-    return a.archive.localeCompare(b.archive);
+    const libcRank = (asset: NativeReleaseAssetPolicyInput): number => asset.libc === 'musl' ? 0 : asset.libc === 'glibc' ? 1 : 2;
+    return a.product.localeCompare(b.product)
+      || a.platform.localeCompare(b.platform)
+      || a.arch.localeCompare(b.arch)
+      || libcRank(a) - libcRank(b)
+      || a.archive.localeCompare(b.archive);
   }),
 };
+if (manifest.assets.length === 0) throw new Error('release manifest must declare at least one native archive');
+validateNativeReleaseManifest(manifest);
+if (manifest.tag !== `v${manifest.version}`) throw new Error('manifest tag/version mismatch');
 for (const product of requireProducts) {
-  if (!manifest.assets.some((asset) => asset.product === product)) {
-    throw new Error(`missing required product in release manifest: ${product}`);
-  }
+  if (!manifest.assets.some((asset) => asset.product === product)) throw new Error(`missing required product in release manifest: ${product}`);
 }
-writeFileSync(resolve(outPath!), `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(resolve(outPath!));
+writeFileSync(resolve(outPath), `${JSON.stringify(manifest, null, 2)}\n`);
+console.log(resolve(outPath));

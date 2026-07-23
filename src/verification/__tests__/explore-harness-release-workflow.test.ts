@@ -3,6 +3,35 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+function releaseUploadRunsAfterVerifier(
+  workflow: string,
+  uploadName: string,
+  verifierResult: 'success' | 'failure',
+): boolean {
+  const verification = workflow.indexOf('Verify release archives and manifest');
+  const upload = workflow.indexOf(uploadName);
+  const nextStep = workflow.indexOf('\n      - name:', upload + uploadName.length);
+  const uploadBlock = workflow.slice(upload, nextStep === -1 ? workflow.length : nextStep);
+  return verification >= 0 && upload > verification && verifierResult === 'success' && !/^\s+if:/m.test(uploadBlock);
+}
+
+function flattenReleaseArtifacts(sourcePaths: string[]): string[] {
+  const destinations = new Set<string>();
+
+  for (const source of sourcePaths) {
+    const basename = source.slice(source.lastIndexOf('/') + 1);
+    if (destinations.has(basename)) {
+      throw new Error(`release asset basename collision: ${source} -> release-assets/${basename}`);
+    }
+    destinations.add(basename);
+  }
+
+  return [...destinations];
+}
+
+
+
+
 describe('native release workflow', () => {
   it('defines a unified tag workflow that publishes both Rust binaries before npm publish', () => {
     const workflowPath = join(process.cwd(), '.github', 'workflows', 'release.yml');
@@ -59,6 +88,56 @@ describe('native release workflow', () => {
     assert.match(workflow, /smoke-verify-native:[\s\S]*npm run build[\s\S]*node dist\/scripts\/verify-native-release-assets\.js/);
     assert.match(workflow, /smoke-packed-install:[\s\S]*npm run build[\s\S]*Smoke test packed install boot \+ core commands[\s\S]*npm run smoke:packed-install/);
     assert.match(workflow, /publish-npm:[\s\S]*Verify version sync against workspace crates[\s\S]*npm pack --dry-run/);
+
+    const manifestGeneration = workflow.indexOf('Generate release manifest from cargo-dist plan');
+    const verification = workflow.indexOf('Verify release archives and manifest');
+    const bundleUpload = workflow.indexOf('Upload release asset bundle for follow-up jobs');
+    const releaseUpload = workflow.indexOf('Attach native assets to GitHub Release');
+    assert.ok(manifestGeneration >= 0, 'release workflow must generate the manifest');
+    assert.ok(verification > manifestGeneration, 'release workflow must verify after manifest generation');
+    assert.ok(bundleUpload > verification, 'release bundle upload must occur after verification');
+    assert.ok(releaseUpload > bundleUpload, 'GitHub Release upload must occur after the verified bundle upload');
+    assert.match(workflow, /Verify release archives and manifest[\s\S]*node dist\/scripts\/verify-native-release-assets\.js/);
+
+    const bundleUploadBlock = workflow.slice(bundleUpload, workflow.indexOf('Generate release body', bundleUpload));
+    const releaseUploadBlock = workflow.slice(releaseUpload, workflow.indexOf('Write release summary', releaseUpload));
+    assert.doesNotMatch(bundleUploadBlock, /^\s+if:/m, 'bundle upload must retain the default success() condition');
+    assert.doesNotMatch(releaseUploadBlock, /^\s+if:/m, 'release attachment must retain the default success() condition');
+    for (const uploadName of ['Upload release asset bundle for follow-up jobs', 'Attach native assets to GitHub Release']) {
+      assert.equal(releaseUploadRunsAfterVerifier(workflow, uploadName, 'success'), true, `${uploadName} must run after successful verification`);
+      assert.equal(releaseUploadRunsAfterVerifier(workflow, uploadName, 'failure'), false, `${uploadName} must not run when verification fails`);
+    }
+  });
+
+  it('fails closed before manifest generation when downloaded artifacts share a basename', () => {
+    const duplicateArchiveBasenameFixture = [
+      'release-artifacts/native-x86/omx-api-v0.20.3-x86_64-unknown-linux-gnu.tar.xz',
+      'release-artifacts/native-arm/omx-api-v0.20.3-x86_64-unknown-linux-gnu.tar.xz',
+    ];
+    const duplicateChecksumBasenameFixture = [
+      'release-artifacts/native-x86/omx-api-v0.20.3-x86_64-unknown-linux-gnu.tar.xz.sha256',
+      'release-artifacts/native-arm/omx-api-v0.20.3-x86_64-unknown-linux-gnu.tar.xz.sha256',
+    ];
+    for (const fixture of [duplicateArchiveBasenameFixture, duplicateChecksumBasenameFixture]) {
+      assert.throws(
+        () => flattenReleaseArtifacts(fixture),
+        /release asset basename collision: release-artifacts\/native-arm\/.* -> release-assets\//,
+      );
+    }
+
+    const workflowPath = join(process.cwd(), '.github', 'workflows', 'release.yml');
+    const workflow = readFileSync(workflowPath, 'utf-8');
+    const manifestGeneration = workflow.indexOf('Generate release manifest from cargo-dist plan');
+    const verification = workflow.indexOf('Verify release archives and manifest', manifestGeneration);
+    const bundleUpload = workflow.indexOf('Upload release asset bundle for follow-up jobs', manifestGeneration);
+    const collisionCheck = workflow.indexOf('release asset basename collision:', manifestGeneration);
+    const copy = workflow.indexOf('cp -- "$source" "$destination"', manifestGeneration);
+
+    assert.ok(collisionCheck > manifestGeneration, 'collision detection must be in the artifact collection step');
+    assert.ok(copy > collisionCheck, 'collision detection must run before copying an artifact basename');
+    assert.ok(verification > copy, 'verification must not run when collision detection blocks manifest generation');
+    assert.ok(bundleUpload > verification, 'upload must not run when collision detection blocks manifest generation or verification');
+    assert.match(workflow, /destination="release-assets\/\$\(basename "\$source"\)"[\s\S]*if \[\[ -e "\$destination" \|\| -L "\$destination" \]\]; then[\s\S]*exit 1[\s\S]*cp -- "\$source" "\$destination"/);
   });
 
   it('keeps cargo-dist Linux targets aligned with musl-first plus glibc fallback assets', () => {

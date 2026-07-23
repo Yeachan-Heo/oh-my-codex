@@ -541,6 +541,40 @@ jobs:
       - name: Run Ralph persistence verification matrix
         run: npm run test:ralph-persistence:compiled
 
+  native-cache-integrity:
+    name: Native Cache Integrity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    needs: [changes, build-dist]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.native_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download prebuilt dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ci-dist-node20
+          path: dist
+      - name: Verify native-cache integrity boundary
+        shell: bash
+        run: |
+          node --test \
+            dist/cli/__tests__/native-assets.test.js \
+            dist/cli/__tests__/sparkshell-cli.test.js \
+            dist/cli/__tests__/api.test.js \
+            dist/scripts/__tests__/verify-native-release-assets.test.js \
+            dist/verification/__tests__/native-release-manifest.test.js \
+            dist/verification/__tests__/explore-harness-release-workflow.test.js \
+            dist/verification/__tests__/ci-rust-gates.test.js
+
   build:
     name: Build (Full Source Build)
     runs-on: ubuntu-latest
@@ -576,7 +610,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, build]
+    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build]
     steps:
       - name: Check required job results
         shell: bash
@@ -600,6 +634,7 @@ jobs:
           COVERAGE_TEAM_CRITICAL_RESULT: ${{ needs.coverage-team-critical.result }}
           RALPH_PERSISTENCE_GATE_RESULT: ${{ needs.ralph-persistence-gate.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          NATIVE_CACHE_INTEGRITY_RESULT: ${{ needs.native-cache-integrity.result }}
           REASON: ${{ needs.changes.outputs.reason }}
         run: |
           set -euo pipefail
@@ -653,6 +688,7 @@ jobs:
           echo "  coverage-team-critical: $COVERAGE_TEAM_CRITICAL_RESULT"
           echo "  ralph-persistence-gate: $RALPH_PERSISTENCE_GATE_RESULT"
           echo "  build: $BUILD_RESULT"
+          echo "  native-cache-integrity: $NATIVE_CACHE_INTEGRITY_RESULT"
 
           check_job changes "$CHANGES_RESULT" true
 
@@ -661,11 +697,13 @@ jobs:
           ts_active=false
           dist_active=false
           build_active=false
+          native_cache_integrity_active=false
           if [[ "$FULL_SUITE" == "true" ]] || [[ "$DOCS_CHANGED" == "true" ]]; then docs_active=true; fi
           if [[ "$FULL_SUITE" == "true" ]] || bool_any "$RUST_CHANGED" "$NATIVE_CHANGED"; then rust_active=true; fi
           if [[ "$FULL_SUITE" == "true" ]] || bool_any "$TS_CHANGED" "$SHARED_CONFIG_CHANGED"; then ts_active=true; fi
           if [[ "$FULL_SUITE" == "true" ]] || bool_any "$TS_CHANGED" "$RUST_CHANGED" "$NATIVE_CHANGED" "$SHARED_CONFIG_CHANGED"; then dist_active=true; fi
           if [[ "$FULL_SUITE" == "true" ]] || bool_any "$RUST_CHANGED" "$NATIVE_CHANGED" "$SHARED_CONFIG_CHANGED"; then build_active=true; fi
+          if [[ "$FULL_SUITE" == "true" ]] || bool_any "$TS_CHANGED" "$NATIVE_CHANGED" "$SHARED_CONFIG_CHANGED"; then native_cache_integrity_active=true; fi
 
           check_job docs-check "$DOCS_CHECK_RESULT" "$docs_active"
           check_job rustfmt "$RUSTFMT_RESULT" "$rust_active"
@@ -678,6 +716,7 @@ jobs:
           check_job test "$TEST_RESULT" "$ts_active"
           check_job coverage-team-critical "$COVERAGE_TEAM_CRITICAL_RESULT" "$ts_active"
           check_job ralph-persistence-gate "$RALPH_PERSISTENCE_GATE_RESULT" "$ts_active"
+          check_job native-cache-integrity "$NATIVE_CACHE_INTEGRITY_RESULT" "$native_cache_integrity_active"
           check_job build "$BUILD_RESULT" "$build_active"
 
           if (( failures > 0 )); then

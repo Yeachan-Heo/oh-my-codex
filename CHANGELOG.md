@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Native cache integrity boundary** — managed cache binaries without their `.sha256` sidecar are rejected; checksum verification establishes integrity, not a signature. On a retained hydration lock, confirm that no OMX hydration process is active for that cache key, remove only that named lock manually, then retry. SparkShell warns and falls back to raw command execution without summary support when its native sidecar is unavailable or GLIBC-incompatible. Binary and checksum sidecars are published as two files and are not an atomic pair; the lock protocol provides process-crash-safe, fail-closed publication, with manual retained-lock remediation, rather than recovery from a process crash.
+
 ## [0.20.3] - 2026-07-19
 
 Patch release for the reliability and workflow-safety work in `v0.20.2..f967cfed64ec57614af136f75d7cb81509808f7e`, plus one additive, backward-compatible feature. No intentional breaking CLI or package-layout changes.

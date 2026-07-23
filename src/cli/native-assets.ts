@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, createWriteStream, existsSync, readdirSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
-import { dirname, extname, join, resolve } from 'node:path';
+import { constants, createWriteStream, existsSync, readdirSync } from 'node:fs';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
+import { homedir, hostname, tmpdir } from 'node:os';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { getPackageRoot } from '../utils/package.js';
+import { validateNativeReleaseManifest } from '../native-assets/policy.js';
+import { inspectNativeArchive, selectNativeArchiveBinary, writeSelectedNativeArchiveMember } from '../native-assets/archive.js';
 
 export type NativeProduct = 'omx-explore-harness' | 'omx-sparkshell' | 'omx-api';
 export type NativeLibc = 'musl' | 'glibc';
@@ -240,7 +242,10 @@ export async function loadNativeReleaseManifest(
   if (!response.ok) {
     throw new Error(`[native-assets] failed to fetch native release manifest (${response.status} ${response.statusText}) from ${url}`);
   }
-  return await response.json() as NativeReleaseManifest;
+  const manifest = await response.json() as NativeReleaseManifest;
+  validateNativeReleaseManifest(manifest as never);
+  if (version && manifest.version !== version) throw new Error(`[native-assets] manifest version mismatch: expected ${version}, received ${manifest.version}`);
+  return manifest;
 }
 
 function isUnavailableManifestError(error: unknown): boolean {
@@ -270,52 +275,388 @@ async function sha256ForFile(path: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function extractArchive(archivePath: string, destinationDir: string): Promise<void> {
-  await mkdir(destinationDir, { recursive: true });
-  const ext = extname(archivePath).toLowerCase();
-  if (ext === '.zip') {
-    const { result } = spawnPlatformCommandSync(
-      process.platform === 'win32' ? 'powershell' : 'unzip',
-      process.platform === 'win32'
-        ? ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destinationDir.replace(/'/g, "''")}' -Force`]
-        : ['-oq', archivePath, '-d', destinationDir],
-      { encoding: 'utf-8' },
-    );
-    if (result.status !== 0 || result.error) {
-      throw new Error(`[native-assets] failed to extract zip archive ${archivePath}: ${(result.stderr || result.error?.message || '').trim()}`);
-    }
-    return;
-  }
 
-  const { result } = spawnPlatformCommandSync('tar', ['-xf', archivePath, '-C', destinationDir], { encoding: 'utf-8' });
-  if (result.status !== 0 || result.error) {
-    throw new Error(`[native-assets] failed to extract archive ${archivePath}: ${(result.stderr || result.error?.message || '').trim()}`);
+const SIDECAR_SUFFIX = '.sha256';
+const LOCK_SUFFIX = '.hydrate.lock';
+const LOCK_WAIT_MS = 10_000;
+const LOCK_RETRY_MS = 100;
+const NATIVE_LOCK_WAIT_MS_ENV = 'OMX_NATIVE_LOCK_WAIT_MS';
+
+const SHA256_LINE = /^[0-9a-f]{64}\n$/;
+
+export type ManagedNativeBinaryState =
+  | 'verified'
+  | 'missing'
+  | 'publication-in-progress'
+  | 'binary-unsafe'
+  | 'binary-empty'
+  | 'orphan-checksum'
+  | 'checksum-unsafe'
+  | 'checksum-malformed'
+  | 'checksum-mismatch'
+  | 'legacy-unverified'
+  | 'cache-descendant-unsafe'
+  | 'inspection-race'
+  | 'publication-lock-timeout'
+  | 'cleanup-failed';
+
+export interface NativeCacheLockDiagnostic {
+  path: string;
+  classification: 'valid-owner-record' | 'metadata-malformed' | 'lock-unsafe' | 'inspection-race' | 'metadata-unavailable';
+  owner?: { pid: number; hostname: string; started_at: string; binary_path: string };
+}
+
+export interface ManagedNativeBinaryInspection {
+  state: ManagedNativeBinaryState;
+  /** Present only when opened-handle verification authorizes this exact binary. */
+  path?: string;
+  lock?: NativeCacheLockDiagnostic;
+}
+
+interface FileIdentity { dev: number | bigint; ino: number | bigint; size: number; }
+interface OpenedFile extends FileIdentity { digest?: string; text?: string; }
+interface PublicationLock { path: string; token: string; record: string; identity: FileIdentity; }
+
+function sidecarPath(binaryPath: string): string { return `${binaryPath}${SIDECAR_SUFFIX}`; }
+function lockPath(binaryPath: string): string { return `${binaryPath}${LOCK_SUFFIX}`; }
+function sameFile(left: FileIdentity, right: FileIdentity): boolean { return left.dev === right.dev && left.ino === right.ino && left.size === right.size; }
+function errno(error: unknown): string | undefined { return (error as NodeJS.ErrnoException).code; }
+function uuid(): string { return crypto.randomUUID(); }
+function absent(error: unknown): boolean { return errno(error) === 'ENOENT'; }
+
+function lockWaitMs(env: NodeJS.ProcessEnv): number {
+  const configured = env[NATIVE_LOCK_WAIT_MS_ENV]?.trim();
+  if (!configured) return LOCK_WAIT_MS;
+  const value = Number(configured);
+  return Number.isFinite(value) && value >= 0 ? value : LOCK_WAIT_MS;
+}
+
+function lockRecord(token: string, binaryPath: string): string {
+  return `${JSON.stringify({
+    version: 1,
+    token,
+    pid: process.pid,
+    hostname: hostname(),
+    started_at: new Date().toISOString(),
+    binary_path: binaryPath,
+  })}\n`;
+}
+
+
+function canonicalDescendantPath(path: string, configuredRoot: string, canonicalRoot: string): string {
+  const rel = relative(resolve(configuredRoot), resolve(path));
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('[native-assets] cache path escapes configured root');
+  return join(canonicalRoot, rel);
+}
+
+async function canonicalCacheRoot(root: string, create: boolean): Promise<string | undefined> {
+  try {
+    if (create) await mkdir(root, { recursive: true, mode: 0o700 });
+    const entry = await lstat(root);
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) throw new Error('unsafe root');
+    return await realpath(root); // The configured root itself is intentionally allowed to be a symlink.
+  } catch (error) {
+    if (!create && absent(error)) return undefined;
+    throw error;
   }
 }
 
-async function findExtractedBinaryPath(rootDir: string, binaryPath: string): Promise<string | undefined> {
-  const normalizedNeedle = binaryPath.replaceAll('\\', '/');
-  const exactCandidate = join(rootDir, binaryPath);
-  if (existsSync(exactCandidate)) return exactCandidate;
-
-  const pending = [rootDir];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    const entries = await readdir(current, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = join(current, entry.name);
-      if (entry.isDirectory()) {
-        pending.push(fullPath);
-        continue;
-      }
-      const relative = fullPath.slice(rootDir.length + 1).replaceAll('\\', '/');
-      if (relative === normalizedNeedle || relative.endsWith(`/${normalizedNeedle}`)) {
-        return fullPath;
-      }
+async function validateDescendant(path: string, canonicalRoot: string, createParents: boolean): Promise<void> {
+  const candidate = resolve(path);
+  const rel = relative(canonicalRoot, candidate);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || resolve(canonicalRoot, rel) !== candidate) {
+    throw new Error('[native-assets] cache path escapes configured root');
+  }
+  const parts = rel.split(sep).filter(Boolean);
+  let current = canonicalRoot;
+  for (const [index, part] of parts.entries()) {
+    current = join(current, part);
+    const isLeaf = index === parts.length - 1;
+    try {
+      const entry = await lstat(current);
+      if (!isLeaf && (entry.isSymbolicLink() || !entry.isDirectory())) throw new Error(`[native-assets] cache descendant is unsafe: ${current}`);
+    } catch (error) {
+      if (!absent(error)) throw error;
+      if (!createParents || isLeaf) continue;
+      await mkdir(current, { mode: 0o700 });
+      const created = await lstat(current);
+      if (!created.isDirectory() || created.isSymbolicLink()) throw new Error(`[native-assets] cache descendant is unsafe: ${current}`);
     }
   }
+  try {
+    const parent = await realpath(dirname(path));
+    if (parent !== canonicalRoot && !parent.startsWith(`${canonicalRoot}${sep}`)) throw new Error('[native-assets] cache path escapes configured root');
+  } catch (error) {
+    if (!absent(error)) throw error;
+  }
+}
 
+async function reInspectPath(path: string, identity: FileIdentity, requireNonEmpty: boolean): Promise<void> {
+  try {
+    const current = await lstat(path);
+    if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1
+      || (requireNonEmpty && current.size <= 0)
+      || !sameFile(identity, { dev: current.dev, ino: current.ino, size: current.size })) {
+      throw new Error('inspection race');
+    }
+  } catch (error) {
+    if (absent(error)) throw new Error('inspection race');
+    throw error;
+  }
+}
+
+async function readOpenedFile(path: string, requireNonEmpty: boolean, hash: boolean, maxBytes?: number): Promise<OpenedFile> {
+  const before = await lstat(path);
+  if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1) throw new Error('unsafe file');
+  if (requireNonEmpty && before.size <= 0) throw new Error('empty file');
+  if (maxBytes !== undefined && before.size > maxBytes) throw new Error('file too large');
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = await handle.stat();
+    const identity = { dev: opened.dev, ino: opened.ino, size: opened.size };
+    if (!opened.isFile() || opened.nlink !== 1 || (requireNonEmpty && opened.size <= 0)
+      || (maxBytes !== undefined && opened.size > maxBytes)
+      || !sameFile({ dev: before.dev, ino: before.ino, size: before.size }, identity)) throw new Error('inspection race');
+    const chunks: Buffer[] = [];
+    const digest = hash ? createHash('sha256') : undefined;
+    const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes ?? 64 * 1024));
+    let position = 0;
+    while (position < opened.size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, opened.size - position), position);
+      if (bytesRead === 0) throw new Error('inspection race');
+      const bytes = buffer.subarray(0, bytesRead);
+      digest?.update(bytes);
+      if (!hash) chunks.push(Buffer.from(bytes));
+      position += bytesRead;
+    }
+    const after = await handle.stat();
+    if (!sameFile(identity, { dev: after.dev, ino: after.ino, size: after.size }) || after.nlink !== 1) throw new Error('inspection race');
+    await reInspectPath(path, identity, requireNonEmpty);
+    return { ...identity, digest: digest?.digest('hex'), text: hash ? undefined : Buffer.concat(chunks).toString('utf8') };
+  } finally { await handle.close(); }
+}
+
+const MAX_SIDECAR_BYTES = 65;
+const MAX_LOCK_RECORD_BYTES = 1024;
+
+function validLockRecord(record: Record<string, unknown>, text: string, binaryPath: string): record is {
+  version: 1; token: string; pid: number; hostname: string; started_at: string; binary_path: string;
+} {
+  if (record.version !== 1 || typeof record.token !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(record.token)
+    || typeof record.pid !== 'number' || !Number.isSafeInteger(record.pid) || record.pid <= 0
+    || typeof record.hostname !== 'string' || !record.hostname.trim()
+    || typeof record.started_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(record.started_at)
+    || !Number.isFinite(Date.parse(record.started_at))
+    || typeof record.binary_path !== 'string' || !record.binary_path.trim() || record.binary_path !== binaryPath) return false;
+  return text === `${JSON.stringify(record)}\n`;
+}
+
+function sanitizeLockDiagnosticField(value: string): string {
+  return value.replace(/[\r\n\t\0]/g, ' ').replace(/[^\x20-\x7e]/g, '?').slice(0, 512);
+}
+
+
+async function inspectLock(path: string, binaryPath: string): Promise<NativeCacheLockDiagnostic | undefined> {
+  try {
+    const file = await readOpenedFile(path, false, false, MAX_LOCK_RECORD_BYTES);
+    const text = file.text || '';
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const record = {
+      version: parsed.version,
+      token: parsed.token,
+      pid: parsed.pid,
+      hostname: parsed.hostname,
+      started_at: parsed.started_at,
+      binary_path: parsed.binary_path,
+    };
+    if (!validLockRecord(record, text, binaryPath)) return { path, classification: 'metadata-malformed' };
+    return {
+      path,
+      classification: 'valid-owner-record',
+      owner: {
+        pid: record.pid,
+        hostname: sanitizeLockDiagnosticField(record.hostname),
+        started_at: record.started_at,
+        binary_path: sanitizeLockDiagnosticField(record.binary_path),
+      },
+    };
+  } catch (error) {
+    if (absent(error)) return undefined;
+    const message = error instanceof Error ? error.message : '';
+    return { path, classification: message.includes('race') ? 'inspection-race' : message.includes('unsafe') ? 'lock-unsafe' : error instanceof SyntaxError || message.includes('too large') ? 'metadata-malformed' : 'metadata-unavailable' };
+  }
+}
+
+
+/** Inspects the exact B/S/L protocol. Only `verified` has a path. */
+export async function inspectManagedNativeBinary(binaryPath: string, env: NodeJS.ProcessEnv = process.env): Promise<ManagedNativeBinaryInspection> {
+  const configuredRoot = resolveNativeCacheRoot(env);
+  let root: string | undefined;
+  let effectiveBinaryPath: string;
+  try {
+    root = await canonicalCacheRoot(configuredRoot, false);
+    if (!root) return { state: 'missing' };
+    effectiveBinaryPath = canonicalDescendantPath(binaryPath, configuredRoot, root);
+    await validateDescendant(effectiveBinaryPath, root, false);
+    await validateDescendant(sidecarPath(effectiveBinaryPath), root, false);
+    await validateDescendant(lockPath(effectiveBinaryPath), root, false);
+  } catch (error) {
+    return { state: error instanceof Error && error.message.includes('race') ? 'inspection-race' : 'cache-descendant-unsafe' };
+  }
+  const lockDiagnostic = await inspectLock(lockPath(effectiveBinaryPath!), effectiveBinaryPath!);
+  try {
+    await validateDescendant(effectiveBinaryPath!, root!, false);
+    await validateDescendant(sidecarPath(effectiveBinaryPath!), root!, false);
+    await validateDescendant(lockPath(effectiveBinaryPath!), root!, false);
+  } catch {
+    return { state: 'inspection-race' };
+  }
+  let binary: OpenedFile | undefined;
+  try { binary = await readOpenedFile(effectiveBinaryPath!, true, true); } catch (error) {
+    if (!absent(error)) {
+      const message = error instanceof Error ? error.message : '';
+      return { state: message.includes('empty') ? 'binary-empty' : message.includes('race') ? 'inspection-race' : 'binary-unsafe', lock: lockDiagnostic };
+    }
+    try { await lstat(sidecarPath(effectiveBinaryPath!)); return { state: 'orphan-checksum', lock: lockDiagnostic }; } catch (sidecarError) {
+      if (!absent(sidecarError)) return { state: 'inspection-race', lock: lockDiagnostic };
+      return { state: lockDiagnostic ? 'publication-in-progress' : 'missing', lock: lockDiagnostic };
+
+    }
+  }
+  try { await validateDescendant(effectiveBinaryPath!, root!, false); } catch { return { state: 'inspection-race', lock: lockDiagnostic }; }
+  let sidecar: OpenedFile;
+  try { sidecar = await readOpenedFile(sidecarPath(effectiveBinaryPath!), true, false, MAX_SIDECAR_BYTES); } catch (error) {
+    if (absent(error)) return { state: lockDiagnostic ? 'publication-in-progress' : 'legacy-unverified', lock: lockDiagnostic };
+    return { state: error instanceof Error && error.message.includes('too large') ? 'checksum-malformed' : 'checksum-unsafe', lock: lockDiagnostic };
+  }
+  try { await validateDescendant(sidecarPath(effectiveBinaryPath!), root!, false); } catch { return { state: 'inspection-race', lock: lockDiagnostic }; }
+  if (sidecar.size !== MAX_SIDECAR_BYTES || !SHA256_LINE.test(sidecar.text || '')) return { state: 'checksum-malformed', lock: lockDiagnostic };
+  if (sidecar.text!.slice(0, 64) !== binary.digest) return { state: 'checksum-mismatch', lock: lockDiagnostic };
+  return { state: 'verified', path: effectiveBinaryPath!, lock: lockDiagnostic };
+}
+
+async function acquireCacheLock(binaryPath: string, env: NodeJS.ProcessEnv): Promise<PublicationLock> {
+
+  const path = lockPath(binaryPath);
+  const started = performance.now();
+  const deadline = started + lockWaitMs(env);
+
+  for (;;) {
+    const token = uuid();
+    const record = lockRecord(token, binaryPath);
+
+    const recordBytes = Buffer.from(record, 'utf8');
+    try {
+      const handle = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        const { bytesWritten } = await handle.write(recordBytes, 0, recordBytes.length, 0);
+        if (bytesWritten !== recordBytes.length) throw new Error('[native-assets] incomplete lock write');
+        const readback = Buffer.alloc(recordBytes.length);
+        const { bytesRead } = await handle.read(readback, 0, readback.length, 0);
+        if (bytesRead !== readback.length || !readback.equals(recordBytes)) throw new Error('[native-assets] lock readback mismatch');
+        const identity = await handle.stat();
+        const fileIdentity = { dev: identity.dev, ino: identity.ino, size: identity.size };
+        if (!identity.isFile() || identity.nlink !== 1) throw new Error('[native-assets] unsafe publication lock');
+        await reInspectPath(path, fileIdentity, true);
+        return { path, token, record, identity: fileIdentity };
+
+      } finally { await handle.close(); }
+    } catch (error) {
+      if (errno(error) !== 'EEXIST') throw error;
+      if (performance.now() >= deadline) {
+        const diagnostic = await inspectLock(path, binaryPath) ?? { path, classification: 'metadata-unavailable' as const };
+        const owner = diagnostic.owner ? ` owner=${JSON.stringify(diagnostic.owner)}` : '';
+        throw new Error(`[native-assets] publication-lock-timeout: ${path}; elapsed=${Math.round(performance.now() - started)}ms deadline=${lockWaitMs(env)}ms; ${diagnostic.classification}${owner}. Confirm no OMX hydration process is active for this cache key, remove only this named lock manually, then retry.`);
+      }
+
+      await new Promise<void>((done) => setTimeout(done, LOCK_RETRY_MS));
+    }
+  }
+}
+
+async function releaseCacheLock(lock: PublicationLock): Promise<ManagedNativeBinaryInspection | undefined> {
+  try {
+    const reopened = await readOpenedFile(lock.path, false, false);
+    if (!sameFile(lock.identity, reopened) || reopened.text !== lock.record) return { state: 'cleanup-failed' };
+    const current = await lstat(lock.path);
+    if (!sameFile(lock.identity, { dev: current.dev, ino: current.ino, size: current.size }) || !current.isFile() || current.nlink !== 1) return { state: 'cleanup-failed' };
+    await unlink(lock.path);
+  } catch (error) { return absent(error) ? undefined : { state: 'cleanup-failed' }; }
   return undefined;
+}
+
+async function quarantineInvalid(path: string): Promise<void> {
+  try {
+    await lstat(path);
+    await rename(path, `${path}.quarantine.${uuid()}`);
+  } catch (error) { if (!absent(error)) throw error; }
+}
+
+async function publishManagedNativeBinary(source: string, destination: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const configuredRoot = resolveNativeCacheRoot(env);
+  const root = await canonicalCacheRoot(configuredRoot, true);
+  if (!root) throw new Error('[native-assets] unable to create cache root');
+  destination = canonicalDescendantPath(destination, configuredRoot, root);
+  await validateDescendant(destination, root, true);
+  const lock = await acquireCacheLock(destination, env);
+  const attempt = uuid();
+  const tempBinary = join(dirname(destination), `.${attempt}.tmp.bin`);
+  const tempSidecar = join(dirname(destination), `.${attempt}.tmp.sha256`);
+  const revalidatePublicationPaths = async (): Promise<void> => {
+    await validateDescendant(destination, root, false);
+    await validateDescendant(sidecarPath(destination), root, false);
+    await validateDescendant(lock.path, root, false);
+    await validateDescendant(tempBinary, root, false);
+    await validateDescendant(tempSidecar, root, false);
+  };
+  let primaryError: unknown;
+  try {
+    await revalidatePublicationPaths();
+    const existing = await inspectManagedNativeBinary(destination, env);
+    if (existing.state === 'verified') return existing.path;
+    await copyFile(source, tempBinary, constants.COPYFILE_EXCL);
+    await revalidatePublicationPaths();
+    if (platform !== 'win32') await chmod(tempBinary, 0o755);
+    const binary = await readOpenedFile(tempBinary, true, true);
+    const sidecar = `${binary.digest}\n`;
+    const handle = await open(tempSidecar, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try { await handle.writeFile(sidecar, 'utf8'); } finally { await handle.close(); }
+    if ((await readOpenedFile(tempSidecar, true, false, MAX_SIDECAR_BYTES)).text !== sidecar) throw new Error('[native-assets] temporary checksum verification failed');
+    await revalidatePublicationPaths();
+    await quarantineInvalid(destination);
+    await revalidatePublicationPaths();
+    await quarantineInvalid(sidecarPath(destination));
+    await revalidatePublicationPaths();
+    await rename(tempBinary, destination);
+    await revalidatePublicationPaths();
+    await rename(tempSidecar, sidecarPath(destination));
+    await revalidatePublicationPaths();
+    const final = await inspectManagedNativeBinary(destination, env);
+    await revalidatePublicationPaths();
+    if (final.state !== 'verified') throw new Error(`[native-assets] cache publication verification failed: ${final.state}`);
+    return final.path;
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    const cleanupFailures: string[] = [];
+    try { await revalidatePublicationPaths(); } catch (error) {
+      cleanupFailures.push(`revalidate publication paths: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    for (const temporary of [tempBinary, tempSidecar]) {
+      try { await rm(temporary, { force: true }); } catch (error) {
+        cleanupFailures.push(`remove ${temporary}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const lockCleanup = await releaseCacheLock(lock);
+    if (lockCleanup) cleanupFailures.push(`${lockCleanup.state}: publication lock was retained`);
+    if (cleanupFailures.length > 0) {
+      const evidence = `[native-assets] cleanup evidence: ${cleanupFailures.join('; ')}`;
+      if (primaryError instanceof Error) primaryError.message += `\n${evidence}`;
+      else throw new Error(evidence);
+    }
+  }
 }
 
 export async function hydrateNativeBinary(
@@ -335,7 +676,8 @@ export async function hydrateNativeBinary(
 
   const version = await getPackageVersion(packageRoot);
   for (const cachedBinaryPath of resolveCachedNativeBinaryCandidatePaths(product, version, platform, arch, env)) {
-    if (existsSync(cachedBinaryPath)) return cachedBinaryPath;
+    const inspected = await inspectManagedNativeBinary(cachedBinaryPath, env);
+    if (inspected.state === 'verified') return inspected.path!;
   }
 
   let manifest: NativeReleaseManifest;
@@ -351,7 +693,7 @@ export async function hydrateNativeBinary(
   if (assets.length === 0) return undefined;
 
   const tempRoot = await mkdtemp(join(tmpdir(), `${product}-${platform}-${arch}-`));
-  const extractDir = join(tempRoot, 'extract');
+  const extractedBinaryPath = join(tempRoot, 'native-binary');
 
   try {
     for (let index = 0; index < assets.length; index += 1) {
@@ -376,20 +718,17 @@ export async function hydrateNativeBinary(
           throw new Error(`[native-assets] checksum mismatch for ${asset.archive}`);
         }
 
-        await extractArchive(archivePath, extractDir);
-        const extractedBinaryPath = await findExtractedBinaryPath(extractDir, asset.binary_path);
-        if (!extractedBinaryPath) {
-          throw new Error(`[native-assets] extracted archive missing expected binary ${asset.binary_path}`);
-        }
+        const archiveEntries = await inspectNativeArchive(archivePath);
+        const archiveBinary = selectNativeArchiveBinary(archiveEntries, asset.binary_path);
+        await writeSelectedNativeArchiveMember(archivePath, archiveBinary.path, extractedBinaryPath);
 
-        await mkdir(dirname(cachedBinaryPath), { recursive: true });
-        await copyFile(extractedBinaryPath, cachedBinaryPath);
-        if (platform !== 'win32') chmodSync(cachedBinaryPath, 0o755);
-        return cachedBinaryPath;
+        const published = await publishManagedNativeBinary(extractedBinaryPath, cachedBinaryPath, platform, env);
+        if (published) return published;
+        throw new Error(`[native-assets] cache publication verification failed for ${cachedBinaryPath}`);
       } catch (error) {
         if (index < assets.length - 1 && isUnavailableArchiveError(error)) {
           await rm(archivePath, { force: true });
-          await rm(extractDir, { recursive: true, force: true });
+          await rm(extractedBinaryPath, { force: true });
           continue;
         }
         throw error;
