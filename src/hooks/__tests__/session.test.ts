@@ -1202,7 +1202,10 @@ describe('session pointer transaction', () => {
       }]);
 
       warnings.length = 0;
-      await writeSessionStart(cwd, 'sess-degraded-start', { platform: 'win32' });
+      await writeSessionStart(cwd, 'sess-degraded-start', {
+        platform: 'win32',
+        regularFileSync: async () => {},
+      });
       assert.deepEqual(warnings, []);
 
       await withPointerDependencies({

@@ -382,19 +382,24 @@ export async function ensureTmuxHookInitialized(cwd = process.cwd()): Promise<vo
 
 async function showTmuxHookStatus(): Promise<void> {
   const cwd = process.cwd();
+  const configPath = tmuxHookConfigPath(cwd);
   const statePath = tmuxHookStatePath(cwd);
   const logPath = tmuxHookLogPath(cwd);
 
   console.log('tmux-hook status');
   console.log('----------------');
-  const { config, initResult } = await loadConfigForCommand('status', cwd);
-  const configPath = tmuxHookConfigPath(cwd);
+  if (!existsSync(configPath)) {
+    console.log(`Config: missing (${configPath})`);
+    console.log('Run: omx tmux-hook init');
+    console.log(`State: ${existsSync(statePath) ? statePath : `missing (${statePath})`}`);
+    console.log(`Log (today): ${existsSync(logPath) ? logPath : 'none yet'}`);
+    return;
+  }
+
+  const { config } = await loadConfigForCommand('status', cwd);
   console.log(`Config: ${configPath}`);
   console.log(`Enabled: ${config.enabled ? 'yes' : 'no'}`);
   console.log(`Target: ${config.target.type}:${config.target.value}`);
-  if (initResult?.usedPlaceholderTarget) {
-    console.log('Target Status: placeholder (set `target.value` to enable injection)');
-  }
   console.log(`Allowed Modes: ${config.allowed_modes.join(', ')}`);
   console.log(`Cooldown: ${config.cooldown_ms}ms`);
   console.log(`Max Injections/Pane: ${config.max_injections_per_session}`);

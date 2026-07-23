@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, realpathSync } from "node:fs";
 import {
 	chmod,
@@ -26454,6 +26455,54 @@ PY`,
       assert.equal(result.omxEventName, "stop");
       assert.equal(result.outputJson?.decision, "block");
       assert.equal(result.outputJson?.stopReason, "session_pointer_unusable");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Stop without lifecycle side effects when session.json points to a definitely dead owner", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-dead-owner-"));
+    const deadOwner = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    const deadPid = deadOwner.pid;
+    assert.ok(deadPid);
+    await once(deadOwner, "exit");
+
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stale-dead-owner";
+      const pointerPath = join(stateDir, "session.json");
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(pointerPath, {
+        session_id: sessionId,
+        cwd,
+        pid: deadPid,
+        platform: process.platform,
+        started_at: "2026-01-01T00:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        current_phase: "verifying",
+        session_id: sessionId,
+      });
+      const pointerBefore = await readFile(pointerPath, "utf8");
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-stale-dead-owner",
+          stop_hook_active: true,
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(pointerPath, "utf8"), pointerBefore);
+      assert.equal(existsSync(join(stateDir, "native-stop-state.json")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

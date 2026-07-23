@@ -20282,6 +20282,13 @@ export async function dispatchCodexNativeHook(
         skipRalphStopBlock: isSubagentStop,
         skipAutoNudge: isSubagentStop,
       }) ?? await buildCompletedGoalCleanupStopOutput(payload, cwd);
+    } else if (
+      stopAuthorizationFailure?.stopReason === "session_pointer_unusable"
+      && pointer.status === "stale-dead"
+    ) {
+      // A definitely dead owner cannot authorize or receive lifecycle writes.
+      // Allow Stop without side effects and preserve the stale pointer as evidence.
+      outputJson = null;
     } else {
       const failure = stopAuthorizationFailure ?? {
         stopReason: "session_pointer_unusable",
