@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { resolveWritableStateScope, WRITABLE_STATE_SCOPE_ERRORS } from '../mcp/state-paths.js';
 import {
   formatCodexGoalReconciliation,
   buildCompletedCodexGoalRemediation,
@@ -802,7 +803,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Fail-closed ordering: no durable ultragoal story/goal transition may run
+ * while writable lifecycle authority is unrestored. Only a present-but-
+ * unusable selected session pointer gates durable mutation; root-mode
+ * projects (no session.json) and unbound environments keep their existing
+ * behavior.
+ */
+export async function assertUltragoalWritableLifecycleAuthority(cwd: string): Promise<void> {
+  try {
+    await resolveWritableStateScope(cwd);
+  } catch (error) {
+    if (error instanceof Error && error.message === WRITABLE_STATE_SCOPE_ERRORS.unusableSession) {
+      throw new UltragoalError(
+        `Refusing a durable ultragoal mutation before writable lifecycle authority is restored: ${error.message} Bind the exact current session (set OMX_SESSION_ID to the current session id) or restart the session so SessionStart reconciles the stale pointer; see docs/troubleshooting.md (stale session pointer recovery).`,
+      );
+    }
+  }
+}
+
 async function withUltragoalMutationLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+  await assertUltragoalWritableLifecycleAuthority(cwd);
   await mkdir(ultragoalDir(cwd), { recursive: true });
   const lockPath = join(ultragoalDir(cwd), ULTRAGOAL_MUTATION_LOCK);
   let handle: Awaited<ReturnType<typeof open>> | undefined;

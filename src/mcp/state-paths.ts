@@ -3,7 +3,10 @@ import { existsSync, realpathSync, readFileSync } from 'fs';
 import { readFile, readdir } from 'fs/promises';
 import {
   isSessionStateUsable,
+  readSessionPointer,
   readUsableSessionState,
+  resolveSessionPointerContext,
+  type SessionPointerStatus,
   type SessionState,
 } from '../hooks/session.js';
 
@@ -511,11 +514,30 @@ function isKnownSessionAlias(sessionId: string, metadata: ResolvedSessionMetadat
 
 
 /**
+ * Classify the selected session.json pointer without treating every unusable
+ * class alike. A definitively dead pointer (stale-dead) carries no owner
+ * authority, while malformed, foreign-cwd, and identity-indeterminate
+ * pointers stay fail-closed. Returns 'error' when the pointer cannot even be
+ * classified, which must also stay fail-closed.
+ */
+async function classifySelectedSessionPointer(cwd: string): Promise<SessionPointerStatus | 'error'> {
+  try {
+    return (await readSessionPointer(resolveSessionPointerContext(cwd))).status;
+  } catch {
+    return 'error';
+  }
+}
+
+
+/**
  * Writable scope precedence:
  * - explicit session_id preserves explicit fork writes;
  * - a usable session.json supplies the only implicit session scope;
  * - OMX_SESSION_ID may bind a known alias only when the live tmux pane proves
  *   the canonical session tag;
+ * - a stale-dead session.json yields to an explicit exact-current
+ *   OMX_SESSION_ID binding (the dead owner holds no authority; SessionStart
+ *   remains the only pointer writer);
  * - root writes are allowed only when session.json is absent.
  */
 export async function resolveWritableStateScope(
@@ -537,6 +559,14 @@ export async function resolveWritableStateScope(
 
   if (!metadata) {
     if (existsSync(join(baseStateDir, 'session.json'))) {
+      const envSessionId = normalizeSessionId(process.env[OMX_SESSION_ID_ENV]);
+      if (envSessionId && (await classifySelectedSessionPointer(cwd)) === 'stale-dead') {
+        return {
+          source: 'session',
+          sessionId: envSessionId,
+          stateDir: join(baseStateDir, 'sessions', envSessionId),
+        };
+      }
       throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
     }
     if (normalizeSessionId(process.env[OMX_SESSION_ID_ENV])) {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'fs/promises';
 
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -29,6 +29,11 @@ import {
   WRITABLE_STATE_SCOPE_ERRORS,
 
 } from '../state-paths.js';
+
+import {
+  __resetSessionPointerTransactionDependenciesForTests,
+  __setSessionPointerTransactionDependenciesForTests,
+} from '../../hooks/session.js';
 
 
 const isolatedEnvKeys = [
@@ -891,6 +896,84 @@ describe('state paths', () => {
           sessionId: 'sess-canonical',
           stateDir: join(stateDir, 'sessions', 'sess-canonical'),
         });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it('binds an explicit exact-current OMX_SESSION_ID when the selected pointer is stale-dead', async () => {
+      const wd = await mkRealTemp('omx-writable-stale-dead-env-');
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+      try {
+        const stateDir = getBaseStateDir(wd);
+        await mkdir(stateDir, { recursive: true });
+        const pointerBody = JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 });
+        await writeFile(join(stateDir, 'session.json'), pointerBody);
+        process.env.OMX_SESSION_ID = 'sess-current';
+
+        assert.deepEqual(await resolveWritableStateScope(wd), {
+          source: 'session',
+          sessionId: 'sess-current',
+          stateDir: join(stateDir, 'sessions', 'sess-current'),
+        });
+
+        // Scope resolution must never mutate the selected pointer; SessionStart
+        // remains the only session.json writer.
+        assert.equal(await readFile(join(stateDir, 'session.json'), 'utf-8'), pointerBody);
+      } finally {
+        __resetSessionPointerTransactionDependenciesForTests();
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it('still fails closed for a stale-dead pointer without an env binding', async () => {
+      const wd = await mkRealTemp('omx-writable-stale-dead-noenv-');
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+      try {
+        const stateDir = getBaseStateDir(wd);
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 }));
+
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
+      } finally {
+        __resetSessionPointerTransactionDependenciesForTests();
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed for malformed and foreign-cwd pointers even with an env binding', async () => {
+      const wd = await mkRealTemp('omx-writable-ambiguous-env-');
+      try {
+        const stateDir = getBaseStateDir(wd);
+        await mkdir(stateDir, { recursive: true });
+        process.env.OMX_SESSION_ID = 'sess-current';
+
+        await writeFile(join(stateDir, 'session.json'), '{not json');
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
+
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+          session_id: 'sess-foreign',
+          cwd: join(wd, 'other-worktree'),
+        }));
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
       } finally {
         await rm(wd, { recursive: true, force: true });
       }

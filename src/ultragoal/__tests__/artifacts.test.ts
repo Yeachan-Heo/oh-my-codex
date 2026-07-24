@@ -1,8 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import {
+  __resetSessionPointerTransactionDependenciesForTests,
+  __setSessionPointerTransactionDependenciesForTests,
+} from '../../hooks/session.js';
 import {
   addUltragoalGoal,
   buildCodexGoalInstruction,
@@ -2198,4 +2203,51 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+
+  it('blocks durable ultragoal mutations while the selected pointer is stale-dead and no exact session is bound', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      delete process.env.OMX_SESSION_ID;
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+      try {
+        const stateDir = join(cwd, '.omx', 'state');
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-stale-dead', cwd, pid: 8388607 }));
+
+        await assert.rejects(
+          () => createUltragoalPlan(cwd, { brief: '- Ship the fix' }),
+          (error: unknown) => {
+            assert.match(String(error), /writable lifecycle authority/);
+            assert.match(String(error), /OMX_SESSION_ID/);
+            return true;
+          },
+        );
+        assert.equal(existsSync(join(cwd, '.omx', 'ultragoal', 'goals.json')), false);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        __resetSessionPointerTransactionDependenciesForTests();
+      }
+    });
+  });
+
+  it('allows durable ultragoal mutations after exact-session reconciliation of a stale-dead pointer', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      process.env.OMX_SESSION_ID = 'sess-current';
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+      try {
+        const stateDir = join(cwd, '.omx', 'state');
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-stale-dead', cwd, pid: 8388607 }));
+
+        const plan = await createUltragoalPlan(cwd, { brief: '- Ship the fix' });
+        assert.equal(plan.goals.length, 1);
+        assert.equal(existsSync(join(cwd, '.omx', 'ultragoal', 'goals.json')), true);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+        __resetSessionPointerTransactionDependenciesForTests();
+      }
+    });
+  });
 });

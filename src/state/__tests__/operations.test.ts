@@ -9,6 +9,10 @@ import { executeStateOperation } from '../operations.js';
 import { subagentTrackingPath } from '../../subagents/tracker.js';
 import { updateModeState } from '../../modes/base.js';
 import { WRITABLE_STATE_SCOPE_ERRORS } from '../../mcp/state-paths.js';
+import {
+  __resetSessionPointerTransactionDependenciesForTests,
+  __setSessionPointerTransactionDependenciesForTests,
+} from '../../hooks/session.js';
 
 async function withAmbientTmuxEnv<T>(env: NodeJS.ProcessEnv, run: () => Promise<T>): Promise<T> {
   const previousTmux = process.env.TMUX;
@@ -1898,6 +1902,41 @@ describe('state operations directory initialization', () => {
       });
       assert.deepEqual(listed.payload, { active_modes: ['ralplan'] });
     } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a stale-dead selected pointer with an explicit exact-current OMX_SESSION_ID (issue #3272)', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-stale-dead-repro-'));
+    const previousEnv = process.env.OMX_SESSION_ID;
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      // Repro of comment 5069023665: the selected pointer names a session whose
+      // PID is dead; the exact current session is bound through OMX_SESSION_ID.
+      const pointerBody = JSON.stringify({ session_id: 'sess-stale-dead', cwd: wd, pid: 8388607 });
+      await writeFile(join(stateDir, 'session.json'), pointerBody);
+      process.env.OMX_SESSION_ID = 'sess-current';
+
+      const response = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'ultragoal',
+        active: true,
+        current_phase: 'reviewing',
+        state: { goal_id: 'G001' },
+      });
+
+      const payload = responsePayload<{ success: boolean; path: string }>(response);
+      assert.equal(payload.success, true);
+      assert.equal(payload.path, join(stateDir, 'sessions', 'sess-current', 'ultragoal-state.json'));
+      assert.equal(existsSync(payload.path), true);
+      // The selected pointer is never rewritten by a scope-resolution read path.
+      assert.equal(await readFile(join(stateDir, 'session.json'), 'utf-8'), pointerBody);
+    } finally {
+      if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+      else delete process.env.OMX_SESSION_ID;
+      __resetSessionPointerTransactionDependenciesForTests();
       await rm(wd, { recursive: true, force: true });
     }
   });

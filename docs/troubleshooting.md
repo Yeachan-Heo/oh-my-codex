@@ -85,6 +85,28 @@ omx doctor --team
 
 Do not force-shutdown a team that may still have useful live panes or worker state. Prefer `omx team status <team-name>` and `tmux ls` first when unsure.
 
+
+## Stale session pointer blocks state writes (`session.json is present but unusable`)
+
+State writes fail closed with `Cannot resolve writable state scope: session.json is present but unusable.` when the selected pointer at `.omx/state/session.json` cannot supply a live, authoritative session — for example the recorded process is dead (`stale-dead`), the file is malformed, or it belongs to a different working directory. Durable Ultragoal mutations (`goals.json` story/goal transitions) also refuse to run in this state: no durable story transition happens before writable lifecycle authority is restored.
+
+### Exact-session reconciliation (stale-dead pointer)
+
+When the pointer's recorded PID is definitively dead, bind the exact current session explicitly and retry the same command — no manual file surgery:
+
+```bash
+export OMX_SESSION_ID=<current-session-id>
+omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"reviewing"}' --json
+```
+
+A stale-dead pointer holds no owner authority, so the validated `OMX_SESSION_ID` binding becomes the writable session scope (state lands under `.omx/state/sessions/<current-session-id>/`). Scope resolution never rewrites `session.json` itself; the next SessionStart hook reconciles the pointer through the normal pointer-lock protocol. Restarting the session achieves the same result without setting the variable.
+
+### Still fail-closed
+
+- A malformed, foreign-working-directory, or identity-indeterminate pointer always requires operator inspection; `OMX_SESSION_ID` does not override it.
+- Without an env binding, a stale-dead pointer still blocks writes — set `OMX_SESSION_ID` or restart.
+- A live pointer with an unmatched `OMX_SESSION_ID` fails closed as `OMX_SESSION_ID is not bound to session.json`.
+
 ## Shift+Enter submits instead of inserting a newline in tmux-backed OMX sessions
 
 This is usually **not** a net-new OMX feature gap.
