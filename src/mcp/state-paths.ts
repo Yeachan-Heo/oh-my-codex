@@ -23,6 +23,7 @@ const OMX_SESSION_ID_ENV = 'OMX_SESSION_ID';
 export const WRITABLE_STATE_SCOPE_ERRORS = {
   unusableSession: 'Cannot resolve writable state scope: session.json is present but unusable.',
   unboundEnvironment: 'Cannot resolve writable state scope: OMX_SESSION_ID is not bound to session.json.',
+  sessionBindingMismatch: 'Cannot resolve writable state scope: OMX_SESSION_ID does not match the live session recorded in session.json.',
 } as const;
 
 
@@ -409,10 +410,18 @@ function resolveCanonicalSessionId(candidate: string | undefined, metadata: Reso
     : candidate;
 }
 
-async function readUsableSessionStateFromBaseStateDir(
+/**
+ * Read the selected session.json only when it holds full selected-root
+ * authority for this exact base state directory: a nonempty recorded cwd that
+ * contains the observed cwd, and a recorded state_root canonical-equal to the
+ * selected base (with the historical cwd-derived fallback when state_root is
+ * absent). Usability/liveness is deliberately NOT checked here so stale-dead
+ * recovery can require the same authority contract as the usable path.
+ */
+async function readAuthoritativeSessionStateFromBaseStateDir(
   cwd: string,
   baseStateDir = getBaseStateDir(cwd),
-): Promise<SessionState | null> {
+): Promise<{ state: SessionState; recordedCwd: string } | null> {
   const sessionPath = join(baseStateDir, 'session.json');
   if (!existsSync(sessionPath)) return null;
 
@@ -433,10 +442,18 @@ async function readUsableSessionStateFromBaseStateDir(
       && isWithinRoot(canonicalObservedCwd, recordedCwd),
     );
     if (!authorityOwnsObservedCwd) return null;
-    return isSessionStateUsable(state, recordedCwd) ? state : null;
+    return { state, recordedCwd };
   } catch {
     return null;
   }
+}
+
+async function readUsableSessionStateFromBaseStateDir(
+  cwd: string,
+  baseStateDir = getBaseStateDir(cwd),
+): Promise<SessionState | null> {
+  const authority = await readAuthoritativeSessionStateFromBaseStateDir(cwd, baseStateDir);
+  return authority && isSessionStateUsable(authority.state, authority.recordedCwd) ? authority.state : null;
 }
 function normalizeSessionMetadata(state: SessionState | null, sourcePath?: string): ResolvedSessionMetadata | undefined {
   const sessionId = normalizeSessionId(state?.session_id);
@@ -560,7 +577,21 @@ export async function resolveWritableStateScope(
   if (!metadata) {
     if (existsSync(join(baseStateDir, 'session.json'))) {
       const envSessionId = normalizeSessionId(process.env[OMX_SESSION_ID_ENV]);
-      if (envSessionId && (await classifySelectedSessionPointer(cwd)) === 'stale-dead') {
+      // Stale-dead recovery requires the dead pointer to satisfy the exact
+      // same selected-root authority contract as a usable pointer (recorded
+      // cwd and state_root bound to this base); a semantically incomplete or
+      // foreign pointer stays fail-closed even with an env binding. The
+      // classification is taken twice so a torn read or a concurrently
+      // published live pointer cannot authorize the recovery.
+      const authority = envSessionId
+        ? await readAuthoritativeSessionStateFromBaseStateDir(cwd, baseStateDir)
+        : null;
+      if (
+        envSessionId
+        && authority
+        && (await classifySelectedSessionPointer(cwd)) === 'stale-dead'
+        && (await classifySelectedSessionPointer(cwd)) === 'stale-dead'
+      ) {
         return {
           source: 'session',
           sessionId: envSessionId,
@@ -588,7 +619,7 @@ export async function resolveWritableStateScope(
   }
 
   if (!isKnownSessionAlias(envSessionId, metadata)) {
-    throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment);
+    throw new Error(WRITABLE_STATE_SCOPE_ERRORS.sessionBindingMismatch);
   }
   return {
     source: 'session',

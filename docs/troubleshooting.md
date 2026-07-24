@@ -99,13 +99,14 @@ export OMX_SESSION_ID=<current-session-id>
 omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"reviewing"}' --json
 ```
 
-A stale-dead pointer holds no owner authority, so the validated `OMX_SESSION_ID` binding becomes the writable session scope (state lands under `.omx/state/sessions/<current-session-id>/`). Scope resolution never rewrites `session.json` itself; the next SessionStart hook reconciles the pointer through the normal pointer-lock protocol. Restarting the session achieves the same result without setting the variable.
+A stale-dead pointer holds no owner authority, so the validated `OMX_SESSION_ID` binding becomes the writable session scope (state lands under `.omx/state/sessions/<current-session-id>/`). Recovery additionally requires the dead pointer itself to be authoritative for this project — its recorded `cwd` and `state_root` must match the selected state root; a pointer with missing or foreign authority metadata stays fail-closed even with an env binding. Scope resolution never rewrites `session.json` itself; only a SessionStart hook reconciles the pointer through the normal pointer-lock protocol. Note that a plain OMX relaunch with a stale-dead pointer aborts with `session_pointer_unusable`/`stale-dead` and preserves the pointer, so setting `OMX_SESSION_ID` explicitly is the reliable recovery path.
 
 ### Still fail-closed
 
 - A malformed, foreign-working-directory, or identity-indeterminate pointer always requires operator inspection; `OMX_SESSION_ID` does not override it.
-- Without an env binding, a stale-dead pointer still blocks writes — set `OMX_SESSION_ID` or restart.
-- A live pointer with an unmatched `OMX_SESSION_ID` fails closed as `OMX_SESSION_ID is not bound to session.json`.
+- Without an env binding, a stale-dead pointer still blocks writes — set `OMX_SESSION_ID` (a plain relaunch aborts instead of reconciling; only a SessionStart hook reconciles the pointer).
+- A live pointer with an unmatched `OMX_SESSION_ID` fails closed as `OMX_SESSION_ID does not match the live session recorded in session.json`.
+- Durable Ultragoal mutations (including the legacy aggregate-objective migration that used to run on plain reads) require successful writable-scope resolution: with no selected pointer they keep prior root/unbound behavior, but allowlist violations, conflicting roots, and live-owner mismatches now propagate instead of being ignored.
 
 ## Shift+Enter submits instead of inserting a newline in tmux-backed OMX sessions
 

@@ -854,7 +854,7 @@ describe('state paths', () => {
         await assert.rejects(
           () => resolveWritableStateScope(wd),
           (error: unknown) => {
-            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment);
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.sessionBindingMismatch);
             return true;
           },
         );
@@ -978,6 +978,71 @@ describe('state paths', () => {
         await rm(wd, { recursive: true, force: true });
       }
     });
+    it('fails closed for an identity-indeterminate pointer even with an env binding', async () => {
+      const wd = await mkRealTemp('omx-writable-indeterminate-env-');
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
+      try {
+        const stateDir = getBaseStateDir(wd);
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-unknown', cwd: wd, pid: 8388607 }));
+        process.env.OMX_SESSION_ID = 'sess-current';
+
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
+        assert.equal(existsSync(join(stateDir, 'sessions', 'sess-current')), false);
+      } finally {
+        __resetSessionPointerTransactionDependenciesForTests();
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed for a stale-dead pointer without cwd or state_root authority even with an env binding', async () => {
+      const wd = await mkRealTemp('omx-writable-stale-dead-noauthority-');
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+      try {
+        const stateDir = getBaseStateDir(wd);
+        await mkdir(stateDir, { recursive: true });
+        process.env.OMX_SESSION_ID = 'sess-current';
+
+        // A dead PID does not cure a missing recorded cwd: the pointer holds
+        // no selected-root authority, so recovery must stay fail-closed.
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-dead', pid: 8388607 }));
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
+
+        // A recorded state_root naming another root is equally non-authoritative.
+        const foreignRoot = join(wd, 'other-root');
+        await mkdir(foreignRoot, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+          session_id: 'sess-dead',
+          cwd: wd,
+          state_root: foreignRoot,
+          pid: 8388607,
+        }));
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
+        assert.equal(existsSync(join(stateDir, 'sessions', 'sess-current')), false);
+      } finally {
+        __resetSessionPointerTransactionDependenciesForTests();
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
   });
 
 });

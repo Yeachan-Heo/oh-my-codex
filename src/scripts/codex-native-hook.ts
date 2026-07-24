@@ -283,6 +283,7 @@ async function resolveVerifiedOwnerOmxSessionId(): Promise<string | undefined> {
 function isImplicitWritableScopeFailure(error: unknown): boolean {
   return error instanceof Error
     && (error.message === WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment
+      || error.message === WRITABLE_STATE_SCOPE_ERRORS.sessionBindingMismatch
       || error.message === WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
 }
 
