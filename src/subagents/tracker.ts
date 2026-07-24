@@ -38,6 +38,12 @@ export interface TrackedSubagentThread {
   resume_completed_at?: string;
   resume_failed_at?: string;
   resume_failure_reason?: string;
+  // Reopen authority is explicit direct-child attestation, never inferred from lifecycle metadata.
+  direct_child_root_id?: string;
+  direct_child_parent_id?: string;
+  reopen_authority_revoked?: boolean;
+  reopen_authority_conflict_reason?: string;
+  reopen_authority_conflict_at?: string;
 }
 
 export interface TrackedSubagentSession {
@@ -76,6 +82,17 @@ export interface RecordSubagentTurnInput {
   resumeFailedAt?: string;
   resumeFailureReason?: string;
   preserveCompletionEvidence?: boolean;
+}
+
+export interface NativeSubagentAuthorityObservation {
+  sessionIds: string[];
+  childThreadId: string;
+  parentThreadId: string;
+  rootNativeSessionId?: string;
+  authorityEvidence?: 'valid' | 'untrusted' | 'absent';
+  implicatedChildThreadIds?: string[];
+  mode?: string;
+  timestamp?: string;
 }
 
 
@@ -294,6 +311,19 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
         ...(typeof candidate.resume_failure_reason === 'string' && candidate.resume_failure_reason.trim().length > 0
           ? { resume_failure_reason: candidate.resume_failure_reason.trim() }
           : {}),
+        ...(typeof candidate.direct_child_root_id === 'string' && candidate.direct_child_root_id.trim().length > 0
+          ? { direct_child_root_id: candidate.direct_child_root_id.trim() }
+          : {}),
+        ...(typeof candidate.direct_child_parent_id === 'string' && candidate.direct_child_parent_id.trim().length > 0
+          ? { direct_child_parent_id: candidate.direct_child_parent_id.trim() }
+          : {}),
+        ...(candidate.reopen_authority_revoked === true ? { reopen_authority_revoked: true } : {}),
+        ...(typeof candidate.reopen_authority_conflict_reason === 'string' && candidate.reopen_authority_conflict_reason.trim()
+          ? { reopen_authority_conflict_reason: candidate.reopen_authority_conflict_reason.trim() }
+          : {}),
+        ...(typeof candidate.reopen_authority_conflict_at === 'string' && candidate.reopen_authority_conflict_at.trim()
+          ? { reopen_authority_conflict_at: candidate.reopen_authority_conflict_at.trim() }
+          : {}),
       };
     }
 
@@ -316,6 +346,65 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
     schemaVersion: SUBAGENT_TRACKING_SCHEMA_VERSION,
     sessions,
   };
+}
+
+function parseStrictSubagentTrackingState(raw: string): SubagentTrackingState | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const candidate = parsed as { schemaVersion?: unknown; sessions?: unknown };
+  if (candidate.schemaVersion !== SUBAGENT_TRACKING_SCHEMA_VERSION || !candidate.sessions || typeof candidate.sessions !== 'object' || Array.isArray(candidate.sessions)) return null;
+  const normalizedSessionIds = new Set<string>();
+  for (const [sessionId, sessionValue] of Object.entries(candidate.sessions as Record<string, unknown>)) {
+    if (!sessionId || sessionId.trim() !== sessionId || normalizedSessionIds.has(sessionId.trim())) return null;
+    normalizedSessionIds.add(sessionId.trim());
+    if (!sessionValue || typeof sessionValue !== 'object' || Array.isArray(sessionValue)) return null;
+    const session = sessionValue as Record<string, unknown>;
+    if (session.session_id !== sessionId || typeof session.updated_at !== 'string' || !session.updated_at.trim()) return null;
+    if (!session.threads || typeof session.threads !== 'object' || Array.isArray(session.threads)) return null;
+    if (session.leader_thread_id !== undefined && (typeof session.leader_thread_id !== 'string' || !session.leader_thread_id.trim() || session.leader_thread_id.trim() !== session.leader_thread_id)) return null;
+    const normalizedThreadIds = new Set<string>();
+    for (const [threadId, threadValue] of Object.entries(session.threads as Record<string, unknown>)) {
+      if (!threadId || threadId.trim() !== threadId || normalizedThreadIds.has(threadId.trim())) return null;
+      normalizedThreadIds.add(threadId.trim());
+      if (!threadValue || typeof threadValue !== 'object' || Array.isArray(threadValue)) return null;
+      const thread = threadValue as Record<string, unknown>;
+      if (thread.thread_id !== threadId || (thread.kind !== 'leader' && thread.kind !== 'subagent')) return null;
+      if (typeof thread.first_seen_at !== 'string' || !thread.first_seen_at.trim()) return null;
+      if (typeof thread.last_seen_at !== 'string' || !thread.last_seen_at.trim()) return null;
+      if (typeof thread.turn_count !== 'number' || !Number.isFinite(thread.turn_count) || thread.turn_count < 1) return null;
+      const hasAuthorityEvidence = thread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+        || thread.direct_child_root_id !== undefined
+        || thread.direct_child_parent_id !== undefined
+        || thread.reopen_authority_revoked !== undefined
+        || thread.reopen_authority_conflict_reason !== undefined
+        || thread.reopen_authority_conflict_at !== undefined;
+      if (hasAuthorityEvidence && thread.status !== undefined && normalizeSubagentStatus(thread.status) === undefined) return null;
+      if (hasAuthorityEvidence && thread.provenance_kind !== undefined && thread.provenance_kind !== NATIVE_SUBAGENT_PROVENANCE) return null;
+      for (const field of ['direct_child_root_id', 'direct_child_parent_id', 'reopen_authority_conflict_reason', 'reopen_authority_conflict_at'] as const) {
+        if (thread[field] !== undefined && (typeof thread[field] !== 'string' || !(thread[field] as string).trim() || (thread[field] as string).trim() !== thread[field])) return null;
+      }
+      if (thread.reopen_authority_revoked !== undefined && typeof thread.reopen_authority_revoked !== 'boolean') return null;
+      if ((thread.direct_child_root_id === undefined) !== (thread.direct_child_parent_id === undefined)) return null;
+      if ((thread.reopen_authority_conflict_reason !== undefined || thread.reopen_authority_conflict_at !== undefined) && thread.reopen_authority_revoked !== true) return null;
+    }
+  }
+  return normalizeSubagentTrackingState(parsed);
+}
+
+function readSubagentTrackingStateStrictSync(cwd: string): { ok: true; state: SubagentTrackingState } | { ok: false } {
+  const path = subagentTrackingPath(cwd);
+  if (!existsSync(path)) return { ok: true, state: createSubagentTrackingState() };
+  try {
+    const state = parseStrictSubagentTrackingState(readFileSync(path, 'utf-8'));
+    return state ? { ok: true, state } : { ok: false };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function atomicTrackingTempPath(path: string): string {
@@ -693,16 +782,6 @@ export function withCrossProcessFileLockSync<T>(
   }
 }
 
-function readSubagentTrackingStateSync(cwd: string): SubagentTrackingState {
-  const path = subagentTrackingPath(cwd);
-  if (!existsSync(path)) return createSubagentTrackingState();
-  try {
-    return normalizeSubagentTrackingState(JSON.parse(readFileSync(path, 'utf-8')));
-  } catch {
-    return createSubagentTrackingState();
-  }
-}
-
 
 function threadIsTrackedAsSubagent(state: SubagentTrackingState, threadId: string): boolean {
   const id = threadId.trim();
@@ -877,6 +956,11 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
       : existingThread?.resume_failure_reason
         ? { resume_failure_reason: existingThread.resume_failure_reason }
         : {}),
+    ...(existingThread?.direct_child_root_id ? { direct_child_root_id: existingThread.direct_child_root_id } : {}),
+    ...(existingThread?.direct_child_parent_id ? { direct_child_parent_id: existingThread.direct_child_parent_id } : {}),
+    ...(existingThread?.reopen_authority_revoked ? { reopen_authority_revoked: true } : {}),
+    ...(existingThread?.reopen_authority_conflict_reason ? { reopen_authority_conflict_reason: existingThread.reopen_authority_conflict_reason } : {}),
+    ...(existingThread?.reopen_authority_conflict_at ? { reopen_authority_conflict_at: existingThread.reopen_authority_conflict_at } : {}),
   };
 
   const threads = {
@@ -901,11 +985,259 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
 
 export async function recordSubagentTurnForSession(cwd: string, input: RecordSubagentTurnInput): Promise<SubagentTrackingState> {
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
-    const current = readSubagentTrackingStateSync(cwd);
-    const next = recordSubagentTurn(current, input);
+    const strict = readSubagentTrackingStateStrictSync(cwd);
+    if (!strict.ok) throw new Error('Malformed subagent tracker authority state');
+    const next = recordSubagentTurn(strict.state, input);
     context.assertOwnership();
     writeSubagentTrackingStateSync(cwd, next, context.publish);
     return next;
+  });
+}
+export function recordNativeSubagentAuthorityObservation(
+  cwd: string,
+  observation: NativeSubagentAuthorityObservation,
+): SubagentTrackingState {
+  const requestedSessionIds = [...new Set(observation.sessionIds.map((value) => value.trim()).filter(Boolean))];
+  const childThreadId = observation.childThreadId.trim();
+  const parentThreadId = observation.parentThreadId.trim();
+  const rootNativeSessionId = observation.rootNativeSessionId?.trim() ?? '';
+  const implicatedChildThreadIds = [...new Set([
+    childThreadId,
+    ...(observation.implicatedChildThreadIds ?? []).map((value) => value.trim()),
+  ].filter(Boolean))];
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const strict = readSubagentTrackingStateStrictSync(cwd);
+    if (!strict.ok) throw new Error('Malformed subagent tracker authority state');
+    let next = strict.state;
+    const existingSessionIds = Object.entries(next.sessions)
+      .filter(([, session]) => implicatedChildThreadIds.some((id) => Boolean(session.threads[id]?.direct_child_root_id || session.threads[id]?.reopen_authority_revoked)))
+      .map(([sessionId]) => sessionId);
+    const sessionIds = [...new Set([...requestedSessionIds, ...existingSessionIds])];
+    const existingBindings = Object.values(next.sessions)
+      .map((session) => session.threads[childThreadId])
+      .filter((thread): thread is TrackedSubagentThread => Boolean(thread?.direct_child_root_id));
+    const authorityEvidence = observation.authorityEvidence ?? (rootNativeSessionId ? 'valid' : 'absent');
+    const globalConflict = authorityEvidence === 'untrusted' && existingBindings.length > 0
+      || authorityEvidence === 'valid' && existingBindings.some((thread) =>
+        thread.direct_child_root_id !== rootNativeSessionId || thread.direct_child_parent_id !== parentThreadId,
+      );
+    const timestamp = observation.timestamp ?? new Date().toISOString();
+    if (authorityEvidence === 'untrusted') {
+      for (const session of Object.values(next.sessions)) {
+        for (const implicatedId of implicatedChildThreadIds) {
+          const implicatedThread = session.threads[implicatedId];
+          if (!implicatedThread?.direct_child_root_id && !implicatedThread?.reopen_authority_revoked) continue;
+          implicatedThread.reopen_authority_revoked = true;
+          implicatedThread.reopen_authority_conflict_reason = 'identity_untrusted';
+          implicatedThread.reopen_authority_conflict_at = timestamp;
+        }
+      }
+    }
+    for (const sessionId of sessionIds) {
+      if (parentThreadId && parentThreadId !== childThreadId) {
+        next = recordSubagentTurn(next, { sessionId, threadId: parentThreadId, kind: 'leader', timestamp });
+      }
+      next = recordSubagentTurn(next, {
+        sessionId,
+        threadId: childThreadId,
+        kind: 'subagent',
+        ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
+        mode: observation.mode,
+        timestamp,
+      });
+      const thread = next.sessions[sessionId]?.threads[childThreadId];
+      if (!thread) continue;
+      const mayAttest = authorityEvidence === 'valid'
+        && Boolean(rootNativeSessionId)
+        && childThreadId !== rootNativeSessionId
+        && parentThreadId === rootNativeSessionId;
+      if (globalConflict) {
+        thread.reopen_authority_revoked = true;
+        thread.reopen_authority_conflict_reason = 'root_or_parent_mismatch';
+        thread.reopen_authority_conflict_at = timestamp;
+      } else if (mayAttest) {
+        thread.direct_child_root_id = rootNativeSessionId;
+        thread.direct_child_parent_id = parentThreadId;
+        thread.provenance_kind = NATIVE_SUBAGENT_PROVENANCE;
+        delete thread.reopen_authority_revoked;
+        delete thread.reopen_authority_conflict_reason;
+        delete thread.reopen_authority_conflict_at;
+      }
+    }
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, next, context.publish);
+    return next;
+  });
+}
+
+export function revokeNativeSubagentAuthorities(
+  cwd: string,
+  childThreadIds: string[],
+  reason = 'identity_untrusted',
+): SubagentTrackingState {
+  const ids = [...new Set(childThreadIds.map((value) => value.trim()).filter(Boolean))];
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const strict = readSubagentTrackingStateStrictSync(cwd);
+    if (!strict.ok) throw new Error('Malformed subagent tracker authority state');
+    const next = strict.state;
+    const timestamp = new Date().toISOString();
+    let changed = false;
+    for (const session of Object.values(next.sessions)) {
+      for (const id of ids) {
+        const thread = session.threads[id];
+        if (!thread?.direct_child_root_id && !thread?.reopen_authority_revoked) continue;
+        thread.reopen_authority_revoked = true;
+        thread.reopen_authority_conflict_reason = reason;
+        thread.reopen_authority_conflict_at = timestamp;
+        changed = true;
+      }
+    }
+    if (changed) {
+      context.assertOwnership();
+      writeSubagentTrackingStateSync(cwd, next, context.publish);
+    }
+    return next;
+  });
+}
+
+export interface DirectChildReopenContext {
+  sessionId: string;
+  rootNativeSessionId: string;
+  source: string;
+}
+
+function formatReopenMetadata(entry: SubagentLedgerEntry): string {
+  const values = [
+    entry.role ? `role: ${entry.role}` : null,
+    entry.laneId ? `lane: ${entry.laneId}` : null,
+    entry.scope ? `scope: ${entry.scope}` : null,
+    `status: ${entry.status}`,
+    entry.lastHandoffSummary ? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}` : null,
+    entry.resumeFailureReason ? `last failure: ${entry.resumeFailureReason.slice(0, 120)}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return values.length ? ` (${values.join('; ')})` : '';
+}
+
+function persistedReopenAuthorityWarning(reason: string): string {
+  return [
+    '[Persisted subagent reopen]',
+    `- Warning: persisted subagent authority was excluded (${reason}); no resume authority or bookkeeping was granted.`,
+    '- Silver rule: do not spawn a same-role/same-lane replacement solely because persisted reopen authority was unavailable; continue in the root or another compatible existing lane.',
+  ].join('\n');
+}
+
+/** Strict, lock-serialized authority consumption for SessionStart persisted reopen output. */
+export function consumeDirectChildReopenContext(
+  cwd: string,
+  context: DirectChildReopenContext,
+): string | null {
+  const sessionId = context.sessionId.trim();
+  const rootNativeSessionId = context.rootNativeSessionId.trim();
+  if (!sessionId || !rootNativeSessionId) return null;
+  const path = subagentTrackingPath(cwd);
+  return withCrossProcessFileLockSync(path, (lock) => {
+    let raw: string;
+    try {
+      raw = readFileSync(path, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      return persistedReopenAuthorityWarning('tracker_read_failed');
+    }
+    const state = parseStrictSubagentTrackingState(raw);
+    if (!state) return persistedReopenAuthorityWarning('malformed_tracker_state');
+    const session = state.sessions[sessionId];
+    if (!session) return null;
+    let changed = false;
+    const repairTimestamp = new Date().toISOString();
+    for (const correlatedSession of Object.values(state.sessions)) {
+      let sessionChanged = false;
+      for (const rootId of new Set([sessionId, rootNativeSessionId])) {
+        const rootThread = correlatedSession.threads[rootId];
+        if (!rootThread || rootThread.kind !== 'subagent') continue;
+        rootThread.kind = 'leader';
+        delete rootThread.direct_child_root_id;
+        delete rootThread.direct_child_parent_id;
+        delete rootThread.reopen_authority_revoked;
+        delete rootThread.reopen_authority_conflict_reason;
+        delete rootThread.reopen_authority_conflict_at;
+        delete rootThread.resume_requested_at;
+        delete rootThread.resume_completed_at;
+        delete rootThread.resume_failed_at;
+        delete rootThread.resume_failure_reason;
+        sessionChanged = true;
+      }
+      if (correlatedSession.threads[rootNativeSessionId] && correlatedSession.leader_thread_id !== rootNativeSessionId) {
+        correlatedSession.leader_thread_id = rootNativeSessionId;
+        sessionChanged = true;
+      }
+      if (sessionChanged) {
+        correlatedSession.updated_at = repairTimestamp;
+        changed = true;
+      }
+    }
+    const savedSubagents = Object.values(session.threads)
+      .filter((thread) => {
+        if (thread.kind !== 'subagent'
+          || thread.thread_id === sessionId
+          || thread.thread_id === rootNativeSessionId
+          || session.leader_thread_id === thread.thread_id
+          || thread.provenance_kind !== NATIVE_SUBAGENT_PROVENANCE
+          || thread.direct_child_root_id !== rootNativeSessionId
+          || thread.direct_child_parent_id !== rootNativeSessionId
+          || thread.reopen_authority_revoked === true) return false;
+        return Object.values(state.sessions).every((correlationSession) => {
+          const view = correlationSession.threads[thread.thread_id];
+          if (!view) return true;
+          return correlationSession.leader_thread_id !== thread.thread_id
+            && view.kind === 'subagent'
+            && view.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+            && view.direct_child_root_id === rootNativeSessionId
+            && view.direct_child_parent_id === rootNativeSessionId
+            && view.reopen_authority_revoked !== true;
+        });
+      })
+      .map((thread) => normalizeLedgerEntry(thread, thread.status ?? 'closed'))
+      .sort(compareResumeEntries);
+    if (!savedSubagents.length) {
+      if (changed) {
+        session.updated_at = new Date().toISOString();
+        lock.assertOwnership();
+        writeSubagentTrackingStateSync(cwd, state, lock.publish);
+      }
+      return null;
+    }
+    const reopenTargets = savedSubagents.filter((entry) => entry.status !== 'unavailable');
+    const unavailableTargets = savedSubagents.filter((entry) => entry.status === 'unavailable');
+    const failedTargets = savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
+    const now = new Date().toISOString();
+    for (const target of reopenTargets) {
+      session.threads[target.threadId] = { ...session.threads[target.threadId]!, resume_requested_at: now };
+    }
+    if (reopenTargets.length || changed) {
+      session.updated_at = now;
+      lock.assertOwnership();
+      writeSubagentTrackingStateSync(cwd, state, lock.publish);
+    }
+    const lines = [
+      '[Persisted subagent reopen]',
+      `- SessionStart source: ${context.source}; saved subagent ids found: ${savedSubagents.length}.`,
+    ];
+    if (reopenTargets.length) {
+      lines.push('- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:');
+      lines.push(...reopenTargets.slice(0, 12).map((entry) => `  - resume_agent(${JSON.stringify(entry.agentId)})${formatReopenMetadata(entry)}`));
+      if (reopenTargets.length > 12) lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
+    } else {
+      lines.push('- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.');
+    }
+    lines.push('- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.');
+    lines.push('- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.');
+    const warnings = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
+    if (warnings.length) {
+      lines.push('- Reopen warnings:');
+      lines.push(...warnings.slice(0, 8).map((entry) => `  - ${entry.agentId}${formatReopenMetadata(entry)}`));
+      if (warnings.length > 8) lines.push(`  - ... ${warnings.length - 8} more warning(s) omitted from this compact SessionStart context.`);
+    }
+    return lines.join('\n');
   });
 }
 

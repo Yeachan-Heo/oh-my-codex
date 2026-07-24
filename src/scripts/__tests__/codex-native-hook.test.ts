@@ -29,6 +29,8 @@ import {
 import { registerTeamNotice } from "../../team/notice-ledger.js";
 import {
 	dispatchCodexNativeHook,
+  readUnambiguousSessionStartNativeId,
+  resolvePersistedReopenRootContext,
 	isCodexNativeHookMainModule,
 	looksLikeGoalCompletionPrompt,
 	mapCodexHookEventToOmxEvent,
@@ -4199,6 +4201,9 @@ PY`,
                 lane_id: "plan-review",
                 scope: "SessionStart reopen",
                 status: "available",
+                provenance_kind: "native_subagent",
+                direct_child_root_id: "codex-leader-reopen",
+                direct_child_parent_id: "codex-leader-reopen",
                 last_handoff_summary: "reviewed the restart plan",
               },
             },
@@ -4236,6 +4241,295 @@ PY`,
     }
   });
 
+  for (const status of ["closed", "available"] as const) {
+    it(`issue #3284 excludes the current root when persisted as a ${status} subagent`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-3284-root-self-${status}-`));
+      try {
+        const stateDir = join(cwd, ".omx", "state");
+        const canonicalSessionId = `omx-3284-${status}`;
+        const rootNativeSessionId = `codex-root-${status}`;
+        const childId = `codex-child-${status}`;
+        await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+        await writeJson(join(stateDir, "subagent-tracking.json"), {
+          schemaVersion: 1,
+          sessions: {
+            [canonicalSessionId]: { session_id: canonicalSessionId, leader_thread_id: `turn-like-${status}`,
+              updated_at: "2026-07-23T00:00:00.000Z", threads: {
+                [rootNativeSessionId]: { thread_id: rootNativeSessionId, kind: "subagent", status,
+                  first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 },
+                [childId]: { thread_id: childId, kind: "subagent", status: "available", provenance_kind: "native_subagent",
+                  direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId,
+                  first_seen_at: "2026-07-23T00:01:00.000Z", last_seen_at: "2026-07-23T00:01:00.000Z", turn_count: 1 },
+              } },
+            [rootNativeSessionId]: { session_id: rootNativeSessionId, leader_thread_id: `turn-like-correlation-${status}`,
+              updated_at: "2026-07-23T00:00:00.000Z", threads: {
+                [rootNativeSessionId]: { thread_id: rootNativeSessionId, kind: "subagent", status, provenance_kind: "native_subagent",
+                  direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId,
+                  resume_requested_at: "2026-07-23T00:02:00.000Z",
+                  first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 },
+              } },
+          },
+        });
+        const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd,
+          session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+        const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+        assert.equal(context.includes(`resume_agent(${JSON.stringify(rootNativeSessionId)})`), false);
+        assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), true);
+        const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+        assert.equal(tracking.sessions[canonicalSessionId].threads[rootNativeSessionId].resume_requested_at, undefined);
+        assert.equal(tracking.sessions[canonicalSessionId].threads[rootNativeSessionId].kind, "leader");
+        assert.equal(tracking.sessions[canonicalSessionId].leader_thread_id, rootNativeSessionId);
+        assert.equal(tracking.sessions[rootNativeSessionId].threads[rootNativeSessionId].kind, "leader");
+        assert.equal(tracking.sessions[rootNativeSessionId].threads[rootNativeSessionId].resume_requested_at, undefined);
+        assert.equal(tracking.sessions[rootNativeSessionId].threads[rootNativeSessionId].direct_child_root_id, undefined);
+        assert.equal(tracking.sessions[rootNativeSessionId].leader_thread_id, rootNativeSessionId);
+        assert.match(tracking.sessions[canonicalSessionId].threads[childId].resume_requested_at, /^\d{4}-\d{2}-\d{2}T/);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("issue #3284 fails closed when SessionStart native id aliases conflict", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-alias-conflict-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-3284-alias";
+      const rootNativeSessionId = "codex-root-alias";
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+        [canonicalSessionId]: { session_id: canonicalSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: {
+          child: { thread_id: "child", kind: "subagent", status: "available", provenance_kind: "native_subagent",
+            direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId,
+            first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 },
+        } },
+      } });
+      const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd,
+        session_id: rootNativeSessionId, sessionId: "foreign-root", source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+      const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.doesNotMatch(context, /\[Persisted subagent reopen\]/);
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+      assert.equal(tracking.sessions[canonicalSessionId].threads.child.resume_requested_at, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("issue #3284 enforces the native alias truth table and root-context failure precedence", () => {
+    assert.deepEqual(readUnambiguousSessionStartNativeId(undefined), { ok: false, reason: "missing" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "root", sessionId: "root" }), { ok: true, value: "root" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "root", sessionId: "foreign" }), { ok: false, reason: "conflict" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "root", sessionId: undefined }), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: 42, sessionId: "root" } as never), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "root" }), { ok: true, value: "root" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ sessionId: "root" }), { ok: true, value: "root" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "foreign", sessionId: "root" }), { ok: false, reason: "conflict" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: undefined, sessionId: "root" }), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "root", sessionId: 42 } as never), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "", sessionId: 42 } as never), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ sessionId: "" }), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: 42 } as never), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: "", sessionId: "" }), { ok: false, reason: "malformed" });
+    assert.deepEqual(readUnambiguousSessionStartNativeId({ session_id: " root ", sessionId: "root" }), { ok: true, value: "root" });
+    const cwd = resolve("/tmp/omx-3284-root-context");
+    const baseState = { session_id: "canonical", native_session_id: "root", cwd, pid: process.pid, started_at: "2026-07-23T00:00:00.000Z" } as any;
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, null), { ok: false, reason: "pointer_not_usable" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, { ...baseState, cwd: "" }), { ok: false, reason: "pointer_cwd_missing" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, { ...baseState, session_id: "" }), { ok: false, reason: "pointer_session_missing" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, { ...baseState, native_session_id: "" }), { ok: false, reason: "pointer_native_root_missing" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, { ...baseState, cwd: resolve("/tmp/foreign") }), { ok: false, reason: "pointer_cwd_mismatch" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "", { session_id: "root" }, baseState), { ok: false, reason: "selected_canonical_missing" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "foreign", { session_id: "root" }, baseState), { ok: false, reason: "canonical_mismatch" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", {}, baseState), { ok: false, reason: "event_native_missing" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "" }, baseState), { ok: false, reason: "event_native_malformed" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "other" }, baseState), { ok: false, reason: "native_root_mismatch" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, baseState), { ok: true, sessionId: "canonical", rootNativeSessionId: "root" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root", sessionId: "foreign" }, baseState), { ok: false, reason: "event_native_conflict" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root", sessionId: "foreign" }, null), { ok: false, reason: "pointer_not_usable" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "foreign", {}, baseState), { ok: false, reason: "canonical_mismatch" });
+    assert.deepEqual(resolvePersistedReopenRootContext(cwd, "canonical", { session_id: "root" }, { ...baseState, owner_omx_session_id: "foreign", owner_codex_session_id: "foreign", codex_session_id: "foreign", previous_native_session_id: "foreign" }), { ok: true, sessionId: "canonical", rootNativeSessionId: "root" });
+  });
+
+  it("issue #3284 withholds authority when transcript and hook child identities disagree", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-child-mismatch-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-3284-child-mismatch";
+      const rootNativeSessionId = "root-3284-child-mismatch";
+      const hookChildId = "hook-child-3284";
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+      const cachedThread = { thread_id: hookChildId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 };
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+        [canonicalSessionId]: { session_id: canonicalSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [hookChildId]: cachedThread } },
+        [rootNativeSessionId]: { session_id: rootNativeSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [hookChildId]: cachedThread } },
+      } });
+      const transcriptPath = join(cwd, "child-mismatch.jsonl");
+      await writeFile(transcriptPath, `${JSON.stringify({ type: "session_meta", payload: { id: "transcript-child-3284", source: { subagent: { thread_spawn: { parent_thread_id: rootNativeSessionId } } } } })}\n`);
+      await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: hookChildId, sessionId: hookChildId, transcript_path: transcriptPath }, { cwd, sessionOwnerPid: process.pid });
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+      const child = tracking.sessions[canonicalSessionId].threads[hookChildId];
+      assert.equal(child.kind, "subagent");
+      assert.equal(child.reopen_authority_revoked, true);
+      const rootResume = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+      const context = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.equal(context.includes(`resume_agent(${JSON.stringify(hookChildId)})`), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("issue #3284 revokes cached authority across conflicting child aliases", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-child-alias-revoke-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-3284-child-alias-revoke";
+      const rootNativeSessionId = "root-3284-child-alias-revoke";
+      const realChildId = "real-child-3284";
+      const fakeChildId = "fake-child-3284";
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+      const cachedThread = { thread_id: realChildId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 };
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+        [canonicalSessionId]: { session_id: canonicalSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [realChildId]: cachedThread } },
+        [rootNativeSessionId]: { session_id: rootNativeSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [realChildId]: cachedThread } },
+      } });
+      const transcriptPath = join(cwd, "child-alias-revoke.jsonl");
+      await writeFile(transcriptPath, `${JSON.stringify({ type: "session_meta", payload: { id: realChildId, source: { subagent: { thread_spawn: { parent_thread_id: rootNativeSessionId } } } } })}\n`);
+      await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: fakeChildId, sessionId: realChildId, transcript_path: transcriptPath }, { cwd, sessionOwnerPid: process.pid });
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+      assert.equal(tracking.sessions[canonicalSessionId].threads[realChildId].reopen_authority_revoked, true);
+      const rootResume = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+      const context = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.equal(context.includes(`resume_agent(${JSON.stringify(realChildId)})`), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("issue #3284 revokes cached authority when the child reappears under a foreign parent", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-foreign-parent-revoke-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-3284-foreign-parent-revoke";
+      const rootNativeSessionId = "root-3284-foreign-parent-revoke";
+      const childId = "child-3284-foreign-parent";
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+      const cachedThread = { thread_id: childId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 };
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+        [canonicalSessionId]: { session_id: canonicalSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [childId]: cachedThread } },
+        [rootNativeSessionId]: { session_id: rootNativeSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [childId]: cachedThread } },
+      } });
+      const transcriptPath = join(cwd, "foreign-parent-revoke.jsonl");
+      await writeFile(transcriptPath, `${JSON.stringify({ type: "session_meta", payload: { id: childId, source: { subagent: { thread_spawn: { parent_thread_id: "foreign-parent" } } } } })}\n`);
+      await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: childId, sessionId: childId, transcript_path: transcriptPath }, { cwd, sessionOwnerPid: process.pid });
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+      assert.equal(tracking.sessions[canonicalSessionId].threads[childId].reopen_authority_revoked, true);
+      const rootResume = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+      const context = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const malformedFirstAlias of ["", 42] as const) {
+    it(`issue #3284 revokes cached authority when the first child alias is ${JSON.stringify(malformedFirstAlias)}`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-3284-child-malformed-first-"));
+      try {
+        const stateDir = join(cwd, ".omx", "state");
+        const canonicalSessionId = "omx-3284-child-malformed-first";
+        const rootNativeSessionId = "root-3284-child-malformed-first";
+        const childId = "child-3284-malformed-first";
+        await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+        const cachedThread = { thread_id: childId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 };
+        await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+          [canonicalSessionId]: { session_id: canonicalSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [childId]: cachedThread } },
+          [rootNativeSessionId]: { session_id: rootNativeSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [childId]: cachedThread } },
+        } });
+        const transcriptPath = join(cwd, "child-malformed-first.jsonl");
+        await writeFile(transcriptPath, `${JSON.stringify({ type: "session_meta", payload: { id: childId, source: { subagent: { thread_spawn: { parent_thread_id: rootNativeSessionId } } } } })}\n`);
+        await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: malformedFirstAlias, sessionId: childId, transcript_path: transcriptPath } as never, { cwd, sessionOwnerPid: process.pid });
+        const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+        assert.equal(tracking.sessions[canonicalSessionId].threads[childId].reopen_authority_revoked, true);
+        const rootResume = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+        const context = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+        assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), false);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+
+  for (const scenario of [
+    { name: "valid-first-blank-second", aliases: { session_id: "child-3284-no-candidate", sessionId: "" } },
+    { name: "both-blank", aliases: { session_id: "", sessionId: "" } },
+    { name: "both-non-string", aliases: { session_id: 42, sessionId: false } },
+    { name: "both-absent", aliases: {} },
+  ] as const) {
+    it(`issue #3284 revokes transcript-identified cached authority for ${scenario.name}`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-3284-no-candidate-${scenario.name}-`));
+      try {
+        const stateDir = join(cwd, ".omx", "state");
+        const canonicalSessionId = `omx-3284-no-candidate-${scenario.name}`;
+        const rootNativeSessionId = `root-3284-no-candidate-${scenario.name}`;
+        const childId = "child-3284-no-candidate";
+        await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+        const cachedThread = { thread_id: childId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 };
+        await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+          [canonicalSessionId]: { session_id: canonicalSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [childId]: cachedThread } },
+          [rootNativeSessionId]: { session_id: rootNativeSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: { [childId]: cachedThread } },
+        } });
+        const transcriptPath = join(cwd, `no-candidate-${scenario.name}.jsonl`);
+        await writeFile(transcriptPath, `${JSON.stringify({ type: "session_meta", payload: { id: childId, source: { subagent: { thread_spawn: { parent_thread_id: rootNativeSessionId } } } } })}\n`);
+        await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, ...scenario.aliases, transcript_path: transcriptPath } as never, { cwd, sessionOwnerPid: process.pid });
+        const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+        assert.equal(tracking.sessions[canonicalSessionId].threads[childId].reopen_authority_revoked, true);
+        const rootResume = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+        const context = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+        assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), false);
+        const afterRootResume = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+        assert.equal(afterRootResume.sessions[canonicalSessionId].threads[childId].resume_requested_at, undefined);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("issue #3284 preserves ordinary transcript-bearing SessionStart when native aliases are unusable", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-ordinary-transcript-"));
+    try {
+      const canonicalSessionId = "omx-3284-ordinary-transcript";
+      const rootNativeSessionId = "root-3284-ordinary-transcript";
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+      const sessionPath = join(cwd, ".omx", "state", "session.json");
+      const before = await readFile(sessionPath, "utf-8");
+      const transcriptPath = join(cwd, "ordinary-root.jsonl");
+      await writeFile(transcriptPath, `${JSON.stringify({ type: "session_meta", payload: { id: rootNativeSessionId, source: "user" } })}\n`);
+      await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: "", sessionId: 42, transcript_path: transcriptPath } as never, { cwd, sessionOwnerPid: process.pid });
+      assert.equal(await readFile(sessionPath, "utf-8"), before);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it("issue #3284 fresh-reads the pointer created by root SessionStart reconciliation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-fresh-pointer-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const rootNativeSessionId = "root-3284-fresh-pointer";
+      const childId = "child-3284-fresh-pointer";
+      await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: {
+        [rootNativeSessionId]: { session_id: rootNativeSessionId, updated_at: "2026-07-23T00:00:00.000Z", threads: {
+          [childId]: { thread_id: childId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 },
+        } },
+      } });
+      const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+      const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not suggest duplicate same-role subagent spawns when reopen ids exist", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-no-duplicates-"));
     try {
@@ -4266,6 +4560,9 @@ PY`,
                 role: "critic",
                 lane_id: "risk-review",
                 status: "closed",
+                provenance_kind: "native_subagent",
+                direct_child_root_id: "codex-leader-reuse",
+                direct_child_parent_id: "codex-leader-reuse",
               },
             },
           },
@@ -4326,6 +4623,9 @@ PY`,
                 status: "unavailable",
                 resume_failed_at: "2026-07-09T00:02:00.000Z",
                 resume_failure_reason: "Codex reported missing thread id",
+                provenance_kind: "native_subagent",
+                direct_child_root_id: "codex-leader-warning",
+                direct_child_parent_id: "codex-leader-warning",
               },
             },
           },
@@ -5012,15 +5312,24 @@ PY`,
       ) as {
         sessions?: Record<string, {
           leader_thread_id?: string;
-          threads?: Record<string, { kind?: string; mode?: string }>;
+          threads?: Record<string, { kind?: string; mode?: string; direct_child_root_id?: string; direct_child_parent_id?: string }>;
         }>;
       };
       assert.equal(tracking.sessions?.[canonicalSessionId]?.leader_thread_id, leaderNativeSessionId);
       assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
       assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.mode, "critic");
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.direct_child_root_id, leaderNativeSessionId);
+      assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.direct_child_parent_id, leaderNativeSessionId);
       assert.equal(tracking.sessions?.[leaderNativeSessionId]?.leader_thread_id, leaderNativeSessionId);
       assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
       assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.mode, "critic");
+      const rootResume = await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: leaderNativeSessionId, source: "resume" },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+      const rootResumeContext = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.equal(rootResumeContext.includes(`resume_agent(${JSON.stringify(childNativeSessionId)})`), true);
+      await rm(join(cwd, "hook-events.jsonl"), { force: true });
 
       await dispatchCodexNativeHook(
         {
