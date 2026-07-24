@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, consumeDirectChildReopenContext, CrossProcessLockLostError, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, recordNativeSubagentAuthorityObservation, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, readProcessStartIdentity, selectReusableSubagentEntry, subagentTrackingPath, summarizeSubagentSession, withCrossProcessFileLockSync } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, consumeDirectChildReopenContext, CrossProcessLockLostError, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, DESCRIPTIVE_ADAPTED_PROVENANCE, recordNativeSubagentAuthorityObservation, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, readProcessStartIdentity, readSubagentTrackingStateStrict, repairPersistedRootIdentity, selectReusableSubagentEntry, subagentTrackingPath, summarizeSubagentSession, withCrossProcessFileLockSync, writeSubagentTrackingState } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
@@ -369,6 +369,120 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('ignores a same-child adapted legacy peer when validating a newly attested child', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-adapted-peer-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: {
+        correlation: { session_id: 'correlation', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          child: { thread_id: 'child', kind: 'subagent', provenance_kind: DESCRIPTIVE_ADAPTED_PROVENANCE, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+      } }));
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      assert.match(context, /resume_agent\("child"\)/);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.correlation.threads.child.provenance_kind, DESCRIPTIVE_ADAPTED_PROVENANCE);
+      assert.equal(persisted.sessions.correlation.threads.child.direct_child_root_id, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the generic shared writer fail closed on malformed authority bytes', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-generic-writer-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      const raw = JSON.stringify({ schemaVersion: 1, sessions: { root: { session_id: 'root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        child: { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', reopen_authority_revoked: 'false', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } });
+      writeFileSync(path, raw);
+      const strict = await readSubagentTrackingStateStrict(cwd);
+      assert.equal(strict.ok, false);
+      const tolerantState = createSubagentTrackingState();
+      await assert.rejects(writeSubagentTrackingState(cwd, tolerantState));
+      assert.equal(readFileSync(path, 'utf8'), raw);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /malformed_tracker_state/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies a canonical-key-colliding attested child without destructive reclassification', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-canonical-collision-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        canonical: { thread_id: 'canonical', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', resume_requested_at: '2026-07-23T00:02:00.000Z', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      assert.doesNotMatch(context, /resume_agent\("canonical"\)/);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.canonical.threads.canonical.kind, 'subagent');
+      assert.equal(persisted.sessions.canonical.threads.canonical.reopen_authority_revoked, true);
+      assert.equal(persisted.sessions.canonical.threads.canonical.reopen_authority_conflict_reason, 'canonical_root_collision');
+      assert.equal(persisted.sessions.canonical.threads.canonical.resume_requested_at, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs a root inversion even when the canonical tracker partition is missing', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-native-only-repair-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { root: { session_id: 'root', leader_thread_id: 'turn-like-foreign', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        root: { thread_id: 'root', kind: 'subagent', status: 'closed', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.root.threads.root.kind, 'leader');
+      assert.equal(persisted.sessions.root.leader_thread_id, 'root');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs a root inversion through the decoupled repair entrypoint', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-decoupled-repair-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { root: { session_id: 'root', leader_thread_id: 'turn-like-foreign', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        root: { thread_id: 'root', kind: 'subagent', status: 'closed', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      assert.equal(repairPersistedRootIdentity(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root' }), true);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.root.threads.root.kind, 'leader');
+      assert.equal(persisted.sessions.root.leader_thread_id, 'root');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces an explicit notice when only legacy non-authoritative records are excluded', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-legacy-notice-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        legacy: { thread_id: 'legacy', kind: 'subagent', provenance_kind: DESCRIPTIVE_ADAPTED_PROVENANCE, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      assert.match(context, /\[Persisted subagent reopen\]/);
+      assert.match(context, /excluded as non-authoritative or legacy/);
+      assert.doesNotMatch(context, /resume_agent\(/);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.canonical.threads.legacy.resume_requested_at, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('prevents descriptive writers from normalizing malformed authority into reopen access', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-shared-writer-'));
     try {
@@ -518,7 +632,11 @@ describe('subagents/tracker', () => {
         recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence });
         const state = JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8'));
         assert.equal(state.sessions.canonical.threads.child.direct_child_root_id, undefined);
-        assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+        const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+        // Fail-closed denial: no authority, no bookkeeping, no resume output. An
+        // explicit exclusion notice is allowed in place of a bare null.
+        assert.doesNotMatch(context, /resume_agent\(/);
+        assert.equal(JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8')).sessions.canonical.threads.child.resume_requested_at, undefined);
       } finally {
         rmSync(cwd, { recursive: true, force: true });
       }
