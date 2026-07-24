@@ -163,7 +163,7 @@ describe('CLI session-scoped state parity', () => {
       );
 
       assert.notEqual(cancelResult.status, 0);
-      assert.match(cancelResult.stderr, /OMX_SESSION_ID is not bound to session\.json/);
+      assert.match(cancelResult.stderr, /OMX_SESSION_ID does not match the live session recorded in session\.json/);
       assert.deepEqual(
         JSON.parse(await readFile(ralphPath, 'utf-8')),
         { active: true, current_phase: 'executing' },

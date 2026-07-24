@@ -150,7 +150,7 @@ describe("mcpParityCommand", () => {
 
       assert.match(
         logs.pop() ?? "",
-        /Cannot resolve writable state scope: OMX_SESSION_ID is not bound to session\.json\./,
+        /Cannot resolve writable state scope: OMX_SESSION_ID does not match the live session recorded in session\.json\./,
       );
       assert.equal(existsSync(join(stateDir, "sessions", "native-unmatched-id", "ralplan-state.json")), false);
       assert.equal(existsSync(join(stateDir, "sessions", "omx-unmatched-id", "ralplan-state.json")), false);

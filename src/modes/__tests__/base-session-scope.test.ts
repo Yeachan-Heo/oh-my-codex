@@ -179,8 +179,8 @@ describe('modes/base session-scoped persistence', () => {
       await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-canonical', cwd: wd }));
       process.env.OMX_SESSION_ID = 'sess-unmatched';
 
-      await assert.rejects(() => assertModeStartAllowed('ralplan', wd), /OMX_SESSION_ID is not bound to session\.json/);
-      await assert.rejects(() => startMode('ralplan', 'must not write', 5, wd), /OMX_SESSION_ID is not bound to session\.json/);
+      await assert.rejects(() => assertModeStartAllowed('ralplan', wd), /OMX_SESSION_ID does not match the live session recorded in session\.json/);
+      await assert.rejects(() => startMode('ralplan', 'must not write', 5, wd), /OMX_SESSION_ID does not match the live session recorded in session\.json/);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-unmatched')), false);
       assert.equal(existsSync(join(stateDir, 'ralplan-state.json')), false);
     } finally {
