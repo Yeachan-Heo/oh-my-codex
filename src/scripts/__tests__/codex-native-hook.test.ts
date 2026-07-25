@@ -12852,7 +12852,9 @@ exit 0
 					delete process.env.OMX_QUESTION_RETURN_PANE;
 				}
 			})(), /OMX_QUESTION_RETURN_PANE=\$TMUX_PANE/);
-			await assertAllowed("direct documented cancellation", await withCleanRunnerNodeEnvironment(async () => {
+			// Issue #3293 IR2 makes bare cancellation hook-owned only for active
+			// Autopilot deep-interview; the external OMX command is not executed.
+			const directCancellation = await withCleanRunnerNodeEnvironment(async () => {
 				const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
 				const trustedBinDir = await mkdtemp(join(tmpdir(), "omx-di-trusted-bin-"));
 				await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
@@ -12865,7 +12867,17 @@ exit 0
 					else process.env.PATH = inheritedPath;
 					await rm(trustedBinDir, { recursive: true, force: true });
 				}
-			}));
+			});
+			assert.match(JSON.stringify(directCancellation.outputJson), /cancelled_exact_session/);
+			assert.equal(
+				JSON.parse(await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json"), "utf8")).current_phase,
+				"cancelled",
+			);
+			assert.equal(
+				JSON.parse(await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "skill-active-state.json"), "utf8")).active,
+				false,
+			);
+			await writeIssue3239ActiveAutopilotDeepInterviewState(cwd, sessionId, threadId);
 			await assertDenied("chained cancellation is not documented direct cancellation", await bash("printf ready && omx cancel", "omx-cancel-chained"), /Deep-interview is active|write intent|handoff|direct/);
 			await assertDenied("force cancellation is ralplan/conductor-only", await bash("omx cancel --force", "omx-cancel-force"), /Deep-interview is active|write intent|handoff|direct/);
 			await assertDenied("bom lookalike is not direct cancellation", await bash("\ufeffomx cancel", "omx-cancel-bom"), /Deep-interview is active|write intent|handoff|direct/);
@@ -12879,6 +12891,8 @@ exit 0
 					else process.env.BASH_ENV = previousBashEnv;
 				}
 			})(), /Deep-interview is active|write intent|handoff|direct/);
+			await writeIssue3239ActiveAutopilotDeepInterviewState(cwd, sessionId, threadId);
+
 			await assertDenied("inherited node coverage output poisons direct cancellation", await (async () => {
 				const previousCoverage = process.env.NODE_V8_COVERAGE;
 				process.env.NODE_V8_COVERAGE = "/tmp/coverage-out";
@@ -12889,6 +12903,7 @@ exit 0
 					else process.env.NODE_V8_COVERAGE = previousCoverage;
 				}
 			})(), /Deep-interview is active|write intent|handoff|direct/);
+			await writeIssue3239ActiveAutopilotDeepInterviewState(cwd, sessionId, threadId);
 
 			for (const [label, command] of [
 				["omx-help", "omx --help"],
