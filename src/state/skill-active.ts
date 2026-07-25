@@ -571,7 +571,10 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     const nextSessionEntries = [...nextVisibleRootEntries, ...sessionOnlyEntries];
 
     if (nextSessionEntries.length === 0) {
-      await unlink(sessionPath).catch(() => {});
+      await options.beforeCommit?.({ site: 'skill-active.session-unlink', kind: 'unlink', path: sessionPath });
+      await unlink(sessionPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
       continue;
     }
 

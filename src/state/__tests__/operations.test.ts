@@ -4810,5 +4810,57 @@ function assertPrefix(events: WritableEvent[], expected: WritableEvent[]): void 
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('revalidates the root-scoped session skill-state unlink', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-session-unlink-'));
+    try {
+      const stateDir = getBaseStateDir(wd);
+      const sessionId = 'sess-current';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      const sessionPath = join(sessionDir, 'skill-active-state.json');
+      const writeFixture = async (): Promise<void> => {
+        const rootSkillState = JSON.stringify({
+          active: true,
+          skill: 'autoresearch',
+          active_skills: [{ skill: 'autoresearch', active: true }],
+        });
+        const sessionSkillState = JSON.stringify({
+          active: false,
+          skill: 'autoresearch',
+          session_id: sessionId,
+        });
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(stateDir, 'autoresearch-state.json'), JSON.stringify({ active: true }));
+        await writeFile(join(stateDir, 'skill-active-state.json'), rootSkillState);
+        await writeFile(sessionPath, sessionSkillState);
+      };
+
+      await writeFixture();
+      const events: WritableEvent[] = [];
+      __setWritableStateScopeTestHooksForTests({
+        beforeScopeRevalidation: async (event) => {
+          events.push([event.commitOrdinal, event.site, event.kind, event.path]);
+        },
+      });
+      const response = await executeStateOperation('state_clear', { workingDirectory: wd, mode: 'autoresearch' });
+      assert.equal(response.isError, undefined);
+      assertPrefix(events, [
+        [1, 'state-clear.primary', 'unlink', join(stateDir, 'autoresearch-state.json')],
+        [2, 'skill-active.root-copy', 'write', join(stateDir, 'skill-active-state.json')],
+        [3, 'skill-active.session-unlink', 'unlink', sessionPath],
+      ]);
+      assert.equal(existsSync(sessionPath), false);
+
+      await writeFixture();
+      installScopeTakeover(stateDir, [3, 'skill-active.session-unlink'], JSON.stringify({ session_id: 'sess-replacement', cwd: wd, state_root: stateDir }));
+      const rejected = await executeStateOperation('state_clear', { workingDirectory: wd, mode: 'autoresearch' });
+      assert.equal(rejected.isError, true);
+      assert.deepEqual(rejected.payload, { error: WRITABLE_STATE_SCOPE_ERRORS.scopeChangedDuringWrite });
+      // Earlier commits in the sequence are not rolled back; each site performs its own point-in-time check.
+      assert.equal(existsSync(sessionPath), true);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 

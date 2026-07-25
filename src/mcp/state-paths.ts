@@ -560,6 +560,7 @@ export type WritableCommitSite =
   | 'run-state.mode-sync'
   | 'skill-active.root-copy'
   | 'skill-active.session-copy'
+  | 'skill-active.session-unlink'
   | 'state-clear.primary'
   | 'native-stop.root'
   | 'native-stop.session'
