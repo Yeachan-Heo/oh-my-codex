@@ -81,6 +81,34 @@ function assertProcessDead(pid: number): void {
   );
 }
 
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * Remove a detached-leader working directory once nothing is still writing to it.
+ *
+ * Subtests that intentionally preserve the HUD pane leave `omx hud --watch` running
+ * against `<wd>/.omx/state` on a 1s tick. Recursive removal races that writer:
+ * `force` only suppresses ENOENT, so a file recreated mid-walk surfaces as
+ * `ENOTEMPTY: directory not empty, rmdir '<wd>/.omx/state'`. Wait for the writer to
+ * exit, then retry to absorb any in-flight tick.
+ */
+async function cleanupDetachedWorkdir(wd: string, hudPanePid?: number): Promise<void> {
+  if (hudPanePid !== undefined) {
+    const deadline = Date.now() + TEST_TIMEOUT_MS;
+    while (processAlive(hudPanePid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+  }
+  await rm(wd, { recursive: true, force: true, maxRetries: 10, retryDelay: POLL_INTERVAL_MS });
+}
+
 async function startDetachedLeader(
   fixture: {
     run: (args: string[]) => string;
@@ -180,7 +208,7 @@ describe('detached leader HUD teardown', () => {
         assert.equal(fixture.sessionExists(), true);
       });
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await cleanupDetachedWorkdir(wd);
     }
   });
 
@@ -203,13 +231,16 @@ describe('detached leader HUD teardown', () => {
         assert.equal(fixture.sessionExists(), true);
       });
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await cleanupDetachedWorkdir(wd);
     }
   });
 
   it('preserves the HUD pane and session after signal-derived child death', async (t) => {
     if (!skipUnlessTmux(t)) return;
     const wd = mkdtempSync(join(tmpdir(), 'omx-detached-leader-signal-'));
+    // This subtest deliberately preserves the HUD pane, so its `omx hud --watch`
+    // is still writing `<wd>/.omx/state` when the test body returns.
+    let hudPanePid: number | undefined;
     try {
       await withTempTmuxSession(async (fixture) => {
         const sessionName = 'omx-detached-signal';
@@ -220,6 +251,7 @@ describe('detached leader HUD teardown', () => {
       // Both are signal-derived exits where teardown must stay closed (exit 143).
       const fakeChild = writeChild(wd, 'sleep 1\nkill -TERM $PPID\nsleep 30');
         const started = await startDetachedLeader(fixture, wd, sessionName, sessionId, 'signal-nonce', fakeChild);
+        hudPanePid = started.hud.panePid;
         const terminal = await readReportWhen(started.releaseMarkerPath, (report) => report.kind === 'terminal');
         assert.equal(terminal.finalized, true);
         assert.equal(terminal.exitStatus, 143);
@@ -227,7 +259,7 @@ describe('detached leader HUD teardown', () => {
         assert.equal(tmuxSessionExists(sessionName, fixture.serverName), true);
       });
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await cleanupDetachedWorkdir(wd, hudPanePid);
     }
   });
 
@@ -257,7 +289,7 @@ describe('detached leader HUD teardown', () => {
         assert.equal(fixture.sessionExists(), true);
       });
     } finally {
-      await rm(wd, { recursive: true, force: true });
+      await cleanupDetachedWorkdir(wd);
     }
   });
 
