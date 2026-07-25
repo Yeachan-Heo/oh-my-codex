@@ -17,7 +17,7 @@ async function withCwd(fn: (cwd: string) => Promise<void>): Promise<void> {
 }
 
 describe('#3181 durable tracker upgrade recovery', () => {
-  it('filters legacy adapted provenance during tolerant tracker recovery', async () => {
+  it('preserves legacy adapted provenance as descriptive-only during tolerant tracker recovery', async () => {
     await withCwd(async (cwd) => {
       const path = subagentTrackingPath(cwd);
       await mkdir(dirname(path), { recursive: true });
@@ -69,6 +69,7 @@ describe('#3181 durable tracker upgrade recovery', () => {
                 turn_count: 2,
                 mode: 'architect',
                 role: 'architect',
+                provenance_kind: 'adapted',
               },
             },
           },
@@ -76,7 +77,7 @@ describe('#3181 durable tracker upgrade recovery', () => {
       });
       assert.equal((JSON.parse(await readFile(path, 'utf8')) as { sessions: Record<string, { threads: Record<string, { provenance_kind?: string }> }> }).sessions['synthetic-session'].threads['synthetic-child'].provenance_kind, 'adapted');
       await writeSubagentTrackingState(cwd, state);
-      assert.equal(JSON.parse(await readFile(path, 'utf8')).sessions['synthetic-session'].threads['synthetic-child'].provenance_kind, undefined);
+      assert.equal(JSON.parse(await readFile(path, 'utf8')).sessions['synthetic-session'].threads['synthetic-child'].provenance_kind, 'adapted');
     });
   });
 

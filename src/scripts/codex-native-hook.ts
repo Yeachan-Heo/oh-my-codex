@@ -1,7 +1,8 @@
 import { execFileSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "fs";
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, readdir, stat, unlink, writeFile } from "fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "path";
+import { createHash } from "crypto";
 
 import { fileURLToPath, pathToFileURL } from "url";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
@@ -17,11 +18,16 @@ import {
   type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
+  fenceNativeSubagentAuthorities,
+  forceGlobalAuthorityDenial,
+  consumeDirectChildReopenContext,
   isTrustedSubagentThread,
   readSubagentSessionSummary,
-  readSubagentSessionLedger,
   readSubagentTrackingState,
-  recordSubagentTurnForSession,
+  recordNativeSubagentAuthorityObservation,
+  repairPersistedRootIdentity,
+  quarantinePersistedRootAuthority,
+  revokeNativeSubagentAuthorities,
   resolveInstalledRoleName,
 } from "../subagents/tracker.js";
 
@@ -39,6 +45,7 @@ import {
   isSessionPointerLaunchAbort,
   isSessionStale,
   isSessionStateUsable,
+  isSessionStateAuthoritativeForCwd,
   normalizeSessionId,
   readNativeSessionOwner,
   readSessionPointer,
@@ -380,6 +387,7 @@ function shouldSuppressParentWorkflowStopForSideConversation(payload: CodexHookP
 
 interface NativeSubagentSessionStartMetadata {
   parentThreadId: string;
+  childSessionId?: string;
   agentNickname?: string;
   agentRole?: string;
 }
@@ -453,6 +461,7 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
     ).trim();
     return {
       parentThreadId,
+      ...(safeString(payload.id).trim() ? { childSessionId: safeString(payload.id).trim() } : {}),
       ...(agentNickname ? { agentNickname } : {}),
       ...(agentRole ? { agentRole } : {}),
     };
@@ -470,6 +479,9 @@ async function recordNativeSubagentSessionStart(
   childSessionId: string,
   metadata: NativeSubagentSessionStartMetadata,
   transcriptPath: string,
+  rootNativeSessionId = "",
+  authorityEvidence: "valid" | "untrusted" | "absent" = "absent",
+  implicatedChildThreadIds: string[] = [],
 ): Promise<void> {
   const parentThreadId = metadata.parentThreadId.trim();
   const childThreadId = childSessionId.trim();
@@ -478,22 +490,33 @@ async function recordNativeSubagentSessionStart(
     canonicalSessionId.trim(),
     parentThreadId,
   ].filter(Boolean))];
-  for (const sessionId of trackingSessionIds) {
-    if (parentThreadId && parentThreadId !== childThreadId) {
-      await recordSubagentTurnForSession(cwd, {
-        sessionId,
-        threadId: parentThreadId,
-        kind: "leader",
-      }).catch(() => {});
-    }
-    await recordSubagentTurnForSession(cwd, {
-      sessionId,
-      threadId: childThreadId,
-      kind: "subagent",
-      ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
-      // agent_type is lifecycle/routing metadata, never authority.
+  let authorityTrackingFailed = false;
+  let authorityFenceFailed = false;
+  try {
+    recordNativeSubagentAuthorityObservation(cwd, {
+      sessionIds: trackingSessionIds,
+      childThreadId,
+      parentThreadId,
+      rootNativeSessionId,
+      authorityEvidence,
+      implicatedChildThreadIds,
       mode: metadata.agentRole,
-    }).catch(() => {});
+    });
+  } catch {
+    authorityTrackingFailed = true;
+    // A failed observation must not leave stale authority usable. Only a
+    // negative (untrusted) observation carries a revocation intent, so fence
+    // exactly those implicated ids until the revocation is durably applied.
+    // A conflicting VALID observation also revokes, so it must fence too.
+    if (authorityEvidence !== "absent") {
+      const fencedIds = [...new Set([childThreadId, ...implicatedChildThreadIds].filter(Boolean))];
+      authorityFenceFailed = !fenceNativeSubagentAuthorities(cwd, fencedIds, `${authorityEvidence}_revocation_failed`);
+      if (authorityFenceFailed) {
+        // Both the tracker denial and the locked fence failed. Escalate to a
+        // lock-free global denial so old authority cannot stay usable.
+        authorityFenceFailed = !forceGlobalAuthorityDenial(cwd, `${authorityEvidence}_denial_escalated`);
+      }
+    }
   }
   refreshNativeSubagentRoleRoutingMarker(
     cwd,
@@ -510,6 +533,8 @@ async function recordNativeSubagentSessionStart(
     ...(metadata.agentNickname ? { agent_nickname: metadata.agentNickname } : {}),
     ...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
     ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
+    authority_tracking_status: authorityTrackingFailed ? "failed" : authorityEvidence,
+    ...(authorityFenceFailed ? { authority_fence_status: "failed" } : {}),
     timestamp: new Date().toISOString(),
   }).catch(() => {});
 }
@@ -2006,24 +2031,63 @@ function shouldBuildSubagentReopenContext(options: {
   return source === "startup" || source === "resume";
 }
 
-function formatSubagentLedgerMetadata(entry: {
-  role?: string;
-  laneId?: string;
-  scope?: string;
-  status?: string;
-  lastHandoffSummary?: string;
-  resumeFailureReason?: string;
-}): string {
-  const metadata = [
-    entry.role ? `role: ${entry.role}` : null,
-    entry.laneId ? `lane: ${entry.laneId}` : null,
-    entry.scope ? `scope: ${entry.scope}` : null,
-    entry.status ? `status: ${entry.status}` : null,
-    entry.lastHandoffSummary ? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}` : null,
-    entry.resumeFailureReason ? `last failure: ${entry.resumeFailureReason.slice(0, 120)}` : null,
-  ].filter((item): item is string => Boolean(item));
-  return metadata.length > 0 ? ` (${metadata.join("; ")})` : "";
+type RawSessionStartNativeId =
+  | { ok: true; value: string }
+  | { ok: false; reason: "missing" | "malformed" | "conflict" };
+
+export function readUnambiguousSessionStartNativeId(payload: CodexHookPayload | undefined): RawSessionStartNativeId {
+  if (!payload) return { ok: false, reason: "missing" };
+  const object = payload as Record<string, unknown>;
+  const hasSnake = Object.prototype.hasOwnProperty.call(object, "session_id");
+  const hasCamel = Object.prototype.hasOwnProperty.call(object, "sessionId");
+  if (!hasSnake && !hasCamel) return { ok: false, reason: "missing" };
+  const values = [
+    ...(hasSnake ? [object.session_id] : []),
+    ...(hasCamel ? [object.sessionId] : []),
+  ];
+  if (values.some((value) => typeof value !== "string" || value.trim().length === 0)) {
+    return { ok: false, reason: "malformed" };
+  }
+  const normalized = values.map((value) => (value as string).trim());
+  if (new Set(normalized).size !== 1) return { ok: false, reason: "conflict" };
+  return { ok: true, value: normalized[0]! };
 }
+
+function readSessionStartNativeCandidates(payload: CodexHookPayload | undefined): string[] {
+  if (!payload) return [];
+  const object = payload as Record<string, unknown>;
+  return [...new Set([
+    Object.prototype.hasOwnProperty.call(object, "session_id") ? object.session_id : undefined,
+    Object.prototype.hasOwnProperty.call(object, "sessionId") ? object.sessionId : undefined,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).map((value) => value.trim()))];
+}
+
+export type PersistedReopenRootContextResult =
+  | { ok: true; sessionId: string; rootNativeSessionId: string }
+  | { ok: false; reason: "pointer_not_usable" | "pointer_cwd_missing" | "pointer_session_missing" | "pointer_native_root_missing" | "pointer_cwd_mismatch" | "selected_canonical_missing" | "canonical_mismatch" | "event_native_missing" | "event_native_malformed" | "event_native_conflict" | "native_root_mismatch" };
+
+export function resolvePersistedReopenRootContext(
+  cwd: string,
+  selectedCanonicalSessionId: string,
+  payload: CodexHookPayload | undefined,
+  state: SessionState | null,
+): PersistedReopenRootContextResult {
+  if (!state) return { ok: false, reason: "pointer_not_usable" };
+  if (!safeString(state.cwd).trim()) return { ok: false, reason: "pointer_cwd_missing" };
+  const pointerSessionId = safeString(state.session_id).trim();
+  if (!pointerSessionId) return { ok: false, reason: "pointer_session_missing" };
+  const pointerNativeId = safeString(state.native_session_id).trim();
+  if (!pointerNativeId) return { ok: false, reason: "pointer_native_root_missing" };
+  if (!isSessionStateAuthoritativeForCwd(state, cwd)) return { ok: false, reason: "pointer_cwd_mismatch" };
+  const canonicalSessionId = selectedCanonicalSessionId.trim();
+  if (!canonicalSessionId) return { ok: false, reason: "selected_canonical_missing" };
+  if (canonicalSessionId !== pointerSessionId) return { ok: false, reason: "canonical_mismatch" };
+  const rawNativeId = readUnambiguousSessionStartNativeId(payload);
+  if (!rawNativeId.ok) return { ok: false, reason: `event_native_${rawNativeId.reason}` };
+  if (rawNativeId.value !== pointerNativeId) return { ok: false, reason: "native_root_mismatch" };
+  return { ok: true, sessionId: pointerSessionId, rootNativeSessionId: pointerNativeId };
+}
+
 
 async function buildPersistedSubagentReopenContext(
   cwd: string,
@@ -2033,59 +2097,81 @@ async function buildPersistedSubagentReopenContext(
     payload?: CodexHookPayload;
   },
 ): Promise<string | null> {
-  if (!shouldBuildSubagentReopenContext(options)) return null;
-
-  const ledger = await readSubagentSessionLedger(cwd, sessionId).catch(() => null);
-  if (!ledger || ledger.savedSubagents.length === 0) return null;
-
-  const source = readSessionStartSource(options.payload);
-  const reopenTargets = ledger.resumeTargets.filter((entry) => entry.status !== "unavailable");
-  const unavailableTargets = ledger.unavailableSubagents;
-  const failedTargets = ledger.savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
-  const nowIso = new Date().toISOString();
-
-  await Promise.all(reopenTargets.map((entry) => recordSubagentTurnForSession(cwd, {
+  if (options.hookEventName !== "SessionStart") return null;
+  const pointerContext = resolveSessionPointerContext(cwd);
+  const pointer = await readSessionPointer(pointerContext);
+  const rootContext = resolvePersistedReopenRootContext(
+    cwd,
     sessionId,
-    threadId: entry.threadId,
-    kind: "subagent",
-    role: entry.role,
-    laneId: entry.laneId,
-    scope: entry.scope,
-    agentNickname: entry.agentNickname,
-    status: entry.status,
-    resumeRequestedAt: nowIso,
-    preserveCompletionEvidence: true,
-  }).catch(() => null)));
-
-  const lines = [
-    "[Persisted subagent reopen]",
-    `- SessionStart source: ${source}; saved subagent ids found: ${ledger.savedSubagents.length}.`,
-  ];
-
-  if (reopenTargets.length > 0) {
-    lines.push("- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:");
-    for (const entry of reopenTargets.slice(0, 12)) {
-      lines.push(`  - resume_agent(${JSON.stringify(entry.agentId)})${formatSubagentLedgerMetadata(entry)}`);
+    options.payload,
+    pointer.status === "usable" ? pointer.state ?? null : null,
+  );
+  if (!rootContext.ok) return null;
+  // A SessionStart that carries native subagent thread_spawn evidence for a
+  // genuinely DISTINCT child is a child session start, not a root observation,
+  // so it must not trigger root identity repair or reopen consumption on any
+  // source. The suppression is bound to the pointer-authoritative root: a
+  // transcript marker that is self-parented, names this very root as its child,
+  // or otherwise fails to identify a distinct child cannot override the
+  // authenticated pointer/event root identity, because that would let a stale
+  // or spurious marker keep a root-as-subagent inversion persisted forever.
+  const sessionStartTranscriptPath = safeString(options.payload?.transcript_path ?? options.payload?.transcriptPath).trim();
+  const sessionStartChildMetadata = readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath);
+  if (sessionStartChildMetadata) {
+    const markerParentId = sessionStartChildMetadata.parentThreadId.trim();
+    const markerChildId = safeString(sessionStartChildMetadata.childSessionId).trim();
+    // String-distinctness is NOT attestation. Suppression of the
+    // pointer-authoritative root's protection requires the marker to be bound
+    // to the authenticated event identity: the marker's child must be this very
+    // SessionStart's unambiguous native id, and its parent must be exactly the
+    // authenticated native root (a direct child, not a nested descendant or a
+    // child of some foreign parent). Anything else is unauthenticated evidence
+    // and must not keep a root-as-subagent inversion alive.
+    const eventChildIdentity = readUnambiguousSessionStartNativeId(options.payload ?? {});
+    const identifiesAuthenticatedDirectChild = markerChildId !== ""
+      && markerChildId !== rootContext.rootNativeSessionId
+      && markerChildId !== rootContext.sessionId
+      && markerParentId === rootContext.rootNativeSessionId
+      && eventChildIdentity.ok
+      && eventChildIdentity.value === markerChildId;
+    if (identifiesAuthenticatedDirectChild) return null;
+    // Contradictory or self-parented child evidence: this event cannot prove a
+    // distinct child, so it must not suppress the pointer-authoritative root's
+    // protection. Quarantine the root's reopen authority without asserting
+    // leader identity, which preserves legitimate descriptive subagent evidence
+    // while ensuring the root can never carry reopen authority.
+    try {
+      quarantinePersistedRootAuthority(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
+    } catch {
+      // Quarantine is best-effort; reopen output stays denied for this event.
     }
-    if (reopenTargets.length > 12) {
-      lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
-    }
-  } else {
-    lines.push("- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.");
+    return null;
   }
-
-  lines.push("- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.");
-  lines.push("- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.");
-
-  const warningEntries = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
-  if (warningEntries.length > 0) {
-    lines.push("- Reopen warnings:");
-    for (const entry of warningEntries.slice(0, 8)) {
-      lines.push(`  - ${entry.agentId}${formatSubagentLedgerMetadata(entry)}`);
+  if (!shouldBuildSubagentReopenContext(options)) {
+    // Reopen output is gated to startup/resume, but root identity repair is not:
+    // a known root-as-subagent inversion must not survive merely because this
+    // SessionStart used another source. Alias/identity conflicts above stay
+    // fail-closed and repair nothing.
+    try {
+      repairPersistedRootIdentity(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
+    } catch {
+      // Repair is best-effort; reopen output remains separately gated.
     }
+    return null;
   }
-
-  return lines.join("\n");
+  try {
+    return consumeDirectChildReopenContext(cwd, {
+      sessionId: rootContext.sessionId,
+      rootNativeSessionId: rootContext.rootNativeSessionId,
+      source: readSessionStartSource(options.payload),
+    });
+  } catch {
+    return [
+      "[Persisted subagent reopen]",
+      "- Warning: persisted subagent authority could not be evaluated; no resume authority or bookkeeping was granted.",
+      "- Silver rule: do not spawn a same-role/same-lane replacement solely because persisted reopen was unavailable; continue in the root or another compatible existing lane.",
+    ].join("\n");
+  }
 }
 
 async function buildSessionStartContext(
@@ -3547,6 +3633,159 @@ async function resolvePreToolUseSessionBinding(
       && knownAliases.has(aliases[0] ?? ""),
   };
 }
+// Issue #3293 cancellation boundary: identity matching is payload-bound while target-root
+// selection remains ambient and same-euid trusted (OMX_ROOT/OMX_STATE_ROOT/OMX_TEAM_STATE_ROOT
+// select the tree; they are not authority).
+export type HookCancelTransactionFailureReason =
+  | "invalid_target"
+  | "lock_held"
+  | "recovery_required"
+  | "preflight_failed"
+  | "state_mismatch"
+  | "journal_failed"
+  | "write_failed"
+  | "rollback_failed"
+  | "verification_failed"
+  | "cleanup_failed";
+
+export interface HookCancelTransactionResult {
+  ok: boolean;
+  reason?: HookCancelTransactionFailureReason;
+}
+
+const HOOK_CANCEL_MAX_STATE_BYTES = 1024 * 1024;
+const HOOK_CANCEL_LOCK_FILE = ".hook-cancel.lock";
+const HOOK_CANCEL_JOURNAL_FILE = ".hook-cancel-transaction.json";
+
+type HookCancelTargetIdentity = { dev: number; ino: number; mode: number; uid: number; size: number; mtimeMs: number };
+type HookCancelPinnedFile = { path: string; bytes: Buffer; identity: HookCancelTargetIdentity; value: Record<string, unknown> };
+
+function hookCancelIdentity(stats: { dev: number; ino: number; mode: number; uid: number; size: number; mtimeMs: number }): HookCancelTargetIdentity {
+  return { dev: stats.dev, ino: stats.ino, mode: stats.mode, uid: stats.uid, size: stats.size, mtimeMs: stats.mtimeMs };
+}
+function hookCancelIdentityMatches(left: HookCancelTargetIdentity, right: HookCancelTargetIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.uid === right.uid && left.size === right.size && left.mtimeMs === right.mtimeMs;
+}
+function hookCancelTargetMatches(left: HookCancelTargetIdentity, right: HookCancelTargetIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.uid === right.uid;
+}
+
+function hookCancelDigest(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
+function hookCancelObject(bytes: Buffer): Record<string, unknown> | null {
+  if (bytes.length === 0 || bytes.length > HOOK_CANCEL_MAX_STATE_BYTES) return null;
+  try { const value = JSON.parse(bytes.toString("utf8")); return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null; } catch { return null; }
+}
+function hookCancelString(value: unknown): string { return typeof value === "string" ? value.trim() : ""; }
+function hookCancelCwdMatches(value: Record<string, unknown>, canonicalCwd: string): boolean {
+  const recorded = hookCancelString(value.cwd) || hookCancelString(value.workingDirectory);
+  try { return !recorded || resolve(recorded) === canonicalCwd; } catch { return false; }
+}
+function hookCancelSessionMatches(value: Record<string, unknown>, sessionId: string, cwd: string): boolean {
+  const recorded = hookCancelString(value.session_id);
+  return (!recorded || recorded === sessionId) && hookCancelCwdMatches(value, cwd);
+}
+function hookCancelAutopilotMatches(value: Record<string, unknown>, sessionId: string, cwd: string): boolean {
+  return value.active === true && hookCancelString(value.mode).toLowerCase() === "autopilot" && normalizeAutopilotPhase(hookCancelString(value.current_phase)) === "deep-interview" && hookCancelSessionMatches(value, sessionId, cwd);
+}
+function hookCancelSkillMatches(value: Record<string, unknown>, sessionId: string, cwd: string): boolean {
+  if (!hookCancelSessionMatches(value, sessionId, cwd)) return false;
+  const entries = Array.isArray(value.active_skills) ? value.active_skills : [value];
+  return entries.some((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const entry = candidate as Record<string, unknown>;
+    return hookCancelString(entry.skill).toLowerCase() === "autopilot" && entry.active !== false && normalizeAutopilotPhase(hookCancelString(entry.phase)) === "deep-interview" && (!hookCancelString(entry.session_id) || hookCancelString(entry.session_id) === sessionId) && hookCancelCwdMatches(entry, cwd);
+  });
+}
+async function hookCancelFsyncDirectory(path: string): Promise<void> {
+  const handle = await open(path, "r"); try { await handle.sync(); } finally { await handle.close(); }
+}
+async function hookCancelPinnedRead(path: string): Promise<HookCancelPinnedFile | null> {
+  let before: Awaited<ReturnType<typeof lstat>>;
+  try { before = await lstat(path); } catch { return null; }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.uid !== process.getuid?.()) return null;
+  let handle: Awaited<ReturnType<typeof open>>;
+  try { handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); } catch { return null; }
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || !hookCancelIdentityMatches(hookCancelIdentity(before), hookCancelIdentity(opened))) return null;
+    const bytes = await handle.readFile(); const after = await handle.stat();
+    if (!hookCancelIdentityMatches(hookCancelIdentity(opened), hookCancelIdentity(after))) return null;
+    if (process.env.NODE_ENV === "test" && process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER === "preflight-instability") return null;
+    const value = hookCancelObject(bytes); return value ? { path, bytes, identity: hookCancelIdentity(after), value } : null;
+  } catch { return null; } finally { await handle.close(); }
+}
+function hookCancelPreparedAutopilot(value: Record<string, unknown>, nowIso: string): Record<string, unknown> {
+  return { ...value, active: false, current_phase: "cancelled", completed_at: nowIso, last_turn_at: nowIso };
+}
+function hookCancelPreparedSkill(value: Record<string, unknown>, sessionId: string, nowIso: string): Record<string, unknown> {
+  const sourceEntries = Array.isArray(value.active_skills) ? value.active_skills : [value]; let cancelled = false;
+  const entries = sourceEntries.map((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+    const entry = candidate as Record<string, unknown>;
+    const matches = hookCancelString(entry.skill).toLowerCase() === "autopilot" && entry.active !== false && normalizeAutopilotPhase(hookCancelString(entry.phase)) === "deep-interview" && (!hookCancelString(entry.session_id) || hookCancelString(entry.session_id) === sessionId);
+    if (!matches) return entry; cancelled = true; return { ...entry, active: false, phase: "cancelled", updated_at: nowIso };
+  });
+  if (!cancelled) return value;
+  const activeEntries = entries.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry) && (entry as Record<string, unknown>).active !== false) as Record<string, unknown>[];
+  const primary = activeEntries[0];
+  return { ...value, active: activeEntries.length > 0, skill: primary ? hookCancelString(primary.skill) : "autopilot", phase: primary ? hookCancelString(primary.phase) : "cancelled", updated_at: nowIso, active_skills: entries };
+}
+function hookCancelInjectFailure(boundary: string): void {
+  if (process.env.NODE_ENV === "test" && process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER === boundary) throw new Error("test-induced hook cancellation transaction failure");
+}
+async function hookCancelWriteExact(handle: Awaited<ReturnType<typeof open>>, bytes: Buffer): Promise<void> { await handle.write(bytes, 0, bytes.length, 0); await handle.truncate(bytes.length); await handle.sync(); }
+async function hookCancelWriteTarget(path: string, identity: HookCancelTargetIdentity, expected: Buffer, next: Buffer): Promise<void> {
+  const handle = await open(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+  try { const current = await handle.stat(); if (!current.isFile() || !hookCancelTargetMatches(identity, hookCancelIdentity(current))) throw new Error("target identity changed"); const bytes = await handle.readFile(); if (!bytes.equals(expected)) throw new Error("target content changed"); await hookCancelWriteExact(handle, next); } finally { await handle.close(); }
+}
+async function hookCancelRestoreTarget(path: string, identity: HookCancelTargetIdentity, original: Buffer): Promise<void> {
+  const handle = await open(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
+  try { const current = await handle.stat(); if (!current.isFile() || !hookCancelTargetMatches(identity, hookCancelIdentity(current))) throw new Error("rollback identity changed"); await hookCancelWriteExact(handle, original); } finally { await handle.close(); }
+}
+export async function readHookCancelTransactionRecoveryState(input: { stateDir: string; canonicalSessionId: string }): Promise<HookCancelTransactionFailureReason | null> {
+  if (!input.canonicalSessionId || basename(input.canonicalSessionId) !== input.canonicalSessionId) return "invalid_target";
+  try { const journal = hookCancelObject(await readFile(join(input.stateDir, "sessions", input.canonicalSessionId, HOOK_CANCEL_JOURNAL_FILE))); return journal?.phase === "prepared" ? "recovery_required" : "cleanup_failed"; } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : "cleanup_failed"; }
+}
+export async function terminalizeExactAutopilotSessionForHookCancel(input: { stateDir: string; canonicalSessionId: string; cwd: string; nowIso: string }): Promise<HookCancelTransactionResult> {
+  let canonicalStateDir: string; let canonicalCwd: string;
+  try { canonicalStateDir = realpathSync(input.stateDir); canonicalCwd = realpathSync(input.cwd); } catch { return { ok: false, reason: "invalid_target" }; }
+  if (!input.canonicalSessionId || basename(input.canonicalSessionId) !== input.canonicalSessionId) return { ok: false, reason: "invalid_target" };
+  const sessionsDir = join(canonicalStateDir, "sessions"); const sessionDir = join(sessionsDir, input.canonicalSessionId);
+  try {
+    const [sessionsStats, sessionStats, resolvedSessionDir] = await Promise.all([lstat(sessionsDir), lstat(sessionDir), import("fs/promises").then(({ realpath }) => realpath(sessionDir))]);
+    if (!sessionsStats.isDirectory() || sessionsStats.isSymbolicLink() || !sessionStats.isDirectory() || sessionStats.isSymbolicLink() || relative(canonicalStateDir, resolvedSessionDir).startsWith("..") || resolve(resolvedSessionDir) !== resolve(sessionDir)) return { ok: false, reason: "invalid_target" };
+  } catch { return { ok: false, reason: "invalid_target" }; }
+  const recovery = await readHookCancelTransactionRecoveryState({ stateDir: canonicalStateDir, canonicalSessionId: input.canonicalSessionId }); if (recovery) return { ok: false, reason: recovery };
+  const lockPath = join(sessionDir, HOOK_CANCEL_LOCK_FILE); const journalPath = join(sessionDir, HOOK_CANCEL_JOURNAL_FILE); let lock: Awaited<ReturnType<typeof open>>;
+  try { lock = await open(lockPath, "wx", 0o600); await lock.sync(); await hookCancelFsyncDirectory(sessionDir); } catch { return { ok: false, reason: "lock_held" }; }
+  try {
+    const [autopilot, skill] = await Promise.all([hookCancelPinnedRead(join(sessionDir, "autopilot-state.json")), hookCancelPinnedRead(join(sessionDir, "skill-active-state.json"))]);
+    if (!autopilot || !skill) return { ok: false, reason: "preflight_failed" };
+    if (!hookCancelAutopilotMatches(autopilot.value, input.canonicalSessionId, canonicalCwd) || !hookCancelSkillMatches(skill.value, input.canonicalSessionId, canonicalCwd)) return { ok: false, reason: "state_mismatch" };
+    const nextAutopilot = Buffer.from(JSON.stringify(hookCancelPreparedAutopilot(autopilot.value, input.nowIso), null, 2)); const nextSkill = Buffer.from(JSON.stringify(hookCancelPreparedSkill(skill.value, input.canonicalSessionId, input.nowIso), null, 2));
+    const journal = Buffer.from(JSON.stringify({ version: 1, session_id: input.canonicalSessionId, phase: "prepared", targets: { autopilot: { identity: autopilot.identity, old_sha256: hookCancelDigest(autopilot.bytes), new_sha256: hookCancelDigest(nextAutopilot) }, skill_active: { identity: skill.identity, old_sha256: hookCancelDigest(skill.bytes), new_sha256: hookCancelDigest(nextSkill) } } }));
+    if (journal.length > HOOK_CANCEL_MAX_STATE_BYTES) return { ok: false, reason: "journal_failed" };
+    const journalHandle = await open(journalPath, "wx", 0o600); try { await journalHandle.writeFile(journal); await journalHandle.sync(); } finally { await journalHandle.close(); }
+    await hookCancelFsyncDirectory(sessionDir); hookCancelInjectFailure("journal-fsync");
+    let autopilotWritten = false; let skillWritten = false;
+    try { await hookCancelWriteTarget(autopilot.path, autopilot.identity, autopilot.bytes, nextAutopilot); autopilotWritten = true; hookCancelInjectFailure("first-data-write"); await hookCancelWriteTarget(skill.path, skill.identity, skill.bytes, nextSkill); skillWritten = true; hookCancelInjectFailure("second-data-write"); }
+    catch {
+      try { if (skillWritten) await hookCancelRestoreTarget(skill.path, skill.identity, skill.bytes); if (autopilotWritten) await hookCancelRestoreTarget(autopilot.path, autopilot.identity, autopilot.bytes); await hookCancelFsyncDirectory(sessionDir); } catch { return { ok: false, reason: "rollback_failed" }; }
+      await unlink(journalPath); await hookCancelFsyncDirectory(sessionDir); return { ok: false, reason: "write_failed" };
+    }
+    const [verifiedAutopilot, verifiedSkill] = await Promise.all([readFile(autopilot.path), readFile(skill.path)]);
+    if (!verifiedAutopilot.equals(nextAutopilot) || !verifiedSkill.equals(nextSkill)) return { ok: false, reason: "verification_failed" };
+    hookCancelInjectFailure("verification");
+    const committed = Buffer.from(JSON.stringify({ ...JSON.parse(journal.toString("utf8")), phase: "committed" })); const committedHandle = await open(journalPath, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW);
+    try { await committedHandle.write(committed, 0, committed.length, 0); await committedHandle.truncate(committed.length); await committedHandle.sync(); } finally { await committedHandle.close(); }
+    hookCancelInjectFailure("journal-commit"); await unlink(journalPath); await hookCancelFsyncDirectory(sessionDir); hookCancelInjectFailure("unlink");
+    return { ok: true };
+  } catch { return { ok: false, reason: "journal_failed" }; }
+  finally {
+    try { await lock.close(); await unlink(lockPath); await hookCancelFsyncDirectory(sessionDir); hookCancelInjectFailure("lock-release"); } catch {}
+  }
+}
+
 
 interface ConductorPolicyRootResolution {
   cwd: string;
@@ -8524,35 +8763,165 @@ function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, 
   return mutations.length === 1 && mutations[0]?.mainRootStructuredStateWrite === true;
 }
 
-function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string, authoritativeSessionId: string): boolean {
-  if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return false;
-  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
-  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
-  if (hasUnquotedShellSubstitution(canonicalCommand)) return false;
-  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return false;
-  if (hasDynamicNestedShellExecution(canonicalCommand)) return false;
-  if (commandHasUntargetedPlanningForbiddenIntent(canonicalCommand)) return false;
-  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return false;
+export type DeepInterviewHandoffRejectReason =
+  | "session_id_missing"
+  | "session_id_mismatch"
+  | "session_alias_conflict"
+  | "working_directory_missing"
+  | "working_directory_mismatch"
+  | "gate_incomplete"
+  | "durable_evidence_missing"
+  | "artifact_target_not_allowed"
+  | "unsafe_transport";
+
+export const DEEP_INTERVIEW_HANDOFF_REJECT_DETAILS: Record<DeepInterviewHandoffRejectReason, string> = {
+  session_id_missing: "The handoff payload must include the authoritative session_id.",
+  session_id_mismatch: "The handoff payload session_id does not match the authoritative session.",
+  session_alias_conflict: "The handoff payload session aliases must match the authoritative session.",
+  working_directory_missing: "The handoff payload must include workingDirectory.",
+  working_directory_mismatch: "The handoff payload workingDirectory does not match the active workspace.",
+  gate_incomplete: "The handoff payload does not contain a complete deep-interview gate.",
+  durable_evidence_missing: "The handoff requires durable deep-interview evidence.",
+  artifact_target_not_allowed: "The handoff artifact target is not allowed.",
+  unsafe_transport: "The handoff command uses an unsafe transport.",
+};
+
+export type DeepInterviewRalplanHandoffEvaluation = {
+  allowed: boolean;
+  reason?: DeepInterviewHandoffRejectReason;
+};
+
+function rejectDeepInterviewRalplanHandoff(reason: DeepInterviewHandoffRejectReason): DeepInterviewRalplanHandoffEvaluation {
+  return { allowed: false, reason };
+}
+
+/**
+ * Resolves only the two documented shell parameter expansions in an inline
+ * handoff payload. This is not an authority grant: the values come from the
+ * hook's authoritative binding and active cwd, and the evaluator immediately
+ * verifies the resulting payload against those same values. Every other shell
+ * variable expansion is rejected rather than interpreted.
+ */
+function resolveDocumentedDeepInterviewHandoffInput(
+  canonicalCommand: string,
+  authoritativeSessionId: string,
+  cwd: string,
+): string | null {
   const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
-  if (stateWriteOperations.length !== 1) return false;
+  const stateWriteOperation = stateWriteOperations.length === 1 ? stateWriteOperations[0] : undefined;
+  const inlineInput = stateWriteOperation ? readStateWriteFlagValue(stateWriteOperation.args, "--input") : undefined;
+  const expansions = canonicalCommand.match(/\$\{[^}]*\}/g) ?? [];
+  const shellExpansions = canonicalCommand.match(/\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)/g) ?? [];
+  const inputExpansions = inlineInput?.match(/\$[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
+  if (expansions.length === 0) return canonicalCommand;
+  if (!inlineInput || expansions.length !== 2 || shellExpansions.length !== 2 || inputExpansions.length !== 2) return null;
+  if (!inputExpansions.every((expansion) => expansion === "$CONDUCTOR_DYNAMIC_PARAMETER")) return null;
+
+  const replacements = new Map<string, string>([
+    ["${OMX_SESSION_ID}", authoritativeSessionId],
+    ["${OMX_SESSION_ID:?authoritative OMX session required}", authoritativeSessionId],
+    ["${PWD}", cwd],
+    ["${PWD:?working directory required}", cwd],
+  ]);
+  if (!expansions.every((expansion) => replacements.has(expansion))) return null;
+  if (!expansions.some((expansion) => expansion.startsWith("${OMX_SESSION_ID"))) return null;
+  if (!expansions.some((expansion) => expansion.startsWith("${PWD"))) return null;
+
+  return canonicalizeOmxStateTransportCommand(canonicalCommand.replace(/\$\{[^}]*\}/g, (expansion) => replacements.get(expansion) ?? expansion));
+}
+
+function deepInterviewRalplanHandoffPayloadHasExactSchema(payload: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === "state") {
+      const nested = safeObject(value);
+      if (!nested || (Object.keys(nested).length > 0 && !deepInterviewRalplanHandoffPayloadHasExactSchema(nested))) return false;
+      continue;
+    }
+    if (key === "handoff_artifacts") {
+      const artifacts = safeObject(value);
+      if (!artifacts || Object.keys(artifacts).some((artifact) => artifact !== "deep_interview")) return false;
+      if (artifacts.deep_interview !== undefined && !safeString(artifacts.deep_interview).trim()) return false;
+      continue;
+    }
+    if (!CONDUCTOR_STATE_WRITE_ALLOWED_PAYLOAD_KEYS.has(key)) return false;
+  }
+  return Object.keys(payload).length > 0;
+}
+
+function readDeepInterviewRalplanHandoffPayload(
+  canonicalCommand: string,
+  authoritativeSessionId: string,
+  cwd: string,
+): Record<string, unknown> | null {
+  const resolvedCommand = resolveDocumentedDeepInterviewHandoffInput(canonicalCommand, authoritativeSessionId, cwd);
+  if (!resolvedCommand) return null;
+  // Preserve base input-file transport. The inline fallback admits only the
+  // documented handoff_artifacts expansion, with the same recursive key guard.
+  const basePayload = readStateWriteInputPayload(cwd, resolvedCommand, canonicalCommand);
+  if (basePayload) return basePayload;
+  const operations = collectOmxStateCommandOperations(resolvedCommand, "write");
+  const operation = operations.length === 1 ? operations[0] : undefined;
+  const inlineInput = operation ? readStateWriteFlagValue(operation.args, "--input") : undefined;
+  if (!operation || !inlineInput || readStateWriteFlagValue(operation.args, "--input-file") !== undefined) return null;
+  try {
+    const parsed = JSON.parse(inlineInput);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && deepInterviewRalplanHandoffPayloadHasExactSchema(parsed as Record<string, unknown>)
+      ? normalizeStateWriteClassificationPayload(parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+
+export function evaluateDeepInterviewRalplanHandoffCommand(
+  cwd: string,
+  command: string,
+  authoritativeSessionId: string,
+): DeepInterviewRalplanHandoffEvaluation {
+  if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
+  if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  if (hasUnquotedShellSubstitution(canonicalCommand)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  if (findUnquotedOmxStateCommandIndexes(canonicalCommand, "clear").length > 0) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  if (hasDynamicNestedShellExecution(canonicalCommand)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  if (commandHasUntargetedPlanningForbiddenIntent(canonicalCommand)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  if (sourcesFileWrittenEarlierInSameCommand(cwd, canonicalCommand)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  const stateWriteOperations = collectOmxStateCommandOperations(canonicalCommand, "write");
+  if (stateWriteOperations.length !== 1) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
   const stateWriteOperation = stateWriteOperations[0];
-  if (!stateWriteOperation || stateWriteOperation.nested) return false;
-  const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-  if (!payload || !isDeepInterviewRalplanHandoffStatePayload(payload)) return false;
-  if (
-    safeString(payload.session_id).trim() !== authoritativeSessionId
-    || !suppliedSessionAliasesMatch(payload, authoritativeSessionId)
-    || safeString(payload.workingDirectory).trim() === ""
-    || resolve(safeString(payload.workingDirectory)) !== resolve(cwd)
-  ) return false;
+  if (!stateWriteOperation || stateWriteOperation.nested) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  const payload = readDeepInterviewRalplanHandoffPayload(canonicalCommand, authoritativeSessionId, cwd);
+  if (!payload) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  if (!isDeepInterviewRalplanHandoffStatePayload(payload)) return rejectDeepInterviewRalplanHandoff("gate_incomplete");
+  const payloadSessionId = safeString(payload.session_id).trim();
+  if (!payloadSessionId) return rejectDeepInterviewRalplanHandoff("session_id_missing");
+  if (payloadSessionId !== authoritativeSessionId) return rejectDeepInterviewRalplanHandoff("session_id_mismatch");
+  if (!suppliedSessionAliasesMatch(payload, authoritativeSessionId)) return rejectDeepInterviewRalplanHandoff("session_alias_conflict");
+  const workingDirectory = safeString(payload.workingDirectory).trim();
+  if (!workingDirectory) return rejectDeepInterviewRalplanHandoff("working_directory_missing");
+  if (resolve(workingDirectory) !== resolve(cwd)) return rejectDeepInterviewRalplanHandoff("working_directory_mismatch");
   const targets = extractDeepInterviewCommandWriteTargets(command);
   if (targets.length === 0) {
-    return !hasPriorExecutableCommand(stateWriteOperation.prefix)
-      && hasExistingDurableDeepInterviewHandoffEvidence(cwd);
+    if (hasPriorExecutableCommand(stateWriteOperation.prefix)) return rejectDeepInterviewRalplanHandoff("unsafe_transport");
+    return hasExistingDurableDeepInterviewHandoffEvidence(cwd)
+      ? { allowed: true }
+      : rejectDeepInterviewRalplanHandoff("durable_evidence_missing");
   }
-  if (!targets.some((target) => isDurableDeepInterviewHandoffEvidencePath(cwd, target))) return false;
-  if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command, authoritativeSessionId)) return false;
-  return targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target, authoritativeSessionId));
+  if (!targets.some((target) => isDurableDeepInterviewHandoffEvidencePath(cwd, target))) return rejectDeepInterviewRalplanHandoff("durable_evidence_missing");
+  if (!hasOnlyAllowedDeepInterviewRalplanHandoffMutations(cwd, command, authoritativeSessionId)) {
+    return targets.some((target) => !isAllowedDeepInterviewArtifactPath(cwd, target, authoritativeSessionId))
+      ? rejectDeepInterviewRalplanHandoff("artifact_target_not_allowed")
+      : rejectDeepInterviewRalplanHandoff("unsafe_transport");
+  }
+  return targets.every((target) => isAllowedDeepInterviewArtifactPath(cwd, target, authoritativeSessionId))
+    ? { allowed: true }
+    : rejectDeepInterviewRalplanHandoff("artifact_target_not_allowed");
+}
+
+function isAllowedDeepInterviewRalplanHandoffCommand(cwd: string, command: string, authoritativeSessionId: string): boolean {
+  return evaluateDeepInterviewRalplanHandoffCommand(cwd, command, authoritativeSessionId).allowed;
 }
 
 
@@ -8806,6 +9175,69 @@ function isDirectOmxCancelCommand(command: string, options: { allowForce?: boole
   return args.length === 0 || (options.allowForce === true && args.length === 1 && args[0] === "--force");
 }
 
+type DirectCancelDenyReason =
+  | "invalid_command"
+  | "session_binding"
+  | "actor_authority"
+  | "active_state"
+  | HookCancelTransactionFailureReason;
+type DirectCancelResult =
+  | { kind: "not-direct-cancel" }
+  | { kind: "handled"; reason: "cancelled_exact_session"; output: Record<string, unknown> }
+  | { kind: "denied"; reason: DirectCancelDenyReason; output: Record<string, unknown> };
+
+function directCancelOutput(reason: string, handled = false): Record<string, unknown> {
+  return {
+    decision: "block",
+    reason: handled
+      ? "OMX direct cancellation completed for this session; the external command was intentionally not executed."
+      : `OMX direct cancellation was not performed (${reason}).`,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: handled ? "cancelled_exact_session" : reason,
+    },
+  };
+}
+
+async function handleDirectOmxCancel(input: {
+  command: string; rawCommand: string; cwd: string; stateDir: string;
+  canonicalSessionId: string; payload: CodexHookPayload; allowForce: boolean;
+  activeState: Record<string, unknown>;
+}): Promise<DirectCancelResult> {
+  const cancelLike = /^[ \t]*omx[ \t]+cancel\b/.test(input.command);
+  if (!cancelLike) return { kind: "not-direct-cancel" };
+  // IR2: hook-owned cancellation is exclusive to active Autopilot
+  // deep-interview. Every other workflow falls through to its pre-#3293
+  // executable-trust path unchanged.
+  if (!hookCancelAutopilotMatches(input.activeState, input.canonicalSessionId, resolve(input.cwd))) {
+    return { kind: "not-direct-cancel" };
+  }
+  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: input.allowForce })) {
+    return { kind: "denied", reason: "invalid_command", output: directCancelOutput("invalid_command") };
+  }
+  const aliases = payloadAliasValues(input.payload, ["session_id", "sessionId"]);
+  if (!input.canonicalSessionId || aliases.length !== 1 || aliases[0] !== input.canonicalSessionId || payloadHasConflictingIdentityAliases(input.payload)) {
+    return { kind: "denied", reason: "session_binding", output: directCancelOutput("session_binding") };
+  }
+  const actor = await resolvePreToolUseWriteActor(input.payload, input.cwd, input.stateDir, input.canonicalSessionId);
+  if (actor !== "main-root") return { kind: "denied", reason: "actor_authority", output: directCancelOutput("actor_authority") };
+
+  const recovery = await readHookCancelTransactionRecoveryState({ stateDir: input.stateDir, canonicalSessionId: input.canonicalSessionId });
+  if (recovery) return { kind: "denied", reason: recovery, output: directCancelOutput(recovery) };
+  const transaction = await terminalizeExactAutopilotSessionForHookCancel({
+    stateDir: input.stateDir,
+    canonicalSessionId: input.canonicalSessionId,
+    cwd: input.cwd,
+    nowIso: new Date().toISOString(),
+  });
+  if (!transaction.ok) {
+    const reason = transaction.reason ?? "preflight_failed";
+    return { kind: "denied", reason, output: directCancelOutput(reason) };
+  }
+  return { kind: "handled", reason: "cancelled_exact_session", output: directCancelOutput("cancelled_exact_session", true) };
+}
+
 function isAllowedOmxCleanupDryRunCommand(command: string): boolean {
   if (!isSingleLiteralShellInvocation(command)) return false;
   const words = literalInvocationWords(command);
@@ -8854,7 +9286,6 @@ function isAllowedGhReadOnlyCommand(command: string): boolean {
 function isAllowedDeepInterviewCommandSpecificBash(
   payload: CodexHookPayload,
   command: string,
-  cwd = process.cwd(),
 ): boolean {
   const questionClassification = classifyOmxQuestionPreToolUse(command, payload);
   if (questionClassification.kind === "allowed") return true;
@@ -8862,26 +9293,16 @@ function isAllowedDeepInterviewCommandSpecificBash(
   // generic allowance: when the trusted execution context cannot be proven,
   // the exemption denies rather than degrading to the ordinary benign path.
   if (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command)) {
-    return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
+    return false;
   }
   return isAllowedOmxReadOnlyCommand(command)
     || isAllowedGhReadOnlyCommand(command)
     || isAllowedVersionProbeCommand(command);
 }
 
-// The direct-cancel exemption authorizes a state-changing recovery command
-// ahead of the normal mutation analysis, so it must independently prove the
-// execution context cannot substitute different code for the validated text:
-// no unsafe inherited Bash startup (`BASH_ENV`) or conductor shell state
-// (imported handlers, unsafe options, untrusted absolute commands), no
-// imported `omx` shell function shadow, no inherited Node loader/OpenSSL
-// startup overrides, no inherited Node filesystem-output controls (coverage,
-// compile cache, report/redirect destinations), no inherited dynamic-loader
-// controls, no command-resolution/runtime environment assignments — and the
-// bare `omx` token must resolve to the hook package's own canonical CLI
-// under the inherited PATH, never to a PATH-shadowed or repository lookalike
-// executable. This reuses the established conductor executable-resolution
-// and runtime-startup safety model instead of inventing a parallel one.
+// The pre-#3293 direct-cancel trust check is retained for Ralplan and
+// Conductor. IR2 scopes hook-owned terminalization to Autopilot deep-interview
+// only; those other workflows still execute their existing trusted command.
 const DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES = [
   "NODE_OPTIONS",
   "NODE_EXTRA_CA_CERTS",
@@ -8939,7 +9360,7 @@ function isAllowedDeepInterviewBashWrite(
     // compound/redirect/substitution form is denied so it cannot smuggle a mutation.
     return questionClassification.kind === "allowed" && isSingleLiteralShellInvocation(command);
   }
-  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command, cwd)) return true;
+  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
@@ -9115,6 +9536,7 @@ function isAllowedRalplanBashWrite(
   if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) {
     return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
   }
+
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
@@ -20194,9 +20616,15 @@ export async function dispatchCodexNativeHook(
   const candidateWorkerPayloadSessionId = declaredTeamWorker
     ? readUnambiguousNormalizedPayloadSessionId(payload)
     : "";
+  const sessionStartNativeCandidates = hookEventName === "SessionStart"
+    ? readSessionStartNativeCandidates(payload)
+    : [];
   const nativeSessionId = declaredTeamWorker
     ? candidateWorkerPayloadSessionId
-    : safeString(payload.session_id ?? payload.sessionId).trim();
+    : sessionStartNativeCandidates[0] ?? safeString(payload.session_id ?? payload.sessionId).trim();
+  const sessionStartTranscriptPath = hookEventName === "SessionStart"
+    ? safeString(payload.transcript_path ?? payload.transcriptPath).trim()
+    : "";
   const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
   const pointer = await readSessionPointer(pointerContext);
@@ -20253,9 +20681,15 @@ export async function dispatchCodexNativeHook(
     resolvedNativeSessionId = nativeSessionId;
     skipCanonicalSessionStartContext = true;
     allowImplicitSessionSideEffects = false;
-  } else if (hookEventName === "SessionStart" && nativeSessionId) {
-    const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
+  } else if (hookEventName === "SessionStart" && (nativeSessionId || readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath))) {
+    const transcriptPath = sessionStartTranscriptPath;
     const subagentSessionStart = readNativeSubagentSessionStartMetadata(transcriptPath);
+    const eventChildIdentity = readUnambiguousSessionStartNativeId(payload);
+    const implicatedChildThreadIds = [...new Set([
+      nativeSessionId,
+      subagentSessionStart?.childSessionId ?? "",
+      ...readSessionStartNativeCandidates(payload),
+    ].filter(Boolean))];
     if (subagentSessionStart) {
       // A native child/subagent SessionStart carries a parent_thread_id in its
       // transcript session_meta. Treat it as a child-agent lifecycle event for
@@ -20279,11 +20713,47 @@ export async function dispatchCodexNativeHook(
             nativeSessionId,
             subagentSessionStart,
             transcriptPath,
+            eventChildIdentity.ok
+              && eventChildIdentity.value === nativeSessionId
+              && subagentSessionStart.childSessionId === nativeSessionId
+              ? safeString(currentSessionState?.native_session_id).trim()
+              : "",
+            eventChildIdentity.ok
+              && eventChildIdentity.value === nativeSessionId
+              && subagentSessionStart.childSessionId === nativeSessionId
+              && safeString(currentSessionState?.native_session_id).trim()
+              ? "valid"
+              : "untrusted",
+            implicatedChildThreadIds,
           );
         } else {
           skipCanonicalSessionStartContext = true;
           resolvedNativeSessionId =
             safeString(currentSessionState?.native_session_id).trim() || nativeSessionId;
+          try {
+            revokeNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent");
+          } catch {
+            // The negative identity observation could not be published. Fence
+            // the implicated ids durably so reopen consumption keeps denying
+            // them instead of leaving the old authority usable. A fence that
+            // also fails to persist is recorded so the failure is observable
+            // rather than silently dropped.
+            if (!fenceNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent_revocation_failed")) {
+              // Both the tracker denial and the locked fence failed. Escalate
+              // to a lock-free global denial so the old authority cannot stay
+              // usable, and record whether even that succeeded.
+              const escalated = forceGlobalAuthorityDenial(cwd, "foreign_parent_denial_escalated");
+              await appendToLog(cwd, {
+                event: "subagent_authority_fence_failed",
+                session_id: canonicalSessionId,
+                native_session_id: nativeSessionId,
+                reason: "foreign_parent_revocation_failed",
+                implicated_thread_ids: implicatedChildThreadIds,
+                global_denial_escalated: escalated,
+                timestamp: new Date().toISOString(),
+              }).catch(() => {});
+            }
+          }
           await recordIgnoredNativeSubagentSessionStart(
             cwd,
             canonicalSessionId,
@@ -20305,6 +20775,9 @@ export async function dispatchCodexNativeHook(
           nativeSessionId,
           subagentSessionStart,
           transcriptPath,
+          "",
+          "absent",
+          implicatedChildThreadIds,
         );
       }
     } else if (declaredTeamWorker) {
@@ -20638,7 +21111,10 @@ export async function dispatchCodexNativeHook(
     }
   }
 
-  if (omxEventName && allowImplicitSessionSideEffects && allowGlobalSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
+  const bypassGenericPreToolUsePluginDispatch = hookEventName === "PreToolUse"
+    && safeString(payload.tool_name).trim() === "Bash"
+    && /^[ \t]*omx[ \t]+cancel\b/.test(readPreToolUseCommand(payload));
+  if (omxEventName && !bypassGenericPreToolUsePluginDispatch && allowImplicitSessionSideEffects && allowGlobalSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
     const baseContext = buildBaseContext(cwd, payload, hookEventName!, canonicalSessionId);
     if (resolvedNativeSessionId) {
       baseContext.native_session_id = resolvedNativeSessionId;
@@ -20758,14 +21234,32 @@ export async function dispatchCodexNativeHook(
         payloadPolicyCwd,
       )
       : null;
-    if (!policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
+    const directCancelCommand = safeString(payload.tool_name).trim() === "Bash"
+      ? readPreToolUseCommand(payload)
+      : "";
+    if (/^[ \t]*omx[ \t]+cancel\b/.test(directCancelCommand)) {
+      const directCancel = await handleDirectOmxCancel({
+        command: directCancelCommand,
+        rawCommand: readPreToolUseRawCommand(payload),
+        cwd: policyCwd,
+        stateDir,
+        canonicalSessionId: sessionBinding.valid ? sessionBinding.canonicalSessionId : "",
+        payload,
+        allowForce: false,
+        activeState: sessionBinding.valid
+          ? (await readStopSessionPinnedState("autopilot-state.json", policyCwd, sessionBinding.canonicalSessionId, stateDir) ?? {})
+          : {},
+      });
+      if (directCancel.kind !== "not-direct-cancel") outputJson = directCancel.output;
+    }
+    if (!outputJson && !policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
       outputJson = buildConductorSessionProvenanceDeny(
         { mode: "conductor", phase: "active" },
         "the selected workflow state root has no usable canonical session cwd",
       );
-    } else if (foreignRootNativeChildDeny) {
+    } else if (!outputJson && foreignRootNativeChildDeny) {
       outputJson = foreignRootNativeChildDeny;
-    } else {
+    } else if (!outputJson) {
     const activeConductorState = sessionBinding.canonicalSessionId
       ? await readActiveConductorStateForPreToolUse(
         payload,
@@ -21210,6 +21704,13 @@ function isDispatchFailureTestTrigger(): boolean {
     && process.env.OMX_NATIVE_HOOK_TEST_THROW_DISPATCH === "1";
 }
 
+function isPostCancelCommitTestTrigger(payload: CodexHookPayload, output: Record<string, unknown> | null): boolean {
+  return process.env.NODE_ENV === "test"
+    && process.env.OMX_NATIVE_HOOK_TEST_AFTER_CANCEL_COMMIT === "1"
+    && readHookEventName(payload) === "PreToolUse"
+    && safeString(safeObject(output?.hookSpecificOutput).permissionDecisionReason).trim() === "cancelled_exact_session";
+}
+
 function buildMalformedPreToolUseBlockTestOutput(payload: CodexHookPayload): Record<string, unknown> | null {
   if (process.env.NODE_ENV !== "test" || readHookEventName(payload) !== "PreToolUse") return null;
   switch (process.env.OMX_NATIVE_HOOK_TEST_MALFORMED_PRETOOL_BLOCK) {
@@ -21271,6 +21772,9 @@ export async function runCodexNativeHookCli(): Promise<void> {
     }
 
     const result = await dispatchCodexNativeHook(payload);
+    // This seam is after hook-owned cancellation has committed but before stdout.
+    // It deliberately does not re-dispatch, so Bash cannot execute or be retried.
+    if (isPostCancelCommitTestTrigger(payload, result.outputJson)) void 0;
     if (result.outputJson) {
       writeNativeHookJsonStdout(sanitizeCodexHookOutput(result.hookEventName, result.outputJson) ?? {});
     } else if (result.hookEventName !== "PreCompact" && result.hookEventName !== "PostCompact") {
