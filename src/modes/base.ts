@@ -4,6 +4,7 @@
  */
 
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { join } from 'path';
 import { existsSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import {
@@ -21,10 +22,12 @@ import { canAdvanceAutopilotRalplanToUltragoal, buildAutopilotRalplanUltragoalGa
 import { deriveAutopilotChildPhase, type AutopilotChildPhase } from '../autopilot/fsm.js';
 import { syncRunStateFromModeState } from '../runtime/run-state.js';
 import {
+  createWritableCommitRevalidator,
   getAuthoritativeActiveStatePaths,
   getBaseStateDir,
   getReadScopedStateDirs,
   getReadScopedStatePaths,
+  getStateFilename,
   getStatePath,
   resolveWritableStateScope,
 } from '../mcp/state-paths.js';
@@ -172,6 +175,13 @@ export async function startMode(
   await mkdir(dir, { recursive: true });
 
   const baseStateDir = getBaseStateDir(projectRoot);
+  const beforeCommit = createWritableCommitRevalidator({
+    operation: 'startMode',
+    cwd: projectRoot ?? process.cwd(),
+    explicitSessionId: undefined,
+    capturedScope: scope,
+    baseStateDir,
+  });
   let transitionMessage: string | undefined;
   if (isTrackedWorkflowMode(mode)) {
     const transition = await reconcileWorkflowTransition(projectRoot ?? process.cwd(), mode, {
@@ -179,6 +189,7 @@ export async function startMode(
       sessionId: scope.sessionId,
       source: 'startMode',
       baseStateDir,
+      beforeCommit,
     });
     transitionMessage = transition.transitionMessage;
   }
@@ -198,8 +209,14 @@ export async function startMode(
 
   const withContext = withModeRuntimeContext({}, stateBase) as ModeState;
   const state = normalizeModeStateOrThrow(mode, withContext);
-  await writeFile(getStatePath(mode, projectRoot, scope.sessionId), JSON.stringify(state, null, 2));
-  await syncRunStateFromModeState(state, projectRoot, scope.sessionId);
+  const payload = JSON.stringify(state, null, 2);
+  const path = join(scope.stateDir, getStateFilename(mode));
+  await beforeCommit({ site: 'mode.primary', kind: 'write', path });
+  await writeFile(path, payload);
+  await syncRunStateFromModeState(state, projectRoot, scope.sessionId, {
+    beforeCommit,
+    targetPath: join(scope.stateDir, 'run-state.json'),
+  });
   if (isTrackedWorkflowMode(mode)) {
     await syncCanonicalSkillStateForMode({
       cwd: projectRoot ?? process.cwd(),
@@ -209,6 +226,7 @@ export async function startMode(
       currentPhase: typeof state.current_phase === 'string' ? state.current_phase : undefined,
       sessionId: scope.sessionId,
       source: 'startMode',
+      beforeCommit,
     });
   }
   return state;
@@ -314,6 +332,13 @@ async function updateModeStateInternal(
 ): Promise<ModeState> {
   const scope = await resolveWritableStateScope(projectRoot, explicitSessionId);
   const baseStateDir = getBaseStateDir(projectRoot);
+  const beforeCommit = createWritableCommitRevalidator({
+    operation: 'updateModeState',
+    cwd: projectRoot ?? process.cwd(),
+    explicitSessionId,
+    capturedScope: scope,
+    baseStateDir,
+  });
   const current = mode === 'ralph' && scope.sessionId
     ? await readModeStateForActiveDecision(mode, scope.sessionId, projectRoot)
     : explicitSessionId
@@ -406,8 +431,14 @@ async function updateModeStateInternal(
     }
   }
   const updated = withModeRuntimeContext(current, normalizedBase) as ModeState;
-  await writeFile(getStatePath(mode, projectRoot, scope.sessionId), JSON.stringify(updated, null, 2));
-  await syncRunStateFromModeState(updated, projectRoot, scope.sessionId);
+  const payload = JSON.stringify(updated, null, 2);
+  const path = join(scope.stateDir, getStateFilename(mode));
+  await beforeCommit({ site: 'mode.primary', kind: 'write', path });
+  await writeFile(path, payload);
+  await syncRunStateFromModeState(updated, projectRoot, scope.sessionId, {
+    beforeCommit,
+    targetPath: join(scope.stateDir, 'run-state.json'),
+  });
   if (isTrackedWorkflowMode(mode)) {
     const cwd = projectRoot ?? process.cwd();
     const ralplanCompletionHandled = mode === 'ralplan' && await completeRalplanSession({
@@ -415,6 +446,8 @@ async function updateModeStateInternal(
       baseStateDir,
       state: updated as Record<string, unknown>,
       explicitSessionId,
+      beforeCommit,
+      capturedScope: scope,
     });
     if (!ralplanCompletionHandled) {
       await syncCanonicalSkillStateForMode({
@@ -425,6 +458,7 @@ async function updateModeStateInternal(
         currentPhase: typeof updated.current_phase === 'string' ? updated.current_phase : undefined,
         sessionId: scope.sessionId,
         source: 'updateModeState',
+        beforeCommit,
       });
     }
   }

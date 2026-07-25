@@ -679,6 +679,18 @@ function classifySessionProcess(
   return 'usable';
 }
 
+/**
+ * Classify process liveness for an already-parsed selected session pointer.
+ * Callers that need cwd/state_root authority must validate those against the
+ * SAME snapshot themselves; this evaluates only pid/start-tick evidence so a
+ * single immutable snapshot can drive both decisions.
+ */
+export function classifySessionStateLiveness(
+  state: SessionState,
+): 'usable' | 'stale-dead' | 'identity-indeterminate' {
+  return classifySessionProcess(state, transactionDependencies);
+}
+
 function classifyParsedSessionPointer(
   context: SessionPointerContext,
   value: unknown,

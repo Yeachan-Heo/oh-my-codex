@@ -2,11 +2,9 @@ import { delimiter, isAbsolute, join, relative, resolve as resolvePath } from 'p
 import { existsSync, realpathSync, readFileSync } from 'fs';
 import { readFile, readdir } from 'fs/promises';
 import {
+  classifySessionStateLiveness,
   isSessionStateUsable,
-  readSessionPointer,
   readUsableSessionState,
-  resolveSessionPointerContext,
-  type SessionPointerStatus,
   type SessionState,
 } from '../hooks/session.js';
 
@@ -24,6 +22,7 @@ export const WRITABLE_STATE_SCOPE_ERRORS = {
   unusableSession: 'Cannot resolve writable state scope: session.json is present but unusable.',
   unboundEnvironment: 'Cannot resolve writable state scope: OMX_SESSION_ID is not bound to session.json.',
   sessionBindingMismatch: 'Cannot resolve writable state scope: OMX_SESSION_ID does not match the live session recorded in session.json.',
+  scopeChangedDuringWrite: 'Cannot commit the state write: the writable state scope changed while the write was in progress.',
 } as const;
 
 
@@ -103,7 +102,7 @@ export function validateStateModeSegment(mode: unknown): string {
   return normalized;
 }
 
-function getStateFilename(mode: string): string {
+export function getStateFilename(mode: string): string {
   return `${validateStateModeSegment(mode)}${STATE_FILE_SUFFIX}`;
 }
 
@@ -410,50 +409,66 @@ function resolveCanonicalSessionId(candidate: string | undefined, metadata: Reso
     : candidate;
 }
 
+interface AuthoritativeSessionSnapshot {
+  raw: string;
+  state: SessionState;
+  recordedCwd: string;
+}
+
 /**
- * Read the selected session.json only when it holds full selected-root
- * authority for this exact base state directory: a nonempty recorded cwd that
- * contains the observed cwd, and a recorded state_root canonical-equal to the
- * selected base (with the historical cwd-derived fallback when state_root is
- * absent). Usability/liveness is deliberately NOT checked here so stale-dead
- * recovery can require the same authority contract as the usable path.
+ * Read the selected session.json once and return the parsed snapshot only
+ * when it holds full selected-root authority for this exact base state
+ * directory: a nonempty recorded cwd that contains the observed cwd, and a
+ * recorded state_root canonical-equal to the selected base (with the
+ * historical cwd-derived fallback when state_root is absent). Usability/
+ * liveness is deliberately NOT checked here so stale-dead recovery can
+ * evaluate authority AND liveness from the same immutable bytes. A malformed
+ * or non-authoritative pointer returns null (fail closed); unexpected read
+ * I/O errors propagate instead of being collapsed into a generic classification.
  */
-async function readAuthoritativeSessionStateFromBaseStateDir(
+async function readAuthoritativeSessionSnapshotFromBaseStateDir(
   cwd: string,
   baseStateDir = getBaseStateDir(cwd),
-): Promise<{ state: SessionState; recordedCwd: string } | null> {
+): Promise<AuthoritativeSessionSnapshot | null> {
   const sessionPath = join(baseStateDir, 'session.json');
-  if (!existsSync(sessionPath)) return null;
-
+  let raw: string;
   try {
-    const content = await readFile(sessionPath, 'utf-8');
-    const state = JSON.parse(content) as SessionState;
-    const recordedCwd = typeof state.cwd === 'string' ? canonicalizeExistingPath(resolvePath(state.cwd)) : '';
-    const recordedStateRoot = typeof state.state_root === 'string'
-      ? canonicalizeExistingPath(resolvePath(state.state_root))
-      : recordedCwd
-        ? canonicalizeExistingPath(join(recordedCwd, '.omx', 'state'))
-        : '';
-    const canonicalBaseStateDir = canonicalizeExistingPath(baseStateDir);
-    const canonicalObservedCwd = canonicalizeExistingPath(resolvePath(cwd));
-    const authorityOwnsObservedCwd = Boolean(
-      recordedCwd
-      && recordedStateRoot === canonicalBaseStateDir
-      && isWithinRoot(canonicalObservedCwd, recordedCwd),
-    );
-    if (!authorityOwnsObservedCwd) return null;
-    return { state, recordedCwd };
-  } catch {
-    return null;
+    raw = await readFile(sessionPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
   }
+
+  let state: SessionState;
+  try {
+    state = JSON.parse(raw) as SessionState;
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+  const recordedCwd = typeof state.cwd === 'string' ? canonicalizeExistingPath(resolvePath(state.cwd)) : '';
+  const recordedStateRoot = typeof state.state_root === 'string'
+    ? canonicalizeExistingPath(resolvePath(state.state_root))
+    : recordedCwd
+      ? canonicalizeExistingPath(join(recordedCwd, '.omx', 'state'))
+      : '';
+  const canonicalBaseStateDir = canonicalizeExistingPath(baseStateDir);
+  const canonicalObservedCwd = canonicalizeExistingPath(resolvePath(cwd));
+  const authorityOwnsObservedCwd = Boolean(
+    recordedCwd
+    && recordedStateRoot === canonicalBaseStateDir
+    && isWithinRoot(canonicalObservedCwd, recordedCwd),
+  );
+  if (!authorityOwnsObservedCwd) return null;
+  return { raw, state, recordedCwd };
 }
 
 async function readUsableSessionStateFromBaseStateDir(
   cwd: string,
   baseStateDir = getBaseStateDir(cwd),
 ): Promise<SessionState | null> {
-  const authority = await readAuthoritativeSessionStateFromBaseStateDir(cwd, baseStateDir);
-  return authority && isSessionStateUsable(authority.state, authority.recordedCwd) ? authority.state : null;
+  const snapshot = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, baseStateDir);
+  return snapshot && isSessionStateUsable(snapshot.state, snapshot.recordedCwd) ? snapshot.state : null;
 }
 function normalizeSessionMetadata(state: SessionState | null, sourcePath?: string): ResolvedSessionMetadata | undefined {
   const sessionId = normalizeSessionId(state?.session_id);
@@ -530,19 +545,60 @@ function isKnownSessionAlias(sessionId: string, metadata: ResolvedSessionMetadat
 }
 
 
-/**
- * Classify the selected session.json pointer without treating every unusable
- * class alike. A definitively dead pointer (stale-dead) carries no owner
- * authority, while malformed, foreign-cwd, and identity-indeterminate
- * pointers stay fail-closed. Returns 'error' when the pointer cannot even be
- * classified, which must also stay fail-closed.
- */
-async function classifySelectedSessionPointer(cwd: string): Promise<SessionPointerStatus | 'error'> {
-  try {
-    return (await readSessionPointer(resolveSessionPointerContext(cwd))).status;
-  } catch {
-    return 'error';
-  }
+export type WritableCommitOperation =
+  | 'startMode'
+  | 'updateModeState'
+  | 'state_write'
+  | 'state_clear'
+  | 'completeRalplanSession';
+
+export type WritableCommitKind = 'write' | 'unlink';
+
+export type WritableCommitSite =
+  | 'transition.source-mode-detail'
+  | 'mode.primary'
+  | 'run-state.mode-sync'
+  | 'skill-active.root-copy'
+  | 'skill-active.session-copy'
+  | 'state-clear.primary'
+  | 'native-stop.root'
+  | 'native-stop.session'
+  | 'ralplan.root-state'
+  | 'ralplan.session-state'
+  | 'ralplan.root-skill-write'
+  | 'ralplan.root-skill-unlink'
+  | 'ralplan.session-skill-write';
+
+export interface WritableCommitAttempt {
+  site: WritableCommitSite;
+  kind: WritableCommitKind;
+  path: string;
+}
+
+export interface WritableScopeRevalidationEvent extends WritableCommitAttempt {
+  operation: WritableCommitOperation;
+  commitOrdinal: number;
+}
+
+export type BeforeWritableCommit = (event: WritableCommitAttempt) => Promise<void>;
+
+export interface WritableStateScopeTestHooks {
+  beforeRecoveryReread?: () => Promise<void>;
+  beforeScopeRevalidation?: (event: Readonly<WritableScopeRevalidationEvent>) => Promise<void>;
+  onSelectedDecisionSnapshotRead?: (event: Readonly<{ ordinal: number; raw: string }>) => void;
+  onRecoveryStabilityReread?: (event: Readonly<{ ordinal: number; raw: string | undefined }>) => void;
+}
+
+let selectedPointerRecoveryHookForTests: (() => Promise<void>) | undefined;
+let writableScopeRevalidationHookForTests: WritableStateScopeTestHooks['beforeScopeRevalidation'];
+let selectedDecisionSnapshotReadHookForTests: WritableStateScopeTestHooks['onSelectedDecisionSnapshotRead'];
+let recoveryStabilityRereadHookForTests: WritableStateScopeTestHooks['onRecoveryStabilityReread'];
+
+export function __setWritableStateScopeTestHooksForTests(hooks: WritableStateScopeTestHooks): void {
+  selectedPointerRecoveryHookForTests = hooks.beforeRecoveryReread;
+  writableScopeRevalidationHookForTests = hooks.beforeScopeRevalidation;
+  selectedDecisionSnapshotReadHookForTests = hooks.onSelectedDecisionSnapshotRead;
+  recoveryStabilityRereadHookForTests = hooks.onRecoveryStabilityReread;
 }
 
 
@@ -563,7 +619,14 @@ export async function resolveWritableStateScope(
 ): Promise<ResolvedStateScope> {
   const cwd = resolveWorkingDirectoryForState(workingDirectory);
   const baseStateDir = getBaseStateDir(cwd);
-  const metadata = await readSessionMetadataFromBaseStateDir(cwd, baseStateDir);
+  let selectedDecisionSnapshotReadOrdinalForTests = 0;
+  let recoveryStabilityRereadOrdinalForTests = 0;
+  const snapshot = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, baseStateDir);
+  const liveness = snapshot ? classifySessionStateLiveness(snapshot.state) : undefined;
+  const metadata = normalizeSessionMetadata(
+    snapshot && liveness === 'usable' ? snapshot.state : null,
+    join(baseStateDir, 'session.json'),
+  );
   const validatedExplicit = validateSessionId(explicitSessionId);
   if (validatedExplicit) {
     const sessionId = resolveCanonicalSessionId(validatedExplicit, metadata) ?? validatedExplicit;
@@ -575,28 +638,39 @@ export async function resolveWritableStateScope(
   }
 
   if (!metadata) {
-    if (existsSync(join(baseStateDir, 'session.json'))) {
+    const sessionPath = join(baseStateDir, 'session.json');
+    if (existsSync(sessionPath)) {
       const envSessionId = normalizeSessionId(process.env[OMX_SESSION_ID_ENV]);
-      // Stale-dead recovery requires the dead pointer to satisfy the exact
-      // same selected-root authority contract as a usable pointer (recorded
-      // cwd and state_root bound to this base); a semantically incomplete or
-      // foreign pointer stays fail-closed even with an env binding. The
-      // classification is taken twice so a torn read or a concurrently
-      // published live pointer cannot authorize the recovery.
-      const authority = envSessionId
-        ? await readAuthoritativeSessionStateFromBaseStateDir(cwd, baseStateDir)
-        : null;
+      if (snapshot && selectedDecisionSnapshotReadHookForTests) {
+        selectedDecisionSnapshotReadHookForTests({
+          ordinal: ++selectedDecisionSnapshotReadOrdinalForTests,
+          raw: snapshot.raw,
+        });
+      }
       if (
         envSessionId
-        && authority
-        && (await classifySelectedSessionPointer(cwd)) === 'stale-dead'
-        && (await classifySelectedSessionPointer(cwd)) === 'stale-dead'
+        && snapshot
+        && normalizeSessionId(snapshot.state.session_id)
+        && liveness === 'stale-dead'
       ) {
-        return {
-          source: 'session',
-          sessionId: envSessionId,
-          stateDir: join(baseStateDir, 'sessions', envSessionId),
-        };
+        if (selectedPointerRecoveryHookForTests) await selectedPointerRecoveryHookForTests();
+        const reread = await readFile(sessionPath, 'utf-8').catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        });
+        if (recoveryStabilityRereadHookForTests) {
+          recoveryStabilityRereadHookForTests({
+            ordinal: ++recoveryStabilityRereadOrdinalForTests,
+            raw: reread,
+          });
+        }
+        if (reread === snapshot.raw) {
+          return {
+            source: 'session',
+            sessionId: envSessionId,
+            stateDir: join(baseStateDir, 'sessions', envSessionId),
+          };
+        }
       }
       throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
     }
@@ -625,6 +699,57 @@ export async function resolveWritableStateScope(
     source: 'session',
     sessionId: metadata.sessionId,
     stateDir: join(baseStateDir, 'sessions', metadata.sessionId),
+  };
+}
+
+/**
+ * Point-in-time check performed immediately before the caller's commit. It
+ * reduces, but does not eliminate, the window for a pointer or root
+ * publication to move the selected target: one can still land after this
+ * check returns and before the caller's write, rename, or unlink. Multi-file
+ * sequences are not atomic.
+ */
+export async function assertWritableStateScopeUnchanged(
+  workingDirectory: string | undefined,
+  explicitSessionId: string | undefined,
+  expected: ResolvedStateScope,
+  expectedBaseStateDir: string,
+  event?: Readonly<WritableScopeRevalidationEvent>,
+): Promise<void> {
+  if (writableScopeRevalidationHookForTests) await writableScopeRevalidationHookForTests(event!);
+  const current = await resolveWritableStateScope(workingDirectory, explicitSessionId);
+  const currentBaseStateDir = getBaseStateDirWithSource(workingDirectory).baseStateDir;
+  if (
+    current.source !== expected.source
+    || current.sessionId !== expected.sessionId
+    || current.stateDir !== expected.stateDir
+    || currentBaseStateDir !== expectedBaseStateDir
+  ) {
+    throw new Error(WRITABLE_STATE_SCOPE_ERRORS.scopeChangedDuringWrite);
+  }
+}
+
+export function createWritableCommitRevalidator(options: {
+  operation: WritableCommitOperation;
+  cwd: string;
+  explicitSessionId: string | undefined;
+  capturedScope: ResolvedStateScope;
+  baseStateDir: string;
+}): BeforeWritableCommit {
+  let commitOrdinal = 0;
+  return async (attempt) => {
+    const event: WritableScopeRevalidationEvent = {
+      operation: options.operation,
+      commitOrdinal: ++commitOrdinal,
+      ...attempt,
+    };
+    await assertWritableStateScopeUnchanged(
+      options.cwd,
+      options.explicitSessionId,
+      options.capturedScope,
+      options.baseStateDir,
+      event,
+    );
   };
 }
 

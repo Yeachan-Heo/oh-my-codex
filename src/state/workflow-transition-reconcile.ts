@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
-import { getStatePath } from '../mcp/state-paths.js';
+import { getStatePath, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import {
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
@@ -126,6 +126,7 @@ async function completeSourceModeState(
   sessionId: string | undefined,
   nowIso: string,
   source: string,
+  beforeCommit?: BeforeWritableCommit,
 ): Promise<string[]> {
   const transitionMessage = `mode transiting: ${sourceMode} -> ${destinationMode}`;
   const candidatePaths = [modeStatePathForRoot(sourceMode, cwd, sessionId, baseStateDir)];
@@ -176,7 +177,9 @@ async function completeSourceModeState(
     const nextState = normalizeTerminalWorkflowState(runOutcomeState, { mode: sourceMode, nowIso }).state as TransitionStateLike;
 
     await mkdir(dirname(candidatePath), { recursive: true });
-    await writeFile(candidatePath, JSON.stringify(nextState, null, 2));
+    const payload = JSON.stringify(nextState, null, 2);
+    await beforeCommit?.({ site: 'transition.source-mode-detail', kind: 'write', path: candidatePath });
+    await writeFile(candidatePath, payload);
     completedPaths.push(candidatePath);
   }
 
@@ -199,6 +202,7 @@ async function completeSourceModeState(
     sessionId,
     nowIso,
     source,
+    beforeCommit,
   });
 
   return completedPaths;
@@ -213,6 +217,7 @@ export async function completeWorkflowModeState(
     nowIso?: string;
     source?: string;
     baseStateDir?: string;
+    beforeCommit?: BeforeWritableCommit;
   } = {},
 ): Promise<string[]> {
   return completeSourceModeState(
@@ -223,6 +228,7 @@ export async function completeWorkflowModeState(
     options.sessionId,
     options.nowIso ?? new Date().toISOString(),
     options.source ?? 'workflow-transition',
+    options.beforeCommit,
   );
 }
 
@@ -236,6 +242,7 @@ export async function reconcileWorkflowTransition(
     source?: string;
     baseStateDir?: string;
     currentModes?: Iterable<string>;
+    beforeCommit?: BeforeWritableCommit;
   } = {},
 ): Promise<ReconciledWorkflowTransition> {
   const {
@@ -270,6 +277,7 @@ export async function reconcileWorkflowTransition(
       sessionId,
       nowIso,
       source,
+      options.beforeCommit,
     ));
   }
 

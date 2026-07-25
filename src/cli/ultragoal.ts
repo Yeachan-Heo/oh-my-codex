@@ -19,6 +19,7 @@ import {
   checkpointUltragoal,
   createUltragoalPlan,
   readUltragoalPlan,
+  readUltragoalPlanSnapshot,
   recordFinalReviewBlockers,
   startNextUltragoal,
   steerUltragoal,
@@ -398,7 +399,7 @@ export async function ultragoalCommand(args: string[], deps: UltragoalCommandDep
     }
 
     if (command === 'status') {
-      const plan = await readUltragoalPlan(cwd);
+      const plan = await readUltragoalPlanSnapshot(cwd);
       const snapshot = await readCodexGoalSnapshotInput(readValue(rest, '--codex-goal-json'), cwd);
       const activeGoal = plan.goals.find((goal) => goal.id === plan.activeGoalId || goal.status === 'in_progress');
       const expectedObjective = plan.codexGoalMode === 'aggregate'

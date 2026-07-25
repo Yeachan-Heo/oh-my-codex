@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { resolveWritableStateScope, WRITABLE_STATE_SCOPE_ERRORS } from '../mcp/state-paths.js';
+import type { ResolvedStateScope } from '../mcp/state-paths.js';
 import {
   formatCodexGoalReconciliation,
   buildCompletedCodexGoalRemediation,
@@ -20,6 +21,10 @@ export const ULTRAGOAL_BRIEF = 'brief.md';
 export const ULTRAGOAL_GOALS = 'goals.json';
 export const ULTRAGOAL_LEDGER = 'ledger.jsonl';
 const ULTRAGOAL_MUTATION_LOCK = '.mutation.lock';
+
+export type UltragoalWritableAuthority =
+  | { kind: 'resolved'; source: ResolvedStateScope['source']; sessionId: string | undefined; stateDir: string }
+  | { kind: 'no-pointer-compat' };
 
 export type UltragoalStatus = 'pending' | 'in_progress' | 'complete' | 'failed' | 'review_blocked' | 'needs_user_decision';
 export type UltragoalCodexGoalMode = 'aggregate' | 'per_story';
@@ -804,15 +809,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Fail-closed ordering: no durable ultragoal story/goal transition may run
- * while writable lifecycle authority is unrestored. Only a present-but-
- * unusable selected session pointer gates durable mutation; root-mode
- * projects (no session.json) and unbound environments keep their existing
- * behavior.
+ * Mutation entry and post-lock acquisition each perform a point-in-time
+ * writable-authority check. A SessionStart publication can still occur after
+ * the second check and before a filesystem write; unrelated resolver failures
+ * propagate and block the mutation.
  */
-export async function assertUltragoalWritableLifecycleAuthority(cwd: string): Promise<void> {
+export async function assertUltragoalWritableLifecycleAuthority(cwd: string): Promise<UltragoalWritableAuthority> {
   try {
-    await resolveWritableStateScope(cwd);
+    const scope = await resolveWritableStateScope(cwd);
+    return {
+      kind: 'resolved',
+      source: scope.source,
+      sessionId: scope.sessionId,
+      stateDir: scope.stateDir,
+    };
   } catch (error) {
     if (error instanceof Error && error.message === WRITABLE_STATE_SCOPE_ERRORS.unusableSession) {
       throw new UltragoalError(
@@ -825,14 +835,32 @@ export async function assertUltragoalWritableLifecycleAuthority(cwd: string): Pr
     // authoritative roots, live-owner binding mismatches, unexpected I/O
     // errors — stays fail-closed and propagates.
     if (error instanceof Error && error.message === WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment) {
-      return;
+      return { kind: 'no-pointer-compat' };
     }
     throw error;
   }
 }
 
+function writableAuthorityEquals(
+  beforeLock: UltragoalWritableAuthority,
+  afterLock: UltragoalWritableAuthority,
+): boolean {
+  if (beforeLock.kind !== afterLock.kind) return false;
+  if (beforeLock.kind === 'no-pointer-compat') return true;
+  const resolvedAfterLock = afterLock as Extract<UltragoalWritableAuthority, { kind: 'resolved' }>;
+  return beforeLock.source === resolvedAfterLock.source
+    && beforeLock.sessionId === resolvedAfterLock.sessionId
+    && beforeLock.stateDir === resolvedAfterLock.stateDir;
+}
+
+function describeWritableAuthority(authority: UltragoalWritableAuthority): string {
+  return authority.kind === 'no-pointer-compat'
+    ? 'no-pointer-compat'
+    : `resolved(source=${authority.source}, sessionId=${authority.sessionId ?? 'undefined'}, stateDir=${authority.stateDir})`;
+}
+
 async function withUltragoalMutationLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
-  await assertUltragoalWritableLifecycleAuthority(cwd);
+  const beforeLock = await assertUltragoalWritableLifecycleAuthority(cwd);
   await mkdir(ultragoalDir(cwd), { recursive: true });
   const lockPath = join(ultragoalDir(cwd), ULTRAGOAL_MUTATION_LOCK);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -851,9 +879,15 @@ async function withUltragoalMutationLock<T>(cwd: string, operation: () => Promis
     throw new UltragoalError(`Timed out waiting for ultragoal mutation lock at ${repoRelative(cwd, lockPath)}.`);
   }
   try {
-    // Revalidate after lock acquisition: a concurrent SessionStart may have
-    // replaced the selected pointer while this caller waited for the lock.
-    await assertUltragoalWritableLifecycleAuthority(cwd);
+    // The post-lock comparison addresses pointer changes while waiting for this
+    // lock only. A SessionStart publication can still land after it and before
+    // the operation's filesystem writes.
+    const afterLock = await assertUltragoalWritableLifecycleAuthority(cwd);
+    if (!writableAuthorityEquals(beforeLock, afterLock)) {
+      throw new UltragoalError(
+        `Refusing durable ultragoal mutation after writable lifecycle authority drift while waiting for the mutation lock: before lock ${describeWritableAuthority(beforeLock)}; after lock ${describeWritableAuthority(afterLock)}.`,
+      );
+    }
     return await operation();
   } finally {
     await handle.close().catch(() => undefined);
@@ -881,6 +915,16 @@ async function readUltragoalPlanFile(cwd: string): Promise<UltragoalPlan> {
     throw new UltragoalError(`Invalid ultragoal plan at ${repoRelative(cwd, path)}.`);
   }
   return parsed;
+}
+
+/**
+ * Pure, lock-free plan read for read-only surfaces such as
+ * `omx ultragoal status`: never migrates, never writes, and is therefore safe
+ * for Team workers. Durable legacy migration only happens through
+ * readUltragoalPlan or the mutators, under the mutation lock and authority gate.
+ */
+export async function readUltragoalPlanSnapshot(cwd: string): Promise<UltragoalPlan> {
+  return readUltragoalPlanFile(cwd);
 }
 
 function requiresAggregateObjectiveMigration(plan: UltragoalPlan): boolean {

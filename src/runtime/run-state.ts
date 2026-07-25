@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
-import { getStateFilePath, resolveStateScope } from '../mcp/state-paths.js';
+import { getStateFilePath, resolveStateScope, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import {
   classifyRunOutcome,
   compatibilityRunOutcomeFromTerminalLifecycleOutcome,
@@ -154,12 +155,7 @@ async function writeAtomicFile(path: string, data: string): Promise<void> {
   }
 }
 
-export async function readRunState(
-  workingDirectory?: string,
-  explicitSessionId?: string,
-): Promise<RunState | null> {
-  const scope = await resolveStateScope(workingDirectory, explicitSessionId);
-  const path = getRunStatePath(workingDirectory, scope.sessionId);
+async function readRunStateAtPath(path: string): Promise<RunState | null> {
   if (!existsSync(path)) return null;
 
   try {
@@ -169,17 +165,30 @@ export async function readRunState(
   }
 }
 
+export async function readRunState(
+  workingDirectory?: string,
+  explicitSessionId?: string,
+): Promise<RunState | null> {
+  const scope = await resolveStateScope(workingDirectory, explicitSessionId);
+  return readRunStateAtPath(getRunStatePath(workingDirectory, scope.sessionId));
+}
+
 export async function syncRunStateFromModeState(
   state: RunStateLike,
   workingDirectory?: string,
   explicitSessionId?: string,
+  options: { beforeCommit?: BeforeWritableCommit; targetPath?: string } = {},
 ): Promise<RunState> {
-  const scope = await resolveStateScope(workingDirectory, explicitSessionId);
-  const path = getRunStatePath(workingDirectory, scope.sessionId);
-  await mkdir(scope.stateDir, { recursive: true });
+  const scope = options.targetPath ? undefined : await resolveStateScope(workingDirectory, explicitSessionId);
+  const path = options.targetPath ?? getRunStatePath(workingDirectory, scope!.sessionId);
+  await mkdir(options.targetPath ? dirname(path) : scope!.stateDir, { recursive: true });
 
-  const existing = await readRunState(workingDirectory, scope.sessionId);
+  const existing = options.targetPath
+    ? await readRunStateAtPath(path)
+    : await readRunState(workingDirectory, scope!.sessionId);
   const next = buildRunState(state, existing);
-  await writeAtomicFile(path, JSON.stringify(next, null, 2));
+  const payload = JSON.stringify(next, null, 2);
+  await options.beforeCommit?.({ site: 'run-state.mode-sync', kind: 'write', path });
+  await writeAtomicFile(path, payload);
   return next;
 }
