@@ -98,6 +98,7 @@ import {
   CODEX_SQLITE_HOME_ENV,
   DETACHED_TMUX_HISTORY_LIMIT,
   isExistingTmuxWindowTooCrampedForLaunchHud,
+  guardDetachedHudDeferredMutation,
 } from "../index.js";
 import { buildResumeArgsWithPreservedFlags, stripHotswapArg } from "../../auth/hotswap.js";
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
@@ -112,6 +113,7 @@ import {
 } from "../../config/models.js";
 import type { ProcessEntry } from "../cleanup.js";
 import { splitWorkerLaunchArgs } from "../../team/model-contract.js";
+import { buildRegisterResizeHookArgs } from "../../team/tmux-session.js";
 
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -4654,6 +4656,48 @@ exit 0
     assert.equal(env.OMX_TMUX_HUD_OWNER, "1");
     assert.equal(env.OMX_ROOT, "/repo");
     assert.equal(env.OMX_ENTRY_PATH, "/repo/dist/cli/omx.js");
+  });
+
+  describe("detached HUD deferred mutation guard", () => {
+    const leader = {
+      paneId: "%11",
+      panePid: 1100,
+      sessionName: "omx-detached",
+      sessionId: "$1",
+      sessionCreated: "1700000000",
+      windowId: "@1",
+      windowIndex: "0",
+      ownerId: "instance-1",
+    };
+    const hud = {
+      paneId: "%77",
+      panePid: 7700,
+      sessionId: "$1",
+      windowId: "@1",
+      operationMarker: "operation-1",
+    };
+
+    it("throws fail-closed when a deferred HUD payload has format escapes but no resize sink", () => {
+      const sinkFree = ["run-shell", "-b",
+        "tmux list-panes -a -F '#{pane_id}\t#{pane_dead}\t#{pane_pid}' >/dev/null 2>&1 || true"];
+      assert.throws(
+        () => guardDetachedHudDeferredMutation(leader, hud, sinkFree),
+        /detached deferred HUD mutation lacks a recognized resize sink/,
+      );
+    });
+
+    it("guards immediate and delayed resize sinks as bare tmux command-list commands", () => {
+      const args = buildRegisterResizeHookArgs("omx-detached:0", "omx_resize_detached", "%77", 2, 7700, "instance-1");
+      const guarded = guardDetachedHudDeferredMutation(leader, hud, args);
+      const hookCommand = guarded.at(-1)!;
+
+      assert.match(hookCommand, /resize-pane -t %77 -y 2 ; display-message/);
+      assert.doesNotMatch(hookCommand, /tmux resize-pane -t %77 -y 2 ; display-message/);
+      assert.match(hookCommand, /tmux if-shell -F/);
+      assert.match(hookCommand, /##\{pane_id\}/);
+      assert.equal(countMatches(hookCommand, /tmux if-shell -F/g), 2);
+      assert.equal(countMatches(hookCommand, /run-shell -b/g), 1);
+    });
   });
 
   it("registerDetachedHudLayoutReconcileHook reads TMUX from the detached leader pane before registering", () => {

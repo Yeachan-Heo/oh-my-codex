@@ -1590,7 +1590,7 @@ function buildDeferredDetachedHudGuard(
   return guardedCommand;
 }
 
-function guardDetachedHudDeferredMutation(
+export function guardDetachedHudDeferredMutation(
   leaderAuthority: DetachedLeaderAuthority,
   hudAuthority: DetachedHudAuthority,
   args: string[],

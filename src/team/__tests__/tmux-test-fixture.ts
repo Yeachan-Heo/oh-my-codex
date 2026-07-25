@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -27,11 +27,17 @@ export interface TempTmuxSessionFixture {
   run: (args: string[]) => string;
   runResult: (args: string[]) => { status: number | null; stdout: string; stderr: string; error: string };
   createPathShim: (directory: string, commandLogPath?: string) => Promise<string>;
-  triggerClientResize: (targetSession: string) => void;
+  triggerClientResize: (
+    targetSession: string,
+    geometry?: { rows?: number; cols?: number },
+  ) => void;
+  serverLogPath: string | null;
+  readServerLog: () => Promise<string>;
 }
 
 export interface TempTmuxSessionOptions {
   useAmbientServer?: boolean;
+  serverLog?: boolean;
 }
 
 function snapshotTmuxEnv(source: NodeJS.ProcessEnv = process.env): TmuxEnvSnapshot {
@@ -51,13 +57,21 @@ function applyTmuxEnv(snapshot: TmuxEnvSnapshot): void {
 
 function runTmuxResult(
   args: string[],
-  options: { ignoreTmuxEnv?: boolean; env?: NodeJS.ProcessEnv; serverName?: string; configFile?: string } = {},
+  options: {
+    ignoreTmuxEnv?: boolean;
+    env?: NodeJS.ProcessEnv;
+    serverName?: string;
+    configFile?: string;
+    verbose?: boolean;
+    cwd?: string;
+  } = {},
 ): { status: number | null; stdout: string; stderr: string; error: string } {
   const env = options.env
     ?? (options.ignoreTmuxEnv ? { ...process.env, TMUX: undefined, TMUX_PANE: undefined } : process.env);
   const argv = [
     ...(options.configFile ? ['-f', options.configFile] : []),
     ...(options.serverName ? ['-L', options.serverName] : []),
+    ...(options.verbose ? ['-vv'] : []),
     ...args,
   ];
   const result = spawnSync('tmux', argv, {
@@ -66,6 +80,7 @@ function runTmuxResult(
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: TMUX_COMMAND_TIMEOUT_MS,
     killSignal: 'SIGKILL',
+    cwd: options.cwd,
   });
   return {
     status: result.status,
@@ -77,7 +92,14 @@ function runTmuxResult(
 
 function runTmux(
   args: string[],
-  options: { ignoreTmuxEnv?: boolean; env?: NodeJS.ProcessEnv; serverName?: string; configFile?: string } = {},
+  options: {
+    ignoreTmuxEnv?: boolean;
+    env?: NodeJS.ProcessEnv;
+    serverName?: string;
+    configFile?: string;
+    verbose?: boolean;
+    cwd?: string;
+  } = {},
 ): string {
   const result = runTmuxResult(args, options);
   if (result.error) {
@@ -145,6 +167,10 @@ export async function withTempTmuxSession<T>(
     throw new Error('withTempTmuxSession requires a callback');
   }
 
+  if (options.serverLog && options.useAmbientServer) {
+    throw new Error('server logging requires a private synthetic tmux server');
+  }
+
   const previousEnv = snapshotTmuxEnv(process.env);
   const fixtureCwd = await mkdtemp(join(tmpdir(), 'omx-tmux-fixture-'));
   const sessionName = uniqueTmuxIdentifier('omx-test');
@@ -168,8 +194,19 @@ export async function withTempTmuxSession<T>(
     runTmux(['set-environment', '-g', 'PATH', `${directory}${delimiter}${process.env.PATH ?? ''}`], tmuxOptions);
     return shimPath;
   };
-  const triggerClientResize = (targetSession: string): void => {
-    const script = `(sleep 0.1; stty rows 41 cols 121) & exec env TERM=xterm timeout 1 tmux -f ${JSON.stringify(NULL_TMUX_CONFIG)} -L ${JSON.stringify(serverName)} attach-session -t ${JSON.stringify(targetSession)}`;
+  const triggerClientResize = (
+    targetSession: string,
+    geometry: { rows?: number; cols?: number } = {},
+  ): void => {
+    const rows = geometry.rows === undefined ? 41 : geometry.rows;
+    const cols = geometry.cols === undefined ? 121 : geometry.cols;
+    if (!Number.isSafeInteger(rows) || rows < 4 || rows > 500) {
+      throw new Error(`invalid trigger rows: ${rows}`);
+    }
+    if (!Number.isSafeInteger(cols) || cols < 20 || cols > 500) {
+      throw new Error(`invalid trigger cols: ${cols}`);
+    }
+    const script = `(sleep 0.1; stty rows ${rows} cols ${cols}) & exec env TERM=xterm timeout 1 tmux -f ${JSON.stringify(NULL_TMUX_CONFIG)} -L ${JSON.stringify(serverName)} attach-session -t ${JSON.stringify(targetSession)}`;
     const result = spawnSync('script', ['-q', '-e', '-c', script, '/dev/null'], {
       encoding: 'utf-8',
       env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
@@ -195,7 +232,7 @@ export async function withTempTmuxSession<T>(
     '-c',
     fixtureCwd,
     'sleep 300',
-  ], tmuxOptions);
+  ], options.serverLog ? { ...tmuxOptions, verbose: true, cwd: fixtureCwd } : tmuxOptions);
   const [windowTarget = '', leaderPaneId = ''] = created.split(/\s+/, 2);
   if (windowTarget === '' || leaderPaneId === '') {
     try {
@@ -208,6 +245,10 @@ export async function withTempTmuxSession<T>(
     await rm(fixtureCwd, { recursive: true, force: true });
     throw new Error(`failed to create temporary tmux fixture: ${created}`);
   }
+
+  const serverLogPath = options.serverLog
+    ? join(fixtureCwd, `tmux-server-${runTmux(['display-message', '-p', '#{pid}'], tmuxOptions)}.log`)
+    : null;
 
   const socketPath = runTmux(['display-message', '-p', '-t', leaderPaneId, '#{socket_path}'], tmuxOptions);
   process.env.TMUX = `${socketPath},${process.pid},0`;
@@ -229,6 +270,16 @@ export async function withTempTmuxSession<T>(
     runResult: (args) => runTmuxResult(args, tmuxOptions),
     createPathShim,
     triggerClientResize,
+    serverLogPath,
+    readServerLog: async () => {
+      if (serverLogPath === null) {
+        throw new Error('server logging was not enabled');
+      }
+      return readFile(serverLogPath, 'utf-8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return '';
+        throw error;
+      });
+    },
   };
 
   try {
