@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'fs/promises';
 
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -18,6 +18,8 @@ import {
   resolveRuntimeStateScope,
   resolveStateScope,
   resolveWritableStateScope,
+  createWritableCommitRevalidator,
+  __setWritableStateScopeTestHooksForTests,
   resolveWorkingDirectoryForState,
   getStateDir,
   getStateFilePath,
@@ -66,6 +68,36 @@ afterEach(() => {
 
 async function mkRealTemp(prefix: string): Promise<string> {
   return await realpath(await mkdtemp(join(await realpath(tmpdir()), prefix)));
+}
+
+function armPointerTakeover(options: {
+  expectedOrdinal: number;
+  expectedSite: string;
+  sessionPath: string;
+  replacementPointer: string;
+  beforePublish?: () => void;
+}): {
+  observed: Array<{ commitOrdinal: number; site: string; kind: string; path: string }>;
+  hook: (event: Readonly<{ commitOrdinal: number; site: string; kind: string; path: string }>) => Promise<void>;
+} {
+  const observed: Array<{ commitOrdinal: number; site: string; kind: string; path: string }> = [];
+  return {
+    observed,
+    hook: async (event) => {
+      const actual = { commitOrdinal: event.commitOrdinal, site: event.site, kind: event.kind, path: event.path };
+      observed.push(actual);
+      if (event.commitOrdinal === options.expectedOrdinal && event.site !== options.expectedSite) {
+        throw new Error(`Expected takeover at ordinal ${options.expectedOrdinal} site ${options.expectedSite}; received ordinal ${event.commitOrdinal} site ${event.site}.`);
+      }
+      if (event.site === options.expectedSite && event.commitOrdinal !== options.expectedOrdinal) {
+        throw new Error(`Expected takeover at ordinal ${options.expectedOrdinal} site ${options.expectedSite}; received ordinal ${event.commitOrdinal} site ${event.site}.`);
+      }
+      if (event.commitOrdinal === options.expectedOrdinal && event.site === options.expectedSite) {
+        options.beforePublish?.();
+        await writeFile(options.sessionPath, options.replacementPointer);
+      }
+    },
+  };
 }
 
 describe('validateSessionId', () => {
@@ -1045,4 +1077,221 @@ describe('state paths', () => {
 
   });
 
+});
+
+describe('writable state scope recovery and revalidation', () => {
+  it('T10 reads the selected decision snapshot and recovery stability snapshot once', async () => {
+    const wd = await mkRealTemp('omx-writable-single-snapshot-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 }));
+      process.env.OMX_SESSION_ID = 'sess-current';
+      const decisions: Array<{ ordinal: number; raw: string }> = [];
+      const stability: Array<{ ordinal: number; raw: string | undefined }> = [];
+      __setWritableStateScopeTestHooksForTests({
+        onSelectedDecisionSnapshotRead: (event) => decisions.push({ ...event }),
+        onRecoveryStabilityReread: (event) => stability.push({ ...event }),
+      });
+      await resolveWritableStateScope(wd);
+      assert.deepEqual(decisions.map(({ ordinal }) => ordinal), [1]);
+      assert.deepEqual(stability.map(({ ordinal }) => ordinal), [1]);
+      assert.equal(stability[0]?.raw, decisions[0]?.raw);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('T11 fails closed when the pointer bytes change during stale-dead recovery', async () => {
+    const wd = await mkRealTemp('omx-writable-unstable-recovery-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      const sessionPath = join(stateDir, 'session.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(sessionPath, JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 }));
+      process.env.OMX_SESSION_ID = 'sess-current';
+      __setWritableStateScopeTestHooksForTests({
+        beforeRecoveryReread: async () => {
+          await writeFile(sessionPath, JSON.stringify({ session_id: 'sess-replaced', cwd: wd }));
+        },
+      });
+      await assert.rejects(
+        () => resolveWritableStateScope(wd),
+        (error: unknown) => {
+          assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+          return true;
+        },
+      );
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-current')), false);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('T12 leaves the stale-dead pointer and base state root entries unchanged during recovery', async () => {
+    const wd = await mkRealTemp('omx-writable-pointer-immutable-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      const sessionPath = join(stateDir, 'session.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(sessionPath, JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 }));
+      const beforePointer = await readFile(sessionPath, 'utf-8');
+      const beforeEntries = (await readdir(stateDir)).sort();
+      process.env.OMX_SESSION_ID = 'sess-current';
+      await resolveWritableStateScope(wd);
+      assert.equal(await readFile(sessionPath, 'utf-8'), beforePointer);
+      assert.deepEqual((await readdir(stateDir)).sort(), beforeEntries);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('T13 rejects stale-dead recovery without selected-root authority', async () => {
+    const wd = await mkRealTemp('omx-writable-authority-matrix-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = 'sess-current';
+      const cases = [
+        { name: 'missing recorded cwd', pointer: { session_id: 'sess-dead', pid: 8388607 } },
+        { name: 'different state root', pointer: { session_id: 'sess-dead', cwd: wd, state_root: join(wd, 'other-root'), pid: 8388607 } },
+        { name: 'recorded cwd does not contain the observed cwd', pointer: { session_id: 'sess-dead', cwd: join(wd, 'other-worktree'), pid: 8388607 } },
+      ];
+      for (const testCase of cases) {
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify(testCase.pointer));
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession, testCase.name);
+            return true;
+          },
+        );
+        assert.equal(existsSync(join(stateDir, 'sessions', 'sess-current')), false, testCase.name);
+      }
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('T1 gives each writable commit revalidator a closure-local ordinal sequence', async () => {
+    const wd = await mkRealTemp('omx-writable-revalidator-ordinals-');
+    __setSessionPointerTransactionDependenciesForTests({});
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-current', cwd: wd }));
+      const capturedScope = await resolveWritableStateScope(wd);
+      const events: Array<{ operation: string; commitOrdinal: number; site: string; kind: string; path: string }> = [];
+      __setWritableStateScopeTestHooksForTests({
+        beforeScopeRevalidation: async (event) => { events.push({ ...event }); },
+      });
+      const options = { operation: 'state_write' as const, cwd: wd, explicitSessionId: undefined, capturedScope, baseStateDir: stateDir };
+      const revalidate = createWritableCommitRevalidator(options);
+      const attempts = [
+        { site: 'mode.primary' as const, kind: 'write' as const, path: join(stateDir, 'mode-state.json') },
+        { site: 'skill-active.root-copy' as const, kind: 'write' as const, path: join(stateDir, 'skill-active.json') },
+        { site: 'skill-active.session-copy' as const, kind: 'write' as const, path: join(stateDir, 'sessions', 'sess-current', 'skill-active.json') },
+      ];
+      for (const attempt of attempts) await revalidate(attempt);
+      await createWritableCommitRevalidator(options)(attempts[0]!);
+      assert.deepEqual(events, [
+        ...attempts.map((attempt, index) => ({ operation: 'state_write', commitOrdinal: index + 1, ...attempt })),
+        { operation: 'state_write', commitOrdinal: 1, ...attempts[0]! },
+      ]);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('T2 rejects a writable commit when revalidation observes a replacement scope', async () => {
+    const wd = await mkRealTemp('omx-writable-revalidator-drift-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      const sessionPath = join(stateDir, 'session.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(sessionPath, JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 }));
+      process.env.OMX_SESSION_ID = 'sess-current';
+      const capturedScope = await resolveWritableStateScope(wd);
+      const takeover = armPointerTakeover({
+        expectedOrdinal: 1,
+        expectedSite: 'mode.primary',
+        sessionPath,
+        replacementPointer: JSON.stringify({ session_id: 'sess-replacement', cwd: wd }),
+        beforePublish: () => { process.env.OMX_SESSION_ID = 'sess-replacement'; },
+      });
+      __setWritableStateScopeTestHooksForTests({ beforeScopeRevalidation: takeover.hook });
+      const revalidate = createWritableCommitRevalidator({
+        operation: 'state_write', cwd: wd, explicitSessionId: undefined, capturedScope, baseStateDir: stateDir,
+      });
+      await assert.rejects(
+        () => revalidate({ site: 'mode.primary', kind: 'write', path: join(stateDir, 'mode-state.json') }),
+        (error: unknown) => {
+          assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.scopeChangedDuringWrite);
+          return true;
+        },
+      );
+      assert.deepEqual(takeover.observed, [{
+        commitOrdinal: 1,
+        site: 'mode.primary',
+        kind: 'write',
+        path: join(stateDir, 'mode-state.json'),
+      }]);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('T3 clears recovery and revalidation hooks and resets snapshot ordinals', async () => {
+    const wd = await mkRealTemp('omx-writable-hooks-clear-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-dead', cwd: wd, pid: 8388607 }));
+      process.env.OMX_SESSION_ID = 'sess-current';
+      const oldCounters = { recovery: 0, revalidation: 0, decision: 0, stability: 0 };
+      __setWritableStateScopeTestHooksForTests({
+        beforeRecoveryReread: async () => { oldCounters.recovery += 1; },
+        beforeScopeRevalidation: async () => { oldCounters.revalidation += 1; },
+        onSelectedDecisionSnapshotRead: () => { oldCounters.decision += 1; },
+        onRecoveryStabilityReread: () => { oldCounters.stability += 1; },
+      });
+      await resolveWritableStateScope(wd);
+      __setWritableStateScopeTestHooksForTests({});
+      await resolveWritableStateScope(wd);
+      assert.deepEqual(oldCounters, { recovery: 1, revalidation: 0, decision: 1, stability: 1 });
+      const restarted: Array<{ decision: number; stability: number }> = [];
+      __setWritableStateScopeTestHooksForTests({
+        onSelectedDecisionSnapshotRead: ({ ordinal }) => restarted.push({ decision: ordinal, stability: 0 }),
+        onRecoveryStabilityReread: ({ ordinal }) => {
+          const event = restarted.at(-1);
+          assert.ok(event);
+          event.stability = ordinal;
+        },
+      });
+      await resolveWritableStateScope(wd);
+      assert.deepEqual(restarted, [{ decision: 1, stability: 1 }]);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

@@ -16,11 +16,13 @@ import {
   isFinalRunCompletionCandidate,
   isUltragoalDone,
   readUltragoalPlan,
+  readUltragoalPlanSnapshot,
   recordFinalReviewBlockers,
   steerUltragoal,
   startNextUltragoal,
   summarizeUltragoalPlan,
   ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE,
+  UltragoalError,
   validateUltragoalSteeringProposal,
   type UltragoalPlan,
   type UltragoalSteeringProposal,
@@ -2375,4 +2377,52 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+
+  it('T16 compares the full writable authority token around ultragoal mutation locks', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      const stateDir = join(cwd, '.omx/state');
+      const pointerPath = join(stateDir, 'session.json');
+      const pointer = (sessionId: string) => JSON.stringify({ session_id: sessionId, cwd, state_root: stateDir });
+      const goalsPath = join(cwd, '.omx/ultragoal/goals.json');
+      const ledgerPath = join(cwd, '.omx/ultragoal/ledger.jsonl');
+      const lockPath = join(cwd, '.omx/ultragoal/.mutation.lock');
+      process.env.OMX_SESSION_ID = 'sess-compat';
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await createUltragoalPlan(cwd, { brief: '- Initial goal' });
+
+        await writeFile(lockPath, 'held');
+        setTimeout(() => { void rm(lockPath, { force: true }); }, 25);
+        await addUltragoalGoal(cwd, { title: 'Stable compatibility authority', objective: 'Mutation proceeds.' });
+
+        await writeFile(pointerPath, pointer('sess-compat'));
+        await addUltragoalGoal(cwd, { title: 'Stable resolved authority', objective: 'Mutation proceeds.' });
+
+        for (const [kind, beforeLock, change] of [
+          ['resolved to different live session', async () => writeFile(pointerPath, pointer('sess-compat')), async () => { process.env.OMX_SESSION_ID = 'sess-replacement'; await writeFile(pointerPath, pointer('sess-replacement')); }],
+          ['resolved to compatibility', async () => writeFile(pointerPath, pointer('sess-compat')), async () => rm(pointerPath)],
+          ['compatibility to resolved', async () => rm(pointerPath, { force: true }), async () => writeFile(pointerPath, pointer('sess-compat'))],
+        ] as const) {
+          process.env.OMX_SESSION_ID = 'sess-compat';
+          await beforeLock();
+          const beforeGoals = await readFile(goalsPath, 'utf-8');
+          const beforeLedger = await readFile(ledgerPath, 'utf-8');
+          await writeFile(lockPath, 'held');
+          setTimeout(() => { void change(); }, 20);
+          setTimeout(() => { void rm(lockPath, { force: true }); }, 45);
+          await assert.rejects(
+            () => addUltragoalGoal(cwd, { title: kind, objective: 'Must not persist.' }),
+            UltragoalError,
+          );
+          assert.equal(await readFile(goalsPath, 'utf-8'), beforeGoals);
+          assert.equal(await readFile(ledgerPath, 'utf-8'), beforeLedger);
+        }
+      } finally {
+        await rm(lockPath, { force: true });
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
 });
