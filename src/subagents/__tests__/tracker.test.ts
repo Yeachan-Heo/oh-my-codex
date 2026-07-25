@@ -430,6 +430,97 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('keeps a legacy plain canonical-key collision as ambiguous without revocation or reclassification', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-legacy-collision-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        canonical: { thread_id: 'canonical', kind: 'subagent', resume_requested_at: '2026-07-23T00:02:00.000Z', status: 'closed', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      assert.doesNotMatch(context, /resume_agent\("canonical"\)/);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.canonical.threads.canonical.kind, 'subagent');
+      assert.equal(persisted.sessions.canonical.threads.canonical.reopen_authority_revoked, undefined);
+      assert.equal(persisted.sessions.canonical.threads.canonical.resume_requested_at, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies an adapted peer view recorded with leader kind', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-adapted-leader-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      const attested = { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 };
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: {
+        canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: { child: attested } },
+        correlation: { session_id: 'correlation', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          child: { thread_id: 'child', kind: 'leader', provenance_kind: DESCRIPTIVE_ADAPTED_PROVENANCE, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+      } }));
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies an adapted peer view colliding with the session leader boundary', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-adapted-leader-boundary-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      const attested = { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 };
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: {
+        canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: { child: attested } },
+        correlation: { session_id: 'correlation', leader_thread_id: 'child', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          child: { thread_id: 'child', kind: 'subagent', provenance_kind: DESCRIPTIVE_ADAPTED_PROVENANCE, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+      } }));
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the legacy notice silent when an authority-bearing denial is present in another partition', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-mixed-notice-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: {
+        canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          legacy: { thread_id: 'legacy', kind: 'subagent', provenance_kind: DESCRIPTIVE_ADAPTED_PROVENANCE, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+        correlation: { session_id: 'correlation', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          legacy: { thread_id: 'legacy', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', reopen_authority_revoked: true, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+      } }));
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed proposed state in the generic writer even without an existing tracker', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-malformed-proposed-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      const malformedProposed = { schemaVersion: 1, sessions: { root: { session_id: 'root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        child: { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', reopen_authority_revoked: 'false', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } };
+      await assert.rejects(writeSubagentTrackingState(cwd, malformedProposed as never));
+      assert.equal(existsSync(path), false);
+      const validState = recordSubagentTurn(createSubagentTrackingState(), { sessionId: 'root', threadId: 'child', kind: 'subagent' });
+      await writeSubagentTrackingState(cwd, validState);
+      assert.equal(existsSync(path), true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('repairs a root inversion even when the canonical tracker partition is missing', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-native-only-repair-'));
     try {

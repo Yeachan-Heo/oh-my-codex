@@ -2087,20 +2087,21 @@ async function buildPersistedSubagentReopenContext(
     pointer.status === "usable" ? pointer.state ?? null : null,
   );
   if (!rootContext.ok) return null;
+  // A SessionStart that itself carries native subagent thread_spawn evidence is
+  // a child session start, not a root observation. It must not trigger root
+  // identity repair or reopen consumption on any source, including
+  // startup/resume.
+  const sessionStartTranscriptPath = safeString(options.payload?.transcript_path ?? options.payload?.transcriptPath).trim();
+  if (readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath)) return null;
   if (!shouldBuildSubagentReopenContext(options)) {
     // Reopen output is gated to startup/resume, but root identity repair is not:
     // a known root-as-subagent inversion must not survive merely because this
     // SessionStart used another source. Alias/identity conflicts above stay
-    // fail-closed and repair nothing. A SessionStart that itself carries native
-    // subagent thread_spawn evidence is a child session start, not a root
-    // observation, so it must not trigger root repair either.
-    const transcriptPath = safeString(options.payload?.transcript_path ?? options.payload?.transcriptPath).trim();
-    if (!readNativeSubagentSessionStartMetadata(transcriptPath)) {
-      try {
-        repairPersistedRootIdentity(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
-      } catch {
-        // Repair is best-effort; reopen output remains separately gated.
-      }
+    // fail-closed and repair nothing.
+    try {
+      repairPersistedRootIdentity(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
+    } catch {
+      // Repair is best-effort; reopen output remains separately gated.
     }
     return null;
   }

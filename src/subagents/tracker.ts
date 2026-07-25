@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, ftruncateSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
@@ -846,24 +846,30 @@ export async function readSubagentTrackingState(cwd: string): Promise<SubagentTr
 
 export async function writeSubagentTrackingState(cwd: string, state: SubagentTrackingState): Promise<string> {
   const path = subagentTrackingPath(cwd);
-  // Fail closed: never overwrite existing authority-bearing bytes that do not
-  // survive strict parsing. A tolerant read must not launder malformed authority
-  // into a valid-looking attestation through this shared writer.
-  if (existsSync(path)) {
-    let raw: string;
-    try {
-      raw = await readFile(path, 'utf-8');
-    } catch {
-      throw new Error('Malformed subagent tracker authority state');
-    }
-    if (!parseStrictSubagentTrackingState(raw)) throw new Error('Malformed subagent tracker authority state');
-  }
+  // Fail closed on both sides of the write: the proposed state must survive
+  // strict authority validation (tolerant inputs must not launder malformed
+  // authority into a valid-looking attestation), and existing on-disk bytes
+  // must not be overwritten when they fail strict parsing. The whole
+  // read/validate/publish transaction is serialized under the tracker lock.
+  const proposedRaw = JSON.stringify(state);
+  if (!parseStrictSubagentTrackingState(proposedRaw)) throw new Error('Malformed subagent tracker authority state');
   const normalized = normalizeSubagentTrackingState(state);
-  await mkdir(dirname(path), { recursive: true });
-  const temporaryPath = atomicTrackingTempPath(path);
-  await writeFile(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`);
-  await rename(temporaryPath, path);
-  return path;
+  const contents = `${JSON.stringify(normalized, null, 2)}\n`;
+  return withCrossProcessFileLockSync(path, (lock) => {
+    if (existsSync(path)) {
+      let raw: string;
+      try {
+        raw = readFileSync(path, 'utf-8');
+      } catch {
+        throw new Error('Malformed subagent tracker authority state');
+      }
+      if (!parseStrictSubagentTrackingState(raw)) throw new Error('Malformed subagent tracker authority state');
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    lock.assertOwnership();
+    lock.publish(contents);
+    return path;
+  });
 }
 
 
@@ -1155,11 +1161,12 @@ function persistedReopenLegacyNotice(excludedCount: number, source: string): str
 
 /**
  * Repair persisted root-as-subagent identity inversion inside an already-parsed
- * state. A thread whose id equals the native root id is conclusively the root and
- * is reclassified as leader. A thread whose id equals only the canonical session
- * key while carrying a valid direct-child attestation is ambiguous: it is denied
- * (authority revoked) without destructive reclassification. Returns true when any
- * record changed.
+ * state. Only a thread whose id equals the exact native root id is conclusively
+ * the root and is reclassified as leader. A thread whose id equals only the
+ * canonical session key is always ambiguous — the storage key is not identity
+ * proof — so it is never destructively reclassified: authority-bearing records
+ * are revoked (fail closed) and every ambiguous record loses resume bookkeeping.
+ * Returns true when any record changed.
  */
 function repairPersistedRootIdentityInState(
   state: SubagentTrackingState,
@@ -1173,27 +1180,35 @@ function repairPersistedRootIdentityInState(
     for (const rootId of new Set([sessionId, rootNativeSessionId])) {
       const rootThread = correlatedSession.threads[rootId];
       if (!rootThread || rootThread.kind !== 'subagent') continue;
-      const ambiguousCanonicalCollision =
-        rootId === sessionId
-        && sessionId !== rootNativeSessionId
-        && rootThread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
-        && typeof rootThread.direct_child_root_id === 'string'
-        && typeof rootThread.direct_child_parent_id === 'string';
+      const ambiguousCanonicalCollision = rootId === sessionId && sessionId !== rootNativeSessionId;
       if (ambiguousCanonicalCollision) {
-        // Fail closed without rewriting identity: the id collides with the
-        // canonical root key but carries child attestation, so it stays a
-        // subagent whose reopen authority is revoked until root identity is
-        // independently established.
-        rootThread.reopen_authority_revoked = true;
-        rootThread.reopen_authority_conflict_reason = 'canonical_root_collision';
-        rootThread.reopen_authority_conflict_at = repairTimestamp;
-        delete rootThread.resume_requested_at;
-        delete rootThread.resume_completed_at;
-        delete rootThread.resume_failed_at;
-        delete rootThread.resume_failure_reason;
-        sessionChanged = true;
+        const carriesAuthority =
+          rootThread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+          || rootThread.direct_child_root_id !== undefined
+          || rootThread.direct_child_parent_id !== undefined;
+        if (carriesAuthority && rootThread.reopen_authority_revoked !== true) {
+          // Fail closed without rewriting identity: the id collides with the
+          // canonical root key but carries child-shaped authority evidence, so
+          // it stays a subagent whose reopen authority is revoked until root
+          // identity is independently established.
+          rootThread.reopen_authority_revoked = true;
+          rootThread.reopen_authority_conflict_reason = 'canonical_root_collision';
+          rootThread.reopen_authority_conflict_at = repairTimestamp;
+          sessionChanged = true;
+        }
+        if (rootThread.resume_requested_at !== undefined
+          || rootThread.resume_completed_at !== undefined
+          || rootThread.resume_failed_at !== undefined
+          || rootThread.resume_failure_reason !== undefined) {
+          delete rootThread.resume_requested_at;
+          delete rootThread.resume_completed_at;
+          delete rootThread.resume_failed_at;
+          delete rootThread.resume_failure_reason;
+          sessionChanged = true;
+        }
         continue;
       }
+      if (rootId !== rootNativeSessionId) continue;
       rootThread.kind = 'leader';
       delete rootThread.direct_child_root_id;
       delete rootThread.direct_child_parent_id;
@@ -1293,8 +1308,13 @@ export function consumeDirectChildReopenContext(
           const view = correlationSession.threads[thread.thread_id];
           if (!view) return true;
           // Recognized legacy adapted records are descriptive-only: they never
-          // grant authority and never block a newly attested valid child.
-          if (view.provenance_kind === DESCRIPTIVE_ADAPTED_PROVENANCE) return true;
+          // grant authority and never block a newly attested valid child. The
+          // tolerance is shape-constrained: an adapted view may only waive
+          // missing attestation for a non-leader subagent view and never waives
+          // leader-kind or leader_thread_id contradictions.
+          if (view.provenance_kind === DESCRIPTIVE_ADAPTED_PROVENANCE
+            && view.kind === 'subagent'
+            && correlationSession.leader_thread_id !== thread.thread_id) return true;
           return correlationSession.leader_thread_id !== thread.thread_id
             && view.kind === 'subagent'
             && view.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
@@ -1312,16 +1332,30 @@ export function consumeDirectChildReopenContext(
         writeSubagentTrackingStateSync(cwd, state, lock.publish);
       }
       // Surface intentional exclusion of legacy/non-authoritative records instead
-      // of silently returning no context. Authority-bearing denials (revoked,
-      // leader-colliding, cross-partition conflicts) stay fail-closed null.
-      const subagentThreads = Object.values(session.threads).filter((thread) => thread.kind === 'subagent');
-      const hadAuthorityBearing = subagentThreads.some((thread) =>
-        thread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
-        || thread.direct_child_root_id !== undefined
-        || thread.direct_child_parent_id !== undefined
-        || thread.reopen_authority_revoked === true);
-      if (!hadAuthorityBearing && subagentThreads.length > 0) {
-        return persistedReopenLegacyNotice(subagentThreads.length, context.source);
+      // of silently returning no context. The notice fires only when every
+      // relevant view across every correlation partition is genuinely
+      // descriptive/legacy: any authority-bearing, leader-kind, or
+      // leader_thread_id-colliding view keeps the denial fail-closed null.
+      const excludedIds = new Set(
+        Object.values(session.threads)
+          .filter((thread) => thread.kind === 'subagent')
+          .map((thread) => thread.thread_id),
+      );
+      const everyRelevantViewIsLegacy = excludedIds.size > 0
+        && Object.values(state.sessions).every((correlationSession) => {
+          if (correlationSession.leader_thread_id && excludedIds.has(correlationSession.leader_thread_id)) return false;
+          return [...excludedIds].every((threadId) => {
+            const view = correlationSession.threads[threadId];
+            if (!view) return true;
+            return view.kind === 'subagent'
+              && view.provenance_kind !== NATIVE_SUBAGENT_PROVENANCE
+              && view.direct_child_root_id === undefined
+              && view.direct_child_parent_id === undefined
+              && view.reopen_authority_revoked !== true;
+          });
+        });
+      if (everyRelevantViewIsLegacy) {
+        return persistedReopenLegacyNotice(excludedIds.size, context.source);
       }
       return null;
     }

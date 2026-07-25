@@ -4363,6 +4363,45 @@ PY`,
     }
   });
 
+  for (const source of ["startup", "resume"] as const) {
+    it(`issue #3284 skips persisted-root repair and reopen output for a self-parented child SessionStart on ${source}`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-3284-self-parented-${source}-`));
+      try {
+        const stateDir = join(cwd, ".omx", "state");
+        const canonicalSessionId = `omx-3284-self-parented-${source}`;
+        const nativeRoleThreadId = `codex-role-thread-${source}`;
+        await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+        await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: nativeRoleThreadId, pid: process.pid });
+        const transcriptPath = join(cwd, `rollout-self-parented-${source}.jsonl`);
+        await writeFile(transcriptPath, `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: nativeRoleThreadId, source: { subagent: { thread_spawn: {
+            parent_thread_id: nativeRoleThreadId, depth: 1, agent_nickname: "Architect", agent_role: "architect" } } } },
+        })}\n`);
+        await writeJson(join(stateDir, "subagent-tracking.json"), {
+          schemaVersion: 1,
+          sessions: {
+            [canonicalSessionId]: { session_id: canonicalSessionId, leader_thread_id: "turn-like-foreign",
+              updated_at: "2026-07-24T00:00:00.000Z", threads: {
+                [nativeRoleThreadId]: { thread_id: nativeRoleThreadId, kind: "subagent", status: "available",
+                  first_seen_at: "2026-07-24T00:00:00.000Z", last_seen_at: "2026-07-24T00:00:00.000Z", turn_count: 1 },
+              } },
+          },
+        });
+        const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd,
+          session_id: nativeRoleThreadId, source, transcript_path: transcriptPath }, { cwd, sessionOwnerPid: process.pid });
+        const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+        assert.doesNotMatch(context, /\[Persisted subagent reopen\]/);
+        assert.doesNotMatch(context, /resume_agent\(/);
+        const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+        assert.equal(tracking.sessions[canonicalSessionId].threads[nativeRoleThreadId].kind, "subagent");
+        assert.equal(tracking.sessions[canonicalSessionId].leader_thread_id, "turn-like-foreign");
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("issue #3284 fails closed when SessionStart native id aliases conflict", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-3284-alias-conflict-"));
     try {
