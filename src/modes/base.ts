@@ -28,7 +28,6 @@ import {
   getReadScopedStateDirs,
   getReadScopedStatePaths,
   getStateFilename,
-  getStatePath,
   resolveWritableStateScope,
 } from '../mcp/state-paths.js';
 import { completeRalplanSession, validateRalplanTerminalConsensus } from '../state/operations.js';
