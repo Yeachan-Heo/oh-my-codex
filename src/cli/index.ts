@@ -1571,20 +1571,28 @@ function buildDeferredDetachedHudGuard(
   command: string,
 ): string {
   const deferredReceipt = detachedAuthorityReceipt();
-  const guardedResize = (match: string): string => {
-    const success = `${match} ; display-message -p ${quoteShellArg(deferredReceipt)}`;
-    const hudGuard = `if-shell -F -t ${quoteShellArg(hudAuthority.paneId)} ${quoteShellArg(detachedHudAuthorityCondition(hudAuthority))} ${quoteShellArg(success)} ${quoteShellArg("")}`;
-    return `tmux if-shell -F -t ${quoteShellArg(leaderAuthority.paneId)} ${quoteShellArg(detachedLeaderAuthorityCondition(leaderAuthority))} ${quoteShellArg(hudGuard)} ${quoteShellArg("")}`;
+  let guardedSinkCount = 0;
+  const guardedResize = (_match: string, sink: string): string => {
+    guardedSinkCount += 1;
+    // The stored hook payload is consumed by one outer tmux format pass when
+    // run-shell executes it. The injected authority conditions must survive that
+    // pass so they are evaluated at execution time against the guarded panes;
+    // unescaped, tmux pre-expands them against the hook's own pane and collapses
+    // them to constants, denying the resize before the sink is parsed (#3292).
+    const outerFormatEscaped = (condition: string): string => condition.replaceAll("#{", "##{");
+    const success = `${sink} ; display-message -p ${quoteShellArg(deferredReceipt)}`;
+    const hudGuard = `if-shell -F -t ${quoteShellArg(hudAuthority.paneId)} ${quoteShellArg(outerFormatEscaped(detachedHudAuthorityCondition(hudAuthority)))} ${quoteShellArg(success)} ${quoteShellArg("")}`;
+    return `tmux if-shell -F -t ${quoteShellArg(leaderAuthority.paneId)} ${quoteShellArg(outerFormatEscaped(detachedLeaderAuthorityCondition(leaderAuthority)))} ${quoteShellArg(hudGuard)} ${quoteShellArg("")}`;
   };
   const outerFormatEscapedCommand = command
     .replaceAll('#{pane_id}', '##{pane_id}')
     .replaceAll('#{pane_dead}', '##{pane_dead}')
     .replaceAll('#{pane_pid}', '##{pane_pid}');
   const guardedCommand = outerFormatEscapedCommand.replace(
-    /tmux resize-pane -t %[0-9]+ -y [1-9][0-9]*/g,
+    /tmux (resize-pane -t %[0-9]+ -y [1-9][0-9]*)/g,
     guardedResize,
   );
-  if (guardedCommand === command) {
+  if (guardedSinkCount === 0) {
     throw new Error("detached deferred HUD mutation lacks a recognized resize sink");
   }
   return guardedCommand;

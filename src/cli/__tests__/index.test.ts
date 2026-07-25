@@ -4698,6 +4698,26 @@ exit 0
       assert.equal(countMatches(hookCommand, /tmux if-shell -F/g), 2);
       assert.equal(countMatches(hookCommand, /run-shell -b/g), 1);
     });
+
+    it("escapes injected authority conditions so they survive the outer run-shell format pass", () => {
+      const args = buildRegisterResizeHookArgs("omx-detached:0", "omx_resize_detached", "%77", 2, 7700, "instance-1");
+      const hookCommand = guardDetachedHudDeferredMutation(leader, hud, args).at(-1)!;
+
+      // run-shell applies exactly one outer tmux format pass to the stored payload.
+      // Unescaped, tmux pre-expands these conditions against the hook's own pane and
+      // collapses them to constants, denying the resize before the sink is parsed.
+      for (const condition of [
+        "##{==:##{pane_id},%11}",
+        "##{==:##{pane_pid},1100}",
+        "##{==:##{@omx_instance_id},instance-1}",
+        "##{==:##{pane_id},%77}",
+        "##{m:*OMX_DETACHED_HUD_OPERATION=operation-1*,##{pane_start_command}}",
+      ]) {
+        assert.ok(hookCommand.includes(condition), `stored payload must escape ${condition}`);
+      }
+      assert.doesNotMatch(hookCommand, /(^|[^#])#\{==:#\{pane_id\},%77\}/);
+      assert.doesNotMatch(hookCommand, /(^|[^#])#\{&&:/);
+    });
   });
 
   it("registerDetachedHudLayoutReconcileHook reads TMUX from the detached leader pane before registering", () => {
