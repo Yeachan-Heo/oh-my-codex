@@ -2425,4 +2425,119 @@ describe('ultragoal artifacts', () => {
       }
     });
   });
+  describe('canonical state paths in nested projects', () => {
+    async function withNestedRepo<T>(run: (paths: { repo: string; subproject: string }) => Promise<T>): Promise<T> {
+      const repo = await mkdtemp(join(tmpdir(), 'omx-ultragoal-nested-'));
+      try {
+        // A real git worktree root plus pre-existing root-level state that must never be selected.
+        await mkdir(join(repo, '.git'), { recursive: true });
+        await mkdir(join(repo, '.omx/ultragoal'), { recursive: true });
+        await writeFile(join(repo, '.omx/ultragoal/goals.json'), '{"version":1,"goals":[]}\n');
+        await writeFile(join(repo, '.omx/ultragoal/ledger.jsonl'), '');
+        const subproject = join(repo, 'subproject');
+        await mkdir(subproject, { recursive: true });
+        return await run({ repo, subproject });
+      } finally {
+        await rm(repo, { recursive: true, force: true });
+      }
+    }
+
+    it('binds the aggregate objective to the subtree state root', async () => {
+      await withNestedRepo(async ({ subproject }) => {
+        const plan = await createUltragoalPlan(subproject, { brief: 'Ship the nested feature' });
+
+        assert.equal(plan.statePathPrefix, 'subproject');
+        assert.match(plan.codexObjective ?? '', /subproject\/\.omx\/ultragoal\/goals\.json/);
+        assert.match(plan.codexObjective ?? '', /subproject\/\.omx\/ultragoal\/ledger\.jsonl/);
+        assert.notEqual(plan.codexObjective, ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE);
+      });
+    });
+
+    it('keeps repository-root launches byte-identical to the root objective', async () => {
+      await withNestedRepo(async ({ repo }) => {
+        const plan = await createUltragoalPlan(repo, { brief: 'Ship the root feature', force: true });
+
+        assert.equal(plan.statePathPrefix, undefined);
+        assert.equal(plan.codexObjective, ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE);
+      });
+    });
+
+    it('renders the aggregate handoff header with canonical state paths', async () => {
+      await withNestedRepo(async ({ subproject }) => {
+        await createUltragoalPlan(subproject, { brief: 'Ship the nested feature' });
+        const started = await startNextUltragoal(subproject);
+        const instruction = buildCodexGoalInstruction(started.goal!, started.plan);
+
+        assert.match(instruction, /Plan: subproject\/\.omx\/ultragoal\/goals\.json/);
+        assert.match(instruction, /Ledger: subproject\/\.omx\/ultragoal\/ledger\.jsonl/);
+      });
+    });
+
+    it('reconciles the prefixed objective and rejects the ambiguous bare objective', async () => {
+      await withNestedRepo(async ({ subproject }) => {
+        const created = await createUltragoalPlan(subproject, { brief: 'Ship the nested feature' });
+        const started = await startNextUltragoal(subproject);
+
+        const checkpointed = await checkpointUltragoal(subproject, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective: created.codexObjective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        });
+        assert.equal(checkpointed.goals[0]?.status, 'complete');
+
+        // A reader that resolved the bare `.omx/...` reference from the repo root must not match.
+        await assert.rejects(
+          checkpointUltragoal(subproject, {
+            goalId: started.goal!.id,
+            status: 'complete',
+            evidence: 'tests passed',
+            codexGoal: { goal: { objective: ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE, status: 'complete' } },
+            qualityGate: cleanQualityGate(),
+          }),
+        );
+      });
+    });
+
+    it('migrates a pre-existing nested plan and leaves root plans untouched', async () => {
+      await withNestedRepo(async ({ repo, subproject }) => {
+        await createUltragoalPlan(subproject, { brief: 'Ship the nested feature' });
+        const planPath = join(subproject, '.omx/ultragoal/goals.json');
+        const stale = JSON.parse(await readFile(planPath, 'utf-8')) as UltragoalPlan;
+        stale.codexObjective = ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE;
+        delete stale.statePathPrefix;
+        await writeFile(planPath, `${JSON.stringify(stale, null, 2)}\n`);
+
+        const migrated = await readUltragoalPlan(subproject);
+        assert.equal(migrated.statePathPrefix, 'subproject');
+        assert.match(migrated.codexObjective ?? '', /subproject\/\.omx\/ultragoal\/goals\.json/);
+        assert.deepEqual(migrated.codexObjectiveAliases, [ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE]);
+        const ledger = await readFile(join(subproject, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+        assert.match(ledger, /"event":"aggregate_objective_migrated"/);
+        assert.match(ledger, /canonical repo-root-relative state paths/);
+
+        // The already-active hidden Codex goal keeps reconciling through the retained alias.
+        const started = await startNextUltragoal(subproject);
+        const checkpointed = await checkpointUltragoal(subproject, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective: ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        });
+        assert.equal(checkpointed.goals[0]?.status, 'complete');
+
+        const rootPlan = await createUltragoalPlan(repo, { brief: 'Ship the root feature', force: true });
+        const rootLedgerBefore = await readFile(join(repo, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+        const reread = await readUltragoalPlan(repo);
+        const rootLedgerAfter = await readFile(join(repo, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+
+        assert.equal(reread.codexObjective, rootPlan.codexObjective);
+        assert.equal(reread.codexObjectiveAliases, undefined);
+        assert.equal(rootLedgerAfter, rootLedgerBefore);
+      });
+    });
+  });
+
 });

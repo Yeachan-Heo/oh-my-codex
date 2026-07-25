@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { resolveWritableStateScope, WRITABLE_STATE_SCOPE_ERRORS } from '../mcp/state-paths.js';
 import type { ResolvedStateScope } from '../mcp/state-paths.js';
 import {
@@ -15,6 +15,7 @@ import {
   buildUnsupportedNativeSubagentGuidance,
   type NativeSubagentSupportEvidence,
 } from '../leader/contract.js';
+import { findGitLayout } from '../utils/git-layout.js';
 
 export const ULTRAGOAL_DIR = '.omx/ultragoal';
 export const ULTRAGOAL_BRIEF = 'brief.md';
@@ -183,6 +184,7 @@ export interface UltragoalPlan {
   codexGoalMode?: UltragoalCodexGoalMode;
   codexObjective?: string;
   codexObjectiveAliases?: string[];
+  statePathPrefix?: string;
   aggregateCompletion?: UltragoalAggregateCompletion;
   activeGoalId?: string;
   goals: UltragoalItem[];
@@ -319,6 +321,25 @@ export function ultragoalLedgerPath(cwd: string): string {
 
 function repoRelative(cwd: string, path: string): string {
   return relative(cwd, path).split('\\').join('/');
+}
+
+/**
+ * Repo-root-relative prefix for the Ultragoal state directory selected by `cwd`.
+ *
+ * Returns `''` for repository-root launches and for any cwd we cannot bind to a
+ * git worktree root, so root-level behavior stays byte-identical to a plain
+ * `.omx/ultragoal` reference.
+ */
+export function ultragoalStatePathPrefix(cwd: string): string {
+  const worktreeRoot = findGitLayout(cwd)?.worktreeRoot;
+  if (!worktreeRoot) return '';
+  const prefix = repoRelative(worktreeRoot, cwd);
+  if (!prefix || prefix.startsWith('../') || prefix === '..' || isAbsolute(prefix)) return '';
+  return prefix;
+}
+
+function prefixedStatePath(prefix: string, artifact: string): string {
+  return `${prefix ? `${prefix}/` : ''}${ULTRAGOAL_DIR}/${artifact}`;
 }
 
 function cleanLine(line: string): string {
@@ -673,11 +694,15 @@ function isScheduleEligibleGoal(goal: UltragoalItem): boolean {
   return goal.steeringStatus !== 'superseded' && goal.steeringStatus !== 'blocked';
 }
 
-export const ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE =
-  `Complete the durable ultragoal plan in ${ULTRAGOAL_DIR}/${ULTRAGOAL_GOALS}, including later accepted/appended stories, under the original brief constraints; use ${ULTRAGOAL_DIR}/${ULTRAGOAL_LEDGER} as the audit trail.`;
+export const ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE = buildAggregateCodexObjective('');
 
-function aggregateCodexObjective(_goals: readonly UltragoalItem[]): string {
-  if (ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE.length <= 4000) return ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE;
+function buildAggregateCodexObjective(statePathPrefix: string): string {
+  return `Complete the durable ultragoal plan in ${prefixedStatePath(statePathPrefix, ULTRAGOAL_GOALS)}, including later accepted/appended stories, under the original brief constraints; use ${prefixedStatePath(statePathPrefix, ULTRAGOAL_LEDGER)} as the audit trail.`;
+}
+
+function aggregateCodexObjective(statePathPrefix: string): string {
+  const objective = buildAggregateCodexObjective(statePathPrefix);
+  if (objective.length <= 4000) return objective;
   throw new UltragoalError('Generated aggregate Codex objective exceeds the 4,000 character goal limit.');
 }
 
@@ -691,12 +716,13 @@ function isLegacyEnumeratedAggregateObjective(objective: string | undefined): bo
 
 function compatibleCodexObjectives(plan: UltragoalPlan): string[] {
   return (plan.codexObjectiveAliases ?? [])
-    .filter((objective) => isLegacyEnumeratedAggregateObjective(objective));
+    .filter((objective) => isLegacyEnumeratedAggregateObjective(objective)
+      || objective === ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE);
 }
 
 function expectedCodexObjective(plan: UltragoalPlan, goal: UltragoalItem): string {
   return codexGoalMode(plan) === 'aggregate'
-    ? (plan.codexObjective ?? aggregateCodexObjective(plan.goals))
+    ? (plan.codexObjective ?? aggregateCodexObjective(plan.statePathPrefix ?? ''))
     : goal.objective;
 }
 
@@ -927,23 +953,34 @@ export async function readUltragoalPlanSnapshot(cwd: string): Promise<UltragoalP
   return readUltragoalPlanFile(cwd);
 }
 
-function requiresAggregateObjectiveMigration(plan: UltragoalPlan): boolean {
-  return codexGoalMode(plan) === 'aggregate' && isLegacyEnumeratedAggregateObjective(plan.codexObjective);
+function requiresCanonicalStatePathMigration(plan: UltragoalPlan, statePathPrefix: string): boolean {
+  return statePathPrefix !== '' && plan.codexObjective === ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE;
+}
+
+function requiresAggregateObjectiveMigration(plan: UltragoalPlan, statePathPrefix: string): boolean {
+  if (codexGoalMode(plan) !== 'aggregate') return false;
+  return isLegacyEnumeratedAggregateObjective(plan.codexObjective)
+    || requiresCanonicalStatePathMigration(plan, statePathPrefix);
 }
 
 /** Durable legacy-objective migration; caller MUST hold the mutation lock. */
 async function migrateAggregateObjectiveUnderLock(cwd: string, parsed: UltragoalPlan): Promise<UltragoalPlan> {
-  if (!requiresAggregateObjectiveMigration(parsed)) return parsed;
+  const statePathPrefix = ultragoalStatePathPrefix(cwd);
+  if (!requiresAggregateObjectiveMigration(parsed, statePathPrefix)) return parsed;
+  const canonicalStatePathMigration = requiresCanonicalStatePathMigration(parsed, statePathPrefix);
   const previousObjective = parsed.codexObjective;
   const now = iso();
-  parsed.codexObjective = aggregateCodexObjective(parsed.goals);
+  parsed.codexObjective = aggregateCodexObjective(statePathPrefix);
+  parsed.statePathPrefix = statePathPrefix === '' ? undefined : statePathPrefix;
   parsed.codexObjectiveAliases = Array.from(new Set([...(parsed.codexObjectiveAliases ?? []), previousObjective].filter((value): value is string => typeof value === 'string' && value.length > 0)));
   parsed.updatedAt = now;
   await writePlan(cwd, parsed);
   await appendLedger(cwd, {
     ts: now,
     event: 'aggregate_objective_migrated',
-    message: 'Migrated legacy enumerated aggregate Codex objective to the stable pointer objective.',
+    message: canonicalStatePathMigration
+      ? 'Migrated the cwd-relative aggregate Codex objective to canonical repo-root-relative state paths.'
+      : 'Migrated legacy enumerated aggregate Codex objective to the stable pointer objective.',
     before: { codexObjective: previousObjective },
     after: { codexObjective: parsed.codexObjective },
   });
@@ -957,7 +994,7 @@ async function readUltragoalPlanUnderLock(cwd: string): Promise<UltragoalPlan> {
 
 export async function readUltragoalPlan(cwd: string): Promise<UltragoalPlan> {
   const parsed = await readUltragoalPlanFile(cwd);
-  if (!requiresAggregateObjectiveMigration(parsed)) return parsed;
+  if (!requiresAggregateObjectiveMigration(parsed, ultragoalStatePathPrefix(cwd))) return parsed;
   // The legacy objective migration is a durable story transition: it requires
   // writable lifecycle authority and the mutation lock, and re-reads the plan
   // under the lock so a concurrent mutator cannot be clobbered or duplicated.
@@ -1003,7 +1040,11 @@ export async function createUltragoalPlan(cwd: string, options: CreateUltragoalO
     codexGoalMode: options.codexGoalMode ?? 'aggregate',
     goals: candidates,
   };
-  if (plan.codexGoalMode === 'aggregate') plan.codexObjective = aggregateCodexObjective(candidates);
+  if (plan.codexGoalMode === 'aggregate') {
+    const statePathPrefix = ultragoalStatePathPrefix(cwd);
+    if (statePathPrefix !== '') plan.statePathPrefix = statePathPrefix;
+    plan.codexObjective = aggregateCodexObjective(statePathPrefix);
+  }
 
   await mkdir(ultragoalDir(cwd), { recursive: true });
   await writeFile(ultragoalBriefPath(cwd), options.brief.endsWith('\n') ? options.brief : `${options.brief}\n`);
@@ -1124,6 +1165,7 @@ function hasProtectedSteeringPayload(value: unknown): boolean {
     'codexObjective',
     'constraints',
     'completedAt',
+    'statePathPrefix',
     'qualityGate',
     'status',
   ]);
@@ -2089,7 +2131,8 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
 }
 
 function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalPlan, options: CodexGoalInstructionOptions): string {
-  const objective = plan.codexObjective ?? aggregateCodexObjective(plan.goals);
+  const statePathPrefix = plan.statePathPrefix ?? '';
+  const objective = plan.codexObjective ?? aggregateCodexObjective(statePathPrefix);
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   const createPayload = { objective };
   const checkpointStatus = finalStory ? 'complete' : 'active';
@@ -2097,8 +2140,8 @@ function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: Ultragoal
     codexGoalConductorGuidance(options),
     '',
     'Ultragoal aggregate-goal handoff',
-    `Plan: ${plan.goalsPath}`,
-    `Ledger: ${plan.ledgerPath}`,
+    `Plan: ${prefixedStatePath(statePathPrefix, ULTRAGOAL_GOALS)}`,
+    `Ledger: ${prefixedStatePath(statePathPrefix, ULTRAGOAL_LEDGER)}`,
     `Goal: ${goal.id} — ${goal.title}`,
     '',
     'Codex goal integration constraints:',
