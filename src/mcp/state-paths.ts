@@ -439,13 +439,18 @@ async function readAuthoritativeSessionSnapshotFromBaseStateDir(
     throw error;
   }
 
-  let state: SessionState;
+  let parsed: unknown;
   try {
-    state = JSON.parse(raw) as SessionState;
+    parsed = JSON.parse(raw);
   } catch (error) {
     if (error instanceof SyntaxError) return null;
     throw error;
   }
+  // JSON null, arrays, and scalars are syntactically valid but are not pointer
+  // objects; treat them as malformed so they fail closed on the stable
+  // unusable-session error instead of throwing on property access.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const state = parsed as SessionState;
   const recordedCwd = typeof state.cwd === 'string' ? canonicalizeExistingPath(resolvePath(state.cwd)) : '';
   const recordedStateRoot = typeof state.state_root === 'string'
     ? canonicalizeExistingPath(resolvePath(state.state_root))

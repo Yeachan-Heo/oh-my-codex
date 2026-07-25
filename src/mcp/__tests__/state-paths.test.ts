@@ -1010,6 +1010,34 @@ describe('state paths', () => {
         await rm(wd, { recursive: true, force: true });
       }
     });
+
+    it('fails closed for JSON-valid non-object pointers even with an env binding', async () => {
+      const wd = await mkRealTemp('omx-writable-nonobject-env-');
+      try {
+        const stateDir = getBaseStateDir(wd);
+        await mkdir(stateDir, { recursive: true });
+        const sessionPath = join(stateDir, 'session.json');
+        process.env.OMX_SESSION_ID = 'sess-current';
+
+        // JSON null, arrays, and scalars parse cleanly but are not pointer
+        // objects. They must surface the same stable unusable-session error as
+        // syntactically malformed bytes rather than throwing on property access.
+        for (const body of ['null', '[]', '42', '"sess-current"']) {
+          await writeFile(sessionPath, body);
+          await assert.rejects(
+            () => resolveWritableStateScope(wd),
+            (error: unknown) => {
+              assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+              return true;
+            },
+          );
+          assert.equal(await readFile(sessionPath, 'utf-8'), body);
+          assert.equal(existsSync(join(stateDir, 'sessions', 'sess-current')), false);
+        }
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
     it('fails closed for an identity-indeterminate pointer even with an env binding', async () => {
       const wd = await mkRealTemp('omx-writable-indeterminate-env-');
       __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
