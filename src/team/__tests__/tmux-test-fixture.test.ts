@@ -138,4 +138,36 @@ describe('withTempTmuxSession', () => {
 
     assert.equal(ambientSessionExists(sessionName), false);
   });
+
+  it('rejects private server logging on the ambient server', async (t) => {
+    skipUnlessTmux(t);
+    await assert.rejects(
+      withTempTmuxSession({ useAmbientServer: true, serverLog: true }, async () => undefined),
+      /server logging requires a private synthetic tmux server/,
+    );
+  });
+
+  it('exposes a private server log only when logging is enabled', async (t) => {
+    skipUnlessTmux(t);
+    await withTempTmuxSession(async (fixture) => {
+      assert.equal(fixture.serverLogPath, null);
+      await assert.rejects(fixture.readServerLog(), /server logging was not enabled/);
+    });
+
+    await withTempTmuxSession({ serverLog: true }, async (fixture) => {
+      assert.match(fixture.serverLogPath ?? '', /tmux-server-[0-9]+\.log$/);
+      assert.equal(typeof (await fixture.readServerLog()), 'string');
+    });
+  });
+
+  it('rejects out-of-range client resize geometry before attaching', async (t) => {
+    skipUnlessTmux(t);
+    await withTempTmuxSession(async (fixture) => {
+      assert.throws(() => fixture.triggerClientResize(fixture.sessionName, { rows: 3 }), /invalid trigger rows: 3/);
+      assert.throws(() => fixture.triggerClientResize(fixture.sessionName, { rows: 501 }), /invalid trigger rows: 501/);
+      assert.throws(() => fixture.triggerClientResize(fixture.sessionName, { rows: 40.5 }), /invalid trigger rows: 40.5/);
+      assert.throws(() => fixture.triggerClientResize(fixture.sessionName, { cols: 19 }), /invalid trigger cols: 19/);
+      assert.throws(() => fixture.triggerClientResize(fixture.sessionName, { cols: 501 }), /invalid trigger cols: 501/);
+    });
+  });
 });
