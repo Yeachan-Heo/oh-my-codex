@@ -166,6 +166,9 @@ function authorityRevisionOf(state: SubagentTrackingState): string {
         thread.reopen_authority_revoked === true ? '1' : '',
         thread.reopen_authority_conflict_reason ?? '',
         thread.reopen_authority_conflict_at ?? '',
+        // Availability gates whether an eligible child is actually emitted as
+        // a reopen target, so it is part of the authority surface.
+        thread.status ?? '',
       ].join('\u0001');
     });
     return [sessionId, session.leader_thread_id ?? '', ...threads].join('\u0002');
@@ -863,20 +866,11 @@ function writeSubagentTrackingStateSync(
   return path;
 }
 
-/**
- * Authority revision observed when a descriptive caller last read the tracker.
- * `writeSubagentTrackingState` uses it to refuse a stale publication that would
- * roll back a newer authority decision.
- */
-const observedAuthorityRevisions = new WeakMap<SubagentTrackingState, string>();
-
 export async function readSubagentTrackingState(cwd: string): Promise<SubagentTrackingState> {
   const path = subagentTrackingPath(cwd);
   if (!existsSync(path)) return createSubagentTrackingState();
   try {
-    const state = normalizeSubagentTrackingState(JSON.parse(await readFile(path, 'utf-8')));
-    observedAuthorityRevisions.set(state, authorityRevisionOf(state));
-    return state;
+    return normalizeSubagentTrackingState(JSON.parse(await readFile(path, 'utf-8')));
   } catch {
     return createSubagentTrackingState();
   }
@@ -896,7 +890,6 @@ export async function writeSubagentTrackingState(cwd: string, state: SubagentTra
   const normalized = normalizeSubagentTrackingState(state);
   const contents = `${JSON.stringify(normalized, null, 2)}\n`;
   const proposedAuthorityRevision = authorityRevisionOf(normalized);
-  const observedAuthorityRevision = observedAuthorityRevisions.get(state);
   return withCrossProcessFileLockSync(path, (lock) => {
     if (existsSync(path)) {
       let raw: string;
@@ -907,14 +900,25 @@ export async function writeSubagentTrackingState(cwd: string, state: SubagentTra
       }
       const current = parseStrictSubagentTrackingState(raw);
       if (!current) throw new Error('Malformed subagent tracker authority state');
-      // Descriptive churn is allowed; authority rollback is not. The write is
-      // refused when on-disk authority has moved since the caller's snapshot
-      // and the proposal does not already carry that newer authority.
-      const currentAuthorityRevision = authorityRevisionOf(current);
-      if (currentAuthorityRevision !== proposedAuthorityRevision
-        && observedAuthorityRevision !== currentAuthorityRevision) {
+      // The generic writer is descriptive-only: it may publish descriptive
+      // churn, but it must never CHANGE the authority surface in any
+      // direction. Granting, revoking, or rolling back authority is reserved
+      // for the lock-owning authority transactions. Requiring the proposed
+      // authority projection to equal the current on-disk projection makes a
+      // stale snapshot, a fresh-read escalation, and a concurrent interleaving
+      // all fail closed with one rule.
+      if (authorityRevisionOf(current) !== proposedAuthorityRevision) {
         throw new Error('Stale subagent tracker authority state');
       }
+    } else if (proposedAuthorityRevision !== authorityRevisionOf(createSubagentTrackingState())) {
+      // Creating the tracker from nothing must not mint authority either.
+      const mintsAuthority = Object.values(normalized.sessions).some((session) =>
+        Object.values(session.threads).some((thread) =>
+          thread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+          || thread.direct_child_root_id !== undefined
+          || thread.direct_child_parent_id !== undefined
+          || thread.reopen_authority_revoked !== undefined));
+      if (mintsAuthority) throw new Error('Stale subagent tracker authority state');
     }
     mkdirSync(dirname(path), { recursive: true });
     lock.assertOwnership();
@@ -1173,44 +1177,75 @@ function readAuthorityFence(cwd: string): { ok: boolean; ids: Set<string> } {
   }
 }
 
-/** Record ids whose revocation could not be persisted, so reopen stays denied. */
-export function fenceNativeSubagentAuthorities(cwd: string, childThreadIds: string[], reason: string): void {
+/** Upper bound on fenced ids, so repeated failures cannot grow the fence without limit. */
+export const AUTHORITY_FENCE_MAX_IDS = 512;
+
+/**
+ * Record ids whose revocation could not be persisted, so reopen stays denied.
+ *
+ * Every fence mutation runs under a dedicated cross-process lock on the fence
+ * path so read/merge/publish is atomic with respect to concurrent fencing and
+ * clearing. Returns true when the denial is durable; the caller must treat
+ * false as an unresolved fail-closed condition.
+ */
+export function fenceNativeSubagentAuthorities(cwd: string, childThreadIds: string[], reason: string): boolean {
   const ids = childThreadIds.map((value) => value.trim()).filter(Boolean);
-  if (!ids.length) return;
+  if (!ids.length) return true;
   const path = authorityFencePath(cwd);
-  const existing = readAuthorityFence(cwd);
-  const merged = [...new Set([...existing.ids, ...ids])].sort();
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    const temporaryPath = atomicTrackingTempPath(path);
-    writeFileSync(temporaryPath, `${JSON.stringify({ ids: merged, reason, fenced_at: new Date().toISOString() }, null, 2)}\n`);
-    renameSync(temporaryPath, path);
+    return withCrossProcessFileLockSync(path, (lock) => {
+      const existing = readAuthorityFence(cwd);
+      // An unreadable fence already denies every id; do not weaken it by
+      // rewriting it into a narrower explicit id list.
+      if (!existing.ok) return true;
+      const merged = [...new Set([...existing.ids, ...ids])].sort();
+      if (merged.length > AUTHORITY_FENCE_MAX_IDS) {
+        // Refuse to grow past the cap by writing a deliberately unreadable
+        // sentinel: a global denial is strictly stronger than a partial list.
+        mkdirSync(dirname(path), { recursive: true });
+        lock.assertOwnership();
+        lock.publish(`${JSON.stringify({ ids: 'all', reason: 'fence_capacity_exceeded', fenced_at: new Date().toISOString() }, null, 2)}\n`);
+        return true;
+      }
+      mkdirSync(dirname(path), { recursive: true });
+      lock.assertOwnership();
+      lock.publish(`${JSON.stringify({ ids: merged, reason, fenced_at: new Date().toISOString() }, null, 2)}\n`);
+      return true;
+    });
   } catch {
-    // Best-effort persistence. A fence that cannot be written leaves the
-    // pre-existing fence (if any) intact; consumption still fails closed for
-    // an unreadable fence.
+    // The denial could not be made durable. The caller must surface this
+    // rather than continue as if the revocation had been applied.
+    return false;
   }
 }
 
-/** Drop ids from the fence once their revocation is durably published. */
+/**
+ * Drop ids from the fence once their revocation is durably published.
+ *
+ * Runs under the fence lock and re-reads inside it, so it can never clear
+ * based on a stale snapshot. An unreadable fence is a global denial and is
+ * NEVER destroyed here: only an explicit, fully reconciled id list is removed.
+ */
 function clearAuthorityFence(cwd: string, childThreadIds: string[]): void {
   const path = authorityFencePath(cwd);
   if (!existsSync(path)) return;
   const cleared = new Set(childThreadIds.map((value) => value.trim()).filter(Boolean));
-  const existing = readAuthorityFence(cwd);
+  if (!cleared.size) return;
   try {
-    if (!existing.ok) {
-      unlinkSync(path);
-      return;
-    }
-    const remaining = [...existing.ids].filter((id) => !cleared.has(id)).sort();
-    if (!remaining.length) {
-      unlinkSync(path);
-      return;
-    }
-    const temporaryPath = atomicTrackingTempPath(path);
-    writeFileSync(temporaryPath, `${JSON.stringify({ ids: remaining, reason: 'partial_clear', fenced_at: new Date().toISOString() }, null, 2)}\n`);
-    renameSync(temporaryPath, path);
+    withCrossProcessFileLockSync(path, (lock) => {
+      const existing = readAuthorityFence(cwd);
+      // Preserve an unreadable/global denial. Reconciling it requires explicit
+      // operator action, not an incidental unrelated revocation.
+      if (!existing.ok) return;
+      const remaining = [...existing.ids].filter((id) => !cleared.has(id)).sort();
+      if (remaining.length === existing.ids.size) return;
+      lock.assertOwnership();
+      if (!remaining.length) {
+        unlinkSync(path);
+        return;
+      }
+      lock.publish(`${JSON.stringify({ ids: remaining, reason: 'partial_clear', fenced_at: new Date().toISOString() }, null, 2)}\n`);
+    });
   } catch {
     // Leaving a stale fence entry is fail-closed and therefore acceptable.
   }

@@ -488,6 +488,7 @@ async function recordNativeSubagentSessionStart(
     parentThreadId,
   ].filter(Boolean))];
   let authorityTrackingFailed = false;
+  let authorityFenceFailed = false;
   try {
     recordNativeSubagentAuthorityObservation(cwd, {
       sessionIds: trackingSessionIds,
@@ -503,11 +504,12 @@ async function recordNativeSubagentSessionStart(
     // A failed observation must not leave stale authority usable. Only a
     // negative (untrusted) observation carries a revocation intent, so fence
     // exactly those implicated ids until the revocation is durably applied.
-    if (authorityEvidence === "untrusted") {
-      fenceNativeSubagentAuthorities(
+    // A conflicting VALID observation also revokes, so it must fence too.
+    if (authorityEvidence !== "absent") {
+      authorityFenceFailed = !fenceNativeSubagentAuthorities(
         cwd,
         [...new Set([childThreadId, ...implicatedChildThreadIds].filter(Boolean))],
-        "identity_untrusted_revocation_failed",
+        `${authorityEvidence}_revocation_failed`,
       );
     }
   }
@@ -527,6 +529,7 @@ async function recordNativeSubagentSessionStart(
     ...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
     ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
     authority_tracking_status: authorityTrackingFailed ? "failed" : authorityEvidence,
+    ...(authorityFenceFailed ? { authority_fence_status: "failed" } : {}),
     timestamp: new Date().toISOString(),
   }).catch(() => {});
 }
@@ -2112,11 +2115,21 @@ async function buildPersistedSubagentReopenContext(
   if (sessionStartChildMetadata) {
     const markerParentId = sessionStartChildMetadata.parentThreadId.trim();
     const markerChildId = safeString(sessionStartChildMetadata.childSessionId).trim();
-    const identifiesDistinctChild = markerChildId !== ""
+    // String-distinctness is NOT attestation. Suppression of the
+    // pointer-authoritative root's protection requires the marker to be bound
+    // to the authenticated event identity: the marker's child must be this very
+    // SessionStart's unambiguous native id, and its parent must be exactly the
+    // authenticated native root (a direct child, not a nested descendant or a
+    // child of some foreign parent). Anything else is unauthenticated evidence
+    // and must not keep a root-as-subagent inversion alive.
+    const eventChildIdentity = readUnambiguousSessionStartNativeId(options.payload ?? {});
+    const identifiesAuthenticatedDirectChild = markerChildId !== ""
       && markerChildId !== rootContext.rootNativeSessionId
       && markerChildId !== rootContext.sessionId
-      && markerParentId !== markerChildId;
-    if (identifiesDistinctChild) return null;
+      && markerParentId === rootContext.rootNativeSessionId
+      && eventChildIdentity.ok
+      && eventChildIdentity.value === markerChildId;
+    if (identifiesAuthenticatedDirectChild) return null;
     // Contradictory or self-parented child evidence: this event cannot prove a
     // distinct child, so it must not suppress the pointer-authoritative root's
     // protection. Quarantine the root's reopen authority without asserting
@@ -20381,8 +20394,19 @@ export async function dispatchCodexNativeHook(
           } catch {
             // The negative identity observation could not be published. Fence
             // the implicated ids durably so reopen consumption keeps denying
-            // them instead of leaving the old authority usable.
-            fenceNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent_revocation_failed");
+            // them instead of leaving the old authority usable. A fence that
+            // also fails to persist is recorded so the failure is observable
+            // rather than silently dropped.
+            if (!fenceNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent_revocation_failed")) {
+              await appendToLog(cwd, {
+                event: "subagent_authority_fence_failed",
+                session_id: canonicalSessionId,
+                native_session_id: nativeSessionId,
+                reason: "foreign_parent_revocation_failed",
+                implicated_thread_ids: implicatedChildThreadIds,
+                timestamp: new Date().toISOString(),
+              }).catch(() => {});
+            }
           }
           await recordIgnoredNativeSubagentSessionStart(
             cwd,

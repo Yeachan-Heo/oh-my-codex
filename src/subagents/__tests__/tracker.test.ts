@@ -633,6 +633,115 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('refuses a fresh generic write that would grant or remove reopen authority', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-fresh-generic-authority-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      revokeNativeSubagentAuthorities(cwd, ['child'], 'foreign_parent');
+      // A FRESH read still must not let the descriptive writer lift a revocation.
+      const fresh = await readSubagentTrackingState(cwd);
+      delete fresh.sessions.canonical!.threads.child!.reopen_authority_revoked;
+      delete fresh.sessions.canonical!.threads.child!.reopen_authority_conflict_reason;
+      delete fresh.sessions.canonical!.threads.child!.reopen_authority_conflict_at;
+      await assert.rejects(writeSubagentTrackingState(cwd, fresh), /Stale subagent tracker authority state/);
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      // A fresh read must equally not let it GRANT authority. Attaching a fresh
+      // attestation to a previously unattested thread is refused as a stale
+      // authority change rather than published.
+      const granting = await readSubagentTrackingState(cwd);
+      const plain = recordSubagentTurn(granting, { sessionId: 'canonical', threadId: 'newcomer', kind: 'subagent' });
+      plain.sessions.canonical!.threads.newcomer!.provenance_kind = NATIVE_SUBAGENT_PROVENANCE;
+      plain.sessions.canonical!.threads.newcomer!.direct_child_root_id = 'root';
+      plain.sessions.canonical!.threads.newcomer!.direct_child_parent_id = 'root';
+      await assert.rejects(writeSubagentTrackingState(cwd, plain), /Stale subagent tracker authority state/);
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a generic write that would mint authority into a fresh tracker', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-mint-authority-'));
+    try {
+      const minted = recordSubagentTurn(createSubagentTrackingState(), { sessionId: 'canonical', threadId: 'child', kind: 'subagent' });
+      minted.sessions.canonical!.threads.child!.provenance_kind = NATIVE_SUBAGENT_PROVENANCE;
+      minted.sessions.canonical!.threads.child!.direct_child_root_id = 'root';
+      minted.sessions.canonical!.threads.child!.direct_child_parent_id = 'root';
+      await assert.rejects(writeSubagentTrackingState(cwd, minted), /Stale subagent tracker authority state/);
+      assert.equal(existsSync(subagentTrackingPath(cwd)), false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a generic write that would roll an authorized child back to available', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-status-rollback-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      const snapshot = await readSubagentTrackingState(cwd);
+      snapshot.sessions.canonical!.threads.child!.status = 'unavailable';
+      await assert.rejects(writeSubagentTrackingState(cwd, snapshot), /Stale subagent tracker authority state/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('never destroys an unreadable global fence during an unrelated revocation clear', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-fence-preserved-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'a', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'b', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      const fencePath = `${subagentTrackingPath(cwd)}.authority-fence.json`;
+      writeFileSync(fencePath, '{ not json');
+      // An unrelated revocation must not delete the global denial.
+      revokeNativeSubagentAuthorities(cwd, ['a'], 'identity_untrusted');
+      assert.equal(existsSync(fencePath), true);
+      assert.match(
+        consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '',
+        /unreadable_authority_fence/,
+      );
+      // A no-op revocation for an unknown id must not clear it either.
+      revokeNativeSubagentAuthorities(cwd, ['nonexistent'], 'identity_untrusted');
+      assert.equal(existsSync(fencePath), true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not weaken an unreadable global fence when a later fence records more ids', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-fence-no-weaken-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      const fencePath = `${subagentTrackingPath(cwd)}.authority-fence.json`;
+      writeFileSync(fencePath, '{ not json');
+      assert.equal(fenceNativeSubagentAuthorities(cwd, ['other'], 'identity_untrusted_revocation_failed'), true);
+      assert.match(
+        consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '',
+        /unreadable_authority_fence/,
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('clears only fully reconciled fence ids and keeps the rest denied', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-fence-partial-clear-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'a', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'b', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      assert.equal(fenceNativeSubagentAuthorities(cwd, ['a', 'b'], 'identity_untrusted_revocation_failed'), true);
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      revokeNativeSubagentAuthorities(cwd, ['a'], 'identity_untrusted');
+      // `b` is still fenced, so it must not be emitted even though its tracker
+      // record still looks valid.
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      const fence = JSON.parse(readFileSync(`${subagentTrackingPath(cwd)}.authority-fence.json`, 'utf8'));
+      assert.deepEqual(fence.ids, ['b']);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('repairs a root inversion even when the canonical tracker partition is missing', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-native-only-repair-'));
     try {
