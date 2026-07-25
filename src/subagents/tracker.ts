@@ -911,13 +911,18 @@ export async function writeSubagentTrackingState(cwd: string, state: SubagentTra
         throw new Error('Stale subagent tracker authority state');
       }
     } else if (proposedAuthorityRevision !== authorityRevisionOf(createSubagentTrackingState())) {
-      // Creating the tracker from nothing must not mint authority either.
+      // Creating the tracker from nothing must not mint reopen authority.
+      // `leader_thread_id` is deliberately NOT included: it is ordinary
+      // descriptive lifecycle data that legitimate first writers set, and it
+      // never by itself makes a thread an eligible reopen target.
       const mintsAuthority = Object.values(normalized.sessions).some((session) =>
         Object.values(session.threads).some((thread) =>
           thread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
           || thread.direct_child_root_id !== undefined
           || thread.direct_child_parent_id !== undefined
-          || thread.reopen_authority_revoked !== undefined));
+          || thread.reopen_authority_revoked !== undefined
+          || thread.reopen_authority_conflict_reason !== undefined
+          || thread.reopen_authority_conflict_at !== undefined));
       if (mintsAuthority) throw new Error('Stale subagent tracker authority state');
     }
     mkdirSync(dirname(path), { recursive: true });
@@ -1216,6 +1221,34 @@ export function fenceNativeSubagentAuthorities(cwd: string, childThreadIds: stri
     // The denial could not be made durable. The caller must surface this
     // rather than continue as if the revocation had been applied.
     return false;
+  }
+}
+
+/**
+ * Last-resort global denial used when BOTH the tracker revocation transaction
+ * and the locked fence publication fail. It deliberately avoids the fence lock
+ * (which may be exactly what is unavailable) and writes an intentionally
+ * unreadable sentinel directly, because `readAuthorityFence` treats any
+ * unreadable fence as a denial of every id. Returns true when the denial is
+ * durable on disk.
+ */
+export function forceGlobalAuthorityDenial(cwd: string, reason: string): boolean {
+  const path = authorityFencePath(cwd);
+  const contents = `${JSON.stringify({ ids: 'all', reason, fenced_at: new Date().toISOString() }, null, 2)}\n`;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporaryPath = atomicTrackingTempPath(path);
+    writeFileSync(temporaryPath, contents);
+    renameSync(temporaryPath, path);
+    return true;
+  } catch {
+    try {
+      // Even a partial/truncated write is safe here: unreadable means denied.
+      writeFileSync(path, contents);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

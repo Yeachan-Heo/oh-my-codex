@@ -18,6 +18,7 @@ import {
 } from "../state/skill-active.js";
 import {
   fenceNativeSubagentAuthorities,
+  forceGlobalAuthorityDenial,
   consumeDirectChildReopenContext,
   isTrustedSubagentThread,
   readSubagentSessionSummary,
@@ -506,11 +507,13 @@ async function recordNativeSubagentSessionStart(
     // exactly those implicated ids until the revocation is durably applied.
     // A conflicting VALID observation also revokes, so it must fence too.
     if (authorityEvidence !== "absent") {
-      authorityFenceFailed = !fenceNativeSubagentAuthorities(
-        cwd,
-        [...new Set([childThreadId, ...implicatedChildThreadIds].filter(Boolean))],
-        `${authorityEvidence}_revocation_failed`,
-      );
+      const fencedIds = [...new Set([childThreadId, ...implicatedChildThreadIds].filter(Boolean))];
+      authorityFenceFailed = !fenceNativeSubagentAuthorities(cwd, fencedIds, `${authorityEvidence}_revocation_failed`);
+      if (authorityFenceFailed) {
+        // Both the tracker denial and the locked fence failed. Escalate to a
+        // lock-free global denial so old authority cannot stay usable.
+        authorityFenceFailed = !forceGlobalAuthorityDenial(cwd, `${authorityEvidence}_denial_escalated`);
+      }
     }
   }
   refreshNativeSubagentRoleRoutingMarker(
@@ -20398,12 +20401,17 @@ export async function dispatchCodexNativeHook(
             // also fails to persist is recorded so the failure is observable
             // rather than silently dropped.
             if (!fenceNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent_revocation_failed")) {
+              // Both the tracker denial and the locked fence failed. Escalate
+              // to a lock-free global denial so the old authority cannot stay
+              // usable, and record whether even that succeeded.
+              const escalated = forceGlobalAuthorityDenial(cwd, "foreign_parent_denial_escalated");
               await appendToLog(cwd, {
                 event: "subagent_authority_fence_failed",
                 session_id: canonicalSessionId,
                 native_session_id: nativeSessionId,
                 reason: "foreign_parent_revocation_failed",
                 implicated_thread_ids: implicatedChildThreadIds,
+                global_denial_escalated: escalated,
                 timestamp: new Date().toISOString(),
               }).catch(() => {});
             }

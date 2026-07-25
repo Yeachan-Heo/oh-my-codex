@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, consumeDirectChildReopenContext, CrossProcessLockLostError, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, DESCRIPTIVE_ADAPTED_PROVENANCE, fenceNativeSubagentAuthorities, recordNativeSubagentAuthorityObservation, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, readSubagentTrackingStateStrict, repairPersistedRootIdentity, revokeNativeSubagentAuthorities, selectReusableSubagentEntry, subagentTrackingPath, summarizeSubagentSession, withCrossProcessFileLockSync, writeSubagentTrackingState } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, consumeDirectChildReopenContext, CrossProcessLockLostError, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, DESCRIPTIVE_ADAPTED_PROVENANCE, fenceNativeSubagentAuthorities, forceGlobalAuthorityDenial, recordNativeSubagentAuthorityObservation, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, readSubagentTrackingStateStrict, repairPersistedRootIdentity, revokeNativeSubagentAuthorities, selectReusableSubagentEntry, subagentTrackingPath, summarizeSubagentSession, withCrossProcessFileLockSync, writeSubagentTrackingState } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
@@ -669,6 +669,48 @@ describe('subagents/tracker', () => {
       minted.sessions.canonical!.threads.child!.direct_child_parent_id = 'root';
       await assert.rejects(writeSubagentTrackingState(cwd, minted), /Stale subagent tracker authority state/);
       assert.equal(existsSync(subagentTrackingPath(cwd)), false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('lets a fresh generic write set a descriptive leader_thread_id but never mint authority', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-mint-leader-'));
+    try {
+      // leader_thread_id alone is descriptive lifecycle data that legitimate
+      // first writers set; it never makes a thread an eligible reopen target.
+      const descriptive = recordSubagentTurn(createSubagentTrackingState(), { sessionId: 'canonical', threadId: 'child', kind: 'subagent', leaderThreadId: 'thread-leader' });
+      await writeSubagentTrackingState(cwd, descriptive);
+      assert.doesNotMatch(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\(/);
+      // Attaching attestation to that same fresh create is refused.
+      rmSync(subagentTrackingPath(cwd), { force: true });
+      const minted = recordSubagentTurn(createSubagentTrackingState(), { sessionId: 'canonical', threadId: 'child', kind: 'subagent', leaderThreadId: 'thread-leader' });
+      minted.sessions.canonical!.threads.child!.provenance_kind = NATIVE_SUBAGENT_PROVENANCE;
+      minted.sessions.canonical!.threads.child!.direct_child_root_id = 'root';
+      minted.sessions.canonical!.threads.child!.direct_child_parent_id = 'root';
+      await assert.rejects(writeSubagentTrackingState(cwd, minted), /Stale subagent tracker authority state/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies every reopen target after a forced global authority denial', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-global-denial-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      // Simulates both the tracker revocation AND the locked fence failing.
+      assert.equal(forceGlobalAuthorityDenial(cwd, 'identity_untrusted_denial_escalated'), true);
+      assert.match(
+        consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '',
+        /unreadable_authority_fence/,
+      );
+      // The escalated denial survives an unrelated successful revocation.
+      revokeNativeSubagentAuthorities(cwd, ['other'], 'identity_untrusted');
+      assert.match(
+        consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '',
+        /unreadable_authority_fence/,
+      );
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
