@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, consumeDirectChildReopenContext, CrossProcessLockLostError, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, DESCRIPTIVE_ADAPTED_PROVENANCE, recordNativeSubagentAuthorityObservation, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, readProcessStartIdentity, readSubagentTrackingStateStrict, repairPersistedRootIdentity, selectReusableSubagentEntry, subagentTrackingPath, summarizeSubagentSession, withCrossProcessFileLockSync, writeSubagentTrackingState } from '../tracker.js';
+import { __setCrossProcessPublishBarrierForTest, __setCrossProcessQuarantineBarrierForTest, consumeDirectChildReopenContext, CrossProcessLockLostError, buildSubagentResumeLedger, CROSS_PROCESS_LOCK_ARTIFACT_SWEEP_CAP, CROSS_PROCESS_LOCK_LEASE_MS, createSubagentTrackingState, crossProcessLockPath, DESCRIPTIVE_ADAPTED_PROVENANCE, fenceNativeSubagentAuthorities, recordNativeSubagentAuthorityObservation, recordSubagentTurn, recordSubagentTurnForSession, NATIVE_SUBAGENT_PROVENANCE, readProcessStartIdentity, readSubagentTrackingState, readSubagentTrackingStateStrict, repairPersistedRootIdentity, revokeNativeSubagentAuthorities, selectReusableSubagentEntry, subagentTrackingPath, summarizeSubagentSession, withCrossProcessFileLockSync, writeSubagentTrackingState } from '../tracker.js';
 import { NATIVE_SUBAGENT_ROLE_ROUTING_MARKER_FILE, readRoleRoutingMarker, writeRoleRoutingMarker } from '../role-routing-marker.js';
 
 const CROSS_PROCESS_LOCK_HOLDER_SOURCE = `
@@ -516,6 +516,118 @@ describe('subagents/tracker', () => {
       const validState = recordSubagentTurn(createSubagentTrackingState(), { sessionId: 'root', threadId: 'child', kind: 'subagent' });
       await writeSubagentTrackingState(cwd, validState);
       assert.equal(existsSync(path), true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a stale generic write that would roll back a newer authority revocation', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-stale-generic-write-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      // A descriptive caller snapshots the tracker outside the lock.
+      const stale = await readSubagentTrackingState(cwd);
+      // A competing negative observation revokes that authority.
+      revokeNativeSubagentAuthorities(cwd, ['child'], 'foreign_parent');
+      assert.equal(JSON.parse(readFileSync(path, 'utf8')).sessions.canonical.threads.child.reopen_authority_revoked, true);
+      // Publishing the stale snapshot must not resurrect the revoked authority.
+      await assert.rejects(writeSubagentTrackingState(cwd, stale), /Stale subagent tracker authority state/);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(persisted.sessions.canonical.threads.child.reopen_authority_revoked, true);
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still allows a descriptive generic write when authority has not moved', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-descriptive-write-ok-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      const snapshot = await readSubagentTrackingState(cwd);
+      const descriptive = recordSubagentTurn(snapshot, { sessionId: 'canonical', threadId: 'child', kind: 'subagent' });
+      await writeSubagentTrackingState(cwd, descriptive);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves an uncorrelated partition untouched when a thread id collides with the canonical key', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-uncorrelated-collision-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: {
+        canonical: { session_id: 'canonical', updated_at: '2026-07-23T00:00:00.000Z', threads: {} },
+        unrelated: { session_id: 'unrelated', leader_thread_id: 'foreign-root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          canonical: { thread_id: 'canonical', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'foreign-root', direct_child_parent_id: 'foreign-root', resume_requested_at: '2026-07-23T00:02:00.000Z', resume_completed_at: '2026-07-23T00:03:00.000Z', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+      } }));
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      const persisted = JSON.parse(readFileSync(path, 'utf8'));
+      const foreignChild = persisted.sessions.unrelated.threads.canonical;
+      assert.equal(foreignChild.reopen_authority_revoked, undefined);
+      assert.equal(foreignChild.reopen_authority_conflict_reason, undefined);
+      assert.equal(foreignChild.direct_child_root_id, 'foreign-root');
+      assert.equal(foreignChild.resume_requested_at, '2026-07-23T00:02:00.000Z');
+      assert.equal(foreignChild.resume_completed_at, '2026-07-23T00:03:00.000Z');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still quarantines a canonical-key collision inside a correlated partition', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-correlated-collision-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: {
+        correlated: { session_id: 'correlated', leader_thread_id: 'root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+          root: { thread_id: 'root', kind: 'leader', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+          canonical: { thread_id: 'canonical', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', resume_requested_at: '2026-07-23T00:02:00.000Z', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+        } },
+      } }));
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      const collided = JSON.parse(readFileSync(path, 'utf8')).sessions.correlated.threads.canonical;
+      assert.equal(collided.kind, 'subagent');
+      assert.equal(collided.reopen_authority_revoked, true);
+      assert.equal(collided.reopen_authority_conflict_reason, 'canonical_root_collision');
+      assert.equal(collided.resume_requested_at, undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps authority denied when a revocation could not be published', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-authority-fence-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      // Simulate a revocation whose transaction failed: the tracker still shows
+      // valid authority, but the fence records the unpublished denial.
+      fenceNativeSubagentAuthorities(cwd, ['child'], 'identity_untrusted_revocation_failed');
+      assert.equal(JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8')).sessions.canonical.threads.child.reopen_authority_revoked, undefined);
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      // Once the revocation is durably applied, the fence is released.
+      revokeNativeSubagentAuthorities(cwd, ['child'], 'identity_untrusted');
+      assert.equal(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }), null);
+      assert.equal(JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8')).sessions.canonical.threads.child.reopen_authority_revoked, true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for every id when the authority fence is unreadable', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-fence-unreadable-'));
+    try {
+      recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
+      writeFileSync(`${subagentTrackingPath(cwd)}.authority-fence.json`, '{ not json');
+      assert.match(
+        consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '',
+        /unreadable_authority_fence/,
+      );
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

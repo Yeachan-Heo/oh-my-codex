@@ -144,6 +144,35 @@ export function subagentTrackingPath(cwd: string): string {
   return join(getBaseStateDir(cwd), 'subagent-tracking.json');
 }
 
+/**
+ * Authority-relevant projection of a tracker state. The generic descriptive
+ * writer is allowed to publish descriptive churn, but it must never roll back
+ * an authority decision that another process committed after the caller read
+ * its snapshot. Comparing this projection is the durable equivalent of a CAS
+ * on the authority surface without forcing every descriptive caller to hold
+ * the tracker lock across its own read/modify/write.
+ */
+function authorityRevisionOf(state: SubagentTrackingState): string {
+  const sessions = Object.keys(state.sessions).sort().map((sessionId) => {
+    const session = state.sessions[sessionId]!;
+    const threads = Object.keys(session.threads).sort().map((threadId) => {
+      const thread = session.threads[threadId]!;
+      return [
+        threadId,
+        thread.kind,
+        thread.provenance_kind ?? '',
+        thread.direct_child_root_id ?? '',
+        thread.direct_child_parent_id ?? '',
+        thread.reopen_authority_revoked === true ? '1' : '',
+        thread.reopen_authority_conflict_reason ?? '',
+        thread.reopen_authority_conflict_at ?? '',
+      ].join('\u0001');
+    });
+    return [sessionId, session.leader_thread_id ?? '', ...threads].join('\u0002');
+  });
+  return sessions.join('\u0003');
+}
+
 
 export function resolveInstalledRoleName(role: string, codexHomeOverride?: string, projectRootOverride?: string): string | null {
   const normalizedRole = role.trim().toLowerCase();
@@ -834,11 +863,20 @@ function writeSubagentTrackingStateSync(
   return path;
 }
 
+/**
+ * Authority revision observed when a descriptive caller last read the tracker.
+ * `writeSubagentTrackingState` uses it to refuse a stale publication that would
+ * roll back a newer authority decision.
+ */
+const observedAuthorityRevisions = new WeakMap<SubagentTrackingState, string>();
+
 export async function readSubagentTrackingState(cwd: string): Promise<SubagentTrackingState> {
   const path = subagentTrackingPath(cwd);
   if (!existsSync(path)) return createSubagentTrackingState();
   try {
-    return normalizeSubagentTrackingState(JSON.parse(await readFile(path, 'utf-8')));
+    const state = normalizeSubagentTrackingState(JSON.parse(await readFile(path, 'utf-8')));
+    observedAuthorityRevisions.set(state, authorityRevisionOf(state));
+    return state;
   } catch {
     return createSubagentTrackingState();
   }
@@ -846,15 +884,19 @@ export async function readSubagentTrackingState(cwd: string): Promise<SubagentTr
 
 export async function writeSubagentTrackingState(cwd: string, state: SubagentTrackingState): Promise<string> {
   const path = subagentTrackingPath(cwd);
-  // Fail closed on both sides of the write: the proposed state must survive
+  // Fail closed on every side of the write. The proposed state must survive
   // strict authority validation (tolerant inputs must not launder malformed
-  // authority into a valid-looking attestation), and existing on-disk bytes
-  // must not be overwritten when they fail strict parsing. The whole
-  // read/validate/publish transaction is serialized under the tracker lock.
+  // authority into a valid-looking attestation); existing on-disk bytes must
+  // not be overwritten when they fail strict parsing; and the publication must
+  // not roll back an authority decision committed after the caller read its
+  // snapshot. The whole read/validate/compare/publish transaction is
+  // serialized under the tracker lock.
   const proposedRaw = JSON.stringify(state);
   if (!parseStrictSubagentTrackingState(proposedRaw)) throw new Error('Malformed subagent tracker authority state');
   const normalized = normalizeSubagentTrackingState(state);
   const contents = `${JSON.stringify(normalized, null, 2)}\n`;
+  const proposedAuthorityRevision = authorityRevisionOf(normalized);
+  const observedAuthorityRevision = observedAuthorityRevisions.get(state);
   return withCrossProcessFileLockSync(path, (lock) => {
     if (existsSync(path)) {
       let raw: string;
@@ -863,7 +905,16 @@ export async function writeSubagentTrackingState(cwd: string, state: SubagentTra
       } catch {
         throw new Error('Malformed subagent tracker authority state');
       }
-      if (!parseStrictSubagentTrackingState(raw)) throw new Error('Malformed subagent tracker authority state');
+      const current = parseStrictSubagentTrackingState(raw);
+      if (!current) throw new Error('Malformed subagent tracker authority state');
+      // Descriptive churn is allowed; authority rollback is not. The write is
+      // refused when on-disk authority has moved since the caller's snapshot
+      // and the proposal does not already carry that newer authority.
+      const currentAuthorityRevision = authorityRevisionOf(current);
+      if (currentAuthorityRevision !== proposedAuthorityRevision
+        && observedAuthorityRevision !== currentAuthorityRevision) {
+        throw new Error('Stale subagent tracker authority state');
+      }
     }
     mkdirSync(dirname(path), { recursive: true });
     lock.assertOwnership();
@@ -1094,6 +1145,77 @@ export function recordNativeSubagentAuthorityObservation(
   });
 }
 
+/**
+ * Durable fence for authority revocations that could not be published.
+ *
+ * A negative identity observation is only meaningful if reopen consumption can
+ * see it. When the revocation transaction fails (lock exhaustion, malformed
+ * bytes, I/O error) the affected ids are recorded here instead of being
+ * silently dropped, and `consumeDirectChildReopenContext` treats any fenced id
+ * as denied until the revocation is durably applied.
+ */
+function authorityFencePath(cwd: string): string {
+  return `${subagentTrackingPath(cwd)}.authority-fence.json`;
+}
+
+/** Read the fenced ids. An unreadable/malformed fence fails closed for all ids. */
+function readAuthorityFence(cwd: string): { ok: boolean; ids: Set<string> } {
+  const path = authorityFencePath(cwd);
+  if (!existsSync(path)) return { ok: true, ids: new Set() };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { ids?: unknown };
+    if (!Array.isArray(parsed.ids)) return { ok: false, ids: new Set() };
+    const ids = parsed.ids.filter((id): id is string => typeof id === 'string' && Boolean(id.trim()));
+    if (ids.length !== parsed.ids.length) return { ok: false, ids: new Set() };
+    return { ok: true, ids: new Set(ids.map((id) => id.trim())) };
+  } catch {
+    return { ok: false, ids: new Set() };
+  }
+}
+
+/** Record ids whose revocation could not be persisted, so reopen stays denied. */
+export function fenceNativeSubagentAuthorities(cwd: string, childThreadIds: string[], reason: string): void {
+  const ids = childThreadIds.map((value) => value.trim()).filter(Boolean);
+  if (!ids.length) return;
+  const path = authorityFencePath(cwd);
+  const existing = readAuthorityFence(cwd);
+  const merged = [...new Set([...existing.ids, ...ids])].sort();
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporaryPath = atomicTrackingTempPath(path);
+    writeFileSync(temporaryPath, `${JSON.stringify({ ids: merged, reason, fenced_at: new Date().toISOString() }, null, 2)}\n`);
+    renameSync(temporaryPath, path);
+  } catch {
+    // Best-effort persistence. A fence that cannot be written leaves the
+    // pre-existing fence (if any) intact; consumption still fails closed for
+    // an unreadable fence.
+  }
+}
+
+/** Drop ids from the fence once their revocation is durably published. */
+function clearAuthorityFence(cwd: string, childThreadIds: string[]): void {
+  const path = authorityFencePath(cwd);
+  if (!existsSync(path)) return;
+  const cleared = new Set(childThreadIds.map((value) => value.trim()).filter(Boolean));
+  const existing = readAuthorityFence(cwd);
+  try {
+    if (!existing.ok) {
+      unlinkSync(path);
+      return;
+    }
+    const remaining = [...existing.ids].filter((id) => !cleared.has(id)).sort();
+    if (!remaining.length) {
+      unlinkSync(path);
+      return;
+    }
+    const temporaryPath = atomicTrackingTempPath(path);
+    writeFileSync(temporaryPath, `${JSON.stringify({ ids: remaining, reason: 'partial_clear', fenced_at: new Date().toISOString() }, null, 2)}\n`);
+    renameSync(temporaryPath, path);
+  } catch {
+    // Leaving a stale fence entry is fail-closed and therefore acceptable.
+  }
+}
+
 export function revokeNativeSubagentAuthorities(
   cwd: string,
   childThreadIds: string[],
@@ -1120,6 +1242,9 @@ export function revokeNativeSubagentAuthorities(
       context.assertOwnership();
       writeSubagentTrackingStateSync(cwd, next, context.publish);
     }
+    // The revocation is now durable for these ids (either just published, or
+    // already present on disk), so any prior fence for them can be released.
+    clearAuthorityFence(cwd, ids);
     return next;
   });
 }
@@ -1160,12 +1285,34 @@ function persistedReopenLegacyNotice(excludedCount: number, source: string): str
 }
 
 /**
+ * True when a stored partition is provably about the current root, and not an
+ * unrelated/historical workspace session that merely happens to contain a
+ * thread id equal to the current canonical session key. Canonical-key collision
+ * quarantine is scoped to correlated partitions so it cannot destroy authority
+ * or resume bookkeeping belonging to a different root.
+ */
+function partitionCorrelatesToRoot(
+  session: TrackedSubagentSession,
+  sessionId: string,
+  rootNativeSessionId: string,
+): boolean {
+  if (session.session_id === sessionId || session.session_id === rootNativeSessionId) return true;
+  if (session.leader_thread_id === rootNativeSessionId) return true;
+  if (session.threads[rootNativeSessionId] !== undefined) return true;
+  return Object.values(session.threads).some((thread) =>
+    thread.direct_child_root_id === rootNativeSessionId
+    || thread.direct_child_parent_id === rootNativeSessionId);
+}
+
+/**
  * Repair persisted root-as-subagent identity inversion inside an already-parsed
  * state. Only a thread whose id equals the exact native root id is conclusively
  * the root and is reclassified as leader. A thread whose id equals only the
  * canonical session key is always ambiguous — the storage key is not identity
  * proof — so it is never destructively reclassified: authority-bearing records
  * are revoked (fail closed) and every ambiguous record loses resume bookkeeping.
+ * That ambiguity quarantine only applies inside partitions that correlate to
+ * this root; unrelated partitions are left untouched.
  * Returns true when any record changed.
  */
 function repairPersistedRootIdentityInState(
@@ -1177,11 +1324,15 @@ function repairPersistedRootIdentityInState(
   let changed = false;
   for (const correlatedSession of Object.values(state.sessions)) {
     let sessionChanged = false;
+    const correlated = partitionCorrelatesToRoot(correlatedSession, sessionId, rootNativeSessionId);
     for (const rootId of new Set([sessionId, rootNativeSessionId])) {
       const rootThread = correlatedSession.threads[rootId];
       if (!rootThread || rootThread.kind !== 'subagent') continue;
       const ambiguousCanonicalCollision = rootId === sessionId && sessionId !== rootNativeSessionId;
       if (ambiguousCanonicalCollision) {
+        // An uncorrelated partition's identically-named thread belongs to a
+        // different root: leave its authority and bookkeeping alone.
+        if (!correlated) continue;
         const carriesAuthority =
           rootThread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
           || rootThread.direct_child_root_id !== undefined
@@ -1263,6 +1414,70 @@ export function repairPersistedRootIdentity(
   });
 }
 
+/**
+ * Quarantine reopen authority for a root that is persisted as a subagent when
+ * the identity evidence is contradictory (for example a self-parented
+ * transcript marker). Unlike full repair this never asserts leader identity, so
+ * legitimate descriptive subagent evidence is preserved; it only strips the
+ * authority and resume bookkeeping that a root must never carry. Returns true
+ * when any record changed.
+ */
+export function quarantinePersistedRootAuthority(
+  cwd: string,
+  context: { sessionId: string; rootNativeSessionId: string },
+): boolean {
+  const sessionId = context.sessionId.trim();
+  const rootNativeSessionId = context.rootNativeSessionId.trim();
+  if (!sessionId || !rootNativeSessionId) return false;
+  const path = subagentTrackingPath(cwd);
+  return withCrossProcessFileLockSync(path, (lock) => {
+    let raw: string;
+    try {
+      raw = readFileSync(path, 'utf-8');
+    } catch {
+      return false;
+    }
+    const state = parseStrictSubagentTrackingState(raw);
+    if (!state) return false;
+    const timestamp = new Date().toISOString();
+    let changed = false;
+    for (const session of Object.values(state.sessions)) {
+      if (!partitionCorrelatesToRoot(session, sessionId, rootNativeSessionId)) continue;
+      const rootThread = session.threads[rootNativeSessionId];
+      if (!rootThread || rootThread.kind !== 'subagent') continue;
+      const carriesAuthority = rootThread.provenance_kind === NATIVE_SUBAGENT_PROVENANCE
+        || rootThread.direct_child_root_id !== undefined
+        || rootThread.direct_child_parent_id !== undefined;
+      let sessionChanged = false;
+      if (carriesAuthority && rootThread.reopen_authority_revoked !== true) {
+        rootThread.reopen_authority_revoked = true;
+        rootThread.reopen_authority_conflict_reason = 'contradictory_root_child_evidence';
+        rootThread.reopen_authority_conflict_at = timestamp;
+        sessionChanged = true;
+      }
+      if (rootThread.resume_requested_at !== undefined
+        || rootThread.resume_completed_at !== undefined
+        || rootThread.resume_failed_at !== undefined
+        || rootThread.resume_failure_reason !== undefined) {
+        delete rootThread.resume_requested_at;
+        delete rootThread.resume_completed_at;
+        delete rootThread.resume_failed_at;
+        delete rootThread.resume_failure_reason;
+        sessionChanged = true;
+      }
+      if (sessionChanged) {
+        session.updated_at = timestamp;
+        changed = true;
+      }
+    }
+    if (changed) {
+      lock.assertOwnership();
+      writeSubagentTrackingStateSync(cwd, state, lock.publish);
+    }
+    return changed;
+  });
+}
+
 /** Strict, lock-serialized authority consumption for SessionStart persisted reopen output. */
 export function consumeDirectChildReopenContext(
   cwd: string,
@@ -1282,6 +1497,11 @@ export function consumeDirectChildReopenContext(
     }
     const state = parseStrictSubagentTrackingState(raw);
     if (!state) return persistedReopenAuthorityWarning('malformed_tracker_state');
+    // A revocation that could not be published leaves a durable fence. Fenced
+    // ids stay denied here even though the on-disk record still looks valid,
+    // so a failed negative observation can never leave old authority usable.
+    const fence = readAuthorityFence(cwd);
+    if (!fence.ok) return persistedReopenAuthorityWarning('unreadable_authority_fence');
     const repairTimestamp = new Date().toISOString();
     // Root identity repair runs before candidate eligibility so a missing
     // canonical partition cannot leave a known root inversion unrepaired.
@@ -1300,6 +1520,7 @@ export function consumeDirectChildReopenContext(
           || thread.thread_id === sessionId
           || thread.thread_id === rootNativeSessionId
           || session.leader_thread_id === thread.thread_id
+          || fence.ids.has(thread.thread_id)
           || thread.provenance_kind !== NATIVE_SUBAGENT_PROVENANCE
           || thread.direct_child_root_id !== rootNativeSessionId
           || thread.direct_child_parent_id !== rootNativeSessionId

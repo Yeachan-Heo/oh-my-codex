@@ -17,12 +17,14 @@ import {
   type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
+  fenceNativeSubagentAuthorities,
   consumeDirectChildReopenContext,
   isTrustedSubagentThread,
   readSubagentSessionSummary,
   readSubagentTrackingState,
   recordNativeSubagentAuthorityObservation,
   repairPersistedRootIdentity,
+  quarantinePersistedRootAuthority,
   revokeNativeSubagentAuthorities,
   resolveInstalledRoleName,
 } from "../subagents/tracker.js";
@@ -498,6 +500,16 @@ async function recordNativeSubagentSessionStart(
     });
   } catch {
     authorityTrackingFailed = true;
+    // A failed observation must not leave stale authority usable. Only a
+    // negative (untrusted) observation carries a revocation intent, so fence
+    // exactly those implicated ids until the revocation is durably applied.
+    if (authorityEvidence === "untrusted") {
+      fenceNativeSubagentAuthorities(
+        cwd,
+        [...new Set([childThreadId, ...implicatedChildThreadIds].filter(Boolean))],
+        "identity_untrusted_revocation_failed",
+      );
+    }
   }
   refreshNativeSubagentRoleRoutingMarker(
     cwd,
@@ -2087,12 +2099,36 @@ async function buildPersistedSubagentReopenContext(
     pointer.status === "usable" ? pointer.state ?? null : null,
   );
   if (!rootContext.ok) return null;
-  // A SessionStart that itself carries native subagent thread_spawn evidence is
-  // a child session start, not a root observation. It must not trigger root
-  // identity repair or reopen consumption on any source, including
-  // startup/resume.
+  // A SessionStart that carries native subagent thread_spawn evidence for a
+  // genuinely DISTINCT child is a child session start, not a root observation,
+  // so it must not trigger root identity repair or reopen consumption on any
+  // source. The suppression is bound to the pointer-authoritative root: a
+  // transcript marker that is self-parented, names this very root as its child,
+  // or otherwise fails to identify a distinct child cannot override the
+  // authenticated pointer/event root identity, because that would let a stale
+  // or spurious marker keep a root-as-subagent inversion persisted forever.
   const sessionStartTranscriptPath = safeString(options.payload?.transcript_path ?? options.payload?.transcriptPath).trim();
-  if (readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath)) return null;
+  const sessionStartChildMetadata = readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath);
+  if (sessionStartChildMetadata) {
+    const markerParentId = sessionStartChildMetadata.parentThreadId.trim();
+    const markerChildId = safeString(sessionStartChildMetadata.childSessionId).trim();
+    const identifiesDistinctChild = markerChildId !== ""
+      && markerChildId !== rootContext.rootNativeSessionId
+      && markerChildId !== rootContext.sessionId
+      && markerParentId !== markerChildId;
+    if (identifiesDistinctChild) return null;
+    // Contradictory or self-parented child evidence: this event cannot prove a
+    // distinct child, so it must not suppress the pointer-authoritative root's
+    // protection. Quarantine the root's reopen authority without asserting
+    // leader identity, which preserves legitimate descriptive subagent evidence
+    // while ensuring the root can never carry reopen authority.
+    try {
+      quarantinePersistedRootAuthority(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
+    } catch {
+      // Quarantine is best-effort; reopen output stays denied for this event.
+    }
+    return null;
+  }
   if (!shouldBuildSubagentReopenContext(options)) {
     // Reopen output is gated to startup/resume, but root identity repair is not:
     // a known root-as-subagent inversion must not survive merely because this
@@ -20343,7 +20379,10 @@ export async function dispatchCodexNativeHook(
           try {
             revokeNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent");
           } catch {
-            // Authority revocation remains fail-closed and must not promote this child.
+            // The negative identity observation could not be published. Fence
+            // the implicated ids durably so reopen consumption keeps denying
+            // them instead of leaving the old authority usable.
+            fenceNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent_revocation_failed");
           }
           await recordIgnoredNativeSubagentSessionStart(
             cwd,

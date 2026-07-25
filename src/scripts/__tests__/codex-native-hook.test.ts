@@ -4364,7 +4364,7 @@ PY`,
   });
 
   for (const source of ["startup", "resume"] as const) {
-    it(`issue #3284 skips persisted-root repair and reopen output for a self-parented child SessionStart on ${source}`, async () => {
+    it(`issue #3284 quarantines root reopen authority without asserting leader identity for a self-parented child SessionStart on ${source}`, async () => {
       const cwd = await mkdtemp(join(tmpdir(), `omx-3284-self-parented-${source}-`));
       try {
         const stateDir = join(cwd, ".omx", "state");
@@ -4384,6 +4384,8 @@ PY`,
             [canonicalSessionId]: { session_id: canonicalSessionId, leader_thread_id: "turn-like-foreign",
               updated_at: "2026-07-24T00:00:00.000Z", threads: {
                 [nativeRoleThreadId]: { thread_id: nativeRoleThreadId, kind: "subagent", status: "available",
+                  provenance_kind: "native_subagent", direct_child_root_id: nativeRoleThreadId,
+                  direct_child_parent_id: nativeRoleThreadId, resume_requested_at: "2026-07-24T00:02:00.000Z",
                   first_seen_at: "2026-07-24T00:00:00.000Z", last_seen_at: "2026-07-24T00:00:00.000Z", turn_count: 1 },
               } },
           },
@@ -4393,14 +4395,58 @@ PY`,
         const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
         assert.doesNotMatch(context, /\[Persisted subagent reopen\]/);
         assert.doesNotMatch(context, /resume_agent\(/);
+        // The transcript marker names this very root as its own child, so it is
+        // not distinct-child evidence and cannot override the authenticated
+        // pointer identity. The root's reopen authority is quarantined without
+        // asserting leader identity, so descriptive subagent evidence survives.
         const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
-        assert.equal(tracking.sessions[canonicalSessionId].threads[nativeRoleThreadId].kind, "subagent");
-        assert.equal(tracking.sessions[canonicalSessionId].leader_thread_id, "turn-like-foreign");
+        const rootRecord = tracking.sessions[canonicalSessionId].threads[nativeRoleThreadId];
+        assert.equal(rootRecord.kind, "subagent");
+        assert.equal(rootRecord.reopen_authority_revoked, true);
+        assert.equal(rootRecord.reopen_authority_conflict_reason, "contradictory_root_child_evidence");
+        assert.equal(rootRecord.resume_requested_at, undefined);
       } finally {
         await rm(cwd, { recursive: true, force: true });
       }
     });
   }
+
+  it("issue #3284 still suppresses root repair for a genuinely distinct child SessionStart", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3284-distinct-child-suppression-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const canonicalSessionId = "omx-3284-distinct-child";
+      const rootNativeSessionId = "root-3284-distinct-child";
+      const childId = "child-3284-distinct";
+      await mkdir(join(stateDir, "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: rootNativeSessionId, pid: process.pid });
+      const transcriptPath = join(cwd, "rollout-distinct-child.jsonl");
+      await writeFile(transcriptPath, `${JSON.stringify({
+        type: "session_meta",
+        payload: { id: childId, source: { subagent: { thread_spawn: { parent_thread_id: rootNativeSessionId, depth: 1 } } } },
+      })}\n`);
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [canonicalSessionId]: { session_id: canonicalSessionId, leader_thread_id: "turn-like-foreign",
+            updated_at: "2026-07-24T00:00:00.000Z", threads: {
+              [rootNativeSessionId]: { thread_id: rootNativeSessionId, kind: "subagent", status: "available",
+                first_seen_at: "2026-07-24T00:00:00.000Z", last_seen_at: "2026-07-24T00:00:00.000Z", turn_count: 1 },
+            } },
+        },
+      });
+      const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd,
+        session_id: rootNativeSessionId, source: "resume", transcript_path: transcriptPath }, { cwd, sessionOwnerPid: process.pid });
+      const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
+      assert.doesNotMatch(context, /resume_agent\(/);
+      // A distinct child id is real child evidence, so this event stays a child
+      // observation and does not act as a root observation.
+      const tracking = JSON.parse(await readFile(join(stateDir, "subagent-tracking.json"), "utf-8"));
+      assert.equal(tracking.sessions[canonicalSessionId].threads[rootNativeSessionId].kind, "subagent");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 
   it("issue #3284 fails closed when SessionStart native id aliases conflict", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-3284-alias-conflict-"));
