@@ -18,11 +18,16 @@ import {
   type SkillActiveEntry,
 } from "../state/skill-active.js";
 import {
+  fenceNativeSubagentAuthorities,
+  forceGlobalAuthorityDenial,
+  consumeDirectChildReopenContext,
   isTrustedSubagentThread,
   readSubagentSessionSummary,
-  readSubagentSessionLedger,
   readSubagentTrackingState,
-  recordSubagentTurnForSession,
+  recordNativeSubagentAuthorityObservation,
+  repairPersistedRootIdentity,
+  quarantinePersistedRootAuthority,
+  revokeNativeSubagentAuthorities,
   resolveInstalledRoleName,
 } from "../subagents/tracker.js";
 
@@ -40,6 +45,7 @@ import {
   isSessionPointerLaunchAbort,
   isSessionStale,
   isSessionStateUsable,
+  isSessionStateAuthoritativeForCwd,
   normalizeSessionId,
   readNativeSessionOwner,
   readSessionPointer,
@@ -380,6 +386,7 @@ function shouldSuppressParentWorkflowStopForSideConversation(payload: CodexHookP
 
 interface NativeSubagentSessionStartMetadata {
   parentThreadId: string;
+  childSessionId?: string;
   agentNickname?: string;
   agentRole?: string;
 }
@@ -453,6 +460,7 @@ function readNativeSubagentSessionStartMetadata(transcriptPath: string): NativeS
     ).trim();
     return {
       parentThreadId,
+      ...(safeString(payload.id).trim() ? { childSessionId: safeString(payload.id).trim() } : {}),
       ...(agentNickname ? { agentNickname } : {}),
       ...(agentRole ? { agentRole } : {}),
     };
@@ -470,6 +478,9 @@ async function recordNativeSubagentSessionStart(
   childSessionId: string,
   metadata: NativeSubagentSessionStartMetadata,
   transcriptPath: string,
+  rootNativeSessionId = "",
+  authorityEvidence: "valid" | "untrusted" | "absent" = "absent",
+  implicatedChildThreadIds: string[] = [],
 ): Promise<void> {
   const parentThreadId = metadata.parentThreadId.trim();
   const childThreadId = childSessionId.trim();
@@ -478,22 +489,33 @@ async function recordNativeSubagentSessionStart(
     canonicalSessionId.trim(),
     parentThreadId,
   ].filter(Boolean))];
-  for (const sessionId of trackingSessionIds) {
-    if (parentThreadId && parentThreadId !== childThreadId) {
-      await recordSubagentTurnForSession(cwd, {
-        sessionId,
-        threadId: parentThreadId,
-        kind: "leader",
-      }).catch(() => {});
-    }
-    await recordSubagentTurnForSession(cwd, {
-      sessionId,
-      threadId: childThreadId,
-      kind: "subagent",
-      ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
-      // agent_type is lifecycle/routing metadata, never authority.
+  let authorityTrackingFailed = false;
+  let authorityFenceFailed = false;
+  try {
+    recordNativeSubagentAuthorityObservation(cwd, {
+      sessionIds: trackingSessionIds,
+      childThreadId,
+      parentThreadId,
+      rootNativeSessionId,
+      authorityEvidence,
+      implicatedChildThreadIds,
       mode: metadata.agentRole,
-    }).catch(() => {});
+    });
+  } catch {
+    authorityTrackingFailed = true;
+    // A failed observation must not leave stale authority usable. Only a
+    // negative (untrusted) observation carries a revocation intent, so fence
+    // exactly those implicated ids until the revocation is durably applied.
+    // A conflicting VALID observation also revokes, so it must fence too.
+    if (authorityEvidence !== "absent") {
+      const fencedIds = [...new Set([childThreadId, ...implicatedChildThreadIds].filter(Boolean))];
+      authorityFenceFailed = !fenceNativeSubagentAuthorities(cwd, fencedIds, `${authorityEvidence}_revocation_failed`);
+      if (authorityFenceFailed) {
+        // Both the tracker denial and the locked fence failed. Escalate to a
+        // lock-free global denial so old authority cannot stay usable.
+        authorityFenceFailed = !forceGlobalAuthorityDenial(cwd, `${authorityEvidence}_denial_escalated`);
+      }
+    }
   }
   refreshNativeSubagentRoleRoutingMarker(
     cwd,
@@ -510,6 +532,8 @@ async function recordNativeSubagentSessionStart(
     ...(metadata.agentNickname ? { agent_nickname: metadata.agentNickname } : {}),
     ...(metadata.agentRole ? { agent_role: metadata.agentRole } : {}),
     ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
+    authority_tracking_status: authorityTrackingFailed ? "failed" : authorityEvidence,
+    ...(authorityFenceFailed ? { authority_fence_status: "failed" } : {}),
     timestamp: new Date().toISOString(),
   }).catch(() => {});
 }
@@ -2006,24 +2030,63 @@ function shouldBuildSubagentReopenContext(options: {
   return source === "startup" || source === "resume";
 }
 
-function formatSubagentLedgerMetadata(entry: {
-  role?: string;
-  laneId?: string;
-  scope?: string;
-  status?: string;
-  lastHandoffSummary?: string;
-  resumeFailureReason?: string;
-}): string {
-  const metadata = [
-    entry.role ? `role: ${entry.role}` : null,
-    entry.laneId ? `lane: ${entry.laneId}` : null,
-    entry.scope ? `scope: ${entry.scope}` : null,
-    entry.status ? `status: ${entry.status}` : null,
-    entry.lastHandoffSummary ? `handoff: ${entry.lastHandoffSummary.slice(0, 120)}` : null,
-    entry.resumeFailureReason ? `last failure: ${entry.resumeFailureReason.slice(0, 120)}` : null,
-  ].filter((item): item is string => Boolean(item));
-  return metadata.length > 0 ? ` (${metadata.join("; ")})` : "";
+type RawSessionStartNativeId =
+  | { ok: true; value: string }
+  | { ok: false; reason: "missing" | "malformed" | "conflict" };
+
+export function readUnambiguousSessionStartNativeId(payload: CodexHookPayload | undefined): RawSessionStartNativeId {
+  if (!payload) return { ok: false, reason: "missing" };
+  const object = payload as Record<string, unknown>;
+  const hasSnake = Object.prototype.hasOwnProperty.call(object, "session_id");
+  const hasCamel = Object.prototype.hasOwnProperty.call(object, "sessionId");
+  if (!hasSnake && !hasCamel) return { ok: false, reason: "missing" };
+  const values = [
+    ...(hasSnake ? [object.session_id] : []),
+    ...(hasCamel ? [object.sessionId] : []),
+  ];
+  if (values.some((value) => typeof value !== "string" || value.trim().length === 0)) {
+    return { ok: false, reason: "malformed" };
+  }
+  const normalized = values.map((value) => (value as string).trim());
+  if (new Set(normalized).size !== 1) return { ok: false, reason: "conflict" };
+  return { ok: true, value: normalized[0]! };
 }
+
+function readSessionStartNativeCandidates(payload: CodexHookPayload | undefined): string[] {
+  if (!payload) return [];
+  const object = payload as Record<string, unknown>;
+  return [...new Set([
+    Object.prototype.hasOwnProperty.call(object, "session_id") ? object.session_id : undefined,
+    Object.prototype.hasOwnProperty.call(object, "sessionId") ? object.sessionId : undefined,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0).map((value) => value.trim()))];
+}
+
+export type PersistedReopenRootContextResult =
+  | { ok: true; sessionId: string; rootNativeSessionId: string }
+  | { ok: false; reason: "pointer_not_usable" | "pointer_cwd_missing" | "pointer_session_missing" | "pointer_native_root_missing" | "pointer_cwd_mismatch" | "selected_canonical_missing" | "canonical_mismatch" | "event_native_missing" | "event_native_malformed" | "event_native_conflict" | "native_root_mismatch" };
+
+export function resolvePersistedReopenRootContext(
+  cwd: string,
+  selectedCanonicalSessionId: string,
+  payload: CodexHookPayload | undefined,
+  state: SessionState | null,
+): PersistedReopenRootContextResult {
+  if (!state) return { ok: false, reason: "pointer_not_usable" };
+  if (!safeString(state.cwd).trim()) return { ok: false, reason: "pointer_cwd_missing" };
+  const pointerSessionId = safeString(state.session_id).trim();
+  if (!pointerSessionId) return { ok: false, reason: "pointer_session_missing" };
+  const pointerNativeId = safeString(state.native_session_id).trim();
+  if (!pointerNativeId) return { ok: false, reason: "pointer_native_root_missing" };
+  if (!isSessionStateAuthoritativeForCwd(state, cwd)) return { ok: false, reason: "pointer_cwd_mismatch" };
+  const canonicalSessionId = selectedCanonicalSessionId.trim();
+  if (!canonicalSessionId) return { ok: false, reason: "selected_canonical_missing" };
+  if (canonicalSessionId !== pointerSessionId) return { ok: false, reason: "canonical_mismatch" };
+  const rawNativeId = readUnambiguousSessionStartNativeId(payload);
+  if (!rawNativeId.ok) return { ok: false, reason: `event_native_${rawNativeId.reason}` };
+  if (rawNativeId.value !== pointerNativeId) return { ok: false, reason: "native_root_mismatch" };
+  return { ok: true, sessionId: pointerSessionId, rootNativeSessionId: pointerNativeId };
+}
+
 
 async function buildPersistedSubagentReopenContext(
   cwd: string,
@@ -2033,59 +2096,81 @@ async function buildPersistedSubagentReopenContext(
     payload?: CodexHookPayload;
   },
 ): Promise<string | null> {
-  if (!shouldBuildSubagentReopenContext(options)) return null;
-
-  const ledger = await readSubagentSessionLedger(cwd, sessionId).catch(() => null);
-  if (!ledger || ledger.savedSubagents.length === 0) return null;
-
-  const source = readSessionStartSource(options.payload);
-  const reopenTargets = ledger.resumeTargets.filter((entry) => entry.status !== "unavailable");
-  const unavailableTargets = ledger.unavailableSubagents;
-  const failedTargets = ledger.savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
-  const nowIso = new Date().toISOString();
-
-  await Promise.all(reopenTargets.map((entry) => recordSubagentTurnForSession(cwd, {
+  if (options.hookEventName !== "SessionStart") return null;
+  const pointerContext = resolveSessionPointerContext(cwd);
+  const pointer = await readSessionPointer(pointerContext);
+  const rootContext = resolvePersistedReopenRootContext(
+    cwd,
     sessionId,
-    threadId: entry.threadId,
-    kind: "subagent",
-    role: entry.role,
-    laneId: entry.laneId,
-    scope: entry.scope,
-    agentNickname: entry.agentNickname,
-    status: entry.status,
-    resumeRequestedAt: nowIso,
-    preserveCompletionEvidence: true,
-  }).catch(() => null)));
-
-  const lines = [
-    "[Persisted subagent reopen]",
-    `- SessionStart source: ${source}; saved subagent ids found: ${ledger.savedSubagents.length}.`,
-  ];
-
-  if (reopenTargets.length > 0) {
-    lines.push("- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:");
-    for (const entry of reopenTargets.slice(0, 12)) {
-      lines.push(`  - resume_agent(${JSON.stringify(entry.agentId)})${formatSubagentLedgerMetadata(entry)}`);
+    options.payload,
+    pointer.status === "usable" ? pointer.state ?? null : null,
+  );
+  if (!rootContext.ok) return null;
+  // A SessionStart that carries native subagent thread_spawn evidence for a
+  // genuinely DISTINCT child is a child session start, not a root observation,
+  // so it must not trigger root identity repair or reopen consumption on any
+  // source. The suppression is bound to the pointer-authoritative root: a
+  // transcript marker that is self-parented, names this very root as its child,
+  // or otherwise fails to identify a distinct child cannot override the
+  // authenticated pointer/event root identity, because that would let a stale
+  // or spurious marker keep a root-as-subagent inversion persisted forever.
+  const sessionStartTranscriptPath = safeString(options.payload?.transcript_path ?? options.payload?.transcriptPath).trim();
+  const sessionStartChildMetadata = readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath);
+  if (sessionStartChildMetadata) {
+    const markerParentId = sessionStartChildMetadata.parentThreadId.trim();
+    const markerChildId = safeString(sessionStartChildMetadata.childSessionId).trim();
+    // String-distinctness is NOT attestation. Suppression of the
+    // pointer-authoritative root's protection requires the marker to be bound
+    // to the authenticated event identity: the marker's child must be this very
+    // SessionStart's unambiguous native id, and its parent must be exactly the
+    // authenticated native root (a direct child, not a nested descendant or a
+    // child of some foreign parent). Anything else is unauthenticated evidence
+    // and must not keep a root-as-subagent inversion alive.
+    const eventChildIdentity = readUnambiguousSessionStartNativeId(options.payload ?? {});
+    const identifiesAuthenticatedDirectChild = markerChildId !== ""
+      && markerChildId !== rootContext.rootNativeSessionId
+      && markerChildId !== rootContext.sessionId
+      && markerParentId === rootContext.rootNativeSessionId
+      && eventChildIdentity.ok
+      && eventChildIdentity.value === markerChildId;
+    if (identifiesAuthenticatedDirectChild) return null;
+    // Contradictory or self-parented child evidence: this event cannot prove a
+    // distinct child, so it must not suppress the pointer-authoritative root's
+    // protection. Quarantine the root's reopen authority without asserting
+    // leader identity, which preserves legitimate descriptive subagent evidence
+    // while ensuring the root can never carry reopen authority.
+    try {
+      quarantinePersistedRootAuthority(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
+    } catch {
+      // Quarantine is best-effort; reopen output stays denied for this event.
     }
-    if (reopenTargets.length > 12) {
-      lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
-    }
-  } else {
-    lines.push("- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.");
+    return null;
   }
-
-  lines.push("- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.");
-  lines.push("- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.");
-
-  const warningEntries = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
-  if (warningEntries.length > 0) {
-    lines.push("- Reopen warnings:");
-    for (const entry of warningEntries.slice(0, 8)) {
-      lines.push(`  - ${entry.agentId}${formatSubagentLedgerMetadata(entry)}`);
+  if (!shouldBuildSubagentReopenContext(options)) {
+    // Reopen output is gated to startup/resume, but root identity repair is not:
+    // a known root-as-subagent inversion must not survive merely because this
+    // SessionStart used another source. Alias/identity conflicts above stay
+    // fail-closed and repair nothing.
+    try {
+      repairPersistedRootIdentity(cwd, { sessionId: rootContext.sessionId, rootNativeSessionId: rootContext.rootNativeSessionId });
+    } catch {
+      // Repair is best-effort; reopen output remains separately gated.
     }
+    return null;
   }
-
-  return lines.join("\n");
+  try {
+    return consumeDirectChildReopenContext(cwd, {
+      sessionId: rootContext.sessionId,
+      rootNativeSessionId: rootContext.rootNativeSessionId,
+      source: readSessionStartSource(options.payload),
+    });
+  } catch {
+    return [
+      "[Persisted subagent reopen]",
+      "- Warning: persisted subagent authority could not be evaluated; no resume authority or bookkeeping was granted.",
+      "- Silver rule: do not spawn a same-role/same-lane replacement solely because persisted reopen was unavailable; continue in the root or another compatible existing lane.",
+    ].join("\n");
+  }
 }
 
 async function buildSessionStartContext(
@@ -20530,9 +20615,15 @@ export async function dispatchCodexNativeHook(
   const candidateWorkerPayloadSessionId = declaredTeamWorker
     ? readUnambiguousNormalizedPayloadSessionId(payload)
     : "";
+  const sessionStartNativeCandidates = hookEventName === "SessionStart"
+    ? readSessionStartNativeCandidates(payload)
+    : [];
   const nativeSessionId = declaredTeamWorker
     ? candidateWorkerPayloadSessionId
-    : safeString(payload.session_id ?? payload.sessionId).trim();
+    : sessionStartNativeCandidates[0] ?? safeString(payload.session_id ?? payload.sessionId).trim();
+  const sessionStartTranscriptPath = hookEventName === "SessionStart"
+    ? safeString(payload.transcript_path ?? payload.transcriptPath).trim()
+    : "";
   const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
   const pointer = await readSessionPointer(pointerContext);
@@ -20589,9 +20680,15 @@ export async function dispatchCodexNativeHook(
     resolvedNativeSessionId = nativeSessionId;
     skipCanonicalSessionStartContext = true;
     allowImplicitSessionSideEffects = false;
-  } else if (hookEventName === "SessionStart" && nativeSessionId) {
-    const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
+  } else if (hookEventName === "SessionStart" && (nativeSessionId || readNativeSubagentSessionStartMetadata(sessionStartTranscriptPath))) {
+    const transcriptPath = sessionStartTranscriptPath;
     const subagentSessionStart = readNativeSubagentSessionStartMetadata(transcriptPath);
+    const eventChildIdentity = readUnambiguousSessionStartNativeId(payload);
+    const implicatedChildThreadIds = [...new Set([
+      nativeSessionId,
+      subagentSessionStart?.childSessionId ?? "",
+      ...readSessionStartNativeCandidates(payload),
+    ].filter(Boolean))];
     if (subagentSessionStart) {
       // A native child/subagent SessionStart carries a parent_thread_id in its
       // transcript session_meta. Treat it as a child-agent lifecycle event for
@@ -20615,11 +20712,47 @@ export async function dispatchCodexNativeHook(
             nativeSessionId,
             subagentSessionStart,
             transcriptPath,
+            eventChildIdentity.ok
+              && eventChildIdentity.value === nativeSessionId
+              && subagentSessionStart.childSessionId === nativeSessionId
+              ? safeString(currentSessionState?.native_session_id).trim()
+              : "",
+            eventChildIdentity.ok
+              && eventChildIdentity.value === nativeSessionId
+              && subagentSessionStart.childSessionId === nativeSessionId
+              && safeString(currentSessionState?.native_session_id).trim()
+              ? "valid"
+              : "untrusted",
+            implicatedChildThreadIds,
           );
         } else {
           skipCanonicalSessionStartContext = true;
           resolvedNativeSessionId =
             safeString(currentSessionState?.native_session_id).trim() || nativeSessionId;
+          try {
+            revokeNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent");
+          } catch {
+            // The negative identity observation could not be published. Fence
+            // the implicated ids durably so reopen consumption keeps denying
+            // them instead of leaving the old authority usable. A fence that
+            // also fails to persist is recorded so the failure is observable
+            // rather than silently dropped.
+            if (!fenceNativeSubagentAuthorities(cwd, implicatedChildThreadIds, "foreign_parent_revocation_failed")) {
+              // Both the tracker denial and the locked fence failed. Escalate
+              // to a lock-free global denial so the old authority cannot stay
+              // usable, and record whether even that succeeded.
+              const escalated = forceGlobalAuthorityDenial(cwd, "foreign_parent_denial_escalated");
+              await appendToLog(cwd, {
+                event: "subagent_authority_fence_failed",
+                session_id: canonicalSessionId,
+                native_session_id: nativeSessionId,
+                reason: "foreign_parent_revocation_failed",
+                implicated_thread_ids: implicatedChildThreadIds,
+                global_denial_escalated: escalated,
+                timestamp: new Date().toISOString(),
+              }).catch(() => {});
+            }
+          }
           await recordIgnoredNativeSubagentSessionStart(
             cwd,
             canonicalSessionId,
@@ -20641,6 +20774,9 @@ export async function dispatchCodexNativeHook(
           nativeSessionId,
           subagentSessionStart,
           transcriptPath,
+          "",
+          "absent",
+          implicatedChildThreadIds,
         );
       }
     } else if (declaredTeamWorker) {
