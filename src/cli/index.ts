@@ -757,7 +757,7 @@ export function resolveCliInvocation(args: string[]): ResolvedCliInvocation {
   if (firstArg === "--version" || firstArg === "-v") {
     return { command: "version", launchArgs: [] };
   }
-  if (!firstArg || firstArg.startsWith("--")) {
+  if (!firstArg || firstArg.startsWith("-")) {
     return { command: "launch", launchArgs: firstArg ? args : [] };
   }
   if (firstArg === "launch") {

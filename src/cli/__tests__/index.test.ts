@@ -2392,6 +2392,13 @@ describe("resolveCliInvocation", () => {
     });
   });
 
+  it("keeps short Codex flags on the normal launch dispatch path", () => {
+    assert.deepEqual(resolveCliInvocation(["-p", "minimax", "--hotswap", "--direct"]), {
+      command: "launch",
+      launchArgs: ["-p", "minimax", "--hotswap", "--direct"],
+    });
+  });
+
   it("advertises the explicit update command in top-level help", () => {
     assert.match(HELP, /omx update\s+Install the stable channel now, then refresh setup/);
     assert.match(HELP, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
