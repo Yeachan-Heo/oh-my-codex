@@ -2498,6 +2498,69 @@ function buildNativeOutsideTmuxTeamPromptBlockState(
     transition_error: "Codex App/native outside-tmux sessions cannot activate the tmux-only `team` workflow directly. Launch OMX CLI from an attached tmux shell first, then run `omx team ...` there.",
   };
 }
+// #3311 (repair): the primary standalone-Ultragoal activation path is a
+// UserPromptSubmit `$ultragoal` prompt, which seeds active/planning state
+// synchronously via recordSkillActivation -> persistStatefulSkillSeedState
+// (keyword-detector.ts) *before* any PreToolUse call occurs. The PreToolUse
+// guard alone (buildUltragoalNoOwnerActivationGuardOutput) never sees this
+// seeding step, so it cannot prevent the deadlock for ordinary `$ultragoal`
+// usage. Mirror the existing `team` outside-tmux prompt block: intercept the
+// prompt itself, before recordSkillActivation ever seeds state, and refuse a
+// *fresh* standalone-Ultragoal activation when no owner will be reachable
+// (native launcher, outside tmux). Already-active sessions of any tracked
+// Conductor mode (including autopilot-supervised Ultragoal, and continuation
+// of an already-active standalone Ultragoal session) are left untouched, so
+// resumption, prior-plan continuation, and non-standalone Ultragoal remain
+// exactly as before.
+async function buildNativeOutsideTmuxUltragoalPromptBlockState(
+  classification: KeywordInputClassification,
+  cwd: string,
+  payload: CodexHookPayload,
+  stateDir: string,
+  sessionId?: string,
+  threadId?: string,
+  turnId?: string,
+): Promise<SkillActiveState | null> {
+  const match = classification.matches.find((entry) => entry.skill === "ultragoal") ?? null;
+  if (!match) return null;
+  if (!isNativeOutsideTmuxUserPrompt(cwd, payload, sessionId)) return null;
+  if (!sessionId) return null;
+
+  // Any already-active tracked skill for this session — including autopilot
+  // supervising ultragoal (or ralplan/deep-interview) as a child phase,
+  // continuation of an already-active standalone Ultragoal session, or any
+  // other tracked workflow — means this is not a fresh standalone-Ultragoal
+  // activation. Read the canonical skill-active state directly (not the
+  // Conductor-write-guard-specific readActiveConductorStateForPreToolUse,
+  // which deliberately excludes autopilot supervising ralplan/deep-interview/
+  // rework for an unrelated reason: those phases have their own dedicated
+  // planning guards). Fall through unchanged to recordSkillActivation's own
+  // transition/continuation/supervision logic.
+  const canonicalState = await readVisibleSkillActiveStateForStateDir(stateDir, sessionId);
+  const hasAnyActiveTrackedSkill = canonicalState
+    ? listActiveSkills(canonicalState).some((entry) => (
+      matchesSkillStopContext(entry, canonicalState, sessionId, threadId ?? "")
+    ))
+    : false;
+  if (hasAnyActiveTrackedSkill) return null;
+
+  const nowIso = new Date().toISOString();
+  return {
+    version: 1,
+    active: false,
+    skill: "ultragoal",
+    keyword: match.keyword,
+    phase: "planning",
+    activated_at: nowIso,
+    updated_at: nowIso,
+    source: "keyword-detector",
+    session_id: sessionId,
+    thread_id: threadId,
+    turn_id: turnId,
+    active_skills: [],
+    transition_error: ULTRAGOAL_NO_OWNER_DENY_REASON,
+  };
+}
 
 function buildSkillStateCliInstruction(mode: string, statePath: string): string {
   return `skill: ${mode} activated and initial state initialized at ${statePath}; use CLI-first state updates via \`omx state write/read/clear --input '<json>' --json\`; use omx_state MCP only when explicit MCP compatibility is enabled.`;
@@ -6220,17 +6283,12 @@ function describeImplementationToolBlock(
 // is the narrow exception: the backend has a dedicated completeRalplanSession
 // path that coherently terminalizes root and session state when the payload is a
 // complete consensus-approved terminal state.
-function readStateWriteInputPayload(
+function extractStateWriteOperationPayload(
   cwd: string,
+  stateWriteOperation: OmxStateCommandOperation,
   command: string,
-  sourceCommand: string = command,
+  sourceCommand: string,
 ): Record<string, unknown> | null {
-  const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
-  if (stateWriteOperations.length === 0) return null;
-  if (stateWriteOperations.length > 1) return null;
-
-  const stateWriteOperation = stateWriteOperations[0];
-  if (!stateWriteOperation) return null;
   const stateWriteArgs = stateWriteOperation.args;
 
   const mergeModeFlag = (payload: Record<string, unknown>): Record<string, unknown> | null => {
@@ -6272,13 +6330,50 @@ function readStateWriteInputPayload(
 
   try {
     const raw = readFileSync(resolve(resolvedInputFileCwd, inputFile.trim()), "utf-8");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw.startsWith("\uFEFF") ? raw.slice(1) : raw);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? mergeModeFlag(parsed as Record<string, unknown>)
       : null;
   } catch {
     return null;
   }
+}
+
+function readStateWriteInputPayload(
+  cwd: string,
+  command: string,
+  sourceCommand: string = command,
+): Record<string, unknown> | null {
+  const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
+  if (stateWriteOperations.length === 0) return null;
+  if (stateWriteOperations.length > 1) return null;
+
+  const stateWriteOperation = stateWriteOperations[0];
+  if (!stateWriteOperation) return null;
+
+  return extractStateWriteOperationPayload(cwd, stateWriteOperation, command, sourceCommand);
+}
+
+// #3311: unlike readStateWriteInputPayload (deliberately conservative —
+// abstains on any compound command for the broader planning-boundary guards
+// that call it), this variant is scoped to the narrow ultragoal-no-owner
+// activation check only. It inspects EVERY `omx state write` operation in a
+// compound Bash command (e.g. `omx state write ...; omx state write ...`)
+// so a benign-looking leading statement cannot mask a later activation
+// write that recreates the #3311 deadlock through the documented
+// `skills/ultragoal/SKILL.md` direct-write contract.
+function readAllStateWriteInputPayloads(
+  cwd: string,
+  command: string,
+  sourceCommand: string = command,
+): Record<string, unknown>[] {
+  const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
+  const payloads: Record<string, unknown>[] = [];
+  for (const stateWriteOperation of stateWriteOperations) {
+    const payload = extractStateWriteOperationPayload(cwd, stateWriteOperation, command, sourceCommand);
+    if (payload) payloads.push(payload);
+  }
+  return payloads;
 }
 
 function envCommandHasCwdChangingOption(words: string[], startIndex: number): boolean {
@@ -10247,6 +10342,101 @@ async function readActiveConductorStateForPreToolUse(
   }
 
   return null;
+}
+// #3311: standalone Ultragoal must not activate an execution-blocking
+// Main-root Conductor state on a host surface where no authorized executor
+// will ever be reachable. On native Codex App / native-hook surfaces outside
+// tmux, the Team runtime is unavailable and typed native child/descendant
+// provenance intentionally does not grant write authority (see #3127), so
+// once Conductor mode activates for standalone ultragoal there, only
+// `omx cancel` remains reachable. Refuse the activation write itself instead
+// of letting the deadlock occur; this is additive and only fires for a
+// *fresh* activation (no existing active Conductor state for this session).
+const ULTRAGOAL_NO_OWNER_DENY_REASON =
+  "OMX-ULTRAGOAL-NO-OWNER: standalone Ultragoal cannot activate Main-root Conductor mode on this host surface "
+  + "(Codex App / native hook, outside tmux) because no authorized executor is reachable here: the Team runtime "
+  + "is tmux-only, and native child/descendant provenance intentionally does not grant write authority (see #3127). "
+  + "Activating Conductor mode here would deadlock with only `omx cancel` reachable.";
+
+function collectUltragoalActivationCandidatePayloads(
+  payload: CodexHookPayload,
+  toolName: string,
+  cwd: string,
+): Record<string, unknown>[] {
+  if (toolName === "mcp__omx_state__state_write") {
+    const input = safeObject(payload.tool_input);
+    return input ? [input] : [];
+  }
+  if (toolName === "Bash") {
+    return readAllStateWriteInputPayloads(cwd, readPreToolUseCommand(payload));
+  }
+  return [];
+}
+
+// #3311: executeStateOperation's state_write backend merges a payload as
+// `{...existing, ...fields, ...(state || {})}` — a nested `state` object
+// (present on both the Bash --input JSON and the structured MCP tool_input)
+// overrides top-level activation fields, while `mode` always comes from the
+// top-level routing field regardless of any nested `state.mode`. Flatten the
+// same way here so a payload that only nests `current_phase`/`active` under
+// `state` cannot bypass detection while still reaching the exact same write.
+function flattenStateWriteActivationPayload(input: Record<string, unknown>): Record<string, unknown> {
+  const nestedState = safeObject(input.state);
+  return nestedState ? { ...input, ...nestedState, mode: input.mode } : input;
+}
+
+function isUltragoalConductorActivationPayload(input: Record<string, unknown> | null): boolean {
+  if (!input) return false;
+  const flattened = flattenStateWriteActivationPayload(input);
+  if (safeString(flattened.mode).trim() !== "ultragoal") return false;
+  if (flattened.active !== true) return false;
+  return isNonTerminalPhase(flattened.current_phase ?? flattened.currentPhase);
+}
+
+async function buildUltragoalNoOwnerActivationGuardOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  resolvedSessionId?: string,
+  policyCwd = cwd,
+): Promise<Record<string, unknown> | null> {
+  const toolName = safeString(payload.tool_name).trim();
+  if (toolName !== "Bash" && toolName !== "mcp__omx_state__state_write") return null;
+  const activationCandidates = collectUltragoalActivationCandidatePayloads(payload, toolName, cwd);
+  if (!activationCandidates.some((candidate) => isUltragoalConductorActivationPayload(candidate))) return null;
+
+  const sessionId = safeString(resolvedSessionId ?? readPayloadSessionId(payload)).trim();
+  if (!sessionId) return null;
+
+  // Already-active sessions (phase updates, resumption, or recovery on an
+  // existing stuck state) remain governed by the existing Conductor write
+  // guard and `omx cancel`, not this pre-activation refusal.
+  if (await readActiveConductorStateForPreToolUse(payload, policyCwd, stateDir, sessionId)) return null;
+
+  const writeActor = await resolvePreToolUseWriteActor(payload, cwd, stateDir, sessionId);
+  if (writeActor !== "main-root") return null;
+
+  const executionSurface = resolveCodexExecutionSurface(cwd, {
+    hookEventName: "PreToolUse",
+    payload,
+    canonicalSessionId: sessionId,
+    nativeSessionId: readPayloadThreadId(payload),
+  });
+  if (executionSurface.launcher !== "native" || executionSurface.transport !== "outside-tmux") return null;
+
+  return {
+    decision: "block",
+    reason: ULTRAGOAL_NO_OWNER_DENY_REASON,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext:
+        "Standalone Ultragoal Conductor mode requires either an attached tmux session (Team execution) or a scoped "
+        + "native write-assignment grant, neither of which exists on native Codex App outside tmux. Do not set "
+        + "ultragoal active/current_phase here. Proceed with direct bounded implementation for this task without "
+        + "entering Ultragoal's Conductor-gated planning mode, or re-run from an attached tmux OMX CLI shell so "
+        + "`omx team` is available. `omx cancel` remains available if a stuck Conductor state already exists.",
+    },
+  };
 }
 
 function normalizeRepoRelativePath(cwd: string, rawPath: string): string | null {
@@ -21045,6 +21235,14 @@ export async function dispatchCodexNativeHook(
         sessionIdForState || undefined,
         threadId || undefined,
         turnId || undefined,
+      ) ?? await buildNativeOutsideTmuxUltragoalPromptBlockState(
+        promptClassification,
+        cwd,
+        payload,
+        stateDir,
+        sessionIdForState || undefined,
+        threadId || undefined,
+        turnId || undefined,
       ) ?? await recordSkillActivation({
         stateDir,
         sourceCwd: cwd,
@@ -21442,6 +21640,13 @@ export async function dispatchCodexNativeHook(
           policyCwd,
           stateDir,
           rootPointerConflict,
+        )
+        ?? await buildUltragoalNoOwnerActivationGuardOutput(
+          payload,
+          cwd,
+          stateDir,
+          preToolUseSessionId,
+          policyCwd,
         )
         ?? await buildConductorPreToolUseWriteGuardOutput(
           payload,
