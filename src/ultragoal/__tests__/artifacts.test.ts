@@ -2827,6 +2827,27 @@ describe('ultragoal artifacts', () => {
     });
   }
 
+  it('rejects a malformed OMX_SESSION_ID even when a live selected session exists', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      process.env.OMX_SESSION_ID = 'bad/session';
+      try {
+        const stateDir = join(cwd, '.omx', 'state');
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-live', cwd }));
+
+        await assert.rejects(
+          () => createUltragoalPlan(cwd, { brief: '- Must not persist' }),
+          /OMX_SESSION_ID/,
+        );
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal')), false);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
+
   it('preserves unbound compatibility for mutations of an existing plan', async () => {
     await withTempRepo(async (cwd) => {
       const previousEnv = process.env.OMX_SESSION_ID;

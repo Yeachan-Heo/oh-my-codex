@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
-import { resolveWritableStateScope, WRITABLE_STATE_SCOPE_ERRORS } from '../mcp/state-paths.js';
+import { normalizeSessionId, resolveWritableStateScope, WRITABLE_STATE_SCOPE_ERRORS } from '../mcp/state-paths.js';
 import type { ResolvedStateScope } from '../mcp/state-paths.js';
 import {
   formatCodexGoalReconciliation,
@@ -877,8 +877,8 @@ export async function assertUltragoalWritableLifecycleAuthority(
     const scope = await resolveWritableStateScope(cwd);
     if (
       options.allowUnboundEnvironment === false
-      && scope.source === 'root'
       && suppliedEnvironmentSessionId
+      && !normalizeSessionId(suppliedEnvironmentSessionId)
     ) {
       throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment);
     }
