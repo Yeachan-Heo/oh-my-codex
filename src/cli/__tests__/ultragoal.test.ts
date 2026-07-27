@@ -68,6 +68,70 @@ async function capture(run: () => Promise<void>): Promise<{ stdout: string[]; st
 }
 
 describe('cli/ultragoal', () => {
+  it('does not create durable artifacts when OMX_SESSION_ID is unbound', async () => {
+    await withCwd(async (cwd) => {
+      const previousSessionId = process.env.OMX_SESSION_ID;
+      process.env.OMX_SESSION_ID = 'sess-unbound';
+      try {
+        const result = await capture(() => ultragoalCommand([
+          'create-goals',
+          '--brief',
+          '- First milestone',
+        ]));
+
+        assert.equal(result.exitCode, 1);
+        assert.match(result.stderr.join('\n'), /writable lifecycle authority/);
+        assert.match(result.stderr.join('\n'), /OMX_SESSION_ID is not bound to session\.json/);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal')), false);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal/brief.md')), false);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal/goals.json')), false);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal/ledger.jsonl')), false);
+      } finally {
+        if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
+
+  it('preserves an existing plan when unbound OMX_SESSION_ID rejects --force recreation', async () => {
+    await withCwd(async (cwd) => {
+      const previousSessionId = process.env.OMX_SESSION_ID;
+      delete process.env.OMX_SESSION_ID;
+      try {
+        const created = await capture(() => ultragoalCommand([
+          'create-goals',
+          '--brief',
+          '- Original milestone',
+        ]));
+        assert.equal(created.exitCode, undefined);
+
+        const artifactPaths = [
+          join(cwd, '.omx/ultragoal/brief.md'),
+          join(cwd, '.omx/ultragoal/goals.json'),
+          join(cwd, '.omx/ultragoal/ledger.jsonl'),
+        ];
+        const before = await Promise.all(artifactPaths.map((path) => readFile(path)));
+
+        process.env.OMX_SESSION_ID = 'sess-unbound-force';
+        const rejected = await capture(() => ultragoalCommand([
+          'create-goals',
+          '--brief',
+          '- Replacement milestone',
+          '--force',
+        ]));
+
+        assert.equal(rejected.exitCode, 1);
+        assert.match(rejected.stderr.join('\n'), /writable lifecycle authority/);
+        assert.match(rejected.stderr.join('\n'), /OMX_SESSION_ID is not bound to session\.json/);
+        const after = await Promise.all(artifactPaths.map((path) => readFile(path)));
+        assert.deepEqual(after, before);
+      } finally {
+        if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
+
   it('refuses mutating ultragoal commands from Team worker environments', async () => {
     const mutators: string[][] = [
       ['create-goals', '--brief', 'worker must not create'],

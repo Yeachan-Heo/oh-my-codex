@@ -868,7 +868,10 @@ function sleep(ms: number): Promise<void> {
  * the second check and before a filesystem write; unrelated resolver failures
  * propagate and block the mutation.
  */
-export async function assertUltragoalWritableLifecycleAuthority(cwd: string): Promise<UltragoalWritableAuthority> {
+export async function assertUltragoalWritableLifecycleAuthority(
+  cwd: string,
+  options: { allowUnboundEnvironment?: boolean } = {},
+): Promise<UltragoalWritableAuthority> {
   try {
     const scope = await resolveWritableStateScope(cwd);
     return {
@@ -878,18 +881,25 @@ export async function assertUltragoalWritableLifecycleAuthority(cwd: string): Pr
       stateDir: scope.stateDir,
     };
   } catch (error) {
-    if (error instanceof Error && error.message === WRITABLE_STATE_SCOPE_ERRORS.unusableSession) {
-      throw new UltragoalError(
-        `Refusing a durable ultragoal mutation before writable lifecycle authority is restored: ${error.message} Bind the exact current session (set OMX_SESSION_ID to the current session id); see docs/troubleshooting.md (stale session pointer recovery).`,
-      );
-    }
-    // Documented compatibility exception only: root-mode projects and unbound
-    // environments (no selected session pointer) keep their existing behavior.
-    // Every other resolver failure — allowlist violations, conflicting
-    // authoritative roots, live-owner binding mismatches, unexpected I/O
-    // errors — stays fail-closed and propagates.
-    if (error instanceof Error && error.message === WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment) {
+    // Existing-plan mutators keep the documented unbound compatibility path.
+    // Bootstrap callers opt out so failed state activation cannot create a new durable plan.
+    if (
+      error instanceof Error
+      && error.message === WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment
+      && options.allowUnboundEnvironment !== false
+    ) {
       return { kind: 'no-pointer-compat' };
+    }
+    if (
+      error instanceof Error
+      && (
+        error.message === WRITABLE_STATE_SCOPE_ERRORS.unusableSession
+        || error.message === WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment
+      )
+    ) {
+      throw new UltragoalError(
+        `Refusing a durable ultragoal mutation before writable lifecycle authority is restored: ${error.message} Restore the authoritative session binding so OMX_SESSION_ID matches the current session.json before retrying; see docs/troubleshooting.md (stale session pointer recovery).`,
+      );
     }
     throw error;
   }
@@ -913,8 +923,12 @@ function describeWritableAuthority(authority: UltragoalWritableAuthority): strin
     : `resolved(source=${authority.source}, sessionId=${authority.sessionId ?? 'undefined'}, stateDir=${authority.stateDir})`;
 }
 
-async function withUltragoalMutationLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
-  const beforeLock = await assertUltragoalWritableLifecycleAuthority(cwd);
+async function withUltragoalMutationLock<T>(
+  cwd: string,
+  operation: () => Promise<T>,
+  options: { allowUnboundEnvironment?: boolean } = {},
+): Promise<T> {
+  const beforeLock = await assertUltragoalWritableLifecycleAuthority(cwd, options);
   await mkdir(ultragoalDir(cwd), { recursive: true });
   const lockPath = join(ultragoalDir(cwd), ULTRAGOAL_MUTATION_LOCK);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
@@ -936,7 +950,7 @@ async function withUltragoalMutationLock<T>(cwd: string, operation: () => Promis
     // The post-lock comparison addresses pointer changes while waiting for this
     // lock only. A SessionStart publication can still land after it and before
     // the operation's filesystem writes.
-    const afterLock = await assertUltragoalWritableLifecycleAuthority(cwd);
+    const afterLock = await assertUltragoalWritableLifecycleAuthority(cwd, options);
     if (!writableAuthorityEquals(beforeLock, afterLock)) {
       throw new UltragoalError(
         `Refusing durable ultragoal mutation after writable lifecycle authority drift while waiting for the mutation lock: before lock ${describeWritableAuthority(beforeLock)}; after lock ${describeWritableAuthority(afterLock)}.`,
@@ -1080,7 +1094,7 @@ export async function createUltragoalPlan(cwd: string, options: CreateUltragoalO
   await writeFile(ultragoalLedgerPath(cwd), '');
   await appendLedger(cwd, { ts: now, event: 'plan_created', message: `${candidates.length} goal(s) created` });
   return plan;
-  });
+  }, { allowUnboundEnvironment: false });
 }
 
 export function summarizeUltragoalPlan(plan: UltragoalPlan): { total: number; pending: number; inProgress: number; complete: number; failed: number; reviewBlocked: number; historicalReviewBlocked: number; needsUserDecision: number; superseded: number; steeringBlocked: number; aggregateComplete: boolean; artifactComplete: boolean; activeGoalId?: string } {
