@@ -2787,6 +2787,91 @@ describe('ultragoal artifacts', () => {
   });
 
 
+  it('preserves root-mode bootstrap when OMX_SESSION_ID is absent', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      delete process.env.OMX_SESSION_ID;
+      try {
+        const plan = await createUltragoalPlan(cwd, { brief: '- Root-mode goal' });
+
+        assert.equal(plan.goals.length, 1);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal/brief.md')), true);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal/goals.json')), true);
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal/ledger.jsonl')), true);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
+
+  for (const [label, malformedSessionId] of [
+    ['path separator', 'bad/session'],
+    ['overlong value', 'x'.repeat(65)],
+  ] as const) {
+    it(`rejects root-mode bootstrap for a nonempty OMX_SESSION_ID with ${label}`, async () => {
+      await withTempRepo(async (cwd) => {
+        const previousEnv = process.env.OMX_SESSION_ID;
+        process.env.OMX_SESSION_ID = malformedSessionId;
+        try {
+          await assert.rejects(
+            () => createUltragoalPlan(cwd, { brief: '- Must not persist' }),
+            /OMX_SESSION_ID/,
+          );
+          assert.equal(existsSync(join(cwd, '.omx/ultragoal')), false);
+        } finally {
+          if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+          else delete process.env.OMX_SESSION_ID;
+        }
+      });
+    });
+  }
+
+  it('rejects a malformed OMX_SESSION_ID even when a live selected session exists', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      process.env.OMX_SESSION_ID = 'bad/session';
+      try {
+        const stateDir = join(cwd, '.omx', 'state');
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-live', cwd }));
+
+        await assert.rejects(
+          () => createUltragoalPlan(cwd, { brief: '- Must not persist' }),
+          /OMX_SESSION_ID/,
+        );
+        assert.equal(existsSync(join(cwd, '.omx/ultragoal')), false);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
+
+  it('preserves unbound compatibility for mutations of an existing plan', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      delete process.env.OMX_SESSION_ID;
+      try {
+        await createUltragoalPlan(cwd, { brief: '- Initial goal' });
+
+        process.env.OMX_SESSION_ID = 'sess-compat';
+        const added = await addUltragoalGoal(cwd, {
+          title: 'Compatibility goal',
+          objective: 'Preserve the existing-plan compatibility path.',
+        });
+
+        assert.equal(added.plan.goals.length, 2);
+        assert.equal(added.goal.title, 'Compatibility goal');
+        const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+        assert.match(ledger, /"event":"goal_added"/);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+      }
+    });
+  });
+
   it('blocks durable ultragoal mutations while the selected pointer is stale-dead and no exact session is bound', async () => {
     await withTempRepo(async (cwd) => {
       const previousEnv = process.env.OMX_SESSION_ID;
@@ -2968,11 +3053,12 @@ describe('ultragoal artifacts', () => {
       const goalsPath = join(cwd, '.omx/ultragoal/goals.json');
       const ledgerPath = join(cwd, '.omx/ultragoal/ledger.jsonl');
       const lockPath = join(cwd, '.omx/ultragoal/.mutation.lock');
-      process.env.OMX_SESSION_ID = 'sess-compat';
+      delete process.env.OMX_SESSION_ID;
       try {
         await mkdir(stateDir, { recursive: true });
         await createUltragoalPlan(cwd, { brief: '- Initial goal' });
 
+        process.env.OMX_SESSION_ID = 'sess-compat';
         await writeFile(lockPath, 'held');
         setTimeout(() => { void rm(lockPath, { force: true }); }, 25);
         await addUltragoalGoal(cwd, { title: 'Stable compatibility authority', objective: 'Mutation proceeds.' });
