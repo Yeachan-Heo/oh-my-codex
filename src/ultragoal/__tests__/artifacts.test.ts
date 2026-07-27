@@ -2805,6 +2805,28 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  for (const [label, malformedSessionId] of [
+    ['path separator', 'bad/session'],
+    ['overlong value', 'x'.repeat(65)],
+  ] as const) {
+    it(`rejects root-mode bootstrap for a nonempty OMX_SESSION_ID with ${label}`, async () => {
+      await withTempRepo(async (cwd) => {
+        const previousEnv = process.env.OMX_SESSION_ID;
+        process.env.OMX_SESSION_ID = malformedSessionId;
+        try {
+          await assert.rejects(
+            () => createUltragoalPlan(cwd, { brief: '- Must not persist' }),
+            /OMX_SESSION_ID/,
+          );
+          assert.equal(existsSync(join(cwd, '.omx/ultragoal')), false);
+        } finally {
+          if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+          else delete process.env.OMX_SESSION_ID;
+        }
+      });
+    });
+  }
+
   it('preserves unbound compatibility for mutations of an existing plan', async () => {
     await withTempRepo(async (cwd) => {
       const previousEnv = process.env.OMX_SESSION_ID;

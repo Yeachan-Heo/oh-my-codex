@@ -873,7 +873,15 @@ export async function assertUltragoalWritableLifecycleAuthority(
   options: { allowUnboundEnvironment?: boolean } = {},
 ): Promise<UltragoalWritableAuthority> {
   try {
+    const suppliedEnvironmentSessionId = process.env.OMX_SESSION_ID?.trim();
     const scope = await resolveWritableStateScope(cwd);
+    if (
+      options.allowUnboundEnvironment === false
+      && scope.source === 'root'
+      && suppliedEnvironmentSessionId
+    ) {
+      throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unboundEnvironment);
+    }
     return {
       kind: 'resolved',
       source: scope.source,
