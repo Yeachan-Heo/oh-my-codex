@@ -9875,6 +9875,54 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
 }
 
 
+// #3316: `collaboration.send_message` tool_input is inert coordination
+// metadata (`{agent_id, message}`) with no path/command/code payload — it
+// cannot itself execute or mutate anything. It is scoped out of the blanket
+// native-child "orchestration" deny ONLY when a registered child can prove,
+// against the same authoritative session's `subagent-tracking.json`, that it
+// is messaging its own owning leader thread. Every other collaboration.* tool
+// (spawn/close/interrupt/followup/wait_agent) stays gated via the unchanged
+// "orchestration" transport classification, and every other actor/target
+// combination for send_message itself (foreign session, unrelated cross-child,
+// wrong parent/session, malformed/empty/non-string target, unregistered
+// cold-start leader) stays denied fail-closed.
+function readCollaborationSendMessageTargetAgentId(payload: CodexHookPayload): string {
+  const input = safeObject(payload.tool_input);
+  const value = input?.agent_id;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+async function resolveAuthorizedSendMessageChildToLeader(
+  payload: CodexHookPayload,
+  toolName: string,
+  cwd: string,
+  sessionId: string,
+): Promise<boolean> {
+  if (!sessionId) return false;
+  if (canonicalizeNativeCollaborationToolName(toolName) !== "collaboration.send_message") return false;
+
+  const targetAgentId = readCollaborationSendMessageTargetAgentId(payload);
+  if (!targetAgentId) return false;
+
+  const callerId = readPayloadAgentId(payload) || readPayloadThreadId(payload);
+  if (!callerId) return false;
+
+  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
+  const session = trackingState?.sessions?.[sessionId];
+  // A leader that has not yet been registered (cold-start) is not treated as
+  // an authoritative target here; fail closed rather than silently trust an
+  // unregistered identity.
+  const leaderThreadId = safeString(session?.leader_thread_id).trim();
+  if (!leaderThreadId) return false;
+  if (targetAgentId !== leaderThreadId) return false;
+
+  // Target relation must be proven: the caller must itself be a registered
+  // subagent thread of this exact session (not an arbitrary same-session
+  // cross-child, and not the leader thread messaging itself).
+  const callerThread = session?.threads?.[callerId];
+  return Boolean(callerThread) && callerThread!.kind === "subagent";
+}
+
 async function buildRalplanPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
   cwd: string,
@@ -9914,7 +9962,14 @@ async function buildRalplanPreToolUseBoundaryOutput(
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
     : mutationTransport !== "read-only";
-  if (actorMutation && (actor === "native-child" || actor === "provenance-conflict")) {
+  if (
+    actorMutation
+    && (actor === "native-child" || actor === "provenance-conflict")
+    && !(
+      actor === "native-child"
+      && await resolveAuthorizedSendMessageChildToLeader(payload, toolName, authorityCwd, sessionId)
+    )
+  ) {
     return buildPlanningActorWriteDeny(
       safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -10038,7 +10093,14 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
     : mutationTransport !== "read-only";
-  if (actorMutation && (actor === "native-child" || actor === "provenance-conflict")) {
+  if (
+    actorMutation
+    && (actor === "native-child" || actor === "provenance-conflict")
+    && !(
+      actor === "native-child"
+      && await resolveAuthorizedSendMessageChildToLeader(payload, toolName, authorityCwd, sessionId)
+    )
+  ) {
     return buildPlanningActorWriteDeny(
       "Deep-interview",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),

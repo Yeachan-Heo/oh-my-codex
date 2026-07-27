@@ -21476,6 +21476,273 @@ PY`,
       }
     }
   });
+  it("#3316: allows a registered child to message its owning leader via collaboration.send_message during active deep-interview", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3316-di-send-message-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-3316-di-send-message";
+      const leaderThreadId = "thread-3316-di-leader";
+      const childThreadId = "thread-3316-di-child";
+      const foreignSessionId = "sess-3316-di-foreign";
+      const foreignLeaderThreadId = "thread-3316-di-foreign-leader";
+      const foreignChildThreadId = "thread-3316-di-foreign-child";
+      const unrelatedThreadId = "thread-3316-di-unrelated";
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        cwd,
+        leader_thread_id: leaderThreadId,
+        native_session_id: "native-3316-di",
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", parent_thread_id: leaderThreadId },
+            },
+          },
+          [foreignSessionId]: {
+            session_id: foreignSessionId,
+            leader_thread_id: foreignLeaderThreadId,
+            threads: {
+              [foreignLeaderThreadId]: { thread_id: foreignLeaderThreadId, kind: "leader" },
+              [foreignChildThreadId]: { thread_id: foreignChildThreadId, kind: "subagent", parent_thread_id: foreignLeaderThreadId },
+            },
+          },
+        },
+      });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "planning",
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        active_skills: [{ skill: "deep-interview", phase: "planning", active: true, session_id: sessionId, thread_id: leaderThreadId }],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+      });
+
+      const sendMessage = (
+        threadId: string,
+        agentId: string,
+        targetAgentId: unknown,
+        overrides: Record<string, unknown> = {},
+      ) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          agent_id: agentId,
+          tool_name: "collaboration.send_message",
+          tool_input: { agent_id: targetAgentId, message: "status update" },
+          ...overrides,
+        },
+        { cwd },
+      );
+
+      // Registered leader -> registered child: already allowed today (main-root actor bypasses the gate).
+      const leaderToChild = await sendMessage(leaderThreadId, leaderThreadId, childThreadId);
+      assert.equal(leaderToChild.outputJson, null, "leader-to-child");
+
+      // Registered child -> its owning leader, same authoritative session, target relation proven: now allowed.
+      const childToLeader = await sendMessage(childThreadId, childThreadId, leaderThreadId);
+      assert.equal(childToLeader.outputJson, null, "child-to-leader");
+
+      // The flattened Codex CLI tool-name form must canonicalize identically.
+      const flattenedChildToLeader = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_id: childThreadId,
+          tool_name: "collaborationsend_message",
+          tool_input: { agent_id: leaderThreadId, message: "status update" },
+        },
+        { cwd },
+      );
+      assert.equal(flattenedChildToLeader.outputJson, null, "flattened-child-to-leader");
+
+      // spawn/close/interrupt/followup/wait remain gated for the same registered child: no namespace-wide loosening.
+      for (const toolName of [
+        "collaboration.spawn_agent",
+        "collaboration.close_agent",
+        "collaboration.interrupt_agent",
+        "collaboration.followup_task",
+        "collaboration.wait_agent",
+      ]) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: childThreadId,
+            agent_id: childThreadId,
+            tool_name: toolName,
+            tool_input: { agent_id: leaderThreadId, message: "status update" },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson?.decision, "block", toolName);
+        assert.match(String(result.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, toolName);
+      }
+
+      // Cold-start leader (a genuine leader thread that has not yet been recorded as this
+      // session's leader_thread_id in subagent-tracking.json) must not be silently treated as
+      // an arbitrary authorized child; it resolves to native-child and stays fail-closed and denied.
+      const coldStartUnregisteredThreadId = "thread-3316-di-cold-start-leader";
+      const coldStartLeader = await sendMessage(coldStartUnregisteredThreadId, coldStartUnregisteredThreadId, leaderThreadId);
+      assert.equal(coldStartLeader.outputJson?.decision, "block", "cold-start-leader");
+      assert.match(String(coldStartLeader.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "cold-start-leader");
+
+      // Foreign session: a child registered under a different session_id's tracking record stays denied.
+      const foreignSessionChild = await sendMessage(foreignChildThreadId, foreignChildThreadId, leaderThreadId);
+      assert.equal(foreignSessionChild.outputJson?.decision, "block", "foreign-session-child");
+      assert.match(String(foreignSessionChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "foreign-session-child");
+
+      // Unrelated cross-child: a same-session child messaging an arbitrary thread that is not the
+      // registered leader (only leader<->registered-child pairs are admitted).
+      const unrelatedCrossChild = await sendMessage(childThreadId, childThreadId, unrelatedThreadId);
+      assert.equal(unrelatedCrossChild.outputJson?.decision, "block", "unrelated-cross-child");
+      assert.match(String(unrelatedCrossChild.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "unrelated-cross-child");
+
+      // Wrong-parent/session: a child claims a target agent_id pointing at a leader thread from a
+      // DIFFERENT session; session-scoped target relation must not resolve across sessions.
+      const wrongParentSession = await sendMessage(childThreadId, childThreadId, foreignLeaderThreadId);
+      assert.equal(wrongParentSession.outputJson?.decision, "block", "wrong-parent-session");
+      assert.match(String(wrongParentSession.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "wrong-parent-session");
+
+      // Malformed / empty / non-string target agent_id stays denied (fail-closed).
+      for (const [label, malformedTarget] of [
+        ["missing", undefined],
+        ["empty", ""],
+        ["whitespace", "   "],
+        ["number", 42],
+        ["object", { thread_id: leaderThreadId }],
+        ["array", [leaderThreadId]],
+        ["null", null],
+      ] as const) {
+        const malformed = await sendMessage(childThreadId, childThreadId, malformedTarget as unknown);
+        assert.equal(malformed.outputJson?.decision, "block", `malformed-target-${label}`);
+        assert.match(String(malformed.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, `malformed-target-${label}`);
+      }
+
+      // No command/path execution rides along on message content: shell-metacharacter-laden
+      // message text from the registered child to its owning leader stays inert and allowed.
+      const messageWithShellPayload = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_id: childThreadId,
+          tool_name: "collaboration.send_message",
+          tool_input: { agent_id: leaderThreadId, message: "; rm -rf / #`touch /tmp/pwned`$(id)" },
+        },
+        { cwd },
+      );
+      assert.equal(messageWithShellPayload.outputJson, null, "shell-payload-message-content");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("#3316: allows a registered child to message its owning leader via collaboration.send_message during active ralplan", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3316-ralplan-send-message-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-3316-ralplan-send-message";
+      const leaderThreadId = "thread-3316-ralplan-leader";
+      const childThreadId = "thread-3316-ralplan-child";
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), {
+        session_id: sessionId,
+        cwd,
+        leader_thread_id: leaderThreadId,
+      });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: leaderThreadId,
+            threads: {
+              [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" },
+              [childThreadId]: { thread_id: childThreadId, kind: "subagent", parent_thread_id: leaderThreadId },
+            },
+          },
+        },
+      });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: sessionId,
+        active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "critic-review",
+        session_id: sessionId,
+      });
+
+      const sendMessage = (threadId: string, targetAgentId: unknown) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          agent_id: threadId,
+          tool_name: "collaboration.send_message",
+          tool_input: { agent_id: targetAgentId, message: "critic feedback ready" },
+        },
+        { cwd },
+      );
+
+      const leaderToChild = await sendMessage(leaderThreadId, childThreadId);
+      assert.equal(leaderToChild.outputJson, null, "ralplan-leader-to-child");
+
+      const childToLeader = await sendMessage(childThreadId, leaderThreadId);
+      assert.equal(childToLeader.outputJson, null, "ralplan-child-to-leader");
+
+      const spawnAgentStillGated = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: childThreadId,
+          agent_id: childThreadId,
+          tool_name: "collaboration.spawn_agent",
+          tool_input: { agent_type: "executor", message: "spawn attempt" },
+        },
+        { cwd },
+      );
+      assert.equal(spawnAgentStillGated.outputJson?.decision, "block", "ralplan-spawn-agent-still-gated");
+      assert.match(String(spawnAgentStillGated.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "ralplan-spawn-agent-still-gated");
+
+      const malformedTarget = await sendMessage(childThreadId, undefined);
+      assert.equal(malformedTarget.outputJson?.decision, "block", "ralplan-malformed-target");
+      assert.match(String(malformedTarget.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/, "ralplan-malformed-target");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   // Direct-cancel positives must prove behavior in a clean execution context,
   // but the test runner itself may inherit Node startup/output instrumentation
