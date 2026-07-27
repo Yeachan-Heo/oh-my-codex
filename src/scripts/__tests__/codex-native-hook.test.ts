@@ -14094,8 +14094,10 @@ exit 0
 				["foreign session", { mode: "deep-interview", active: true, session_id: "foreign", workingDirectory: cwd }],
 				["dynamic session", { mode: "deep-interview", active: true, session_id: "$CODEX_THREAD_ID", workingDirectory: cwd }],
 				["conflicting owner alias", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", owner_codex_session_id: "foreign", workingDirectory: cwd }],
+				["persisted verified owner alias", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", owner_codex_session_id: "owner-codex-di-artifact", workingDirectory: cwd }],
 				["foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: join(cwd, "src") }],
 				["nested foreign session", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { session_id: "foreign" } }],
+				["nested persisted verified session alias", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { session_id: "native-di-artifact" } }],
 				["nested foreign owner alias", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { owner_omx_session_id: "foreign" } }],
 				["nested foreign cwd", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { workingDirectory: join(cwd, "src") } }],
 				["nested conflicting mode", { mode: "deep-interview", active: true, session_id: "sess-di-artifact", workingDirectory: cwd, state: { mode: "ralplan" } }],
@@ -14139,37 +14141,29 @@ exit 0
 				assert.equal(aliasStateWrite.outputJson, null, name);
 			}
 
-			const nestedNativeAliasStateWrite = await preToolUse({
+			const canonicalOwnershipStateWrite = await preToolUse({
 				hook_event_name: "PreToolUse",
 				cwd,
 				session_id: "sess-di-artifact",
 				tool_name: "mcp__omx_state__state_write",
-				tool_use_id: "tool-di-nested-native-alias-state-scope",
+				tool_use_id: "tool-di-canonical-ownership-state-scope",
 				tool_input: {
 					mode: "deep-interview",
 					active: true,
 					session_id: "sess-di-artifact",
+					owner_omx_session_id: "sess-di-artifact",
+					owner_codex_session_id: "sess-di-artifact",
+					codex_session_id: "sess-di-artifact",
 					workingDirectory: cwd,
-					state: { session_id: "native-di-artifact" },
+					state: {
+						session_id: "sess-di-artifact",
+						owner_omx_session_id: "sess-di-artifact",
+						owner_codex_session_id: "sess-di-artifact",
+						codex_session_id: "sess-di-artifact",
+					},
 				},
 			});
-			assert.equal(nestedNativeAliasStateWrite.outputJson, null);
-
-			const mixedVerifiedAliasesStateWrite = await preToolUse({
-				hook_event_name: "PreToolUse",
-				cwd,
-				session_id: "sess-di-artifact",
-				tool_name: "mcp__omx_state__state_write",
-				tool_use_id: "tool-di-mixed-verified-alias-state-scope",
-				tool_input: {
-					mode: "deep-interview",
-					active: true,
-					session_id: "sess-di-artifact",
-					owner_codex_session_id: "owner-codex-di-artifact",
-					workingDirectory: cwd,
-				},
-			});
-			assert.equal(mixedVerifiedAliasesStateWrite.outputJson, null);
+			assert.equal(canonicalOwnershipStateWrite.outputJson, null);
 
 			const blockedReadWriteRedirect = await preToolUse({
 				hook_event_name: "PreToolUse",

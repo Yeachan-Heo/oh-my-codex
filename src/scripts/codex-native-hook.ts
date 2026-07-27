@@ -9023,19 +9023,6 @@ function suppliedSessionAliasesMatch(payload: Record<string, unknown>, sessionId
     .every((value) => safeString(value).trim() === sessionId);
 }
 
-function suppliedSessionAliasesAreVerified(
-  payload: Record<string, unknown>,
-  verifiedAliases: ReadonlySet<string>,
-): boolean {
-  return [
-    payload.session_id,
-    payload.owner_omx_session_id,
-    payload.codex_session_id,
-    payload.owner_codex_session_id,
-  ].filter((value) => value !== undefined)
-    .every((value) => verifiedAliases.has(safeString(value).trim()));
-}
-
 function hasOnlyFinishedExplicitOutcomes(payload: Record<string, unknown>): boolean {
   const values = [
     payload.lifecycle_outcome,
@@ -18906,13 +18893,18 @@ async function directConductorStateWritePayloadHasExactSchema(
   if (safeString(currentSession?.session_id).trim() === canonicalSessionId) {
     for (const alias of sessionPointerAliases(currentSession)) verifiedAliases.add(alias);
   }
+  // The top-level session_id selects the writable scope and is stripped by
+  // executeStateOperation. Other ownership fields can be persisted.
   if (!verifiedAliases.has(safeString(input.session_id).trim())) return false;
-  if (!suppliedSessionAliasesAreVerified(input, verifiedAliases)) return false;
+  if (![
+    input.owner_omx_session_id,
+    input.codex_session_id,
+    input.owner_codex_session_id,
+  ].filter((value) => value !== undefined)
+    .every((value) => safeString(value).trim() === canonicalSessionId)) return false;
   let nestedState = input.state === undefined ? null : safeObject(input.state);
   while (nestedState) {
-    if (!suppliedSessionAliasesAreVerified(nestedState, verifiedAliases)) return false;
-    const nestedSessionId = safeString(nestedState.session_id).trim();
-    if (nestedSessionId && !verifiedAliases.has(nestedSessionId)) return false;
+    if (!suppliedSessionAliasesMatch(nestedState, canonicalSessionId)) return false;
     const nestedWorkingDirectory = safeString(nestedState.workingDirectory).trim();
     if (nestedWorkingDirectory && resolve(nestedWorkingDirectory) !== resolve(policyCwd)) return false;
     const nestedMode = safeString(nestedState.mode).trim();
