@@ -3609,6 +3609,16 @@ interface PreToolUseSessionBinding {
   missing: boolean;
 }
 
+function sessionPointerAliases(state: SessionState | null | undefined): Set<string> {
+  return new Set(uniqueNonEmpty([
+    safeString(state?.session_id).trim(),
+    safeString(state?.native_session_id).trim(),
+    safeString(state?.owner_omx_session_id).trim(),
+    safeString(state?.owner_codex_session_id).trim(),
+    safeString(state?.codex_session_id).trim(),
+  ]));
+}
+
 async function resolvePreToolUseSessionBinding(
   cwd: string,
   stateDir: string,
@@ -3620,10 +3630,7 @@ async function resolvePreToolUseSessionBinding(
     : await readUsableSessionStateFromStateDir(cwd, stateDir).catch(() => null);
   const canonicalSessionId = safeString(currentSession?.session_id).trim();
   const aliases = payloadAliasValues(payload, ["session_id", "sessionId"]);
-  const knownAliases = new Set([
-    canonicalSessionId,
-    safeString(currentSession?.native_session_id).trim(),
-  ].filter(Boolean));
+  const knownAliases = sessionPointerAliases(currentSession);
   return {
     canonicalSessionId,
     missing: aliases.length === 0,
@@ -4094,12 +4101,8 @@ async function resolveInternalSessionIdForPayload(
   const canonicalSessionId = safeString(currentSession?.session_id).trim();
   if (!canonicalSessionId) return allowUnboundPayloadFallback ? payloadSessionId : "";
 
-  const nativeSessionId = safeString(currentSession?.native_session_id).trim();
-  const ownerOmxSessionId = safeString(currentSession?.owner_omx_session_id).trim();
   if (!payloadSessionId) return canonicalSessionId;
-  if (payloadSessionId === canonicalSessionId) return canonicalSessionId;
-  if (nativeSessionId && payloadSessionId === nativeSessionId) return canonicalSessionId;
-  if (ownerOmxSessionId && payloadSessionId === ownerOmxSessionId) return canonicalSessionId;
+  if (sessionPointerAliases(currentSession).has(payloadSessionId)) return canonicalSessionId;
   return allowUnboundPayloadFallback ? payloadSessionId : "";
 }
 
@@ -4116,13 +4119,8 @@ async function readRootSessionStateFromStateDir(stateDir: string): Promise<Sessi
 }
 
 function payloadMatchesSessionPointer(payloadSessionId: string, state: SessionState): boolean {
-  const canonicalSessionId = safeString(state.session_id).trim();
-  const nativeSessionId = safeString(state.native_session_id).trim();
-  const ownerOmxSessionId = safeString(state.owner_omx_session_id).trim();
   if (!payloadSessionId) return true;
-  return payloadSessionId === canonicalSessionId
-    || (nativeSessionId !== "" && payloadSessionId === nativeSessionId)
-    || (ownerOmxSessionId !== "" && payloadSessionId === ownerOmxSessionId);
+  return sessionPointerAliases(state).has(payloadSessionId);
 }
 
 function isRootSessionPointerLive(state: SessionState): boolean {
@@ -9025,6 +9023,19 @@ function suppliedSessionAliasesMatch(payload: Record<string, unknown>, sessionId
     .every((value) => safeString(value).trim() === sessionId);
 }
 
+function suppliedSessionAliasesAreVerified(
+  payload: Record<string, unknown>,
+  verifiedAliases: ReadonlySet<string>,
+): boolean {
+  return [
+    payload.session_id,
+    payload.owner_omx_session_id,
+    payload.codex_session_id,
+    payload.owner_codex_session_id,
+  ].filter((value) => value !== undefined)
+    .every((value) => verifiedAliases.has(safeString(value).trim()));
+}
+
 function hasOnlyFinishedExplicitOutcomes(payload: Record<string, unknown>): boolean {
   const values = [
     payload.lifecycle_outcome,
@@ -9796,7 +9807,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
   if (!activeState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
-  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd, sessionId)) {
+  if (toolName === "mcp__omx_state__state_write" && !await directConductorStateWritePayloadHasExactSchema(payload, cwd, stateDir, sessionId)) {
     return buildPlanningStateScopeDeny(
       safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -9920,7 +9931,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
   if (!activeState) return null;
 
   const toolName = safeString(payload.tool_name).trim();
-  if (toolName === "mcp__omx_state__state_write" && !directConductorStateWritePayloadHasExactSchema(payload, cwd, sessionId)) {
+  if (toolName === "mcp__omx_state__state_write" && !await directConductorStateWritePayloadHasExactSchema(payload, cwd, stateDir, sessionId)) {
     return buildPlanningStateScopeDeny(
       "Deep-interview",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -18881,17 +18892,27 @@ function buildConductorBashBlockedDetail(cwd: string, command: string): string {
     ?? "Bash write intent target <unresolved>; Main-root Conductor may write only workflow state/ledger/mailbox/handoff metadata";
 }
 
-function directConductorStateWritePayloadHasExactSchema(payload: CodexHookPayload, policyCwd: string, canonicalSessionId: string): boolean {
+async function directConductorStateWritePayloadHasExactSchema(
+  payload: CodexHookPayload,
+  policyCwd: string,
+  stateDir: string,
+  canonicalSessionId: string,
+): Promise<boolean> {
   const input = safeObject(payload.tool_input);
   if (!input || !conductorStateWritePayloadHasExactSchema(input)) return false;
   if (!canonicalSessionId) return false;
-  if (safeString(input.session_id).trim() !== canonicalSessionId) return false;
-  if (!suppliedSessionAliasesMatch(input, canonicalSessionId)) return false;
+  const verifiedAliases = new Set([canonicalSessionId]);
+  const currentSession = await readUsableSessionStateFromStateDir(policyCwd, stateDir).catch(() => null);
+  if (safeString(currentSession?.session_id).trim() === canonicalSessionId) {
+    for (const alias of sessionPointerAliases(currentSession)) verifiedAliases.add(alias);
+  }
+  if (!verifiedAliases.has(safeString(input.session_id).trim())) return false;
+  if (!suppliedSessionAliasesAreVerified(input, verifiedAliases)) return false;
   let nestedState = input.state === undefined ? null : safeObject(input.state);
   while (nestedState) {
-    if (!suppliedSessionAliasesMatch(nestedState, canonicalSessionId)) return false;
+    if (!suppliedSessionAliasesAreVerified(nestedState, verifiedAliases)) return false;
     const nestedSessionId = safeString(nestedState.session_id).trim();
-    if (nestedSessionId && nestedSessionId !== canonicalSessionId) return false;
+    if (nestedSessionId && !verifiedAliases.has(nestedSessionId)) return false;
     const nestedWorkingDirectory = safeString(nestedState.workingDirectory).trim();
     if (nestedWorkingDirectory && resolve(nestedWorkingDirectory) !== resolve(policyCwd)) return false;
     const nestedMode = safeString(nestedState.mode).trim();
@@ -18997,7 +19018,7 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     } else if (
       toolName === "mcp__omx_state__state_write"
       && (
-        !directConductorStateWritePayloadHasExactSchema(payload, policyCwd, sessionId)
+        !await directConductorStateWritePayloadHasExactSchema(payload, policyCwd, stateDir, sessionId)
         || !conductorStatePayloadPreservesActiveGuard(directStateInput, activeState)
       )
     ) {
