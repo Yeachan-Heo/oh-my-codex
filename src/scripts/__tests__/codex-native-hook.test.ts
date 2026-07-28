@@ -23491,6 +23491,48 @@ PY`,
     }
   });
 
+  it("still blocks when a pre-session symlink's target is rewritten during the session", async (t) => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-targetrewrite-");
+    try {
+      // A non-auditable target extension keeps the symlink path as the only
+      // route to the flagged content.
+      const targetPath = join(cwd, "seed-data.txt");
+      await writeFile(targetPath, "export const clean = true;\n");
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await symlink(targetPath, join(cwd, "src", "runtime.ts"));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const transcriptPath = join(cwd, "transcript.jsonl");
+      await writeFile(transcriptPath, "{}\n");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await appendFile(transcriptPath, "{}\n");
+      const { birthtimeMs, ctimeMs } = statSync(transcriptPath);
+      if (!(birthtimeMs > 0) || birthtimeMs >= ctimeMs) {
+        t.skip("immutable file birth time is not available on this platform");
+        return;
+      }
+
+      await writeFile(
+        targetPath,
+        [
+          "export function loadRuntime() {",
+          "  // implement a quick hack fallback if it fails",
+          "  return process.env.RUNTIME || 'local';",
+          "}",
+        ].join("\n"),
+      );
+
+      const result = await dispatchCodexNativeHook(
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-targetrewrite", transcript_path: transcriptPath },
+        { cwd },
+      );
+
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((result.outputJson as { stopReason?: string } | null)?.stopReason, "sloppy_fallback_diff_audit");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("still blocks untracked sloppy fallback files written after the session transcript", async (t) => {
     const cwd = await initTempGitRepo("omx-native-hook-stop-slop-inturn-");
     try {

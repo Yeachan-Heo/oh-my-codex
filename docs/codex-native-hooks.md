@@ -316,9 +316,11 @@ The audit is bounded so a single finding cannot hold a session hostage:
   pre-existing repo content the session never touched cannot block it. A file
   counts as pre-session only when every available indicator (mtime, ctime,
   and birth time when reported) predates the session transcript's birth time;
-  lstat semantics keep in-session symlinks to older targets auditable. This
-  prevents `cp -p`/`tar`-style preserved mtimes from smuggling new sloppy
-  lines past the audit. The transcript birth time is trusted only when it is
+  lstat semantics keep in-session symlinks to older targets auditable, and
+  symlink targets are stat'ed as well, so a pre-session link whose target is
+  rewritten during the session is audited too. This prevents
+  `cp -p`/`tar`-style preserved mtimes from smuggling new sloppy lines past
+  the audit. The transcript birth time is trusted only when it is
   immutable — when the filesystem reports no birth time or one
   indistinguishable from ctime (a mutable fallback that transcript appends
   would move), the scoping is disabled and all untracked source files are

@@ -1976,13 +1976,28 @@ function collectSloppyFallbackFindingsFromUntracked(cwd: string, sessionStartMs?
     if (sessionStartMs != null) {
       try {
         // Skip only files that provably predate the session: mtime alone is
-        // preservable (cp -p, tar) and statSync follows symlinks to older
-        // targets, so require every available indicator (mtime, ctime, and
-        // birth time when the filesystem reports one) to predate the session.
-        const stats = lstatSync(join(cwd, path));
-        const indicators = [stats.mtimeMs, stats.ctimeMs];
-        if (Number.isFinite(stats.birthtimeMs) && stats.birthtimeMs > 0) indicators.push(stats.birthtimeMs);
-        if (indicators.every((indicatorMs) => Number.isFinite(indicatorMs) && indicatorMs < sessionStartMs)) continue;
+        // preservable (cp -p, tar), so require every available indicator
+        // (mtime, ctime, and birth time when the filesystem reports one) to
+        // predate the session. A pre-session symlink can still surface
+        // in-session edits through its target, so the target's indicators
+        // must predate the session too; the link's own indicators keep
+        // in-session links to older targets auditable.
+        const fullPath = join(cwd, path);
+        const linkStats = lstatSync(fullPath);
+        const statsToCheck = [linkStats];
+        if (linkStats.isSymbolicLink()) {
+          try {
+            statsToCheck.push(statSync(fullPath));
+          } catch {
+            // Dangling link: nothing readable to audit either way.
+          }
+        }
+        const predatesSession = statsToCheck.every((stats) => {
+          const indicators = [stats.mtimeMs, stats.ctimeMs];
+          if (Number.isFinite(stats.birthtimeMs) && stats.birthtimeMs > 0) indicators.push(stats.birthtimeMs);
+          return indicators.every((indicatorMs) => Number.isFinite(indicatorMs) && indicatorMs < sessionStartMs);
+        });
+        if (predatesSession) continue;
       } catch {
         continue;
       }
