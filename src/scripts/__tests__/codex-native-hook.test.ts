@@ -22644,6 +22644,40 @@ PY`,
     }
   });
 
+  it("keeps the repeat count when staging a subset reorders identical findings", async () => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-subset-");
+    try {
+      await mkdir(join(cwd, "src"), { recursive: true });
+      const sloppySource = (exportName: string) => [
+        `export function ${exportName}() {`,
+        "  // implement a quick hack fallback if it fails",
+        "  return process.env.RUNTIME || 'local';",
+        "}",
+      ].join("\n");
+      await writeFile(join(cwd, "src", "alpha.ts"), sloppySource("loadAlpha"));
+      await writeFile(join(cwd, "src", "beta.ts"), sloppySource("loadBeta"));
+      const payload = { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-subset", turn_id: "turn-subset" };
+      const stop = (attempt: number) =>
+        dispatchCodexNativeHook(attempt === 0 ? payload : { ...payload, stop_hook_active: true }, { cwd });
+
+      const first = await stop(0);
+      // Staging only beta reorders the raw finding list (staged findings come
+      // first), but the fingerprint must stay identical for the same set.
+      execFileSync("git", ["add", "src/beta.ts"], { cwd, stdio: "ignore" });
+      const subsetStaged = await stop(1);
+      execFileSync("git", ["add", "src/alpha.ts"], { cwd, stdio: "ignore" });
+      const allStaged = await stop(2);
+      const afterCap = await stop(3);
+
+      assert.equal((first.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((subsetStaged.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((allStaged.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal(afterCap.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("skips the sloppy fallback diff audit when OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT is off", async () => {
     const cwd = await initTempGitRepo("omx-native-hook-stop-slop-disabled-");
     const previousValue = process.env.OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT;

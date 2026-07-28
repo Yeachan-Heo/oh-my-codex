@@ -1994,7 +1994,11 @@ function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]
 }
 
 function buildSloppyFallbackDiffGuardFingerprint(findings: SloppyFallbackDiffFinding[]): string {
-  return JSON.stringify(findings.map((finding) => [finding.path, finding.line]));
+  return JSON.stringify(
+    findings
+      .map((finding) => [finding.path, finding.line] as const)
+      .sort(([pathA, lineA], [pathB, lineB]) => pathA.localeCompare(pathB) || lineA.localeCompare(lineB)),
+  );
 }
 
 async function maybeBuildSloppyFallbackDiffStopOutput(
