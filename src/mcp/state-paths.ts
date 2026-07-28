@@ -617,6 +617,9 @@ export function __setWritableStateScopeTestHooksForTests(hooks: WritableStateSco
  * - a stale-dead session.json yields to an explicit exact-current
  *   OMX_SESSION_ID binding (the dead owner holds no authority; SessionStart
  *   remains the only pointer writer);
+ * - an identity-indeterminate session.json may recover only when OMX_SESSION_ID
+ *   exactly matches the pointer's own session_id (the owner may still be alive,
+ *   so unlike stale-dead recovery, no looser validated binding is accepted);
  * - root writes are allowed only when session.json is absent.
  */
 export async function resolveWritableStateScope(
@@ -653,29 +656,34 @@ export async function resolveWritableStateScope(
           raw: snapshot.raw,
         });
       }
-      if (
-        envSessionId
-        && snapshot
-        && normalizeSessionId(snapshot.state.session_id)
-        && liveness === 'stale-dead'
-      ) {
-        if (selectedPointerRecoveryHookForTests) await selectedPointerRecoveryHookForTests();
-        const reread = await readFile(sessionPath, 'utf-8').catch((error: NodeJS.ErrnoException) => {
-          if (error.code === 'ENOENT') return undefined;
-          throw error;
-        });
-        if (recoveryStabilityRereadHookForTests) {
-          recoveryStabilityRereadHookForTests({
-            ordinal: ++recoveryStabilityRereadOrdinalForTests,
-            raw: reread,
+      if (snapshot && envSessionId) {
+        const canonicalPointerSessionId = normalizeSessionId(snapshot.state.session_id);
+        const recoveryEligible = Boolean(
+          canonicalPointerSessionId
+          && (
+            liveness === 'stale-dead'
+            || (liveness === 'identity-indeterminate' && envSessionId === canonicalPointerSessionId)
+          ),
+        );
+        if (recoveryEligible) {
+          if (selectedPointerRecoveryHookForTests) await selectedPointerRecoveryHookForTests();
+          const reread = await readFile(sessionPath, 'utf-8').catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return undefined;
+            throw error;
           });
-        }
-        if (reread === snapshot.raw) {
-          return {
-            source: 'session',
-            sessionId: envSessionId,
-            stateDir: join(baseStateDir, 'sessions', envSessionId),
-          };
+          if (recoveryStabilityRereadHookForTests) {
+            recoveryStabilityRereadHookForTests({
+              ordinal: ++recoveryStabilityRereadOrdinalForTests,
+              raw: reread,
+            });
+          }
+          if (reread === snapshot.raw) {
+            return {
+              source: 'session',
+              sessionId: envSessionId,
+              stateDir: join(baseStateDir, 'sessions', envSessionId),
+            };
+          }
         }
       }
       throw new Error(WRITABLE_STATE_SCOPE_ERRORS.unusableSession);

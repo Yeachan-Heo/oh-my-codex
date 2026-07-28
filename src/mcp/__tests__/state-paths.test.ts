@@ -1038,6 +1038,31 @@ describe('state paths', () => {
         await rm(wd, { recursive: true, force: true });
       }
     });
+    it('recovers writable scope for an identity-indeterminate pointer with an exact-match OMX_SESSION_ID', async () => {
+      const wd = await mkRealTemp('omx-writable-indeterminate-exact-');
+      __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
+      try {
+        const stateDir = getBaseStateDir(wd);
+        const sessionPath = join(stateDir, 'session.json');
+        await mkdir(stateDir, { recursive: true });
+        const pointerBody = JSON.stringify({ session_id: 'sess-exact', cwd: wd, pid: 8388607 });
+        await writeFile(sessionPath, pointerBody);
+        const beforePointer = await readFile(sessionPath, 'utf-8');
+        const beforeEntries = (await readdir(stateDir)).sort();
+        process.env.OMX_SESSION_ID = 'sess-exact';
+
+        assert.deepEqual(await resolveWritableStateScope(wd), {
+          source: 'session',
+          sessionId: 'sess-exact',
+          stateDir: join(stateDir, 'sessions', 'sess-exact'),
+        });
+        assert.equal(await readFile(sessionPath, 'utf-8'), beforePointer);
+        assert.deepEqual((await readdir(stateDir)).sort(), beforeEntries);
+      } finally {
+        __resetSessionPointerTransactionDependenciesForTests();
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
     it('fails closed for an identity-indeterminate pointer even with an env binding', async () => {
       const wd = await mkRealTemp('omx-writable-indeterminate-env-');
       __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
@@ -1162,6 +1187,35 @@ describe('writable state scope recovery and revalidation', () => {
     }
   });
 
+  it('fails closed when the pointer bytes change during identity-indeterminate exact-match recovery', async () => {
+    const wd = await mkRealTemp('omx-writable-indeterminate-unstable-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      const sessionPath = join(stateDir, 'session.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(sessionPath, JSON.stringify({ session_id: 'sess-indeterminate', cwd: wd, pid: 8388607 }));
+      process.env.OMX_SESSION_ID = 'sess-indeterminate';
+      __setWritableStateScopeTestHooksForTests({
+        beforeRecoveryReread: async () => {
+          await writeFile(sessionPath, JSON.stringify({ session_id: 'sess-indeterminate', cwd: wd, pid: 9999999 }));
+        },
+      });
+      await assert.rejects(
+        () => resolveWritableStateScope(wd),
+        (error: unknown) => {
+          assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+          return true;
+        },
+      );
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-indeterminate')), false);
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('T12 leaves the stale-dead pointer and base state root entries unchanged during recovery', async () => {
     const wd = await mkRealTemp('omx-writable-pointer-immutable-');
     __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'dead' });
@@ -1205,6 +1259,36 @@ describe('writable state scope recovery and revalidation', () => {
           },
         );
         assert.equal(existsSync(join(stateDir, 'sessions', 'sess-current')), false, testCase.name);
+      }
+    } finally {
+      __setWritableStateScopeTestHooksForTests({});
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for identity-indeterminate pointer without selected-root authority even with an exact-match env binding', async () => {
+    const wd = await mkRealTemp('omx-writable-indeterminate-noauthority-');
+    __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
+    try {
+      const stateDir = getBaseStateDir(wd);
+      await mkdir(stateDir, { recursive: true });
+      process.env.OMX_SESSION_ID = 'sess-indeterminate';
+      const cases = [
+        { name: 'missing recorded cwd', pointer: { session_id: 'sess-indeterminate', pid: 8388607 } },
+        { name: 'different state root', pointer: { session_id: 'sess-indeterminate', cwd: wd, state_root: join(wd, 'other-root'), pid: 8388607 } },
+        { name: 'recorded cwd does not contain the observed cwd', pointer: { session_id: 'sess-indeterminate', cwd: join(wd, 'other-worktree'), pid: 8388607 } },
+      ];
+      for (const testCase of cases) {
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify(testCase.pointer));
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession, testCase.name);
+            return true;
+          },
+        );
+        assert.equal(existsSync(join(stateDir, 'sessions', 'sess-indeterminate')), false, testCase.name);
       }
     } finally {
       __setWritableStateScopeTestHooksForTests({});

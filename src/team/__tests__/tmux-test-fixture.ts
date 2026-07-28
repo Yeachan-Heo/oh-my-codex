@@ -129,6 +129,48 @@ export function isRealTmuxAvailable(): boolean {
   return true;
 }
 
+/**
+ * Test-only PTY invocation for GNU/util-linux `script(1)` vs. BSD/macOS `script(1)`.
+ *
+ * util-linux (Linux) accepts `-c command` and always requires a trailing log-file
+ * argument: `script -q -e -c <command> /dev/null`.
+ *
+ * BSD/macOS `script(1)` (shell_cmds) has no `-c` flag; the command is a trailing
+ * positional argument vector after the log file: `script [file [command ...]]`.
+ * Verified against Apple's shell_cmds script.1 source (apple-oss-distributions/shell_cmds):
+ * "-e: Accepted for compatibility with util-linux script. The child command exit
+ * status is always the exit status of script." — i.e. on BSD/macOS, `script`
+ * unconditionally propagates the child's exit status even without `-e`, so `-e`
+ * is redundant there and intentionally omitted. The command is passed as a single
+ * `/bin/sh -c <command>` argv triple (not a shell string) to keep the wrapped
+ * command as exactly one argument, matching the util-linux `-c` contract.
+ */
+export interface PtyScriptCommand {
+  executable: string;
+  args: string[];
+}
+
+export function buildPtyScriptCommand(command: string, platform: NodeJS.Platform = process.platform): PtyScriptCommand {
+  if (platform === 'darwin') {
+    return { executable: 'script', args: ['-q', '/dev/null', '/bin/sh', '-c', command] };
+  }
+  return { executable: 'script', args: ['-q', '-e', '-c', command, '/dev/null'] };
+}
+
+export function isRealScriptAvailable(): boolean {
+  const result = spawnSync('/bin/sh', ['-c', 'command -v script'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: TMUX_COMMAND_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  });
+  if (result.error) {
+    if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw result.error;
+  }
+  return result.status === 0;
+}
+
 export function tmuxSessionExists(sessionName: string, serverName?: string): boolean {
   try {
     runTmux(['has-session', '-t', sessionName], {
@@ -151,6 +193,10 @@ function resolveTmuxExecutable(): string {
 
 function uniqueTmuxIdentifier(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 export async function withTempTmuxSession<T>(
@@ -206,8 +252,27 @@ export async function withTempTmuxSession<T>(
     if (!Number.isSafeInteger(cols) || cols < 20 || cols > 500) {
       throw new Error(`invalid trigger cols: ${cols}`);
     }
-    const script = `(sleep 0.1; stty rows ${rows} cols ${cols}) & exec env TERM=xterm timeout 1 tmux -f ${JSON.stringify(NULL_TMUX_CONFIG)} -L ${JSON.stringify(serverName)} attach-session -t ${JSON.stringify(targetSession)}`;
-    const result = spawnSync('script', ['-q', '-e', '-c', script, '/dev/null'], {
+    const tmuxAttachCommand = [
+      shellQuote(tmuxExecutable),
+      '-f',
+      shellQuote(NULL_TMUX_CONFIG),
+      '-L',
+      shellQuote(serverName),
+      'attach-session',
+      '-t',
+      shellQuote(targetSession),
+    ].join(' ');
+    const watchdog = [
+      `const { spawn } = require('node:child_process');`,
+      `const child = spawn(process.argv[1], process.argv.slice(2), { stdio: 'inherit', env: { ...process.env, TERM: 'xterm' } });`,
+      `let timedOut = false; let forceKillTimer;`,
+      `const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 250); }, 1000);`,
+      `child.once('error', (error) => { clearTimeout(timer); clearTimeout(forceKillTimer); console.error(error.message); process.exit(127); });`,
+      `child.once('exit', (code, signal) => { clearTimeout(timer); clearTimeout(forceKillTimer); process.exit(timedOut ? 124 : (code ?? (signal ? 1 : 0))); });`,
+    ].join('');
+    const script = `(sleep 0.1; stty rows ${rows} cols ${cols}) & exec ${shellQuote(process.execPath)} -e ${shellQuote(watchdog)} -- ${tmuxAttachCommand}`;
+    const ptyCommand = buildPtyScriptCommand(script);
+    const result = spawnSync(ptyCommand.executable, ptyCommand.args, {
       encoding: 'utf-8',
       env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -15,7 +15,7 @@ import {
   writeSessionStart,
   type LaunchSessionBinding,
 } from '../../hooks/session.js';
-import { isRealTmuxAvailable, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
+import { buildPtyScriptCommand, isRealScriptAvailable, isRealTmuxAvailable, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
 
 const CLI_SPAWN_TIMEOUT_MS = 60_000;
 function buildRunOmxEnv(envOverrides: Record<string, string>): NodeJS.ProcessEnv {
@@ -354,6 +354,13 @@ function skipUnlessPrivateRealTmux(t: TestContext): boolean {
   if (isRealTmuxAvailable()) return true;
   assert.equal(process.env.CI, undefined, 'CI must provide tmux for the private-server detached launch regression');
   t.skip('tmux is not installed');
+  return false;
+}
+function skipUnlessScriptAvailable(t: TestContext): boolean {
+  if (process.platform === 'win32') { t.skip('PTY launch harness requires posix script(1)'); return false; }
+  if (isRealScriptAvailable()) return true;
+  assert.equal(process.env.CI, undefined, 'CI must provide script(1) for the PTY launch regression');
+  t.skip('script(1) is not installed');
   return false;
 }
 
@@ -2685,7 +2692,7 @@ exit 0
 
   it('returns the attached client to the shell with the child status after a normal detached child exit', async (t) => {
     if (!skipUnlessPrivateRealTmux(t)) return;
-    if (process.platform === 'win32') { t.skip('PTY launch harness requires posix script(1)'); return; }
+    if (!skipUnlessScriptAvailable(t)) return;
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-detached-e2e-'));
     try {
       await withTempTmuxSession(async (fixture) => {
@@ -2712,9 +2719,12 @@ exit 0
             'OMX_HOOK_DERIVED_SIGNALS=0',
             'TERM=xterm-256color',
           ].map((kv) => `export ${kv}`).join('; ');
+          const ptyCommand = buildPtyScriptCommand(
+            `${envPrefix}; cd ${JSON.stringify(wd)} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(omxBin)} --tmux ${JSON.stringify('e2e prompt')}`,
+          );
           const result = spawnSync(
-            'script',
-            ['-q', '-e', '-c', `${envPrefix}; cd ${JSON.stringify(wd)} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(omxBin)} --tmux ${JSON.stringify('e2e prompt')}`, '/dev/null'],
+            ptyCommand.executable,
+            ptyCommand.args,
             {
               encoding: 'utf-8',
               timeout: 120_000,

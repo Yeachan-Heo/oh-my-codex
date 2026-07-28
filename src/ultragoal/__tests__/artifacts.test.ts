@@ -10,6 +10,7 @@ import {
 } from '../../hooks/session.js';
 import {
   addUltragoalGoal,
+  assertUltragoalWritableLifecycleAuthority,
   buildCodexGoalInstruction,
   checkpointUltragoal,
   createUltragoalPlan,
@@ -3204,6 +3205,55 @@ describe('ultragoal artifacts', () => {
         assert.equal(reread.codexObjectiveAliases, undefined);
         assert.equal(rootLedgerAfter, rootLedgerBefore);
       });
+    });
+  });
+
+  it('allows durable Ultragoal mutations for an exact-match identity-indeterminate pointer and rejects mismatches', async () => {
+    await withTempRepo(async (cwd) => {
+      const previousEnv = process.env.OMX_SESSION_ID;
+      const sessionId = 'sess-indeterminate';
+      const stateDir = join(cwd, '.omx', 'state');
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+          session_id: sessionId,
+          cwd,
+          state_root: stateDir,
+          pid: 8388607,
+        }));
+        __setSessionPointerTransactionDependenciesForTests({ probePid: () => 'indeterminate' });
+        process.env.OMX_SESSION_ID = sessionId;
+
+        const plan = await createUltragoalPlan(cwd, { brief: '- Ship the indeterminate recovery' });
+        assert.equal(plan.goals.length, 1);
+        assert.equal(existsSync(join(cwd, '.omx', 'ultragoal', 'goals.json')), true);
+        const authority = await assertUltragoalWritableLifecycleAuthority(cwd);
+        assert.deepEqual(authority, {
+          kind: 'resolved',
+          source: 'session',
+          sessionId,
+          stateDir: join(stateDir, 'sessions', sessionId),
+        });
+
+        const goalsPath = join(cwd, '.omx', 'ultragoal', 'goals.json');
+        const beforeMismatch = await readFile(goalsPath, 'utf-8');
+        process.env.OMX_SESSION_ID = 'sess-foreign';
+        // withUltragoalMutationLock calls assertUltragoalWritableLifecycleAuthority before and after lock
+        // acquisition, and that helper calls resolveWritableStateScope, so its point-in-time revalidation
+        // inherits this exact-match branch for free with no separate production-code change needed.
+        await assert.rejects(
+          () => addUltragoalGoal(cwd, { title: 'Must not persist', objective: 'Foreign session mutation.' }),
+          (error: unknown) => {
+            assert.match(String(error), /writable lifecycle authority/);
+            return true;
+          },
+        );
+        assert.equal(await readFile(goalsPath, 'utf-8'), beforeMismatch);
+      } finally {
+        if (typeof previousEnv === 'string') process.env.OMX_SESSION_ID = previousEnv;
+        else delete process.env.OMX_SESSION_ID;
+        __resetSessionPointerTransactionDependenciesForTests();
+      }
     });
   });
 
