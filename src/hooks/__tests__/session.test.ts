@@ -115,6 +115,33 @@ async function linuxProcessStartTicks(pid: number): Promise<number> {
 }
 
 describe('session lifecycle manager', () => {
+  it('isolates a team worker session pointer from the shared team state root', async () => {
+    const workerCwd = await mkdtemp(join(tmpdir(), 'omx-session-worker-root-'));
+    const sharedStateRoot = await mkdtemp(join(tmpdir(), 'omx-session-team-root-'));
+    const previousTeamWorker = process.env.OMX_TEAM_WORKER;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousOmxRoot = process.env.OMX_ROOT;
+    try {
+      process.env.OMX_TEAM_WORKER = 'alpha/worker-1';
+      process.env.OMX_TEAM_STATE_ROOT = sharedStateRoot;
+      process.env.OMX_ROOT = workerCwd;
+
+      const context = resolveSessionPointerContext(workerCwd);
+      assert.equal(context.baseStateDir, join(workerCwd, '.omx', 'state'));
+      assert.equal(context.rootSource, 'omx-root-env');
+      assert.notEqual(context.baseStateDir, sharedStateRoot);
+    } finally {
+      if (previousTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
+      else process.env.OMX_TEAM_WORKER = previousTeamWorker;
+      if (previousTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
+      else process.env.OMX_ROOT = previousOmxRoot;
+      await rm(workerCwd, { recursive: true, force: true });
+      await rm(sharedStateRoot, { recursive: true, force: true });
+    }
+  });
+
   it('resets session metrics files with zeroed counters', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-metrics-'));
     try {

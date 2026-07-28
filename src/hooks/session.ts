@@ -176,7 +176,15 @@ export function normalizeSessionId(value: unknown): string | undefined {
 /** Resolve the one exact pointer path used by an operation. */
 export function resolveSessionPointerContext(cwd: string): SessionPointerContext {
   const normalizedCwd = resolveWorkingDirectoryForState(cwd);
-  const { baseStateDir, rootSource } = getBaseStateDirWithSource(normalizedCwd);
+  const workerOmxRoot = process.env.OMX_TEAM_WORKER?.trim()
+    ? process.env.OMX_ROOT?.trim()
+    : undefined;
+  const { baseStateDir, rootSource } = workerOmxRoot
+    ? {
+        baseStateDir: join(resolveWorkingDirectoryForState(workerOmxRoot), '.omx', 'state'),
+        rootSource: 'omx-root-env' as const,
+      }
+    : getBaseStateDirWithSource(normalizedCwd);
   const pointerPath = join(baseStateDir, SESSION_FILE);
   return {
     cwd: normalizedCwd,
@@ -189,6 +197,7 @@ export function resolveSessionPointerContext(cwd: string): SessionPointerContext
 
 function attemptedStateRootSource(): AttemptedStateRootSource {
   try {
+    if (process.env.OMX_TEAM_WORKER?.trim() && process.env.OMX_ROOT?.trim()) return 'omx-root-env';
     if (process.env.OMX_TEAM_STATE_ROOT?.trim()) return 'team-env';
     if (process.env.OMX_ROOT?.trim()) return 'omx-root-env';
     if (process.env.OMX_STATE_ROOT?.trim()) return 'omx-state-root-env';
@@ -298,6 +307,16 @@ export interface SessionStartOptions {
   tmuxSessionName?: string;
   tmuxPaneId?: string;
   context?: SessionPointerContext;
+}
+
+export interface OwnedForeignSessionPointerRepairOptions {
+  context?: SessionPointerContext;
+  pid: number;
+  nativeSessionId: string;
+  verifiedOwnerOmxSessionId: string;
+  platform?: NodeJS.Platform;
+  /** @internal Scoped deterministic regular-file fsync seam. */
+  regularFileSync?: (platform: NodeJS.Platform) => Promise<void>;
 }
 
 /** @internal Test-only deterministic transaction seam; do not use outside session tests. */
@@ -1689,6 +1708,88 @@ export async function reconcileNativeSessionStart(
     timestamp: result.value.state.native_session_switched_at ?? new Date().toISOString(),
   }).catch(() => {});
   return result.value.state;
+}
+
+/**
+ * Repair a foreign-cwd pointer only when the current tmux owner alias and the
+ * exact live process identity both prove that the pointer still belongs to the
+ * caller. This is intentionally narrower than SessionStart reconciliation:
+ * unrelated or identity-indeterminate foreign pointers remain fail-closed.
+ */
+export async function repairOwnedForeignSessionPointer(
+  cwd: string,
+  options: OwnedForeignSessionPointerRepairOptions,
+): Promise<SessionState> {
+  const verifiedOwnerOmxSessionId = normalizeSessionId(options.verifiedOwnerOmxSessionId);
+  const nativeSessionId = normalizeSessionId(options.nativeSessionId);
+  const pid = Number.isInteger(options.pid) && options.pid > 0 ? options.pid : undefined;
+  const result = await writePointerTransaction(
+    cwd,
+    verifiedOwnerOmxSessionId,
+    {
+      context: options.context,
+      platform: options.platform,
+      regularFileSync: options.regularFileSync,
+    },
+    NATIVE_POINTER_TIMEOUT_MS,
+    (pointer, context) => {
+      const state = pointer.state;
+      const platform = options.platform ?? process.platform;
+      const ownerMatches = state
+        && verifiedOwnerOmxSessionId
+        && (
+          normalizeSessionId(state.session_id) === verifiedOwnerOmxSessionId
+          || normalizeSessionId(state.owner_omx_session_id) === verifiedOwnerOmxSessionId
+        );
+      const processMatches = state
+        && platform === 'linux'
+        && (state.platform ?? platform) === platform
+        && pid !== undefined
+        && state.pid === pid
+        && classifySessionProcess(state, transactionDependencies) === 'usable';
+      if (
+        pointer.status !== 'foreign-cwd'
+        || !state
+        || !ownerMatches
+        || !processMatches
+        || !nativeSessionId
+      ) {
+        throw unusablePointerAbort(context, verifiedOwnerOmxSessionId, pointer);
+      }
+
+      const existingNativeSessionId = normalizeSessionId(state.native_session_id);
+      const nativeSessionChanged = existingNativeSessionId !== nativeSessionId;
+      return createSessionState(
+        context.cwd,
+        state.session_id,
+        pid,
+        platform,
+        sessionIdentityFor(pid, platform),
+        {
+          nativeSessionId,
+          previousNativeSessionId: nativeSessionChanged
+            ? existingNativeSessionId
+            : state.previous_native_session_id,
+          nativeSessionSwitchedAt: nativeSessionChanged
+            ? new Date().toISOString()
+            : state.native_session_switched_at,
+          ownerOmxSessionId: state.owner_omx_session_id,
+          startedAt: state.started_at,
+          tmuxSessionName: state.tmux_session_name,
+          tmuxPaneId: state.tmux_pane_id,
+        },
+      );
+    },
+    (state) => state,
+  );
+  await appendToLogAtContext(result.context, {
+    event: 'session_pointer_foreign_cwd_repaired',
+    session_id: result.value.session_id,
+    native_session_id: result.value.native_session_id,
+    pid: result.value.pid,
+    timestamp: result.value.native_session_switched_at ?? new Date().toISOString(),
+  }).catch(() => {});
+  return result.value;
 }
 
 function historyDirectory(context: SessionPointerContext): string {

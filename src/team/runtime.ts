@@ -16,6 +16,7 @@ import {
   CreateTeamSessionPartialError,
   buildWorkerProcessLaunchSpec,
   scrubTeamWorkerHudOwnershipEnv,
+  scrubTeamWorkerSessionOwnershipEnv,
   resolveTeamWorkerCli,
   resolveTeamWorkerCliForResolvedLaunchArgs,
   assertTeamWorkerCliPolicyCompatibility,
@@ -3051,7 +3052,10 @@ function spawnPromptWorker(
     initialPrompt,
     workerRole,
   );
-  const childEnv = scrubTeamWorkerHudOwnershipEnv({ ...process.env, ...processSpec.env });
+  const childEnv = scrubTeamWorkerHudOwnershipEnv({
+    ...scrubTeamWorkerSessionOwnershipEnv(process.env),
+    ...processSpec.env,
+  });
   // Prompt workers are external CLI processes, not in-process runtime code.
   // Keeping c8's NODE_V8_COVERAGE in their environment makes coverage runs
   // track long-lived fake worker descendants and can keep node --test alive
@@ -5303,7 +5307,10 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
   }
 
-  const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
+  const shutdownReports = await prepareWorkerWorktreeShutdownReports(
+    config,
+    config.leader_cwd?.trim() || cwd,
+  );
 
   const commitHygieneEntries: TeamOperationalCommitEntry[] = [];
   for (const report of shutdownReports) {

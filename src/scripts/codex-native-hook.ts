@@ -43,6 +43,7 @@ import {
   readSessionState,
   readUsableSessionState,
   reconcileNativeSessionStart,
+  repairOwnedForeignSessionPointer,
   resolveSessionPointerContext,
   type SessionStartOptions,
   type SessionState,
@@ -19664,7 +19665,25 @@ export async function dispatchCodexNativeHook(
   const nativeSessionId = safeString(payload.session_id ?? payload.sessionId).trim();
   const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
-  const pointer = await readSessionPointer(pointerContext);
+  let pointer = await readSessionPointer(pointerContext);
+  if (hookEventName === "Stop" && pointer.status === "foreign-cwd" && nativeSessionId) {
+    const verifiedOwnerOmxSessionId = await resolveVerifiedOwnerOmxSessionId();
+    if (verifiedOwnerOmxSessionId) {
+      try {
+        const repairedState = await repairOwnedForeignSessionPointer(cwd, {
+          context: pointerContext,
+          pid: options.sessionOwnerPid ?? resolveSessionOwnerPid(payload),
+          nativeSessionId,
+          verifiedOwnerOmxSessionId,
+          platform: options.sessionStartOptions?.platform,
+          regularFileSync: options.sessionStartOptions?.regularFileSync,
+        });
+        pointer = { status: "usable", state: repairedState };
+      } catch (error) {
+        if (!isSessionPointerLaunchAbort(error)) throw error;
+      }
+    }
+  }
   const currentSessionState = pointer.status === "usable" ? pointer.state ?? null : null;
   let promptTurnContext: ResolvedPromptTurnContext | null = hookEventName === "UserPromptSubmit"
     ? evaluateResolvedPromptTurn({

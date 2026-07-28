@@ -4342,6 +4342,64 @@ PY`,
       assert.equal(stalePointer.session_id, "native-stale-3138");
       assert.equal(stalePointer.owner_omx_session_id, "omx-stale-3138");
 
+      const repairCwd = join(root, "repair-owned-foreign");
+      const repairStatePath = join(repairCwd, ".omx", "state", "session.json");
+      const repairOwner = "omx-repair-3138";
+      const contaminatedNativeSessionId = "native-worker-3138";
+      const leaderNativeSessionId = "native-leader-3138";
+      await mkdir(repairCwd, { recursive: true });
+      await writeSessionStart(repairCwd, repairOwner, {
+        nativeSessionId: contaminatedNativeSessionId,
+        pid: process.pid,
+      });
+      const contaminatedPointer = JSON.parse(await readFile(repairStatePath, "utf-8")) as Record<string, unknown>;
+      contaminatedPointer.cwd = join(root, "deleted-worker-worktree");
+      await writeJson(repairStatePath, contaminatedPointer);
+      process.env.OMX_SESSION_ID = repairOwner;
+      await setOwnerEvidence(repairOwner);
+
+      const repairedStop = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: repairCwd,
+        session_id: leaderNativeSessionId,
+      }, { cwd: repairCwd, sessionOwnerPid: process.pid });
+      assert.equal(repairedStop.outputJson, null);
+      const repairedPointer = JSON.parse(await readFile(repairStatePath, "utf-8")) as {
+        session_id?: string;
+        native_session_id?: string;
+        previous_native_session_id?: string;
+        cwd?: string;
+      };
+      assert.equal(repairedPointer.session_id, repairOwner);
+      assert.equal(repairedPointer.native_session_id, leaderNativeSessionId);
+      assert.equal(repairedPointer.previous_native_session_id, contaminatedNativeSessionId);
+      assert.equal(repairedPointer.cwd, repairCwd);
+
+      const indeterminateCwd = join(root, "indeterminate-owned-foreign");
+      const indeterminateStatePath = join(indeterminateCwd, ".omx", "state", "session.json");
+      const indeterminateOwner = "omx-indeterminate-3138";
+      await writeJson(indeterminateStatePath, {
+        session_id: indeterminateOwner,
+        native_session_id: "native-worker-indeterminate-3138",
+        cwd: join(root, "other-indeterminate-worktree"),
+        started_at: "2026-01-01T00:00:00.000Z",
+        pid: process.pid,
+        platform: "linux",
+      });
+      process.env.OMX_SESSION_ID = indeterminateOwner;
+      await setOwnerEvidence(indeterminateOwner);
+      const indeterminateStop = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: indeterminateCwd,
+        session_id: "native-leader-indeterminate-3138",
+      }, { cwd: indeterminateCwd, sessionOwnerPid: process.pid });
+      assert.equal(indeterminateStop.outputJson?.decision, "block");
+      assert.equal(indeterminateStop.outputJson?.stopReason, "session_pointer_unusable");
+      assert.equal(
+        (JSON.parse(await readFile(indeterminateStatePath, "utf-8")) as { cwd?: string }).cwd,
+        join(root, "other-indeterminate-worktree"),
+      );
+
       const foreignCwd = join(root, "foreign");
       const foreignStatePath = join(foreignCwd, ".omx", "state", "session.json");
       await writeJson(foreignStatePath, {

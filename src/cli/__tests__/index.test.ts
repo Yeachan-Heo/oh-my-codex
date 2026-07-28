@@ -4568,7 +4568,7 @@ exit 0
     assert.match(leaderCmd!, /wait "\$omx_codex_pid";/);
     assert.match(leaderCmd!, /kill -TERM "\$omx_codex_pid"/);
     assert.match(leaderCmd!, /releaseTmuxExtendedKeysLease/);
-    assert.match(leaderCmd!, /if \[ "\$status" -eq 0 \]; then/);
+    assert.match(leaderCmd!, /if \[ "\$status" -eq 0 \] \|\| \[ "\$status" -ge 128 \]; then/);
     assert.match(leaderCmd!, /tmux kill-session -t/);
     assert.match(leaderCmd!, /"omx-demo"/);
     assert.match(leaderCmd!, /codex exited immediately with code 0/);
@@ -4760,7 +4760,7 @@ exit 0
     }
   });
 
-  it("detached leader command preserves the detached tmux session on signal-derived exits", async () => {
+  it("detached leader command removes the detached tmux session on signal-derived exits", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-detached-leader-signal-"));
     const fakeBin = join(cwd, "bin");
     const logPath = join(cwd, "leader.log");
@@ -4829,7 +4829,7 @@ exit 0
       assert.match(log, /tmux:show-options -sv extended-keys/);
       assert.match(log, /tmux:set-option -sq extended-keys always/);
       assert.match(log, /tmux:set-option -sq extended-keys off/);
-      assert.doesNotMatch(log, /tmux:kill-session -t omx-demo/);
+      assert.match(log, /tmux:kill-session -t omx-demo/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

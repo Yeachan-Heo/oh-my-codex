@@ -4240,7 +4240,7 @@ function buildDetachedSessionLeaderCommand(
     buildTmuxExtendedKeysReleaseShellSnippet(cwd),
     parentEnvCleanup,
     detachedPostLaunchHelper,
-    'if [ "$status" -eq 0 ]; then',
+    'if [ "$status" -eq 0 ] || [ "$status" -ge 128 ]; then',
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
     "fi;",
     "exit $status;",

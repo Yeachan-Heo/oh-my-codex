@@ -154,6 +154,13 @@ const GEMINI_APPROVAL_MODE_FLAG = '--approval-mode';
 const GEMINI_APPROVAL_MODE_YOLO = 'yolo';
 const OMX_LEADER_NODE_PATH_ENV = 'OMX_LEADER_NODE_PATH';
 const OMX_LEADER_CLI_PATH_ENV = 'OMX_LEADER_CLI_PATH';
+const TEAM_WORKER_SESSION_OWNERSHIP_ENV_KEYS = [
+  'OMX_SESSION_ID',
+  'CODEX_SESSION_ID',
+  'SESSION_ID',
+  'OMX_STATE_ROOT',
+  'OMX_ROOT',
+] as const;
 const TMUX_WORKER_AMBIENT_ENV_ALLOWLIST = [
   'HTTPS_PROXY',
   'HTTP_PROXY',
@@ -1679,6 +1686,14 @@ export function scrubTeamWorkerHudOwnershipEnv<T extends Record<string, string |
   return scrubbed;
 }
 
+export function scrubTeamWorkerSessionOwnershipEnv<T extends Record<string, string | undefined>>(env: T): T {
+  const scrubbed = { ...env };
+  for (const key of TEAM_WORKER_SESSION_OWNERSHIP_ENV_KEYS) {
+    delete scrubbed[key];
+  }
+  return scrubbed;
+}
+
 function hasConfigOverride(args: readonly string[], key: string): boolean {
   return someConfigOverrideBeforeEndOfOptions(args, (value) => {
     const trimmed = value.trim();
@@ -1796,7 +1811,11 @@ export function buildWorkerStartupCommand(
     const pathBootstrap = leaderNodeDir
       ? `$env:PATH = ${quotePowerShellArg(`${leaderNodeDir};`)} + $env:PATH`
       : '';
-    const hudEnvUnset = [OMX_TMUX_HUD_OWNER_ENV, OMX_TMUX_HUD_LEADER_PANE_ENV]
+    const hudEnvUnset = [
+      OMX_TMUX_HUD_OWNER_ENV,
+      OMX_TMUX_HUD_LEADER_PANE_ENV,
+      ...TEAM_WORKER_SESSION_OWNERSHIP_ENV_KEYS,
+    ]
       .map((key) => `Remove-Item Env:${key} -ErrorAction SilentlyContinue`)
       .join('; ');
     const envAssignments = Object.entries(startupEnv)
@@ -1831,7 +1850,11 @@ export function buildWorkerStartupCommand(
     : '';
   const inner = `${rcPrefix}${pathPrefix}${cliInvocation}`;
   const envParts = Object.entries(startupEnv).map(([key, value]) => `${key}=${value}`);
-  const unsetParts = ['-u', OMX_TMUX_HUD_OWNER_ENV, '-u', OMX_TMUX_HUD_LEADER_PANE_ENV];
+  const unsetParts = [
+    OMX_TMUX_HUD_OWNER_ENV,
+    OMX_TMUX_HUD_LEADER_PANE_ENV,
+    ...TEAM_WORKER_SESSION_OWNERSHIP_ENV_KEYS,
+  ].flatMap((key) => ['-u', key]);
 
   return `env ${[...unsetParts, ...envParts].map(shellQuoteSingle).join(' ')} ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(inner)}`;
 }
@@ -1871,7 +1894,11 @@ function buildWorkerStartupScriptContent(
   return [
     '#!/bin/sh',
     'set -eu',
-    `unset ${OMX_TMUX_HUD_OWNER_ENV} ${OMX_TMUX_HUD_LEADER_PANE_ENV}`,
+    `unset ${[
+      OMX_TMUX_HUD_OWNER_ENV,
+      OMX_TMUX_HUD_LEADER_PANE_ENV,
+      ...TEAM_WORKER_SESSION_OWNERSHIP_ENV_KEYS,
+    ].join(' ')}`,
     `cd ${shellQuoteSingle(translatePathForMsys(cwd))}`,
     envExports,
     `exec ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(`${rcPrefix}${pathPrefix}${cliInvocation}`)}`,
@@ -2044,6 +2071,9 @@ function buildWorkerProcessLaunchSpecForMode(
     if (typeof value !== 'string' || value.trim() === '') continue;
     workerEnv[key] = value;
   }
+  // Team coordination remains rooted at OMX_TEAM_STATE_ROOT, but lifecycle
+  // hooks must never reuse the leader's session pointer or inherited aliases.
+  workerEnv.OMX_ROOT = cwd;
 
   return {
     workerCli,

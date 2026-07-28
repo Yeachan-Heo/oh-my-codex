@@ -1138,7 +1138,13 @@ describe('buildWorkerStartupCommand', () => {
       );
       assert.match(cmd, /OMX_TEAM_WORKER=alpha-team\/worker-1/);
       assert.match(cmd, /OMX_TEAM_STATE_ROOT=\/tmp\/workspace\/\.omx\/state/);
+      assert.match(cmd, /OMX_ROOT=\/tmp\/workspace/);
       assert.match(cmd, /'-u' 'OMX_TMUX_HUD_OWNER' '-u' 'OMX_TMUX_HUD_LEADER_PANE'/);
+      assert.match(cmd, /'-u' 'OMX_SESSION_ID'/);
+      assert.match(cmd, /'-u' 'CODEX_SESSION_ID'/);
+      assert.match(cmd, /'-u' 'SESSION_ID'/);
+      assert.match(cmd, /'-u' 'OMX_STATE_ROOT'/);
+      assert.match(cmd, /'-u' 'OMX_ROOT'/);
       assert.doesNotMatch(cmd, /OMX_TMUX_HUD_OWNER=1/);
       assert.doesNotMatch(cmd, /OMX_TMUX_HUD_LEADER_PANE=%leader/);
     } finally {
@@ -1626,7 +1632,10 @@ describe('buildWorkerStartupCommand', () => {
       const script = await readFile(join(stateRoot, 'team', 'alpha', 'runtime', 'worker-1-startup.sh'), 'utf-8');
       assert.match(script, /^#!\/bin\/sh/m);
       assert.match(script, new RegExp(`cd '${wd.replace(/'/g, `'\\\\''`)}'`));
-      assert.match(script, /^unset OMX_TMUX_HUD_OWNER OMX_TMUX_HUD_LEADER_PANE$/m);
+      assert.match(
+        script,
+        /^unset OMX_TMUX_HUD_OWNER OMX_TMUX_HUD_LEADER_PANE OMX_SESSION_ID CODEX_SESSION_ID SESSION_ID OMX_STATE_ROOT OMX_ROOT$/m,
+      );
       assert.match(script, /export OMX_TEAM_STATE_ROOT=/);
       assert.doesNotMatch(script, /^export OMX_TMUX_HUD_OWNER=/m);
       assert.doesNotMatch(script, /^export OMX_TMUX_HUD_LEADER_PANE=/m);

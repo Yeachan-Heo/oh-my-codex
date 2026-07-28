@@ -5568,6 +5568,10 @@ fs.writeFileSync(path.join(logDir, 'env.json'), JSON.stringify({
   cwd: process.cwd(),
   teamStateRoot: process.env.OMX_TEAM_STATE_ROOT || '',
   worker: process.env.OMX_TEAM_WORKER || '',
+  omxRoot: process.env.OMX_ROOT || '',
+  omxSessionId: process.env.OMX_SESSION_ID || '',
+  codexSessionId: process.env.CODEX_SESSION_ID || '',
+  genericSessionId: process.env.SESSION_ID || '',
 }));
 process.stdin.on('data', (chunk) => {
   fs.appendFileSync(path.join(logDir, 'stdin.log'), chunk.toString());
@@ -5584,12 +5588,20 @@ process.on('SIGTERM', () => process.exit(0));
     const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
     const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
     const prevLogDir = process.env.OMX_TEST_LOG_DIR;
+    const prevOmxRoot = process.env.OMX_ROOT;
+    const prevOmxSessionId = process.env.OMX_SESSION_ID;
+    const prevCodexSessionId = process.env.CODEX_SESSION_ID;
+    const prevGenericSessionId = process.env.SESSION_ID;
 
     process.env.PATH = `${binDir}:${prevPath ?? ''}`;
     delete process.env.TMUX;
     process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
     process.env.OMX_TEAM_WORKER_CLI = 'codex';
     process.env.OMX_TEST_LOG_DIR = logDir;
+    process.env.OMX_ROOT = repo;
+    process.env.OMX_SESSION_ID = 'omx-inherited-leader';
+    process.env.CODEX_SESSION_ID = 'codex-inherited-leader';
+    process.env.SESSION_ID = 'generic-inherited-leader';
 
     let runtime: TeamRuntime | null = null;
     try {
@@ -5629,10 +5641,18 @@ process.on('SIGTERM', () => process.exit(0));
         cwd: string;
         teamStateRoot: string;
         worker: string;
+        omxRoot: string;
+        omxSessionId: string;
+        codexSessionId: string;
+        genericSessionId: string;
       };
       assert.equal(envLog.cwd, workerPath);
       assert.equal(envLog.teamStateRoot, join(repo, '.omx', 'state'));
       assert.equal(envLog.worker, 'team-detached-worktree-paths/worker-1');
+      assert.equal(envLog.omxRoot, workerPath);
+      assert.equal(envLog.omxSessionId, '');
+      assert.equal(envLog.codexSessionId, '');
+      assert.equal(envLog.genericSessionId, '');
       const rootAgents = await readFile(join(workerPath, 'AGENTS.md'), 'utf-8');
       assert.match(rootAgents, /Team Worker Runtime Instructions/);
       assert.match(rootAgents, new RegExp(`Inbox path: .*${runtime.teamName}/workers/worker-1/inbox\\.md`));
@@ -5663,6 +5683,14 @@ process.on('SIGTERM', () => process.exit(0));
       else delete process.env.OMX_TEAM_WORKER_CLI;
       if (typeof prevLogDir === 'string') process.env.OMX_TEST_LOG_DIR = prevLogDir;
       else delete process.env.OMX_TEST_LOG_DIR;
+      if (typeof prevOmxRoot === 'string') process.env.OMX_ROOT = prevOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof prevOmxSessionId === 'string') process.env.OMX_SESSION_ID = prevOmxSessionId;
+      else delete process.env.OMX_SESSION_ID;
+      if (typeof prevCodexSessionId === 'string') process.env.CODEX_SESSION_ID = prevCodexSessionId;
+      else delete process.env.CODEX_SESSION_ID;
+      if (typeof prevGenericSessionId === 'string') process.env.SESSION_ID = prevGenericSessionId;
+      else delete process.env.SESSION_ID;
       await rm(toolingDir, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
     }
@@ -5670,6 +5698,7 @@ process.on('SIGTERM', () => process.exit(0));
 
   it('shutdownTeam removes team-created detached worktrees on normal shutdown', async () => {
     const repo = await initRepo();
+    const foreignCallerCwd = await mkdtemp(join(tmpdir(), 'omx-runtime-worktree-shutdown-caller-'));
     const toolingDir = await mkdtemp(join(tmpdir(), 'omx-runtime-worktree-tools-'));
     const binDir = join(toolingDir, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -5692,6 +5721,7 @@ process.on('SIGTERM', () => process.exit(0));
     const prevTmux = process.env.TMUX;
     const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
     const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
 
     process.env.PATH = `${binDir}:${prevPath ?? ''}`;
     delete process.env.TMUX;
@@ -5717,10 +5747,13 @@ process.on('SIGTERM', () => process.exit(0));
       assert.equal(runtime.config.workers[0]?.worktree_created, true);
       assert.equal(existsSync(worktreePath as string), true);
       assert.equal(existsSync(join(worktreePath as string, 'AGENTS.md')), true);
+      await writeFile(join(worktreePath as string, 'worker-shutdown-change.txt'), 'preserved\n', 'utf-8');
 
-      await shutdownTeam(runtime.teamName, repo);
+      process.env.OMX_TEAM_STATE_ROOT = join(repo, '.omx', 'state');
+      await shutdownTeam(runtime.teamName, foreignCallerCwd, { force: true });
       runtime = null;
 
+      assert.equal(await readFile(join(repo, 'worker-shutdown-change.txt'), 'utf-8'), 'preserved\n');
       assert.equal(existsSync(worktreePath as string), false);
       assert.equal(existsSync(join(repo, '.omx', 'state', 'team', 'team-detached-worktree-shutdown')), false);
     } finally {
@@ -5735,7 +5768,10 @@ process.on('SIGTERM', () => process.exit(0));
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
       if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
       else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
       await rm(toolingDir, { recursive: true, force: true });
+      await rm(foreignCallerCwd, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
     }
   });
