@@ -4,10 +4,41 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.20.4] - 2026-07-28
+
+Patch release for the reliability, workflow-safety, and native-hook trust work in `v0.20.3..73cb50c125c11aca0654b8841e690f011eb5f43f`, plus one additive, backward-compatible feature. No intentional breaking CLI or package-layout changes.
+
+### Added
+
+- **Herdr lifecycle/status bridge** — opt-in Herdr lifecycle and status bridge (Phase 1) provides an external adaptation surface (#3241, #3242).
+
 ### Fixed
 
 - **Autopilot host-receipt preflight** — fresh default Autopilot now fails before deep-interview and Architect/Critic review work when the official host consensus receipt verifier is deterministically unavailable, while preserving the exact fail-closed blocker, direct/manual Ralplan diagnostics, active-session resumability, and ADR 3194/3212 authority boundaries (#3270).
-- **Native cache integrity boundary** — managed cache binaries without their `.sha256` sidecar are rejected; checksum verification establishes integrity, not a signature. On a retained hydration lock, confirm that no OMX hydration process is active for that cache key, remove only that named lock manually, then retry. SparkShell warns and falls back to raw command execution without summary support when its native sidecar is unavailable or GLIBC-incompatible. Binary and checksum sidecars are published as two files and are not an atomic pair; the lock protocol provides process-crash-safe, fail-closed publication, with manual retained-lock remediation, rather than recovery from a process crash.
+- **Native cache integrity boundary** — managed cache binaries without their `.sha256` sidecar are rejected; checksum verification establishes integrity, not a signature. On a retained hydration lock, confirm that no OMX hydration process is active for that cache key, remove only that named lock manually, then retry. SparkShell warns and falls back to raw command execution without summary support when its native sidecar is unavailable or GLIBC-incompatible. Binary and checksum sidecars are published as two files and are not an atomic pair; the lock protocol provides process-crash-safe, fail-closed publication, with manual retained-lock remediation, rather than recovery from a process crash (#3285).
+- **Dead session-pointer lock recovery** — canonical session-pointer locks are recovered when positively dead, with identity-revalidated, no-clobber reversible claims; recovery checkpoints are resumable, swapped claims preserved, failed claims rolled back, and recovery directories atomically quarantined (#3261, #3262; issue #3256).
+- **Team startup rollback and pane authority** — startup cleanup is bound to exact owned panes and split-proof reconciliation, pinned against ambiguous worker/HUD cleanup and PID reuse (#3265; #3231, #3228, #3229, #3230; issue #3224).
+- **Team fail-closed on managed Codex bypass** — managed bypass rejection is enforced fail-closed when Codex bypass is rejected under managed mode (#3232).
+- **Resumed session cancel ownership** — cancel ownership is reconciled for resumed sessions, preserving proven-session scoping (#3280, #3290, #3214).
+- **Root session self-reopen prevention** — root sessions are prevented from self-reopening (#3284, #3289).
+- **Native hook trust and path canonicalization** — exact absolute package CLI status is trusted (#3333; issues #3320, #3322, #3323, #3325, #3321, #3327), conductor mutation roots are canonicalized, macOS policy paths and temporary fixture roots are canonicalized, and planning state transport guards are repaired (#3343, #3344, #3348, #3349, #3350, #3351, #3352, #3353).
+- **Identity-indeterminate pointer recovery** — bounded exact-match recovery resolves identity-indeterminate session pointers (#3324, #3332).
+- **Ultragoal goal-status and state binding** — native Codex goal blocked status is preserved (#3301, #3305), aggregate goals are bound to canonical state paths (#3294, #3297), aggregate completion is persisted on ordinary final checkpoint (#3295), and finite Codex goal tools are authorized under Main-root Conductor (#3300, #3304).
+- **State authoritative root and alias resolution** — verified native session aliases are resolved (#3308, #3160), and durable state commits are revalidated against exact stale session bindings (#3272, #3298).
+- **Deep-interview cancel and self-lock** — the deep-interview omx cancel hook is made hook-owned (#3293, #3299), and the PreToolUse self-lock is fixed (#3240).
+- **HUD teardown and resize guards** — detached HUD is torn down on child exit (#3267), and deferred HUD resize sinks are guarded in command-list context (#3292, #3296).
+- **Native Stop hook bounds** — sloppy fallback Stop audit is bounded and session-scoped (#3347), native Stop hook pointer loops are bounded (#3238), paused Stop guidance is bounded (#3237), and unmatched native Stop is silenced (#3254).
+- **Native sidecar and collaboration authority** — native sidecar session authority is scoped during pointer conflicts (#3244), live session pointers are prevented from native-start replacement (#3235), collaboration tool names are canonicalized (#3264), and collaboration.send_message is scoped out of native-child orchestration deny (#3317).
+- **Standalone Conductor activation guard** — standalone Ultragoal Conductor activation with no reachable owner is refused (#3311, #3312).
+- **Unauthoritative plan bootstrap rejection** — unauthoritative Ultragoal bootstrap publication is rejected (#3326).
+- **Read-only discovery misclassification** — omx/gjc read-only discovery is no longer misclassified as writes (#3313, #3314, #3318).
+- **Auth metadata validation and credential switch** — metadata is validated before credential switch (#3276).
+- **Oversized native hook stdin** — oversized native hook stdin is drained (#3273).
+- **Nonexistent native assignment guidance** — nonexistent native assignment guidance is removed (#3346).
+- **Windows session owner PID** — Windows native hook session owner PID is resolved (#3260).
+- **Bun install ownership** — Bun install ownership is preserved during update (#3259).
+- **tmux separator argv boundaries** — tmux separator argv boundaries are preserved (#3258).
+- **Ralplan preflight guidance** — Ralplan preflight guidance is scoped (#3255).
 
 ## [0.20.3] - 2026-07-19
 
