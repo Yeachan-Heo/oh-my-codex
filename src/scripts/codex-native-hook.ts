@@ -10030,12 +10030,12 @@ function buildPlanningActorWriteDeny(
     decision: "block",
     reason: provenanceConflict
       ? `PROVENANCE_DENIED: ${modeLabel} is active (phase: ${phase}); payload identity aliases conflict and cannot authorize a write.`
-      : `OWNER_CONFIRMATION_REQUIRED: ${modeLabel} is active (phase: ${phase}); implementation/write tools are blocked because native child/descendant provenance establishes same-session origin, not assigned write authority.`,
+      : `OWNER_CONFIRMATION_REQUIRED: ${modeLabel} is active (phase: ${phase}); implementation/write tools are blocked because native child/descendant provenance establishes same-session origin, not product-write authority.`,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext: provenanceConflict
         ? "PROVENANCE_DENIED: Conflicting or ambiguous native identity cannot authorize planning or workflow-state mutations."
-        : `OWNER_CONFIRMATION_REQUIRED: Native child/descendant provenance permits only positively classified read-only operations unless exact authoritative write assignment exists. ${modeLabel === "Deep-interview" ? "Deep-interview remains requirements/spec mode." : "Planning artifact paths do not grant write authority."}`,
+        : `OWNER_CONFIRMATION_REQUIRED: Native child/descendant provenance permits only positively classified read-only operations in this implementation. ${modeLabel === "Deep-interview" ? "Deep-interview remains requirements/spec mode." : "Planning artifact paths do not grant write authority."}`,
     },
   };
 }
@@ -10764,9 +10764,9 @@ async function buildUltragoalNoOwnerActivationGuardOutput(
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       additionalContext:
-        "Standalone Ultragoal Conductor mode requires either an attached tmux session (Team execution) or a scoped "
-        + "native write-assignment grant, neither of which exists on native Codex App outside tmux. Do not set "
-        + "ultragoal active/current_phase here. Proceed with direct bounded implementation for this task without "
+        "Standalone Ultragoal Conductor mode requires an attached tmux session (Team execution) on native Codex App "
+        + "outside tmux; native child/descendant provenance does not grant write authority. Do not set ultragoal "
+        + "active/current_phase here. Proceed with direct bounded implementation for this task without "
         + "entering Ultragoal's Conductor-gated planning mode, or re-run from an attached tmux OMX CLI shell so "
         + "`omx team` is available. `omx cancel` remains available if a stuck Conductor state already exists.",
     },
@@ -19629,11 +19629,11 @@ export async function buildConductorPreToolUseWriteGuardOutput(
       decision: "block",
       reason:
         `OWNER_CONFIRMATION_REQUIRED: Conductor mode is active (${activeState.mode} phase: ${formatPhase(activeState.phase, "active")}); `
-        + `native child/descendant provenance establishes same-session origin, not assigned write authority; ${blockedDetail}.`,
+        + `native child/descendant provenance establishes same-session origin, not product-write authority; ${blockedDetail}.`,
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         additionalContext:
-          "OWNER_CONFIRMATION_REQUIRED: Native child/descendant provenance establishes only session membership, not assigned write authority. "
+          "OWNER_CONFIRMATION_REQUIRED: Native child/descendant provenance establishes only session membership, not product-write authority. "
           + "Do not perform source, package, git, or other substantive writes; return control to the owning Conductor for explicit confirmation.",
       },
     };

@@ -35052,7 +35052,7 @@ PY`,
         },
       });
 
-      // A tracked descendant has same-session provenance but no assigned write authority.
+      // A tracked descendant has same-session provenance but no product-write authority.
       const trackedDescendant = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",
@@ -35068,7 +35068,7 @@ PY`,
       assert.match(String(trackedDescendant.outputJson?.reason ?? ""), /OWNER_CONFIRMATION_REQUIRED/);
       assert.doesNotMatch(String(trackedDescendant.outputJson?.reason ?? ""), /Main-root/);
 
-      // A runtime-proven descendant has same-session provenance but no assigned write authority.
+      // A runtime-proven descendant has same-session provenance but no product-write authority.
       const chainedDescendant = await dispatchCodexNativeHook(
         {
           hook_event_name: "PreToolUse",

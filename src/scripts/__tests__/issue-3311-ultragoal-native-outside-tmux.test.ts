@@ -84,6 +84,12 @@ describe("issue-3311: standalone Ultragoal native-App outside-tmux activation gu
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /OMX-ULTRAGOAL-NO-OWNER/);
+      const context = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)
+          ?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(context, /native child\/descendant provenance does not grant write authority/);
+      assert.doesNotMatch(context, /write-assignment|assignment-backed|scoped native .*grant/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -114,6 +120,12 @@ describe("issue-3311: standalone Ultragoal native-App outside-tmux activation gu
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /OMX-ULTRAGOAL-NO-OWNER/);
+      const context = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)
+          ?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(context, /native child\/descendant provenance does not grant write authority/);
+      assert.doesNotMatch(context, /write-assignment|assignment-backed|scoped native .*grant/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -147,6 +159,12 @@ describe("issue-3311: standalone Ultragoal native-App outside-tmux activation gu
 
       assert.equal(result.outputJson?.decision, "block");
       assert.match(String(result.outputJson?.reason ?? ""), /OMX-ULTRAGOAL-NO-OWNER/);
+      const context = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)
+          ?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.match(context, /native child\/descendant provenance does not grant write authority/);
+      assert.doesNotMatch(context, /write-assignment|assignment-backed|scoped native .*grant/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
