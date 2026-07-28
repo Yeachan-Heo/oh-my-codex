@@ -1932,13 +1932,27 @@ function isSloppyFallbackDiffAuditDisabled(): boolean {
   );
 }
 
+export function isSloppyFallbackTranscriptStartUsable(birthtimeMs: number, ctimeMs: number): boolean {
+  return (
+    Number.isFinite(birthtimeMs)
+    && birthtimeMs > 0
+    && Number.isFinite(ctimeMs)
+    && birthtimeMs < ctimeMs
+  );
+}
+
 function resolveSloppyFallbackSessionStartMs(payload: CodexHookPayload, cwd: string): number | null {
   const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
   if (!transcriptPath) return null;
   try {
     const resolvedPath = isAbsolute(transcriptPath) ? transcriptPath : resolve(cwd, transcriptPath);
-    const { birthtimeMs } = statSync(resolvedPath);
-    return Number.isFinite(birthtimeMs) && birthtimeMs > 0 ? birthtimeMs : null;
+    const { birthtimeMs, ctimeMs } = statSync(resolvedPath);
+    // Only trust an immutable birth time. On filesystems where Node reports
+    // birthtime as ctime (or another mutable fallback), every transcript
+    // append moves the derived session start forward and can make in-session
+    // edits look pre-session; treat that ambiguity as unavailable and audit
+    // all untracked files instead of risking a silent skip.
+    return isSloppyFallbackTranscriptStartUsable(birthtimeMs, ctimeMs) ? birthtimeMs : null;
   } catch {
     return null;
   }

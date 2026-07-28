@@ -317,8 +317,11 @@ The audit is bounded so a single finding cannot hold a session hostage:
   and birth time when reported) predates the session transcript's birth time;
   lstat semantics keep in-session symlinks to older targets auditable. This
   prevents `cp -p`/`tar`-style preserved mtimes from smuggling new sloppy
-  lines past the audit. When no transcript path or birth time is available,
-  the untracked scan falls back to auditing all untracked source files.
+  lines past the audit. The transcript birth time is trusted only when it is
+  immutable — when the filesystem reports no birth time or one
+  indistinguishable from ctime (a mutable fallback that transcript appends
+  would move), the scoping is disabled and all untracked source files are
+  audited.
 
 ## UserPromptSubmit: triage advisory context
 

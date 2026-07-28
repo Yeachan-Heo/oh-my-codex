@@ -3,6 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import {
 	chmod,
+	appendFile,
 	mkdir,
 	mkdtemp,
 	readFile,
@@ -30,6 +31,7 @@ import {
 import { registerTeamNotice } from "../../team/notice-ledger.js";
 import {
 	dispatchCodexNativeHook,
+	isSloppyFallbackTranscriptStartUsable,
   readUnambiguousSessionStartNativeId,
   resolvePersistedReopenRootContext,
 	isCodexNativeHookMainModule,
@@ -23313,9 +23315,14 @@ PY`,
       await new Promise((resolve) => setTimeout(resolve, 25));
       const transcriptPath = join(cwd, "transcript.jsonl");
       await writeFile(transcriptPath, "{}\n");
-      const { birthtimeMs } = statSync(transcriptPath);
-      if (!(birthtimeMs > 0)) {
-        t.skip("file birth time is not available on this platform");
+      // A real session appends to its transcript; the append makes the
+      // transcript's ctime newer than its immutable birth time, which is what
+      // lets the audit trust that birth time as the session start.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await appendFile(transcriptPath, "{}\n");
+      const { birthtimeMs, ctimeMs } = statSync(transcriptPath);
+      if (!(birthtimeMs > 0) || birthtimeMs >= ctimeMs) {
+        t.skip("immutable file birth time is not available on this platform");
         return;
       }
 
@@ -23325,6 +23332,51 @@ PY`,
       );
 
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("trusts only immutable transcript birth times as the sloppy fallback session start", () => {
+    assert.equal(isSloppyFallbackTranscriptStartUsable(50, 100), true);
+    assert.equal(isSloppyFallbackTranscriptStartUsable(100, 100), false);
+    assert.equal(isSloppyFallbackTranscriptStartUsable(0, 100), false);
+    assert.equal(isSloppyFallbackTranscriptStartUsable(100, 50), false);
+    assert.equal(isSloppyFallbackTranscriptStartUsable(Number.NaN, 100), false);
+    assert.equal(isSloppyFallbackTranscriptStartUsable(50, Number.NaN), false);
+  });
+
+  it("audits untracked files when the transcript birth time is indistinguishable from ctime", async (t) => {    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-ctimebacked-");
+    try {
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await writeFile(
+        join(cwd, "src", "runtime.ts"),
+        [
+          "export function loadRuntime() {",
+          "  // implement a quick hack fallback if it fails",
+          "  return process.env.RUNTIME || 'local';",
+          "}",
+        ].join("\n"),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const transcriptPath = join(cwd, "transcript.jsonl");
+      await writeFile(transcriptPath, "{}\n");
+      // A freshly created transcript has birth time == ctime, mimicking
+      // filesystems where Node reports a mutable ctime fallback as birthtime;
+      // the audit must treat that as unavailable rather than trust it.
+      const { birthtimeMs, ctimeMs } = statSync(transcriptPath);
+      if (!(birthtimeMs > 0) || birthtimeMs < ctimeMs) {
+        t.skip("this platform reports an immutable birth time distinct from ctime");
+        return;
+      }
+
+      const result = await dispatchCodexNativeHook(
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-ctimebacked", transcript_path: transcriptPath },
+        { cwd },
+      );
+
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((result.outputJson as { stopReason?: string } | null)?.stopReason, "sloppy_fallback_diff_audit");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
