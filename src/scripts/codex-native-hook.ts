@@ -224,6 +224,7 @@ const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_MAX_REPEATS = 8;
+const SLOPPY_FALLBACK_DIFF_STOP_DEFAULT_MAX_REPEATS = 3;
 const RALPH_ORPHANED_STARTING_STALE_MS = 15 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_DEFAULT_IDLE_MS = 10 * 60_000;
 const ORDINARY_STOP_NO_PROGRESS_MAX_MESSAGE_LENGTH = 240;
@@ -1925,13 +1926,39 @@ function collectSloppyFallbackFindingsFromPatch(
   return findings;
 }
 
-function collectSloppyFallbackFindingsFromUntracked(cwd: string): SloppyFallbackDiffFinding[] {
+function isSloppyFallbackDiffAuditDisabled(): boolean {
+  return /^(?:0|off|false|disabled?)$/i.test(
+    safeString(process.env.OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT).trim(),
+  );
+}
+
+function resolveSloppyFallbackSessionStartMs(payload: CodexHookPayload, cwd: string): number | null {
+  const transcriptPath = safeString(payload.transcript_path ?? payload.transcriptPath).trim();
+  if (!transcriptPath) return null;
+  try {
+    const resolvedPath = isAbsolute(transcriptPath) ? transcriptPath : resolve(cwd, transcriptPath);
+    const { birthtimeMs } = statSync(resolvedPath);
+    return Number.isFinite(birthtimeMs) && birthtimeMs > 0 ? birthtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectSloppyFallbackFindingsFromUntracked(cwd: string, sessionStartMs?: number | null): SloppyFallbackDiffFinding[] {
   const output = gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]);
   if (!output) return [];
   const findings: SloppyFallbackDiffFinding[] = [];
   for (const rawPath of output.split("\0")) {
     const path = normalizeGitPath(rawPath.trim());
     if (!path || !isDiffAuditableSourcePath(path)) continue;
+    if (sessionStartMs != null) {
+      try {
+        const { mtimeMs } = statSync(join(cwd, path));
+        if (Number.isFinite(mtimeMs) && mtimeMs < sessionStartMs) continue;
+      } catch {
+        continue;
+      }
+    }
     let content = "";
     try {
       content = readFileSync(join(cwd, path), "utf-8");
@@ -1943,14 +1970,14 @@ function collectSloppyFallbackFindingsFromUntracked(cwd: string): SloppyFallback
   return findings;
 }
 
-function findSloppyFallbackDiffFindings(cwd: string): SloppyFallbackDiffFinding[] {
+function findSloppyFallbackDiffFindings(cwd: string, sessionStartMs?: number | null): SloppyFallbackDiffFinding[] {
   const layout = findGitLayout(cwd);
   if (!layout) return [];
   const auditRoot = layout.worktreeRoot;
   return [
     ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--cached", "--no-ext-diff", "--unified=3"]), "staged"),
     ...collectSloppyFallbackFindingsFromPatch(gitOutput(auditRoot, ["diff", "--no-ext-diff", "--unified=3"]), "unstaged"),
-    ...collectSloppyFallbackFindingsFromUntracked(auditRoot),
+    ...collectSloppyFallbackFindingsFromUntracked(auditRoot, sessionStartMs),
   ];
 }
 
@@ -1969,6 +1996,75 @@ function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]
     stopReason: "sloppy_fallback_diff_audit",
     systemMessage,
   };
+}
+
+function buildSloppyFallbackDiffGuardFingerprint(findings: SloppyFallbackDiffFinding[]): string {
+  return JSON.stringify(findings.map((finding) => [finding.source, finding.path, finding.line]));
+}
+
+async function maybeBuildSloppyFallbackDiffStopOutput(
+  payload: CodexHookPayload,
+  cwd: string,
+  stateDir: string,
+  canonicalSessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  if (isSloppyFallbackDiffAuditDisabled()) return null;
+  const findings = findSloppyFallbackDiffFindings(cwd, resolveSloppyFallbackSessionStartMs(payload, cwd));
+  const statePath = join(stateDir, NATIVE_STOP_STATE_FILE);
+  const state = await readJsonIfExists(statePath) ?? {};
+  const sessions = safeObject(state.sessions);
+  const sessionKey = readNativeStopSessionKey(payload, canonicalSessionId);
+  const sessionState = safeObject(sessions[sessionKey]);
+
+  if (findings.length === 0) {
+    if (sessionState.sloppy_fallback_diff_guard !== undefined) {
+      const clearedSessionState = { ...sessionState };
+      delete clearedSessionState.sloppy_fallback_diff_guard;
+      sessions[sessionKey] = clearedSessionState;
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
+    }
+    return null;
+  }
+
+  const fingerprint = buildSloppyFallbackDiffGuardFingerprint(findings);
+  const nowIso = new Date().toISOString();
+  const previousGuard = safeObject(sessionState.sloppy_fallback_diff_guard);
+  const sameFingerprint = safeString(previousGuard.fingerprint).trim() === fingerprint;
+  const repeatCount = sameFingerprint
+    ? parseBoundedPositiveInteger(previousGuard.repeat_count, 1) + 1
+    : 1;
+  sessions[sessionKey] = {
+    ...sessionState,
+    sloppy_fallback_diff_guard: {
+      fingerprint,
+      first_seen_at: sameFingerprint
+        ? safeString(previousGuard.first_seen_at).trim() || nowIso
+        : nowIso,
+      last_seen_at: nowIso,
+      repeat_count: repeatCount,
+      last_turn_id: readPayloadTurnId(payload) || null,
+      last_thread_id: readPayloadThreadId(payload) || null,
+    },
+  };
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(statePath, JSON.stringify({ ...state, sessions }, null, 2));
+
+  const maxRepeats = parseBoundedPositiveInteger(
+    process.env.OMX_NATIVE_STOP_SLOPPY_FALLBACK_MAX_REPEATS,
+    SLOPPY_FALLBACK_DIFF_STOP_DEFAULT_MAX_REPEATS,
+  );
+  if (repeatCount > maxRepeats) return null;
+
+  return await returnPersistentStopBlock(
+    payload,
+    stateDir,
+    "sloppy-fallback-diff-stop",
+    JSON.stringify(findings),
+    buildSloppyFallbackDiffStopOutput(findings),
+    canonicalSessionId,
+    { allowRepeatDuringStopHook: true },
+  );
 }
 
 function localExcludeAlreadyIgnoresOmx(cwd: string): boolean {
@@ -21284,18 +21380,14 @@ async function buildStopHookOutput(
       );
     }
 
-    const sloppyFallbackDiffFindings = findSloppyFallbackDiffFindings(cwd);
-    const sloppyFallbackDiffOutput = buildSloppyFallbackDiffStopOutput(sloppyFallbackDiffFindings);
-    if (sloppyFallbackDiffOutput) {
-      return await returnPersistentStopBlock(
-        payload,
-        stateDir,
-        "sloppy-fallback-diff-stop",
-        JSON.stringify(sloppyFallbackDiffFindings),
-        sloppyFallbackDiffOutput,
-        canonicalSessionId,
-        { allowRepeatDuringStopHook: true },
-      );
+    const sloppyFallbackDiffStopOutput = await maybeBuildSloppyFallbackDiffStopOutput(
+      payload,
+      cwd,
+      stateDir,
+      canonicalSessionId,
+    );
+    if (sloppyFallbackDiffStopOutput) {
+      return sloppyFallbackDiffStopOutput;
     }
 
     if (isFinalHandoffDocumentRefreshCandidate(lastAssistantMessage)) {

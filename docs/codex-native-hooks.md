@@ -292,6 +292,28 @@ returns a no-op response instead of a diagnostic continuation block.
 Native `Stop` ends one assistant turn rather than the Codex process, so a
 successful `Stop` does not delete owner evidence.
 
+## Stop: sloppy fallback/workaround diff audit
+
+Native `Stop` audits the worktree for ungrounded fallback wording in added
+source lines: staged and unstaged diffs, plus untracked source files. A finding
+blocks the stop and asks the agent to ground or rework the line.
+
+The audit is bounded so a single finding cannot hold a session hostage:
+
+- Identical findings block at most `OMX_NATIVE_STOP_SLOPPY_FALLBACK_MAX_REPEATS`
+  times (default 3), tracked per session in
+  `.omx/state/native-stop-state.json` under `sloppy_fallback_diff_guard`. The
+  guard fingerprints the finding set only (not the assistant message), resets
+  when findings change, and clears when findings disappear. Past the cap the
+  gate fails open for that identical finding set.
+- `OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT=off` (also `0`/`false`/`disabled`)
+  disables the audit entirely.
+- Untracked files whose mtime predates the session start (derived from the
+  transcript file's birth time) are skipped, so pre-existing repo content the
+  session never touched cannot block it. When no transcript path or birth time
+  is available, the untracked scan falls back to auditing all untracked source
+  files.
+
 ## UserPromptSubmit: triage advisory context
 
 `UserPromptSubmit` can now emit triage advisory context alongside keyword context. When no keyword matches, the triage layer classifies the prompt and may inject an advisory prompt-routing context string — this is advisory prompt-routing context that does not activate a skill or workflow by itself; it adds a developer-context hint the model may follow. Light advisory destinations include repo-local `explore`, narrow-edit `executor`, visual `designer`, and external documentation/reference `researcher`; researcher routing is for official-doc, version-compatibility, source-backed, or external lookup requests, does not override local anchors or implementation-shaped prompts, and still writes only prompt-routing state. Keywords remain the deterministic control surface: a matched keyword always takes precedence over triage output, and users can suppress triage injection per prompt with phrases such as `no workflow`, `just chat`, or `plain answer`.
