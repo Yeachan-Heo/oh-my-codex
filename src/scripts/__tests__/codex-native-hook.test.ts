@@ -23199,6 +23199,39 @@ PY`,
     }
   });
 
+  it("keeps the repeat count when identical findings move across staging states", async () => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-staging-");
+    try {
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await writeFile(
+        join(cwd, "src", "runtime.ts"),
+        [
+          "export function loadRuntime() {",
+          "  // implement a quick hack fallback if it fails",
+          "  return process.env.RUNTIME || 'local';",
+          "}",
+        ].join("\n"),
+      );
+      const payload = { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-staging", turn_id: "turn-staging" };
+      const stop = (attempt: number) =>
+        dispatchCodexNativeHook(attempt === 0 ? payload : { ...payload, stop_hook_active: true }, { cwd });
+
+      const first = await stop(0);
+      execFileSync("git", ["add", "src/runtime.ts"], { cwd, stdio: "ignore" });
+      const staged = await stop(1);
+      execFileSync("git", ["reset", "-q", "--", "src/runtime.ts"], { cwd, stdio: "ignore" });
+      const unstagedAgain = await stop(2);
+      const afterCap = await stop(3);
+
+      assert.equal((first.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((staged.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((unstagedAgain.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal(afterCap.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("skips the sloppy fallback diff audit when OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT is off", async () => {
     const cwd = await initTempGitRepo("omx-native-hook-stop-slop-disabled-");
     const previousValue = process.env.OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT;

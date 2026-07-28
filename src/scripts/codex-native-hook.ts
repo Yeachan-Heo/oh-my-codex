@@ -1999,7 +1999,7 @@ function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]
 }
 
 function buildSloppyFallbackDiffGuardFingerprint(findings: SloppyFallbackDiffFinding[]): string {
-  return JSON.stringify(findings.map((finding) => [finding.source, finding.path, finding.line]));
+  return JSON.stringify(findings.map((finding) => [finding.path, finding.line]));
 }
 
 async function maybeBuildSloppyFallbackDiffStopOutput(
