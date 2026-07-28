@@ -1765,6 +1765,7 @@ interface SloppyFallbackDiffFinding {
   path: string;
   line: string;
   source: "staged" | "unstaged" | "untracked";
+  lineNumber?: number;
 }
 
 const SOURCE_DIFF_EXTENSIONS = new Set([
@@ -1863,6 +1864,7 @@ function isSuspiciousSloppyFallbackAddedLine(line: string, nearbyContext: string
 interface SloppyFallbackCandidateLine {
   text: string;
   added: boolean;
+  lineNumber?: number;
 }
 
 function collectFindingsFromCandidateLines(
@@ -1880,7 +1882,7 @@ function collectFindingsFromCandidateLines(
       .map((line) => line.text)
       .join("\n");
     if (isSuspiciousSloppyFallbackAddedLine(candidate.text, nearbyContext)) {
-      findings.push({ path, line: candidate.text.trim(), source });
+      findings.push({ path, line: candidate.text.trim(), source, lineNumber: candidate.lineNumber });
     }
   }
   return findings;
@@ -1893,6 +1895,7 @@ function collectSloppyFallbackFindingsFromPatch(
   const findings: SloppyFallbackDiffFinding[] = [];
   let currentPath = "";
   let hunkLines: SloppyFallbackCandidateLine[] = [];
+  let newFileLineNumber = 0;
 
   const flushHunk = () => {
     findings.push(...collectFindingsFromCandidateLines(currentPath, hunkLines, source));
@@ -1904,6 +1907,7 @@ function collectSloppyFallbackFindingsFromPatch(
     if (fileMatch) {
       flushHunk();
       currentPath = normalizeGitPath(fileMatch[2] || fileMatch[1] || "");
+      newFileLineNumber = 0;
       continue;
     }
     const renameMatch = rawLine.match(/^\+\+\+ b\/(.*)$/);
@@ -1913,13 +1917,17 @@ function collectSloppyFallbackFindingsFromPatch(
     }
     if (rawLine.startsWith("@@")) {
       flushHunk();
+      const hunkMatch = rawLine.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      newFileLineNumber = hunkMatch ? Number.parseInt(hunkMatch[1], 10) : 0;
       continue;
     }
     if (!currentPath || !isDiffAuditableSourcePath(currentPath) || isDiffHeaderLine(rawLine)) continue;
     if (rawLine.startsWith("+")) {
-      hunkLines.push({ text: rawLine.slice(1), added: true });
+      hunkLines.push({ text: rawLine.slice(1), added: true, lineNumber: newFileLineNumber || undefined });
+      if (newFileLineNumber > 0) newFileLineNumber += 1;
     } else if (rawLine.startsWith(" ")) {
-      hunkLines.push({ text: rawLine.slice(1), added: false });
+      hunkLines.push({ text: rawLine.slice(1), added: false, lineNumber: newFileLineNumber || undefined });
+      if (newFileLineNumber > 0) newFileLineNumber += 1;
     }
   }
   flushHunk();
@@ -1985,7 +1993,7 @@ function collectSloppyFallbackFindingsFromUntracked(cwd: string, sessionStartMs?
     } catch {
       continue;
     }
-    findings.push(...collectFindingsFromCandidateLines(path, content.split(/\r?\n/).map((text) => ({ text, added: true })), "untracked"));
+    findings.push(...collectFindingsFromCandidateLines(path, content.split(/\r?\n/).map((text, index) => ({ text, added: true, lineNumber: index + 1 })), "untracked"));
   }
   return findings;
 }
@@ -2021,8 +2029,9 @@ function buildSloppyFallbackDiffStopOutput(findings: SloppyFallbackDiffFinding[]
 function buildSloppyFallbackDiffGuardFingerprint(findings: SloppyFallbackDiffFinding[]): string {
   return JSON.stringify(
     findings
-      .map((finding) => [finding.path, finding.line] as const)
-      .sort(([pathA, lineA], [pathB, lineB]) => pathA.localeCompare(pathB) || lineA.localeCompare(lineB)),
+      .map((finding) => [finding.path, finding.line, finding.lineNumber ?? 0] as const)
+      .sort(([pathA, lineA, numberA], [pathB, lineB, numberB]) =>
+        pathA.localeCompare(pathB) || lineA.localeCompare(lineB) || numberA - numberB),
   );
 }
 

@@ -303,12 +303,13 @@ The audit is bounded so a single finding cannot hold a session hostage:
 - Identical findings block at most `OMX_NATIVE_STOP_SLOPPY_FALLBACK_MAX_REPEATS`
   times (default 3), tracked per session in
   `.omx/state/native-stop-state.json` under `sloppy_fallback_diff_guard`. The
-  guard fingerprints the finding set by path and line only, sorted so the
-  fingerprint is order-insensitive (not the assistant message, and not the
-  staged/unstaged/untracked source, so identical findings keep counting
-  across `git add`/`git reset` and subset staging), resets when findings
-  change, and clears when findings disappear. Past the cap the gate fails
-  open for that identical finding set.
+  guard fingerprints the finding set by path, line text, and new-file line
+  number, sorted so the fingerprint is order-insensitive (not the assistant
+  message, and not the staged/unstaged/untracked source, so identical
+  findings keep counting across `git add`/`git reset` and subset staging,
+  while relocating the same text to another line starts a fresh count),
+  resets when findings change, and clears when findings disappear. Past the
+  cap the gate fails open for that identical finding set.
 - `OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT=off` (also `0`/`false`/`disabled`)
   disables the audit entirely.
 - Untracked files that provably predate the session are skipped, so

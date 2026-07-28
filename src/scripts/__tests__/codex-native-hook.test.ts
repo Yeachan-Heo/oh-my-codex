@@ -23268,6 +23268,39 @@ PY`,
     }
   });
 
+  it("resets the repeat cap when a finding moves to a new line in the same file", async () => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-moveline-");
+    try {
+      await mkdir(join(cwd, "src"), { recursive: true });
+      const sloppySource = (headerLines: string[]) => [
+        ...headerLines,
+        "export function loadRuntime() {",
+        "  // implement a quick hack fallback if it fails",
+        "  return process.env.RUNTIME || 'local';",
+        "}",
+      ].join("\n");
+      await writeFile(join(cwd, "src", "runtime.ts"), sloppySource([]));
+      const payload = { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-moveline", turn_id: "turn-moveline" };
+      const stop = (attempt: number) =>
+        dispatchCodexNativeHook(attempt === 0 ? payload : { ...payload, stop_hook_active: true }, { cwd });
+
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await stop(attempt);
+      }
+      const allowed = await dispatchCodexNativeHook({ ...payload, stop_hook_active: true }, { cwd });
+      assert.equal(allowed.outputJson, null);
+
+      // The identical text relocated to another line is a new finding set and
+      // must block again rather than inherit the exhausted repeat cap.
+      await writeFile(join(cwd, "src", "runtime.ts"), sloppySource(["// header comment"]));
+      const blockedAgain = await dispatchCodexNativeHook({ ...payload, stop_hook_active: true }, { cwd });
+      assert.equal((blockedAgain.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((blockedAgain.outputJson as { stopReason?: string } | null)?.stopReason, "sloppy_fallback_diff_audit");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("skips the sloppy fallback diff audit when OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT is off", async () => {
     const cwd = await initTempGitRepo("omx-native-hook-stop-slop-disabled-");
     const previousValue = process.env.OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT;
