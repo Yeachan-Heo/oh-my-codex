@@ -23298,6 +23298,54 @@ PY`,
   it("ignores untracked sloppy fallback files last written before the session transcript", async (t) => {
     const cwd = await initTempGitRepo("omx-native-hook-stop-slop-preexisting-");
     try {
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await writeFile(
+        join(cwd, "src", "runtime.ts"),
+        [
+          "export function loadRuntime() {",
+          "  // implement a quick hack fallback if it fails",
+          "  return process.env.RUNTIME || 'local';",
+          "}",
+        ].join("\n"),
+      );
+      // The file must genuinely predate the session: ctime/birth time cannot
+      // be backdated with utimes, so create the transcript afterwards.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const transcriptPath = join(cwd, "transcript.jsonl");
+      await writeFile(transcriptPath, "{}\n");
+      const { birthtimeMs } = statSync(transcriptPath);
+      if (!(birthtimeMs > 0)) {
+        t.skip("file birth time is not available on this platform");
+        return;
+      }
+
+      const result = await dispatchCodexNativeHook(
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-preexisting", transcript_path: transcriptPath },
+        { cwd },
+      );
+
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks untracked sloppy fallback files materialized in-session with preserved mtime", async (t) => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-cpreserve-");
+    try {
+      const seedPath = join(cwd, "seed.ts");
+      await writeFile(
+        seedPath,
+        [
+          "export function loadRuntime() {",
+          "  // implement a quick hack fallback if it fails",
+          "  return process.env.RUNTIME || 'local';",
+          "}",
+        ].join("\n"),
+      );
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      await utimes(seedPath, oldTime, oldTime);
+      await new Promise((resolve) => setTimeout(resolve, 25));
       const transcriptPath = join(cwd, "transcript.jsonl");
       await writeFile(transcriptPath, "{}\n");
       const { birthtimeMs } = statSync(transcriptPath);
@@ -23306,9 +23354,26 @@ PY`,
         return;
       }
       await mkdir(join(cwd, "src"), { recursive: true });
-      const sloppyPath = join(cwd, "src", "runtime.ts");
+      execFileSync("cp", ["-p", seedPath, join(cwd, "src", "runtime.ts")], { stdio: "ignore" });
+
+      const result = await dispatchCodexNativeHook(
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-cpreserve", transcript_path: transcriptPath },
+        { cwd },
+      );
+
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((result.outputJson as { stopReason?: string } | null)?.stopReason, "sloppy_fallback_diff_audit");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks untracked sloppy fallback files reachable through an in-session symlink to an older target", async (t) => {
+    const cwd = await initTempGitRepo("omx-native-hook-stop-slop-symlink-");
+    try {
+      const seedPath = join(cwd, "seed.ts");
       await writeFile(
-        sloppyPath,
+        seedPath,
         [
           "export function loadRuntime() {",
           "  // implement a quick hack fallback if it fails",
@@ -23316,15 +23381,26 @@ PY`,
           "}",
         ].join("\n"),
       );
-      const preSessionTime = new Date(Date.now() - 10 * 60_000);
-      await utimes(sloppyPath, preSessionTime, preSessionTime);
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      await utimes(seedPath, oldTime, oldTime);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const transcriptPath = join(cwd, "transcript.jsonl");
+      await writeFile(transcriptPath, "{}\n");
+      const { birthtimeMs } = statSync(transcriptPath);
+      if (!(birthtimeMs > 0)) {
+        t.skip("file birth time is not available on this platform");
+        return;
+      }
+      await mkdir(join(cwd, "src"), { recursive: true });
+      await symlink(seedPath, join(cwd, "src", "runtime.ts"));
 
       const result = await dispatchCodexNativeHook(
-        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-preexisting", transcript_path: transcriptPath },
+        { hook_event_name: "Stop", cwd, session_id: "sess-stop-slop-symlink", transcript_path: transcriptPath },
         { cwd },
       );
 
-      assert.equal(result.outputJson, null);
+      assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block");
+      assert.equal((result.outputJson as { stopReason?: string } | null)?.stopReason, "sloppy_fallback_diff_audit");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
