@@ -1948,8 +1948,14 @@ function collectSloppyFallbackFindingsFromUntracked(cwd: string, sessionStartMs?
     if (!path || !isDiffAuditableSourcePath(path)) continue;
     if (sessionStartMs != null) {
       try {
-        const { mtimeMs } = statSync(join(cwd, path));
-        if (Number.isFinite(mtimeMs) && mtimeMs < sessionStartMs) continue;
+        // Skip only files that provably predate the session: mtime alone is
+        // preservable (cp -p, tar) and statSync follows symlinks to older
+        // targets, so require every available indicator (mtime, ctime, and
+        // birth time when the filesystem reports one) to predate the session.
+        const stats = lstatSync(join(cwd, path));
+        const indicators = [stats.mtimeMs, stats.ctimeMs];
+        if (Number.isFinite(stats.birthtimeMs) && stats.birthtimeMs > 0) indicators.push(stats.birthtimeMs);
+        if (indicators.every((indicatorMs) => Number.isFinite(indicatorMs) && indicatorMs < sessionStartMs)) continue;
       } catch {
         continue;
       }

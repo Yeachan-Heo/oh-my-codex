@@ -311,11 +311,14 @@ The audit is bounded so a single finding cannot hold a session hostage:
   open for that identical finding set.
 - `OMX_NATIVE_STOP_SLOPPY_FALLBACK_AUDIT=off` (also `0`/`false`/`disabled`)
   disables the audit entirely.
-- Untracked files whose mtime predates the session start (derived from the
-  transcript file's birth time) are skipped, so pre-existing repo content the
-  session never touched cannot block it. When no transcript path or birth time
-  is available, the untracked scan falls back to auditing all untracked source
-  files.
+- Untracked files that provably predate the session are skipped, so
+  pre-existing repo content the session never touched cannot block it. A file
+  counts as pre-session only when every available indicator (mtime, ctime,
+  and birth time when reported) predates the session transcript's birth time;
+  lstat semantics keep in-session symlinks to older targets auditable. This
+  prevents `cp -p`/`tar`-style preserved mtimes from smuggling new sloppy
+  lines past the audit. When no transcript path or birth time is available,
+  the untracked scan falls back to auditing all untracked source files.
 
 ## UserPromptSubmit: triage advisory context
 
