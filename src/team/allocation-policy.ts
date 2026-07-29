@@ -4,6 +4,7 @@ export interface AllocationTaskInput {
   subject: string;
   description: string;
   role?: string;
+  affinityDescription?: string;
   blocked_by?: string[];
   filePaths?: string[];
   domains?: string[];
@@ -92,7 +93,7 @@ function extractHardAffinityHints(task: AllocationTaskInput): Set<string> {
   for (const pathValue of task.filePaths ?? []) collectExactPathHint(pathValue, hints, 'structured');
   for (const domain of task.domains ?? []) collectExactDeclaredDomainHint(domain, hints);
 
-  const text = `${task.subject}\n${task.description}`;
+  const text = `${task.subject}\n${task.affinityDescription ?? task.description}`;
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
     if (match[1]) collectExactPathHint(match[1], hints, 'prose');
   }
@@ -105,7 +106,7 @@ function extractTaskHints(task: AllocationTaskInput): Set<string> {
   for (const domain of task.domains ?? []) collectDeclaredDomainHints(domain, hints);
   for (const domain of task.inferredDomains ?? []) collectDeclaredDomainHints(domain, hints);
 
-  const text = `${task.subject}\n${task.description}`;
+  const text = `${task.subject}\n${task.affinityDescription ?? task.description}`;
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
     if (match[1]) collectPathHints(match[1], hints, 'prose');
   }
@@ -153,7 +154,7 @@ function scoreWorker(
 export function chooseTaskOwner(
   task: AllocationTaskInput,
   workers: AllocationWorkerInput[],
-  currentAssignments: Array<{ owner: string; role?: string; subject?: string; description?: string; filePaths?: string[]; domains?: string[]; inferredDomains?: string[] }>,
+  currentAssignments: Array<{ owner: string; role?: string; subject?: string; description?: string; affinityDescription?: string; filePaths?: string[]; domains?: string[]; inferredDomains?: string[] }>,
 ): AllocationDecision {
   if (workers.length === 0) {
     throw new Error('at least one worker is required for allocation');
@@ -170,6 +171,7 @@ export function chooseTaskOwner(
       const assignedTask = {
         subject: item.subject ?? '',
         description: item.description ?? '',
+        affinityDescription: item.affinityDescription,
         role: item.role,
         filePaths: item.filePaths,
         domains: item.domains,

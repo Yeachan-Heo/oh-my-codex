@@ -51,6 +51,7 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
       role: task.role,
       subject: task.subject,
       description: task.description,
+      affinityDescription: task.affinityDescription,
       filePaths: task.filePaths,
       domains: task.domains,
     }));
@@ -74,6 +75,7 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
       role: task.role,
       subject: task.subject,
       description: task.description,
+      affinityDescription: task.affinityDescription,
       filePaths: task.filePaths,
       domains: task.domains,
     });

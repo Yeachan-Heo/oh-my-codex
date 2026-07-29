@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildRepoAwareTeamExecutionPlan } from '../repo-aware-decomposition.js';
+import { buildRebalanceDecisions } from '../rebalance-policy.js';
 
 function repo(): string {
   const cwd = mkdtempSync(join(tmpdir(), 'omx-dag-'));
@@ -121,6 +122,31 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
     ]);
 
     assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-2']);
+    assert.deepEqual(plan.tasks.map((task) => task.affinityDescription), ['first lane', 'second lane']);
+
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: plan.tasks.map((task, index) => ({
+        ...task,
+        id: String(index + 1),
+        status: 'pending' as const,
+        owner: undefined,
+        created_at: `2026-03-11T00:00:0${index}.000Z`,
+      })),
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+      ],
+    });
+    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-2']);
   });
 
 

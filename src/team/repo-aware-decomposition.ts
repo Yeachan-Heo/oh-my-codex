@@ -21,6 +21,7 @@ export interface LegacyTeamExecutionPlanInput {
 export interface RepoAwareTask {
   subject: string;
   description: string;
+  affinityDescription?: string;
   owner: string;
   role?: string;
   blocked_by?: string[];
@@ -214,6 +215,7 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
   const allocationInput = sorted.map((node) => ({
     subject: node.subject,
     description: node.description,
+    affinityDescription: node.description,
     role: input.explicitAgentType ? input.agentType : node.role,
     blocked_by: node.depends_on ?? [],
     symbolic_depends_on: node.depends_on ?? [],

@@ -3345,7 +3345,7 @@ export async function startTeam(
   task: string,
   agentType: string,
   workerCount: number,
-  tasks: Array<{ subject: string; description: string; owner?: string; blocked_by?: string[]; depends_on?: string[]; symbolic_depends_on?: string[]; role?: string; delegation?: TeamTask['delegation']; coordination?: TeamTask['coordination']; requires_code_change?: boolean; filePaths?: string[]; domains?: string[]; lane?: string; allocation_reason?: string; symbolic_id?: string }>,
+  tasks: Array<{ subject: string; description: string; affinityDescription?: string; owner?: string; blocked_by?: string[]; depends_on?: string[]; symbolic_depends_on?: string[]; role?: string; delegation?: TeamTask['delegation']; coordination?: TeamTask['coordination']; requires_code_change?: boolean; filePaths?: string[]; domains?: string[]; lane?: string; allocation_reason?: string; symbolic_id?: string }>,
   cwd: string,
   options: TeamStartOptions = {},
 ): Promise<TeamRuntime> {
@@ -3590,6 +3590,7 @@ export async function startTeam(
       const created = await createStateTask(sanitized, {
         subject: t.subject,
         description: t.description,
+        affinityDescription: t.affinityDescription,
         status: 'pending',
         owner: t.owner,
         blocked_by: hasSymbolicDagIdentity ? undefined : t.blocked_by ?? t.depends_on,

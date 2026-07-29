@@ -114,6 +114,7 @@ export interface TeamTask {
   id: string;
   subject: string;
   description: string;
+  affinityDescription?: string;
   status: TeamTaskStatus;
   requires_code_change?: boolean;
   role?: string;

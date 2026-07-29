@@ -202,6 +202,7 @@ export interface TeamTask {
   id: string;
   subject: string;
   description: string;
+  affinityDescription?: string;
   status: 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed';
   requires_code_change?: boolean;
   role?: string; // agent role for this task (e.g., 'executor', 'test-engineer', 'designer')
