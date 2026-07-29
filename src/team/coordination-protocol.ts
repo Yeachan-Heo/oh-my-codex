@@ -77,7 +77,7 @@ function hasInterdependenceSignal(text: string): boolean {
 }
 
 export function normalizeTeamFileScope(value: string): string {
-	const portable = value.trim().replace(/\\/g, "/").replace(/([A-Za-z0-9])\.+$/, "$1");
+	const portable = value.trim().replace(/\\/g, "/");
 	const normalized = pathPosix.normalize(portable);
 	return normalized === "." ? "" : normalized.replace(/^(\.\/)+/, "");
 }

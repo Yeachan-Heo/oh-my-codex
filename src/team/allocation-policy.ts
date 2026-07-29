@@ -7,6 +7,7 @@ export interface AllocationTaskInput {
   blocked_by?: string[];
   filePaths?: string[];
   domains?: string[];
+  inferredDomains?: string[];
 }
 
 export interface AllocationWorkerInput {
@@ -40,8 +41,15 @@ function normalizeHint(value: string): string | null {
   return normalized.length >= 3 ? normalized : null;
 }
 
-function collectPathHints(pathValue: string, target: Set<string>): void {
-  const normalizedPath = normalizeTeamFileScope(pathValue);
+function normalizedPathHint(pathValue: string, source: 'structured' | 'prose'): string {
+  const boundaryValue = source === 'prose'
+    ? pathValue.replace(/([A-Za-z0-9])\.+$/, '$1')
+    : pathValue;
+  return normalizeTeamFileScope(boundaryValue);
+}
+
+function collectPathHints(pathValue: string, target: Set<string>, source: 'structured' | 'prose'): void {
+  const normalizedPath = normalizedPathHint(pathValue, source);
   if (!normalizedPath) return;
   target.add(`path:${normalizedPath}`);
 
@@ -51,8 +59,8 @@ function collectPathHints(pathValue: string, target: Set<string>): void {
   if (normalizedStem) target.add(`domain:${normalizedStem}`);
 }
 
-function collectExactPathHint(pathValue: string, target: Set<string>): void {
-  const normalizedPath = normalizeTeamFileScope(pathValue);
+function collectExactPathHint(pathValue: string, target: Set<string>, source: 'structured' | 'prose'): void {
+  const normalizedPath = normalizedPathHint(pathValue, source);
   if (normalizedPath) target.add(`path:${normalizedPath}`);
 }
 
@@ -81,24 +89,25 @@ function collectExactDeclaredDomainHint(value: string, target: Set<string>): voi
 
 function extractHardAffinityHints(task: AllocationTaskInput): Set<string> {
   const hints = new Set<string>();
-  for (const pathValue of task.filePaths ?? []) collectExactPathHint(pathValue, hints);
+  for (const pathValue of task.filePaths ?? []) collectExactPathHint(pathValue, hints, 'structured');
   for (const domain of task.domains ?? []) collectExactDeclaredDomainHint(domain, hints);
 
   const text = `${task.subject}\n${task.description}`;
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
-    if (match[1]) collectExactPathHint(match[1], hints);
+    if (match[1]) collectExactPathHint(match[1], hints, 'prose');
   }
   return hints;
 }
 
 function extractTaskHints(task: AllocationTaskInput): Set<string> {
   const hints = new Set<string>();
-  for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints);
+  for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints, 'structured');
   for (const domain of task.domains ?? []) collectDeclaredDomainHints(domain, hints);
+  for (const domain of task.inferredDomains ?? []) collectDeclaredDomainHints(domain, hints);
 
   const text = `${task.subject}\n${task.description}`;
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
-    if (match[1]) collectPathHints(match[1], hints);
+    if (match[1]) collectPathHints(match[1], hints, 'prose');
   }
   collectDomainHints(text, hints);
   return hints;
@@ -144,7 +153,7 @@ function scoreWorker(
 export function chooseTaskOwner(
   task: AllocationTaskInput,
   workers: AllocationWorkerInput[],
-  currentAssignments: Array<{ owner: string; role?: string; subject?: string; description?: string; filePaths?: string[]; domains?: string[] }>,
+  currentAssignments: Array<{ owner: string; role?: string; subject?: string; description?: string; filePaths?: string[]; domains?: string[]; inferredDomains?: string[] }>,
 ): AllocationDecision {
   if (workers.length === 0) {
     throw new Error('at least one worker is required for allocation');
@@ -164,6 +173,7 @@ export function chooseTaskOwner(
         role: item.role,
         filePaths: item.filePaths,
         domains: item.domains,
+        inferredDomains: item.inferredDomains,
       };
       for (const hint of extractTaskHints(assignedTask)) scopeHints.add(hint);
       for (const hint of extractHardAffinityHints(assignedTask)) workerHardAffinityHints.add(hint);

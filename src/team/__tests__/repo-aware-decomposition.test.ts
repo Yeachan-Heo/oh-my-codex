@@ -20,6 +20,23 @@ const legacy = () => ({
   tasks: [{ subject: 'legacy', description: 'legacy', owner: 'worker-1', role: 'team-executor' }],
 });
 
+function buildDagPlan(cwd: string, nodes: Array<Record<string, unknown>>) {
+  writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({
+    schema_version: 1,
+    nodes,
+  }));
+  return buildRepoAwareTeamExecutionPlan({
+    task: 'team',
+    workerCount: 2,
+    agentType: 'executor',
+    explicitAgentType: false,
+    explicitWorkerCount: true,
+    cwd,
+    buildLegacyPlan: legacy,
+    allowDagHandoff: true,
+  });
+}
+
 describe('buildRepoAwareTeamExecutionPlan', () => {
   it('falls back to legacy text decomposition when no DAG exists', () => {
     const cwd = repo();
@@ -52,6 +69,58 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
     assert.equal(plan.metadata?.node_id_to_task_id, undefined);
     assert.deepEqual(plan.metadata?.node_dependencies?.tests, ['impl']);
     assert.match(plan.tasks[0].description, /File scope: src\/team\/runtime.ts/);
+  });
+
+  it('distributes distinct files under src despite shared inferred top-level domains', () => {
+    const cwd = repo();
+    const plan = buildDagPlan(cwd, [
+      { id: 'client', subject: 'Client', description: 'client lane', filePaths: ['src/client.ts'] },
+      { id: 'server', subject: 'Server', description: 'server lane', filePaths: ['src/server.ts'] },
+    ]);
+
+    assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-2']);
+    assert.deepEqual(plan.tasks.map((task) => task.domains), [undefined, undefined]);
+  });
+
+  it('distributes distinct same-basename paths when inferred domains are soft only', () => {
+    const cwd = repo();
+    const plan = buildDagPlan(cwd, [
+      { id: 'client', subject: 'Client index', description: 'client lane', filePaths: ['src/client/index.ts'] },
+      { id: 'server', subject: 'Server index', description: 'server lane', filePaths: ['src/server/index.ts'] },
+    ]);
+
+    assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-2']);
+  });
+
+  it('keeps explicit caller-declared domains hard across distinct paths', () => {
+    const cwd = repo();
+    const plan = buildDagPlan(cwd, [
+      { id: 'client', subject: 'Client UI', description: 'client lane', filePaths: ['src/client.ts'], domains: ['ui'] },
+      { id: 'server', subject: 'Server UI', description: 'server lane', filePaths: ['src/server.ts'], domains: ['ui'] },
+    ]);
+
+    assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-1']);
+    assert.deepEqual(plan.tasks.map((task) => task.domains), [['ui'], ['ui']]);
+  });
+
+  it('binds semantically equivalent structured paths in repo-aware allocation', () => {
+    const cwd = repo();
+    const plan = buildDagPlan(cwd, [
+      { id: 'first', subject: 'Parser first', description: 'first lane', filePaths: ['./src/parser.ts'] },
+      { id: 'second', subject: 'Parser second', description: 'second lane', filePaths: ['src/./parser.ts'] },
+    ]);
+
+    assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-1']);
+  });
+
+  it('preserves structured trailing-dot filename boundaries in repo-aware allocation', () => {
+    const cwd = repo();
+    const plan = buildDagPlan(cwd, [
+      { id: 'dotted', subject: 'Dotted release', description: 'first lane', filePaths: ['docs/release.'] },
+      { id: 'plain', subject: 'Plain release', description: 'second lane', filePaths: ['docs/release'] },
+    ]);
+
+    assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-2']);
   });
 
 

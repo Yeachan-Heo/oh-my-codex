@@ -3,6 +3,7 @@ import { relative } from 'node:path';
 import { allocateTasksToWorkers } from './allocation-policy.js';
 import type { ApprovedRepositoryContextSummary } from '../planning/artifacts.js';
 import { readTeamDagHandoffForLatestPlan, type TeamDagHandoff, type TeamDagNode, type TeamDagResolution, type TeamDagWorkerCountSource } from './dag-schema.js';
+import { normalizeTeamFileScope } from './coordination-protocol.js';
 
 export interface LegacyTeamExecutionPlanInput {
   task: string;
@@ -75,15 +76,15 @@ const IMPLEMENTATION_LANE_PATTERN = /\b(?:impl|implementation|code|build|feature
 const VERIFICATION_LANE_PATTERN = /\b(?:verify|verification|test|qa|review)\b/i;
 
 function normalizePath(path: string): string {
-  return path.replace(/^\.\//, '');
+  return normalizeTeamFileScope(path);
 }
 
 function pathExists(cwd: string, path: string): boolean {
   return existsSync(`${cwd}/${normalizePath(path)}`);
 }
 
-function inferDomains(node: TeamDagNode): string[] {
-  const domains = new Set(node.domains ?? []);
+function inferSoftDomains(node: TeamDagNode): string[] {
+  const domains = new Set<string>();
   for (const path of node.filePaths ?? []) {
     const normalized = normalizePath(path);
     const first = normalized.split('/')[0];
@@ -104,7 +105,7 @@ function enrichNodeDescription(node: TeamDagNode, cwd: string): string {
     if (existing.length > 0) parts.push(`Existing paths: ${existing.map((file) => relative(cwd, `${cwd}/${file}`)).join(', ')}`);
     if (missing.length > 0) parts.push(`Planned/new paths: ${missing.join(', ')}`);
   }
-  const domains = inferDomains(node);
+  const domains = [...new Set([...(node.domains ?? []), ...inferSoftDomains(node)])];
   if (domains.length > 0) parts.push(`Domains: ${domains.join(', ')}`);
   if (node.lane) parts.push(`Lane: ${node.lane}`);
   if (node.acceptance?.length) parts.push(`Acceptance: ${node.acceptance.join('; ')}`);
@@ -208,16 +209,18 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
     name: `worker-${index + 1}`,
     role: input.explicitAgentType ? input.agentType : undefined,
   }));
+  const nodeById = new Map(sorted.map((node) => [node.id, node]));
 
   const allocationInput = sorted.map((node) => ({
     subject: node.subject,
-    description: enrichNodeDescription(node, input.cwd),
+    description: node.description,
     role: input.explicitAgentType ? input.agentType : node.role,
     blocked_by: node.depends_on ?? [],
     symbolic_depends_on: node.depends_on ?? [],
     requires_code_change: node.requires_code_change,
     filePaths: node.filePaths,
-    domains: inferDomains(node),
+    domains: node.domains,
+    inferredDomains: inferSoftDomains(node),
     lane: node.lane,
     symbolic_id: node.id,
   }));
@@ -225,8 +228,11 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
   const allocationReasons: Record<string, string> = {};
   const tasks = allocated.map((task): RepoAwareTask => {
     allocationReasons[task.symbolic_id] = task.allocation_reason;
-    const { blocked_by: _symbolicBlockedBy, ...runtimeTask } = task;
-    return runtimeTask;
+    const { blocked_by: _symbolicBlockedBy, inferredDomains: _inferredDomains, ...runtimeTask } = task;
+    const sourceNode = nodeById.get(task.symbolic_id);
+    return sourceNode
+      ? { ...runtimeTask, description: enrichNodeDescription(sourceNode, input.cwd) }
+      : runtimeTask;
   });
   const nodeDependencies = Object.fromEntries(sorted.map((node) => [node.id, node.depends_on ?? []]));
 

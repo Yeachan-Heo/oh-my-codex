@@ -280,6 +280,44 @@ describe('rebalance-policy', () => {
     assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-2']);
   });
 
+  it('keeps structured trailing-dot filenames distinct during rebalance', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        {
+          id: '1',
+          subject: 'Dotted release',
+          description: 'first lane',
+          status: 'pending',
+          filePaths: ['docs/release.'],
+          created_at: '2026-03-11T00:00:00.000Z',
+        },
+        {
+          id: '2',
+          subject: 'Plain release',
+          description: 'second lane',
+          status: 'pending',
+          filePaths: ['docs/release'],
+          created_at: '2026-03-11T00:00:01.000Z',
+        },
+      ],
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-2']);
+  });
+
   it('preserves exact file affinity under repeated rebalance load', () => {
     const decisions = buildRebalanceDecisions({
       reclaimedTaskIds: [],

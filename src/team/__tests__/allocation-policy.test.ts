@@ -173,6 +173,21 @@ describe('allocation-policy', () => {
     assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2']);
   });
 
+  it('keeps structured trailing-dot filenames distinct from punctuation-free paths', () => {
+    const assignments = allocateTasksToWorkers(
+      [
+        { subject: 'dotted release', description: 'first lane', filePaths: ['docs/release.'] },
+        { subject: 'plain release', description: 'second lane', filePaths: ['docs/release'] },
+      ],
+      [
+        { name: 'worker-1' },
+        { name: 'worker-2' },
+      ],
+    );
+
+    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2']);
+  });
+
   it('keeps related file-path work on the same worker to reduce overlap', () => {
     const assignments = allocateTasksToWorkers(
       [
