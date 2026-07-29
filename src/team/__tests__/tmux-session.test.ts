@@ -176,8 +176,17 @@ async function withMockTmuxFixture<T>(
   const logPath = join(fakeBinDir, 'tmux.log');
   const tmuxStubPath = join(fakeBinDir, 'tmux');
   const previousPath = process.env.PATH;
+  const previousOmxRoot = process.env.OMX_ROOT;
+  const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+  const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
 
   try {
+    // Team state is cwd-scoped in these fixtures. Do not let the leader's
+    // boxed runtime root redirect durable fixture assertions outside the
+    // temporary test worktree.
+    delete process.env.OMX_ROOT;
+    delete process.env.OMX_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
     const fixtureScript = tmuxScript(logPath);
     const standaloneGlobalProofFallback = dirPrefix.includes('standalone')
       ? `  [ -n "$pid" ] || case "$target" in %11) pid=2000000011 ;; %44) pid=2000000044 ;; esac\n`
@@ -266,9 +275,20 @@ ${standaloneGlobalPaneProofFallback}
 fi
 ` : ''}
 if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "-t" ]; then
+  success="${'$'}6"
+  # Only source-authority transactions need fixture-side command-list
+  # emulation. Other if-shell calls (for example detached teardown) retain
+  # their fixture-defined behavior, including deliberate server-side denial.
+  case "$success" in
+    *omx_source_*) ;;
+    *) exec "$fixture" "${'$'}@" ;;
+  esac
+  # Preserve the guarded command list in the fixture log before emulating its
+  # success branch. Real tmux receives this one atomic command, not the
+  # individual effect re-issued below for fixture execution.
+  printf '%s\n' "${'$'}*" >> "${logPath}"
   source="${'$'}4"
   predicate="${'$'}5"
-  success="${'$'}6"
   frame="$(source_frame "$source")" || { exec "$fixture" "${'$'}@"; }
   old_ifs="$IFS"; IFS="$(printf '\tX')"; IFS="${'$'}{IFS%X}"; set -- $frame; IFS="$old_ifs"
   session="${'$'}1"; session_id="${'$'}2"; created="${'$'}3"; index="${'$'}4"; window_id="${'$'}5"; pane="${'$'}6"; pid="${'$'}7"
@@ -285,7 +305,7 @@ if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "
     esac
   fi
   receipt="$(printf '%s' "$success" | sed -n "s/.*\\(omx_source_[A-Za-z0-9_]*\\).*/\\1/p")"
-  effect="${'$'}{success%% \\; display-message*}"
+  effect="${'$'}{success%% ; display-message*}"
   eval "set -- $effect"
   output="$($0 "${'$'}@")" || exit 1
   case "${'$'}1" in
@@ -315,6 +335,12 @@ exec "$fixture" "${'$'}@"
   } finally {
     if (typeof previousPath === 'string') process.env.PATH = previousPath;
     else delete process.env.PATH;
+    if (typeof previousOmxRoot === 'string') process.env.OMX_ROOT = previousOmxRoot;
+    else delete process.env.OMX_ROOT;
+    if (typeof previousOmxStateRoot === 'string') process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+    else delete process.env.OMX_STATE_ROOT;
+    if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+    else delete process.env.OMX_TEAM_STATE_ROOT;
     await rm(fakeBinDir, { recursive: true, force: true });
   }
 }
@@ -340,7 +366,7 @@ esac
         const captured = spawnSync('tmux', ['display-message', '-p', '-t', '%1', '#{session_name}\t#{session_id}\t#{session_created}\t#{window_index}\t#{window_id}\t#{pane_id}\t#{pane_pid}'], { encoding: 'utf8' });
         assert.equal(captured.status, 0);
         assert.equal(captured.stdout, 'recycled\t$1\t1\t0\t@0\t%1\t101\n');
-        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}\tomx_source_recycled' \\; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
+        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}\tomx_source_recycled' ; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
         assert.equal(guarded.stdout, '');
         assert.equal(fs.existsSync(`${logPath}.split`), false);
@@ -374,7 +400,7 @@ esac
         const guarded = spawnSync('tmux', [
           'if-shell', '-F', '-t', '%1',
           '#{&&:#{==:#{pane_dead},0},#{&&:#{==:#{pane_id},%1},#{&&:#{==:#{pane_pid},101},#{&&:#{==:#{session_id},$1},#{&&:#{==:#{session_created},1},#{&&:#{==:#{window_id},@0},#{==:#{@omx_team_pane_owner_id},team:original}}}}}}',
-          `split-window -h -t %1 -P -F '#{pane_id}\\t${receipt}' \\; display-message -p '${receipt}'`,
+          `split-window -h -t %1 -P -F '#{pane_id}\t${receipt}' ; display-message -p '${receipt}'`,
           "display-message -p ''",
         ], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
@@ -5164,13 +5190,13 @@ esac
           const redrawTransactions = commands
             .map((command, index) => ({ command, index }))
             .filter(({ command }) => command.includes('send-keys -t %1 C-l')
-              && command.includes('display-message -p omx_source_'));
+              && /display-message -p ['"]?omx_source_/.test(command));
           assert.equal(redrawTransactions.length, 1);
           const redrawIndex = redrawTransactions[0]!.index;
           assert.ok(redrawIndex > 0);
           assert.match(
             redrawTransactions[0]!.command,
-            /send-keys -t %1 C-l.*display-message -p omx_source_/,
+            /send-keys -t %1 C-l.*display-message -p ['"]?omx_source_/,
             'leader Codex pane redraw must carry the exact guarded transaction receipt',
           );
 
@@ -5368,24 +5394,27 @@ esac
           const globalExactPanePidProof = /^list-panes -a -F #\{pane_id\}\t#\{pane_dead\}\t#\{pane_pid\}$/;
           const targetScopedExactPaneSetProof = /^list-panes -t shared:0 -F #\{pane_id\}\t#\{pane_current_command\}\t#\{pane_start_command\}$/;
           const exactPaneEffects = /^(set-option -p -t %|split-window .* -t %|resize-pane -t %|select-pane -t %|send-keys -t %|if-shell -F -t %)/;
+          const isGuardedAuthorityTransaction = (command: string): boolean => command.startsWith('if-shell -F -t %')
+            && command.includes('#{==:#{pane_dead},0}')
+            && /#\{==:#\{pane_id\},%[0-9]+\}/.test(command)
+            && /#\{==:#\{pane_pid\},[1-9][0-9]*\}/.test(command)
+            && /#\{==:#\{session_id\},\$[0-9]+\}/.test(command)
+            && /#\{==:#\{session_created\},[0-9]+\}/.test(command)
+            && /#\{==:#\{window_id\},@[0-9]+\}/.test(command)
+            && (/set-option(?: [^;]*)? @omx_(?:team_pane_owner_id|instance_id|pane_instance_id)\b/.test(command)
+              || new RegExp(`#\\{==:#\\{@omx_team_pane_owner_id\\},${escapeRegExp(session.teamPaneOwnerId)}\\}`).test(command));
           for (const [index, command] of commands.entries()) {
             if (!exactPaneEffects.test(command)) continue;
             const immediatelyPrevious = commands[index - 1] ?? '';
             const previousProof = commands[index - 2] ?? '';
-            const guardedAuthorityTransaction = command.startsWith('if-shell -F -t %')
-              && command.includes('#{==:#{pane_dead},0}')
-              && /#\{==:#\{pane_id\},%[0-9]+\}/.test(command)
-              && /#\{==:#\{pane_pid\},[1-9][0-9]*\}/.test(command)
-              && /#\{==:#\{session_id\},\$[0-9]+\}/.test(command)
-              && /#\{==:#\{session_created\},[0-9]+\}/.test(command)
-              && /#\{==:#\{window_id\},@[0-9]+\}/.test(command)
-              && (/set-option(?: [^;]*)? @omx_(?:team_pane_owner_id|instance_id|pane_instance_id)\b/.test(command)
-                || new RegExp(`#\\{==:#\\{@omx_team_pane_owner_id\\},${escapeRegExp(session.teamPaneOwnerId)}\\}`).test(command));
             const hasAdjacentAuthority = globalExactPanePidProof.test(immediatelyPrevious)
               || (targetScopedExactPaneSetProof.test(immediatelyPrevious)
                 && globalExactPanePidProof.test(previousProof))
-              || guardedAuthorityTransaction
-              || command.includes('display-message -p omx_source_');
+              || isGuardedAuthorityTransaction(command)
+              // The fixture logs the actual guarded `if-shell` command, then
+              // replays its source-owned effect to maintain pane state.
+              || isGuardedAuthorityTransaction(immediatelyPrevious)
+              || /display-message -p ['"]?omx_source_/.test(command);
             assert.equal(
               hasAdjacentAuthority,
               true,

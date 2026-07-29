@@ -349,7 +349,7 @@ function bindSplitReceiptToPaneCommand(command: string, receipt: string): string
 function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: string, receipt: string = sourceTransactionReceipt()): string {
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    `${effect} \\; display-message -p ${shellQuoteSingle(receipt)}`,
+    `${effect} ; display-message -p ${shellQuoteSingle(receipt)}`,
     "display-message -p ''",
   ]);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);
@@ -374,7 +374,7 @@ function runSourceAuthorizedSplit(
   const effect = buildEffect(receipt);
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    effect.replace("-F '#{pane_id}'", `-F '#{pane_id}\\t${receipt}'`),
+    effect.replace("-F '#{pane_id}'", `-F '#{pane_id}\t${receipt}'`),
     "display-message -p ''",
   ], true);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);

@@ -85,6 +85,25 @@ describe('allocation-policy', () => {
     assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-1']);
   });
 
+  it('does not let shared prose collapse independent generic-worker lanes', () => {
+    const assignments = allocateTasksToWorkers(
+      [
+        { subject: 'Foundation', description: 'Implement shared light theme tokens and navigation', role: 'designer' },
+        { subject: 'Console', description: 'Implement light theme surfaces for console navigation', role: 'designer' },
+        { subject: 'Public proof', description: 'Apply the shared light theme to proof surfaces', role: 'researcher' },
+        { subject: 'Metrics', description: 'Apply the shared light theme to metrics surfaces', role: 'quality-reviewer' },
+      ],
+      [
+        { name: 'worker-1' },
+        { name: 'worker-2' },
+        { name: 'worker-3' },
+        { name: 'worker-4' },
+      ],
+    );
+
+    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-3', 'worker-4']);
+  });
+
   it('keeps related file-path work on the same worker to reduce overlap', () => {
     const assignments = allocateTasksToWorkers(
       [

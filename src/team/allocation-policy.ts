@@ -70,6 +70,18 @@ function extractTaskHints(task: AllocationTaskInput): Set<string> {
   return hints;
 }
 
+/**
+ * A generic Team worker pool has no durable specialization to preserve. In
+ * that case, free-form prose such as "shared theme" is too weak a signal to
+ * put every otherwise-independent lane on the first worker. Explicit file
+ * ownership remains strong enough to keep related work together.
+ */
+function hasExplicitFilePathHint(task: AllocationTaskInput): boolean {
+  if ((task.filePaths?.length ?? 0) > 0) return true;
+  const text = `${task.subject}\n${task.description}`;
+  return [...text.matchAll(FILE_PATH_PATTERN)].length > 0;
+}
+
 function countHintOverlap(taskHints: Set<string>, workerHints: Set<string>): number {
   let overlap = 0;
   for (const hint of taskHints) {
@@ -139,11 +151,17 @@ export function chooseTaskOwner(
     };
   });
 
+  const genericWorkerPool = workerState.length > 0
+    && workerState.every((worker) => !worker.role?.trim());
+  const minimumAssignedCount = Math.min(...workerState.map((worker) => worker.assignedCount));
+  const candidates = genericWorkerPool && !hasExplicitFilePathHint(task)
+    ? workerState.filter((worker) => worker.assignedCount === minimumAssignedCount)
+    : workerState;
   const uniformRolePool = Boolean(task.role?.trim())
-    && workerState.length > 0
-    && workerState.every((worker) => worker.role?.trim() === task.role?.trim());
+    && candidates.length > 0
+    && candidates.every((worker) => worker.role?.trim() === task.role?.trim());
 
-  const ranked = workerState
+  const ranked = candidates
     .map((worker, index) => ({
       worker,
       index,
