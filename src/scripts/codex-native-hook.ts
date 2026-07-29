@@ -5655,11 +5655,16 @@ function classifyPreToolUseMutationTransport(
 ): PreToolUseMutationTransport {
   if (toolName === "Bash") {
     const command = readPreToolUseCommand(payload);
+    const rawCommand = readPreToolUseRawCommand(payload);
     if (
-      readPreToolUseRawCommand(payload) === command
+      rawCommand === command
       && (isAllowedOmxReadOnlyCommand(command, cwd) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command))
     ) return "read-only";
-    return commandHasDeepInterviewWriteIntent(command, 0, cwd) || collectOmxStateCommandOperations(command, "write").length > 0 || commandHasNestedCliMutationIntent(command) || classifyConductorExecutableRuntime(command, 0, cwd) !== null
+    return rawCommand !== command
+      || commandHasDeepInterviewWriteIntent(command, 0, cwd)
+      || collectOmxStateCommandOperations(command, "write").length > 0
+      || commandHasNestedCliMutationIntent(command)
+      || classifyConductorExecutableRuntime(command, 0, cwd) !== null
       ? "bash"
       : "read-only";
   }
@@ -10584,53 +10589,6 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
 }
 
 
-// #3316: `collaboration.send_message` tool_input is inert coordination
-// metadata (`{agent_id, message}`) with no path/command/code payload — it
-// cannot itself execute or mutate anything. It is scoped out of the blanket
-// native-child "orchestration" deny ONLY when a registered child can prove,
-// against the same authoritative session's `subagent-tracking.json`, that it
-// is messaging its own owning leader thread. Every other collaboration.* tool
-// (spawn/close/interrupt/followup/wait_agent) stays gated via the unchanged
-// "orchestration" transport classification, and every other actor/target
-// combination for send_message itself (foreign session, unrelated cross-child,
-// wrong parent/session, malformed/empty/non-string target, unregistered
-// cold-start leader) stays denied fail-closed.
-function readCollaborationSendMessageTargetAgentId(payload: CodexHookPayload): string {
-  const input = safeObject(payload.tool_input);
-  const value = input?.agent_id;
-  return typeof value === "string" ? value.trim() : "";
-}
-
-async function resolveAuthorizedSendMessageChildToLeader(
-  payload: CodexHookPayload,
-  toolName: string,
-  cwd: string,
-  sessionId: string,
-): Promise<boolean> {
-  if (!sessionId) return false;
-  if (canonicalizeNativeCollaborationToolName(toolName) !== "collaboration.send_message") return false;
-
-  const targetAgentId = readCollaborationSendMessageTargetAgentId(payload);
-  if (!targetAgentId) return false;
-
-  const callerId = readPayloadAgentId(payload) || readPayloadThreadId(payload);
-  if (!callerId) return false;
-
-  const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
-  const session = trackingState?.sessions?.[sessionId];
-  // A leader that has not yet been registered (cold-start) is not treated as
-  // an authoritative target here; fail closed rather than silently trust an
-  // unregistered identity.
-  const leaderThreadId = safeString(session?.leader_thread_id).trim();
-  if (!leaderThreadId) return false;
-  if (targetAgentId !== leaderThreadId) return false;
-
-  // Target relation must be proven: the caller must itself be a registered
-  // subagent thread of this exact session (not an arbitrary same-session
-  // cross-child, and not the leader thread messaging itself).
-  const callerThread = session?.threads?.[callerId];
-  return Boolean(callerThread) && callerThread!.kind === "subagent";
-}
 
 async function buildRalplanPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
@@ -10671,14 +10629,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
     : mutationTransport !== "read-only";
-  if (
-    actorMutation
-    && (actor === "native-child" || actor === "provenance-conflict")
-    && !(
-      actor === "native-child"
-      && await resolveAuthorizedSendMessageChildToLeader(payload, toolName, authorityCwd, sessionId)
-    )
-  ) {
+  if (actorMutation && (actor === "native-child" || actor === "provenance-conflict")) {
     return buildPlanningActorWriteDeny(
       safeString(activeState.mode).trim().toLowerCase() === "autopilot" ? "Autopilot planning" : "Ralplan",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -10715,7 +10666,7 @@ async function buildRalplanPreToolUseBoundaryOutput(
         blockedDetail = describeImplementationToolBlock(toolName, blockedPath, toolPathCandidates.length);
       }
     }
-  } else if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle") {
+  } else if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle" || mutationTransport === "orchestration") {
     blocked = true;
     blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized planning mutation transport`;
   }
@@ -10802,14 +10753,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
     : mutationTransport !== "read-only";
-  if (
-    actorMutation
-    && (actor === "native-child" || actor === "provenance-conflict")
-    && !(
-      actor === "native-child"
-      && await resolveAuthorizedSendMessageChildToLeader(payload, toolName, authorityCwd, sessionId)
-    )
-  ) {
+  if (actorMutation && (actor === "native-child" || actor === "provenance-conflict")) {
     return buildPlanningActorWriteDeny(
       "Deep-interview",
       formatPhase(activeState.current_phase ?? activeState.currentPhase, "planning"),
@@ -10841,7 +10785,7 @@ async function buildDeepInterviewPreToolUseBoundaryOutput(
       const blockedPath = candidates.find((candidate) => !isAllowedDeepInterviewArtifactPath(cwd, candidate, sessionId));
       blockedDetail = describeImplementationToolBlock(toolName, blockedPath, candidates.length);
     }
-  } else if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle") {
+  } else if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle" || mutationTransport === "orchestration") {
     blocked = true;
     blockedDetail = `${toolName || "unknown tool"} is not a recognized read-only or explicitly authorized deep-interview mutation transport`;
   }
@@ -10882,7 +10826,7 @@ function blocksDeepInterviewImplementationWrite(payload: CodexHookPayload, cwd: 
     return !isAllowedDeepInterviewBashWrite(cwd, readPreToolUseCommand(payload), undefined, authoritativeSessionId);
   }
   const mutationTransport = classifyPreToolUseMutationTransport(payload, toolName);
-  if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle") return true;
+  if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle" || mutationTransport === "orchestration") return true;
   if (mutationTransport !== "path") return false;
   const candidates = collectImplementationToolPathCandidates(
     payload,
@@ -11000,7 +10944,7 @@ async function buildPlanningRootPointerConflictPreToolUseOutput(
     );
     blocked = toolPathCandidates.length === 0
       || toolPathCandidates.some((candidate) => !isAllowedRalplanArtifactPath(cwd, candidate, rootSessionId));
-  } else if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle") {
+  } else if (mutationTransport === "unknown" || mutationTransport === "goal-lifecycle" || mutationTransport === "orchestration") {
     blocked = true;
   }
 
@@ -12145,7 +12089,162 @@ function commandHasUnsafeDynamicLoaderEnvironment(command: string, depth = 0): b
 
 
 
-function isPositivelyReadOnlyGitCommand(words: string[], commandIndex: number): boolean {
+const HARDENED_GIT_STATUS_ARGS = [
+  "--no-pager",
+  "--no-optional-locks",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.untrackedCache=false",
+  "-c",
+  "pager.status=false",
+  "status",
+  "--short",
+  "--branch",
+  "--untracked-files=normal",
+  "--ignore-submodules=all",
+  "--no-renames",
+] as const;
+
+function gitStatusNullConfigPath(): string {
+  return process.platform === "win32" ? "NUL" : "/dev/null";
+}
+
+function gitStatusInvocationHasExactArgs(words: string[], commandIndex: number): boolean {
+  const args = collectConductorInvocationWords(words, commandIndex).map(shellWordLiteral);
+  return args.length === HARDENED_GIT_STATUS_ARGS.length
+    && args.every((arg, index) => arg === HARDENED_GIT_STATUS_ARGS[index]);
+}
+
+function gitConfigTextHasExecutableStatusSurface(text: string): boolean {
+  if (text.includes("\0")) return true;
+  let section = "";
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    if (line.endsWith("\\")) return true;
+    if (line.startsWith("[")) {
+      const match = /^\[\s*([^\]\s"]+)(?:\s+"[^"]*")?\s*\]$/.exec(line);
+      if (!match) return true;
+      section = safeString(match[1]).toLowerCase();
+      if (new Set(["alias", "filter", "include", "includeif", "submodule"]).has(section)) return true;
+      continue;
+    }
+    const keyMatch = /^([A-Za-z][A-Za-z0-9.-]*)\s*(?:=|$)/.exec(line);
+    if (!keyMatch || !section) return true;
+    const key = safeString(keyMatch[1]).toLowerCase();
+    if (section === "core" && new Set(["attributesfile", "excludesfile", "fsmonitor", "hookspath", "pager", "worktree"]).has(key)) return true;
+    if (section === "diff" && new Set(["command", "external", "textconv"]).has(key)) return true;
+    if (section === "interactive" && key === "difffilter") return true;
+    if (section === "pager") return true;
+    if (section === "status" && key === "submodulesummary") return true;
+  }
+  return false;
+}
+
+function gitStatusMetadataDirectories(cwd: string): string[] | null {
+  try {
+    const dotGit = join(cwd, ".git");
+    const metadata = lstatSync(dotGit);
+    let gitDir: string;
+    if (metadata.isDirectory()) {
+      gitDir = realpathSync(dotGit);
+    } else if (metadata.isFile()) {
+      const pointer = readFileSync(dotGit, "utf-8").trim();
+      const match = /^gitdir:\s*(.+)$/i.exec(pointer);
+      if (!match) return null;
+      gitDir = realpathSync(resolve(dirname(dotGit), safeString(match[1]).trim()));
+    } else {
+      return null;
+    }
+    let commonDir = gitDir;
+    const commonDirPath = join(gitDir, "commondir");
+    if (existsSync(commonDirPath)) {
+      const commonDirValue = readFileSync(commonDirPath, "utf-8").trim();
+      if (!commonDirValue) return null;
+      commonDir = realpathSync(resolve(gitDir, commonDirValue));
+    }
+    return [...new Set([gitDir, commonDir])];
+  } catch {
+    return null;
+  }
+}
+
+function gitStatusTrackedSurfaceIsSafe(cwd: string, gitExecutablePath: string): boolean {
+  const environment: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("GIT_") || name === "PAGER") delete environment[name];
+  }
+  environment.GIT_ATTR_NOSYSTEM = "1";
+  environment.GIT_CONFIG_COUNT = "0";
+  environment.GIT_CONFIG_GLOBAL = gitStatusNullConfigPath();
+  environment.GIT_CONFIG_NOSYSTEM = "1";
+  environment.GIT_CONFIG_SYSTEM = gitStatusNullConfigPath();
+  environment.GIT_OPTIONAL_LOCKS = "0";
+  environment.GIT_PAGER = "";
+  environment.LC_ALL = "C";
+  environment.PAGER = "";
+  const trackedDirectories = new Set<string>([cwd]);
+  try {
+    const output = execFileSync(
+      gitExecutablePath,
+      ["--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "ls-files", "--stage", "-z"],
+      { cwd, encoding: "utf-8", env: environment, maxBuffer: 64 * 1024 * 1024, timeout: 5_000 },
+    );
+    for (const record of output.split("\0")) {
+      if (!record) continue;
+      const separator = record.indexOf("\t");
+      if (separator < 0) return false;
+      const metadata = record.slice(0, separator);
+      const path = record.slice(separator + 1);
+      if (metadata.startsWith("160000 ")) return false;
+      if (path === ".gitmodules" || path === ".gitattributes" || path.endsWith("/.gitattributes")) return false;
+      const parts = path.split("/").slice(0, -1);
+      let directory = cwd;
+      for (const part of parts) {
+        if (!part || part === "." || part === "..") return false;
+        directory = join(directory, part);
+        trackedDirectories.add(directory);
+      }
+    }
+    for (const directory of trackedDirectories) {
+      const attributesPath = join(directory, ".gitattributes");
+      if (existsSync(attributesPath) && readFileSync(attributesPath, "utf-8").trim() !== "") return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitStatusRepositoryConfigurationIsSafe(cwd: string, gitExecutablePath: string): boolean {
+  const metadataDirectories = gitStatusMetadataDirectories(cwd);
+  if (!metadataDirectories) return false;
+  try {
+    for (const directory of metadataDirectories) {
+      const attributesPath = join(directory, "info", "attributes");
+      if (existsSync(attributesPath) && readFileSync(attributesPath, "utf-8").trim() !== "") return false;
+      for (const name of ["config", "config.worktree"]) {
+        const configPath = join(directory, name);
+        if (existsSync(configPath) && gitConfigTextHasExecutableStatusSurface(readFileSync(configPath, "utf-8"))) return false;
+      }
+    }
+    return gitStatusTrackedSurfaceIsSafe(cwd, gitExecutablePath);
+  } catch {
+    return false;
+  }
+}
+
+function isPositivelyReadOnlyGitCommand(
+  words: string[],
+  commandIndex: number,
+  cwd: string,
+  gitExecutablePath?: string,
+): boolean {
+  if (gitStatusInvocationHasExactArgs(words, commandIndex)) {
+    if (!gitExecutablePath) return false;
+    return gitStatusRepositoryConfigurationIsSafe(cwd, gitExecutablePath);
+  }
   const args = collectConductorInvocationWords(words, commandIndex);
   let index = 0;
   while (index < args.length) {
@@ -12176,6 +12275,73 @@ function isPositivelyReadOnlyGitCommand(words: string[], commandIndex: number): 
     if (!/^[A-Za-z0-9._~/:=@,+^{}-]+$/.test(word)) return false;
   }
   return true;
+}
+
+function findCommandHasShellExpansionSyntax(command: string): boolean {
+  return /[?*{}\[\]~\\]/.test(command) || /(?:^|[\t ])[@+]\(/.test(command);
+}
+
+function findPathIsWorkspaceBounded(path: string, cwd: string): boolean {
+  if (!path || isAbsolute(path)) return false;
+  try {
+    const canonicalCwd = realpathSync(cwd);
+    const canonicalStart = realpathSync(resolve(cwd, path));
+    const workspaceRelative = relative(canonicalCwd, canonicalStart);
+    return workspaceRelative === ""
+      || (!isAbsolute(workspaceRelative) && !/^(?:\.\.(?:[\\/]|$))/.test(workspaceRelative));
+  } catch {
+    return false;
+  }
+}
+
+function isPositivelyClassifiedFindCommand(words: string[], commandIndex: number, cwd: string): boolean {
+  const args = collectConductorInvocationWords(words, commandIndex);
+  let expressionStarted = false;
+  let sawMaxDepth = false;
+  const readOnlyPredicates = new Set([
+    "-depth", "-empty", "-executable", "-false", "-ls", "-mount", "-print", "-print0", "-prune",
+    "-quit", "-readable", "-true", "-writable", "-xdev",
+  ]);
+  const booleanOperators = new Set(["!", "(", ")", ",", "-a", "-and", "-not", "-o", "-or"]);
+  const staticValuePredicates = new Set(["-iname", "-ipath", "-name", "-path"]);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const raw = args[index] ?? "";
+    const word = shellWordLiteral(raw);
+    if (!word || isDynamicNestedCommandString(word) || /[$`\0\r\n]/.test(raw)) return false;
+    if (/[?*{}\[\]~<>\\]/.test(raw)) return false;
+    if (/[()]/.test(raw) && !booleanOperators.has(word)) return false;
+    if (!expressionStarted && !word.startsWith("-") && !booleanOperators.has(word)) {
+      if (!findPathIsWorkspaceBounded(word, cwd)) return false;
+      continue;
+    }
+    expressionStarted = true;
+    if (booleanOperators.has(word) || readOnlyPredicates.has(word)) continue;
+    if (word === "-maxdepth" || word === "-mindepth") {
+      const value = shellWordLiteral(args[index + 1] ?? "");
+      if (!/^(?:0|[1-9][0-9]*)$/.test(value)) return false;
+      const depth = Number(value);
+      if (!Number.isSafeInteger(depth) || depth > 32) return false;
+      if (word === "-maxdepth") sawMaxDepth = true;
+      index += 1;
+      continue;
+    }
+    if (word === "-type") {
+      const value = shellWordLiteral(args[index + 1] ?? "");
+      if (!/^[bcdpflsD]$/.test(value)) return false;
+      index += 1;
+      continue;
+    }
+    if (staticValuePredicates.has(word)) {
+      const rawValue = args[index + 1] ?? "";
+      const value = shellWordLiteral(rawValue);
+      if (!value || isDynamicNestedCommandString(value) || /[$`\0\r\n]/.test(rawValue)) return false;
+      index += 1;
+      continue;
+    }
+    return false;
+  }
+  return sawMaxDepth;
 }
 function ghCommandPath(words: string[], commandIndex: number): [string, string] {
   const operands: string[] = [];
@@ -12672,6 +12838,7 @@ function gitRuntimeEnvironmentIsUnsafe(name: string): boolean {
     || name === "GIT_SSH"
     || name === "GIT_SSH_COMMAND"
     || name === "GIT_PAGER"
+    || name === "PAGER"
     || name === "GIT_EDITOR"
     || name === "GIT_SEQUENCE_EDITOR"
     || name === "GIT_CONFIG_COUNT"
@@ -12679,12 +12846,109 @@ function gitRuntimeEnvironmentIsUnsafe(name: string): boolean {
     || /^GIT_DIFF_PATH_(?:COUNTER|TOTAL)$/.test(name)
     || /^GIT_TRACE(?:_|$)/.test(name);
 }
+
 function gitCommandHasUnsafeRuntimeEnvironment(words: string[], commandIndex: number): boolean {
   if (Object.keys(process.env).some(gitRuntimeEnvironmentIsUnsafe)) return true;
   return words.slice(0, commandIndex).some((word) => {
     const assignment = parseShellAssignmentWord(word);
     return assignment !== null && gitRuntimeEnvironmentIsUnsafe(assignment.name);
   });
+}
+
+function directInvocationCommandIndex(words: string[], commandStartIndex: number): number {
+  let index = commandStartIndex;
+  while (index < words.length && isEnvironmentAssignmentWord(words[index] ?? "")) index += 1;
+  return index;
+}
+
+function gitStatusInvocationHasSafeEnvironment(
+  words: string[],
+  commandStartIndex: number,
+  commandIndex: number,
+): boolean {
+  const nullConfigPath = gitStatusNullConfigPath();
+  const required = new Map<string, string>([
+    ["GIT_ATTR_NOSYSTEM", "1"],
+    ["GIT_CONFIG_COUNT", "0"],
+    ["GIT_CONFIG_GLOBAL", nullConfigPath],
+    ["GIT_CONFIG_NOSYSTEM", "1"],
+    ["GIT_CONFIG_SYSTEM", nullConfigPath],
+    ["GIT_EDITOR", ""],
+    ["GIT_EXTERNAL_DIFF", ""],
+    ["GIT_PAGER", ""],
+    ["GIT_SEQUENCE_EDITOR", ""],
+    ["PAGER", ""],
+  ]);
+  if (directInvocationCommandIndex(words, commandStartIndex) !== commandIndex) return false;
+
+  const assignments = new Map<string, string>();
+  for (const rawWord of words.slice(commandStartIndex, commandIndex)) {
+    const assignment = parseShellAssignmentWord(rawWord);
+    if (!assignment || assignment.append || assignments.has(assignment.name)) return false;
+    if (assignment.name !== "PATH" && !required.has(assignment.name)) return false;
+    if (assignment.name === "PATH" && /[$`\0\r\n]/.test(rawWord)) return false;
+    assignments.set(assignment.name, assignment.value);
+  }
+  for (const [name, value] of required) {
+    if (assignments.get(name) !== value) return false;
+  }
+
+  const effectiveEnvironment = new Map<string, string>();
+  for (const [name, value] of Object.entries(process.env)) effectiveEnvironment.set(name, value ?? "");
+  for (const [name, value] of assignments) effectiveEnvironment.set(name, value);
+  for (const [name, value] of effectiveEnvironment) {
+    if (value === "") continue;
+    if (required.get(name) === value) continue;
+    if (name === "GIT_TERMINAL_PROMPT" && value === "0") continue;
+    if (name === "PAGER" || name.startsWith("GIT_") || gitRuntimeEnvironmentIsUnsafe(name)) return false;
+  }
+  return true;
+}
+
+function hasHardenedGitStatusEnvironmentShape(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = tokenizeConductorShellWords(command);
+  const commandStartIndex = 0;
+  const commandIndex = directInvocationCommandIndex(words, commandStartIndex);
+  if (commandNameFromShellWord(words[commandIndex] ?? "") !== "git") return false;
+  return gitStatusInvocationHasExactArgs(words, commandIndex)
+    && gitStatusInvocationHasSafeEnvironment(words, commandStartIndex, commandIndex);
+}
+
+function conductorInvocationTrustedExecutablePath(
+  words: string[],
+  commandStartIndex: number,
+  commandIndex: number,
+  state: ShellPosixState,
+  rootCwd: string,
+): string | null {
+  const commandWord = shellWordLiteral(words[commandIndex] ?? "");
+  if (!commandWord || /[$`\0\r\n]/.test(commandWord)) return null;
+  const commandName = commandNameFromShellWord(commandWord);
+  const commandState = resolveConductorCommandPathState(words, commandStartIndex, commandIndex, state);
+  if (commandWord.includes("/")) {
+    if (!conductorSlashCommandIsTrusted(commandWord, commandState, rootCwd)) return null;
+    const candidate = isAbsolute(commandWord) ? commandWord : resolve(commandState.effectiveCwd ?? rootCwd, commandWord);
+    try {
+      return realpathSync(candidate);
+    } catch {
+      return null;
+    }
+  }
+  const candidate = conductorResolvePathInterpreter(commandName, commandState);
+  return candidate !== null && conductorExecutableHasTrustedIdentity(commandName, candidate, rootCwd, commandState)
+    ? candidate
+    : null;
+}
+
+function conductorInvocationHasTrustedExecutableIdentity(
+  words: string[],
+  commandStartIndex: number,
+  commandIndex: number,
+  state: ShellPosixState,
+  rootCwd: string,
+): boolean {
+  return conductorInvocationTrustedExecutablePath(words, commandStartIndex, commandIndex, state, rootCwd) !== null;
 }
 
 function conductorRuntimeEnvironmentNameIsSensitive(name: string): boolean {
@@ -12896,7 +13160,7 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
   const coprocCompounds = stripConductorCoprocCompoundBodiesForRuntimeInspection(command);
   const topLevelCommand = coprocCompounds.command;
   const unsafeDynamicLoaderEnvironment = commandHasUnsafeDynamicLoaderEnvironment(topLevelCommand);
-  if (commandMayPopulateSensitiveRuntimeEnvironment(topLevelCommand)) {
+  if (commandMayPopulateSensitiveRuntimeEnvironment(topLevelCommand) && !hasHardenedGitStatusEnvironmentShape(topLevelCommand)) {
     inspection.uninspectedOtherRuntimeCount += 1;
     inspection.uninspectedCommandNames.push("runtime-environment-writer");
   }
@@ -13001,6 +13265,12 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
       }
       const commandWord = commandIndex >= 0 ? words[commandIndex] ?? "" : "";
       const commandName = commandNameFromShellWord(commandWord);
+      let invocationStartIndex = index;
+      while (
+        invocationStartIndex > 0
+        && !isShellCommandSeparatorAt(words, invocationStartIndex - 1)
+        && !isShellGroupingSyntaxWord(words[invocationStartIndex - 1] ?? "")
+      ) invocationStartIndex -= 1;
       if (unsafeDynamicLoaderEnvironment) {
         inspection.uninspectedOtherRuntimeCount += 1;
         inspection.uninspectedCommandNames.push("dynamic-loader-environment");
@@ -13153,6 +13423,23 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
           inspection.uninspectedOtherRuntimeCount += 1;
           inspection.uninspectedCommandNames.push(commandName);
         }
+      } else if (commandName === "find") {
+        const exactFindInvocation = depth === 0 && isSingleLiteralShellInvocation(topLevelCommand)
+          && directInvocationCommandIndex(words, invocationStartIndex) === commandIndex
+          && !usedExternalDispatchWrapper
+          && !invokesDefinedShellFunction
+          && !findCommandHasShellExpansionSyntax(topLevelCommand)
+          && conductorInvocationHasTrustedExecutableIdentity(
+            words,
+            invocationStartIndex,
+            commandIndex,
+            runtimeShellState,
+            runtimeCwd,
+          );
+        if (!exactFindInvocation || !isPositivelyClassifiedFindCommand(words, commandIndex, runtimeCwd)) {
+          inspection.uninspectedOtherRuntimeCount += 1;
+          inspection.uninspectedCommandNames.push(commandName);
+        }
       } else if (commandName === "uniq") {
         if (!isPositivelyClassifiedUniqCommand(
           words,
@@ -13163,7 +13450,31 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
           inspection.uninspectedCommandNames.push(commandName);
         }
       } else if (commandName === "git") {
-        if (commandSetsGitHelper || gitCommandHasUnsafeRuntimeEnvironment(words, commandIndex) || !isPositivelyReadOnlyGitCommand(words, commandIndex)) {
+        const hardenedStatus = gitStatusInvocationHasExactArgs(words, commandIndex);
+        const trustedGitExecutablePath = hardenedStatus
+          ? conductorInvocationTrustedExecutablePath(
+            words,
+            invocationStartIndex,
+            commandIndex,
+            runtimeShellState,
+            runtimeCwd,
+          )
+          : null;
+        const exactStatusInvocation = hardenedStatus
+          && depth === 0
+          && isSingleLiteralShellInvocation(topLevelCommand)
+          && directInvocationCommandIndex(words, invocationStartIndex) === commandIndex
+          && !usedExternalDispatchWrapper
+          && !invokesDefinedShellFunction
+          && gitStatusInvocationHasSafeEnvironment(words, invocationStartIndex, commandIndex)
+          && trustedGitExecutablePath !== null;
+        const unsafeGit = hardenedStatus
+          ? !exactStatusInvocation
+            || !isPositivelyReadOnlyGitCommand(words, commandIndex, runtimeCwd, trustedGitExecutablePath ?? undefined)
+          : commandSetsGitHelper
+            || gitCommandHasUnsafeRuntimeEnvironment(words, commandIndex)
+            || !isPositivelyReadOnlyGitCommand(words, commandIndex, runtimeCwd);
+        if (unsafeGit) {
           inspection.uninspectedOtherRuntimeCount += 1;
           inspection.uninspectedCommandNames.push(commandName);
         }
@@ -20092,9 +20403,14 @@ export async function buildConductorPreToolUseWriteGuardOutput(
   let nativeChildMutationAttempt = false;
 
   if (toolName === "Bash") {
-    if (mutationTransport !== "read-only") {
+    const rawCommand = readPreToolUseRawCommand(payload);
+    if (rawCommand !== command) {
+      blocked = true;
+      nativeChildMutationAttempt = true;
+      blockedDetail = "Bash command bytes must match the exact classified command";
+    } else if (mutationTransport !== "read-only") {
       const shellMutations = extractConductorBashMutations(command, cwd, policyCwd);
-      const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd, readPreToolUseRawCommand(payload));
+      const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd, rawCommand);
       blocked = !bashEvaluation.allowed;
       const canonicalStateCommand = canonicalizeOmxStateTransportCommand(command);
       const bashStateOperations = collectOmxStateCommandOperations(canonicalStateCommand, "write");
@@ -20133,6 +20449,8 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     }
   } else if (mutationTransport === "orchestration" || mutationTransport === "goal-lifecycle") {
     nativeChildMutationAttempt = true;
+    blocked = true;
+    blockedDetail = `${toolName} requires documented host-authenticated Main-root authority that Codex 0.145.0 does not expose`;
   } else if (mutationTransport === "path") {
     nativeChildMutationAttempt = true;
     const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
