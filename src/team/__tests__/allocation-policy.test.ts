@@ -104,6 +104,22 @@ describe('allocation-policy', () => {
     assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-3', 'worker-4']);
   });
 
+  it('preserves explicit domain affinity in generic worker pools without file paths', () => {
+    const assignments = allocateTasksToWorkers(
+      [
+        { subject: 'alpha', description: 'first lane', role: 'executor', domains: ['notifications'] },
+        { subject: 'beta', description: 'second lane', role: 'executor', domains: ['notifications'] },
+      ],
+      [
+        { name: 'worker-1' },
+        { name: 'worker-2' },
+      ],
+    );
+
+    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-1']);
+    assert.match(assignments[1].allocation_reason, /file\/domain ownership/);
+  });
+
   it('keeps related file-path work on the same worker to reduce overlap', () => {
     const assignments = allocateTasksToWorkers(
       [

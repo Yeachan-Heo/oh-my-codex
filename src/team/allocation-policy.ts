@@ -73,11 +73,13 @@ function extractTaskHints(task: AllocationTaskInput): Set<string> {
 /**
  * A generic Team worker pool has no durable specialization to preserve. In
  * that case, free-form prose such as "shared theme" is too weak a signal to
- * put every otherwise-independent lane on the first worker. Explicit file
- * ownership remains strong enough to keep related work together.
+ * put every otherwise-independent lane on the first worker. Explicit file or
+ * declared domain ownership remains strong enough to keep related work
+ * together.
  */
-function hasExplicitFilePathHint(task: AllocationTaskInput): boolean {
+function hasExplicitAffinityHint(task: AllocationTaskInput): boolean {
   if ((task.filePaths?.length ?? 0) > 0) return true;
+  if ((task.domains ?? []).some((domain) => normalizeHint(domain) !== null)) return true;
   const text = `${task.subject}\n${task.description}`;
   return [...text.matchAll(FILE_PATH_PATTERN)].length > 0;
 }
@@ -154,7 +156,7 @@ export function chooseTaskOwner(
   const genericWorkerPool = workerState.length > 0
     && workerState.every((worker) => !worker.role?.trim());
   const minimumAssignedCount = Math.min(...workerState.map((worker) => worker.assignedCount));
-  const candidates = genericWorkerPool && !hasExplicitFilePathHint(task)
+  const candidates = genericWorkerPool && !hasExplicitAffinityHint(task)
     ? workerState.filter((worker) => worker.assignedCount === minimumAssignedCount)
     : workerState;
   const uniformRolePool = Boolean(task.role?.trim())
