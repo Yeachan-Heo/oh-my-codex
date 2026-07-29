@@ -429,3 +429,163 @@ fn concurrent_exec_queue_accepts_exactly_one_request_id() {
     assert_eq!(dispatch["records"][0]["request_id"], "concurrent");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// fs-rename-no-replace integration tests
+//
+// These tests exercise the omx-runtime `fs-rename-no-replace` subcommand
+// through the compiled binary. On Linux (both gnu and musl) this exercises
+// the SYS_renameat2 syscall path with RENAME_NOREPLACE.
+// ---------------------------------------------------------------------------
+
+/// Helper: run `fs-rename-no-replace <from> <to>` and return (exit_ok, stdout, stderr).
+fn run_rename_no_replace(from: &str, to: &str) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["fs-rename-no-replace", from, to])
+        .output()
+        .expect("ran omx-runtime fs-rename-no-replace");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+mod fs_rename_no_replace_linux {
+    use super::*;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "omx-rename-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn moves_regular_file_and_source_removed() {
+        let dir = temp_dir();
+        let src = dir.join("source.txt");
+        let dst = dir.join("dest.txt");
+        std::fs::write(&src, "hello").unwrap();
+
+        let (ok, stdout, _stderr) =
+            run_rename_no_replace(src.to_str().unwrap(), dst.to_str().unwrap());
+        assert!(ok, "command should succeed: {stdout}");
+
+        if stdout.contains(r#""outcome":"unsupported""#) {
+            // Kernel/filesystem does not support RENAME_NOREPLACE; the
+            // binary correctly classified it as unsupported. Source must
+            // still exist (no move occurred).
+            assert!(src.exists(), "source must be preserved when unsupported");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        assert!(stdout.contains(r#""outcome":"moved""#), "stdout: {stdout}");
+
+        // Source must be gone; destination must contain the content.
+        assert!(!src.exists(), "source must be removed after move");
+        assert!(dst.exists(), "destination must exist after move");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn moves_directory_and_source_removed() {
+        let dir = temp_dir();
+        let src = dir.join("source_dir");
+        let dst = dir.join("dest_dir");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("inner.txt"), "inner").unwrap();
+
+        let (ok, stdout, _stderr) =
+            run_rename_no_replace(src.to_str().unwrap(), dst.to_str().unwrap());
+        assert!(ok, "directory move should succeed: {stdout}");
+
+        if stdout.contains(r#""outcome":"unsupported""#) {
+            assert!(
+                src.exists(),
+                "source dir must be preserved when unsupported"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        assert!(stdout.contains(r#""outcome":"moved""#), "stdout: {stdout}");
+
+        assert!(!src.exists(), "source directory must be removed");
+        assert!(dst.exists(), "destination directory must exist");
+        assert!(dst.join("inner.txt").exists(), "inner file must survive");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn destination_collision_returns_not_moved_and_source_preserved() {
+        let dir = temp_dir();
+        let src = dir.join("source.txt");
+        let dst = dir.join("dest.txt");
+        std::fs::write(&src, "source-content").unwrap();
+        std::fs::write(&dst, "dest-content").unwrap();
+
+        let (ok, stdout, _stderr) =
+            run_rename_no_replace(src.to_str().unwrap(), dst.to_str().unwrap());
+        assert!(ok, "command should succeed: {stdout}");
+
+        if stdout.contains(r#""outcome":"unsupported""#) {
+            // On unsupported filesystems both files must be untouched.
+            assert_eq!(std::fs::read_to_string(&src).unwrap(), "source-content");
+            assert_eq!(std::fs::read_to_string(&dst).unwrap(), "dest-content");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        assert!(
+            stdout.contains(r#""outcome":"not-moved""#),
+            "stdout: {stdout}"
+        );
+
+        // Both files must be untouched.
+        assert!(src.exists(), "source must still exist");
+        assert!(dst.exists(), "destination must still exist");
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "source-content");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "dest-content");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonexistent_source_returns_error() {
+        let dir = temp_dir();
+        let src = dir.join("nope.txt");
+        let dst = dir.join("dest.txt");
+
+        let (ok, _stdout, stderr) =
+            run_rename_no_replace(src.to_str().unwrap(), dst.to_str().unwrap());
+        assert!(!ok, "command should fail for nonexistent source");
+        assert!(
+            stderr.contains("omx-runtime:") || stderr.contains("error"),
+            "stderr should contain error: {stderr}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relative_path_rejected_with_error() {
+        let (ok, _stdout, stderr) = run_rename_no_replace("relative.txt", "dest.txt");
+        assert!(!ok, "relative paths should be rejected");
+        assert!(
+            stderr.contains("absolute") || stderr.contains("error"),
+            "stderr should mention absolute: {stderr}"
+        );
+    }
+}

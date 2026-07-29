@@ -177,13 +177,50 @@ fn validate_absolute_path(raw: &str, name: &str) -> Result<std::ffi::CString, St
         .map_err(|_| format!("{name} path contains an embedded NUL byte"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn fs_rename_no_replace(
     from: &std::ffi::CString,
     to: &std::ffi::CString,
 ) -> Result<FsRenameOutcome, String> {
     let result = unsafe {
         libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        return Ok(FsRenameOutcome::Moved);
+    }
+
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EEXIST) => Ok(FsRenameOutcome::NotMoved),
+        Some(libc::ENOSYS) => Ok(FsRenameOutcome::Unsupported("ENOSYS")),
+        Some(libc::EINVAL) => Ok(FsRenameOutcome::Unsupported("EINVAL")),
+        Some(libc::ENOTSUP) => Ok(FsRenameOutcome::Unsupported("ENOTSUP")),
+        Some(code) => Err(format!("renameat2 failed with errno {code}: {error}")),
+        None => Err(format!("renameat2 failed: {error}")),
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+fn fs_rename_no_replace(
+    from: &std::ffi::CString,
+    to: &std::ffi::CString,
+) -> Result<FsRenameOutcome, String> {
+    // libc 0.2.189 added a musl binding for renameat2, but the release
+    // runner's older musl exported symbol surface does not include it,
+    // causing an undefined-symbol link failure. Invoke the syscall
+    // directly via libc::syscall so the atomic no-replace rename works
+    // regardless of the musl version. The outcome and errno mapping are
+    // equivalent to the libc::renameat2 wrapper above (both classify the
+    // same errno values to the same FsRenameOutcome variants).
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
             libc::AT_FDCWD,
             from.as_ptr(),
             libc::AT_FDCWD,
