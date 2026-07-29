@@ -21,7 +21,7 @@ interface WorkerAllocationState extends AllocationWorkerInput {
   assignedCount: number;
   primaryRole?: string;
   scopeHints: Set<string>;
-  explicitAffinityHints: Set<string>;
+  hardAffinityHints: Set<string>;
 }
 
 const FILE_PATH_PATTERN = /(?:^|[\s("'])((?:src|scripts|docs|prompts|skills|templates|native|crates)\/[A-Za-z0-9._/-]+)/g;
@@ -49,6 +49,11 @@ function collectPathHints(pathValue: string, target: Set<string>): void {
   if (normalizedStem) target.add(`domain:${normalizedStem}`);
 }
 
+function collectExactPathHint(pathValue: string, target: Set<string>): void {
+  const normalizedPath = normalizeHint(pathValue.replace(/^[./]+/, ''));
+  if (normalizedPath) target.add(`path:${normalizedPath}`);
+}
+
 function collectDomainHints(value: string, target: Set<string>): void {
   const words = value.toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) ?? [];
   for (const word of words) {
@@ -67,7 +72,24 @@ function collectDeclaredDomainHints(value: string, target: Set<string>): void {
   collectDomainHints(value, target);
 }
 
-function extractExplicitAffinityHints(task: AllocationTaskInput): Set<string> {
+function collectExactDeclaredDomainHint(value: string, target: Set<string>): void {
+  const normalized = normalizeDeclaredDomainHint(value);
+  if (normalized) target.add(`declared-domain:${normalized}`);
+}
+
+function extractHardAffinityHints(task: AllocationTaskInput): Set<string> {
+  const hints = new Set<string>();
+  for (const pathValue of task.filePaths ?? []) collectExactPathHint(pathValue, hints);
+  for (const domain of task.domains ?? []) collectExactDeclaredDomainHint(domain, hints);
+
+  const text = `${task.subject}\n${task.description}`;
+  for (const match of text.matchAll(FILE_PATH_PATTERN)) {
+    if (match[1]) collectExactPathHint(match[1], hints);
+  }
+  return hints;
+}
+
+function extractTaskHints(task: AllocationTaskInput): Set<string> {
   const hints = new Set<string>();
   for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints);
   for (const domain of task.domains ?? []) collectDeclaredDomainHints(domain, hints);
@@ -76,12 +98,7 @@ function extractExplicitAffinityHints(task: AllocationTaskInput): Set<string> {
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
     if (match[1]) collectPathHints(match[1], hints);
   }
-  return hints;
-}
-
-function extractTaskHints(task: AllocationTaskInput): Set<string> {
-  const hints = extractExplicitAffinityHints(task);
-  collectDomainHints(`${task.subject}\n${task.description}`, hints);
+  collectDomainHints(text, hints);
   return hints;
 }
 
@@ -131,13 +148,13 @@ export function chooseTaskOwner(
     throw new Error('at least one worker is required for allocation');
   }
 
-  const explicitAffinityHints = extractExplicitAffinityHints(task);
+  const hardAffinityHints = extractHardAffinityHints(task);
   const taskHints = extractTaskHints(task);
   const workerState = workers.map<WorkerAllocationState>((worker) => {
     const assigned = currentAssignments.filter((item) => item.owner === worker.name);
     const primaryRole = assigned.find((item) => item.role)?.role;
     const scopeHints = new Set<string>();
-    const workerExplicitAffinityHints = new Set<string>();
+    const workerHardAffinityHints = new Set<string>();
     for (const item of assigned) {
       const assignedTask = {
         subject: item.subject ?? '',
@@ -147,14 +164,14 @@ export function chooseTaskOwner(
         domains: item.domains,
       };
       for (const hint of extractTaskHints(assignedTask)) scopeHints.add(hint);
-      for (const hint of extractExplicitAffinityHints(assignedTask)) workerExplicitAffinityHints.add(hint);
+      for (const hint of extractHardAffinityHints(assignedTask)) workerHardAffinityHints.add(hint);
     }
     return {
       ...worker,
       assignedCount: assigned.length,
       primaryRole,
       scopeHints,
-      explicitAffinityHints: workerExplicitAffinityHints,
+      hardAffinityHints: workerHardAffinityHints,
     };
   });
 
@@ -163,13 +180,15 @@ export function chooseTaskOwner(
   const minimumAssignedCount = Math.min(...workerState.map((worker) => worker.assignedCount));
   let candidates = workerState;
   if (genericWorkerPool) {
-    if (explicitAffinityHints.size === 0) {
-      candidates = workerState.filter((worker) => worker.assignedCount === minimumAssignedCount);
-    } else {
+    if (hardAffinityHints.size > 0) {
       const affinityCandidates = workerState.filter((worker) => (
-        countHintOverlap(explicitAffinityHints, worker.explicitAffinityHints) > 0
+        countHintOverlap(hardAffinityHints, worker.hardAffinityHints) > 0
       ));
-      if (affinityCandidates.length > 0) candidates = affinityCandidates;
+      candidates = affinityCandidates.length > 0
+        ? affinityCandidates
+        : workerState.filter((worker) => worker.assignedCount === minimumAssignedCount);
+    } else {
+      candidates = workerState.filter((worker) => worker.assignedCount === minimumAssignedCount);
     }
   }
   const uniformRolePool = Boolean(task.role?.trim())

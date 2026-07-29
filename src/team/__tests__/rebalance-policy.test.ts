@@ -190,6 +190,72 @@ describe('rebalance-policy', () => {
     assert.match(decisions[1]?.reason ?? '', /file\/domain ownership/);
   });
 
+  it('distributes rebalance work whose exact paths share only a basename', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        {
+          id: '1',
+          subject: 'Client entry',
+          description: 'client lane',
+          status: 'pending',
+          filePaths: ['src/client/index.ts'],
+          created_at: '2026-03-11T00:00:00.000Z',
+        },
+        {
+          id: '2',
+          subject: 'Server entry',
+          description: 'server lane',
+          status: 'pending',
+          filePaths: ['src/server/index.ts'],
+          created_at: '2026-03-11T00:00:01.000Z',
+        },
+      ],
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-2']);
+  });
+
+  it('preserves exact file affinity under repeated rebalance load', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: Array.from({ length: 6 }, (_, index) => ({
+        id: String(index + 1),
+        subject: `Runtime lane ${index + 1}`,
+        description: `unique work item ${index + 1}`,
+        status: 'pending' as const,
+        filePaths: ['src/team/runtime.ts'],
+        created_at: `2026-03-11T00:00:0${index}.000Z`,
+      })),
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:06.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:06.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decisions.map((decision) => decision.workerName), Array(6).fill('worker-1'));
+  });
+
   it('preserves seeded in-flight file and short-domain affinity during rebalance', () => {
     const decisions = buildRebalanceDecisions({
       reclaimedTaskIds: [],

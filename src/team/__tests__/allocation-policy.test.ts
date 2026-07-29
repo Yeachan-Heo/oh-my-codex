@@ -137,6 +137,21 @@ describe('allocation-policy', () => {
     assert.deepEqual(assignments.map((task) => task.owner), Array(6).fill('worker-1'));
   });
 
+  it('distributes different exact paths that share only a basename hint', () => {
+    const assignments = allocateTasksToWorkers(
+      [
+        { subject: 'client entry', description: 'client lane', filePaths: ['src/client/index.ts'] },
+        { subject: 'server entry', description: 'server lane', filePaths: ['src/server/index.ts'] },
+      ],
+      [
+        { name: 'worker-1' },
+        { name: 'worker-2' },
+      ],
+    );
+
+    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2']);
+  });
+
   it('keeps related file-path work on the same worker to reduce overlap', () => {
     const assignments = allocateTasksToWorkers(
       [
