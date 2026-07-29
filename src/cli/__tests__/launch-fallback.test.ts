@@ -1813,6 +1813,7 @@ exit 0
       const fakeBin = join(wd, 'bin');
       const envLogPath = join(wd, 'codex-env.log');
       const tmuxLogPath = join(wd, 'tmux.log');
+      const leaderLogPath = join(wd, 'provider-leader.log');
 
       await mkdir(home, { recursive: true });
       await mkdir(fakeBin, { recursive: true });
@@ -1861,7 +1862,7 @@ case "$1" in
       TERMINFO=/tmp/server-terminfo \
       TERMINFO_DIRS=/tmp/server-terminfo-dirs \
       TERMCAP=server-termcap \
-      nohup /bin/sh -c "$last" </dev/null >/tmp/omx-test-provider-leader.log 2>&1 &
+      nohup /bin/sh -c "$last" </dev/null >"${leaderLogPath}" 2>&1 &
     printf '%%12\n'
     exit 0
     ;;

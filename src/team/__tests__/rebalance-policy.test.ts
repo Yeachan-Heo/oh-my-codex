@@ -163,22 +163,80 @@ describe('rebalance-policy', () => {
           domains: ['ui'],
           created_at: '2026-03-11T00:00:01.000Z',
         },
+        {
+          id: '3',
+          subject: 'Third UI lane',
+          description: 'Implement the third surface',
+          status: 'pending',
+          domains: ['ui'],
+          created_at: '2026-03-11T00:00:02.000Z',
+        },
       ],
       workers: [
         {
           name: 'worker-1',
           alive: true,
-          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
         },
         {
           name: 'worker-2',
           alive: true,
-          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-1', 'worker-1']);
+    assert.match(decisions[1]?.reason ?? '', /file\/domain ownership/);
+  });
+
+  it('preserves seeded in-flight file and short-domain affinity during rebalance', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        {
+          id: '9',
+          subject: 'Existing UI runtime lane',
+          description: 'Current in-flight ownership',
+          status: 'in_progress',
+          owner: 'worker-1',
+          filePaths: ['src/team/runtime.ts'],
+          domains: ['ui'],
+          created_at: '2026-03-11T00:00:00.000Z',
+        },
+        {
+          id: '1',
+          subject: 'UI follow-up',
+          description: 'Continue the UI domain',
+          status: 'pending',
+          domains: ['ui'],
+          created_at: '2026-03-11T00:00:01.000Z',
+        },
+        {
+          id: '2',
+          subject: 'Runtime follow-up',
+          description: 'Continue the runtime file',
+          status: 'pending',
+          filePaths: ['src/team/runtime.ts'],
+          created_at: '2026-03-11T00:00:02.000Z',
+        },
+      ],
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
         },
       ],
     });
 
     assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-1']);
+    assert.match(decisions[0]?.reason ?? '', /file\/domain ownership/);
     assert.match(decisions[1]?.reason ?? '', /file\/domain ownership/);
   });
 

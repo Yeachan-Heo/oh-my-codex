@@ -21,6 +21,7 @@ interface WorkerAllocationState extends AllocationWorkerInput {
   assignedCount: number;
   primaryRole?: string;
   scopeHints: Set<string>;
+  explicitAffinityHints: Set<string>;
 }
 
 const FILE_PATH_PATTERN = /(?:^|[\s("'])((?:src|scripts|docs|prompts|skills|templates|native|crates)\/[A-Za-z0-9._/-]+)/g;
@@ -66,9 +67,8 @@ function collectDeclaredDomainHints(value: string, target: Set<string>): void {
   collectDomainHints(value, target);
 }
 
-function extractTaskHints(task: AllocationTaskInput): Set<string> {
+function extractExplicitAffinityHints(task: AllocationTaskInput): Set<string> {
   const hints = new Set<string>();
-
   for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints);
   for (const domain of task.domains ?? []) collectDeclaredDomainHints(domain, hints);
 
@@ -76,23 +76,13 @@ function extractTaskHints(task: AllocationTaskInput): Set<string> {
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
     if (match[1]) collectPathHints(match[1], hints);
   }
-  collectDomainHints(text, hints);
-
   return hints;
 }
 
-/**
- * A generic Team worker pool has no durable specialization to preserve. In
- * that case, free-form prose such as "shared theme" is too weak a signal to
- * put every otherwise-independent lane on the first worker. Explicit file or
- * declared domain ownership remains strong enough to keep related work
- * together.
- */
-function hasExplicitAffinityHint(task: AllocationTaskInput): boolean {
-  if ((task.filePaths?.length ?? 0) > 0) return true;
-  if ((task.domains ?? []).some((domain) => normalizeDeclaredDomainHint(domain) !== null)) return true;
-  const text = `${task.subject}\n${task.description}`;
-  return [...text.matchAll(FILE_PATH_PATTERN)].length > 0;
+function extractTaskHints(task: AllocationTaskInput): Set<string> {
+  const hints = extractExplicitAffinityHints(task);
+  collectDomainHints(`${task.subject}\n${task.description}`, hints);
+  return hints;
 }
 
 function countHintOverlap(taskHints: Set<string>, workerHints: Set<string>): number {
@@ -141,35 +131,47 @@ export function chooseTaskOwner(
     throw new Error('at least one worker is required for allocation');
   }
 
+  const explicitAffinityHints = extractExplicitAffinityHints(task);
   const taskHints = extractTaskHints(task);
   const workerState = workers.map<WorkerAllocationState>((worker) => {
     const assigned = currentAssignments.filter((item) => item.owner === worker.name);
     const primaryRole = assigned.find((item) => item.role)?.role;
     const scopeHints = new Set<string>();
+    const workerExplicitAffinityHints = new Set<string>();
     for (const item of assigned) {
-      const itemHints = extractTaskHints({
+      const assignedTask = {
         subject: item.subject ?? '',
         description: item.description ?? '',
         role: item.role,
         filePaths: item.filePaths,
         domains: item.domains,
-      });
-      for (const hint of itemHints) scopeHints.add(hint);
+      };
+      for (const hint of extractTaskHints(assignedTask)) scopeHints.add(hint);
+      for (const hint of extractExplicitAffinityHints(assignedTask)) workerExplicitAffinityHints.add(hint);
     }
     return {
       ...worker,
       assignedCount: assigned.length,
       primaryRole,
       scopeHints,
+      explicitAffinityHints: workerExplicitAffinityHints,
     };
   });
 
   const genericWorkerPool = workerState.length > 0
     && workerState.every((worker) => !worker.role?.trim());
   const minimumAssignedCount = Math.min(...workerState.map((worker) => worker.assignedCount));
-  const candidates = genericWorkerPool && !hasExplicitAffinityHint(task)
-    ? workerState.filter((worker) => worker.assignedCount === minimumAssignedCount)
-    : workerState;
+  let candidates = workerState;
+  if (genericWorkerPool) {
+    if (explicitAffinityHints.size === 0) {
+      candidates = workerState.filter((worker) => worker.assignedCount === minimumAssignedCount);
+    } else {
+      const affinityCandidates = workerState.filter((worker) => (
+        countHintOverlap(explicitAffinityHints, worker.explicitAffinityHints) > 0
+      ));
+      if (affinityCandidates.length > 0) candidates = affinityCandidates;
+    }
+  }
   const uniformRolePool = Boolean(task.role?.trim())
     && candidates.length > 0
     && candidates.every((worker) => worker.role?.trim() === task.role?.trim());

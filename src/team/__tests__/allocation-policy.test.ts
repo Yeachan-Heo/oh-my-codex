@@ -104,11 +104,12 @@ describe('allocation-policy', () => {
     assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-3', 'worker-4']);
   });
 
-  it('preserves short explicit domain affinity in generic worker pools without file paths', () => {
+  it('preserves short explicit domain affinity as generic-worker load grows', () => {
     const assignments = allocateTasksToWorkers(
       [
-        { subject: 'alpha', description: 'first lane', role: 'executor', domains: ['ui'] },
-        { subject: 'beta', description: 'second lane', role: 'executor', domains: ['ui'] },
+        { subject: 'alpha', description: 'first lane', domains: ['ui'] },
+        { subject: 'beta', description: 'second lane', domains: ['ui'] },
+        { subject: 'gamma', description: 'third lane', domains: ['ui'] },
       ],
       [
         { name: 'worker-1' },
@@ -116,8 +117,24 @@ describe('allocation-policy', () => {
       ],
     );
 
-    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-1']);
-    assert.match(assignments[1].allocation_reason, /file\/domain ownership/);
+    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-1', 'worker-1']);
+    assert.match(assignments[2].allocation_reason, /file\/domain ownership/);
+  });
+
+  it('preserves explicit file affinity after repeated generic-worker assignments', () => {
+    const assignments = allocateTasksToWorkers(
+      Array.from({ length: 6 }, (_, index) => ({
+        subject: `runtime lane ${index + 1}`,
+        description: `unique work item ${index + 1}`,
+        filePaths: ['src/team/runtime.ts'],
+      })),
+      [
+        { name: 'worker-1' },
+        { name: 'worker-2' },
+      ],
+    );
+
+    assert.deepEqual(assignments.map((task) => task.owner), Array(6).fill('worker-1'));
   });
 
   it('keeps related file-path work on the same worker to reduce overlap', () => {
