@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { relative } from 'node:path';
-import { allocateTasksToWorkers } from './allocation-policy.js';
+import { allocateTasksToWorkers, allocationPathCasePolicyForPlatform, type AllocationPathCasePolicy } from './allocation-policy.js';
 import type { ApprovedRepositoryContextSummary } from '../planning/artifacts.js';
 import { readTeamDagHandoffForLatestPlan, type TeamDagHandoff, type TeamDagNode, type TeamDagResolution, type TeamDagWorkerCountSource } from './dag-schema.js';
 import { normalizeTeamFileScope } from './coordination-protocol.js';
@@ -16,6 +16,7 @@ export interface LegacyTeamExecutionPlanInput {
   allowDagHandoff?: boolean;
   dagFallbackReason?: string;
   approvedRepositoryContextSummary?: ApprovedRepositoryContextSummary;
+  pathCasePolicy?: AllocationPathCasePolicy;
 }
 
 export interface RepoAwareTask {
@@ -30,6 +31,7 @@ export interface RepoAwareTask {
   requires_code_change?: boolean;
   filePaths?: string[];
   domains?: string[];
+  explicitDomains?: string[];
   lane?: string;
   allocation_reason?: string;
   symbolic_id?: string;
@@ -216,24 +218,33 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
     subject: node.subject,
     description: node.description,
     affinityDescription: node.description,
+    acceptance: node.acceptance,
     role: input.explicitAgentType ? input.agentType : node.role,
     blocked_by: node.depends_on ?? [],
     symbolic_depends_on: node.depends_on ?? [],
     requires_code_change: node.requires_code_change,
     filePaths: node.filePaths,
-    domains: node.domains,
+    explicitDomains: node.domains,
     inferredDomains: inferSoftDomains(node),
     lane: node.lane,
     symbolic_id: node.id,
   }));
-  const allocated = allocateTasksToWorkers(allocationInput, workers);
+  const allocated = allocateTasksToWorkers(allocationInput, workers, {
+    pathCasePolicy: input.pathCasePolicy ?? allocationPathCasePolicyForPlatform(),
+  });
   const allocationReasons: Record<string, string> = {};
   const tasks = allocated.map((task): RepoAwareTask => {
     allocationReasons[task.symbolic_id] = task.allocation_reason;
-    const { blocked_by: _symbolicBlockedBy, inferredDomains: _inferredDomains, ...runtimeTask } = task;
+    const { blocked_by: _symbolicBlockedBy, acceptance: _acceptance, inferredDomains: _inferredDomains, ...runtimeTask } = task;
     const sourceNode = nodeById.get(task.symbolic_id);
     return sourceNode
-      ? { ...runtimeTask, description: enrichNodeDescription(sourceNode, input.cwd) }
+      ? {
+          ...runtimeTask,
+          description: enrichNodeDescription(sourceNode, input.cwd),
+          affinityDescription: [sourceNode.description, ...(sourceNode.acceptance ?? [])].join('\n'),
+          domains: sourceNode.domains,
+          explicitDomains: sourceNode.domains,
+        }
       : runtimeTask;
   });
   const nodeDependencies = Object.fromEntries(sorted.map((node) => [node.id, node.depends_on ?? []]));

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { allocateTasksToWorkers, chooseTaskOwner } from '../allocation-policy.js';
+import { allocateTasksToWorkers, allocationPathCasePolicyForPlatform, chooseTaskOwner } from '../allocation-policy.js';
 
 describe('allocation-policy', () => {
   it('prefers matching worker role when no prior assignments exist', () => {
@@ -107,9 +107,9 @@ describe('allocation-policy', () => {
   it('preserves short explicit domain affinity as generic-worker load grows', () => {
     const assignments = allocateTasksToWorkers(
       [
-        { subject: 'alpha', description: 'first lane', domains: ['ui'] },
-        { subject: 'beta', description: 'second lane', domains: ['ui'] },
-        { subject: 'gamma', description: 'third lane', domains: ['ui'] },
+        { subject: 'alpha', description: 'first lane', explicitDomains: ['ui'] },
+        { subject: 'beta', description: 'second lane', explicitDomains: ['ui'] },
+        { subject: 'gamma', description: 'third lane', explicitDomains: ['ui'] },
       ],
       [
         { name: 'worker-1' },
@@ -186,6 +186,64 @@ describe('allocation-policy', () => {
     );
 
     assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-2']);
+  });
+
+  it('uses acceptance text as caller-authored prose affinity', () => {
+    const assignments = allocateTasksToWorkers(
+      [
+        { subject: 'first acceptance lane', description: 'first lane', acceptance: ['Update src/shared.ts'] },
+        { subject: 'second acceptance lane', description: 'second lane', acceptance: ['Verify src/shared.ts'] },
+      ],
+      [
+        { name: 'worker-1' },
+        { name: 'worker-2' },
+      ],
+    );
+
+    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-1']);
+  });
+
+  it('applies deterministic platform-bounded path case policies', () => {
+    assert.equal(allocationPathCasePolicyForPlatform('win32'), 'case-insensitive');
+    assert.equal(allocationPathCasePolicyForPlatform('darwin'), 'case-insensitive');
+    assert.equal(allocationPathCasePolicyForPlatform('linux'), 'case-sensitive');
+    assert.equal(allocationPathCasePolicyForPlatform('freebsd'), 'case-sensitive');
+
+    const tasks = [
+      { subject: 'upper parser', description: 'first lane', filePaths: ['src/Parser.ts'] },
+      { subject: 'lower parser', description: 'second lane', filePaths: ['src/parser.ts'] },
+    ];
+    const workers = [{ name: 'worker-1' }, { name: 'worker-2' }];
+
+    assert.deepEqual(
+      allocateTasksToWorkers(tasks, workers, { pathCasePolicy: 'case-sensitive' }).map((task) => task.owner),
+      ['worker-1', 'worker-2'],
+    );
+    assert.deepEqual(
+      allocateTasksToWorkers(tasks, workers, { pathCasePolicy: 'case-insensitive' }).map((task) => task.owner),
+      ['worker-1', 'worker-1'],
+    );
+  });
+
+  it('keeps inferred domains soft while explicit domains bind', () => {
+    const workers = [{ name: 'worker-1' }, { name: 'worker-2' }];
+    const inferred = allocateTasksToWorkers(
+      [
+        { subject: 'client', description: 'first lane', filePaths: ['src/client/index.ts'], inferredDomains: ['src', 'index'] },
+        { subject: 'server', description: 'second lane', filePaths: ['src/server/index.ts'], inferredDomains: ['src', 'index'] },
+      ],
+      workers,
+    );
+    const explicit = allocateTasksToWorkers(
+      [
+        { subject: 'client UI', description: 'first lane', filePaths: ['src/client.ts'], explicitDomains: ['ui'] },
+        { subject: 'server UI', description: 'second lane', filePaths: ['src/server.ts'], explicitDomains: ['ui'] },
+      ],
+      workers,
+    );
+
+    assert.deepEqual(inferred.map((task) => task.owner), ['worker-1', 'worker-2']);
+    assert.deepEqual(explicit.map((task) => task.owner), ['worker-1', 'worker-1']);
   });
 
   it('keeps related file-path work on the same worker to reduce overlap', () => {

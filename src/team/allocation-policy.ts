@@ -5,9 +5,11 @@ export interface AllocationTaskInput {
   description: string;
   role?: string;
   affinityDescription?: string;
+  acceptance?: string[];
   blocked_by?: string[];
   filePaths?: string[];
   domains?: string[];
+  explicitDomains?: string[];
   inferredDomains?: string[];
 }
 
@@ -19,6 +21,21 @@ export interface AllocationWorkerInput {
 export interface AllocationDecision {
   owner: string;
   reason: string;
+}
+
+export type AllocationPathCasePolicy = 'case-sensitive' | 'case-insensitive';
+
+export interface AllocationContext {
+  pathCasePolicy?: AllocationPathCasePolicy;
+}
+
+/**
+ * Bounded deterministic default: known Windows/macOS allocation contexts fold
+ * case; Linux and unknown platforms preserve case unless a caller proves and
+ * supplies a different policy.
+ */
+export function allocationPathCasePolicyForPlatform(platform = process.platform): AllocationPathCasePolicy {
+  return platform === 'win32' || platform === 'darwin' ? 'case-insensitive' : 'case-sensitive';
 }
 
 interface WorkerAllocationState extends AllocationWorkerInput {
@@ -42,15 +59,20 @@ function normalizeHint(value: string): string | null {
   return normalized.length >= 3 ? normalized : null;
 }
 
-function normalizedPathHint(pathValue: string, source: 'structured' | 'prose'): string {
+function normalizedPathHint(
+  pathValue: string,
+  source: 'structured' | 'prose',
+  casePolicy: AllocationPathCasePolicy,
+): string {
   const boundaryValue = source === 'prose'
     ? pathValue.replace(/([A-Za-z0-9])\.+$/, '$1')
     : pathValue;
-  return normalizeTeamFileScope(boundaryValue);
+  const normalized = normalizeTeamFileScope(boundaryValue);
+  return casePolicy === 'case-insensitive' ? normalized.toLowerCase() : normalized;
 }
 
-function collectPathHints(pathValue: string, target: Set<string>, source: 'structured' | 'prose'): void {
-  const normalizedPath = normalizedPathHint(pathValue, source);
+function collectPathHints(pathValue: string, target: Set<string>, source: 'structured' | 'prose', casePolicy: AllocationPathCasePolicy): void {
+  const normalizedPath = normalizedPathHint(pathValue, source, casePolicy);
   if (!normalizedPath) return;
   target.add(`path:${normalizedPath}`);
 
@@ -60,8 +82,8 @@ function collectPathHints(pathValue: string, target: Set<string>, source: 'struc
   if (normalizedStem) target.add(`domain:${normalizedStem}`);
 }
 
-function collectExactPathHint(pathValue: string, target: Set<string>, source: 'structured' | 'prose'): void {
-  const normalizedPath = normalizedPathHint(pathValue, source);
+function collectExactPathHint(pathValue: string, target: Set<string>, source: 'structured' | 'prose', casePolicy: AllocationPathCasePolicy): void {
+  const normalizedPath = normalizedPathHint(pathValue, source, casePolicy);
   if (normalizedPath) target.add(`path:${normalizedPath}`);
 }
 
@@ -88,27 +110,35 @@ function collectExactDeclaredDomainHint(value: string, target: Set<string>): voi
   if (normalized) target.add(`declared-domain:${normalized}`);
 }
 
-function extractHardAffinityHints(task: AllocationTaskInput): Set<string> {
-  const hints = new Set<string>();
-  for (const pathValue of task.filePaths ?? []) collectExactPathHint(pathValue, hints, 'structured');
-  for (const domain of task.domains ?? []) collectExactDeclaredDomainHint(domain, hints);
+function allocationProseText(task: AllocationTaskInput): string {
+  return [
+    task.subject,
+    task.affinityDescription ?? task.description,
+    ...(task.acceptance ?? []),
+  ].join('\n');
+}
 
-  const text = `${task.subject}\n${task.affinityDescription ?? task.description}`;
+function extractHardAffinityHints(task: AllocationTaskInput, casePolicy: AllocationPathCasePolicy): Set<string> {
+  const hints = new Set<string>();
+  for (const pathValue of task.filePaths ?? []) collectExactPathHint(pathValue, hints, 'structured', casePolicy);
+  for (const domain of task.explicitDomains ?? task.domains ?? []) collectExactDeclaredDomainHint(domain, hints);
+
+  const text = allocationProseText(task);
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
-    if (match[1]) collectExactPathHint(match[1], hints, 'prose');
+    if (match[1]) collectExactPathHint(match[1], hints, 'prose', casePolicy);
   }
   return hints;
 }
 
-function extractTaskHints(task: AllocationTaskInput): Set<string> {
+function extractTaskHints(task: AllocationTaskInput, casePolicy: AllocationPathCasePolicy): Set<string> {
   const hints = new Set<string>();
-  for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints, 'structured');
-  for (const domain of task.domains ?? []) collectDeclaredDomainHints(domain, hints);
+  for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints, 'structured', casePolicy);
+  for (const domain of task.explicitDomains ?? task.domains ?? []) collectDeclaredDomainHints(domain, hints);
   for (const domain of task.inferredDomains ?? []) collectDeclaredDomainHints(domain, hints);
 
-  const text = `${task.subject}\n${task.affinityDescription ?? task.description}`;
+  const text = allocationProseText(task);
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
-    if (match[1]) collectPathHints(match[1], hints, 'prose');
+    if (match[1]) collectPathHints(match[1], hints, 'prose', casePolicy);
   }
   collectDomainHints(text, hints);
   return hints;
@@ -154,14 +184,16 @@ function scoreWorker(
 export function chooseTaskOwner(
   task: AllocationTaskInput,
   workers: AllocationWorkerInput[],
-  currentAssignments: Array<{ owner: string; role?: string; subject?: string; description?: string; affinityDescription?: string; filePaths?: string[]; domains?: string[]; inferredDomains?: string[] }>,
+  currentAssignments: Array<{ owner: string; role?: string; subject?: string; description?: string; affinityDescription?: string; acceptance?: string[]; filePaths?: string[]; domains?: string[]; explicitDomains?: string[]; inferredDomains?: string[] }>,
+  context: AllocationContext = {},
 ): AllocationDecision {
   if (workers.length === 0) {
     throw new Error('at least one worker is required for allocation');
   }
+  const pathCasePolicy = context.pathCasePolicy ?? allocationPathCasePolicyForPlatform();
 
-  const hardAffinityHints = extractHardAffinityHints(task);
-  const taskHints = extractTaskHints(task);
+  const hardAffinityHints = extractHardAffinityHints(task, pathCasePolicy);
+  const taskHints = extractTaskHints(task, pathCasePolicy);
   const workerState = workers.map<WorkerAllocationState>((worker) => {
     const assigned = currentAssignments.filter((item) => item.owner === worker.name);
     const primaryRole = assigned.find((item) => item.role)?.role;
@@ -172,13 +204,15 @@ export function chooseTaskOwner(
         subject: item.subject ?? '',
         description: item.description ?? '',
         affinityDescription: item.affinityDescription,
+        acceptance: item.acceptance,
         role: item.role,
         filePaths: item.filePaths,
         domains: item.domains,
+        explicitDomains: item.explicitDomains,
         inferredDomains: item.inferredDomains,
       };
-      for (const hint of extractTaskHints(assignedTask)) scopeHints.add(hint);
-      for (const hint of extractHardAffinityHints(assignedTask)) workerHardAffinityHints.add(hint);
+      for (const hint of extractTaskHints(assignedTask, pathCasePolicy)) scopeHints.add(hint);
+      for (const hint of extractHardAffinityHints(assignedTask, pathCasePolicy)) workerHardAffinityHints.add(hint);
     }
     return {
       ...worker,
@@ -244,10 +278,11 @@ export function chooseTaskOwner(
 export function allocateTasksToWorkers<T extends AllocationTaskInput>(
   tasks: T[],
   workers: AllocationWorkerInput[],
+  context: AllocationContext = {},
 ): Array<T & { owner: string; allocation_reason: string }> {
   const assignments: Array<T & { owner: string; allocation_reason: string }> = [];
   for (const task of tasks) {
-    const decision = chooseTaskOwner(task, workers, assignments);
+    const decision = chooseTaskOwner(task, workers, assignments, context);
     assignments.push({
       ...task,
       owner: decision.owner,

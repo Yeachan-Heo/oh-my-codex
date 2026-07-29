@@ -213,6 +213,7 @@ export interface TeamTask {
   depends_on?: string[]; // task IDs
   filePaths?: string[];
   domains?: string[];
+  explicitDomains?: string[];
   lane?: string;
   allocation_reason?: string;
   version?: number;

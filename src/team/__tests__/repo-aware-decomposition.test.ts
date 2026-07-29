@@ -21,7 +21,11 @@ const legacy = () => ({
   tasks: [{ subject: 'legacy', description: 'legacy', owner: 'worker-1', role: 'team-executor' }],
 });
 
-function buildDagPlan(cwd: string, nodes: Array<Record<string, unknown>>) {
+function buildDagPlan(
+  cwd: string,
+  nodes: Array<Record<string, unknown>>,
+  pathCasePolicy?: 'case-sensitive' | 'case-insensitive',
+) {
   writeFileSync(join(cwd, '.omx', 'plans', 'team-dag-demo.json'), JSON.stringify({
     schema_version: 1,
     nodes,
@@ -35,6 +39,7 @@ function buildDagPlan(cwd: string, nodes: Array<Record<string, unknown>>) {
     cwd,
     buildLegacyPlan: legacy,
     allowDagHandoff: true,
+    pathCasePolicy,
   });
 }
 
@@ -102,6 +107,33 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
 
     assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-1']);
     assert.deepEqual(plan.tasks.map((task) => task.domains), [['ui'], ['ui']]);
+    assert.deepEqual(plan.tasks.map((task) => task.explicitDomains), [['ui'], ['ui']]);
+  });
+
+  it('binds acceptance-only shared paths through caller prose affinity', () => {
+    const cwd = repo();
+    const plan = buildDagPlan(cwd, [
+      { id: 'first', subject: 'Shared first', description: 'first lane', acceptance: ['Update src/shared.ts'] },
+      { id: 'second', subject: 'Shared second', description: 'second lane', acceptance: ['Verify src/shared.ts'] },
+    ]);
+
+    assert.deepEqual(plan.tasks.map((task) => task.owner), ['worker-1', 'worker-1']);
+    assert.deepEqual(
+      plan.tasks.map((task) => task.affinityDescription),
+      ['first lane\nUpdate src/shared.ts', 'second lane\nVerify src/shared.ts'],
+    );
+  });
+
+  it('applies explicit path case policy in repo-aware allocation', () => {
+    const nodes = [
+      { id: 'upper', subject: 'Upper parser', description: 'first lane', filePaths: ['src/Parser.ts'] },
+      { id: 'lower', subject: 'Lower parser', description: 'second lane', filePaths: ['src/parser.ts'] },
+    ];
+    const sensitive = buildDagPlan(repo(), nodes, 'case-sensitive');
+    const insensitive = buildDagPlan(repo(), nodes, 'case-insensitive');
+
+    assert.deepEqual(sensitive.tasks.map((task) => task.owner), ['worker-1', 'worker-2']);
+    assert.deepEqual(insensitive.tasks.map((task) => task.owner), ['worker-1', 'worker-1']);
   });
 
   it('binds semantically equivalent structured paths in repo-aware allocation', () => {

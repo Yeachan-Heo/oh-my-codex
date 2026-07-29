@@ -1,5 +1,5 @@
 import type { TeamTask, WorkerStatus } from './state/types.js';
-import { chooseTaskOwner, type AllocationWorkerInput } from './allocation-policy.js';
+import { chooseTaskOwner, type AllocationPathCasePolicy, type AllocationWorkerInput } from './allocation-policy.js';
 
 export interface RebalanceWorkerInput extends AllocationWorkerInput {
   alive: boolean;
@@ -17,6 +17,7 @@ export interface RebalancePolicyInput {
   tasks: TeamTask[];
   workers: RebalanceWorkerInput[];
   reclaimedTaskIds: string[];
+  pathCasePolicy?: AllocationPathCasePolicy;
 }
 
 function hasCompletedDependencies(task: TeamTask, taskById: Map<string, TeamTask>): boolean {
@@ -54,6 +55,7 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
       affinityDescription: task.affinityDescription,
       filePaths: task.filePaths,
       domains: task.domains,
+      explicitDomains: task.explicitDomains,
     }));
 
   const decisions: RebalanceDecision[] = [];
@@ -61,7 +63,9 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
 
   for (const task of unownedPendingTasks) {
     if (claimedTaskIds.has(task.id)) continue;
-    const decision = chooseTaskOwner(task, liveWorkers, inFlightAssignments);
+    const decision = chooseTaskOwner(task, liveWorkers, inFlightAssignments, {
+      pathCasePolicy: input.pathCasePolicy,
+    });
     decisions.push({
       type: 'assign',
       taskId: task.id,
@@ -78,6 +82,7 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
       affinityDescription: task.affinityDescription,
       filePaths: task.filePaths,
       domains: task.domains,
+      explicitDomains: task.explicitDomains,
     });
     claimedTaskIds.add(task.id);
   }

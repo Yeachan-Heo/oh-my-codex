@@ -125,6 +125,7 @@ export interface TeamTask {
   depends_on?: string[];
   filePaths?: string[];
   domains?: string[];
+  explicitDomains?: string[];
   lane?: string;
   allocation_reason?: string;
   version?: number;

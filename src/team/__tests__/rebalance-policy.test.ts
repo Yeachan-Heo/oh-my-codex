@@ -318,6 +318,84 @@ describe('rebalance-policy', () => {
     assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-2']);
   });
 
+  it('uses persisted caller acceptance prose during rebalance', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        {
+          id: '1',
+          subject: 'Shared first',
+          description: 'Rendered first lane metadata',
+          affinityDescription: 'Acceptance: update src/shared.ts',
+          status: 'pending',
+          created_at: '2026-03-11T00:00:00.000Z',
+        },
+        {
+          id: '2',
+          subject: 'Shared second',
+          description: 'Rendered second lane metadata',
+          affinityDescription: 'Acceptance: verify src/shared.ts',
+          status: 'pending',
+          created_at: '2026-03-11T00:00:01.000Z',
+        },
+      ],
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-1']);
+  });
+
+  it('applies the requested path case policy during rebalance', () => {
+    const decide = (pathCasePolicy: 'case-sensitive' | 'case-insensitive') => buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      pathCasePolicy,
+      tasks: [
+        {
+          id: '1',
+          subject: 'Upper parser',
+          description: 'first lane',
+          status: 'pending',
+          filePaths: ['src/Parser.ts'],
+          created_at: '2026-03-11T00:00:00.000Z',
+        },
+        {
+          id: '2',
+          subject: 'Lower parser',
+          description: 'second lane',
+          status: 'pending',
+          filePaths: ['src/parser.ts'],
+          created_at: '2026-03-11T00:00:01.000Z',
+        },
+      ],
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decide('case-sensitive').map((decision) => decision.workerName), ['worker-1', 'worker-2']);
+    assert.deepEqual(decide('case-insensitive').map((decision) => decision.workerName), ['worker-1', 'worker-1']);
+  });
+
   it('preserves exact file affinity under repeated rebalance load', () => {
     const decisions = buildRebalanceDecisions({
       reclaimedTaskIds: [],
