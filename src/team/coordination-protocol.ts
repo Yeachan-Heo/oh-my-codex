@@ -76,8 +76,9 @@ function hasInterdependenceSignal(text: string): boolean {
 	return INTERDEPENDENCE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function normalizedFileScope(value: string): string {
-	const normalized = pathPosix.normalize(value.trim().replace(/\\/g, "/"));
+export function normalizeTeamFileScope(value: string): string {
+	const portable = value.trim().replace(/\\/g, "/").replace(/([A-Za-z0-9])\.+$/, "$1");
+	const normalized = pathPosix.normalize(portable);
 	return normalized === "." ? "" : normalized.replace(/^(\.\/)+/, "");
 }
 
@@ -86,7 +87,7 @@ function normalizedScopeValue(
 	field: "filePaths" | "domains",
 ): string {
 	return field === "filePaths"
-		? normalizedFileScope(value)
+		? normalizeTeamFileScope(value)
 		: value.trim().toLowerCase();
 }
 

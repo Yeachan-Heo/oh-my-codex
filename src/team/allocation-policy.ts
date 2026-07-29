@@ -1,3 +1,5 @@
+import { normalizeTeamFileScope } from './coordination-protocol.js';
+
 export interface AllocationTaskInput {
   subject: string;
   description: string;
@@ -39,7 +41,7 @@ function normalizeHint(value: string): string | null {
 }
 
 function collectPathHints(pathValue: string, target: Set<string>): void {
-  const normalizedPath = normalizeHint(pathValue.replace(/^[./]+/, ''));
+  const normalizedPath = normalizeTeamFileScope(pathValue);
   if (!normalizedPath) return;
   target.add(`path:${normalizedPath}`);
 
@@ -50,7 +52,7 @@ function collectPathHints(pathValue: string, target: Set<string>): void {
 }
 
 function collectExactPathHint(pathValue: string, target: Set<string>): void {
-  const normalizedPath = normalizeHint(pathValue.replace(/^[./]+/, ''));
+  const normalizedPath = normalizeTeamFileScope(pathValue);
   if (normalizedPath) target.add(`path:${normalizedPath}`);
 }
 
