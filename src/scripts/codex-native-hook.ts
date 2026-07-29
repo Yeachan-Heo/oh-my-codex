@@ -15846,13 +15846,26 @@ function hasSafeConductorOrchestrationRuntimeEnvironment(
   if (clearBoundary === null) {
     for (const [name, value] of Object.entries(process.env)) {
       if (!/^(?:OMX|GJC)_/.test(name) || safeString(value).trim() === "") continue;
-      if (!conductorOrchestrationRuntimeEnvironmentNameIsPermitted(name)) return false;
+      // Inherited hook environment is process-authenticated: the omx launcher
+      // itself exports many OMX_* names beyond this allowlist (OMX_REPO_ROOT,
+      // OMX_MADMAX_DETACHED_CONTEXT, model defaults, …). Hard-failing on
+      // unlisted inherited names denies every omx CLI transport on real
+      // run-scoped sessions. Unknown inherited names are ignored for root
+      // resolution; only model-controlled inline assignments below stay strict.
+      if (!conductorOrchestrationRuntimeEnvironmentNameIsPermitted(name)) continue;
       environment.set(name, safeString(value));
     }
     if (state?.securityEnvironmentUnresolved) return false;
     for (const [name, value] of state?.securityEnvironment ?? []) {
       if (!/^(?:OMX|GJC)_/.test(name)) continue;
-      if (value === CONDUCTOR_UNKNOWN_SHELL_BINDING || !conductorOrchestrationRuntimeEnvironmentNameIsPermitted(name)) return false;
+      // Launcher-exported names flow into the shell-state mirror verbatim. A
+      // not-permitted name whose value still byte-matches the
+      // process-authenticated inherited environment was not introduced by the
+      // command; only diverging or unknown bindings are hostile.
+      if (value === CONDUCTOR_UNKNOWN_SHELL_BINDING
+        || (!conductorOrchestrationRuntimeEnvironmentNameIsPermitted(name)
+          && value !== safeString(process.env[name]))) return false;
+      if (!conductorOrchestrationRuntimeEnvironmentNameIsPermitted(name)) continue;
       if (value.trim() === "") environment.delete(name);
       else environment.set(name, value);
     }
@@ -15891,8 +15904,16 @@ function hasSafeConductorOrchestrationRuntimeEnvironment(
   const rootValue = environment.get("OMX_ROOT") ?? rootCwd;
   try {
     const canonicalRoot = realpathSync(resolve(rootCwd));
-    if (realpathSync(resolve(rootCwd, rootValue)) !== canonicalRoot) return false;
-    const expectedStateRoot = realpathSync(join(canonicalRoot, ".omx", "state"));
+    // Run-scoped launches set OMX_ROOT to an isolated run directory whose
+    // state tree is $OMX_ROOT/.omx/state (getBaseStateDirWithSource); the
+    // inherited run root is a canonical anchor alongside the repo root.
+    const inheritedOmxRootValue = safeString(process.env.OMX_ROOT).trim();
+    const inheritedRunRoot = inheritedOmxRootValue
+      ? realpathSync(resolve(rootCwd, inheritedOmxRootValue))
+      : canonicalRoot;
+    const resolvedRootValue = realpathSync(resolve(rootCwd, rootValue));
+    if (resolvedRootValue !== canonicalRoot && resolvedRootValue !== inheritedRunRoot) return false;
+    const expectedStateRoot = realpathSync(join(resolvedRootValue, ".omx", "state"));
     for (const name of ["OMX_STATE_ROOT", "OMX_TEAM_STATE_ROOT"] as const) {
       const value = environment.get(name);
       if (value && realpathSync(resolve(rootCwd, value)) !== expectedStateRoot) return false;
@@ -15914,14 +15935,24 @@ function hasCanonicalInheritedConductorOrchestrationRoots(
   if (nestedExecEnvironmentClearBoundary(words, commandStartIndex, commandIndex) !== null) return true;
   try {
     const canonicalRoot = realpathSync(resolve(rootCwd));
-    const expectedStateRoot = realpathSync(join(canonicalRoot, ".omx", "state"));
-    for (const [name, expectedPath] of [
-      ["OMX_ROOT", canonicalRoot],
-      ["OMX_STATE_ROOT", expectedStateRoot],
-      ["OMX_TEAM_STATE_ROOT", expectedStateRoot],
+    // Run-scoped launches set OMX_ROOT to an isolated run directory whose
+    // state tree lives at $OMX_ROOT/.omx/state (see getBaseStateDirWithSource).
+    // The inherited run root is process-authenticated (set by the omx
+    // launcher, not the model), so it is a canonical anchor alongside the
+    // repo root; rejecting it denies every omx CLI transport as
+    // "<unresolved>" on run-scoped sessions.
+    const inheritedOmxRootValue = safeString(process.env.OMX_ROOT).trim();
+    const inheritedRunRoot = inheritedOmxRootValue
+      ? realpathSync(resolve(rootCwd, inheritedOmxRootValue))
+      : canonicalRoot;
+    const expectedStateRoot = realpathSync(join(inheritedRunRoot, ".omx", "state"));
+    for (const [name, expectedPaths] of [
+      ["OMX_ROOT", [canonicalRoot, inheritedRunRoot]],
+      ["OMX_STATE_ROOT", [expectedStateRoot]],
+      ["OMX_TEAM_STATE_ROOT", [expectedStateRoot]],
     ] as const) {
       const value = safeString(process.env[name]).trim();
-      if (value && realpathSync(resolve(rootCwd, value)) !== expectedPath) return false;
+      if (value && !(expectedPaths as readonly string[]).includes(realpathSync(resolve(rootCwd, value)))) return false;
     }
   } catch {
     return false;
@@ -17424,13 +17455,39 @@ function conductorResolvedPackageCliCandidateIsTrusted(
     if (!candidate) continue;
     try {
       accessSync(candidate, fsConstants.X_OK);
-      const trustedCli = expectedCandidate !== null && realpathSync(candidate) === expectedCandidate;
-      return trustedCli && conductorPackageCliHasTrustedNodeInterpreter(candidate, state, rootCwd);
+      if (expectedCandidate !== null && realpathSync(candidate) === expectedCandidate) {
+        return conductorPackageCliHasTrustedNodeInterpreter(candidate, state, rootCwd);
+      }
+      return expectedCandidate !== null
+        && conductorLauncherRuntimeShimResolvesTrustedPackageCli(candidate, expectedCandidate);
     } catch {
       return false;
     }
   }
   return false;
+}
+
+function conductorLauncherRuntimeShimResolvesTrustedPackageCli(candidatePath: string, expectedCandidate: string): boolean {
+  // The omx launcher prepends $OMX_ROOT/.omx/runtime/bin to PATH holding a
+  // two-line sh shim that execs the canonical package CLI through an
+  // absolute node interpreter. Treating that launcher-owned shim as
+  // untrusted denies bare `omx cancel` — the documented Conductor recovery
+  // surface — on every run-scoped session.
+  try {
+    const omxRoot = safeString(process.env.OMX_ROOT).trim();
+    if (!omxRoot) return false;
+    const shimDirectory = realpathSync(join(resolve(omxRoot), ".omx", "runtime", "bin"));
+    if (dirname(realpathSync(candidatePath)) !== shimDirectory) return false;
+    const content = readFileSync(candidatePath, "utf-8");
+    const match = content.match(/^#!\/bin\/sh\nexec '([^'\n]+)' '([^'\n]+)' "\$@"\n?$/);
+    if (!match) return false;
+    const interpreter = match[1] ?? "";
+    if (!isAbsolute(interpreter)) return false;
+    accessSync(interpreter, fsConstants.X_OK);
+    return realpathSync(match[2] ?? "") === expectedCandidate;
+  } catch {
+    return false;
+  }
 }
 
 function conductorSlashCommandIsTrusted(commandWord: string, state: ShellPosixState, rootCwd: string): boolean {
