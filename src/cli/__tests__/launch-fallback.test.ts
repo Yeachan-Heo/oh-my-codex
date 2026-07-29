@@ -14,6 +14,7 @@ import {
   finalizeBoundOnce,
   writeSessionStart,
   type LaunchSessionBinding,
+  type SessionPointerContext,
 } from '../../hooks/session.js';
 import { buildPtyScriptCommand, isRealScriptAvailable, isRealTmuxAvailable, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
 
@@ -70,6 +71,18 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function cwdDefaultSessionPointerContext(cwd: string): SessionPointerContext {
+  const baseStateDir = join(cwd, '.omx', 'state');
+  const sessionPath = join(baseStateDir, 'session.json');
+  return {
+    cwd,
+    baseStateDir,
+    rootSource: 'cwd-default',
+    sessionPath,
+    lockPath: `${sessionPath}.lock`,
+  };
+}
+
 function shouldSkipForSpawnPermissions(_err: string): false {
   // These integration fixtures are contractual: EPERM/EACCES is a failure,
   // not a pass. Node's test runner has no portable dynamic skip here.
@@ -94,20 +107,23 @@ async function writeExecutable(path: string, content: string): Promise<void> {
 }
 async function wrapFakeTmuxWithDetachedLeader(fakeTmuxPath: string): Promise<void> {
   const implementationPath = `${fakeTmuxPath}.impl`;
+  const detachedSessionNamePath = `${fakeTmuxPath}.detached-session-name`;
+  const detachedOwnerIdPath = `${fakeTmuxPath}.detached-owner-id`;
+  const detachedLeaderLogPath = `${fakeTmuxPath}.detached-leader.log`;
   await rename(fakeTmuxPath, implementationPath);
   await writeExecutable(fakeTmuxPath, `#!/bin/sh
 if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{session_created}'*'#{window_id}'*'#{pane_pid}'*) true;; *) false;; esac; then
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  session=$(cat ${JSON.stringify(detachedSessionNamePath)} 2>/dev/null || printf omx-test)
   printf '%s\t$1\t1\t0\t@1\t%s\t123\n' "$session" "$4"
   exit 0
 fi
 if [ "$1" = "set-option" ] && [ "$2" = "-t" ] && [ "$4" = "@omx_instance_id" ]; then
-  printf '%s' "$5" > /tmp/omx-test-detached-owner-id
+  printf '%s' "$5" > ${JSON.stringify(detachedOwnerIdPath)}
 fi
 if [ "$1" = "list-panes" ] && case "$*" in *'#{session_created}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
   ${JSON.stringify(implementationPath)} "$@" >/dev/null 2>&1 || true
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
-  owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf '')
+  session=$(cat ${JSON.stringify(detachedSessionNamePath)} 2>/dev/null || printf omx-test)
+  owner=$(cat ${JSON.stringify(detachedOwnerIdPath)} 2>/dev/null || printf '')
   printf '%%12\t0\t123\t%s\t$1\t1\t%s\n' "$session" "$owner"
   exit 0
 fi
@@ -141,12 +157,12 @@ printf '%s' "$output"
 if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
   previous=''
   for arg in "$@"; do
-    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > /tmp/omx-test-detached-session-name; break; fi
+    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > ${JSON.stringify(detachedSessionNamePath)}; break; fi
     previous="$arg"
   done
   for last_arg do :; done
   pane=$(printf '%s' "$output" | sed -n '1p')
-  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >${JSON.stringify(detachedLeaderLogPath)} 2>&1 &
   leader_pid=$!
   (while kill -0 "$leader_pid" 2>/dev/null; do sleep 0.02; done; printf done > ${JSON.stringify(`${fakeTmuxPath}.leader-done`)}) </dev/null >/dev/null 2>&1 &
 fi
@@ -162,6 +178,10 @@ async function createLaunchFixture(
   const fakeBin = join(wd, 'bin');
   const tmuxLogPath = join(wd, 'tmux.log');
   const leaderDonePath = join(wd, 'leader-done');
+  const fakeTmuxPath = join(fakeBin, 'tmux');
+  const detachedSessionNamePath = `${fakeTmuxPath}.detached-session-name`;
+  const detachedOwnerIdPath = `${fakeTmuxPath}.detached-owner-id`;
+  const detachedLeaderLogPath = `${fakeTmuxPath}.detached-leader.log`;
 
   await mkdir(home, { recursive: true });
   await mkdir(fakeBin, { recursive: true });
@@ -172,19 +192,19 @@ async function createLaunchFixture(
   await writeExecutable(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
   const tmuxImpl = join(fakeBin, 'tmux-impl');
   await writeExecutable(tmuxImpl, tmuxScript(tmuxLogPath));
-  await writeExecutable(join(fakeBin, 'tmux'), `#!/bin/sh
+  await writeExecutable(fakeTmuxPath, `#!/bin/sh
 if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{session_created}'*'#{window_id}'*'#{pane_pid}'*) true;; *) false;; esac; then
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  session=$(cat ${JSON.stringify(detachedSessionNamePath)} 2>/dev/null || printf omx-test)
   printf '%s\t$1\t1\t0\t@1\t%s\t123\n' "$session" "$4"
   exit 0
 fi
 if [ "$1" = "set-option" ] && [ "$2" = "-t" ] && [ "$4" = "@omx_instance_id" ]; then
-  printf '%s' "$5" > /tmp/omx-test-detached-owner-id
+  printf '%s' "$5" > ${JSON.stringify(detachedOwnerIdPath)}
 fi
 if [ "$1" = "list-panes" ] && case "$*" in *'#{session_created}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
   ${JSON.stringify(tmuxImpl)} "$@" >/dev/null 2>&1 || true
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
-  owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf '')
+  session=$(cat ${JSON.stringify(detachedSessionNamePath)} 2>/dev/null || printf omx-test)
+  owner=$(cat ${JSON.stringify(detachedOwnerIdPath)} 2>/dev/null || printf '')
   printf '%%12\t0\t123\t%s\t$1\t1\t%s\n' "$session" "$owner"
   exit 0
 fi
@@ -218,12 +238,12 @@ printf '%s' "$output"
 if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
   previous=''
   for arg in "$@"; do
-    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > /tmp/omx-test-detached-session-name; break; fi
+    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > ${JSON.stringify(detachedSessionNamePath)}; break; fi
     previous="$arg"
   done
   for last_arg do :; done
   pane=$(printf '%s' "$output" | sed -n '1p')
-  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c "$last_arg" </dev/null >${JSON.stringify(detachedLeaderLogPath)} 2>&1 &
   leader_pid=$!
   (while kill -0 "$leader_pid" 2>/dev/null; do sleep 0.02; done; printf done > ${JSON.stringify(join(wd, 'leader-done'))}) </dev/null >/dev/null 2>&1 &
 fi
@@ -634,7 +654,10 @@ describe('ordinary launch root collision guidance', () => {
     try {
       execFileSync('git', ['init'], { cwd: wd, stdio: 'ignore' });
       const fixture = await createHeldCodexFixture(wd);
-      const established = await establishLaunchSessionBinding(wd, 'first-standard-launch', { pid: process.pid });
+      const established = await establishLaunchSessionBinding(wd, 'first-standard-launch', {
+        pid: process.pid,
+        context: cwdDefaultSessionPointerContext(wd),
+      });
       assert.equal(established.kind, 'committed-released');
       if (established.kind !== 'committed-released') return;
       binding = established.binding;
@@ -713,8 +736,14 @@ describe('ordinary launch root collision guidance', () => {
       execFileSync('git', ['init'], { cwd: firstCheckout, stdio: 'ignore' });
       execFileSync('git', ['init'], { cwd: secondCheckout, stdio: 'ignore' });
 
-      const firstEstablished = await establishLaunchSessionBinding(firstCheckout, 'first-checkout-owner', { pid: process.pid });
-      const secondEstablished = await establishLaunchSessionBinding(secondCheckout, 'second-checkout-owner', { pid: process.pid });
+      const firstEstablished = await establishLaunchSessionBinding(firstCheckout, 'first-checkout-owner', {
+        pid: process.pid,
+        context: cwdDefaultSessionPointerContext(firstCheckout),
+      });
+      const secondEstablished = await establishLaunchSessionBinding(secondCheckout, 'second-checkout-owner', {
+        pid: process.pid,
+        context: cwdDefaultSessionPointerContext(secondCheckout),
+      });
       assert.equal(firstEstablished.kind, 'committed-released');
       assert.equal(secondEstablished.kind, 'committed-released');
       if (firstEstablished.kind !== 'committed-released' || secondEstablished.kind !== 'committed-released') return;
@@ -725,7 +754,10 @@ describe('ordinary launch root collision guidance', () => {
       await finalizeBoundOnce(firstBinding, 'test');
       await finalizeBoundOnce(secondBinding, 'test');
 
-      await writeSessionStart(firstCheckout, 'stale-owner', { pid: 2_147_483_647 });
+      await writeSessionStart(firstCheckout, 'stale-owner', {
+        pid: 2_147_483_647,
+        context: cwdDefaultSessionPointerContext(firstCheckout),
+      });
       const fixture = await createHeldCodexFixture(wd);
       await rm(fixture.releasePath, { force: true });
       const relaunch = runOmx(firstCheckout, ['--direct', '--version'], fixture.env);

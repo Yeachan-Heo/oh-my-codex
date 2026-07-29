@@ -74,12 +74,12 @@ describe('decomposeTaskString', () => {
     assert.deepEqual(tasks.map((task) => task.owner), ['worker-1', 'worker-2', 'worker-3']);
   });
 
-  it('clusters same-role work to preserve specialization when routing is mixed', () => {
+  it('distributes same-role generic-worker lanes when routing is mixed', () => {
     const tasks = decomposeTaskString('write docs, build UI component, update docs, and fix tests', 3, 'executor', false);
     assert.equal(tasks.length, 4);
     const docOwners = tasks.filter((task) => task.role === 'writer').map((task) => task.owner);
     assert.ok(docOwners.length >= 2);
-    assert.equal(new Set(docOwners).size, 1);
+    assert.equal(new Set(docOwners).size, 2);
   });
 
   it('handles single worker with single task', () => {
