@@ -303,6 +303,44 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  native-rust-darwin:
+    name: Native Rust (Darwin)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    needs: [changes]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build omx-runtime
+        run: cargo build -p omx-runtime
+      - name: Test omx-runtime
+        run: cargo test -p omx-runtime
+
+  native-rust-windows:
+    name: Native Rust (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    needs: [changes]
+    if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.rust_changed == 'true' || needs.changes.outputs.native_changed == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build omx-runtime
+        run: cargo build -p omx-runtime
+      - name: Test omx-runtime
+        run: cargo test -p omx-runtime
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -610,7 +648,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [changes, docs-check, rustfmt, clippy, rust-tests, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build]
+    needs: [changes, docs-check, rustfmt, clippy, rust-tests, native-rust-darwin, native-rust-windows, lint, typecheck, build-dist, ralplan-preflight-macos, test, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build]
     steps:
       - name: Check required job results
         shell: bash
@@ -626,6 +664,8 @@ jobs:
           RUSTFMT_RESULT: ${{ needs.rustfmt.result }}
           CLIPPY_RESULT: ${{ needs.clippy.result }}
           RUST_TESTS_RESULT: ${{ needs.rust-tests.result }}
+          NATIVE_RUST_DARWIN_RESULT: ${{ needs.native-rust-darwin.result }}
+          NATIVE_RUST_WINDOWS_RESULT: ${{ needs.native-rust-windows.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           BUILD_DIST_RESULT: ${{ needs.build-dist.result }}
@@ -680,6 +720,8 @@ jobs:
           echo "  rustfmt: $RUSTFMT_RESULT"
           echo "  clippy: $CLIPPY_RESULT"
           echo "  rust-tests: $RUST_TESTS_RESULT"
+          echo "  native-rust-darwin: $NATIVE_RUST_DARWIN_RESULT"
+          echo "  native-rust-windows: $NATIVE_RUST_WINDOWS_RESULT"
           echo "  lint: $LINT_RESULT"
           echo "  typecheck: $TYPECHECK_RESULT"
           echo "  build-dist: $BUILD_DIST_RESULT"
@@ -709,6 +751,8 @@ jobs:
           check_job rustfmt "$RUSTFMT_RESULT" "$rust_active"
           check_job clippy "$CLIPPY_RESULT" "$rust_active"
           check_job rust-tests "$RUST_TESTS_RESULT" "$rust_active"
+          check_job native-rust-darwin "$NATIVE_RUST_DARWIN_RESULT" "$rust_active"
+          check_job native-rust-windows "$NATIVE_RUST_WINDOWS_RESULT" "$rust_active"
           check_job lint "$LINT_RESULT" "$ts_active"
           check_job typecheck "$TYPECHECK_RESULT" "$ts_active"
           check_job build-dist "$BUILD_DIST_RESULT" "$dist_active"

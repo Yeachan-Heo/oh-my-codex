@@ -589,3 +589,83 @@ mod fs_rename_no_replace_linux {
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_identity_current_process_returns_identity() {
+    let pid = std::process::id().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["process-identity", &pid])
+        .output()
+        .expect("ran omx-runtime process-identity");
+
+    assert!(
+        output.status.success(),
+        "process-identity failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+
+    let platform = parsed["platform"].as_str().expect("platform string");
+    assert_eq!(platform, "linux");
+    let birth = parsed["birth"].as_str().expect("birth string");
+    assert!(!birth.is_empty(), "birth must not be empty");
+    assert!(
+        birth.chars().all(|character| character.is_ascii_digit()),
+        "birth must be a decimal string: {birth}"
+    );
+    if let Some(cmdline) = parsed.get("cmdline") {
+        assert!(cmdline.is_string(), "cmdline must be a string when present");
+    }
+}
+
+#[test]
+fn process_identity_zero_pid_fails() {
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["process-identity", "0"])
+        .output()
+        .expect("ran omx-runtime process-identity");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("process-identity pid must be > 0"));
+}
+
+#[test]
+fn process_identity_non_numeric_pid_fails() {
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["process-identity", "abc"])
+        .output()
+        .expect("ran omx-runtime process-identity");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("process-identity pid must be a positive integer"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_identity_nonexistent_pid_reports_gone() {
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["process-identity", "999999999"])
+        .output()
+        .expect("ran omx-runtime process-identity");
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(parsed["outcome"], "gone");
+}
+
+#[test]
+fn process_identity_missing_pid_fails() {
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .arg("process-identity")
+        .output()
+        .expect("ran omx-runtime process-identity");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("process-identity requires exactly <pid>"));
+}

@@ -43,6 +43,34 @@ import {
   type RegularFileSyncOutcome,
 } from '../utils/file-durability.js';
 
+/** Cross-platform process birth identity. `birth` is an exact decimal string. */
+export interface ProcessIdentity {
+  platform: NodeJS.Platform;
+  birth: string;
+  cmdline_hash?: string;
+}
+
+/** Raw observation from a native process-identity provider. No comparison logic. */
+export type ProcessObservation =
+  | { kind: 'identity'; identity: ProcessIdentity }
+  | { kind: 'gone' }
+  | { kind: 'denied' }
+  | { kind: 'unsupported' }
+  | { kind: 'error' };
+
+/** Classification of a recorded identity against a live observation. */
+export type IdentityClassification =
+  | { status: 'match' }
+  | { status: 'birth-mismatch' }
+  | { status: 'identity-unavailable' }
+  | { status: 'gone' };
+
+/** Provider interface for observing process identity. */
+export interface ProcessInspectionProvider {
+  probePid(pid: number): PidProbeResult;
+  observeProcess(pid: number, platform: NodeJS.Platform): ProcessObservation;
+}
+
 export interface SessionState {
   session_id: string;
   native_session_id?: string;
@@ -58,6 +86,10 @@ export interface SessionState {
   platform?: NodeJS.Platform;
   pid_start_ticks?: number;
   pid_cmdline?: string;
+  /** Versioned process identity schema; absent means legacy v1. */
+  identity_schema_version?: 2;
+  /** Cross-platform process identity (v2 schema). */
+  process_identity?: ProcessIdentity;
   tmux_session_name?: string;
   tmux_pane_id?: string;
   /** Private wrapper lineage evidence; native reconciliation never creates or repairs it. */
@@ -372,6 +404,8 @@ interface LinuxProcessIdentity {
 export interface SessionStaleCheckOptions {
   platform?: NodeJS.Platform;
   isPidAlive?: (pid: number) => boolean;
+  probePid?: (pid: number) => PidProbeResult;
+  observeProcess?: (pid: number, platform: NodeJS.Platform) => ProcessObservation;
   readLinuxIdentity?: (pid: number) => LinuxProcessIdentity | null;
 }
 
@@ -443,12 +477,9 @@ export interface SessionPointerTransactionDependencies {
   nowMs(): number;
   sleep(ms: number): Promise<void>;
   token(): string;
+  runtimePlatform: NodeJS.Platform;
   probePid(pid: number): PidProbeResult;
-  readProcessIdentity(pid: number, platform: NodeJS.Platform): {
-    status: 'matching' | 'reused' | 'indeterminate';
-    startTicks?: number;
-    cmdlineHash?: string;
-  };
+  observeProcess(pid: number, platform: NodeJS.Platform): ProcessObservation;
   atomicRenameNoReplace(from: string, to: string): Promise<RecoveryRenameNoReplaceResult>;
 }
 
@@ -536,20 +567,25 @@ function defaultProbePid(pid: number): PidProbeResult {
   })(pid);
 }
 
-function defaultReadProcessIdentity(pid: number, platform: NodeJS.Platform): {
-  status: 'matching' | 'reused' | 'indeterminate';
-  startTicks?: number;
-  cmdlineHash?: string;
-} {
-  if (platform !== 'linux') return { status: 'indeterminate' };
-  const identity = readLinuxProcessIdentity(pid);
-  if (!identity) return { status: 'indeterminate' };
-  const cmdlineHash = hashCmdline(identity.cmdline);
-  return {
-    status: 'matching',
-    startTicks: identity.startTicks,
-    ...(cmdlineHash ? { cmdlineHash } : {}),
-  };
+function defaultObserveProcess(pid: number, platform: NodeJS.Platform): ProcessObservation {
+  if (platform === 'linux') {
+    return observeLinuxProcess(pid);
+  }
+  if (platform !== 'darwin' && platform !== 'win32') {
+    return { kind: 'unsupported' };
+  }
+  try {
+    const stdout = nodeExecFileSync(resolveRuntimeBinaryPath(), ['process-identity', String(pid)], {
+      encoding: 'utf8',
+      timeout: 3000,
+      maxBuffer: 64 * 1024,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return parseProcessIdentityOutput(stdout);
+  } catch {
+    return { kind: 'unsupported' };
+  }
 }
 
 const defaultTransactionDependencies: SessionPointerTransactionDependencies = {
@@ -557,9 +593,15 @@ const defaultTransactionDependencies: SessionPointerTransactionDependencies = {
   nowMs: () => Date.now(),
   sleep: async (ms) => await new Promise<void>((resolve) => setTimeout(resolve, ms)),
   token: () => randomUUID(),
+  runtimePlatform: process.platform,
   probePid: defaultProbePid,
-  readProcessIdentity: defaultReadProcessIdentity,
+  observeProcess: defaultObserveProcess,
   atomicRenameNoReplace: defaultRecoveryRenameNoReplace,
+};
+
+export const defaultProcessInspectionProvider: ProcessInspectionProvider = {
+  probePid: defaultProbePid,
+  observeProcess: defaultObserveProcess,
 };
 
 let transactionDependencies: SessionPointerTransactionDependencies = defaultTransactionDependencies;
@@ -616,12 +658,107 @@ function readLinuxProcessIdentity(pid: number): LinuxProcessIdentity | null {
   }
 }
 
-function defaultIsPidAlive(pid: number): boolean {
+const NODE_PLATFORMS = new Set<NodeJS.Platform>([
+  'aix', 'android', 'darwin', 'freebsd', 'haiku', 'linux', 'openbsd', 'sunos', 'win32', 'cygwin', 'netbsd',
+]);
+const PROCESS_BIRTH_PATTERN = /^\d+(?:\.\d+)?$/;
+
+function isNodePlatform(value: unknown): value is NodeJS.Platform {
+  return typeof value === 'string' && NODE_PLATFORMS.has(value as NodeJS.Platform);
+}
+
+function isValidBirth(value: unknown): value is string {
+  return typeof value === 'string' && PROCESS_BIRTH_PATTERN.test(value);
+}
+
+function isValidProcessIdentity(value: unknown): value is ProcessIdentity {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const identity = value as Partial<ProcessIdentity>;
+  if (Object.keys(identity).some((key) => key !== 'platform' && key !== 'birth' && key !== 'cmdline_hash')) return false;
+  return isNodePlatform(identity.platform)
+    && isValidBirth(identity.birth)
+    && (identity.cmdline_hash === undefined
+      || typeof identity.cmdline_hash === 'string' && SHA256_PATTERN.test(identity.cmdline_hash));
+}
+
+function isComparableProcessIdentity(value: unknown): value is ProcessIdentity {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const identity = value as Partial<ProcessIdentity>;
+  return isNodePlatform(identity.platform)
+    && typeof identity.birth === 'string'
+    && identity.birth.length > 0
+    && (identity.cmdline_hash === undefined
+      || typeof identity.cmdline_hash === 'string' && SHA256_PATTERN.test(identity.cmdline_hash));
+}
+
+function observeLinuxProcess(pid: number): ProcessObservation {
+  if (!Number.isInteger(pid) || pid <= 0) return { kind: 'error' };
+  const identity = readLinuxProcessIdentity(pid);
+  if (identity) {
+    const cmdlineHash = hashCmdline(identity.cmdline);
+    return {
+      kind: 'identity',
+      identity: {
+        platform: 'linux',
+        birth: String(identity.startTicks),
+        ...(cmdlineHash ? { cmdline_hash: cmdlineHash } : {}),
+      },
+    };
+  }
+
+  let statContent: string;
   try {
-    process.kill(pid, 0);
-    return true;
+    statContent = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === 'ENOENT' || code === 'ESRCH') return { kind: 'gone' };
+    if (code === 'EACCES' || code === 'EPERM') return { kind: 'denied' };
+    return { kind: 'error' };
+  }
+  if (!statContent) return { kind: 'error' };
+  const probe = defaultProbePid(pid);
+  if (probe === 'dead') return { kind: 'gone' };
+  if (probe === 'indeterminate') return { kind: 'denied' };
+  return { kind: 'error' };
+}
+
+function parseProcessIdentityOutput(stdout: string): ProcessObservation {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'error' };
+    const value = parsed as Record<string, unknown>;
+    const keys = Object.keys(value);
+    const outcome = value.outcome;
+    if (outcome !== undefined) {
+      if (typeof outcome !== 'string') return { kind: 'error' };
+      if (outcome === 'gone' || outcome === 'denied' || outcome === 'unsupported') {
+        if (keys.length !== 1) return { kind: 'error' };
+        if (outcome === 'gone') return { kind: 'gone' };
+        if (outcome === 'denied') return { kind: 'denied' };
+        return { kind: 'unsupported' };
+      }
+      if (outcome === 'error') return { kind: 'error' };
+      return { kind: 'error' };
+    }
+
+    if (keys.some((key) => key !== 'platform' && key !== 'birth' && key !== 'cmdline')) {
+      return { kind: 'error' };
+    }
+    const platform = value.platform;
+    const birth = value.birth;
+    if (!isNodePlatform(platform) || !isValidBirth(birth)) return { kind: 'error' };
+    if (value.cmdline !== undefined && typeof value.cmdline !== 'string') return { kind: 'error' };
+    const cmdlineHash = hashCmdline(value.cmdline as string | undefined);
+    return {
+      kind: 'identity',
+      identity: {
+        platform,
+        birth,
+        ...(cmdlineHash ? { cmdline_hash: cmdlineHash } : {}),
+      },
+    };
   } catch {
-    return false;
+    return { kind: 'error' };
   }
 }
 
@@ -634,20 +771,137 @@ export function isSessionStale(
   options: SessionStaleCheckOptions = {},
 ): boolean {
   if (!Number.isInteger(state.pid) || state.pid <= 0) return true;
-  const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
-  if (!isPidAlive(state.pid)) return true;
 
-  const platform = options.platform ?? process.platform;
-  if (platform !== 'linux') return false;
+  const runtimePlatform = options.platform ?? transactionDependencies.runtimePlatform ?? process.platform;
+  const probePid = options.probePid ?? (options.isPidAlive
+    ? (pid: number): PidProbeResult => options.isPidAlive!(pid) ? 'alive' : 'dead'
+    : transactionDependencies.probePid);
+  const observeProcess = options.observeProcess ?? (options.readLinuxIdentity
+    ? (pid: number, platform: NodeJS.Platform): ProcessObservation => {
+      if (platform !== 'linux') return { kind: 'unsupported' };
+      const identity = options.readLinuxIdentity!(pid);
+      if (!identity) return { kind: 'error' };
+      const cmdlineHash = hashCmdline(identity.cmdline);
+      return {
+        kind: 'identity',
+        identity: {
+          platform: 'linux',
+          birth: String(identity.startTicks),
+          ...(cmdlineHash ? { cmdline_hash: cmdlineHash } : {}),
+        },
+      };
+    }
+    : transactionDependencies.observeProcess);
+  const dependencies = {
+    ...transactionDependencies,
+    runtimePlatform,
+    probePid,
+    observeProcess,
+  };
+  return classifySessionProcess(state, dependencies) !== 'usable';
+}
 
-  const liveIdentity = (options.readLinuxIdentity ?? readLinuxProcessIdentity)(state.pid);
-  if (!liveIdentity || typeof state.pid_start_ticks !== 'number') return true;
-  if (state.pid_start_ticks !== liveIdentity.startTicks) return true;
+type ProcessClassificationStatus = 'usable' | 'stale-dead' | 'identity-indeterminate';
+type ObservationComparison = 'match' | 'birth-mismatch' | 'birth-mismatch-retryable' | 'identity-unavailable';
 
-  const expectedCmdline = normalizeCmdline(state.pid_cmdline);
-  if (!expectedCmdline) return false;
-  const liveCmdline = normalizeCmdline(liveIdentity.cmdline);
-  return !liveCmdline || liveCmdline !== expectedCmdline;
+function safeObserve(
+  provider: ProcessInspectionProvider,
+  pid: number,
+  runtimePlatform: NodeJS.Platform,
+): ProcessObservation {
+  try {
+    return provider.observeProcess(pid, runtimePlatform);
+  } catch {
+    return { kind: 'error' };
+  }
+}
+
+function compareObservation(
+  recorded: ProcessIdentity,
+  observation: ProcessObservation | unknown,
+  runtimePlatform: NodeJS.Platform,
+): ObservationComparison {
+  if (!observation || typeof observation !== 'object' || (observation as ProcessObservation).kind !== 'identity') {
+    return 'identity-unavailable';
+  }
+  const identity = (observation as Extract<ProcessObservation, { kind: 'identity' }>).identity;
+  if (!isComparableProcessIdentity(identity) || identity.platform !== runtimePlatform) {
+    return 'identity-unavailable';
+  }
+  if (identity.birth !== recorded.birth) return 'birth-mismatch-retryable';
+  if (recorded.cmdline_hash !== undefined && identity.cmdline_hash !== recorded.cmdline_hash) {
+    return 'identity-unavailable';
+  }
+  return 'match';
+}
+
+/** Compare recorded process birth evidence with a fresh provider observation. */
+export function classifyRecordedIdentity(
+  recorded: Pick<ProcessIdentity, 'platform' | 'birth' | 'cmdline_hash'>,
+  runtimePlatform: NodeJS.Platform,
+  provider: ProcessInspectionProvider,
+  pid: number,
+): IdentityClassification {
+  if (!isComparableProcessIdentity(recorded) || recorded.platform !== runtimePlatform || !Number.isInteger(pid) || pid <= 0) {
+    return { status: 'identity-unavailable' };
+  }
+
+  let probe: PidProbeResult;
+  try {
+    probe = provider.probePid(pid);
+  } catch {
+    return { status: 'identity-unavailable' };
+  }
+  if (probe === 'dead') return { status: 'gone' };
+  if (probe !== 'alive') return { status: 'identity-unavailable' };
+
+  const first = compareObservation(recorded, safeObserve(provider, pid, runtimePlatform), runtimePlatform);
+  if (first === 'birth-mismatch-retryable') {
+    const second = compareObservation(recorded, safeObserve(provider, pid, runtimePlatform), runtimePlatform);
+    if (second === 'match') return { status: 'match' };
+    if (second === 'birth-mismatch-retryable' || second === 'birth-mismatch') return { status: 'birth-mismatch' };
+    return { status: 'identity-unavailable' };
+  }
+  if (first === 'match') return { status: 'match' };
+  if (first === 'birth-mismatch') return { status: 'birth-mismatch' };
+  return { status: 'identity-unavailable' };
+}
+
+function recordedIdentityForState(
+  state: SessionState,
+  runtimePlatform: NodeJS.Platform,
+): ProcessIdentity | null | 'invalid' {
+  if (state.identity_schema_version !== undefined && state.identity_schema_version !== 2) return 'invalid';
+  if (state.process_identity !== undefined) {
+    if (state.identity_schema_version !== 2 || !isValidProcessIdentity(state.process_identity)) return 'invalid';
+    if (state.platform !== undefined && state.platform !== state.process_identity.platform) return 'invalid';
+    return state.process_identity;
+  }
+  if (state.identity_schema_version === 2) return 'invalid';
+
+  const recordedPlatform = state.platform ?? runtimePlatform;
+  if (recordedPlatform === 'linux' && isValidStartTicks(state.pid_start_ticks)) {
+    const cmdlineHash = hashCmdline(state.pid_cmdline);
+    return {
+      platform: 'linux',
+      birth: String(state.pid_start_ticks),
+      ...(cmdlineHash ? { cmdline_hash: cmdlineHash } : {}),
+    };
+  }
+  return null;
+}
+
+function probeIdentitylessProcess(
+  pid: number,
+  dependencies: SessionPointerTransactionDependencies,
+): ProcessClassificationStatus {
+  let probe: PidProbeResult;
+  try {
+    probe = dependencies.probePid(pid);
+  } catch {
+    return 'identity-indeterminate';
+  }
+  return probe === 'dead' ? 'stale-dead' : 'identity-indeterminate';
 }
 
 export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: string): boolean {
@@ -668,9 +922,11 @@ export function isSessionStateUsable(
   if (!normalizeSessionId(state.session_id)) return false;
   if (typeof state.cwd === 'string' && state.cwd.trim() && !isSessionStateAuthoritativeForCwd(state, cwd)) return false;
   const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
-  const hasLinuxIdentityMetadata = typeof state.pid_start_ticks === 'number'
-    || typeof state.pid_cmdline === 'string';
-  return !hasPidMetadata && !hasLinuxIdentityMetadata || !isSessionStale(state, options);
+  const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
+    || typeof state.pid_cmdline === 'string'
+    || state.identity_schema_version !== undefined
+    || state.process_identity !== undefined;
+  return !hasPidMetadata && !hasIdentityMetadata || !isSessionStale(state, options);
 }
 
 function isValidStartTicks(value: unknown): value is number {
@@ -680,40 +936,27 @@ function isValidStartTicks(value: unknown): value is number {
 function classifySessionProcess(
   state: SessionState,
   dependencies: SessionPointerTransactionDependencies,
-): 'usable' | 'stale-dead' | 'identity-indeterminate' {
+): ProcessClassificationStatus {
   const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
-  const hasIdentityMetadata = typeof state.pid_start_ticks === 'number' || typeof state.pid_cmdline === 'string';
+  const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
+    || typeof state.pid_cmdline === 'string'
+    || state.identity_schema_version !== undefined
+    || state.process_identity !== undefined;
   if (!hasPidMetadata && !hasIdentityMetadata) return 'usable';
   if (!hasPidMetadata) return 'identity-indeterminate';
 
-  let pidStatus: PidProbeResult;
-  try {
-    pidStatus = dependencies.probePid(state.pid);
-  } catch {
-    return 'identity-indeterminate';
-  }
-  if (pidStatus === 'dead') return 'stale-dead';
-  if (pidStatus !== 'alive') return 'identity-indeterminate';
+  const runtimePlatform = dependencies.runtimePlatform;
+  const recorded = recordedIdentityForState(state, runtimePlatform);
+  if (recorded === 'invalid') return 'identity-indeterminate';
+  if (!recorded) return probeIdentitylessProcess(state.pid, dependencies);
 
-  const platform = state.platform ?? process.platform;
-  if (platform !== 'linux') return 'usable';
-  if (!isValidStartTicks(state.pid_start_ticks)) return 'identity-indeterminate';
-
-  let liveIdentity: ReturnType<SessionPointerTransactionDependencies['readProcessIdentity']>;
-  try {
-    liveIdentity = dependencies.readProcessIdentity(state.pid, platform);
-  } catch {
-    return 'identity-indeterminate';
+  const classification = classifyRecordedIdentity(recorded, runtimePlatform, dependencies, state.pid);
+  switch (classification.status) {
+    case 'match': return 'usable';
+    case 'gone':
+    case 'birth-mismatch': return 'stale-dead';
+    case 'identity-unavailable': return 'identity-indeterminate';
   }
-  if (!liveIdentity || !isValidStartTicks(liveIdentity.startTicks)) return 'identity-indeterminate';
-  if (liveIdentity.startTicks !== state.pid_start_ticks) return 'stale-dead';
-  if (liveIdentity.status !== 'matching') return 'identity-indeterminate';
-
-  const expectedCmdlineHash = hashCmdline(state.pid_cmdline);
-  if (expectedCmdlineHash && liveIdentity.cmdlineHash !== expectedCmdlineHash) {
-    return 'identity-indeterminate';
-  }
-  return 'usable';
 }
 
 /**
@@ -741,6 +984,14 @@ function classifyParsedSessionPointer(
   if (typeof state.cwd === 'string' && state.cwd.trim() && !isSessionStateAuthoritativeForCwd(state, context.cwd)) {
     return { status: 'foreign-cwd', raw, state };
   }
+  if (state.identity_schema_version !== undefined && state.identity_schema_version !== 2) return { status: 'identity-indeterminate', raw, state };
+  if (state.process_identity !== undefined
+    && (state.identity_schema_version !== 2
+      || !isValidProcessIdentity(state.process_identity)
+      || state.platform !== undefined && state.platform !== state.process_identity.platform)) {
+    return { status: 'malformed', raw, state };
+  }
+  if (state.identity_schema_version === 2 && state.process_identity === undefined) return { status: 'malformed', raw, state };
 
   const processStatus = classifySessionProcess(state, transactionDependencies);
   return { status: processStatus, state, raw };
@@ -807,7 +1058,7 @@ function createSessionState(
   sessionId: string,
   pid: number,
   platform: NodeJS.Platform,
-  linuxIdentity: LinuxProcessIdentity | null,
+  identity: ProcessIdentity | LinuxProcessIdentity | null,
   options: {
     nowIso?: string;
     nativeSessionId?: string;
@@ -827,6 +1078,27 @@ function createSessionState(
   const ownerOmxSessionId = normalizeSessionId(options.ownerOmxSessionId);
   const tmuxSessionName = normalizeNonempty(options.tmuxSessionName);
   const tmuxPaneId = normalizeNonempty(options.tmuxPaneId);
+  const processIdentity = identity && 'birth' in identity
+    ? identity
+    : identity
+      ? {
+          platform: 'linux' as const,
+          birth: String(identity.startTicks),
+          ...(hashCmdline(identity.cmdline) ? { cmdline_hash: hashCmdline(identity.cmdline) } : {}),
+        }
+      : undefined;
+  const publishIdentity = processIdentity && isValidProcessIdentity(processIdentity) && processIdentity.platform === platform
+    ? processIdentity
+    : undefined;
+  const legacyStartTicks = identity && 'startTicks' in identity
+    ? identity.startTicks
+    : publishIdentity?.platform === 'linux' && Number.isSafeInteger(Number(publishIdentity.birth))
+      ? Number(publishIdentity.birth)
+      : undefined;
+  const legacyLinuxIdentity = publishIdentity?.platform === 'linux' && publishIdentity.birth === String(legacyStartTicks)
+    ? readLinuxProcessIdentity(pid)
+    : null;
+  const legacyCmdline = identity && 'cmdline' in identity ? identity.cmdline : legacyLinuxIdentity?.cmdline;
   return {
     session_id: sessionId,
     ...(nativeSessionId ? { native_session_id: nativeSessionId } : {}),
@@ -839,8 +1111,9 @@ function createSessionState(
     state_root: stateRoot,
     pid,
     platform,
-    ...(linuxIdentity ? { pid_start_ticks: linuxIdentity.startTicks } : {}),
-    ...(linuxIdentity?.cmdline ? { pid_cmdline: linuxIdentity.cmdline } : {}),
+    ...(publishIdentity ? { identity_schema_version: 2 as const, process_identity: publishIdentity } : {}),
+    ...(legacyStartTicks !== undefined ? { pid_start_ticks: legacyStartTicks } : {}),
+    ...(legacyCmdline ? { pid_cmdline: legacyCmdline } : {}),
     ...(tmuxSessionName ? { tmux_session_name: tmuxSessionName } : {}),
     ...(tmuxPaneId ? { tmux_pane_id: tmuxPaneId } : {}),
   };
@@ -860,8 +1133,15 @@ function resolvePid(options: SessionStartOptions): number {
   return Number.isInteger(options.pid) && options.pid && options.pid > 0 ? options.pid : process.pid;
 }
 
-function sessionIdentityFor(pid: number, platform: NodeJS.Platform): LinuxProcessIdentity | null {
-  return platform === 'linux' ? readLinuxProcessIdentity(pid) : null;
+function sessionIdentityFor(pid: number, platform: NodeJS.Platform): ProcessIdentity | null {
+  try {
+    const observation = transactionDependencies.observeProcess(pid, platform);
+    return observation.kind === 'identity' && isValidProcessIdentity(observation.identity) && observation.identity.platform === platform
+      ? observation.identity
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function currentOwnerAlias(state: SessionState): string | undefined {
@@ -909,22 +1189,47 @@ interface SessionPointerLockOwnerV1 {
   created_at: string;
 }
 
+interface SessionPointerLockOwnerV2 {
+  version: 2;
+  token: string;
+  pid: number;
+  platform: NodeJS.Platform;
+  process_identity: ProcessIdentity;
+  pid_start_ticks?: number;
+  pid_cmdline_hash?: string;
+  created_at: string;
+}
+
+type SessionPointerLockOwner = SessionPointerLockOwnerV1 | SessionPointerLockOwnerV2;
 type LockOwnerStatus = 'live' | 'dead' | 'reused' | 'identity-indeterminate' | 'missing' | 'malformed';
 
-function parseLockOwner(raw: string): SessionPointerLockOwnerV1 | null {
+function parseLockOwner(raw: string): SessionPointerLockOwner | null {
   try {
-    const value = JSON.parse(raw) as Partial<SessionPointerLockOwnerV1>;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    if (value.version !== 1 || !isValidToken(value.token) || typeof value.pid !== 'number' || !Number.isInteger(value.pid) || value.pid <= 0) return null;
-    if (typeof value.platform !== 'string' || !value.platform || typeof value.created_at !== 'string' || !value.created_at) {
-      return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const value = parsed as Record<string, unknown>;
+    if (!isValidToken(value.token) || typeof value.pid !== 'number' || !Number.isInteger(value.pid) || value.pid <= 0) return null;
+    if (!isNodePlatform(value.platform) || typeof value.created_at !== 'string' || !value.created_at) return null;
+
+    if (value.version === 1) {
+      if (value.pid_start_ticks !== undefined && !isValidStartTicks(value.pid_start_ticks)) return null;
+      if (value.pid_cmdline_hash !== undefined
+        && (typeof value.pid_cmdline_hash !== 'string' || !SHA256_PATTERN.test(value.pid_cmdline_hash))) {
+        return null;
+      }
+      return value as unknown as SessionPointerLockOwnerV1;
     }
-    if (value.pid_start_ticks !== undefined && !isValidStartTicks(value.pid_start_ticks)) return null;
-    if (value.pid_cmdline_hash !== undefined
-      && (typeof value.pid_cmdline_hash !== 'string' || !SHA256_PATTERN.test(value.pid_cmdline_hash))) {
-      return null;
+    if (value.version === 2) {
+      const processIdentity = value.process_identity;
+      if (!isValidProcessIdentity(processIdentity) || processIdentity.platform !== value.platform) return null;
+      if (value.pid_start_ticks !== undefined && !isValidStartTicks(value.pid_start_ticks)) return null;
+      if (value.pid_cmdline_hash !== undefined
+        && (typeof value.pid_cmdline_hash !== 'string' || !SHA256_PATTERN.test(value.pid_cmdline_hash))) {
+        return null;
+      }
+      return value as unknown as SessionPointerLockOwnerV2;
     }
-    return value as SessionPointerLockOwnerV1;
+    return null;
   } catch {
     return null;
   }
@@ -934,9 +1239,19 @@ function isValidToken(value: unknown): value is string {
   return typeof value === 'string' && SESSION_POINTER_TOKEN_PATTERN.test(value);
 }
 
+function recordedIdentityForLockOwner(owner: SessionPointerLockOwner): ProcessIdentity | null {
+  if (owner.version === 2) return owner.process_identity;
+  if (owner.platform !== 'linux' || !isValidStartTicks(owner.pid_start_ticks)) return null;
+  return {
+    platform: 'linux',
+    birth: String(owner.pid_start_ticks),
+    ...(owner.pid_cmdline_hash ? { cmdline_hash: owner.pid_cmdline_hash } : {}),
+  };
+}
+
 async function inspectLockOwnerFile(ownerPath: string, missingStatus: LockOwnerStatus = 'missing'): Promise<{
   status: LockOwnerStatus;
-  owner?: SessionPointerLockOwnerV1;
+  owner?: SessionPointerLockOwner;
 }> {
   let raw: string;
   try {
@@ -948,39 +1263,36 @@ async function inspectLockOwnerFile(ownerPath: string, missingStatus: LockOwnerS
   const owner = parseLockOwner(raw);
   if (!owner) return { status: 'malformed' };
 
-  let pidStatus: PidProbeResult;
-  try {
-    pidStatus = transactionDependencies.probePid(owner.pid);
-  } catch {
-    return { status: 'identity-indeterminate', owner };
+  const recorded = recordedIdentityForLockOwner(owner);
+  if (!recorded) {
+    let probe: PidProbeResult;
+    try {
+      probe = transactionDependencies.probePid(owner.pid);
+    } catch {
+      return { status: 'identity-indeterminate', owner };
+    }
+    return probe === 'dead'
+      ? { status: 'dead', owner }
+      : { status: 'identity-indeterminate', owner };
   }
-  if (pidStatus === 'dead') return { status: 'dead', owner };
-  if (pidStatus !== 'alive') return { status: 'identity-indeterminate', owner };
 
-  if (owner.platform !== 'linux' || !isValidStartTicks(owner.pid_start_ticks)) {
-    return { status: 'identity-indeterminate', owner };
+  const classification = classifyRecordedIdentity(
+    recorded,
+    transactionDependencies.runtimePlatform,
+    transactionDependencies,
+    owner.pid,
+  );
+  switch (classification.status) {
+    case 'match': return { status: 'live', owner };
+    case 'gone': return { status: 'dead', owner };
+    case 'birth-mismatch': return { status: 'reused', owner };
+    case 'identity-unavailable': return { status: 'identity-indeterminate', owner };
   }
-
-  let liveIdentity: ReturnType<SessionPointerTransactionDependencies['readProcessIdentity']>;
-  try {
-    liveIdentity = transactionDependencies.readProcessIdentity(owner.pid, owner.platform);
-  } catch {
-    return { status: 'identity-indeterminate', owner };
-  }
-  if (!liveIdentity || !isValidStartTicks(liveIdentity.startTicks)) {
-    return { status: 'identity-indeterminate', owner };
-  }
-  if (liveIdentity.startTicks !== owner.pid_start_ticks) return { status: 'reused', owner };
-  if (liveIdentity.status !== 'matching') return { status: 'identity-indeterminate', owner };
-  if (owner.pid_cmdline_hash && owner.pid_cmdline_hash !== liveIdentity.cmdlineHash) {
-    return { status: 'identity-indeterminate', owner };
-  }
-  return { status: 'live', owner };
 }
 
 async function inspectLockOwner(lockPath: string): Promise<{
   status: LockOwnerStatus;
-  owner?: SessionPointerLockOwnerV1;
+  owner?: SessionPointerLockOwner;
 }> {
   return await inspectLockOwnerFile(join(lockPath, 'owner.json'));
 }
@@ -1282,26 +1594,35 @@ interface HeldPointerLock {
   token: string;
 }
 
-function buildLockOwner(token: string): SessionPointerLockOwnerV1 {
-  let identity: ReturnType<SessionPointerTransactionDependencies['readProcessIdentity']> | undefined;
+function buildLockOwner(token: string): SessionPointerLockOwner {
+  const runtimePlatform = transactionDependencies.runtimePlatform;
+  let observation: ProcessObservation | undefined;
   try {
-    identity = transactionDependencies.readProcessIdentity(process.pid, process.platform);
+    observation = transactionDependencies.observeProcess(process.pid, runtimePlatform);
   } catch {
     // Publication remains valid with optional identity metadata omitted.
   }
-  return {
-    version: 1,
+  const identity = observation?.kind === 'identity' && isValidProcessIdentity(observation.identity)
+    && observation.identity.platform === runtimePlatform
+    ? observation.identity
+    : undefined;
+  const legacyStartTicks = identity?.platform === 'linux' && Number.isSafeInteger(Number(identity.birth))
+    ? Number(identity.birth)
+    : undefined;
+  const legacyHash = identity?.cmdline_hash && SHA256_PATTERN.test(identity.cmdline_hash)
+    ? identity.cmdline_hash
+    : undefined;
+  const common = {
     token,
     pid: process.pid,
-    platform: process.platform,
-    ...(identity?.status === 'matching' && isValidStartTicks(identity.startTicks)
-      ? { pid_start_ticks: identity.startTicks }
-      : {}),
-    ...(identity?.status === 'matching' && identity.cmdlineHash && SHA256_PATTERN.test(identity.cmdlineHash)
-      ? { pid_cmdline_hash: identity.cmdlineHash }
-      : {}),
+    platform: runtimePlatform,
+    ...(legacyStartTicks !== undefined ? { pid_start_ticks: legacyStartTicks } : {}),
+    ...(legacyHash ? { pid_cmdline_hash: legacyHash } : {}),
     created_at: new Date(transactionDependencies.nowMs()).toISOString(),
   };
+  return identity
+    ? { version: 2, ...common, process_identity: identity }
+    : { version: 1, ...common };
 }
 
 async function removeOwnedPath(path: string): Promise<SessionPointerSecondaryFailure | undefined> {
@@ -1513,7 +1834,7 @@ async function acquirePointerLock(
 
 async function releasePointerLock(lock: HeldPointerLock): Promise<SessionPointerSecondaryFailure[]> {
   const ownerPath = join(lock.context.lockPath, 'owner.json');
-  let owner: SessionPointerLockOwnerV1 | null = null;
+  let owner: SessionPointerLockOwner | null = null;
   try {
     owner = parseLockOwner(await transactionDependencies.fs.readFile(ownerPath, 'utf8'));
   } catch {
@@ -2505,7 +2826,7 @@ export async function readNativeSessionOwnerEvidence(
   const state = pointer.state;
   return state?.session_id === normalized
     && state.native_session_id === normalized
-    && state.platform === process.platform
+    && state.platform === transactionDependencies.runtimePlatform
     && isSessionStateAuthoritativeForCwd(state, context.cwd)
     ? pointer
     : { status: 'malformed', state, raw: pointer.raw };

@@ -124,6 +124,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         Some("fs-rename-no-replace") => run_fs_rename_no_replace(&args[1..]),
+        Some("process-identity") => run_process_identity(&args[1..]),
         Some("init") => {
             let dir = second.ok_or("init requires a state directory path")?;
             let engine = RuntimeEngine::new().with_state_dir(dir);
@@ -271,6 +272,292 @@ fn fs_rename_no_replace(
     Ok(FsRenameOutcome::Unsupported("platform"))
 }
 
+// ---------------------------------------------------------------------------
+// process-identity subcommand
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+enum ProcessIdentityError {
+    Denied,
+    Gone,
+    Unsupported,
+    Error(String),
+}
+
+struct ProcessIdentityResult {
+    platform: &'static str,
+    birth: String,
+    cmdline: Option<String>,
+}
+
+fn run_process_identity(args: &[String]) -> Result<(), String> {
+    if args.len() != 1 {
+        return Err("process-identity requires exactly <pid>".to_string());
+    }
+    let pid: u32 = args[0].parse().map_err(|_| {
+        format!(
+            "process-identity pid must be a positive integer, got: {}",
+            args[0]
+        )
+    })?;
+    if pid == 0 {
+        return Err("process-identity pid must be > 0".to_string());
+    }
+    let result = process_identity(pid);
+    let json = match result {
+        Ok(identity) => {
+            let mut obj = serde_json::json!({
+                "platform": identity.platform,
+                "birth": identity.birth,
+            });
+            if let Some(cmdline) = &identity.cmdline {
+                obj["cmdline"] = serde_json::Value::String(cmdline.clone());
+            }
+            obj
+        }
+        Err(ProcessIdentityError::Denied) => {
+            serde_json::json!({ "outcome": "denied" })
+        }
+        Err(ProcessIdentityError::Gone) => {
+            serde_json::json!({ "outcome": "gone" })
+        }
+        Err(ProcessIdentityError::Unsupported) => {
+            serde_json::json!({ "outcome": "unsupported" })
+        }
+        Err(ProcessIdentityError::Error(reason)) => {
+            serde_json::json!({ "outcome": "error", "reason": reason })
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&json).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn process_identity(pid: u32) -> Result<ProcessIdentityResult, ProcessIdentityError> {
+    let stat_path = format!("/proc/{pid}/stat");
+    let stat_content = match std::fs::read_to_string(&stat_path) {
+        Ok(content) => content,
+        Err(e) => {
+            return match e.raw_os_error() {
+                Some(libc::ENOENT) | Some(libc::ESRCH) => Err(ProcessIdentityError::Gone),
+                Some(libc::EACCES) | Some(libc::EPERM) => Err(ProcessIdentityError::Denied),
+                _ => Err(ProcessIdentityError::Error(format!(
+                    "read stat failed: {e}"
+                ))),
+            };
+        }
+    };
+
+    // Parse field 22: skip past the comm field (in parens) then count fields
+    let command_end = stat_content.rfind(')');
+    let start_ticks = match command_end {
+        Some(idx) => {
+            let fields: Vec<&str> = stat_content[idx + 1..].split_whitespace().collect();
+            // After ')', field 1 is state, field 2 is ppid, ..., field 20 is starttime
+            // (field 3 in the full stat is ppid; the 20th field after ')' is starttime)
+            if fields.len() <= 19 {
+                return Err(ProcessIdentityError::Error(
+                    "stat content too short for starttime field".to_string(),
+                ));
+            }
+            match fields[19].parse::<u64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(ProcessIdentityError::Error(format!(
+                        "starttime field is not a valid integer: {}",
+                        fields[19]
+                    )))
+                }
+            }
+        }
+        None => {
+            return Err(ProcessIdentityError::Error(
+                "stat content has no closing paren".to_string(),
+            ))
+        }
+    };
+
+    // Read cmdline if accessible
+    let cmdline = read_linux_cmdline(pid);
+
+    Ok(ProcessIdentityResult {
+        platform: "linux",
+        birth: start_ticks.to_string(),
+        cmdline,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_cmdline(pid: u32) -> Option<String> {
+    use std::io::Read;
+    let cmdline_path = format!("/proc/{pid}/cmdline");
+    let mut content = String::new();
+    let result =
+        std::fs::File::open(&cmdline_path).and_then(|mut f| f.read_to_string(&mut content));
+    match result {
+        Ok(_) => {
+            let text = content.replace('\u{0}', " ").trim().to_string();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+// Darwin: proc_pidinfo with PROC_PIDTBSDINFO for pbi_start_tvsec/pbi_start_tvusec
+#[cfg(target_os = "macos")]
+fn process_identity(pid: u32) -> Result<ProcessIdentityResult, ProcessIdentityError> {
+    use std::ffi::c_int;
+
+    extern "C" {
+        fn proc_pidinfo(
+            pid: c_int,
+            flavor: c_int,
+            arg: u64,
+            buffer: *mut std::ffi::c_void,
+            buffersize: c_int,
+        ) -> c_int;
+    }
+
+    const PROC_PIDTBSDINFO: c_int = 3;
+    const PROC_PIDTBSDINFO_SIZE: c_int = std::mem::size_of::<ProcTaskBsdInfo>() as c_int;
+
+    // struct proc_bsdinfo (from libproc.h / proc_info.h):
+    //   pbi_name: [c_char; 16] (COMMLEN = 16)
+    //   pbi_pid: i32
+    //   pbi_ppid: i32
+    //   pbi_uid: uid_t (u32)
+    //   pbi_gid: gid_t (u32)
+    //   pbi_ruid: uid_t
+    //   pbi_rgid: gid_t
+    //   pbi_svuid: uid_t
+    //   pbi_svgid: gid_t
+    //   pbi_rfu: u32
+    //   pbi_flags: u32
+    //   pbi_start_tvsec: u64   ← birth seconds since epoch
+    //   pbi_start_tvusec: u64  ← birth microseconds
+    //   ... remaining fields not needed
+    #[repr(C)]
+    struct ProcTaskBsdInfo {
+        pbi_name: [std::ffi::c_char; 16],
+        pbi_pid: i32,
+        pbi_ppid: i32,
+        pbi_uid: u32,
+        pbi_gid: u32,
+        pbi_ruid: u32,
+        pbi_rgid: u32,
+        pbi_svuid: u32,
+        pbi_svgid: u32,
+        pbi_rfu: u32,
+        pbi_flags: u32,
+        pbi_start_tvsec: u64,
+        pbi_start_tvusec: u64,
+    }
+
+    let mut buf: ProcTaskBsdInfo = unsafe { std::mem::zeroed() };
+    let ret = unsafe {
+        proc_pidinfo(
+            pid as c_int,
+            PROC_PIDTBSDINFO,
+            0,
+            &mut buf as *mut _ as *mut std::ffi::c_void,
+            PROC_PIDTBSDINFO_SIZE,
+        )
+    };
+
+    if ret <= 0 {
+        let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return match errno_val {
+            libc::EPERM | libc::EACCES => Err(ProcessIdentityError::Denied),
+            libc::ESRCH | libc::ENOENT => Err(ProcessIdentityError::Gone),
+            _ => Err(ProcessIdentityError::Error(format!(
+                "proc_pidinfo(PROC_PIDTBSDINFO) failed: errno={}",
+                errno_val
+            ))),
+        };
+    }
+
+    // Birth is exact decimal string: seconds.microseconds since Unix epoch.
+    // Two processes started in the same second will differ in microseconds
+    // unless they genuinely started at the same microsecond instant.
+    let birth = format!("{}.{}", buf.pbi_start_tvsec, buf.pbi_start_tvusec);
+
+    Ok(ProcessIdentityResult {
+        platform: "darwin",
+        birth,
+        cmdline: None,
+    })
+}
+
+// Windows: OpenProcess + GetProcessTimes for creation FILETIME
+#[cfg(target_os = "windows")]
+fn process_identity(pid: u32) -> Result<ProcessIdentityResult, ProcessIdentityError> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        return match err {
+            5 => Err(ProcessIdentityError::Denied), // ERROR_ACCESS_DENIED
+            87 => Err(ProcessIdentityError::Gone),  // ERROR_INVALID_PARAMETER
+            _ => Err(ProcessIdentityError::Error(format!(
+                "OpenProcess failed: error code {}",
+                err
+            ))),
+        };
+    }
+
+    // RAII guard: CloseHandle on all paths
+    struct HandleGuard(*mut std::ffi::c_void);
+    impl Drop for HandleGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+    }
+    let _guard = HandleGuard(handle);
+
+    let mut creation: FILETIME = unsafe { std::mem::zeroed() };
+    let mut exit: FILETIME = unsafe { std::mem::zeroed() };
+    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+    let mut user: FILETIME = unsafe { std::mem::zeroed() };
+
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+
+    if ok == 0 {
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        return Err(ProcessIdentityError::Error(format!(
+            "GetProcessTimes failed: error code {}",
+            err
+        )));
+    }
+
+    // Combine FILETIME (100ns intervals since 1601-01-01) into u64
+    let birth_u64 = ((creation.dwHighDateTime as u64) << 32) | (creation.dwLowDateTime as u64);
+
+    Ok(ProcessIdentityResult {
+        platform: "win32",
+        birth: birth_u64.to_string(),
+        cmdline: None,
+    })
+}
+
+// Unsupported platform fallback
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn process_identity(_pid: u32) -> Result<ProcessIdentityResult, ProcessIdentityError> {
+    Err(ProcessIdentityError::Unsupported)
+}
+
 fn print_usage() {
     println!(concat!(
         "usage: omx-runtime <command> [options]\n",
@@ -278,6 +565,7 @@ fn print_usage() {
         "commands:\n",
         "  schema [--json]                     print the runtime contract summary\n",
         "  fs-rename-no-replace <from> <to>       atomically move without replacing destination\n",
+        "  process-identity <pid>              print process birth identity as JSON\n",
         "  snapshot [--json] [--state-dir=DIR]  print a runtime snapshot\n",
         "  mux-contract                        print the mux boundary summary\n",
         "  exec <json> [--state-dir=DIR]       process a runtime command from JSON\n",

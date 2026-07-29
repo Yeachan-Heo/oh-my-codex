@@ -4200,7 +4200,7 @@ PY`,
       process.env.OMX_SESSION_ID = sessionId;
       assert.equal(await neutralizeOwnedRoutingRalplan(cwd), true);
       const result = await dispatchCodexNativeHook({ hook_event_name: 'SessionStart', cwd, session_id: sessionId }, { cwd });
-      const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput?.additionalContext ?? '');
+      const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)?.hookSpecificOutput?.additionalContext ?? '');
       assert.doesNotMatch(context, /- ralplan phase:/);
     } finally {
       previousSessionId === undefined ? delete process.env.OMX_SESSION_ID : process.env.OMX_SESSION_ID = previousSessionId;
