@@ -46,7 +46,14 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
 
   const inFlightAssignments = input.tasks
     .filter((task) => task.owner && task.status === 'in_progress')
-    .map((task) => ({ owner: task.owner as string, role: task.role }));
+    .map((task) => ({
+      owner: task.owner as string,
+      role: task.role,
+      subject: task.subject,
+      description: task.description,
+      filePaths: task.filePaths,
+      domains: task.domains,
+    }));
 
   const decisions: RebalanceDecision[] = [];
   const claimedTaskIds = new Set<string>();
@@ -62,7 +69,14 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
         ? `reclaimed work is ready; ${decision.reason}`
         : `idle worker pickup; ${decision.reason}`,
     });
-    inFlightAssignments.push({ owner: decision.owner, role: task.role });
+    inFlightAssignments.push({
+      owner: decision.owner,
+      role: task.role,
+      subject: task.subject,
+      description: task.description,
+      filePaths: task.filePaths,
+      domains: task.domains,
+    });
     claimedTaskIds.add(task.id);
   }
 

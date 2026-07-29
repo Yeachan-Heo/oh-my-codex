@@ -55,11 +55,22 @@ function collectDomainHints(value: string, target: Set<string>): void {
   }
 }
 
+function normalizeDeclaredDomainHint(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return normalized || null;
+}
+
+function collectDeclaredDomainHints(value: string, target: Set<string>): void {
+  const normalized = normalizeDeclaredDomainHint(value);
+  if (normalized) target.add(`domain:${normalized}`);
+  collectDomainHints(value, target);
+}
+
 function extractTaskHints(task: AllocationTaskInput): Set<string> {
   const hints = new Set<string>();
 
   for (const pathValue of task.filePaths ?? []) collectPathHints(pathValue, hints);
-  for (const domain of task.domains ?? []) collectDomainHints(domain, hints);
+  for (const domain of task.domains ?? []) collectDeclaredDomainHints(domain, hints);
 
   const text = `${task.subject}\n${task.description}`;
   for (const match of text.matchAll(FILE_PATH_PATTERN)) {
@@ -79,7 +90,7 @@ function extractTaskHints(task: AllocationTaskInput): Set<string> {
  */
 function hasExplicitAffinityHint(task: AllocationTaskInput): boolean {
   if ((task.filePaths?.length ?? 0) > 0) return true;
-  if ((task.domains ?? []).some((domain) => normalizeHint(domain) !== null)) return true;
+  if ((task.domains ?? []).some((domain) => normalizeDeclaredDomainHint(domain) !== null)) return true;
   const text = `${task.subject}\n${task.description}`;
   return [...text.matchAll(FILE_PATH_PATTERN)].length > 0;
 }

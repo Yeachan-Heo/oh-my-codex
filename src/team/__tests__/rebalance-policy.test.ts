@@ -143,6 +143,45 @@ describe('rebalance-policy', () => {
     assert.match(decisions[0]?.reason ?? '', /reclaimed work is ready; (keeps writer work grouped|matches worker role writer)/);
   });
 
+  it('preserves short explicit domain affinity across rebalance decisions', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        {
+          id: '1',
+          subject: 'First UI lane',
+          description: 'Implement the first surface',
+          status: 'pending',
+          domains: ['ui'],
+          created_at: '2026-03-11T00:00:00.000Z',
+        },
+        {
+          id: '2',
+          subject: 'Second UI lane',
+          description: 'Implement the second surface',
+          status: 'pending',
+          domains: ['ui'],
+          created_at: '2026-03-11T00:00:01.000Z',
+        },
+      ],
+      workers: [
+        {
+          name: 'worker-1',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+        {
+          name: 'worker-2',
+          alive: true,
+          status: { state: 'idle', updated_at: '2026-03-11T00:00:02.000Z' },
+        },
+      ],
+    });
+
+    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-1']);
+    assert.match(decisions[1]?.reason ?? '', /file\/domain ownership/);
+  });
+
   it('does not assign work when no live idle worker is available', () => {
     const decisions = buildRebalanceDecisions({
       reclaimedTaskIds: ['4'],
