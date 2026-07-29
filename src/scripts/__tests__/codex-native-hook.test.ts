@@ -32919,7 +32919,10 @@ PY`,
             await assertAllowed("bounded find files", "find . -maxdepth 2 -type f");
             await assertAllowed("bounded find command-local PATH", `${assignmentWord("PATH", trustedPath)} find . -maxdepth 2 -type f`);
             await assertAllowed("bounded find directories", "find . -mindepth 1 -maxdepth 3 -type d -print");
-            await assertAllowed("real rg", "rg -n \"transport\" README.md");
+            // The CI image does not guarantee ripgrep; assert the real trusted binary only when the authenticated PATH contains it.
+            if (existsSync("/usr/bin/rg") || existsSync("/bin/rg")) {
+              await assertAllowed("real rg", "rg -n \"transport\" README.md");
+            }
 
             for (const [name, command] of [
               ["plain git status", "git status --short --branch"],
