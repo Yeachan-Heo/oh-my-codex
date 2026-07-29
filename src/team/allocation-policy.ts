@@ -26,7 +26,7 @@ interface WorkerAllocationState extends AllocationWorkerInput {
   hardAffinityHints: Set<string>;
 }
 
-const FILE_PATH_PATTERN = /(?:^|[\s("'])((?:src|scripts|docs|prompts|skills|templates|native|crates)\/[A-Za-z0-9._/-]+)/g;
+const FILE_PATH_PATTERN = /(?:^|[\s("'])((?:\.[\\/])?(?:src|scripts|docs|prompts|skills|templates|native|crates)[\\/][A-Za-z0-9._\\/-]+)/g;
 const DOMAIN_STOP_WORDS = new Set([
   'a', 'an', 'and', 'the', 'for', 'with', 'into', 'from', 'then', 'than', 'that', 'this', 'those', 'these',
   'work', 'task', 'tasks', 'implement', 'implementation', 'continue', 'additional', 'update', 'fix', 'lane',

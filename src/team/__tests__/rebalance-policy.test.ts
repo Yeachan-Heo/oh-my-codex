@@ -190,7 +190,7 @@ describe('rebalance-policy', () => {
     assert.match(decisions[1]?.reason ?? '', /file\/domain ownership/);
   });
 
-  it('canonicalizes equivalent exact path spellings during rebalance', () => {
+  it('canonicalizes equivalent structured and prose path spellings during rebalance', () => {
     const decisions = buildRebalanceDecisions({
       reclaimedTaskIds: [],
       tasks: [
@@ -217,27 +217,29 @@ describe('rebalance-policy', () => {
           status: 'pending',
           created_at: '2026-03-11T00:00:02.000Z',
         },
-      ],
-      workers: [
         {
-          name: 'worker-1',
-          alive: true,
-          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
+          id: '4',
+          subject: 'Parser fourth',
+          description: 'Continue ./src/parser.ts',
+          status: 'pending',
+          created_at: '2026-03-11T00:00:03.000Z',
         },
         {
-          name: 'worker-2',
-          alive: true,
-          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
-        },
-        {
-          name: 'worker-3',
-          alive: true,
-          status: { state: 'idle', updated_at: '2026-03-11T00:00:03.000Z' },
+          id: '5',
+          subject: 'Parser fifth',
+          description: 'Continue src\\parser.ts.',
+          status: 'pending',
+          created_at: '2026-03-11T00:00:04.000Z',
         },
       ],
+      workers: Array.from({ length: 5 }, (_, index) => ({
+        name: `worker-${index + 1}`,
+        alive: true,
+        status: { state: 'idle' as const, updated_at: '2026-03-11T00:00:05.000Z' },
+      })),
     });
 
-    assert.deepEqual(decisions.map((decision) => decision.workerName), ['worker-1', 'worker-1', 'worker-1']);
+    assert.deepEqual(decisions.map((decision) => decision.workerName), Array(5).fill('worker-1'));
   });
 
   it('distributes rebalance work whose exact paths share only a basename', () => {

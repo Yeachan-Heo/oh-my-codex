@@ -137,21 +137,25 @@ describe('allocation-policy', () => {
     assert.deepEqual(assignments.map((task) => task.owner), Array(6).fill('worker-1'));
   });
 
-  it('canonicalizes equivalent exact path spellings before assigning affinity', () => {
+  it('canonicalizes equivalent structured and prose path spellings before assigning affinity', () => {
     const assignments = allocateTasksToWorkers(
       [
         { subject: 'parser first', description: 'first lane', filePaths: ['./src/parser.ts'] },
         { subject: 'parser second', description: 'second lane', filePaths: ['src/./parser.ts'] },
         { subject: 'parser third', description: 'Continue src/parser.ts.' },
+        { subject: 'parser fourth', description: 'Continue ./src/parser.ts' },
+        { subject: 'parser fifth', description: 'Continue src\\parser.ts.' },
       ],
       [
         { name: 'worker-1' },
         { name: 'worker-2' },
         { name: 'worker-3' },
+        { name: 'worker-4' },
+        { name: 'worker-5' },
       ],
     );
 
-    assert.deepEqual(assignments.map((task) => task.owner), ['worker-1', 'worker-1', 'worker-1']);
+    assert.deepEqual(assignments.map((task) => task.owner), Array(5).fill('worker-1'));
   });
 
   it('distributes different exact paths that share only a basename hint', () => {
