@@ -43,6 +43,8 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 - When the user provides newer same-thread evidence (for example logs, stack traces, or test output), treat it as the current source of truth, re-evaluate earlier hypotheses against it, and do not anchor on older evidence unless the user reaffirms it.
 - Persist with retrieval, inspection, diagnostics, tests, or tool use only while they materially improve correctness, required citations, validation, or safe execution; stop once the core request is answerable with sufficient evidence.
 - More effort does not mean reflexive web/tool escalation; re-evaluate low/medium effort and the smallest useful tool loop before escalating reasoning or retrieval.
+- Run independent shell probes as separate commands; do not `&&`-chain them. `&&` short-circuits, so a single failing probe silently skips every later probe and you proceed on incomplete context while believing it was gathered.
+- Treat a missing optional input (for example `AGENTS.md`, `.omx/context`, or an absent config file) as information rather than failure: record the absence and continue, guarding individual probes with `|| true` or `2>/dev/null` instead of chaining them.
 <!-- OMX:GUIDANCE:OPERATING:END -->
 </operating_principles>
 
