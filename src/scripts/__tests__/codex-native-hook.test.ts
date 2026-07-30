@@ -17099,6 +17099,33 @@ exit 0
 				session_id: "sess-di-artifact",
 				workingDirectory: cwd,
 			})}'`;
+			for (const [name, command] of [
+				[
+					"lookalike-node-wrapper",
+					`node ./attacker/omx.js state write --input ${safeStateWriteInput} --json`,
+				],
+				[
+					"path-spoofed-node-wrapper",
+					`env PATH=${cwd} node dist/cli/omx.js state write --input ${safeStateWriteInput} --json`,
+				],
+			] as const) {
+				const blockedNodeCliStateWrite = await preToolUse(
+					{
+						hook_event_name: "PreToolUse",
+						cwd,
+						session_id: "sess-di-artifact",
+						tool_name: "Bash",
+						tool_use_id: `tool-di-state-cli-${name}`,
+						tool_input: { command },
+					},
+					{ cwd },
+				);
+				assert.equal(
+					(blockedNodeCliStateWrite.outputJson as { decision?: string } | null)?.decision,
+					"block",
+					command,
+				);
+			}
 			const safeCliWrapperStateWriteCommands = [
 				[
 					"env-wrapper-safe-write",

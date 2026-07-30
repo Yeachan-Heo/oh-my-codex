@@ -9036,7 +9036,12 @@ function hasExistingDurableDeepInterviewHandoffEvidence(cwd: string): boolean {
   return false;
 }
 
-function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, authoritativeSessionId: string): boolean {
+function isStandaloneParsedOmxStateWriteTransport(
+  cwd: string,
+  command: string,
+  authoritativeSessionId: string,
+  options: { allowDeepInterviewWorkspaceNodeCliWrapper?: boolean } = {},
+): boolean {
   if (omxStateTransportHasUnsafeRuntimeWrapper(command)) return false;
   const canonicalCommand = canonicalizeOmxStateTransportCommand(command);
   if (hasUnsafeUnquotedHeredocExpansion(canonicalCommand)) return false;
@@ -9058,6 +9063,36 @@ function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, 
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0) return false;
   if (extractConductorEditorWriteTargets(command).length > 0) return false;
   if (extractConductorInterpreterWrites(command).length > 0) return false;
+  if (
+    options.allowDeepInterviewWorkspaceNodeCliWrapper === true
+  ) {
+    const words = tokenizeShellWords(command);
+    const wrapperContext = resolveWrappedCommandExecutionContext(words, cwd);
+    if (wrapperContext !== null) {
+      const wrapperRuntime = shellWordLiteral(words[wrapperContext.index] ?? "");
+      if (isOmxCliWrapperRuntime(wrapperRuntime)) {
+        const wrapperState = resolveConductorCommandPathState(
+          words,
+          0,
+          wrapperContext.index,
+          createConductorRuntimeShellState(cwd),
+        );
+        const nodePath = conductorResolvePathInterpreter("node", wrapperState);
+        const nodeInterpreterTrusted =
+          nodePath !== null
+            ? conductorPackageCliNodeInterpreterIsTrusted(nodePath, cwd)
+            : getConductorShellBinding(wrapperState, "PATH").value === undefined
+              && wrapperState.pathUsesSystemDefaultWhenUnset;
+        return wrapperRuntime === "node"
+          && isSingleLiteralShellInvocation(command)
+          && sameFilePath(
+            resolve(wrapperContext.cwd, shellWordLiteral(words[wrapperContext.index + 1] ?? "")),
+            resolve(cwd, "dist/cli/omx.js"),
+          )
+          && nodeInterpreterTrusted;
+      }
+    }
+  }
   if (classifyConductorExecutableRuntime(canonicalCommand, 0, cwd) !== null) return false;
   const mutations = extractConductorBashMutations(command, cwd);
   return mutations.length === 1 && mutations[0]?.mainRootStructuredStateWrite === true;
@@ -10005,6 +10040,9 @@ function isAllowedDeepInterviewBashWrite(
       || !suppliedSessionAliasesMatch(payload, sessionId)
       || safeString(payload.workingDirectory).trim() === ""
       || !sameFilePath(safeString(payload.workingDirectory), cwd)) return false;
+    return isStandaloneParsedOmxStateWriteTransport(cwd, command, sessionId, {
+      allowDeepInterviewWorkspaceNodeCliWrapper: true,
+    });
   }
   if (commandHasUntargetedPlanningForbiddenIntent(command)) return false;
   if (firstPlanningTmpScriptExecutionTarget(cwd, command)) return false;
