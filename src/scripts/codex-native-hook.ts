@@ -18484,14 +18484,21 @@ function scanConductorShellSegment(
       continue;
     }
     if (cliMutationIntent) {
-      mutations.push(commandPathMayResolveRepositoryExecutable
+      // A proven trusted package-CLI resolution already walked the effective
+      // PATH in order and confirmed the first matching candidate is the
+      // canonical CLI, which directly refutes the conservative
+      // may-resolve-repository-executable guess. Without this, a repo rooted
+      // at $HOME (where every user bin directory lives "inside the
+      // repository") turns every bare omx/gjc invocation into a PATH-mutation
+      // deny (observed 2026-07-30).
+      mutations.push(commandPathMayResolveRepositoryExecutable && !trustedOmxGjcPackageCliPath
         ? { command: "PATH", targets: [] }
         : { command: commandName, targets: [] });
       continue;
     }
     if (
       (!commandIsBare && !conductorSlashCommandIsTrusted(commandWord, activeState, rootCwd))
-      || commandPathMayResolveRepositoryExecutable
+      || (commandPathMayResolveRepositoryExecutable && !trustedOmxGjcPackageCliPath)
     ) {
       mutations.push({ command: "PATH", targets: [] });
       continue;

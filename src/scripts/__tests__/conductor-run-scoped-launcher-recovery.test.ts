@@ -207,6 +207,37 @@ describe("Conductor recovery under a run-scoped launcher environment", () => {
     }
   });
 
+  it("allows a bare omx help query when the CLI resolution is proven trusted, even with PATH entries inside the repo", async () => {
+    // With a repo rooted at $HOME every user bin directory lives "inside the
+    // repository", so conductorPathMayResolveRepositoryExecutable is
+    // permanently true; it must not override a PROVEN trusted package-CLI
+    // resolution, or pure help queries deny as "PATH mutation <unresolved>".
+    saveEnv();
+    const session = await stageArmedRunScopedConductorSession("help-query");
+    try {
+      // A repo-internal bin directory ahead of the shim in PATH (empty, so
+      // resolution still hits the trusted shim) plus a nonexistent one —
+      // both shapes that make the may-resolve heuristic fire.
+      const repoBin = join(session.cwd, "node_modules", ".bin");
+      await mkdir(repoBin, { recursive: true });
+      const repoBinMissing = join(session.cwd, "bin");
+      applyRunScopedLauncherEnvironment(session, savedEnv.get("PATH") ?? "");
+      process.env.PATH = `${repoBin}:${repoBinMissing}:${process.env.PATH}`;
+      const result = await dispatchCodexNativeHook(
+        buildPreToolUsePayload(session, { command: "omx ultragoal create-goals --help" }),
+        { cwd: session.cwd },
+      );
+      assert.notEqual(
+        result.outputJson?.decision,
+        "block",
+        `trusted omx help query must not deny: ${JSON.stringify(result.outputJson)}`,
+      );
+    } finally {
+      await rm(session.cwd, { recursive: true, force: true });
+      await rm(session.runRoot, { recursive: true, force: true });
+    }
+  });
+
   it("allows `omx cancel --force` while Conductor mode is armed on a run-scoped session", async () => {
     saveEnv();
     const session = await stageArmedRunScopedConductorSession("cancel-force");
