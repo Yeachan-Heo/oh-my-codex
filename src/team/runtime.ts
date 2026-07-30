@@ -6820,6 +6820,15 @@ async function sendLeaderMailboxMessage(params: {
     },
   });
 
+  if (queuedOutcome.reason === 'duplicate_pending_dispatch_request') {
+    return {
+      ...queuedOutcome,
+      ok: true,
+      transport: 'mailbox',
+      reason: 'existing_message_pending_dispatch',
+    };
+  }
+
   if (
     !isExistingMailboxNotificationOutcome(queuedOutcome)
     && transportPreference === 'hook_preferred_with_fallback'
