@@ -3984,10 +3984,19 @@ function hookCancelSessionMatches(value: Record<string, unknown>, sessionId: str
 }
 function hookCancelAutopilotIsActive(value: Record<string, unknown>): boolean {
   const mode = hookCancelString(value.mode).toLowerCase();
+  if (value.active !== true) return false;
+  if (mode && mode !== "autopilot") return false;
   // Cancellation only decreases authority. Persisted phase text (including a
   // missing, unknown, or terminal-looking phase) cannot override active:true.
-  return value.active === true
-    && (!mode || mode === "autopilot");
+  // However, hook-owned cancellation for non-deep-interview phases is only
+  // appropriate when the lifecycle state is identity-stripped (missing
+  // session_id): a fully-identified state can be cancelled by the external
+  // omx cancel CLI through its trusted-execution-context path, so the hook
+  // must not intercept it (issue #3293). Identity-stripped states (#3369)
+  // cannot be matched by the external command and require hook ownership.
+  const phase = normalizeAutopilotPhase(hookCancelString(value.current_phase));
+  if (phase === "deep-interview") return true;
+  return !hookCancelString(value.session_id);
 }
 function hookCancelAutopilotMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
   return hookCancelAutopilotIsActive(value) && hookCancelSessionMatches(value, sessionId, cwd, policy);
@@ -9782,7 +9791,7 @@ async function handleDirectOmxCancel(input: {
   // Hook-owned cancellation requires both an active matching lifecycle and its
   // canonical skill mirror. Stale files alone retain the normal executable path.
   if (!workflow) return { kind: "not-direct-cancel" };
-  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: true })) {
+  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: workflow === "ultragoal" })) {
     return { kind: "denied", reason: "invalid_command", output: directCancelOutput("invalid_command") };
   }
   if (

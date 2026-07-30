@@ -877,18 +877,17 @@ export async function executeStateOperation(
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
             activeCanonicalModes = await readCanonicalActiveWorkflowModes(baseStateDir, effectiveSessionId);
             canonicalDecision = evaluateWorkflowTransition(activeCanonicalModes, mode);
+            const hasExistingCanonicalRalplan = activeCanonicalModes.includes('ralplan');
             const freshAutopilotReceiptBlocked = mode === 'autopilot'
               && !isResumableAutopilotState(existing)
+              && hasExistingCanonicalRalplan
               && shouldBlockFreshAutopilotForRalplanReceipt();
-            const preserveStandaloneRalplanForReceiptDenial = freshAutopilotReceiptBlocked
-              && activeCanonicalModes.length === 1
-              && activeCanonicalModes[0] === 'ralplan';
-            if (!canonicalDecision.allowed && !preserveStandaloneRalplanForReceiptDenial) {
-              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
-              return;
-            }
             if (freshAutopilotReceiptBlocked) {
               validationError = `${RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable}: official host consensus receipt verifier is unavailable`;
+              return;
+            }
+            if (!canonicalDecision.allowed && canonicalDecision.denialReason === 'rollback') {
+              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
               return;
             }
           }

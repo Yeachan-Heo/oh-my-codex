@@ -172,6 +172,27 @@ describe("issue #3369 Autopilot Ralplan state-machine self-lock", () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-3369-fresh-admission-"));
     try {
       await withEnv({ OMX_ROOT: cwd, OMX_SESSION_ID: undefined }, async () => {
+        const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-3369-fresh");
+        await writeJson(join(sessionDir, "ralplan-state.json"), {
+          active: true,
+          current_phase: "planning",
+          run_outcome: "continue",
+        });
+        await writeJson(join(sessionDir, "skill-active-state.json"), {
+          version: 1,
+          active: true,
+          skill: "ralplan",
+          phase: "planning",
+          source: "test-fixture",
+          session_id: "sess-3369-fresh",
+          active_skills: [{
+            skill: "ralplan",
+            phase: "planning",
+            active: true,
+            session_id: "sess-3369-fresh",
+          }],
+        });
+
         const response = await executeStateOperation("state_write", {
           workingDirectory: cwd,
           mode: "autopilot",
@@ -181,8 +202,7 @@ describe("issue #3369 Autopilot Ralplan state-machine self-lock", () => {
         });
         assert.equal(response.isError, true);
         assert.match(String((response.payload as { error?: string }).error || ""), /documented_host_consensus_receipt_unavailable/);
-        await assert.rejects(readFile(join(cwd, ".omx", "state", "sessions", "sess-3369-fresh", "autopilot-state.json")));
-        await assert.rejects(readFile(join(cwd, ".omx", "state", "sessions", "sess-3369-fresh", "skill-active-state.json")));
+        await assert.rejects(readFile(join(sessionDir, "autopilot-state.json")));
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
