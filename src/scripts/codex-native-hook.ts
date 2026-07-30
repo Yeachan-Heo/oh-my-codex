@@ -11842,7 +11842,7 @@ function commandDefinesConductorCommandNotFoundHandler(command: string): boolean
   return false;
 }
 
-function commandHasUnsafeConductorShellState(command: string, cwd = process.cwd()): boolean {
+function commandHasUnsafeConductorShellState(command: string, cwd = process.cwd(), depth = 0): boolean {
   if (inheritedConductorBashStartupIsUnsafe()) return true;
   if (hasConductorPromptParameterTransform(command)) return true;
   if (
@@ -11948,6 +11948,11 @@ function commandHasUnsafeConductorShellState(command: string, cwd = process.cwd(
     if (unresolvedNameref && !shellBuiltins.has(commandName) && !CONDUCTOR_BASH_COMPOUND_SYNTAX_WORDS.has(commandName)) return true;
   }
 
+  const nestedShellCommands = extractNestedShellCommandStringsForStateScan(command);
+  if (nestedShellCommands.length > 0) {
+    if (depth >= CONDUCTOR_BASH_MAX_NESTING_DEPTH) return true;
+    if (nestedShellCommands.some((nested) => commandHasUnsafeConductorShellState(nested, cwd, depth + 1))) return true;
+  }
   return false;
 }
 
