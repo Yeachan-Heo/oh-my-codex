@@ -15905,15 +15905,19 @@ function hasSafeConductorOrchestrationRuntimeEnvironment(
   try {
     const canonicalRoot = realpathSync(resolve(rootCwd));
     // Run-scoped launches set OMX_ROOT to an isolated run directory whose
-    // state tree is $OMX_ROOT/.omx/state (getBaseStateDirWithSource); the
-    // inherited run root is a canonical anchor alongside the repo root.
+    // state tree is $OMX_ROOT/.omx/state (getBaseStateDirWithSource). That
+    // inherited run root is process-authenticated, so it — and NOT the repo
+    // root — is the only root a structured orchestration write may target
+    // for such a session: `environment` here includes model-controlled
+    // command-prefix assignments, so also accepting the repo root would let
+    // `OMX_ROOT=/repo omx state write …` redirect the write into
+    // repository-local state and break the run's session binding.
     const inheritedOmxRootValue = safeString(process.env.OMX_ROOT).trim();
-    const inheritedRunRoot = inheritedOmxRootValue
+    const expectedRoot = inheritedOmxRootValue
       ? realpathSync(resolve(rootCwd, inheritedOmxRootValue))
       : canonicalRoot;
-    const resolvedRootValue = realpathSync(resolve(rootCwd, rootValue));
-    if (resolvedRootValue !== canonicalRoot && resolvedRootValue !== inheritedRunRoot) return false;
-    const expectedStateRoot = realpathSync(join(resolvedRootValue, ".omx", "state"));
+    if (realpathSync(resolve(rootCwd, rootValue)) !== expectedRoot) return false;
+    const expectedStateRoot = realpathSync(join(expectedRoot, ".omx", "state"));
     for (const name of ["OMX_STATE_ROOT", "OMX_TEAM_STATE_ROOT"] as const) {
       const value = environment.get(name);
       if (value && realpathSync(resolve(rootCwd, value)) !== expectedStateRoot) return false;
@@ -15946,13 +15950,13 @@ function hasCanonicalInheritedConductorOrchestrationRoots(
       ? realpathSync(resolve(rootCwd, inheritedOmxRootValue))
       : canonicalRoot;
     const expectedStateRoot = realpathSync(join(inheritedRunRoot, ".omx", "state"));
-    for (const [name, expectedPaths] of [
-      ["OMX_ROOT", [canonicalRoot, inheritedRunRoot]],
-      ["OMX_STATE_ROOT", [expectedStateRoot]],
-      ["OMX_TEAM_STATE_ROOT", [expectedStateRoot]],
+    for (const [name, expectedPath] of [
+      ["OMX_ROOT", inheritedRunRoot],
+      ["OMX_STATE_ROOT", expectedStateRoot],
+      ["OMX_TEAM_STATE_ROOT", expectedStateRoot],
     ] as const) {
       const value = safeString(process.env[name]).trim();
-      if (value && !(expectedPaths as readonly string[]).includes(realpathSync(resolve(rootCwd, value)))) return false;
+      if (value && realpathSync(resolve(rootCwd, value)) !== expectedPath) return false;
     }
   } catch {
     return false;
@@ -17459,7 +17463,7 @@ function conductorResolvedPackageCliCandidateIsTrusted(
         return conductorPackageCliHasTrustedNodeInterpreter(candidate, state, rootCwd);
       }
       return expectedCandidate !== null
-        && conductorLauncherRuntimeShimResolvesTrustedPackageCli(candidate, expectedCandidate);
+        && conductorLauncherRuntimeShimResolvesTrustedPackageCli(candidate, expectedCandidate, rootCwd);
     } catch {
       return false;
     }
@@ -17467,24 +17471,89 @@ function conductorResolvedPackageCliCandidateIsTrusted(
   return false;
 }
 
-function conductorLauncherRuntimeShimResolvesTrustedPackageCli(candidatePath: string, expectedCandidate: string): boolean {
+// Decode one argument emitted by the launcher's `quoteShellArg`
+// (`'` -> `'"'"'`, whole value single-quoted), so a package path containing an
+// apostrophe (e.g. /home/O'Brien/...) still parses. Returns the decoded value
+// and the index just past the token, or null when the text does not match that
+// exact grammar.
+function decodeLauncherShellQuotedArg(text: string, start: number): { value: string; next: number } | null {
+  let index = start;
+  let value = "";
+  let consumedSegment = false;
+  while (index < text.length) {
+    if (text[index] === "'") {
+      const end = text.indexOf("'", index + 1);
+      if (end === -1) return null;
+      value += text.slice(index + 1, end);
+      index = end + 1;
+      consumedSegment = true;
+      continue;
+    }
+    if (text.startsWith(`"'"`, index)) {
+      value += "'";
+      index += 3;
+      consumedSegment = true;
+      continue;
+    }
+    break;
+  }
+  return consumedSegment ? { value, next: index } : null;
+}
+
+// Parse the launcher-generated shim (see buildOmxRuntimeCommandShim in
+// src/cli/index.ts) into its interpreter and CLI arguments. Supports both
+// managed shapes: the POSIX `#!/bin/sh` + `exec <node> <cli> "$@"` form and the
+// Windows `@echo off` + `"<node>" "<cli>" %*` CRLF form.
+export function parseLauncherRuntimeShim(content: string): { interpreter: string; cli: string } | null {
+  const windows = content.match(/^@echo off\r?\n"([^"\r\n]+)" "([^"\r\n]+)" %\*\r?\n?$/);
+  if (windows) return { interpreter: windows[1] ?? "", cli: windows[2] ?? "" };
+
+  const posixPrefix = '#!/bin/sh\nexec ';
+  if (!content.startsWith(posixPrefix)) return null;
+  const interpreterToken = decodeLauncherShellQuotedArg(content, posixPrefix.length);
+  if (!interpreterToken || content[interpreterToken.next] !== " ") return null;
+  const cliToken = decodeLauncherShellQuotedArg(content, interpreterToken.next + 1);
+  if (!cliToken) return null;
+  if (!/^ "\$@"\n?$/.test(content.slice(cliToken.next))) return null;
+  return { interpreter: interpreterToken.value, cli: cliToken.value };
+}
+
+// The shim names its own interpreter, so an interpreter that merely exists and
+// is executable is not enough: a shim rewritten before Conductor armed could
+// name a staged payload while still pointing its second argument at the
+// canonical CLI. Require the interpreter to be either this hook's own Node
+// runtime (what the launcher writes by default) or a system-owned executable
+// under the existing trusted-identity rules.
+function conductorLauncherShimInterpreterIsTrusted(interpreter: string, rootCwd: string): boolean {
+  if (!isAbsolute(interpreter) || /[$`]/.test(interpreter)) return false;
+  try {
+    accessSync(interpreter, fsConstants.X_OK);
+    if (realpathSync(interpreter) === realpathSync(process.execPath)) return true;
+  } catch {
+    return false;
+  }
+  return conductorExecutableHasTrustedSystemIdentity(interpreter, rootCwd);
+}
+
+function conductorLauncherRuntimeShimResolvesTrustedPackageCli(
+  candidatePath: string,
+  expectedCandidate: string,
+  rootCwd: string,
+): boolean {
   // The omx launcher prepends $OMX_ROOT/.omx/runtime/bin to PATH holding a
-  // two-line sh shim that execs the canonical package CLI through an
-  // absolute node interpreter. Treating that launcher-owned shim as
-  // untrusted denies bare `omx cancel` — the documented Conductor recovery
-  // surface — on every run-scoped session.
+  // generated shim that execs the canonical package CLI through an absolute
+  // interpreter. Treating that launcher-owned shim as untrusted denies bare
+  // `omx cancel` — the documented Conductor recovery surface — on every
+  // run-scoped session.
   try {
     const omxRoot = safeString(process.env.OMX_ROOT).trim();
     if (!omxRoot) return false;
     const shimDirectory = realpathSync(join(resolve(omxRoot), ".omx", "runtime", "bin"));
     if (dirname(realpathSync(candidatePath)) !== shimDirectory) return false;
-    const content = readFileSync(candidatePath, "utf-8");
-    const match = content.match(/^#!\/bin\/sh\nexec '([^'\n]+)' '([^'\n]+)' "\$@"\n?$/);
-    if (!match) return false;
-    const interpreter = match[1] ?? "";
-    if (!isAbsolute(interpreter)) return false;
-    accessSync(interpreter, fsConstants.X_OK);
-    return realpathSync(match[2] ?? "") === expectedCandidate;
+    const parsed = parseLauncherRuntimeShim(readFileSync(candidatePath, "utf-8"));
+    if (!parsed) return false;
+    if (!conductorLauncherShimInterpreterIsTrusted(parsed.interpreter, rootCwd)) return false;
+    return isAbsolute(parsed.cli) && realpathSync(parsed.cli) === expectedCandidate;
   } catch {
     return false;
   }

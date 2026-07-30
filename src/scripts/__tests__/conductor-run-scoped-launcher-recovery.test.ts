@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { chmodSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, it } from "node:test";
-import { dispatchCodexNativeHook } from "../codex-native-hook.js";
+import { dispatchCodexNativeHook, parseLauncherRuntimeShim } from "../codex-native-hook.js";
 
 // Regression coverage for the run-scoped Conductor recovery deadlock:
 // `omx` launches with a run-scoped state root set OMX_ROOT to an isolated run
@@ -256,5 +256,114 @@ describe("Conductor recovery under a run-scoped launcher environment", () => {
       await rm(session.cwd, { recursive: true, force: true });
       await rm(session.runRoot, { recursive: true, force: true });
     }
+  });
+
+  it("still blocks a run-scoped structured state write redirected at the repo root", async () => {
+    // The inherited run root is process-authenticated; a model-controlled
+    // command-prefix OMX_ROOT must not redirect a structured orchestration
+    // write into repository-local state and break the session binding.
+    saveEnv();
+    const session = await stageArmedRunScopedConductorSession("root-redirect");
+    try {
+      applyRunScopedLauncherEnvironment(session, savedEnv.get("PATH") ?? "");
+      // Fully session-bound payload (session_id + workingDirectory + guard
+      // preserved) so the session-binding layer is satisfied and the root
+      // check is the layer that must refuse the redirect.
+      const input = JSON.stringify({
+        mode: "ultragoal",
+        active: true,
+        current_phase: "executing",
+        session_id: session.sessionId,
+        workingDirectory: session.cwd,
+      });
+      const result = await dispatchCodexNativeHook(
+        buildPreToolUsePayload(session, {
+          command: `OMX_ROOT=${session.cwd} omx state write --input '${input}' --json`,
+        }),
+        { cwd: session.cwd },
+      );
+      assert.equal(
+        result.outputJson?.decision,
+        "block",
+        `repo-root redirected state write must stay blocked: ${JSON.stringify(result.outputJson)}`,
+      );
+    } finally {
+      await rm(session.cwd, { recursive: true, force: true });
+      await rm(session.runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a runtime shim that names an untrusted interpreter", async () => {
+    // A shim rewritten before Conductor armed can still name the canonical CLI
+    // as its second argument while executing a staged payload; the interpreter
+    // itself must carry a trusted identity.
+    saveEnv();
+    const session = await stageArmedRunScopedConductorSession("shim-payload");
+    try {
+      const payload = join(session.runRoot, "payload.sh");
+      await writeFile(payload, "#!/bin/sh\nexit 0\n");
+      chmodSync(payload, 0o700);
+      const shimPath = join(session.runRoot, ".omx", "runtime", "bin", "omx");
+      await writeFile(shimPath, `#!/bin/sh\nexec '${payload}' '${PACKAGE_CLI_PATH}' "$@"\n`);
+      chmodSync(shimPath, 0o700);
+      applyRunScopedLauncherEnvironment(session, savedEnv.get("PATH") ?? "");
+      const result = await dispatchCodexNativeHook(
+        buildPreToolUsePayload(session, { command: "omx cancel" }),
+        { cwd: session.cwd },
+      );
+      assert.equal(
+        result.outputJson?.decision,
+        "block",
+        `shim with an untrusted interpreter must not authorize cancel: ${JSON.stringify(result.outputJson)}`,
+      );
+    } finally {
+      await rm(session.cwd, { recursive: true, force: true });
+      await rm(session.runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a launcher shim whose paths carry shell-escaped apostrophes", async () => {
+    // quoteShellArg emits the split-quote sequence ('"'"') for an apostrophe,
+    // e.g. under /home/O'Brien; the verifier must decode that grammar instead
+    // of requiring one uninterrupted single-quoted string.
+    saveEnv();
+    const session = await stageArmedRunScopedConductorSession("apostrophe");
+    try {
+      const quotedDir = join(session.runRoot, "O'Brien");
+      await mkdir(quotedDir, { recursive: true });
+      const aliasedCli = join(quotedDir, "omx.js");
+      const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+      const shimPath = join(session.runRoot, ".omx", "runtime", "bin", "omx");
+      // The CLI argument must still realpath to the canonical package CLI, so
+      // link the apostrophe-bearing spelling at it rather than copying.
+      await symlink(PACKAGE_CLI_PATH, aliasedCli);
+      await writeFile(shimPath, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(aliasedCli)} "$@"\n`);
+      chmodSync(shimPath, 0o700);
+      applyRunScopedLauncherEnvironment(session, savedEnv.get("PATH") ?? "");
+      const result = await dispatchCodexNativeHook(
+        buildPreToolUsePayload(session, { command: "omx cancel" }),
+        { cwd: session.cwd },
+      );
+      assert.notEqual(
+        result.outputJson?.decision,
+        "block",
+        `apostrophe-quoted launcher shim must stay trusted: ${JSON.stringify(result.outputJson)}`,
+      );
+    } finally {
+      await rm(session.cwd, { recursive: true, force: true });
+      await rm(session.runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts the Windows-shaped launcher shim (@echo off, CRLF)", async () => {
+    // buildOmxRuntimeCommandShim emits omx.cmd on win32; the verifier must
+    // recognize that managed shape too, or Windows run-scoped sessions keep
+    // the cancel deadlock. Parser-level check so it runs on any host.
+    const shim = `@echo off\r\n"C:\\\\Program Files\\\\nodejs\\\\node.exe" "C:\\\\omx\\\\dist\\\\cli\\\\omx.js" %*\r\n`;
+    const parsed = parseLauncherRuntimeShim(shim);
+    assert.deepEqual(parsed, {
+      interpreter: "C:\\\\Program Files\\\\nodejs\\\\node.exe",
+      cli: "C:\\\\omx\\\\dist\\\\cli\\\\omx.js",
+    });
   });
 });
