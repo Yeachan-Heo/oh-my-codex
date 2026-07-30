@@ -36,10 +36,14 @@
 ## Current status
 
 - Task 1 targeted reproduction completed on clean `origin/main`.
-- Task 2 classification completed: 4 PASS/not failing, 4 environment-only, 3 suite-interaction/flaky, 2 deterministic baseline defects.
-- TDD RED evidence: existing `codex-native-hook` and `api-interop` assertions repeatedly fail on clean `origin/main`; GREEN pending.
-- Task 3A plan correction: the initial one-line shared-helper reuse compiled but stayed RED on the first safe `env ... node dist/cli/omx.js` wrapper. A first exact-path revision then proved its new lookalike assertion by exposing that the existing raw mutation proof authorized `node ./attacker/omx.js` before the fallback ran. Both attempts remain uncommitted; the revised ordering evaluates runtime wrappers before the raw proof, and no existing test was weakened.
-- Known environment blocker: `tmux` is not installed; no installation is authorized.
+- Task 2 initial file-level classification completed: 4 PASS/not failing, 4 environment-only, 3 suite-interaction/flaky, 2 files with deterministic baseline defects.
+- TDD RED evidence: existing `codex-native-hook` and `api-interop` assertions repeatedly failed on clean `origin/main`; both deterministic defects now have targeted GREEN evidence.
+- Task 3A plan correction: the initial one-line shared-helper reuse compiled but stayed RED on the first safe `env ... node dist/cli/omx.js` wrapper. The new lookalike assertion then exposed two authorization leaks in the uncommitted revision: raw mutation trust ran before the exact-path proof, and a rejected recognized state write fell through to the generic no-write-intent allow. After those were closed, the later `env -C` input-file assertion showed the generic runtime classifier still ran before the exact wrapper proof. The security review also required trusted Node interpreter resolution so `env PATH=<attacker>` cannot borrow the exact script path. The final plan uses the repo's existing path-state/interpreter trust predicates before both generic checks and returns the helper decision directly; no existing test was weakened.
+- Task 3A verified slice: commit `bef2a329` changes only `src/scripts/codex-native-hook.ts` and `src/scripts/__tests__/codex-native-hook.test.ts`. Fresh post-commit evidence: build exit 0; exact scrubbed hook run 1 pass, 637 skipped, 0 fail; deep-interview contract 27/27 pass; commit diff check exit 0. Independent static verification confirmed exact workspace CLI path, trusted Node resolution, terminal rejection on helper false, and unchanged default 3-argument callers.
+- Task 3B verified slice: commit `b822cdc9` changes only `src/team/runtime.ts`. Existing RED repeated at `second.ok` with 128/129 pass; fresh post-commit evidence: build exit 0; API interop 129/129 pass; MCP communication 9/9 pass; commit diff check exit 0. Generic queue code and tests remain unchanged.
+- Task 3C verified slice: commit `e27e4455` changes only the hook source and its existing test file. Clean-origin/main isolated RED proved ambient `ZDOTDIR` was incorrectly applied to bash. The original nested-redirect assertion remains unchanged; explicit controls now prove bash/BASH_ENV, zsh/ZDOTDIR, and sh/ENV boundaries. Fresh post-commit evidence: build exit 0; scrubbed focused run 2 pass, 636 skipped, 0 fail; commit diff check and guard pass.
+- Final integrated source review: APPROVE; no graph provenance, dependency, ignored `AGENTS.md`, global configuration, or unrelated production path change found.
+- Known environment blockers: `tmux` is absent; global model configuration selects Spark/Terra rather than fallback Luna; prompt triage is explicitly disabled; inherited model variables, PATH candidates, and missing `wget` affect four hook assertions. No host/global workaround is authorized.
 
 ## Task 1 reproduction evidence
 
@@ -111,3 +115,61 @@ Deterministic shared roots:
 - Leader mailbox API: `queueDirectMailboxMessage` correctly reports `duplicate_pending_dispatch_request`, but `sendLeaderMailboxMessage` passes the false outcome to `sendWorkerMessage`, which throws before API interop can return the already-persisted row.
 
 No source fix is authorized for the environment-only or suite-interaction/flaky rows.
+
+## Final 13-file rerun
+
+The final branch rerun used the same 13 files, serial execution, per-file process isolation, and a command-local `OMX_NODE_TEST_RUNNER_TIMEOUT_MS=600000`.
+
+| Test file | Final result | Evidence |
+| --- | --- | --- |
+| `cli/__tests__/team` | environment-only FAIL | 75 pass, 1 skip; `tmux is not available` |
+| `notifications/__tests__/tmux` | PASS | 24/24 |
+| `team/__tests__/tmux-test-fixture` | environment-only FAIL | 5 pass, 9 skip; missing tmux |
+| `hooks/__tests__/deep-interview-contract` | PASS | 27/27 |
+| `hooks/__tests__/team-runtime-gating-docs-contract` | PASS | 1/1 |
+| `team/__tests__/worker-runtime-identity` | environment-only FAIL | 2 pass, 2 fail; configured model differs from fallback expectation |
+| `utils/__tests__/agents-model-table` | environment-only FAIL | 4 pass, 1 fail; configured Spark/Terra differs from fallback expectation |
+| `hooks/__tests__/analyze-routing-contract` | PASS | 3/3 |
+| `scripts/__tests__/codex-native-hook` | environment-only FAIL after deterministic repairs | 613 pass, 24 fail, 1 skip |
+| `scripts/__tests__/smoke-packed-install` | PASS | 48/48 |
+| `team/__tests__/api-interop` | PASS | 129/129 |
+| `cli/__tests__/setup-gh-star` | PASS | 2/2 |
+| `team/__tests__/runtime` | PASS | 196/196 |
+
+Final matrix: 8 files PASS; 5 files fail only on preserved environment inputs.
+
+The 24 remaining hook failures are fully classified:
+
+- 20 triage advisory expectations: global `promptRouting.triage.enabled=false`. Clean `origin/main` with the preserved config passed 17/37 and failed 20/37; a command-local empty `CODEX_HOME` passed 37/37.
+- 1 untrusted-omx PATH diagnostic: inherited global model variables are rejected before the intended PATH branch; focused origin/main run passes when those command-local variables are unset.
+- 1 wget read-only case: `wget` is absent on this host, so executable resolution correctly fails closed.
+- 2 `env cp` metadata cases: inherited PATH contains a user-owned, non-executable `~/.local/bin/env` before the trusted system binary, so wrapper resolution correctly fails closed.
+
+No source or test change was made for these environment-only cases.
+
+## Final verification ladder
+
+- `npm run build`: PASS.
+- Exact scrubbed deep-interview hook regression: 1 pass, 637 skipped, 0 fail.
+- Scrubbed shell-startup regressions: 2 pass, 636 skipped, 0 fail.
+- Deep-interview contract: 27/27 PASS.
+- API interop and MCP communication: 129/129 and 9/9 PASS.
+- `npm run lint`: PASS; 788 files checked.
+- `npm run check:no-unused`: PASS.
+- `npm run verify:native-agents`: PASS; 22 installable agents and 37 prompt assets.
+- `npm run verify:plugin-bundle`: PASS; 29 canonical skill directories and plugin metadata.
+- Worktree guard self-test and active-lane check: PASS.
+- `git diff --check` and committed-range diff check: PASS.
+- Exact 13-file matrix: nonzero only for the five environment rows above.
+- `npm test`: build, native-agent verification, and plugin-bundle verification passed before the 405-file serial runner. The runner remained active beyond the intended 10-minute bound and grace period; only that owned process was terminated with exit 130. Full-suite completion is therefore not claimed.
+
+## Local checkpoints
+
+- `36c1af99` Preserve the baseline failure boundary before source repair
+- `71fe47ff` Correct the deep-interview repair boundary after TDD disproved the first plan
+- `f0ccde4d` Order the deep-interview wrapper proof before legacy mutation trust
+- `bef2a329` Allow safe deep-interview state writes to reach backend validation
+- `b822cdc9` Preserve idempotent leader mailbox sends across pending dispatch dedupe
+- `e27e4455` Apply shell startup guards only to the shell that reads them
+
+All checkpoints are local. No push, PR, merge, deploy, release, OMX update, EOD, global installation change, or user-setting change was performed.
