@@ -182,6 +182,13 @@ import {
   type TeamOperationalCommitEntry,
 } from './commit-hygiene.js';
 import {
+  classifyRecordedIdentity,
+  defaultProcessInspectionProvider,
+  type IdentityClassification,
+  type ProcessIdentity as SharedProcessIdentity,
+} from '../hooks/session.js';
+
+import {
   assertCleanLeaderWorkspaceForWorkerWorktrees,
   ensureWorktree,
   isGitRepository,
@@ -2449,41 +2456,51 @@ function isPidGone(pid: number): boolean {
   return probePidLiveness(pid) === 'gone';
 }
 
-type ProcessIdentity = {
+interface TrackedProcessRecordV2 {
   pid: number;
-  /** Linux /proc stat start-time ticks; this changes when a PID is reused. */
-  start_time: string;
-};
+  process_identity: SharedProcessIdentity;
+}
 
-async function captureProcessIdentity(pid: number): Promise<ProcessIdentity | null> {
-  // There is no portable process birth identifier exposed by Node. Refuse to
-  // persist replayable PID debt on platforms without Linux's stable proc stat
-  // start-time field rather than later treating a reused PID as authoritative.
-  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
-  try {
-    const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
-    const close = stat.lastIndexOf(')');
-    const fields = close >= 0 ? stat.slice(close + 2).trim().split(/\s+/) : [];
-    // field 22 is starttime; fields begin at field 3 after the comm value.
-    const startTime = fields[19];
-    return typeof startTime === 'string' && /^[0-9]+$/.test(startTime)
-      ? { pid, start_time: startTime }
-      : null;
-  } catch {
-    return null;
+// V1 (legacy, read-only): Linux-only.
+type TrackedProcessRecordV1 = { pid: number; start_time: string };
+type TrackedProcessRecord = TrackedProcessRecordV1 | TrackedProcessRecordV2;
+
+async function captureProcessIdentity(pid: number): Promise<TrackedProcessRecordV2 | null> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  const observation = defaultProcessInspectionProvider.observeProcess(pid, process.platform);
+  if (observation.kind !== 'identity') return null;
+  return { pid, process_identity: observation.identity };
+}
+
+async function captureProcessIdentities(pids: readonly number[]): Promise<TrackedProcessRecordV2[] | null> {
+  const identities = await Promise.all([...new Set(pids)].map((pid) => captureProcessIdentity(pid)));
+  return identities.every((identity): identity is TrackedProcessRecordV2 => identity !== null) ? identities : null;
+}
+
+async function probeProcessIdentity(identity: TrackedProcessRecord): Promise<'gone' | 'same' | 'reused_or_unknown'> {
+  const recorded: SharedProcessIdentity = 'process_identity' in identity
+    ? identity.process_identity
+    : { platform: 'linux', birth: identity.start_time };
+  const runtimePlatform = 'process_identity' in identity
+    ? identity.process_identity.platform
+    : 'linux'; // V1 is always Linux.
+  if (runtimePlatform !== process.platform && 'process_identity' in identity) {
+    return 'reused_or_unknown';
+  }
+  const classification: IdentityClassification = classifyRecordedIdentity(
+    recorded,
+    process.platform,
+    defaultProcessInspectionProvider,
+    identity.pid,
+  );
+  switch (classification.status) {
+    case 'match': return 'same';
+    case 'gone': return 'gone';
+    case 'birth-mismatch': return 'reused_or_unknown';
+    case 'identity-unavailable': return 'reused_or_unknown';
   }
 }
 
-async function captureProcessIdentities(pids: readonly number[]): Promise<ProcessIdentity[] | null> {
-  const identities = await Promise.all([...new Set(pids)].map((pid) => captureProcessIdentity(pid)));
-  return identities.every((identity): identity is ProcessIdentity => identity !== null) ? identities : null;
-}
-
-async function probeProcessIdentity(identity: ProcessIdentity): Promise<'gone' | 'same' | 'reused_or_unknown'> {
-  const current = await captureProcessIdentity(identity.pid);
-  if (current === null) return probePidLiveness(identity.pid) === 'gone' ? 'gone' : 'reused_or_unknown';
-  return current.start_time === identity.start_time ? 'same' : 'reused_or_unknown';
-}
 
 function probeProcessGroupLiveness(processGroupId: number): 'alive' | 'gone' | 'unknown' {
   if (process.platform === 'win32') return 'gone';
@@ -2694,7 +2711,8 @@ type ExactPaneProcessTreeTeardown = {
   trackedPids: number[];
   authorizedPanePid?: number;
   proofUnavailable?: ExactPaneUnavailableProof;
-  trackedProcessIdentities?: ProcessIdentity[];
+  trackedProcessIdentities?: TrackedProcessRecord[];
+
 };
 
 type ExactPaneProcessProbe =
@@ -2891,14 +2909,16 @@ type GonePaneDescendantCleanupDebtEntry =
   | {
     pane_id: string;
     authorized_pane_pid: number;
-    tracked_processes: ProcessIdentity[];
+    tracked_processes: TrackedProcessRecord[];
+
     evidence: string;
   }
   | {
     pane_id: string;
     authorized_pane_pid: number;
     tracked_pids: number[];
-    tracked_processes?: ProcessIdentity[];
+    tracked_processes?: TrackedProcessRecord[];
+
     evidence: 'process_identity_unavailable';
   };
 
@@ -2970,13 +2990,36 @@ async function persistGonePaneDescendantCleanupDebt(params: {
   await writeAtomic(debtPath, JSON.stringify({ schema_version: 1, operation: 'gone_pane_descendant_cleanup', entries }, null, 2));
 }
 
-function isValidProcessIdentity(value: unknown): value is ProcessIdentity {
-  return typeof value === 'object' && value !== null
-    && Number.isSafeInteger((value as { pid?: unknown }).pid)
-    && (value as { pid: number }).pid > 0
-    && typeof (value as { start_time?: unknown }).start_time === 'string'
-    && /^[0-9]+$/.test((value as { start_time: string }).start_time);
+const TRACKED_PROCESS_PLATFORMS = new Set<NodeJS.Platform>([
+  'aix', 'android', 'darwin', 'freebsd', 'haiku', 'linux', 'openbsd', 'sunos', 'win32', 'cygwin', 'netbsd',
+]);
+const TRACKED_PROCESS_BIRTH_PATTERN = /^\d+(?:\.\d+)?$/;
+const TRACKED_PROCESS_CMDLINE_HASH_PATTERN = /^[a-f0-9]{64}$/;
+
+function isValidSharedProcessIdentity(value: unknown): value is SharedProcessIdentity {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const identity = value as Partial<SharedProcessIdentity>;
+  if (Object.keys(identity).some((key) => key !== 'platform' && key !== 'birth' && key !== 'cmdline_hash')) return false;
+  return typeof identity.platform === 'string'
+    && TRACKED_PROCESS_PLATFORMS.has(identity.platform as NodeJS.Platform)
+    && typeof identity.birth === 'string'
+    && TRACKED_PROCESS_BIRTH_PATTERN.test(identity.birth)
+    && (identity.cmdline_hash === undefined
+      || typeof identity.cmdline_hash === 'string' && TRACKED_PROCESS_CMDLINE_HASH_PATTERN.test(identity.cmdline_hash));
 }
+
+function isValidProcessIdentity(value: unknown): value is TrackedProcessRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const candidate = value as {
+    pid?: unknown;
+    start_time?: unknown;
+    process_identity?: unknown;
+  };
+  if (!Number.isSafeInteger(candidate.pid) || (candidate.pid as number) <= 0) return false;
+  if ('process_identity' in candidate) return isValidSharedProcessIdentity(candidate.process_identity);
+  return typeof candidate.start_time === 'string' && /^[0-9]+$/.test(candidate.start_time);
+}
+
 
 function isValidGonePaneDescendantCleanupDebt(value: unknown): value is GonePaneDescendantCleanupDebt {
   if (typeof value !== 'object' || value === null) return false;
@@ -3002,7 +3045,8 @@ function isValidGonePaneDescendantCleanupDebt(value: unknown): value is GonePane
         || new Set(trackedPids).size !== trackedPids.length) return false;
       if (candidate.tracked_processes === undefined) return true;
       if (!Array.isArray(candidate.tracked_processes) || !candidate.tracked_processes.every(isValidProcessIdentity)) return false;
-      const trackedProcesses = candidate.tracked_processes as ProcessIdentity[];
+      const trackedProcesses = candidate.tracked_processes as TrackedProcessRecord[];
+
       return trackedProcesses.every((identity) => trackedPids.includes(identity.pid))
         && new Set(trackedProcesses.map((identity) => identity.pid)).size === trackedProcesses.length;
     }
@@ -3010,7 +3054,8 @@ function isValidGonePaneDescendantCleanupDebt(value: unknown): value is GonePane
       || candidate.tracked_pids !== undefined
       || !Array.isArray(candidate.tracked_processes) || candidate.tracked_processes.length === 0
       || !candidate.tracked_processes.every(isValidProcessIdentity)) return false;
-    const trackedProcesses = candidate.tracked_processes as ProcessIdentity[];
+    const trackedProcesses = candidate.tracked_processes as TrackedProcessRecord[];
+
     return new Set(trackedProcesses.map((identity) => identity.pid)).size === trackedProcesses.length;
 
   });
@@ -3030,7 +3075,7 @@ async function reconcileGonePaneDescendantCleanupDebt(teamName: string, cwd: str
   for (const entry of debt.entries) {
     if ('tracked_pids' in entry) {
       const trackedProcesses = entry.tracked_processes ?? [];
-      const knownIdentities = new Map<number, ProcessIdentity>(
+      const knownIdentities = new Map<number, TrackedProcessRecord>(
         trackedProcesses.map((identity) => [identity.pid, identity]),
       );
       const states: Array<'gone' | 'same' | 'reused_or_unknown'> = await Promise.all(entry.tracked_pids.map((pid: number) => {

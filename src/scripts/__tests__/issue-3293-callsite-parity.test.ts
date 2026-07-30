@@ -1,5 +1,5 @@
-// Characterization baseline for issue #3293 wave B callsite parity. Only the valid
-// exact-session deep-interview direct-cancel case is expected to change in wave B.
+// Characterization baseline for issue #3293 direct-cancel callsite parity.
+// Issue #3358 extends hook-owned exact-session cancellation to Ultragoal only.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -136,14 +136,17 @@ describe("issue #3293 callsite parity baseline", () => {
 		});
 	}
 
-	for (const [mode, site] of [["ralplan", "~9114"], ["conductor", "~18227"]] as const) {
-		for (const command of ["omx cancel", "omx cancel --force"]) {
-			it(`${mode} ${site}: ${command} falls through to the pre-#3293 executable-trust path`, async () => {
-				const f = await fixture(mode, `${mode}-${command.endsWith("force") ? "force" : "bare"}`);
-				try { await withTrustedOmx(f.cwd, async () => assert.equal((await preToolUse(f, command)).outputJson, null)); }
-				finally { await rm(f.cwd, { recursive: true, force: true }); }
-			});
-		}
+	for (const command of ["omx cancel", "omx cancel --force"]) {
+		it(`ralplan ~9114: ${command} falls through to the pre-#3293 executable-trust path`, async () => {
+			const f = await fixture("ralplan", `ralplan-${command.endsWith("force") ? "force" : "bare"}`);
+			try { await withTrustedOmx(f.cwd, async () => assert.equal((await preToolUse(f, command)).outputJson, null)); }
+			finally { await rm(f.cwd, { recursive: true, force: true }); }
+		});
+		it(`conductor ~18227: ${command} is hook-owned for the exact Ultragoal session`, async () => {
+			const f = await fixture("conductor", `conductor-${command.endsWith("force") ? "force" : "bare"}`);
+			try { assertBlocked(await preToolUse(f, command), /cancelled_exact_session/); }
+			finally { await rm(f.cwd, { recursive: true, force: true }); }
+		});
 	}
 
 
@@ -176,9 +179,9 @@ describe("issue #3293 callsite parity baseline", () => {
 		});
 	}
 
-	it("Conductor ~18419: cancel-shaped command retains its pre-#3293 trust denial when trust is absent", async () => {
+	it("Conductor ~18419: exact cancellation remains reachable when executable trust is absent", async () => {
 		const f = await fixture("conductor", "conductor-detail");
-		try { assertBlocked(await preToolUse(f, "omx cancel"), /direct cancellation execution context is not trusted/); }
+		try { assertBlocked(await preToolUse(f, "omx cancel"), /cancelled_exact_session/); }
 		finally { await rm(f.cwd, { recursive: true, force: true }); }
 	});
 });

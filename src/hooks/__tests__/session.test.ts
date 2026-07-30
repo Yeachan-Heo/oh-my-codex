@@ -33,6 +33,7 @@ import {
   writeSessionStart,
   type LaunchSessionBinding,
   type SessionState,
+  type ProcessObservation,
 } from '../session.js';
 
 interface SessionHistoryEntry {
@@ -75,9 +76,11 @@ async function withPointerDependencies(
   overrides: Parameters<typeof __setSessionPointerTransactionDependenciesForTests>[0],
   run: () => Promise<void>,
 ): Promise<void> {
+  const runtimePlatform = overrides.runtimePlatform ?? process.platform;
   __setSessionPointerTransactionDependenciesForTests({
     atomicRenameNoReplace: defaultTestAtomicRenameNoReplace,
     ...overrides,
+    runtimePlatform,
   });
 
   try {
@@ -99,8 +102,12 @@ async function withOwnerEnvironment(sessionId: string | undefined, run: () => Pr
   }
 }
 
-function matchingProcessIdentity() {
-  return { status: 'matching' as const, startTicks: 1 };
+function matchingObservation(): ProcessObservation {
+  return { kind: 'identity', identity: { platform: 'linux', birth: '1' } };
+}
+
+function matchingWin32Observation(): ProcessObservation {
+  return { kind: 'identity', identity: { platform: 'win32', birth: '1' } };
 }
 
 async function writeLockOwner(cwd: string, owner: Record<string, unknown>): Promise<string> {
@@ -111,12 +118,16 @@ async function writeLockOwner(cwd: string, owner: Record<string, unknown>): Prom
 }
 
 function validLockOwner(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const platform = (overrides.platform ?? 'linux') as NodeJS.Platform;
+  const version = overrides.version === 2 || overrides.process_identity !== undefined ? 2 : 1;
+  const identity = overrides.process_identity ?? (version === 2 ? { platform, birth: '1' } : undefined);
   return {
-    version: 1,
+    version,
     token: TEST_TOKEN,
     pid: process.pid,
-    platform: 'linux',
-    pid_start_ticks: 1,
+    platform,
+    ...(version === 2 && identity ? { process_identity: identity } : {}),
+    ...(version === 1 ? { pid_start_ticks: 1 } : {}),
     created_at: '2026-07-14T00:00:00.000Z',
     ...overrides,
   };
@@ -552,26 +563,32 @@ describe('session lifecycle manager', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-native-owner-reconcile-'));
     let binding: LaunchSessionBinding | undefined;
     try {
-      const established = await establishLaunchSessionBinding(cwd, 'omx-owner-session', {
-        nativeSessionId: 'codex-native-old',
+      await withPointerDependencies({
+        runtimePlatform: 'win32',
+        observeProcess: () => matchingWin32Observation(),
+      }, async () => {
+        const established = await establishLaunchSessionBinding(cwd, 'omx-owner-session', {
+          nativeSessionId: 'codex-native-old',
+          platform: 'win32',
+        });
+        assert.equal(established.kind, 'committed-released');
+        if (established.kind !== 'committed-released') return;
+        binding = established.binding;
+
+        const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-old', {
+          pid: process.pid,
+          platform: 'win32',
+        });
+
+        assert.equal(reconciled.session_id, 'omx-owner-session');
+        assert.equal(reconciled.native_session_id, 'codex-native-old');
+        assert.equal(reconciled.previous_native_session_id, undefined);
+        assert.equal(reconciled.owner_omx_session_id, undefined);
+        assert.equal(reconciled.pid, process.pid);
+
+        await finalizeBoundOnce(binding, 'test');
+        assert.equal(await readSessionState(cwd), null);
       });
-      assert.equal(established.kind, 'committed-released');
-      if (established.kind !== 'committed-released') return;
-      binding = established.binding;
-
-      const reconciled = await reconcileNativeSessionStart(cwd, 'codex-native-old', {
-        pid: process.pid,
-        platform: 'win32',
-      });
-
-      assert.equal(reconciled.session_id, 'omx-owner-session');
-      assert.equal(reconciled.native_session_id, 'codex-native-old');
-      assert.equal(reconciled.previous_native_session_id, undefined);
-      assert.equal(reconciled.owner_omx_session_id, undefined);
-      assert.equal(reconciled.pid, process.pid);
-
-      await finalizeBoundOnce(binding, 'test');
-      assert.equal(await readSessionState(cwd), null);
     } finally {
       if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
@@ -804,16 +821,28 @@ describe('isSessionStale', () => {
     assert.equal(stale, true);
   });
 
-  it('falls back to PID liveness on non-Linux platforms', () => {
-    const state = makeState();
-
-    const stale = isSessionStale(state, {
-      platform: 'darwin',
-      isPidAlive: () => true,
-      readLinuxIdentity: () => null,
-    });
-
-    assert.equal(stale, false);
+  it('classifies identity-less live non-Linux pointers as identity-indeterminate', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-non-linux-identityless-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      await mkdir(context.baseStateDir, { recursive: true });
+      await writeFile(context.sessionPath, JSON.stringify({
+        session_id: 'sess-darwin-identityless',
+        started_at: '2026-07-14T00:00:00.000Z',
+        cwd,
+        pid: process.pid,
+        platform: 'darwin',
+      }), 'utf-8');
+      await withPointerDependencies({
+        runtimePlatform: 'darwin',
+        probePid: () => 'alive',
+        observeProcess: () => ({ kind: 'unsupported' }),
+      }, async () => {
+        assert.equal((await readSessionPointer(context)).status, 'identity-indeterminate');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 
@@ -834,7 +863,7 @@ describe('session pointer transaction', () => {
       const context = resolveSessionPointerContext(cwd);
       await withPointerDependencies({
         probePid: () => 'alive',
-        readProcessIdentity: () => matchingProcessIdentity(),
+        observeProcess: () => matchingObservation(),
       }, async () => {
         assert.equal((await readSessionPointer(context)).status, 'absent');
         await mkdir(context.baseStateDir, { recursive: true });
@@ -850,13 +879,13 @@ describe('session pointer transaction', () => {
 
         __setSessionPointerTransactionDependenciesForTests({
           probePid: () => 'dead',
-          readProcessIdentity: () => matchingProcessIdentity(),
+          observeProcess: () => matchingObservation(),
         });
         assert.equal((await readSessionPointer(context)).status, 'stale-dead');
 
         __setSessionPointerTransactionDependenciesForTests({
           probePid: () => 'indeterminate',
-          readProcessIdentity: () => matchingProcessIdentity(),
+          observeProcess: () => matchingObservation(),
         });
         assert.equal((await readSessionPointer(context)).status, 'identity-indeterminate');
 
@@ -874,6 +903,292 @@ describe('session pointer transaction', () => {
     } finally {
       __resetSessionPointerTransactionDependenciesForTests();
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('covers the process identity decision table through pointer and lock inspection', async () => {
+    const hashA = 'aaa'.repeat(21) + 'a';
+    const hashB = 'bbb'.repeat(21) + 'b';
+    const identityOwner = (identity: { platform: NodeJS.Platform; birth: string; cmdline_hash?: string }) => validLockOwner({
+      pid: 4242,
+      version: 2,
+      platform: identity.platform,
+      process_identity: identity,
+    });
+    const legacyOwner = (platform: NodeJS.Platform = 'linux', startTicks = 1) => validLockOwner({
+      pid: 4242,
+      platform,
+      pid_start_ticks: startTicks,
+    });
+    const identitylessOwner = (platform: NodeJS.Platform) => validLockOwner({
+      pid: 4242,
+      platform,
+      pid_start_ticks: undefined,
+    });
+    const identity = (platform: NodeJS.Platform, birth: string, cmdline_hash?: string): ProcessObservation => ({
+      kind: 'identity',
+      identity: { platform, birth, ...(cmdline_hash ? { cmdline_hash } : {}) },
+    });
+    const classifierCases: Array<{
+      name: string;
+      recordedState?: Record<string, unknown>;
+      rawPointer?: string;
+      runtimePlatform: NodeJS.Platform;
+      probePid: 'alive' | 'dead' | 'indeterminate';
+      observations: ProcessObservation[];
+      lockOwner?: Record<string, unknown> | 'malformed';
+      expectedPointerStatus: string;
+      expectedLockStatus: string;
+    }> = [
+      {
+        name: 'usable match',
+        recordedState: {
+          platform: 'linux', pid_start_ticks: 1, identity_schema_version: 2,
+          process_identity: { platform: 'linux', birth: '1' },
+        },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '1')],
+        lockOwner: identityOwner({ platform: 'linux', birth: '1' }),
+        expectedPointerStatus: 'usable', expectedLockStatus: 'live',
+      },
+      {
+        name: 'darwin match',
+        recordedState: { identity_schema_version: 2, process_identity: { platform: 'darwin', birth: '1234.567' } },
+        runtimePlatform: 'darwin', probePid: 'alive', observations: [identity('darwin', '1234.567')],
+        lockOwner: identityOwner({ platform: 'darwin', birth: '1234.567' }),
+        expectedPointerStatus: 'usable', expectedLockStatus: 'live',
+      },
+      {
+        name: 'windows exact FILETIME',
+        recordedState: { identity_schema_version: 2, process_identity: { platform: 'win32', birth: '132580896000000000' } },
+        runtimePlatform: 'win32', probePid: 'alive', observations: [identity('win32', '132580896000000000')],
+        lockOwner: identityOwner({ platform: 'win32', birth: '132580896000000000' }),
+        expectedPointerStatus: 'usable', expectedLockStatus: 'live',
+      },
+      {
+        name: 'dead PID',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'dead', observations: [],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'stale-dead', expectedLockStatus: 'dead',
+      },
+      {
+        name: 'birth mismatch',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '2'), identity('linux', '2')],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'stale-dead', expectedLockStatus: 'reused',
+      },
+      {
+        name: 'TOCTOU retry agree',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '2'), identity('linux', '1')],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'usable', expectedLockStatus: 'live',
+      },
+      {
+        name: 'TOCTOU retry disagree',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '2'), identity('linux', '3')],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'stale-dead', expectedLockStatus: 'reused',
+      },
+      {
+        name: 'EPERM probePid',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'indeterminate', observations: [],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'provider denied',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [{ kind: 'denied' }],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'provider error',
+        recordedState: { platform: 'linux', pid_start_ticks: 1 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [{ kind: 'error' }],
+        lockOwner: legacyOwner(),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'provider unsupported',
+        recordedState: { identity_schema_version: 2, process_identity: { platform: 'freebsd', birth: '1' } },
+        runtimePlatform: 'freebsd', probePid: 'alive', observations: [{ kind: 'unsupported' }],
+        lockOwner: identityOwner({ platform: 'freebsd', birth: '1' }),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'foreign platform',
+        recordedState: { identity_schema_version: 2, process_identity: { platform: 'darwin', birth: '1' } },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '1')],
+        lockOwner: identityOwner({ platform: 'darwin', birth: '1' }),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'cmdline hash match',
+        recordedState: {
+          identity_schema_version: 2,
+          process_identity: { platform: 'linux', birth: '1', cmdline_hash: hashA },
+        },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '1', hashA)],
+        lockOwner: identityOwner({ platform: 'linux', birth: '1', cmdline_hash: hashA }),
+        expectedPointerStatus: 'usable', expectedLockStatus: 'live',
+      },
+      {
+        name: 'cmdline hash mismatch',
+        recordedState: {
+          identity_schema_version: 2,
+          process_identity: { platform: 'linux', birth: '1', cmdline_hash: hashA },
+        },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '1', hashB)],
+        lockOwner: identityOwner({ platform: 'linux', birth: '1', cmdline_hash: hashA }),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'legacy v1 upgrade Linux',
+        recordedState: { platform: 'linux', pid_start_ticks: 111 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '111')],
+        lockOwner: legacyOwner('linux', 111),
+        expectedPointerStatus: 'usable', expectedLockStatus: 'live',
+      },
+      {
+        name: 'legacy v1 mismatch Linux',
+        recordedState: { platform: 'linux', pid_start_ticks: 111 },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '222'), identity('linux', '222')],
+        lockOwner: legacyOwner('linux', 111),
+        expectedPointerStatus: 'stale-dead', expectedLockStatus: 'reused',
+      },
+      {
+        name: 'legacy identity-less live non-Linux',
+        recordedState: { platform: 'darwin' },
+        runtimePlatform: 'darwin', probePid: 'alive', observations: [{ kind: 'unsupported' }],
+        lockOwner: identitylessOwner('darwin'),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'future schema v3',
+        recordedState: { identity_schema_version: 3, process_identity: { platform: 'linux', birth: '1' } },
+        runtimePlatform: 'linux', probePid: 'alive', observations: [identity('linux', '1')],
+        lockOwner: identitylessOwner('darwin'),
+        expectedPointerStatus: 'identity-indeterminate', expectedLockStatus: 'identity-indeterminate',
+      },
+      {
+        name: 'malformed JSON',
+        rawPointer: '{not-json',
+        runtimePlatform: 'linux', probePid: 'alive', observations: [], lockOwner: 'malformed',
+        expectedPointerStatus: 'malformed', expectedLockStatus: 'malformed',
+      },
+      {
+        name: 'same-second Darwin collision',
+        recordedState: { identity_schema_version: 2, process_identity: { platform: 'darwin', birth: '1000.500' } },
+        runtimePlatform: 'darwin', probePid: 'alive', observations: [identity('darwin', '1000.999'), identity('darwin', '1000.999')],
+        lockOwner: identityOwner({ platform: 'darwin', birth: '1000.500' }),
+        expectedPointerStatus: 'stale-dead', expectedLockStatus: 'reused',
+      },
+      {
+        name: 'absent pointer',
+        runtimePlatform: 'linux', probePid: 'alive', observations: [],
+        expectedPointerStatus: 'absent', expectedLockStatus: 'absent',
+      },
+    ];
+
+    for (const testCase of classifierCases) {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-session-classifier-'));
+      try {
+        const context = resolveSessionPointerContext(cwd);
+        await mkdir(context.baseStateDir, { recursive: true });
+        if (testCase.rawPointer !== undefined) {
+          await writeFile(context.sessionPath, testCase.rawPointer, 'utf-8');
+        } else if (testCase.recordedState) {
+          await writeFile(context.sessionPath, JSON.stringify({
+            session_id: 'sess-classifier',
+            started_at: '2026-07-14T00:00:00.000Z',
+            cwd,
+            pid: 4242,
+            ...testCase.recordedState,
+          }), 'utf-8');
+        }
+        if (testCase.lockOwner !== undefined) {
+          await mkdir(context.lockPath, { recursive: true });
+          await writeFile(
+            join(context.lockPath, 'owner.json'),
+            testCase.lockOwner === 'malformed' ? '{not-json' : JSON.stringify(testCase.lockOwner),
+            'utf-8',
+          );
+        }
+        let observerCalls = 0;
+        const observer = (): ProcessObservation => {
+          const index = observerCalls++;
+          return testCase.observations[Math.min(index, Math.max(testCase.observations.length - 1, 0))] ?? { kind: 'error' };
+        };
+        await withPointerDependencies({
+          runtimePlatform: testCase.runtimePlatform,
+          probePid: () => testCase.probePid,
+          observeProcess: observer,
+        }, async () => {
+          assert.equal((await readSessionPointer(context)).status, testCase.expectedPointerStatus, testCase.name);
+        });
+
+        let lockObserverCalls = 0;
+        const lockObserver = (): ProcessObservation => {
+          const index = lockObserverCalls++;
+          return testCase.observations[Math.min(index, Math.max(testCase.observations.length - 1, 0))] ?? { kind: 'error' };
+        };
+        await withPointerDependencies({
+          runtimePlatform: testCase.runtimePlatform,
+          probePid: () => testCase.probePid,
+          observeProcess: lockObserver,
+        }, async () => {
+          assert.equal((await inspectSessionPointerLock(cwd)).status, testCase.expectedLockStatus, testCase.name);
+        });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('rejects every schema version other than v2 as identity-indeterminate', async () => {
+    const schemaVersions: unknown[] = [0, 1, -1, null, '2', 'bad', 3];
+    for (const schemaVersion of schemaVersions) {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-session-identity-schema-rejection-'));
+      try {
+        const context = resolveSessionPointerContext(cwd);
+        await mkdir(context.baseStateDir, { recursive: true });
+        await writeFile(context.sessionPath, JSON.stringify({
+          session_id: 'sess-schema-rejection',
+          started_at: '2026-07-14T00:00:00.000Z',
+          cwd,
+          pid: 4242,
+          platform: 'linux',
+          pid_start_ticks: 1,
+          identity_schema_version: schemaVersion,
+        }), 'utf-8');
+        await mkdir(context.lockPath, { recursive: true });
+        await writeFile(join(context.lockPath, 'owner.json'), JSON.stringify(validLockOwner({
+          pid: 4242,
+          platform: 'darwin',
+          pid_start_ticks: undefined,
+        })), 'utf-8');
+        await withPointerDependencies({
+          runtimePlatform: 'linux',
+          probePid: () => 'alive',
+          observeProcess: () => matchingObservation(),
+        }, async () => {
+          assert.equal((await readSessionPointer(context)).status, 'identity-indeterminate', String(schemaVersion));
+        });
+        await withPointerDependencies({
+          runtimePlatform: 'linux',
+          probePid: () => 'alive',
+          observeProcess: () => matchingObservation(),
+        }, async () => {
+          assert.equal((await inspectSessionPointerLock(cwd)).status, 'identity-indeterminate', String(schemaVersion));
+        });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
     }
   });
 
@@ -897,19 +1212,15 @@ describe('session pointer transaction', () => {
       name: string;
       owner?: Record<string, unknown>;
       probePid: 'dead' | 'alive' | 'indeterminate';
-      identity?: {
-        status: 'matching' | 'reused' | 'indeterminate';
-        startTicks?: number;
-        cmdlineHash?: string;
-      };
+      observation?: ProcessObservation;
       expected: string;
     }> = [
       { name: 'dead', owner: validLockOwner(), probePid: 'dead', expected: 'dead' },
-      { name: 'reused', owner: validLockOwner(), probePid: 'alive', identity: { status: 'reused', startTicks: 2 }, expected: 'reused' },
+      { name: 'reused', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'identity', identity: { platform: 'linux', birth: '2' } }, expected: 'reused' },
       { name: 'indeterminate-probe', owner: validLockOwner(), probePid: 'indeterminate', expected: 'identity-indeterminate' },
-      { name: 'indeterminate-identity', owner: validLockOwner(), probePid: 'alive', identity: { status: 'indeterminate' }, expected: 'identity-indeterminate' },
-      { name: 'unsubstantiated-reuse', owner: validLockOwner(), probePid: 'alive', identity: { status: 'reused', startTicks: 1 }, expected: 'identity-indeterminate' },
-      { name: 'missing-required-hash', owner: validLockOwner({ pid_cmdline_hash: 'a'.repeat(64) }), probePid: 'alive', identity: matchingProcessIdentity(), expected: 'identity-indeterminate' },
+      { name: 'indeterminate-identity', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'error' }, expected: 'identity-indeterminate' },
+      { name: 'foreign-identity', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'identity', identity: { platform: 'darwin', birth: '1' } }, expected: 'identity-indeterminate' },
+      { name: 'missing-required-hash', owner: validLockOwner({ pid_cmdline_hash: 'a'.repeat(64) }), probePid: 'alive', observation: matchingObservation(), expected: 'identity-indeterminate' },
       { name: 'missing', probePid: 'alive', expected: 'missing' },
       { name: 'malformed', owner: { version: 1 }, probePid: 'alive', expected: 'malformed' },
     ];
@@ -926,7 +1237,7 @@ describe('session pointer transaction', () => {
         await withPointerDependencies({
           token: () => TEST_TOKEN,
           probePid: () => testCase.probePid,
-          readProcessIdentity: () => testCase.identity ?? matchingProcessIdentity(),
+          observeProcess: () => testCase.observation ?? matchingObservation(),
         }, async () => {
           await assert.rejects(
             writeSessionStart(cwd, 'sess-lock', { platform: 'win32' }),
@@ -1105,7 +1416,7 @@ describe('session pointer transaction', () => {
       await withPointerDependencies({
         token: () => SUCCESSOR_TOKEN,
         probePid: (pid) => pid === successorPid ? 'alive' : 'dead',
-        readProcessIdentity: () => matchingProcessIdentity(),
+        observeProcess: () => matchingObservation(),
         atomicRenameNoReplace: async (from, to) => {
           if (from === context.lockPath && to === parkedPath) {
             await rename(from, to);
@@ -1517,7 +1828,7 @@ describe('session pointer transaction', () => {
       const successor = JSON.stringify(validLockOwner({ token: FOREIGN_TOKEN, pid: successorPid }));
       await mkdir(context.lockPath);
       await writeFile(ownerPath, successor, 'utf-8');
-      await withPointerDependencies({ token: () => { throw new Error('resume must not mint token'); }, probePid: (pid) => pid === successorPid ? 'alive' : 'dead', readProcessIdentity: () => matchingProcessIdentity() }, async () => {
+      await withPointerDependencies({ token: () => { throw new Error('resume must not mint'); }, probePid: (pid) => pid === successorPid ? 'alive' : 'dead', observeProcess: () => matchingObservation() }, async () => {
         const refused = await recoverSessionPointerLock(cwd);
         assert.equal(refused.recovered, false);
         assert.match(refused.reason, /recovery state/i);
@@ -1891,9 +2202,9 @@ describe('session pointer transaction', () => {
   });
 
   it('fails closed for live pre-rename, PID reuse, malformed, and ambiguous lock evidence', async () => {
-    const cases: Array<{ name: string; files: Array<[string, string]>; probePid: 'alive' | 'dead'; identity?: ReturnType<typeof matchingProcessIdentity> }> = [
-      { name: 'live-temp', files: [[`owner.${TEST_TOKEN}.tmp`, JSON.stringify(validLockOwner())]], probePid: 'alive', identity: matchingProcessIdentity() },
-      { name: 'reused', files: [['owner.json', JSON.stringify(validLockOwner())]], probePid: 'alive', identity: { status: 'matching', startTicks: 2 } },
+    const cases: Array<{ name: string; files: Array<[string, string]>; probePid: 'alive' | 'dead'; observation?: ProcessObservation }> = [
+      { name: 'live-temp', files: [[`owner.${TEST_TOKEN}.tmp`, JSON.stringify(validLockOwner())]], probePid: 'alive', observation: matchingObservation() },
+      { name: 'reused', files: [['owner.json', JSON.stringify(validLockOwner())]], probePid: 'alive', observation: { kind: 'identity', identity: { platform: 'linux', birth: '2' } } },
       { name: 'malformed', files: [['owner.json', '{']], probePid: 'dead' },
       { name: 'ambiguous', files: [['owner.json', JSON.stringify(validLockOwner())], [`owner.${SUCCESSOR_TOKEN}.tmp`, JSON.stringify(validLockOwner({ token: SUCCESSOR_TOKEN }))]], probePid: 'dead' },
     ];
@@ -1906,7 +2217,7 @@ describe('session pointer transaction', () => {
         await withPointerDependencies({
           token: () => SUCCESSOR_TOKEN,
           probePid: () => testCase.probePid,
-          readProcessIdentity: () => testCase.identity ?? matchingProcessIdentity(),
+          observeProcess: () => testCase.observation ?? matchingObservation(),
         }, async () => {
           const before = await readdir(context.lockPath);
           const recovered = await recoverSessionPointerLock(cwd);
@@ -2046,7 +2357,7 @@ describe('session pointer transaction', () => {
         sleep: async (ms) => { delays.push(ms); now += ms; },
         token: () => TEST_TOKEN,
         probePid: () => 'alive',
-        readProcessIdentity: () => matchingProcessIdentity(),
+        observeProcess: () => matchingObservation(),
       }, async () => {
         await assert.rejects(
           writeSessionStart(cwd, 'sess-timeout', { platform: 'win32' }),
@@ -2107,6 +2418,32 @@ describe('session pointer transaction', () => {
         );
       });
       assert.equal(existsSync(context.lockPath), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes a legacy-like Linux state when process identity capture fails', async (t) => {
+    if (process.platform !== 'linux') {
+      t.skip('Linux identity publication semantics are under test.');
+      return;
+    }
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-identity-capture-failure-'));
+    try {
+      await withPointerDependencies({
+        runtimePlatform: 'linux',
+        observeProcess: () => ({ kind: 'error' }),
+      }, async () => {
+        const state = await writeSessionStart(cwd, 'sess-identity-capture-failure', { platform: 'linux' });
+        assert.equal(state.platform, 'linux');
+        assert.equal(Object.hasOwn(state, 'identity_schema_version'), false);
+        assert.equal(Object.hasOwn(state, 'process_identity'), false);
+        assert.equal(Object.hasOwn(state, 'pid_start_ticks'), false);
+        const persisted = await readSessionState(cwd);
+        assert.ok(persisted);
+        assert.equal(Object.hasOwn(persisted, 'identity_schema_version'), false);
+        assert.equal(Object.hasOwn(persisted, 'process_identity'), false);
+      });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2403,31 +2740,36 @@ describe('session pointer transaction', () => {
   it('binds an owner alias only on a verified same-native/absent transition and never during replacement', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-alias-'));
     try {
-      const nativeOnly = await reconcileNativeSessionStart(cwd, 'native-first', {
-        platform: 'win32',
-        ownerOmxSessionId: 'omx-owner',
-      });
-      assert.equal(nativeOnly.owner_omx_session_id, undefined);
-
-      await withOwnerEnvironment('omx-owner', async () => {
-        const bound = await reconcileNativeSessionStart(cwd, 'native-first', {
+      await withPointerDependencies({
+        runtimePlatform: 'win32',
+        observeProcess: () => matchingWin32Observation(),
+      }, async () => {
+        const nativeOnly = await reconcileNativeSessionStart(cwd, 'native-first', {
           platform: 'win32',
-          ownerAliasVerified: true,
+          ownerOmxSessionId: 'omx-owner',
         });
-        assert.equal(bound.session_id, 'native-first');
-        assert.equal(bound.owner_omx_session_id, 'omx-owner');
+        assert.equal(nativeOnly.owner_omx_session_id, undefined);
 
-        await assert.rejects(
-          reconcileNativeSessionStart(cwd, 'native-second', {
+        await withOwnerEnvironment('omx-owner', async () => {
+          const bound = await reconcileNativeSessionStart(cwd, 'native-first', {
             platform: 'win32',
             ownerAliasVerified: true,
-          }),
-          isOwnerConflict,
-        );
+          });
+          assert.equal(bound.session_id, 'native-first');
+          assert.equal(bound.owner_omx_session_id, 'omx-owner');
 
-        const persisted = await readSessionState(cwd);
-        assert.equal(persisted?.session_id, 'native-first');
-        assert.equal(persisted?.owner_omx_session_id, 'omx-owner');
+          await assert.rejects(
+            reconcileNativeSessionStart(cwd, 'native-second', {
+              platform: 'win32',
+              ownerAliasVerified: true,
+            }),
+            isOwnerConflict,
+          );
+
+          const persisted = await readSessionState(cwd);
+          assert.equal(persisted?.session_id, 'native-first');
+          assert.equal(persisted?.owner_omx_session_id, 'omx-owner');
+        });
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -2437,7 +2779,11 @@ describe('session pointer transaction', () => {
   it('keeps native session owner sidecars isolated and rejects live cross-process reuse', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-sidecar-'));
     try {
-      await withPointerDependencies({ probePid: () => 'alive' }, async () => {
+      await withPointerDependencies({
+        runtimePlatform: 'win32',
+        observeProcess: () => matchingWin32Observation(),
+        probePid: () => 'alive',
+      }, async () => {
         const first = await writeNativeSessionOwner(
           cwd,
           'native-owner-a',
@@ -2476,6 +2822,7 @@ describe('session pointer transaction', () => {
         );
         await writeNativeSessionOwner(cwd, 'native-owner-current', {
           pid: process.pid,
+          platform: 'win32',
         });
         assert.equal(
           (await readNativeSessionOwner(cwd, 'native-owner-current'))?.pid,
@@ -2600,14 +2947,14 @@ describe('session pointer transaction', () => {
       }), 'utf-8');
       const before = await readFile(ownerPath, 'utf-8');
 
-      assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-platform')).status, 'malformed');
+      assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-platform')).status, 'identity-indeterminate');
       assert.equal(await readNativeSessionOwner(cwd, 'native-owner-platform'), null);
       await assert.rejects(
         writeNativeSessionOwner(cwd, 'native-owner-platform', {
           pid: process.pid,
         }),
         (error: unknown) => isSessionPointerLaunchAbort(error)
-          && error.code === 'session_pointer_owner_conflict',
+          && error.code === 'session_pointer_unusable',
       );
       assert.equal(await readFile(ownerPath, 'utf-8'), before);
     } finally {
@@ -2621,17 +2968,18 @@ describe('session pointer transaction', () => {
       assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-absent')).status, 'absent');
       await withPointerDependencies({
         probePid: (pid) => pid === 11 ? 'dead' : 'alive',
+        observeProcess: () => ({ kind: 'identity', identity: { platform: 'linux' as const, birth: '1' } }),
       }, async () => {
         await writeNativeSessionOwner(
           cwd,
           'native-owner-recovery',
-          { pid: 11, platform: 'win32' },
+          { pid: 11, platform: 'linux' },
         );
-        assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-recovery')).status, 'malformed');
+        assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-recovery')).status, 'stale-dead');
         const recovered = await writeNativeSessionOwner(
           cwd,
           'native-owner-recovery',
-          { pid: 22, platform: 'win32' },
+          { pid: 22, platform: 'linux' },
         );
         assert.equal(recovered.pid, 22);
 
@@ -2673,7 +3021,8 @@ describe('session pointer transaction', () => {
           started_at: new Date().toISOString(),
           cwd,
           pid: 22,
-          platform: 'win32',
+          platform: 'linux',
+          pid_start_ticks: 1,
         }), 'utf-8');
         const forgedBefore = await readFile(forgedPath, 'utf-8');
         assert.equal(await readNativeSessionOwner(cwd, 'native-owner-forged'), null);
@@ -2681,7 +3030,7 @@ describe('session pointer transaction', () => {
           writeNativeSessionOwner(
             cwd,
             'native-owner-forged',
-            { pid: 22, platform: 'win32' },
+            { pid: 22, platform: 'linux' },
           ),
           (error: unknown) => isSessionPointerLaunchAbort(error)
             && error.code === 'session_pointer_owner_conflict',
@@ -2702,7 +3051,8 @@ describe('session pointer transaction', () => {
           native_session_id: 'native-owner-missing-cwd',
           started_at: new Date().toISOString(),
           pid: 22,
-          platform: 'win32',
+          platform: 'linux',
+          pid_start_ticks: 1,
         }), 'utf-8');
         const missingCwdBefore = await readFile(missingCwdPath, 'utf-8');
         assert.equal(await readNativeSessionOwner(cwd, 'native-owner-missing-cwd'), null);
@@ -2710,7 +3060,7 @@ describe('session pointer transaction', () => {
           writeNativeSessionOwner(
             cwd,
             'native-owner-missing-cwd',
-            { pid: 22, platform: 'win32' },
+            { pid: 22, platform: 'linux' },
           ),
           (error: unknown) => isSessionPointerLaunchAbort(error)
             && error.code === 'session_pointer_owner_conflict',
@@ -2725,7 +3075,11 @@ describe('session pointer transaction', () => {
   it('rejects cross-process native reconciliation while preserving the live selected pointer', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-cross-process-selected-'));
     try {
-      await withPointerDependencies({ probePid: () => 'alive' }, async () => {
+      await withPointerDependencies({
+        runtimePlatform: 'win32',
+        observeProcess: () => matchingWin32Observation(),
+        probePid: () => 'alive',
+      }, async () => {
         await writeSessionStart(cwd, 'native-selected-a', {
           nativeSessionId: 'native-selected-a',
           pid: 11,
@@ -2752,26 +3106,31 @@ describe('session pointer transaction', () => {
   it('preserves pointer evidence when history cannot be appended and rejects unusable end states before history or HUD cleanup', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-end-preserve-'));
     try {
-      const context = resolveSessionPointerContext(cwd);
-      const established = await establishLaunchSessionBinding(cwd, 'sess-history', { platform: 'win32' });
-      assert.equal(established.kind, 'committed-released');
-      if (established.kind !== 'committed-released') return;
-      await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
-      await rm(join(cwd, '.omx', 'logs'), { recursive: true, force: true });
-      await writeFile(join(cwd, '.omx', 'logs'), 'not-a-directory', 'utf-8');
-      await assert.rejects(finalizeBoundOnce(established.binding, 'history-failure'));
-      assert.equal((await readSessionState(cwd))?.session_id, 'sess-history');
-      await rm(join(cwd, '.omx', 'logs'), { force: true });
+      await withPointerDependencies({
+        runtimePlatform: 'win32',
+        observeProcess: () => matchingWin32Observation(),
+      }, async () => {
+        const context = resolveSessionPointerContext(cwd);
+        const established = await establishLaunchSessionBinding(cwd, 'sess-history', { platform: 'win32' });
+        assert.equal(established.kind, 'committed-released');
+        if (established.kind !== 'committed-released') return;
+        await mkdir(join(cwd, '.omx', 'logs'), { recursive: true });
+        await rm(join(cwd, '.omx', 'logs'), { recursive: true, force: true });
+        await writeFile(join(cwd, '.omx', 'logs'), 'not-a-directory', 'utf-8');
+        await assert.rejects(finalizeBoundOnce(established.binding, 'history-failure'));
+        assert.equal((await readSessionState(cwd))?.session_id, 'sess-history');
+        await rm(join(cwd, '.omx', 'logs'), { force: true });
 
-      await writeFile(context.sessionPath, '{ malformed', 'utf-8');
-      await assert.rejects(
-        writeSessionEnd(cwd, 'sess-history', { binding: established.binding }),
-        (error: unknown) => isSessionPointerLaunchAbort(error)
-          && error.code === 'session_pointer_unusable'
-          && error.pointerStatus === 'malformed',
-      );
-      assert.equal(await readFile(context.sessionPath, 'utf-8'), '{ malformed');
-      assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+        await writeFile(context.sessionPath, '{ malformed', 'utf-8');
+        await assert.rejects(
+          writeSessionEnd(cwd, 'sess-history', { binding: established.binding }),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_unusable'
+            && error.pointerStatus === 'malformed',
+        );
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), '{ malformed');
+        assert.equal(existsSync(join(cwd, '.omx', 'logs', 'session-history.jsonl')), false);
+      });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2802,6 +3161,39 @@ describe('bound launch authority', () => {
       assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, 'closed');
       assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, 'closed');
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves process_identity across detached metadata updates', async (t) => {
+    if (process.platform !== 'linux') {
+      t.skip('Linux v2 process identity publication semantics are under test.');
+      return;
+    }
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-binding-identity-preserve-'));
+    let binding: LaunchSessionBinding | undefined;
+    try {
+      await withPointerDependencies({
+        runtimePlatform: 'linux',
+        observeProcess: () => matchingObservation(),
+      }, async () => {
+        const established = await establishLaunchSessionBinding(cwd, 'sess-binding-identity-preserve', { platform: 'linux' });
+        assert.equal(established.kind, 'committed-released');
+        if (established.kind !== 'committed-released') return;
+        const establishedBinding = established.binding;
+        binding = establishedBinding;
+        const before = await readSessionState(cwd);
+        assert.ok(before?.process_identity);
+        const metadata = await updateDetachedSessionMetadata(establishedBinding, { tmuxPaneId: '%identity-preserved' });
+        assert.equal(metadata.kind, 'committed-released');
+        const after = await readSessionState(cwd);
+        assert.deepEqual(after?.process_identity, before?.process_identity);
+        assert.equal(after?.identity_schema_version, 2);
+        assert.equal(after?.tmux_pane_id, '%identity-preserved');
+        assert.equal((await finalizeBoundOnce(establishedBinding, 'identity-preserved')).finalized, true);
+      });
+    } finally {
+      if (binding) await closeLaunchSessionBindingOnce(binding).catch(() => {});
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2944,7 +3336,7 @@ describe('bound launch authority', () => {
         await writeFile(context.sessionPath, testCase.raw, 'utf-8');
         await withPointerDependencies({
           probePid: () => testCase.probePid ?? 'alive',
-          readProcessIdentity: () => matchingProcessIdentity(),
+          observeProcess: () => matchingObservation(),
           fs: {
             mkdir: async (path, options) => { order.push(`mkdir:${path}`); await mkdir(path, options); },
             readFile: async (path, encoding) => { order.push(`read:${path}`); return await readFile(path, encoding); },
@@ -3313,37 +3705,46 @@ describe('bound launch authority', () => {
     let ordinary: LaunchSessionBinding | undefined;
     let stale: LaunchSessionBinding | undefined;
     try {
-      const ordinaryEstablished = await establishLaunchSessionBinding(cwd, 'sess-unsupported-ordinary', { platform: 'win32' });
-      assert.equal(ordinaryEstablished.kind, 'committed-released');
-      if (ordinaryEstablished.kind !== 'committed-released') return;
-      ordinary = ordinaryEstablished.binding;
-      assert.deepEqual(ordinary.directoryIdentity, { kind: 'unsupported', reason: 'platform' });
+      await withPointerDependencies({
+        runtimePlatform: 'win32',
+        observeProcess: () => matchingWin32Observation(),
+      }, async () => {
+        const ordinaryEstablished = await establishLaunchSessionBinding(cwd, 'sess-unsupported-ordinary', { platform: 'win32' });
+        assert.equal(ordinaryEstablished.kind, 'committed-released');
+        if (ordinaryEstablished.kind !== 'committed-released') return;
+        ordinary = ordinaryEstablished.binding;
+        assert.deepEqual(ordinary.directoryIdentity, { kind: 'unsupported', reason: 'platform' });
 
-      const ordinaryFinalized = await finalizeBoundOnce(ordinary, 'ordinary-unsupported');
-      assert.equal(ordinaryFinalized.finalized, true);
-      assert.equal(existsSync(resolveSessionPointerContext(cwd).sessionPath), false);
-      assert.equal((await closeLaunchSessionBindingOnce(ordinary)).status, 'closed');
+        const ordinaryFinalized = await finalizeBoundOnce(ordinary, 'ordinary-unsupported');
+        assert.equal(ordinaryFinalized.finalized, true);
+        assert.equal(existsSync(resolveSessionPointerContext(cwd).sessionPath), false);
+        assert.equal((await closeLaunchSessionBindingOnce(ordinary)).status, 'closed');
 
-      const staleEstablished = await establishLaunchSessionBinding(cwd, 'sess-unsupported-stale', {
-        nativeSessionId: 'native-unsupported-stale',
-        platform: 'win32',
+        const staleEstablished = await establishLaunchSessionBinding(cwd, 'sess-unsupported-stale', {
+          nativeSessionId: 'native-unsupported-stale',
+          platform: 'win32',
+        });
+        assert.equal(staleEstablished.kind, 'committed-released');
+        if (staleEstablished.kind !== 'committed-released') return;
+        stale = staleEstablished.binding;
+        await reconcileNativeSessionStart(cwd, 'native-unsupported-stale', { pid: 424242, platform: 'win32' });
+        const context = resolveSessionPointerContext(cwd);
+        const historyPath = join(cwd, '.omx', 'logs', 'session-history.jsonl');
+
+        await withPointerDependencies({
+          runtimePlatform: 'win32',
+          observeProcess: () => matchingWin32Observation(),
+          probePid: () => 'dead',
+        }, async () => {
+          const finalized = await finalizeBoundOnce(stale as LaunchSessionBinding, 'stale-unsupported');
+          assert.equal(finalized.finalized, true);
+          assert.equal(finalized.cleanup.comparison?.status, 'matched');
+          assert.match(finalized.cleanup.comparison?.reason ?? '', /unsupported-directory-capability:platform/);
+        });
+        assert.equal(existsSync(context.sessionPath), false);
+        const history = await readFile(historyPath, 'utf-8');
+        assert.match(history, /native-unsupported-stale/);
       });
-      assert.equal(staleEstablished.kind, 'committed-released');
-      if (staleEstablished.kind !== 'committed-released') return;
-      stale = staleEstablished.binding;
-      await reconcileNativeSessionStart(cwd, 'native-unsupported-stale', { pid: 424242, platform: 'win32' });
-      const context = resolveSessionPointerContext(cwd);
-      const historyPath = join(cwd, '.omx', 'logs', 'session-history.jsonl');
-
-      await withPointerDependencies({ probePid: () => 'dead' }, async () => {
-        const finalized = await finalizeBoundOnce(stale as LaunchSessionBinding, 'stale-unsupported');
-        assert.equal(finalized.finalized, true);
-        assert.equal(finalized.cleanup.comparison?.status, 'matched');
-        assert.match(finalized.cleanup.comparison?.reason ?? '', /unsupported-directory-capability:platform/);
-      });
-      assert.equal(existsSync(context.sessionPath), false);
-      const history = await readFile(historyPath, 'utf-8');
-      assert.match(history, /native-unsupported-stale/);
     } finally {
       if (ordinary) await closeLaunchSessionBindingOnce(ordinary).catch(() => {});
       if (stale) await closeLaunchSessionBindingOnce(stale).catch(() => {});

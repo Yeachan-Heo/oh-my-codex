@@ -98,6 +98,17 @@ test("denies a pre-existing prepared journal with a value-free recovery reason",
   });
 });
 
+for (const sessionId of [".", "..", "../escape"]) {
+  test(`denies unsafe session id ${JSON.stringify(sessionId)} without mutation`, async () => {
+    await withFixture(async (f) => {
+      const before = [await readFile(f.autopilotPath), await readFile(f.skillPath)];
+      assert.deepEqual(await terminalizeExactAutopilotSessionForHookCancel({ stateDir: f.stateDir, canonicalSessionId: sessionId, cwd: f.cwd, nowIso: NOW }), { ok: false, reason: "invalid_target" });
+      assert.equal(await readHookCancelTransactionRecoveryState({ stateDir: f.stateDir, canonicalSessionId: sessionId }), "invalid_target");
+      assert.deepEqual([await readFile(f.autopilotPath), await readFile(f.skillPath)], before);
+    });
+  });
+}
+
 test("denies a symlinked session directory component", async () => {
   await withFixture(async (f) => {
     const linked = join(f.stateDir, "sessions", "linked-session"); await symlink(f.sessionDir, linked);
@@ -146,7 +157,24 @@ test("denies a missing paired skill-active state without mutation", async () => 
   await withFixture(async (f) => { const before = await readFile(f.autopilotPath); await rm(f.skillPath); assert.deepEqual(await terminalize(f), { ok: false, reason: "preflight_failed" }); assert.deepEqual(await readFile(f.autopilotPath), before); });
 });
 
-for (const boundary of ["journal-fsync", "first-data-write", "second-data-write", "verification", "journal-commit", "unlink", "lock-release"]) {
+test("cleans a lock whose initialization fails before the transaction starts", async () => {
+  await withFixture(async (f) => {
+    const original = [await readFile(f.autopilotPath), await readFile(f.skillPath)];
+    const prior = process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER;
+    process.env.NODE_ENV = "test";
+    process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER = "lock-acquire";
+    try {
+      assert.deepEqual(await terminalize(f), { ok: false, reason: "lock_held" });
+    } finally {
+      if (prior === undefined) delete process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER;
+      else process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER = prior;
+    }
+    assert.equal(existsSync(join(f.sessionDir, ".hook-cancel.lock")), false);
+    assert.deepEqual([await readFile(f.autopilotPath), await readFile(f.skillPath)], original);
+  });
+});
+
+for (const boundary of ["journal-fsync", "partial-first-data-write", "first-data-write", "partial-second-data-write", "second-data-write", "verification", "journal-commit", "unlink", "lock-release"]) {
   test(`fault injection after ${boundary} never leaves a torn two-file state`, async () => {
     await withFixture(async (f) => {
       const original = [await readFile(f.autopilotPath), await readFile(f.skillPath)];
