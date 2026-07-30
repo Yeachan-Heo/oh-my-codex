@@ -196,9 +196,9 @@ Expected: placeholder 없이 exact file/code/command가 추가되기 전에는 p
 
 **Files:**
 
-- Modify: `src/scripts/codex-native-hook.ts:10007`
+- Modify: `src/scripts/codex-native-hook.ts:9039`, `src/scripts/codex-native-hook.ts:9062`, `src/scripts/codex-native-hook.ts:10007`
 - Test: `src/scripts/__tests__/codex-native-hook.test.ts:14310`
-- Test guard: existing RED assertions must not be changed, removed, skipped, or weakened; production-only fix.
+- Test guard: existing RED assertions must not be changed, removed, skipped, or weakened. Add only the exact lookalike CLI negative assertion below.
 
 - [ ] **Step 1: existing regression assertion이 RED인지 다시 확인한다**
 
@@ -214,17 +214,77 @@ env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
 
 Expected: safe CLI wrapper state write loop의 `should defer to backend validation` assertion이 expected `null`, actual `decision: block`으로 FAIL.
 
-- [ ] **Step 2: 이미 검증된 standalone transport helper를 deep-interview path에서 재사용한다**
+- [ ] **Step 2: basename fallback을 막는 lookalike assertion을 먼저 고정한다**
 
-Inside the existing `if (stateWriteOperations.length > 0)` block, after mode/session/workingDirectory validation:
+Immediately before the existing `safeCliWrapperStateWriteCommands` loop, add:
 
 ```ts
-if (isStandaloneParsedOmxStateWriteTransport(cwd, command, sessionId)) return true;
+const blockedLookalikeNodeCliStateWrite = await preToolUse(
+  {
+    hook_event_name: "PreToolUse",
+    cwd,
+    session_id: "sess-di-artifact",
+    tool_name: "Bash",
+    tool_use_id: "tool-di-state-cli-lookalike-node-wrapper",
+    tool_input: {
+      command: `node ./attacker/omx.js state write --input ${safeStateWriteInput} --json`,
+    },
+  },
+  { cwd },
+);
+assert.equal(
+  (blockedLookalikeNodeCliStateWrite.outputJson as { decision?: string } | null)?.decision,
+  "block",
+);
 ```
 
-Expected: generic write-intent scanner로 떨어지기 전에 safe wrapper/session/cwd 구조만 허용한다. blanket allow, 새 helper, 새 dependency는 추가하지 않는다.
+Expected: 기존 source에서는 lookalike assertion은 PASS하고, 바로 뒤의 기존 safe wrapper assertion은 계속 RED다.
 
-- [ ] **Step 3: targeted GREEN과 인접 contract를 확인한다**
+- [ ] **Step 3: shared helper의 기본 증명은 보존하고 deep-interview exact workspace wrapper만 opt-in한다**
+
+Extend the existing helper signature:
+
+```ts
+function isStandaloneParsedOmxStateWriteTransport(
+  cwd: string,
+  command: string,
+  authoritativeSessionId: string,
+  options: { allowDeepInterviewWorkspaceNodeCliWrapper?: boolean } = {},
+): boolean {
+```
+
+Replace only the helper's final raw-mutation return:
+
+```ts
+const mutations = extractConductorBashMutations(command, cwd);
+if (mutations.length === 1 && mutations[0]?.mainRootStructuredStateWrite === true) return true;
+if (
+  options.allowDeepInterviewWorkspaceNodeCliWrapper !== true
+  || !isSingleLiteralShellInvocation(command)
+) return false;
+const words = tokenizeShellWords(command);
+const wrapperContext = resolveWrappedCommandExecutionContext(words, cwd);
+if (
+  wrapperContext === null
+  || shellWordLiteral(words[wrapperContext.index] ?? "") !== "node"
+) return false;
+return sameFilePath(
+  resolve(wrapperContext.cwd, shellWordLiteral(words[wrapperContext.index + 1] ?? "")),
+  resolve(cwd, "dist/cli/omx.js"),
+);
+```
+
+Inside the existing deep-interview `if (stateWriteOperations.length > 0)` block, after mode/session/workingDirectory validation:
+
+```ts
+if (isStandaloneParsedOmxStateWriteTransport(cwd, command, sessionId, {
+  allowDeepInterviewWorkspaceNodeCliWrapper: true,
+})) return true;
+```
+
+Expected: Ralplan과 Conductor의 3-argument callers는 기존 raw Main-root mutation proof를 그대로 요구한다. deep-interview만 기존 helper checks를 모두 통과한 single literal `node` invocation에서 wrapper effective cwd의 CLI entry가 정확히 workspace `dist/cli/omx.js`와 같을 때 허용한다. basename allow, blanket allow, 새 helper, 새 dependency는 추가하지 않는다.
+
+- [ ] **Step 4: targeted GREEN과 인접 contract를 확인한다**
 
 Run:
 
@@ -240,19 +300,19 @@ git diff --check
 
 Expected: targeted hook subtest PASS, deep-interview contract 27/27 PASS, diff check PASS.
 
-- [ ] **Step 4: verified slice를 Lore commit한다**
+- [ ] **Step 5: verified slice를 Lore commit한다**
 
-Stage only `src/scripts/codex-native-hook.ts`.
+Stage only `src/scripts/codex-native-hook.ts` and `src/scripts/__tests__/codex-native-hook.test.ts`.
 
 ```text
 Allow safe deep-interview state writes to reach backend validation
 
-Constraint: Preserve protected-state validation and allow only the existing standalone parsed transport contract
-Rejected: Blanket deep-interview Bash state-write allow | would bypass wrapper, session, cwd, and mutation checks
+Constraint: Preserve protected-state validation and allow only the exact workspace Node CLI wrapper after existing transport checks
+Rejected: Basename-based omx.js fallback | would authorize attacker-controlled lookalike paths
 Confidence: high
 Scope-risk: narrow
-Directive: Keep deep-interview and Ralplan canonical transport validation aligned through the shared helper
-Tested: targeted codex-native-hook deep-interview subtest; deep-interview contract suite; git diff --check
+Directive: Keep the deep-interview wrapper opt-in exact-path scoped; Ralplan and Conductor must retain the default raw mutation proof
+Tested: targeted codex-native-hook deep-interview subtest including lookalike rejection; deep-interview contract suite; git diff --check
 Not-tested: full suite deferred to the final verification ladder
 ```
 

@@ -38,6 +38,7 @@
 - Task 1 targeted reproduction completed on clean `origin/main`.
 - Task 2 classification completed: 4 PASS/not failing, 4 environment-only, 3 suite-interaction/flaky, 2 deterministic baseline defects.
 - TDD RED evidence: existing `codex-native-hook` and `api-interop` assertions repeatedly fail on clean `origin/main`; GREEN pending.
+- Task 3A plan correction: the initial one-line shared-helper reuse compiled but stayed RED on the first safe `env ... node dist/cli/omx.js` wrapper. It remains uncommitted while the exact-path wrapper proof is reviewed; no test was weakened.
 - Known environment blocker: `tmux` is not installed; no installation is authorized.
 
 ## Task 1 reproduction evidence
@@ -106,7 +107,7 @@ Post-run evidence:
 
 Deterministic shared roots:
 
-- Deep-interview hook: `isAllowedDeepInterviewBashWrite` validates the state payload, then falls through to generic write-intent rejection instead of reusing `isStandaloneParsedOmxStateWriteTransport`.
+- Deep-interview hook: `isAllowedDeepInterviewBashWrite` validates the state payload, but the shared transport helper's final raw Main-root mutation proof rejects otherwise-safe `env`/`command`/`exec` Node CLI wrappers. The revised plan keeps that default proof for Ralplan/Conductor and permits only the exact workspace `dist/cli/omx.js` wrapper in deep-interview.
 - Leader mailbox API: `queueDirectMailboxMessage` correctly reports `duplicate_pending_dispatch_request`, but `sendLeaderMailboxMessage` passes the false outcome to `sendWorkerMessage`, which throws before API interop can return the already-persisted row.
 
 No source fix is authorized for the environment-only or suite-interaction/flaky rows.
