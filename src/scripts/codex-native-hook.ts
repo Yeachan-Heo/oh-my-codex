@@ -11924,6 +11924,7 @@ function commandHasUnsafeConductorShellState(command: string, cwd = process.cwd(
             unresolvedNameref = true;
             continue;
           }
+          if (assignment.name === "PATH" || assignment.name === "PATHEXT") return true;
           if (conductorShellStateNameIsSensitive(assignment.value)) return true;
         }
       }

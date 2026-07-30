@@ -36796,6 +36796,7 @@ PY`,
 
       const inheritedPath = process.env.PATH;
       const metadataPerl = "perl -pi -e 's/old/new/' .omx/state/conductor.log";
+      const metadataCat = "cat .omx/state/conductor.log";
       for (const command of [
         `PATH=${JSON.stringify(hostBinDir)} bash --noprofile --norc -lc \"printf safe\"`,
         `PATH=${JSON.stringify(inheritedPath)} bash --noprofile --norc -lc \"printf safe\"`,
@@ -36815,6 +36816,11 @@ PY`,
         `f() { local PATHEXT=.EVIL; ${metadataPerl}; }; f`,
         `f() { local PATH=${JSON.stringify(inheritedPath)}; printf -v PATH '%s' ${JSON.stringify(inheritedPath)}; ${metadataPerl}; }; f`,
         `f() { local PATH=${JSON.stringify(inheritedPath)}; local -n path_ref=PATH; printf -v path_ref '%s' ${JSON.stringify(inheritedPath)}; ${metadataPerl}; }; f`,
+        `ALT=${JSON.stringify(inheritedPath)}; declare -n PATH=ALT; ${metadataCat}`,
+        `declare -n PATH=ALT; ALT=${JSON.stringify(inheritedPath)}; ${metadataCat}`,
+        `f() { local ALT=${JSON.stringify(inheritedPath)}; local -n PATH=ALT; ${metadataCat}; }; f`,
+        `declare -n PATHEXT=ALT; ALT=.EVIL; ${metadataCat}`,
+        `f() { local ALT=.EVIL; local -n PATHEXT=ALT; ${metadataCat}; }; f`,
         `ALT=${JSON.stringify(inheritedPath)}; declare -n PATH=ALT; ${metadataPerl}`,
         `declare -n PATH=ALT; ALT=${JSON.stringify(inheritedPath)}; ${metadataPerl}`,
         `declare -n PATHEXT=ALT; ALT=.EVIL; ${metadataPerl}`,
