@@ -18262,18 +18262,21 @@ function applyShellPosixStateEffect(words: string[], commandIndex: number, state
   if (namerefMode || clearNamerefMode) {
     const persistentAlias = !inFunction || global;
     for (const assignment of assignments) {
+      if (assignment.name === "PATH" || assignment.name === "PATHEXT") state.commandResolutionMutation = "prior";
       if (clearNamerefMode) {
         state.aliases.delete(assignment.name);
         state.globalAliases.delete(assignment.name);
         continue;
       }
       const target = isConductorShellBindingName(assignment.value) ? assignment.value : null;
+      if (target === "PATH" || target === "PATHEXT") state.commandResolutionMutation = "prior";
       if (isConductorSecuritySensitiveEnvironmentName(assignment.value)) state.securityEnvironmentUnresolved = true;
       state.aliases.set(assignment.name, target);
       if (persistentAlias) state.globalAliases.add(assignment.name);
       else state.globalAliases.delete(assignment.name);
     }
     for (const name of operands.filter((word) => !word.startsWith("-") && !word.startsWith("+") && !parseShellAssignmentWord(word))) {
+      if (name === "PATH" || name === "PATHEXT") state.commandResolutionMutation = "prior";
       if (clearNamerefMode) {
         state.aliases.delete(name);
         state.globalAliases.delete(name);
