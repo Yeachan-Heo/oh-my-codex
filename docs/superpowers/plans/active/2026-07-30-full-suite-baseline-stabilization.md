@@ -257,21 +257,24 @@ Replace only the helper's final raw-mutation return:
 
 ```ts
 const mutations = extractConductorBashMutations(command, cwd);
-if (mutations.length === 1 && mutations[0]?.mainRootStructuredStateWrite === true) return true;
 if (
-  options.allowDeepInterviewWorkspaceNodeCliWrapper !== true
-  || !isSingleLiteralShellInvocation(command)
-) return false;
-const words = tokenizeShellWords(command);
-const wrapperContext = resolveWrappedCommandExecutionContext(words, cwd);
-if (
-  wrapperContext === null
-  || shellWordLiteral(words[wrapperContext.index] ?? "") !== "node"
-) return false;
-return sameFilePath(
-  resolve(wrapperContext.cwd, shellWordLiteral(words[wrapperContext.index + 1] ?? "")),
-  resolve(cwd, "dist/cli/omx.js"),
-);
+  options.allowDeepInterviewWorkspaceNodeCliWrapper === true
+) {
+  const words = tokenizeShellWords(command);
+  const wrapperContext = resolveWrappedCommandExecutionContext(words, cwd);
+  if (wrapperContext !== null) {
+    const wrapperRuntime = shellWordLiteral(words[wrapperContext.index] ?? "");
+    if (isOmxCliWrapperRuntime(wrapperRuntime)) {
+      return wrapperRuntime === "node"
+        && isSingleLiteralShellInvocation(command)
+        && sameFilePath(
+          resolve(wrapperContext.cwd, shellWordLiteral(words[wrapperContext.index + 1] ?? "")),
+          resolve(cwd, "dist/cli/omx.js"),
+        );
+    }
+  }
+}
+return mutations.length === 1 && mutations[0]?.mainRootStructuredStateWrite === true;
 ```
 
 Inside the existing deep-interview `if (stateWriteOperations.length > 0)` block, after mode/session/workingDirectory validation:
@@ -282,7 +285,7 @@ if (isStandaloneParsedOmxStateWriteTransport(cwd, command, sessionId, {
 })) return true;
 ```
 
-Expected: Ralplan과 Conductor의 3-argument callers는 기존 raw Main-root mutation proof를 그대로 요구한다. deep-interview만 기존 helper checks를 모두 통과한 single literal `node` invocation에서 wrapper effective cwd의 CLI entry가 정확히 workspace `dist/cli/omx.js`와 같을 때 허용한다. basename allow, blanket allow, 새 helper, 새 dependency는 추가하지 않는다.
+Expected: Ralplan과 Conductor의 3-argument callers는 기존 raw Main-root mutation proof를 그대로 요구한다. deep-interview opt-in의 Node/Bun/tsx wrapper는 raw proof보다 먼저 판정하고, single literal `node` invocation에서 wrapper effective cwd의 CLI entry가 정확히 workspace `dist/cli/omx.js`와 같을 때만 허용한다. direct trusted `omx state write`는 기존 raw proof를 유지한다. basename allow, blanket allow, 새 helper, 새 dependency는 추가하지 않는다.
 
 - [ ] **Step 4: targeted GREEN과 인접 contract를 확인한다**
 
