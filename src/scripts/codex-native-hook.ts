@@ -17722,6 +17722,25 @@ function conductorExecutableHasTrustedSystemIdentity(commandPath: string, rootCw
   }
 }
 
+function conductorExecutableHasTrustedInheritedPathIdentity(commandName: string, commandPath: string, rootCwd: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(commandName)) return false;
+  if (commandName === "omx" || commandName === "gjc") return false;
+  try {
+    const lexical = resolve(commandPath);
+    const root = realpathSync(resolve(rootCwd));
+    if (lexical === root || lexical.startsWith(`${root}/`)) return false;
+
+    const canonical = realpathSync(lexical);
+    if (canonical === root || canonical.startsWith(`${root}/`)) return false;
+    const executable = statSync(canonical);
+    if (!executable.isFile()) return false;
+    accessSync(canonical, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function conductorNativeExecutableHeaderIsRecognized(header: Buffer): boolean {
   if (header.length < 2) return false;
   return (header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46)
@@ -17874,6 +17893,12 @@ function conductorPathMayResolveRepositoryExecutable(
     );
     if (workspaceNpmBinPathSafety !== null) return workspaceNpmBinPathSafety;
     if (canonical === root || canonical.startsWith(`${root}/`)) return true;
+    // The inherited host PATH is already the shell's executable-resolution boundary.
+    // A command-local PATH assignment must still use the stricter identity checks below.
+    if (
+      path === process.env.PATH
+      && conductorExecutableHasTrustedInheritedPathIdentity(commandName, candidate, rootCwd)
+    ) return false;
     return !conductorExecutableHasTrustedIdentity(commandName, candidate, rootCwd, state);
   }
   // PATH exhaustion may invoke command_not_found_handle; no executable identity was proved.

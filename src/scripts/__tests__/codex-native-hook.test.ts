@@ -36718,6 +36718,75 @@ PY`,
     }
   });
 
+  it("trusts exact inherited non-repository PATH executables while keeping command-local overrides fail-closed (#3370)", async () => {
+    if (process.platform === "win32") return;
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-inherited-path-"));
+    const hostBinDir = await mkdtemp(join(tmpdir(), "omx-native-hook-host-bin-"));
+    const previousPath = process.env.PATH;
+    try {
+      const bashPath = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash", "/usr/bin/bash"].find((candidate) => existsSync(candidate));
+      const perlPath = ["/opt/homebrew/bin/perl", "/usr/local/bin/perl", "/usr/bin/perl", "/bin/perl"].find((candidate) => existsSync(candidate));
+      assert.ok(bashPath, "host bash executable is required");
+      assert.ok(perlPath, "host perl executable is required");
+      await symlink(bashPath, join(hostBinDir, "bash"));
+      await symlink(perlPath, join(hostBinDir, "perl"));
+
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-conductor-inherited-path";
+      const threadId = "thread-conductor-inherited-path";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeFile(join(stateDir, "conductor.log"), "old\n", "utf-8");
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: threadId });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: threadId,
+            threads: { [threadId]: { thread_id: threadId, kind: "leader" } },
+          },
+        },
+      });
+      await writeSessionSkillActiveState(stateDir, sessionId, "ralph", "executing");
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: sessionId,
+      });
+
+      process.env.PATH = `${hostBinDir}:/usr/bin:/bin`;
+      const dispatch = (command: string) => dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: threadId,
+          agent_id: threadId,
+          tool_name: "Bash",
+          tool_input: { command },
+        },
+        { cwd },
+      );
+
+      for (const command of [
+        "bash --noprofile --norc -lc \"printf safe\"",
+        "perl -pi -e 's/old/new/' .omx/state/conductor.log",
+      ]) {
+        assert.equal((await dispatch(command)).outputJson, null, command);
+      }
+
+      const commandLocalOverride = await dispatch(`PATH=${JSON.stringify(hostBinDir)} bash --noprofile --norc -lc \"printf safe\"`);
+      assert.equal(commandLocalOverride.outputJson?.decision, "block");
+      assert.match(String(commandLocalOverride.outputJson?.reason ?? ""), /PATH mutation target <unresolved>/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(hostBinDir, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("allows autopilot rework implementation writes while conductor phases stay guarded", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-autopilot-rework-write-"));
     try {
