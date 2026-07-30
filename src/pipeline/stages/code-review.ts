@@ -85,5 +85,5 @@ export function createCodeReviewStage(options: CodeReviewStageOptions = {}): Pip
 }
 
 export function buildCodeReviewInstruction(task: string): string {
-  return `$code-review ${JSON.stringify(task)}`;
+  return `$code-review ${JSON.stringify(task)}\nThis pipeline review stage is read-only. Do not publish GitHub comments or reviews implicitly.`;
 }

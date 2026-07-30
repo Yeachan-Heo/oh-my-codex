@@ -83,6 +83,54 @@ Minimal Autopilot phase declaration when the review stage begins:
 omx state write --input '{"mode":"autopilot","active":true,"current_phase":"code-review"}' --json
 ```
 
+## Optional GitHub PR Review Publication
+
+Plain `$code-review` is local and read-only. Autopilot and pipeline review phases also remain read-only and must never publish implicitly. Publication is a separate, explicit operator action after the review artifact exists.
+
+The executable grammar is:
+
+```sh
+# Read-only preflight (the default; --dry-run is an explicit synonym)
+omx code-review --github-pr <number> --findings <artifact.json> [--repo <owner/name>] [--head <40-char-sha>] [--dry-run]
+
+# One external write, requiring the explicit approval boundary
+omx code-review --github-pr <number> --findings <artifact.json> [--repo <owner/name>] [--head <40-char-sha>] --publish [--receipt <path>]
+```
+
+The immutable JSON artifact must use this exact schema:
+
+```json
+{
+  "schema_version": 1,
+  "repository": "owner/name",
+  "pull_request": 123,
+  "reviewed_head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "findings": [
+    {
+      "id": "review-P1-001",
+      "severity": "P1",
+      "body": "Explain the actionable defect and its impact.",
+      "fix": "State the concrete required fix.",
+      "path": "src/example.ts",
+      "line": 42,
+      "side": "RIGHT"
+    }
+  ]
+}
+```
+
+Only actionable `P0`, `P1`, and `P2` findings are publishable. IDs must be stable and unique; body and fix must be nonempty; paths must be PR-relative; line/side anchors must exist in the current PR diff. Any invalid finding rejects the entire set. Preflight verifies `gh` authentication, write permission, an open PR in the exact repository, the exact current head SHA, and every diff anchor. After diff validation, the command re-reads the PR immediately before any receipt or review write and refuses submission if the head moved.
+
+Without `--publish`, the command prints the auditable proposed `REQUEST_CHANGES` payload and performs no writes. Dry-run is supported on Windows, but explicit publication on win32 raises `publish_unsupported_platform` before reading the artifact, invoking `gh`, or creating any guard or receipt; crash durability is not claimed on Windows. On supported platforms, every `gh api` read and write includes `--hostname github.com`, so a configured default or enterprise host cannot receive the request.
+
+`--publish` first reserves an exclusive, fully written and fsynced canonical guard under `<cwd>/.omx/reviews/guards/`. The guard filename is `guard-<64 lowercase hex>.json`; the default receipt is `receipt-<64 lowercase hex>.json` under `.omx/reviews/receipts/`. Each digest covers the complete canonical identity—`github.com`, repository, PR number, reviewed head SHA, and the artifact's byte-level SHA-256—with separate guard and receipt domains. Thus filenames remain comfortably below filesystem component limits even at GitHub's maximum owner/repository lengths, while each pending/final JSON record retains the full readable identity and artifact hash. This guard is independent of `--receipt`: a custom receipt changes only the separate destination receipt. Any existing pending, ambiguous, final, or stale guard blocks publication, including a retry that selects another receipt path. Distinct canonical identities or artifact hashes receive distinct opaque paths. Non-`EEXIST` reservation errors, including `ENAMETOOLONG`, report `publish_guard_reservation_failed` rather than falsely claiming that a guard exists.
+
+After the canonical guard, the command reserves the destination `publish-pending` receipt. A receipt-reservation failure durably records a non-submitted pending phase in the canonical guard and conservatively blocks automatic retry. Before the POST, the guard transitions durably to an ambiguous submission-in-progress state. The command then submits exactly one REST create-review request pinned with `commit_id`. It never falls back to timeline comments, never retries an ambiguous write failure, and never resolves threads.
+
+The create response supplies only the review ID. Immediately after validating that ID, the command re-reads the current PR head before interpreting stored comment coordinates. It then reads the stored review and its paginated review-comments endpoint and verifies the exact repository/PR/review URLs, reviewed commit, `CHANGES_REQUESTED` state, summary body, observed comment count, and every inline comment's review identity, path, coordinates, and body. If the head is unchanged, each comment must retain the reviewed commit plus its current `line` and `side`. If the head moved, the review must still bind to the reviewed commit and each comment must provide that `original_commit_id`, the requested `original_line`, and the requested original side (using `original_side` when present, otherwise GitHub's `side` field); a null current `line` is valid in this stale case. Missing, foreign, or ambiguous stored evidence is `publish_ambiguous_response`; the pending receipt remains unchanged and no retry occurs.
+
+If stored verification fails after submission, the canonical guard is durably finalized as ambiguous with the available review identity before the error is returned. If the already-read post-submit head moved and the original-coordinate evidence passes, the canonical guard is finalized as stale with both heads and verified review evidence; otherwise it is finalized as final. Only after that canonical transition does the command finalize the destination `mode: "publish-stale"` or `publish` receipt. The stale path raises `post_submit_stale_head`, and both destination modes record the observed stored count. Thus a custom/default receipt failure cannot permit a duplicate POST: the canonical guard already contains final, stale, or conservative ambiguous evidence. Guard and receipt transitions use fully written and fsynced exclusive same-directory temporary files, atomic rename, directory fsync, and temporary-file cleanup.
+
 ## Agent Delegation
 
 Do not self-review as a fallback. If the `code-reviewer` or `architect` agent path is missing, unavailable, skipped, or fails, emit a clear unavailable-review result and block approval until the independent lane evidence exists.
@@ -112,7 +160,9 @@ Output: Code review report with:
 - Issues by severity (CRITICAL, HIGH, MEDIUM, LOW)
 - Specific file:line locations
 - Fix recommendations
-- Approval recommendation (APPROVE / REQUEST CHANGES / COMMENT)"
+- Approval recommendation (APPROVE / REQUEST CHANGES / COMMENT)
+
+Remain read-only. Do not publish GitHub comments or reviews. When an immutable publication artifact is requested, emit only actionable P0/P1/P2 findings with stable IDs, nonempty body/fix, PR-relative path, and exact line+side anchors."
 )
 
 task(

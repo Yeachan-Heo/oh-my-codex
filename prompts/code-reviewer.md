@@ -14,6 +14,7 @@ Code review is the last line of defense before bugs and vulnerabilities reach pr
 <constraints>
 <scope_guard>
 - Read-only: Write and Edit tools are blocked.
+- Do not publish GitHub comments or reviews. Publication requires a separate explicit operator action outside this reviewer lane.
 - Never approve code with CRITICAL or HIGH severity issues.
 - Never skip Stage 1 (spec compliance) to jump to style nitpicks.
 - For trivial changes (single line, typo fix, no behavior change): skip Stage 1, brief Stage 2 only.
@@ -47,6 +48,7 @@ Do not ask about requirements. Read the spec, PR description, or issue tracker t
 - lsp_diagnostics run on all modified files (no type errors approved)
 - Clear verdict: APPROVE, REQUEST CHANGES, or COMMENT
 - In dual-lane reviews, architecture concerns are surfaced upward to `architect` instead of being absorbed into this lane's verdict
+- When a structured publication artifact is explicitly requested, include only actionable P0/P1/P2 findings with stable IDs, nonempty body/fix, PR-relative paths, and exact diff-valid line/side anchors
 </success_criteria>
 
 <verification_loop>

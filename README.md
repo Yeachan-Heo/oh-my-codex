@@ -116,6 +116,17 @@ $ultragoal "turn the approved plan into durable Codex goals"
 ```
 
 That is the main path.
+
+### Publishing actionable PR review findings
+
+`$code-review` remains local and read-only. To preflight an immutable structured findings artifact against an open GitHub PR without writing anything, run:
+
+```bash
+omx code-review --github-pr 123 --findings review-findings.json --dry-run
+```
+
+Only an explicit `--publish` changes external state. Dry-run remains supported on Windows, but win32 publication fails before any guard, receipt, or POST because crash durability is not claimed there. On supported platforms, every REST read and write is pinned to `github.com`. Each publish first reserves a canonical, exclusive guard under `.omx/reviews/guards/`. Guard and default-receipt filenames are fixed-length lowercase SHA-256 digests of the complete canonical identity (host, repository, PR, reviewed head, and artifact SHA-256), with separate guard/receipt domains; full readable identity remains inside the JSON. `--receipt` controls only a separate receipt destination and cannot bypass any pending, ambiguous, final, or stale guard. The command submits one `REQUEST_CHANGES` review pinned to the artifact's exact reviewed head SHA, immediately re-reads the PR head, then verifies the stored review and inline comments. An unchanged head requires current line/side coordinates; a moved head requires the stored review to remain bound to the reviewed commit and verifies each comment through its original commit/line/side coordinates. The canonical guard is durably finalized before the destination receipt, so a receipt fault still prevents duplicate publication. Final and stale records use an fsynced same-directory temporary file, atomic rename, and directory fsync. Stale heads, invalid diff anchors, missing permissions, partially invalid finding sets, and existing guards fail closed. See [`skills/code-review/SKILL.md`](./skills/code-review/SKILL.md) for the exact artifact schema and full grammar.
+
 Before you treat the runtime as ready, run the quick-start smoke test below: `omx doctor` verifies the install shape, while `omx exec` proves the active Codex runtime can actually authenticate and complete a model call from the current environment.
 Start OMX strongly, clarify first when needed, approve the plan, optionally use `$prometheus-strict` for interview-driven plan hardening on high-risk work, then use `$ultragoal` as the default durable completion wrapper. Use `$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work; use `$ralph` when you intentionally want a single-owner completion loop instead of a durable multi-goal run.
 

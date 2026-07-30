@@ -14172,6 +14172,10 @@ exit 0
 				await assertAllowed("omx ralplan --help", "omx ralplan --help");
 				await assertAllowed("omx state read --mode ralplan --json", "omx state read --mode ralplan --json");
 				await assertAllowed("omx state get-status --mode ralplan --json", "omx state get-status --mode ralplan --json");
+				await assertAllowed("code-review default preflight stays read-only", "omx code-review --github-pr 7 --findings findings.json");
+				await assertAllowed("code-review explicit dry-run stays read-only", "omx code-review --github-pr 7 --findings findings.json --dry-run");
+				await assertBlocked("code-review publish crosses the external-write approval boundary", "omx code-review --github-pr 7 --findings findings.json --publish");
+				await assertBlocked("invalid code-review grammar fails closed", "omx code-review --github-pr 7 --findings findings.json --receipt receipt.json");
 				await assertBlocked("invalid state status spelling stays blocked", "omx state status --mode ralplan --json");
 				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
 

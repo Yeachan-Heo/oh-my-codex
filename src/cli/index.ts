@@ -55,6 +55,7 @@ import { adaptCommand } from "./adapt.js";
 import { listCommand } from "./list.js";
 import { authCommand } from "./auth.js";
 import { missionCommand } from "./mission.js";
+import { codeReviewCommand } from "./code-review.js";
 import {
   resolveCodexGlobalOptionValue,
   runAuthHotswap,
@@ -263,6 +264,8 @@ Usage:
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx code-review
+                Validate or explicitly publish one pinned GitHub PR REQUEST_CHANGES review
   omx auth      Manage Codex OAuth auth slots (add|list|use)
   omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
   omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
@@ -475,6 +478,7 @@ Read-only help does not prepare or launch a Codex session.`;
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
+  "code-review",
   "question",
   "cleanup",
   "auth",
@@ -3235,6 +3239,7 @@ export async function main(args: string[]): Promise<void> {
     "cleanup",
     "auth",
     "ask",
+    "code-review",
     "question",
     "autoresearch",
   "autoresearch-goal",
@@ -3353,6 +3358,9 @@ if (command !== "launch" && command !== "resume") {
       }
       case "ask":
         await askCommand(args.slice(1));
+        break;
+      case "code-review":
+        await codeReviewCommand(args.slice(1));
         break;
       case "question":
         await questionCommand(args.slice(1));

@@ -155,6 +155,7 @@ import {
   resolveNativeSubagentSupportStatus,
   type NativeSubagentUnsupportedReason,
 } from "../leader/contract.js";
+import { classifyCodeReviewExternalMutationArgs } from "../github-pr-review/guard.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
 import {
@@ -10024,6 +10025,7 @@ const OMX_NESTED_HELP_COMMANDS = new Set([
   "auth",
   "capabilities",
   "cleanup",
+  "code-review",
   "deepinit",
   "explore",
   "hooks",
@@ -10082,6 +10084,7 @@ function omxOrGjcReadOnlyShapeMatches(command: string): boolean {
   if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
   if (args[0] === "state" && ["read", "get-status", "status"].includes(args[1] ?? "")) return true;
   if (args[0] === "sparkshell") return true;
+  if (args[0] === "code-review") return true;
   return args[0] === "cleanup" && args.includes("--dry-run");
 }
 
@@ -10107,6 +10110,9 @@ function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
   if (args[0] === "state" && OMX_STATE_READ_ONLY_OPERATIONS.has(args[1] ?? "")) {
     return stateReadTrailingArgsAreSafe(args.slice(2));
   }
+  if (args[0] === "code-review") {
+    return classifyCodeReviewExternalMutationArgs(args.slice(1)) === "read-only";
+  }
   return isAllowedOmxCleanupDryRunCommand(command);
 }
 
@@ -10127,6 +10133,9 @@ function isAllowedTrustedAbsoluteOmxReadOnlyCommand(command: string, cwd: string
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h" || args[0] === "--version" || args[0] === "-v")) return true;
   if (args.length === 1 && (args[0] === "help" || args[0] === "status" || args[0] === "version")) return true;
   if (isAllowedOmxNestedHelpForm(args)) return true;
+  if (args[0] === "code-review") {
+    return classifyCodeReviewExternalMutationArgs(args.slice(1)) === "read-only";
+  }
   return args.length === 3
     && args[0] === "ultragoal"
     && args[1] === "status"
@@ -12675,6 +12684,9 @@ function omxCliInvocationHasMutationIntent(words: string[], commandIndex: number
   const subcommand = operands[1] ?? "";
   if (!commandName || ["help", "read", "status", "version"].includes(commandName)) return false;
   if (commandName === "state" && ["read", "get-status"].includes(subcommand)) return false;
+  if (commandName === "code-review") {
+    return classifyCodeReviewExternalMutationArgs(boundedWords.slice(1).map(shellWordLiteral)) !== "read-only";
+  }
   if (["deep-interview", "ralplan", "ralph", "team", "ultragoal"].includes(commandName) && ["read", "status"].includes(subcommand)) return false;
   return true;
 }

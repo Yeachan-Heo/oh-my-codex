@@ -68,6 +68,42 @@ describe('code-review skill contract', () => {
     assert.match(codeReviewSkill, /Plain `code-review` itself remains read-only and does \*\*not\*\* promise auto-fix/i);
   });
 
+  it('keeps publication explicit, fail-closed, and outside Autopilot/pipeline review', () => {
+    assert.match(codeReviewSkill, /Plain `\$code-review` is local and read-only/i);
+    assert.match(codeReviewSkill, /Autopilot and pipeline review phases also remain read-only/i);
+    assert.match(codeReviewSkill, /omx code-review --github-pr <number> --findings <artifact\.json>/i);
+    assert.match(codeReviewSkill, /--publish/i);
+    assert.match(codeReviewSkill, /exact current head SHA/i);
+    assert.match(codeReviewSkill, /rejects the entire set/i);
+    assert.match(codeReviewSkill, /exactly one REST create-review request/i);
+    assert.match(codeReviewSkill, /never falls back to timeline comments/i);
+    assert.match(codeReviewSkill, /never retries an ambiguous write failure/i);
+    assert.match(codeReviewSkill, /never resolves threads/i);
+		assert.match(codeReviewSkill, /re-reads the PR immediately before any receipt or review write/i);
+		assert.match(codeReviewSkill, /reads the stored review and its paginated review-comments endpoint/i);
+		assert.match(codeReviewSkill, /Every `gh api` read and write includes `--hostname github\.com`/i);
+		assert.match(codeReviewSkill, /Immediately after validating that ID, the command re-reads the current PR head/i);
+		assert.match(codeReviewSkill, /original_commit_id/i);
+		assert.match(codeReviewSkill, /original_line/i);
+		assert.match(codeReviewSkill, /canonical guard is durably finalized as ambiguous/i);
+		assert.match(codeReviewSkill, /atomic rename, directory fsync/i);
+		assert.match(codeReviewSkill, /publish_unsupported_platform/i);
+		assert.match(codeReviewSkill, /crash durability is not claimed on Windows/i);
+		assert.match(codeReviewSkill, /canonical guard under `<cwd>\/\.omx\/reviews\/guards\/`/i);
+		assert.match(codeReviewSkill, /guard-<64 lowercase hex>\.json/i);
+		assert.match(codeReviewSkill, /complete canonical identity/i);
+		assert.match(codeReviewSkill, /separate guard and receipt domains/i);
+		assert.match(codeReviewSkill, /retains the full readable identity and artifact hash/i);
+		assert.match(codeReviewSkill, /ENAMETOOLONG.*publish_guard_reservation_failed/i);
+		assert.match(codeReviewSkill, /custom receipt changes only the separate destination receipt/i);
+		assert.match(codeReviewSkill, /Any existing pending, ambiguous, final, or stale guard blocks publication/i);
+		assert.match(codeReviewSkill, /canonical guard already contains final, stale, or conservative ambiguous evidence/i);
+		assert.match(codeReviewSkill, /publish_ambiguous_response/i);
+		assert.match(codeReviewSkill, /mode: "publish-stale"/i);
+		assert.match(codeReviewSkill, /post_submit_stale_head/i);
+		assert.match(codeReviewSkill, /observed stored count/i);
+  });
+
   it('keeps the sample output consistent with a WATCH and COMMENT outcome', () => {
     const totalIssues = codeReviewSkill.match(/Total Issues: (\d+)/i);
     const criticalCount = codeReviewSkill.match(/CRITICAL \((\d+)\)/i);
