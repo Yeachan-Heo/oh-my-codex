@@ -36718,23 +36718,38 @@ PY`,
     }
   });
 
-  it("trusts exact inherited non-repository PATH executables while keeping command-local overrides fail-closed (#3370)", async () => {
+  it("trusts exact inherited non-repository PATH executables while keeping explicit resolution mutations fail-closed (#3370)", async () => {
     if (process.platform === "win32") return;
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-inherited-path-"));
     const hostBinDir = await mkdtemp(join(tmpdir(), "omx-native-hook-host-bin-"));
+    const emptyPrefixDir = await mkdtemp(join(tmpdir(), "omx-native-hook-empty-prefix-"));
     const previousPath = process.env.PATH;
+    const previousPathext = process.env.PATHEXT;
     try {
       const bashPath = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash", "/usr/bin/bash"].find((candidate) => existsSync(candidate));
+      const shPath = ["/bin/sh", "/usr/bin/sh"].find((candidate) => existsSync(candidate));
       const perlPath = ["/opt/homebrew/bin/perl", "/usr/local/bin/perl", "/usr/bin/perl", "/bin/perl"].find((candidate) => existsSync(candidate));
+      const gitPath = ["/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git", "/bin/git"].find((candidate) => existsSync(candidate));
+      const catPath = ["/bin/cat", "/usr/bin/cat"].find((candidate) => existsSync(candidate));
       assert.ok(bashPath, "host bash executable is required");
+      assert.ok(shPath, "host sh executable is required");
       assert.ok(perlPath, "host perl executable is required");
+      assert.ok(gitPath, "host git executable is required");
+      assert.ok(catPath, "host cat executable is required");
       await symlink(bashPath, join(hostBinDir, "bash"));
+      await symlink(bashPath, join(hostBinDir, "BASH"));
+      await symlink(shPath, join(hostBinDir, "ſh"));
       await symlink(perlPath, join(hostBinDir, "perl"));
+      await symlink(gitPath, join(hostBinDir, "git"));
+      await symlink(catPath, join(hostBinDir, "cat"));
+      await symlink(bashPath, join(hostBinDir, "omx.exe"));
+      await symlink(bashPath, join(hostBinDir, "gjc.cmd"));
 
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-inherited-path";
       const threadId = "thread-conductor-inherited-path";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd });
       await writeFile(join(stateDir, "conductor.log"), "old\n", "utf-8");
       await writeJson(join(stateDir, "session.json"), { session_id: sessionId, native_session_id: threadId });
       await writeJson(join(stateDir, "subagent-tracking.json"), {
@@ -36768,20 +36783,46 @@ PY`,
         },
         { cwd },
       );
+      const hardenedGitStatus = "GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_COUNT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_EDITOR= GIT_EXTERNAL_DIFF= GIT_PAGER= GIT_SEQUENCE_EDITOR= PAGER= git --no-pager --no-optional-locks -c core.fsmonitor=false -c core.untrackedCache=false -c pager.status=false status --short --branch --untracked-files=normal --ignore-submodules=all --no-renames";
 
       for (const command of [
         "bash --noprofile --norc -lc \"printf safe\"",
         "perl -pi -e 's/old/new/' .omx/state/conductor.log",
+        hardenedGitStatus,
+        `PATH=${JSON.stringify(`${emptyPrefixDir}:${process.env.PATH}`)} cat .omx/state/conductor.log`,
       ]) {
         assert.equal((await dispatch(command)).outputJson, null, command);
       }
 
-      const commandLocalOverride = await dispatch(`PATH=${JSON.stringify(hostBinDir)} bash --noprofile --norc -lc \"printf safe\"`);
-      assert.equal(commandLocalOverride.outputJson?.decision, "block");
-      assert.match(String(commandLocalOverride.outputJson?.reason ?? ""), /PATH mutation target <unresolved>/);
+      const inheritedPath = process.env.PATH;
+      for (const command of [
+        `PATH=${JSON.stringify(hostBinDir)} bash --noprofile --norc -lc \"printf safe\"`,
+        `PATH=${JSON.stringify(inheritedPath)} bash --noprofile --norc -lc \"printf safe\"`,
+        `PATH=${JSON.stringify(inheritedPath)}; bash --noprofile --norc -lc \"printf safe\"`,
+        `export PATH=${JSON.stringify(inheritedPath)}; bash --noprofile --norc -lc \"printf safe\"`,
+        `printf -v PATH '%s' ${JSON.stringify(inheritedPath)}; bash --noprofile --norc -lc \"printf safe\"`,
+        "PATHEXT=.EVIL bash --noprofile --norc -lc \"printf safe\"",
+        "BASH --noprofile --norc -lc \"printf safe\"",
+        "ſh -c \"printf safe\"",
+        "omx.exe --help",
+        "gjc.cmd --help",
+      ]) {
+        const result = await dispatch(command);
+        assert.equal(result.outputJson?.decision, "block", command);
+      }
+
+      const repoBinDir = join(cwd, "repo-bin");
+      await mkdir(repoBinDir, { recursive: true });
+      await symlink(bashPath, join(repoBinDir, "bash"));
+      process.env.PATH = `${repoBinDir}:${inheritedPath}`;
+      const repositoryPathCandidate = await dispatch("bash --noprofile --norc -lc \"printf safe\"");
+      assert.equal(repositoryPathCandidate.outputJson?.decision, "block");
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      if (previousPathext === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = previousPathext;
+      await rm(emptyPrefixDir, { recursive: true, force: true });
       await rm(hostBinDir, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
     }

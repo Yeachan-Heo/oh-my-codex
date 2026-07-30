@@ -11805,6 +11805,7 @@ const CONDUCTOR_BASH_POSITIVELY_CLASSIFIED_COMMANDS = new Set([
 
 function conductorShellStateNameIsSensitive(name: string): boolean {
   return name === "PATH"
+    || name === "PATHEXT"
     || name === "POSIXLY_CORRECT"
     || name === "WGETRC"
     || name === "HOME"
@@ -12992,7 +12993,7 @@ function conductorInvocationTrustedExecutablePath(
   if (!commandWord || /[$`\0\r\n]/.test(commandWord)) return null;
   const commandName = commandNameFromShellWord(commandWord);
   const commandState = resolveConductorCommandPathState(words, commandStartIndex, commandIndex, state);
-  if (commandWord.includes("/")) {
+  if (/[\\/]/.test(commandWord)) {
     if (!conductorSlashCommandIsTrusted(commandWord, commandState, rootCwd)) return null;
     const candidate = isAbsolute(commandWord) ? commandWord : resolve(commandState.effectiveCwd ?? rootCwd, commandWord);
     try {
@@ -13002,7 +13003,13 @@ function conductorInvocationTrustedExecutablePath(
     }
   }
   const candidate = conductorResolvePathInterpreter(commandName, commandState);
-  return candidate !== null && conductorExecutableHasTrustedIdentity(commandName, candidate, rootCwd, commandState)
+  return candidate !== null && conductorExecutableHasTrustedResolutionIdentity(
+    commandWord,
+    commandName,
+    candidate,
+    rootCwd,
+    commandState,
+  )
     ? candidate
     : null;
 }
@@ -16037,8 +16044,9 @@ function conductorCommandInvalidatesStaticDirectoryProof(
 }
 
 const CONDUCTOR_UNKNOWN_SHELL_BINDING = "<dynamic>";
-const CONDUCTOR_SHELL_BINDING_NAMES = ["POSIXLY_CORRECT", "WGETRC", "HOME", "CDPATH", "PATH", "SSLKEYLOGFILE"] as const;
+const CONDUCTOR_SHELL_BINDING_NAMES = ["POSIXLY_CORRECT", "WGETRC", "HOME", "CDPATH", "PATH", "PATHEXT", "SSLKEYLOGFILE"] as const;
 type ConductorShellBindingName = typeof CONDUCTOR_SHELL_BINDING_NAMES[number];
+type ConductorCommandResolutionMutation = "none" | "command-prefix" | "prior";
 
 interface ConductorShellBinding {
   value: string | undefined;
@@ -16074,6 +16082,7 @@ interface ShellPosixState {
   filesystemAliasMayExist: boolean;
   invalidatedStaticDirectories: Set<string>;
   pathUsesSystemDefaultWhenUnset: boolean;
+  commandResolutionMutation: ConductorCommandResolutionMutation;
 }
 
 const CONDUCTOR_SAFE_SHELL_OPTIONS = new Set([
@@ -16826,6 +16835,7 @@ function cloneShellPosixState(state: ShellPosixState): ShellPosixState {
     filesystemAliasMayExist: state.filesystemAliasMayExist,
     invalidatedStaticDirectories: new Set(state.invalidatedStaticDirectories),
     pathUsesSystemDefaultWhenUnset: state.pathUsesSystemDefaultWhenUnset,
+    commandResolutionMutation: state.commandResolutionMutation,
   };
 }
 
@@ -16853,6 +16863,7 @@ function replaceConductorShellState(target: ShellPosixState, source: ShellPosixS
   target.filesystemAliasMayExist = source.filesystemAliasMayExist;
   target.invalidatedStaticDirectories = new Set(source.invalidatedStaticDirectories);
   target.pathUsesSystemDefaultWhenUnset = source.pathUsesSystemDefaultWhenUnset;
+  target.commandResolutionMutation = source.commandResolutionMutation;
 }
 
 function joinConductorShellStateAlternatives(candidates: ShellPosixState[]): ShellPosixState {
@@ -16886,6 +16897,7 @@ function joinConductorShellStateAlternatives(candidates: ShellPosixState[]): She
     filesystemAliasMayExist: false,
     invalidatedStaticDirectories: new Set(),
     pathUsesSystemDefaultWhenUnset: false,
+    commandResolutionMutation: "none",
   });
   for (const candidate of candidates.slice(1)) {
     const merged = cloneForJoin(candidate);
@@ -16911,6 +16923,7 @@ function setConductorShellBinding(
   const next: ConductorShellBinding = { ...previous, ...update };
   if (update.local === true && !previous.local) next.outer = copyConductorShellBinding(previous);
   state.bindings.set(name, { ...next, dirty: previous.dirty || (persistent && !previous.local && !update.local) });
+  if (persistent && (name === "PATH" || name === "PATHEXT")) state.commandResolutionMutation = "prior";
 }
 
 function beginConductorFunctionLocalBinding(state: ShellPosixState, name: ConductorShellBindingName): void {
@@ -16943,6 +16956,7 @@ function setGlobalConductorShellBinding(
     };
   };
   state.bindings.set(name, updateGlobal(getConductorShellBinding(state, name)));
+  if (name === "PATH" || name === "PATHEXT") state.commandResolutionMutation = "prior";
 }
 function commandMayBeConditionallyExecuted(words: string[], commandStartIndex: number): boolean {
   let ifDepth = 0;
@@ -17020,6 +17034,9 @@ function joinConductorShellStates(baseline: ShellPosixState, candidate: ShellPos
   candidate.physicalCwd = baseline.physicalCwd || candidate.physicalCwd;
   candidate.filesystemAliasMayExist = baseline.filesystemAliasMayExist || candidate.filesystemAliasMayExist;
   candidate.pathUsesSystemDefaultWhenUnset = baseline.pathUsesSystemDefaultWhenUnset && candidate.pathUsesSystemDefaultWhenUnset;
+  candidate.commandResolutionMutation = baseline.commandResolutionMutation === "none" && candidate.commandResolutionMutation === "none"
+    ? "none"
+    : "prior";
   candidate.invalidatedStaticDirectories = new Set([
     ...baseline.invalidatedStaticDirectories,
     ...candidate.invalidatedStaticDirectories,
@@ -17582,17 +17599,26 @@ function resolveConductorCommandPathState(
   commandIndex: number,
   state: ShellPosixState,
 ): ShellPosixState {
+  const inheritedMutation = state.commandResolutionMutation;
   const commandState = cloneShellPosixState(state);
   const clearBoundary = nestedExecEnvironmentClearBoundary(words, commandStartIndex, commandIndex);
   if (clearBoundary !== null) {
     commandState.bindings.delete("PATH");
+    commandState.bindings.delete("PATHEXT");
     commandState.pathUsesSystemDefaultWhenUnset = true;
+    commandState.commandResolutionMutation = "prior";
   }
+  let pathPrefixMutation = false;
   for (const word of words.slice(clearBoundary === null ? commandStartIndex : clearBoundary + 1, commandIndex)) {
     const assignment = parseShellAssignmentWord(word);
-    if (assignment?.name === "PATH") {
+    if (assignment?.name === "PATH" || assignment?.name === "PATHEXT") {
       applyConductorAssignment(commandState, assignment, { exported: true, local: false, persistent: true });
+      if (assignment.name === "PATHEXT") commandState.commandResolutionMutation = "prior";
+      else pathPrefixMutation = true;
     }
+  }
+  if (clearBoundary === null && pathPrefixMutation) {
+    commandState.commandResolutionMutation = inheritedMutation === "none" ? "command-prefix" : "prior";
   }
   return commandState;
 }
@@ -17643,6 +17669,23 @@ function conductorExecutableHasTrustedCurrentNodeRuntimeIdentity(commandName: st
   }
 }
 
+function conductorPathIsInsideRoot(root: string, candidate: string): boolean {
+  const relativePath = relative(root, candidate);
+  return relativePath === ""
+    || (!isAbsolute(relativePath) && !/^\.\.(?:[\\/]|$)/.test(relativePath));
+}
+
+function conductorBareCommandTokenMatchesName(commandWord: string, commandName: string): boolean {
+  const literal = shellWordLiteral(commandWord);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(literal) || /[\\/]/.test(literal)) return false;
+  return process.platform === "win32" ? literal.toLowerCase() === commandName : literal === commandName;
+}
+
+function conductorCommandNameIsReservedPackageCli(commandName: string): boolean {
+  const base = commandName.toLowerCase().replace(/\.(?:bat|cmd|com|exe)$/, "");
+  return base === "omx" || base === "gjc";
+}
+
 function conductorExecutableHasTrustedPackageCliIdentity(
   commandName: string,
   commandPath: string,
@@ -17653,7 +17696,7 @@ function conductorExecutableHasTrustedPackageCliIdentity(
   try {
     const lexical = resolve(commandPath);
     const root = realpathSync(resolve(rootCwd));
-    if (lexical === root || lexical.startsWith(`${root}/`)) return false;
+    if (conductorPathIsInsideRoot(root, lexical)) return false;
     const knownCli = conductorKnownPackageCliPath(commandName);
     const canonicalCommand = realpathSync(commandPath);
     const interpreterTrusted = conductorPackageCliHasTrustedNodeInterpreter(commandPath, state, rootCwd);
@@ -17692,7 +17735,7 @@ function conductorExecutableHasTrustedSystemIdentity(commandPath: string, rootCw
   try {
     const lexical = resolve(commandPath);
     const root = realpathSync(resolve(rootCwd));
-    if (lexical === root || lexical.startsWith(`${root}/`)) return false;
+    if (conductorPathIsInsideRoot(root, lexical)) return false;
 
     // Trust the spelling and its target. A user-controlled symlink cannot borrow
     // a system executable's identity merely by resolving to it.
@@ -17707,7 +17750,7 @@ function conductorExecutableHasTrustedSystemIdentity(commandPath: string, rootCw
     }
 
     const canonical = realpathSync(lexical);
-    if (canonical === root || canonical.startsWith(`${root}/`)) return false;
+    if (conductorPathIsInsideRoot(root, canonical)) return false;
     const executable = statSync(canonical);
     if (!executable.isFile() || executable.uid !== 0 || (executable.mode & 0o022) !== 0) return false;
     accessSync(canonical, fsConstants.X_OK);
@@ -17724,14 +17767,14 @@ function conductorExecutableHasTrustedSystemIdentity(commandPath: string, rootCw
 
 function conductorExecutableHasTrustedInheritedPathIdentity(commandName: string, commandPath: string, rootCwd: string): boolean {
   if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(commandName)) return false;
-  if (commandName === "omx" || commandName === "gjc") return false;
+  if (conductorCommandNameIsReservedPackageCli(commandName)) return false;
   try {
     const lexical = resolve(commandPath);
     const root = realpathSync(resolve(rootCwd));
-    if (lexical === root || lexical.startsWith(`${root}/`)) return false;
+    if (conductorPathIsInsideRoot(root, lexical)) return false;
 
     const canonical = realpathSync(lexical);
-    if (canonical === root || canonical.startsWith(`${root}/`)) return false;
+    if (conductorPathIsInsideRoot(root, canonical)) return false;
     const executable = statSync(canonical);
     if (!executable.isFile()) return false;
     accessSync(canonical, fsConstants.X_OK);
@@ -17756,9 +17799,10 @@ function conductorPathListDelimiter(): string {
 // order instead of treating `:` as a universal PATH separator or trusting a
 // basename without proving which executable the shell selected.
 
-function conductorExecutablePathCandidates(directory: string, commandName: string): string[] | null {
+function conductorExecutablePathCandidates(directory: string, commandName: string, state?: ShellPosixState): string[] | null {
   if (process.platform !== "win32") return [join(directory, commandName)];
-  const rawPathext = process.env.PATHEXT;
+  const rawPathext = state ? getConductorShellBinding(state, "PATHEXT").value : process.env.PATHEXT;
+  if (rawPathext === CONDUCTOR_UNKNOWN_SHELL_BINDING) return null;
   const suffixes = rawPathext === undefined || rawPathext === ""
     ? [...CONDUCTOR_WINDOWS_DEFAULT_PATHEXT]
     : rawPathext.split(conductorPathListDelimiter()).map((suffix) => suffix.trim().toUpperCase()).filter(Boolean);
@@ -17769,12 +17813,71 @@ function conductorExecutablePathCandidates(directory: string, commandName: strin
   ];
 }
 
+function conductorCommandPrefixPreservesInheritedResolution(
+  state: ShellPosixState,
+  commandName: string,
+  rootCwd: string,
+): boolean {
+  if (state.commandResolutionMutation !== "command-prefix") return false;
+  const path = getConductorShellBinding(state, "PATH").value;
+  const inheritedPath = process.env.PATH;
+  if (!path || !inheritedPath || path === inheritedPath) return false;
+  if (getConductorShellBinding(state, "PATHEXT").value !== process.env.PATHEXT) return false;
+  const suffix = `${conductorPathListDelimiter()}${inheritedPath}`;
+  if (!path.endsWith(suffix)) return false;
+  const prefix = path.slice(0, -suffix.length);
+  if (!prefix) return false;
+  let root: string;
+  try {
+    root = realpathSync(resolve(rootCwd));
+  } catch {
+    return false;
+  }
+  for (const entry of prefix.split(conductorPathListDelimiter())) {
+    if (!entry || !isAbsolute(entry)) return false;
+    try {
+      const canonical = realpathSync(entry);
+      if (!statSync(canonical).isDirectory() || conductorPathIsInsideRoot(root, canonical)) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    const candidates = conductorExecutablePathCandidates(entry, commandName, state);
+    if (!candidates) return false;
+    for (const candidate of candidates) {
+      try {
+        lstatSync(candidate);
+        return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+      }
+    }
+  }
+  return true;
+}
+
+function conductorExecutableHasTrustedResolutionIdentity(
+  commandWord: string,
+  commandName: string,
+  commandPath: string,
+  rootCwd: string,
+  state: ShellPosixState,
+): boolean {
+  if (!conductorBareCommandTokenMatchesName(commandWord, commandName)) return false;
+  if (conductorExecutableHasTrustedIdentity(commandName, commandPath, rootCwd, state)) return true;
+  const inheritedResolution = state.commandResolutionMutation === "none"
+    && getConductorShellBinding(state, "PATH").value === process.env.PATH
+    && getConductorShellBinding(state, "PATHEXT").value === process.env.PATHEXT;
+  const safeCommandPrefix = conductorCommandPrefixPreservesInheritedResolution(state, commandName, rootCwd);
+  return (inheritedResolution || safeCommandPrefix)
+    && conductorExecutableHasTrustedInheritedPathIdentity(commandName, commandPath, rootCwd);
+}
+
 function conductorResolvePathInterpreter(commandName: string, state: ShellPosixState): string | null {
   const path = getConductorShellBinding(state, "PATH").value;
   if (!path || path === CONDUCTOR_UNKNOWN_SHELL_BINDING) return null;
   for (const entry of path.split(conductorPathListDelimiter())) {
     if (!entry || !isAbsolute(entry) || isConductorStaticDirectoryInvalidated(state, resolve(entry))) return null;
-    const candidates = conductorExecutablePathCandidates(entry, commandName);
+    const candidates = conductorExecutablePathCandidates(entry, commandName, state);
     if (!candidates) return null;
     for (const candidate of candidates) {
       try {
@@ -17833,10 +17936,12 @@ function conductorTrustedScriptInterpreterIsSafe(
 
 function conductorPathMayResolveRepositoryExecutable(
   state: ShellPosixState,
+  commandWord: string,
   commandName: string,
   rootCwd: string,
 ): boolean {
   if (state.filesystemAliasMayExist) return true;
+  if (!conductorBareCommandTokenMatchesName(commandWord, commandName)) return true;
   const binding = getConductorShellBinding(state, "PATH");
   const path = binding.value;
   if (path === undefined) return !state.pathUsesSystemDefaultWhenUnset;
@@ -17863,7 +17968,7 @@ function conductorPathMayResolveRepositoryExecutable(
       }
     }
 
-    const candidates = conductorExecutablePathCandidates(entry, commandName);
+    const candidates = conductorExecutablePathCandidates(entry, commandName, state);
     if (!candidates) return true;
     let candidate: string | undefined;
     for (const candidatePath of candidates) {
@@ -17880,7 +17985,6 @@ function conductorPathMayResolveRepositoryExecutable(
     }
     if (!candidate) continue;
 
-    // An invalidated PATH entry cannot affect resolution when it lacks this command.
     if (
       isConductorStaticDirectoryInvalidated(state, resolve(entry))
       || isConductorStaticDirectoryInvalidated(state, resolve(candidate))
@@ -17892,14 +17996,14 @@ function conductorPathMayResolveRepositoryExecutable(
       rootCwd,
     );
     if (workspaceNpmBinPathSafety !== null) return workspaceNpmBinPathSafety;
-    if (canonical === root || canonical.startsWith(`${root}/`)) return true;
-    // The inherited host PATH is already the shell's executable-resolution boundary.
-    // A command-local PATH assignment must still use the stricter identity checks below.
-    if (
-      path === process.env.PATH
-      && conductorExecutableHasTrustedInheritedPathIdentity(commandName, candidate, rootCwd)
-    ) return false;
-    return !conductorExecutableHasTrustedIdentity(commandName, candidate, rootCwd, state);
+    if (conductorPathIsInsideRoot(root, canonical)) return true;
+    return !conductorExecutableHasTrustedResolutionIdentity(
+      commandWord,
+      commandName,
+      candidate,
+      rootCwd,
+      state,
+    );
   }
   // PATH exhaustion may invoke command_not_found_handle; no executable identity was proved.
   return true;
@@ -17978,7 +18082,7 @@ function conductorPackageCliHasTrustedNodeInterpreter(candidate: string, state: 
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       return false;
     }
-    const nodeCandidates = conductorExecutablePathCandidates(entry, "node");
+    const nodeCandidates = conductorExecutablePathCandidates(entry, "node", state);
     if (!nodeCandidates) return false;
     let nodeCandidate: string | undefined;
     for (const candidatePath of nodeCandidates) {
@@ -18023,7 +18127,7 @@ function conductorResolvedPackageCliCandidateIsTrusted(
         return false;
       }
     }
-    const candidates = conductorExecutablePathCandidates(binDirectory, commandName);
+    const candidates = conductorExecutablePathCandidates(binDirectory, commandName, state);
     if (!candidates) return false;
     let candidate: string | undefined;
     for (const candidatePath of candidates) {
@@ -18064,6 +18168,7 @@ function conductorCommandPathMayResolveRepositoryExecutable(
 ): boolean {
   return conductorPathMayResolveRepositoryExecutable(
     resolveConductorCommandPathState(words, commandStartIndex, commandIndex, state),
+    shellWordLiteral(words[commandIndex] ?? ""),
     commandNameFromShellWord(words[commandIndex] ?? ""),
     rootCwd,
   );
@@ -18541,6 +18646,7 @@ function createNestedExecChildState(
     filesystemAliasMayExist: parent.filesystemAliasMayExist,
     invalidatedStaticDirectories: new Set(parent.invalidatedStaticDirectories),
     pathUsesSystemDefaultWhenUnset: parent.pathUsesSystemDefaultWhenUnset,
+    commandResolutionMutation: parent.commandResolutionMutation,
     bashoptsExported: false,
     allexport: parent.allexport,
     shellOptionsKnown: parent.shellOptionsKnown,
@@ -18558,6 +18664,7 @@ function createNestedExecChildState(
     child.posixMode = false;
     child.physicalCwd = false;
     child.pathUsesSystemDefaultWhenUnset = true;
+    child.commandResolutionMutation = "prior";
   } else if (parent.bashoptsExported) {
     child.bashoptsLastpipe = parent.bashoptsLastpipe || parent.lastpipe;
     child.bashoptsExported = true;
@@ -18584,9 +18691,10 @@ function applyNestedShellEnvironment(words: string[], commandStartIndex: number,
     }
     if (assignment) {
       applyConductorAssignment(child, assignment, { exported: true, local: false, persistent: false });
-      if (assignment.name === "PATH") {
-        const binding = getConductorShellBinding(child, "PATH");
-        child.bindings.set("PATH", { ...binding, dirty: true });
+      if (assignment.name === "PATH" || assignment.name === "PATHEXT") {
+        const binding = getConductorShellBinding(child, assignment.name);
+        child.bindings.set(assignment.name, { ...binding, dirty: true });
+        child.commandResolutionMutation = "prior";
       }
     }
     const unsetName = word === "-u" || word === "--unset"
@@ -18609,6 +18717,7 @@ function applyNestedShellEnvironment(words: string[], commandStartIndex: number,
     unsetConductorSecurityEnvironment(child, unsetName, false);
     if (isConductorShellBindingName(unsetName)) {
       setConductorShellBinding(child, unsetName, { value: undefined, exported: false }, false);
+      if (unsetName === "PATH" || unsetName === "PATHEXT") child.commandResolutionMutation = "prior";
       if (word === "-u" || word === "--unset") index += 1;
     }
   }
@@ -19780,6 +19889,7 @@ function extractConductorBashMutations(command: string, cwd = process.cwd(), roo
     filesystemAliasMayExist: false,
     invalidatedStaticDirectories: new Set(),
     pathUsesSystemDefaultWhenUnset: false,
+    commandResolutionMutation: "none",
     effectiveCwd: cwd,
     directoryStack: [cwd],
     aliases: new Map(),
@@ -20043,6 +20153,7 @@ function createConductorRuntimeShellState(cwd: string): ShellPosixState {
     filesystemAliasMayExist: false,
     invalidatedStaticDirectories: new Set(),
     pathUsesSystemDefaultWhenUnset: false,
+    commandResolutionMutation: "none",
     effectiveCwd: cwd,
     directoryStack: [cwd],
     aliases: new Map(),
