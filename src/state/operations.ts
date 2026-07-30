@@ -63,6 +63,7 @@ import {
 import {
   type AutopilotChildPhase,
   deriveAutopilotChildPhase,
+  normalizeAutopilotPhase,
 } from '../autopilot/fsm.js';
 import {
   buildAutopilotRalplanUltragoalGateError,
@@ -73,6 +74,8 @@ import {
 } from '../leader/contract.js';
 import {
   buildRalplanConsensusGateFromSources,
+  RALPLAN_CONSENSUS_BLOCKED_REASONS,
+  shouldBlockFreshAutopilotForRalplanReceipt,
 } from '../ralplan/consensus-gate.js';
 
 
@@ -235,9 +238,14 @@ async function initializeStateEnvironment(
   cwd: string,
   effectiveSessionId?: string,
   rootSource?: StateRootSource,
+  exactStateDir?: string,
 ): Promise<void> {
-  await mkdir(getStateDir(cwd), { recursive: true });
-  if (effectiveSessionId) {
+  if (exactStateDir) {
+    await mkdir(exactStateDir, { recursive: true });
+  } else {
+    await mkdir(getStateDir(cwd), { recursive: true });
+  }
+  if (effectiveSessionId && !exactStateDir) {
     await mkdir(getStateDir(cwd, effectiveSessionId), { recursive: true });
   }
   if (rootSource === 'team-env') return;
@@ -739,6 +747,20 @@ function isActiveDetailWorkflowState(state: Record<string, unknown>): boolean {
   return !['complete', 'completed', 'cancelled', 'canceled', 'failed', 'cleared'].includes(phase);
 }
 
+function isResumableAutopilotState(state: Record<string, unknown>): boolean {
+  if (state.active !== true) return false;
+  if (state.mode !== undefined && state.mode !== 'autopilot') return false;
+
+  const phaseValues = ['current_phase', 'currentPhase']
+    .filter((key) => Object.prototype.hasOwnProperty.call(state, key))
+    .map((key) => normalizeAutopilotPhase(state[key]));
+  if (phaseValues.length === 0 || phaseValues.some((phase) => phase === null || phase === 'complete' || phase === 'failed')) {
+    return false;
+  }
+
+  return new Set(phaseValues).size === 1;
+}
+
 async function readSessionDetailTransitionModes(
   cwd: string,
   sessionId: string | undefined,
@@ -801,7 +823,6 @@ export async function executeStateOperation(
         const effectiveSessionId = stateScope.sessionId;
         const mode = validateStateModeSegment(rawArgs.mode);
         const { baseStateDir, rootSource } = getBaseStateDirWithSource(cwd);
-        await initializeStateEnvironment(cwd, effectiveSessionId, rootSource);
         const beforeCommit = createWritableCommitRevalidator({
           operation: 'state_write',
           cwd,
@@ -850,6 +871,29 @@ export async function executeStateOperation(
           if (!hasExplicitStateField(fields, customState, 'terminal_outcome')) {
             delete mergedRaw.terminal_outcome;
           }
+
+          let activeCanonicalModes: TrackedWorkflowMode[] | undefined;
+          let canonicalDecision: ReturnType<typeof evaluateWorkflowTransition> | undefined;
+          if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
+            activeCanonicalModes = await readCanonicalActiveWorkflowModes(baseStateDir, effectiveSessionId);
+            canonicalDecision = evaluateWorkflowTransition(activeCanonicalModes, mode);
+            const freshAutopilotReceiptBlocked = mode === 'autopilot'
+              && !isResumableAutopilotState(existing)
+              && shouldBlockFreshAutopilotForRalplanReceipt();
+            const preserveStandaloneRalplanForReceiptDenial = freshAutopilotReceiptBlocked
+              && activeCanonicalModes.length === 1
+              && activeCanonicalModes[0] === 'ralplan';
+            if (!canonicalDecision.allowed && !preserveStandaloneRalplanForReceiptDenial) {
+              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
+              return;
+            }
+            if (freshAutopilotReceiptBlocked) {
+              validationError = `${RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable}: official host consensus receipt verifier is unavailable`;
+              return;
+            }
+          }
+
+          await initializeStateEnvironment(cwd, effectiveSessionId, rootSource, stateScope.stateDir);
 
           if (
             mode === 'ralph' &&
@@ -1010,15 +1054,9 @@ export async function executeStateOperation(
           }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
-            const activeCanonicalModes = await readCanonicalActiveWorkflowModes(baseStateDir, effectiveSessionId);
-            const canonicalDecision = evaluateWorkflowTransition(activeCanonicalModes, mode);
-            if (!canonicalDecision.allowed && canonicalDecision.denialReason === 'rollback') {
-              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
-              return;
-            }
             const transitionCurrentModes = mode === 'ralplan'
               ? (
-                activeCanonicalModes.length > 0
+                activeCanonicalModes!.length > 0
                   ? activeCanonicalModes
                   : await readSessionDetailTransitionModes(cwd, effectiveSessionId, mode)
               )

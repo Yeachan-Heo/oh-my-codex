@@ -3818,6 +3818,8 @@ function readPayloadAgentId(payload: CodexHookPayload): string {
 }
 interface PreToolUseSessionBinding {
   canonicalSessionId: string;
+  payloadSessionAliases: Set<string>;
+  nativeIdentityAliases: Set<string>;
   valid: boolean;
   missing: boolean;
 }
@@ -3827,6 +3829,14 @@ function sessionPointerAliases(state: SessionState | null | undefined): Set<stri
     safeString(state?.session_id).trim(),
     safeString(state?.native_session_id).trim(),
     safeString(state?.owner_omx_session_id).trim(),
+    safeString(state?.owner_codex_session_id).trim(),
+    safeString(state?.codex_session_id).trim(),
+  ]));
+}
+
+function sessionNativeIdentityAliases(state: SessionState | null | undefined): Set<string> {
+  return new Set(uniqueNonEmpty([
+    safeString(state?.native_session_id).trim(),
     safeString(state?.owner_codex_session_id).trim(),
     safeString(state?.codex_session_id).trim(),
   ]));
@@ -3844,8 +3854,11 @@ async function resolvePreToolUseSessionBinding(
   const canonicalSessionId = safeString(currentSession?.session_id).trim();
   const aliases = payloadAliasValues(payload, ["session_id", "sessionId"]);
   const knownAliases = sessionPointerAliases(currentSession);
+  const nativeIdentityAliases = sessionNativeIdentityAliases(currentSession);
   return {
     canonicalSessionId,
+    payloadSessionAliases: knownAliases,
+    nativeIdentityAliases,
     missing: aliases.length === 0,
     valid: canonicalSessionId !== ""
       && !payloadHasConflictingIdentityAliases(payload)
@@ -3898,14 +3911,18 @@ function hookCancelObject(bytes: Buffer): Record<string, unknown> | null {
 function hookCancelString(value: unknown): string { return typeof value === "string" ? value.trim() : ""; }
 type HookCancelIdentityPolicy = {
   allowMissingCwd: boolean;
+  allowMissingSession: boolean;
   allowSupervisedAutopilotMirror: boolean;
+  nativeIdentityAliases?: ReadonlySet<string>;
 };
 const STRICT_HOOK_CANCEL_IDENTITY: HookCancelIdentityPolicy = {
   allowMissingCwd: false,
+  allowMissingSession: false,
   allowSupervisedAutopilotMirror: false,
 };
 const AUTHENTICATED_HOOK_CANCEL_IDENTITY: HookCancelIdentityPolicy = {
   allowMissingCwd: true,
+  allowMissingSession: false,
   allowSupervisedAutopilotMirror: true,
 };
 function hookCancelRequiredStringAliasesMatch(
@@ -3934,14 +3951,43 @@ function hookCancelCwdMatches(value: Record<string, unknown>, canonicalCwd: stri
     );
   } catch { return false; }
 }
+function hookCancelOptionalSessionAliasesMatch(
+  value: Record<string, unknown>,
+  canonicalSessionId: string,
+  nativeIdentityAliases: ReadonlySet<string>,
+): boolean {
+  for (const alias of ["owner_codex_session_id", "native_session_id", "codex_session_id"]) {
+    if (!Object.prototype.hasOwnProperty.call(value, alias)) continue;
+    const raw = value[alias];
+    if (typeof raw !== "string") return false;
+    const candidate = raw.trim();
+    if (candidate && !nativeIdentityAliases.has(candidate)) return false;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "owner_omx_session_id")) {
+    const raw = value.owner_omx_session_id;
+    if (typeof raw !== "string") return false;
+    const candidate = raw.trim();
+    if (candidate && candidate !== canonicalSessionId) return false;
+  }
+  return true;
+}
 function hookCancelSessionMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
-  return hookCancelRequiredStringAliasesMatch(value, ["session_id", "sessionId"], (candidate) => candidate === sessionId)
+  const nativeIdentityAliases = policy.nativeIdentityAliases ?? new Set<string>();
+  return hookCancelRequiredStringAliasesMatch(
+    value,
+    ["session_id", "sessionId"],
+    (candidate) => candidate === sessionId,
+    policy.allowMissingSession,
+  )
+    && hookCancelOptionalSessionAliasesMatch(value, sessionId, nativeIdentityAliases)
     && hookCancelCwdMatches(value, cwd, policy);
 }
 function hookCancelAutopilotIsActive(value: Record<string, unknown>): boolean {
+  const mode = hookCancelString(value.mode).toLowerCase();
+  // Cancellation only decreases authority. Persisted phase text (including a
+  // missing, unknown, or terminal-looking phase) cannot override active:true.
   return value.active === true
-    && hookCancelString(value.mode).toLowerCase() === "autopilot"
-    && normalizeAutopilotPhase(hookCancelString(value.current_phase)) === "deep-interview";
+    && (!mode || mode === "autopilot");
 }
 function hookCancelAutopilotMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
   return hookCancelAutopilotIsActive(value) && hookCancelSessionMatches(value, sessionId, cwd, policy);
@@ -9649,8 +9695,8 @@ function skipLiteralLeadingAssignments(words: string[]): number {
 }
 
 // Direct cancellation is recognized from the RAW command string with a
-// deliberately tiny ASCII grammar: exactly `omx cancel` (plus `--force` only
-// at the ralplan/Conductor callsites; deep-interview stays plain-cancel) with
+// deliberately tiny ASCII grammar: exactly `omx cancel` (optionally `--force`)
+// at hook-owned workflow callsites, with
 // optional ASCII space/tab padding. No leading environment assignments are
 // accepted at all — runtime startup/configuration variables are an open-ended
 // namespace (PATH, NODE_OPTIONS, OPENSSL_CONF, ...) and a denylist cannot
@@ -9697,19 +9743,30 @@ function directCancelOutput(reason: string, handled = false): Record<string, unk
 
 async function handleDirectOmxCancel(input: {
   command: string; rawCommand: string; cwd: string; stateDir: string;
-  canonicalSessionId: string; payload: CodexHookPayload;
+  canonicalSessionId: string;
+  payloadSessionAliases: ReadonlySet<string>;
+  nativeIdentityAliases: ReadonlySet<string>;
+  payload: CodexHookPayload;
   activeStates: Record<HookCancelWorkflow, Record<string, unknown>>;
   skillState: Record<string, unknown>;
 }): Promise<DirectCancelResult> {
   const cancelLike = /^[ \t]*omx[ \t]+cancel\b/.test(input.command);
   if (!cancelLike) return { kind: "not-direct-cancel" };
   const canonicalCwd = resolve(input.cwd);
+  const authenticatedIdentityPolicy: HookCancelIdentityPolicy = {
+    ...AUTHENTICATED_HOOK_CANCEL_IDENTITY,
+    nativeIdentityAliases: input.nativeIdentityAliases,
+  };
+  const authenticatedAutopilotIdentityPolicy: HookCancelIdentityPolicy = {
+    ...authenticatedIdentityPolicy,
+    allowMissingSession: true,
+  };
   const autopilotActive = hookCancelAutopilotIsActive(input.activeStates.autopilot);
   const ultragoalActive = hookCancelUltragoalIsActive(input.activeStates.ultragoal);
-  const autopilotLifecycleMatches = hookCancelAutopilotMatches(input.activeStates.autopilot, input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
-  const ultragoalLifecycleMatches = hookCancelUltragoalMatches(input.activeStates.ultragoal, input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
-  const autopilotSkillMatches = hookCancelSkillMatches(input.skillState, "autopilot", input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
-  const ultragoalSkillMatches = hookCancelSkillMatches(input.skillState, "ultragoal", input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
+  const autopilotLifecycleMatches = hookCancelAutopilotMatches(input.activeStates.autopilot, input.canonicalSessionId, canonicalCwd, authenticatedAutopilotIdentityPolicy);
+  const ultragoalLifecycleMatches = hookCancelUltragoalMatches(input.activeStates.ultragoal, input.canonicalSessionId, canonicalCwd, authenticatedIdentityPolicy);
+  const autopilotSkillMatches = hookCancelSkillMatches(input.skillState, "autopilot", input.canonicalSessionId, canonicalCwd, authenticatedAutopilotIdentityPolicy);
+  const ultragoalSkillMatches = hookCancelSkillMatches(input.skillState, "ultragoal", input.canonicalSessionId, canonicalCwd, authenticatedIdentityPolicy);
   if (ultragoalActive && (!ultragoalLifecycleMatches || !ultragoalSkillMatches)) {
     return { kind: "denied", reason: "active_state", output: directCancelOutput("active_state") };
   }
@@ -9725,7 +9782,7 @@ async function handleDirectOmxCancel(input: {
   // Hook-owned cancellation requires both an active matching lifecycle and its
   // canonical skill mirror. Stale files alone retain the normal executable path.
   if (!workflow) return { kind: "not-direct-cancel" };
-  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: workflow === "ultragoal" })) {
+  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: true })) {
     return { kind: "denied", reason: "invalid_command", output: directCancelOutput("invalid_command") };
   }
   if (
@@ -9733,7 +9790,7 @@ async function handleDirectOmxCancel(input: {
     || !hookCancelRequiredStringAliasesMatch(
       input.payload as Record<string, unknown>,
       ["session_id", "sessionId"],
-      (candidate) => candidate === input.canonicalSessionId,
+      (candidate) => input.payloadSessionAliases.has(candidate),
     )
     || payloadHasConflictingIdentityAliases(input.payload)
   ) {
@@ -9750,7 +9807,7 @@ async function handleDirectOmxCancel(input: {
     canonicalSessionId: input.canonicalSessionId,
     cwd: input.cwd,
     nowIso: new Date().toISOString(),
-  }, workflow, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
+  }, workflow, workflow === "autopilot" ? authenticatedAutopilotIdentityPolicy : authenticatedIdentityPolicy);
   if (!transaction.ok) {
     const reason = transaction.reason ?? "preflight_failed";
     return { kind: "denied", reason, output: directCancelOutput(reason) };
@@ -22738,6 +22795,8 @@ export async function dispatchCodexNativeHook(
         cwd: policyCwd,
         stateDir,
         canonicalSessionId: sessionBinding.valid ? sessionBinding.canonicalSessionId : "",
+        payloadSessionAliases: sessionBinding.payloadSessionAliases,
+        nativeIdentityAliases: sessionBinding.nativeIdentityAliases,
         payload,
         activeStates: {
           autopilot: autopilotState ?? {},

@@ -7732,10 +7732,18 @@ function assertCancellationOwnerMetadata(
   ownerIds: Set<string>,
   path: string,
 ): void {
-  for (const ownerField of ["session_id", "owner_omx_session_id", "owner_codex_session_id"] as const) {
+  if (Object.prototype.hasOwnProperty.call(value, "session_id")) {
+    const sessionId = normalizeSessionId(value.session_id);
+    if (!sessionId || !ownerIds.has(sessionId)) {
+      throw new Error(`Refusing contradictory session_id in ${path}.`);
+    }
+  }
+  for (const ownerField of ["owner_omx_session_id", "owner_codex_session_id"] as const) {
     if (!Object.prototype.hasOwnProperty.call(value, ownerField)) continue;
-    const owner = normalizeSessionId(value[ownerField]);
-    if (!owner || !ownerIds.has(owner)) {
+    const rawOwner = value[ownerField];
+    const blankOwner = typeof rawOwner === "string" && rawOwner.trim() === "";
+    const owner = normalizeSessionId(rawOwner);
+    if (!blankOwner && (!owner || !ownerIds.has(owner))) {
       throw new Error(`Refusing contradictory ${ownerField} in ${path}.`);
     }
   }
@@ -7779,15 +7787,25 @@ function assertExactSkillOwner(
   path: string,
   allowStaleTopCodexOwner: boolean = false,
 ): void {
-  for (const field of ["session_id", "owner_omx_session_id"] as const) {
-    if (!Object.prototype.hasOwnProperty.call(value, field)) continue;
-    if (normalizeSessionId(value[field]) !== authority.sessionId) {
-      throw new Error(`Refusing contradictory ${field} in ${path}.`);
+  if (
+    Object.prototype.hasOwnProperty.call(value, "session_id")
+    && normalizeSessionId(value.session_id) !== authority.sessionId
+  ) {
+    throw new Error(`Refusing contradictory session_id in ${path}.`);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "owner_omx_session_id")) {
+    const rawOwner = value.owner_omx_session_id;
+    const blankOwner = typeof rawOwner === "string" && rawOwner.trim() === "";
+    const owner = normalizeSessionId(rawOwner);
+    if (!blankOwner && (!owner || owner !== authority.sessionId)) {
+      throw new Error(`Refusing contradictory owner_omx_session_id in ${path}.`);
     }
   }
   if (Object.prototype.hasOwnProperty.call(value, "owner_codex_session_id")) {
-    const owner = normalizeSessionId(value.owner_codex_session_id);
-    if (!owner || (!allowStaleTopCodexOwner && owner !== authority.nativeSessionId)) {
+    const rawOwner = value.owner_codex_session_id;
+    const blankOwner = typeof rawOwner === "string" && rawOwner.trim() === "";
+    const owner = normalizeSessionId(rawOwner);
+    if (!blankOwner && (!owner || (!allowStaleTopCodexOwner && owner !== authority.nativeSessionId))) {
       throw new Error(`Refusing contradictory owner_codex_session_id in ${path}.`);
     }
   }
@@ -7909,7 +7927,9 @@ async function cancelModes(
           const displacedOwnerId = hasTopCodexOwner
             ? normalizeSessionId(parsedState.owner_codex_session_id)
             : undefined;
-          if (hasTopCodexOwner && !displacedOwnerId) {
+          const blankTopCodexOwner = typeof parsedState.owner_codex_session_id === "string"
+            && parsedState.owner_codex_session_id.trim() === "";
+          if (hasTopCodexOwner && !blankTopCodexOwner && !displacedOwnerId) {
             throw new Error(`Refusing contradictory owner_codex_session_id in ${ref.path}.`);
           }
           assertExactSkillOwner(parsedState, exactAuthority, ref.path, hasTopCodexOwner);
