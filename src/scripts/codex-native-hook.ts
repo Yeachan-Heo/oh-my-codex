@@ -12751,8 +12751,6 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
   );
   const perlStartupNames = new Set(["PERL5LIB", "PERL5OPT"]);
   const commandSetsPerlStartup = inheritedRuntimeEnvironmentConfigured(perlStartupNames) || commandConfiguresRuntimeEnvironment(topLevelCommand, perlStartupNames);
-  const shellStartupNames = new Set(["BASH_ENV", "ENV", "ZDOTDIR"]);
-  const commandSetsShellStartup = inheritedRuntimeEnvironmentConfigured(shellStartupNames) || commandConfiguresRuntimeEnvironment(topLevelCommand, shellStartupNames);
   const gitHelperNames = new Set(["GIT_EXTERNAL_DIFF"]);
   const commandSetsGitHelper = inheritedRuntimeEnvironmentConfigured(gitHelperNames) || commandConfiguresRuntimeEnvironment(topLevelCommand, gitHelperNames);
   const runtimeShellState = createConductorRuntimeShellState(runtimeCwd);
@@ -13023,7 +13021,15 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
         inspection.uninspectedCommandNames.push(commandName);
       } else if (isNestedShellCommandWord(commandName)) {
         const nestedIndex = findShellCommandStringArgIndex(words, commandIndex + 1);
-        if (commandSetsShellStartup || nestedShellHasUnsafeStartup(words, commandIndex, index) || (nestedIndex === null && firstInterpreterScriptOperands(words, commandIndex).length === 0)) {
+        const nestedShellStartupNames = commandName === "bash"
+          ? new Set(["BASH_ENV"])
+          : commandName === "zsh"
+            ? new Set(["ZDOTDIR"])
+            : new Set(["ENV"]);
+        const commandSetsNestedShellStartup =
+          inheritedRuntimeEnvironmentConfigured(nestedShellStartupNames)
+          || commandConfiguresRuntimeEnvironment(topLevelCommand, nestedShellStartupNames);
+        if (commandSetsNestedShellStartup || nestedShellHasUnsafeStartup(words, commandIndex, index) || (nestedIndex === null && firstInterpreterScriptOperands(words, commandIndex).length === 0)) {
           inspection.uninspectedOtherRuntimeCount += 1;
           inspection.uninspectedCommandNames.push(commandName);
         }

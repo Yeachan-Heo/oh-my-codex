@@ -36973,6 +36973,9 @@ PY`,
 
   it("allows conductor sed/perl metadata edits while blocking non-metadata targets", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-sed-perl-metadata-"));
+    const originalBashEnv = process.env.BASH_ENV;
+    const originalZdotdir = process.env.ZDOTDIR;
+    const originalEnv = process.env.ENV;
     try {
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-sed-perl-metadata";
@@ -36989,6 +36992,33 @@ PY`,
         current_phase: "executing",
         session_id: sessionId,
       });
+
+      const dispatch = (command: string) =>
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-conductor-sed-perl-metadata",
+            agent_id: "thread-conductor-sed-perl-metadata",
+            tool_name: "Bash",
+            tool_input: { command },
+          },
+          { cwd },
+        );
+
+      delete process.env.BASH_ENV;
+      delete process.env.ZDOTDIR;
+      delete process.env.ENV;
+      for (const command of [
+        "bash --noprofile --norc -lc \"sed -i 's/old/new/' .omx/state/conductor.log\"",
+        "zsh -f -c \"sed -i 's/old/new/' .omx/state/conductor.log\"",
+        "sh -c \"sed -i 's/old/new/' .omx/state/conductor.log\"",
+      ]) {
+        assert.equal((await dispatch(command)).outputJson, null, command);
+      }
+
+      process.env.ZDOTDIR = join(cwd, "ambient-zdotdir");
 
       const allowedCommands = [
         "sed -i 's/old/new/' .omx/state/conductor.log",
@@ -37034,7 +37064,29 @@ PY`,
         assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", command);
         assert.match(String((result.outputJson as { reason?: string } | null)?.reason ?? ""), /Bash .* target .*not workflow state\/ledger\/mailbox\/handoff metadata|target <unresolved>/);
       }
+
+      for (const [envName, command] of [
+        ["BASH_ENV", "bash --noprofile --norc -lc \"sed -i 's/old/new/' .omx/state/conductor.log\""],
+        ["ZDOTDIR", "zsh -f -c \"sed -i 's/old/new/' .omx/state/conductor.log\""],
+        ["ENV", "sh -c \"sed -i 's/old/new/' .omx/state/conductor.log\""],
+      ] as const) {
+        delete process.env.BASH_ENV;
+        delete process.env.ZDOTDIR;
+        delete process.env.ENV;
+        process.env[envName] = join(cwd, `startup-${envName.toLowerCase()}`);
+        assert.equal(
+          (await dispatch(command)).outputJson?.decision,
+          "block",
+          `${envName}: ${command}`,
+        );
+      }
     } finally {
+      if (originalBashEnv === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = originalBashEnv;
+      if (originalZdotdir === undefined) delete process.env.ZDOTDIR;
+      else process.env.ZDOTDIR = originalZdotdir;
+      if (originalEnv === undefined) delete process.env.ENV;
+      else process.env.ENV = originalEnv;
       await rm(cwd, { recursive: true, force: true });
     }
   });
