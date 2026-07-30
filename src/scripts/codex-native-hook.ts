@@ -16923,7 +16923,7 @@ function setConductorShellBinding(
   const next: ConductorShellBinding = { ...previous, ...update };
   if (update.local === true && !previous.local) next.outer = copyConductorShellBinding(previous);
   state.bindings.set(name, { ...next, dirty: previous.dirty || (persistent && !previous.local && !update.local) });
-  if (persistent && (name === "PATH" || name === "PATHEXT")) state.commandResolutionMutation = "prior";
+  if (name === "PATH" || name === "PATHEXT") state.commandResolutionMutation = "prior";
 }
 
 function beginConductorFunctionLocalBinding(state: ShellPosixState, name: ConductorShellBindingName): void {
@@ -17678,6 +17678,7 @@ function conductorPathIsInsideRoot(root: string, candidate: string): boolean {
 function conductorBareCommandTokenMatchesName(commandWord: string, commandName: string): boolean {
   const literal = shellWordLiteral(commandWord);
   if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(literal) || /[\\/]/.test(literal)) return false;
+  if (conductorCommandNameIsReservedPackageCli(commandName) && commandName !== "omx" && commandName !== "gjc") return false;
   return process.platform === "win32" ? literal.toLowerCase() === commandName : literal === commandName;
 }
 
@@ -17835,6 +17836,8 @@ function conductorCommandPrefixPreservesInheritedResolution(
   }
   for (const entry of prefix.split(conductorPathListDelimiter())) {
     if (!entry || !isAbsolute(entry)) return false;
+    const lexical = resolve(entry);
+    if (conductorPathIsInsideRoot(root, lexical)) return false;
     try {
       const canonical = realpathSync(entry);
       if (!statSync(canonical).isDirectory() || conductorPathIsInsideRoot(root, canonical)) return false;
@@ -18517,6 +18520,7 @@ function applyPersistentFunctionEffects(caller: ShellPosixState, callee: ShellPo
       dirty: true,
     });
   }
+  if (callee.commandResolutionMutation !== "none") caller.commandResolutionMutation = "prior";
   caller.securityEnvironmentUnresolved ||= callee.securityEnvironmentUnresolved;
   for (const name of callee.dirtySecurityEnvironmentNames) {
     const value = callee.securityEnvironment.get(name);

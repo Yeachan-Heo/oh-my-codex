@@ -36795,6 +36795,7 @@ PY`,
       }
 
       const inheritedPath = process.env.PATH;
+      const metadataPerl = "perl -pi -e 's/old/new/' .omx/state/conductor.log";
       for (const command of [
         `PATH=${JSON.stringify(hostBinDir)} bash --noprofile --norc -lc \"printf safe\"`,
         `PATH=${JSON.stringify(inheritedPath)} bash --noprofile --norc -lc \"printf safe\"`,
@@ -36806,6 +36807,16 @@ PY`,
         "ſh -c \"printf safe\"",
         "omx.exe --help",
         "gjc.cmd --help",
+        `PATH=${JSON.stringify(`${cwd}/missing:${inheritedPath}`)} cat .omx/state/conductor.log`,
+        `f() { PATH=${JSON.stringify(inheritedPath)}; }; f; ${metadataPerl}`,
+        `f() { export PATH; }; f; ${metadataPerl}`,
+        `f() { local PATH=${JSON.stringify(inheritedPath)}; ${metadataPerl}; }; f`,
+        `f() { declare PATH=${JSON.stringify(inheritedPath)}; ${metadataPerl}; }; f`,
+        `f() { local PATHEXT=.EVIL; ${metadataPerl}; }; f`,
+        `f() { local PATH=${JSON.stringify(inheritedPath)}; printf -v PATH '%s' ${JSON.stringify(inheritedPath)}; ${metadataPerl}; }; f`,
+        `f() { local PATH=${JSON.stringify(inheritedPath)}; local -n path_ref=PATH; printf -v path_ref '%s' ${JSON.stringify(inheritedPath)}; ${metadataPerl}; }; f`,
+        `f() { ${metadataPerl}; }; PATH=${JSON.stringify(inheritedPath)} f`,
+        `f() { ${metadataPerl}; }; PATHEXT=.EVIL f`,
       ]) {
         const result = await dispatch(command);
         assert.equal(result.outputJson?.decision, "block", command);
