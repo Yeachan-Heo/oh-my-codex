@@ -1234,7 +1234,17 @@ function buildPackedProbeEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessE
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     const upper = key.toUpperCase();
-    if (upper === 'NODE_OPTIONS' || upper.startsWith('OMX_') || upper.startsWith('CODEX_')) {
+    if (
+      upper === 'NODE_OPTIONS'
+      || upper === 'BASH_ENV'
+      || upper === 'ENV'
+      || upper === 'ZDOTDIR'
+      || upper.startsWith('OMX_')
+      || upper.startsWith('CODEX_')
+      || upper.startsWith('GJC_')
+      || upper === 'TMUX'
+      || upper === 'TMUX_PANE'
+    ) {
       delete env[key];
     }
   }
