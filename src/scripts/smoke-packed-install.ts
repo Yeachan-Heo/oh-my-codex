@@ -1238,7 +1238,11 @@ function buildPackedProbeEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessE
       delete env[key];
     }
   }
-  return { ...env, ...overrides };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  return env;
 }
 
 export interface PackedInstallNpmFile {
@@ -2458,13 +2462,15 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       [realpathSync(hookScript)],
       { cwd: smokeCwd, env, input: JSON.stringify(payload) },
     );
-    const hookEnv = {
-      ...process.env,
+    const hookEnv = buildPackedProbeEnv({
+      BASH_ENV: undefined,
+      ENV: undefined,
+      ZDOTDIR: undefined,
       OMX_NATIVE_HOOK_DOCTOR_SMOKE: '1',
       OMX_ROOT: hookRoot,
       OMX_SOURCE_CWD: smokeCwd,
       OMX_STARTUP_CWD: smokeCwd,
-    };
+    });
     const officialTeamRootPayload = {
       hook_event_name: 'PreToolUse',
       cwd: smokeCwd,
@@ -2788,9 +2794,9 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
     })).length !== 0) {
       throw new Error('packed main-root bounded quoted heredoc metadata control should be allowed');
     }
-    if (Object.keys(runActorProbeResult('main-root', 'zsh fast startup control', 'Bash', {
+    if (Object.keys(runActorProbe('main-root', 'zsh fast startup control', 'Bash', {
       command: `zsh -f -c ':'`,
-    }, { BASH_ENV: undefined, ENV: undefined, ZDOTDIR: undefined }).output).length !== 0) {
+    })).length !== 0) {
       throw new Error('packed main-root zsh fast startup control should be allowed');
     }
     const boxedPlanningRoot = join(smokeCwd, 'boxed-planning-root');
