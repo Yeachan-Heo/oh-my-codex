@@ -102,8 +102,8 @@ async function withOwnerEnvironment(sessionId: string | undefined, run: () => Pr
   }
 }
 
-function matchingObservation(): ProcessObservation {
-  return { kind: 'identity', identity: { platform: 'linux', birth: '1' } };
+function matchingObservation(platform: NodeJS.Platform = process.platform): ProcessObservation {
+  return { kind: 'identity', identity: { platform, birth: '1' } };
 }
 
 function matchingWin32Observation(): ProcessObservation {
@@ -857,6 +857,33 @@ describe('session pointer transaction', () => {
     );
   });
 
+  it('keeps the default synthetic identity aligned with the host transaction platform', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-platform-fixture-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      await mkdir(context.baseStateDir, { recursive: true });
+      await writeFile(context.sessionPath, JSON.stringify({
+        session_id: 'sess-platform-fixture',
+        started_at: '2026-07-14T00:00:00.000Z',
+        cwd,
+        pid: process.pid,
+        platform: process.platform,
+        identity_schema_version: 2,
+        process_identity: { platform: process.platform, birth: '1' },
+      }), 'utf-8');
+      await withPointerDependencies({
+        probePid: () => 'alive',
+        observeProcess: () => matchingObservation(),
+      }, async () => {
+        assert.equal((await readSessionPointer(context)).status, 'usable');
+      });
+    } finally {
+      __resetSessionPointerTransactionDependenciesForTests();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+
   it('classifies only the exact selected pointer as absent, usable, stale, indeterminate, malformed, or foreign', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-status-'));
     try {
@@ -1175,14 +1202,14 @@ describe('session pointer transaction', () => {
         await withPointerDependencies({
           runtimePlatform: 'linux',
           probePid: () => 'alive',
-          observeProcess: () => matchingObservation(),
+          observeProcess: () => matchingObservation('linux'),
         }, async () => {
           assert.equal((await readSessionPointer(context)).status, 'identity-indeterminate', String(schemaVersion));
         });
         await withPointerDependencies({
           runtimePlatform: 'linux',
           probePid: () => 'alive',
-          observeProcess: () => matchingObservation(),
+          observeProcess: () => matchingObservation('linux'),
         }, async () => {
           assert.equal((await inspectSessionPointerLock(cwd)).status, 'identity-indeterminate', String(schemaVersion));
         });
@@ -3175,7 +3202,7 @@ describe('bound launch authority', () => {
     try {
       await withPointerDependencies({
         runtimePlatform: 'linux',
-        observeProcess: () => matchingObservation(),
+        observeProcess: () => matchingObservation('linux'),
       }, async () => {
         const established = await establishLaunchSessionBinding(cwd, 'sess-binding-identity-preserve', { platform: 'linux' });
         assert.equal(established.kind, 'committed-released');
