@@ -200,6 +200,76 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+export interface PtyCommandResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error: string;
+}
+
+interface PtyCommandRunner {
+  run: (args: string[]) => string;
+  runResult: (args: string[]) => { status: number | null; stdout: string; stderr: string; error: string };
+  sleep?: () => void;
+}
+
+export function runPtyResult(
+  command: string,
+  options: PtyCommandRunner & {
+    platform?: NodeJS.Platform;
+    syntheticServer?: boolean;
+    sessionName: string;
+    pollLimit?: number;
+  },
+): PtyCommandResult {
+  if ((options.platform ?? process.platform) !== 'darwin') {
+    throw new Error('runPtyResult is only supported on Darwin');
+  }
+  if (options.syntheticServer !== true) {
+    throw new Error('runPtyResult requires a private synthetic tmux server');
+  }
+  options.run(['set-option', '-g', 'remain-on-exit', 'on']);
+  const ptyCommand = buildPtyScriptCommand(command, 'darwin');
+  const paneId = options.run([
+    'new-window',
+    '-d',
+    '-P',
+    '-F',
+    '#{pane_id}',
+    '-t',
+    options.sessionName,
+    ...[ptyCommand.executable, ...ptyCommand.args].map(shellQuote),
+  ]);
+  let status: number | null = null;
+  let state = '';
+  for (let attempt = 0; attempt < (options.pollLimit ?? 240); attempt += 1) {
+    state = options.run(['display-message', '-p', '-t', paneId, '#{pane_dead} #{pane_exit_status}']);
+    const [dead, exitStatus] = state.split(/\s+/, 2);
+    if (dead === '1') {
+      status = /^-?\d+$/.test(exitStatus ?? '') ? Number(exitStatus) : null;
+      break;
+    }
+    options.sleep?.();
+  }
+  const outputResult = options.runResult(['capture-pane', '-p', '-t', paneId, '-S', '-']);
+  const cleanupResult = options.runResult(['kill-pane', '-t', paneId]);
+  const errors = [outputResult.error, cleanupResult.error].filter(Boolean).join('; ');
+  if (status === null) {
+    return {
+      status: null,
+      stdout: outputResult.stdout,
+      stderr: outputResult.stderr || cleanupResult.stderr,
+      error: [`PTY command did not exit: ${state}`, errors].filter(Boolean).join('; '),
+    };
+  }
+  return {
+    status,
+    stdout: outputResult.stdout,
+    stderr: outputResult.stderr || cleanupResult.stderr,
+    error: errors,
+  };
+}
+
 export async function withTempTmuxSession<T>(
   optionsOrFn: TempTmuxSessionOptions | ((fixture: TempTmuxSessionFixture) => Promise<T> | T),
   maybeFn?: (fixture: TempTmuxSessionFixture) => Promise<T> | T,
@@ -241,53 +311,14 @@ export async function withTempTmuxSession<T>(
     runTmux(['set-environment', '-g', 'PATH', `${directory}${delimiter}${process.env.PATH ?? ''}`], tmuxOptions);
     return shimPath;
   };
-  const runPtyResult = (command: string): { status: number | null; stdout: string; stderr: string; error: string } => {
-    if (process.platform !== 'darwin') {
-      throw new Error('runPtyResult is only supported on Darwin');
-    }
-    if (serverKind !== 'synthetic') {
-      throw new Error('runPtyResult requires a private synthetic tmux server');
-    }
-    runTmux(['set-option', '-g', 'remain-on-exit', 'on'], tmuxOptions);
-    const ptyCommand = buildPtyScriptCommand(command, 'darwin');
-    const paneId = runTmux([
-      'new-window',
-      '-d',
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-t',
-      sessionName,
-      ...[ptyCommand.executable, ...ptyCommand.args].map(shellQuote),
-    ], tmuxOptions);
-    let status: number | null = null;
-    let state = '';
-    for (let attempt = 0; attempt < 240; attempt += 1) {
-      state = runTmux(['display-message', '-p', '-t', paneId, '#{pane_dead} #{pane_exit_status}'], tmuxOptions);
-      const [dead, exitStatus] = state.split(/\s+/, 2);
-      if (dead === '1') {
-        status = /^-?\d+$/.test(exitStatus ?? '') ? Number(exitStatus) : null;
-        break;
-      }
-      spawnSync('sleep', ['0.05'], { stdio: 'ignore' });
-    }
-    const outputResult = runTmuxResult(['capture-pane', '-p', '-t', paneId, '-S', '-'], tmuxOptions);
-    const cleanupResult = runTmuxResult(['kill-pane', '-t', paneId], tmuxOptions);
-    if (status === null) {
-      return {
-        status: null,
-        stdout: outputResult.stdout,
-        stderr: outputResult.stderr || cleanupResult.stderr,
-        error: `PTY command did not exit: ${state}`,
-      };
-    }
-    return {
-      status,
-      stdout: outputResult.stdout,
-      stderr: outputResult.stderr || cleanupResult.stderr,
-      error: outputResult.error || cleanupResult.error,
-    };
-  };
+  const runPtyCommandResult = (command: string): PtyCommandResult => runPtyResult(command, {
+    platform: process.platform,
+    syntheticServer: serverKind === 'synthetic',
+    sessionName,
+    run: (args) => runTmux(args, tmuxOptions),
+    runResult: (args) => runTmuxResult(args, tmuxOptions),
+    sleep: () => spawnSync('sleep', ['0.05'], { stdio: 'ignore' }),
+  });
   const triggerClientResize = (
     targetSession: string,
     geometry: { rows?: number; cols?: number } = {},
@@ -381,7 +412,7 @@ export async function withTempTmuxSession<T>(
     sessionExists: (targetSessionName = sessionName) => tmuxSessionExists(targetSessionName, serverName || undefined),
     run: (args) => runTmux(args, tmuxOptions),
     runResult: (args) => runTmuxResult(args, tmuxOptions),
-    runPtyResult,
+    runPtyResult: runPtyCommandResult,
     createPathShim,
     triggerClientResize,
     serverLogPath,
