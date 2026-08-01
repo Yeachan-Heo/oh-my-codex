@@ -2712,16 +2712,20 @@ exit 0
           // Simulate a user tmux config that would retain the dead leader pane.
           fixture.run(['set-option', '-g', 'remain-on-exit', remainOnExit]);
           const envPrefix = [
-            `HOME=${JSON.stringify(home)}`,
-            `PATH=${JSON.stringify(bin)}:$PATH`,
-            'OMX_AUTO_UPDATE=0',
-            'OMX_NOTIFY_FALLBACK=0',
-            'OMX_HOOK_DERIVED_SIGNALS=0',
-            'TERM=xterm-256color',
-          ].map((kv) => `export ${kv}`).join('; ');
-          const ptyCommand = buildPtyScriptCommand(
-            `${envPrefix}; cd ${JSON.stringify(wd)} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(omxBin)} --tmux ${JSON.stringify('e2e prompt')}`,
-          );
+            'unset TMUX TMUX_PANE',
+            `export HOME=${JSON.stringify(home)}`,
+            `export PATH=${JSON.stringify(bin)}:$PATH`,
+            'export OMX_AUTO_UPDATE=0',
+            'export OMX_NOTIFY_FALLBACK=0',
+            'export OMX_HOOK_DERIVED_SIGNALS=0',
+            'export TERM=xterm-256color',
+          ].join('; ');
+          const command = `${envPrefix}; cd ${JSON.stringify(wd)} && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(omxBin)} --tmux ${JSON.stringify('e2e prompt')}`;
+          if (process.platform === 'darwin') {
+            const result = fixture.runPtyResult(command);
+            return { status: result.status, output: `${result.stdout}\n${result.stderr}\n${result.error}` };
+          }
+          const ptyCommand = buildPtyScriptCommand(command);
           const result = spawnSync(
             ptyCommand.executable,
             ptyCommand.args,
