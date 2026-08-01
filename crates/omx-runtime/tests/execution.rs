@@ -590,7 +590,7 @@ mod fs_rename_no_replace_linux {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[test]
 fn process_identity_current_process_returns_identity() {
     let pid = std::process::id().to_string();
@@ -608,13 +608,37 @@ fn process_identity_current_process_returns_identity() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
 
     let platform = parsed["platform"].as_str().expect("platform string");
-    assert_eq!(platform, "linux");
+    let expected_platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "linux"
+    };
+    assert_eq!(platform, expected_platform);
     let birth = parsed["birth"].as_str().expect("birth string");
     assert!(!birth.is_empty(), "birth must not be empty");
-    assert!(
-        birth.chars().all(|character| character.is_ascii_digit()),
-        "birth must be a decimal string: {birth}"
-    );
+    if cfg!(target_os = "macos") {
+        let (seconds, microseconds) = birth
+            .split_once('.')
+            .expect("darwin birth must contain seconds.microseconds");
+        assert!(
+            !seconds.is_empty() && seconds.chars().all(|character| character.is_ascii_digit()),
+            "darwin birth seconds must be decimal: {birth}"
+        );
+        assert!(
+            !microseconds.is_empty()
+                && microseconds
+                    .chars()
+                    .all(|character| character.is_ascii_digit()),
+            "darwin birth microseconds must be decimal: {birth}"
+        );
+    } else {
+        assert!(
+            birth.chars().all(|character| character.is_ascii_digit()),
+            "birth must be a decimal string: {birth}"
+        );
+    }
     if let Some(cmdline) = parsed.get("cmdline") {
         assert!(cmdline.is_string(), "cmdline must be a string when present");
     }

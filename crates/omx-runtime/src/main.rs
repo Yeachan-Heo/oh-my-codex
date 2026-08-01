@@ -413,65 +413,21 @@ fn read_linux_cmdline(pid: u32) -> Option<String> {
 // Darwin: proc_pidinfo with PROC_PIDTBSDINFO for pbi_start_tvsec/pbi_start_tvusec
 #[cfg(target_os = "macos")]
 fn process_identity(pid: u32) -> Result<ProcessIdentityResult, ProcessIdentityError> {
-    use std::ffi::c_int;
-
-    extern "C" {
-        fn proc_pidinfo(
-            pid: c_int,
-            flavor: c_int,
-            arg: u64,
-            buffer: *mut std::ffi::c_void,
-            buffersize: c_int,
-        ) -> c_int;
-    }
-
-    const PROC_PIDTBSDINFO: c_int = 3;
-    const PROC_PIDTBSDINFO_SIZE: c_int = std::mem::size_of::<ProcTaskBsdInfo>() as c_int;
-
-    // struct proc_bsdinfo (from libproc.h / proc_info.h):
-    //   pbi_name: [c_char; 16] (COMMLEN = 16)
-    //   pbi_pid: i32
-    //   pbi_ppid: i32
-    //   pbi_uid: uid_t (u32)
-    //   pbi_gid: gid_t (u32)
-    //   pbi_ruid: uid_t
-    //   pbi_rgid: gid_t
-    //   pbi_svuid: uid_t
-    //   pbi_svgid: gid_t
-    //   pbi_rfu: u32
-    //   pbi_flags: u32
-    //   pbi_start_tvsec: u64   ← birth seconds since epoch
-    //   pbi_start_tvusec: u64  ← birth microseconds
-    //   ... remaining fields not needed
-    #[repr(C)]
-    struct ProcTaskBsdInfo {
-        pbi_name: [std::ffi::c_char; 16],
-        pbi_pid: i32,
-        pbi_ppid: i32,
-        pbi_uid: u32,
-        pbi_gid: u32,
-        pbi_ruid: u32,
-        pbi_rgid: u32,
-        pbi_svuid: u32,
-        pbi_svgid: u32,
-        pbi_rfu: u32,
-        pbi_flags: u32,
-        pbi_start_tvsec: u64,
-        pbi_start_tvusec: u64,
-    }
-
-    let mut buf: ProcTaskBsdInfo = unsafe { std::mem::zeroed() };
-    let ret = unsafe {
-        proc_pidinfo(
-            pid as c_int,
-            PROC_PIDTBSDINFO,
+    // Use libc's maintained Darwin ABI definition instead of a partial local
+    // prefix. PROC_PIDTBSDINFO requires a full proc_bsdinfo-sized buffer.
+    let mut process_info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let buffer_size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let bytes_read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
             0,
-            &mut buf as *mut _ as *mut std::ffi::c_void,
-            PROC_PIDTBSDINFO_SIZE,
+            &mut process_info as *mut _ as *mut libc::c_void,
+            buffer_size,
         )
     };
 
-    if ret <= 0 {
+    if bytes_read <= 0 {
         let errno_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         return match errno_val {
             libc::EPERM | libc::EACCES => Err(ProcessIdentityError::Denied),
@@ -482,11 +438,19 @@ fn process_identity(pid: u32) -> Result<ProcessIdentityResult, ProcessIdentityEr
             ))),
         };
     }
+    if bytes_read != buffer_size {
+        return Err(ProcessIdentityError::Error(format!(
+            "proc_pidinfo(PROC_PIDTBSDINFO) returned {bytes_read} bytes; expected {buffer_size}"
+        )));
+    }
 
     // Birth is exact decimal string: seconds.microseconds since Unix epoch.
     // Two processes started in the same second will differ in microseconds
     // unless they genuinely started at the same microsecond instant.
-    let birth = format!("{}.{}", buf.pbi_start_tvsec, buf.pbi_start_tvusec);
+    let birth = format!(
+        "{}.{}",
+        process_info.pbi_start_tvsec, process_info.pbi_start_tvusec
+    );
 
     Ok(ProcessIdentityResult {
         platform: "darwin",
