@@ -397,6 +397,35 @@ function ownerProcessIsDead(token: string): boolean {
   }
 }
 
+async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
+  const firstStat = await stat(lockPath);
+  if (Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS) return false;
+  if (await readLockOwner(lockPath)) return false;
+  const firstEntries = await readdir(lockPath);
+  if (firstEntries.length !== 0) return false;
+
+  const confirmedStat = await stat(lockPath);
+  const confirmedEntries = await readdir(lockPath);
+  if (
+    confirmedStat.mtimeMs !== firstStat.mtimeMs
+    || confirmedStat.ctimeMs !== firstStat.ctimeMs
+    || confirmedEntries.length !== 0
+    || await readLockOwner(lockPath)
+  ) return false;
+
+  const stalePath = `${lockPath}.stale-${process.pid}-${randomBytes(6).toString('hex')}`;
+  try {
+    await rename(lockPath, stalePath);
+  } catch {
+    return false;
+  }
+
+  if ((await readdir(stalePath)).length === 0 && !(await readLockOwner(stalePath))) {
+    await rm(stalePath, { recursive: true, force: true });
+  }
+  return true;
+}
+
 async function sleepForRootLock(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ROOT_SKILL_ACTIVE_LOCK_RETRY_MS));
 }
@@ -409,35 +438,50 @@ async function acquireRootSkillActiveStateLock(rootPath: string): Promise<RootSk
 
   for (;;) {
     let createdLockDirectory = false;
+    let createdLockStat: Awaited<ReturnType<typeof stat>> | undefined;
     try {
       await mkdir(lockPath);
       createdLockDirectory = true;
+      createdLockStat = await stat(lockPath);
       await writeFile(lockOwnerPath(lockPath), token, { flag: 'wx' });
       return { path: lockPath, token };
     } catch (error) {
       if (createdLockDirectory) {
-        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+        try {
+          const currentStat = await stat(lockPath);
+          if (
+            !await readLockOwner(lockPath)
+            && (await readdir(lockPath)).length === 0
+            && createdLockStat
+            && currentStat.mtimeMs === createdLockStat.mtimeMs
+            && currentStat.ctimeMs === createdLockStat.ctimeMs
+          ) {
+            await rm(lockPath, { recursive: true, force: true });
+          }
+        } catch {
+          // The path may have been atomically taken over; never remove a successor.
+        }
         throw error;
       }
       try {
         const observedToken = await readLockOwner(lockPath);
-        const firstStat = await stat(lockPath);
-        if (
-          observedToken
-          && ownerProcessIsDead(observedToken)
-          && Date.now() - firstStat.mtimeMs > ROOT_SKILL_ACTIVE_LOCK_STALE_MS
-        ) {
-          const confirmedToken = await readLockOwner(lockPath);
-          const confirmedStat = await stat(lockPath);
-          if (confirmedToken === observedToken && confirmedStat.mtimeMs === firstStat.mtimeMs) {
-            const stalePath = `${lockPath}.stale-${process.pid}-${randomBytes(6).toString('hex')}`;
-            try {
-              await rename(lockPath, stalePath);
-              if (await readLockOwner(stalePath) === observedToken) {
-                await rm(stalePath, { recursive: true, force: true });
+        if (!observedToken) {
+          await reclaimOwnerlessStaleLock(lockPath);
+        } else if (ownerProcessIsDead(observedToken)) {
+          const firstStat = await stat(lockPath);
+          if (Date.now() - firstStat.mtimeMs > ROOT_SKILL_ACTIVE_LOCK_STALE_MS) {
+            const confirmedToken = await readLockOwner(lockPath);
+            const confirmedStat = await stat(lockPath);
+            if (confirmedToken === observedToken && confirmedStat.mtimeMs === firstStat.mtimeMs) {
+              const stalePath = `${lockPath}.stale-${process.pid}-${randomBytes(6).toString('hex')}`;
+              try {
+                await rename(lockPath, stalePath);
+                if (await readLockOwner(stalePath) === observedToken) {
+                  await rm(stalePath, { recursive: true, force: true });
+                }
+              } catch {
+                // Another process won the stale-lock takeover race; retry.
               }
-            } catch {
-              // Another process won the stale-lock takeover race; retry.
             }
           }
         }

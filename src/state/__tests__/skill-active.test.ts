@@ -673,6 +673,7 @@ describe('skill-active state helpers', () => {
       await waitForRootPhase(rootPath, 'proc-b', 'new-b');
       firstReady.child.kill();
       secondReady.child.kill();
+      await waitForPathGone(`${rootPath}.lock`);
 
       const final = JSON.parse(await readFile(rootPath, 'utf8')) as { active_skills: Array<{ session_id?: string; phase?: string }> };
       assert.deepEqual(
@@ -718,6 +719,17 @@ describe('skill-active state helpers', () => {
       owner.child.kill();
       contender.child.kill();
       await waitForPathGone(`${rootPath}.lock`);
+
+      await mkdir(`${rootPath}.lock`);
+      await utimes(`${rootPath}.lock`, staleTime, staleTime);
+      await writeSkillActiveStateCopiesForStateDir(
+        stateDir,
+        { active: true, skill: 'ralph', phase: 'ownerless-recovered', session_id: 'live-owner', active_skills: [{ skill: 'ralph', phase: 'ownerless-recovered', active: true, session_id: 'live-owner' }] },
+        'live-owner',
+        { active: true, skill: 'ralph', session_id: 'live-owner' },
+      );
+      assert.equal(existsSync(`${rootPath}.lock`), false);
+      assert.equal(JSON.parse(await readFile(rootPath, 'utf8')).active_skills[0].phase, 'ownerless-recovered');
 
       await mkdir(`${rootPath}.lock`);
       await writeFile(`${rootPath}.lock/owner`, '2147483647-dead-owner-token');
