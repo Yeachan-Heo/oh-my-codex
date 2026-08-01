@@ -16656,9 +16656,13 @@ function hasExactConductorOrchestrationOptionSchema(commandName: string, words: 
   const args = collectConductorInvocationWords(words, commandIndex);
   const command = shellWordLiteral(args[0] ?? "");
   const subcommand = shellWordLiteral(args[1] ?? "");
+  const isUltragoalCreate = command === "ultragoal" && (subcommand === "create" || subcommand === "create-goals");
   let permitted: Set<string>;
   let required: Set<string>;
-  if (command === "ultragoal" && subcommand === "steer") {
+  if (isUltragoalCreate) {
+    permitted = new Set(["--brief", "--goal", "--codex-goal-mode", "--force", "--json"]);
+    required = new Set(["--brief"]);
+  } else if (command === "ultragoal" && subcommand === "steer") {
     permitted = new Set(["--kind", "--target-goal-id", "--evidence", "--rationale", "--json"]);
     required = new Set(["--kind", "--target-goal-id", "--evidence", "--rationale"]);
   } else if (command === "ultragoal" && subcommand === "checkpoint") {
@@ -16677,13 +16681,15 @@ function hasExactConductorOrchestrationOptionSchema(commandName: string, words: 
     const raw = args[index] ?? "";
     const option = shellWordLiteral(raw);
     if (!option || !option.startsWith("--") || option === "--" || !conductorOrchestrationWordIsStatic(raw)) return false;
-    if (option === "--json") {
+    if (option === "--json" || (isUltragoalCreate && option === "--force")) {
       if (!permitted.has(option) || seen.has(option)) return false;
       seen.set(option, "");
       continue;
     }
     const name = option.split("=", 1)[0] ?? "";
-    if (!permitted.has(name) || seen.has(name)) return false;
+    if (!permitted.has(name)) return false;
+    const repeated = isUltragoalCreate && name === "--goal";
+    if (!repeated && seen.has(name)) return false;
     const rawValue = option.startsWith(`${name}=`) ? option.slice(name.length + 1) : args[index + 1] ?? "";
     const value = shellWordLiteral(rawValue);
     if (!value || !conductorOrchestrationWordIsStatic(rawValue) || shellWordMayProduceWgetOptions(value)) return false;
@@ -16691,6 +16697,10 @@ function hasExactConductorOrchestrationOptionSchema(commandName: string, words: 
     seen.set(name, value);
   }
   if (![...required].every((option) => seen.has(option))) return false;
+  if (isUltragoalCreate) {
+    const mode = seen.get("--codex-goal-mode");
+    return mode === undefined || new Set(["aggregate", "per-story"]).has(mode);
+  }
   const status = seen.get("--status");
   return status === undefined || new Set(["complete", "blocked", "failed", "in_progress"]).has(status);
 }
@@ -20390,6 +20400,15 @@ function isExactConductorMetadataRoot(cwd: string, target: string): boolean {
 }
 
   const shellMutations = extractConductorBashMutations(normalizedCommand, cwd, policyCwd);
+  if (
+    splitShellCommandSegments(normalizedCommand).length > 1
+    && shellMutations.some((mutation) => mutation.mainRootStructuredOrchestrationMutation)
+  ) {
+    return {
+      allowed: false,
+      blockedDetail: "Bash compound command cannot combine a Main-root Conductor orchestration mutation with another shell segment",
+    };
+  }
   if (shellMutations.length > 0) {
     for (const mutation of shellMutations) {
       if (mutation.mainRootStructuredStateWrite || mutation.mainRootStructuredOrchestrationMutation) continue;

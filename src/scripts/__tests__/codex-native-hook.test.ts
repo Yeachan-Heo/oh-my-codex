@@ -13870,6 +13870,7 @@ exit 0
 				await assertAllowed("omx auth nested help", "omx auth --help");
 				await assertBlocked("invalid state status spelling stays blocked", "omx state status --mode=deep-interview --json");
 
+
 				// #3314: sparkshell-wrapped read-only discovery must not be misclassified as a write.
 				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
 				await assertAllowed("sparkshell nested help", "omx sparkshell --help");
@@ -33216,6 +33217,56 @@ PY`,
               { cwd },
             );
 
+            const assertCommandAllowed = async (command: string) => {
+              const commandResult = await dispatchCodexNativeHook(
+                {
+                  hook_event_name: "PreToolUse",
+                  cwd,
+                  session_id: sessionId,
+                  thread_id: leaderThreadId,
+                  agent_id: leaderThreadId,
+                  tool_name: "Bash",
+                  tool_use_id: `tool-3397-${Math.random()}`,
+                  tool_input: { command },
+                },
+                { cwd },
+              );
+              assert.equal(commandResult.outputJson, null, command);
+            };
+            const assertCommandBlocked = async (command: string) => {
+              const commandResult = await dispatchCodexNativeHook(
+                {
+                  hook_event_name: "PreToolUse",
+                  cwd,
+                  session_id: sessionId,
+                  thread_id: leaderThreadId,
+                  agent_id: leaderThreadId,
+                  tool_name: "Bash",
+                  tool_use_id: `tool-3397-${Math.random()}`,
+                  tool_input: { command },
+                },
+                { cwd },
+              );
+              assert.equal(commandResult.outputJson?.decision, "block", command);
+            };
+            await symlink(join(trustedPath.split(":", 1)[0] ?? "", "omx"), join(trustedPath.split(":", 1)[0] ?? "", "gjc"));
+            await assertCommandAllowed("gjc ultragoal create --brief 'Issue 3397' --force --json");
+            await assertCommandAllowed(
+              "omx ultragoal create-goals --brief 'Issue 3397' --goal 'Fix::Correct parser' --goal 'Verify::Run regressions' --codex-goal-mode aggregate --force --json",
+            );
+            for (const command of [
+              "omx ultragoal create-goals --brief 'Issue 3397' --force --force --json",
+              "omx ultragoal create-goals --brief 'Issue 3397' --force --unknown --json",
+              "omx ultragoal create-goals --brief-file brief.md --force --json",
+              "omx ultragoal create-goals --from-stdin --force --json",
+              "omx ultragoal create-goals 'Issue 3397' --force --json",
+              "omx ultragoal create-goals --brief \"$(printf Issue3397)\" --force --json",
+              "omx ultragoal create-goals --brief 'Issue 3397' --force --json > metadata.json",
+              "omx ultragoal create-goals --brief 'Issue 3397' --force --json && printf done",
+              "env NODE_OPTIONS=--require=./payload.cjs omx ultragoal create-goals --brief 'Issue 3397' --force --json",
+            ]) {
+              await assertCommandBlocked(command);
+            }
             assert.equal(result.outputJson, null);
           } finally {
             if (inheritedPath === undefined) delete process.env.PATH;
