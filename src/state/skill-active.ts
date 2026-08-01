@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
-import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getBaseStateDir, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
@@ -367,14 +367,20 @@ interface RootSkillActiveLock {
   token: string;
 }
 
-function lockOwnerPath(lockPath: string): string {
-  return join(lockPath, 'owner');
+function lockOwnerPath(lockPath: string, token?: string): string {
+  return join(lockPath, token ? `owner-${token}` : 'owner');
 }
 
 async function readLockOwner(lockPath: string): Promise<string | null> {
   try {
-    const owner = (await readFile(lockOwnerPath(lockPath), 'utf-8')).trim();
-    return owner || null;
+    const entries = await readdir(lockPath);
+    const ownerEntries = entries.filter((entry) => entry === 'owner' || entry.startsWith('owner-'));
+    if (ownerEntries.length !== 1) return null;
+    const ownerName = ownerEntries[0];
+    const owner = (await readFile(join(lockPath, ownerName), 'utf-8')).trim();
+    if (!owner) return null;
+    if (ownerName === 'owner') return owner;
+    return ownerName.slice('owner-'.length) === owner ? owner : null;
   } catch {
     return null;
   }
@@ -397,19 +403,34 @@ function ownerProcessIsDead(token: string): boolean {
   }
 }
 
+function lockPendingPath(lockPath: string, token: string): string {
+  return join(lockPath, `pending-${token}`);
+}
+
+function lockReleasedPath(lockPath: string, token: string): string {
+  return `${lockPath}.released-${token}`;
+}
+
 async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
   const firstStat = await stat(lockPath);
-  if (Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS) return false;
-  if (await readLockOwner(lockPath)) return false;
   const firstEntries = await readdir(lockPath);
-  if (firstEntries.length !== 0) return false;
+  const releasedEntry = firstEntries.length === 1 && firstEntries[0].startsWith('released-');
+  const pendingEntry = firstEntries.length === 1 && firstEntries[0].startsWith('pending-');
+  if (!releasedEntry && (!pendingEntry && Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS)) return false;
+  if (await readLockOwner(lockPath)) return false;
 
+  const firstEntry = firstEntries[0];
+  if (firstEntry && (releasedEntry || pendingEntry)) {
+    const entryToken = firstEntry.slice(firstEntry.indexOf('-') + 1);
+    if ((await readFile(join(lockPath, firstEntry), 'utf-8')).trim() !== entryToken) return false;
+  }
   const confirmedStat = await stat(lockPath);
   const confirmedEntries = await readdir(lockPath);
   if (
     confirmedStat.mtimeMs !== firstStat.mtimeMs
     || confirmedStat.ctimeMs !== firstStat.ctimeMs
-    || confirmedEntries.length !== 0
+    || confirmedEntries.length !== firstEntries.length
+    || confirmedEntries[0] !== firstEntry
     || await readLockOwner(lockPath)
   ) return false;
 
@@ -420,7 +441,7 @@ async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
     return false;
   }
 
-  if ((await readdir(stalePath)).length === 0 && !(await readLockOwner(stalePath))) {
+  if (!(await readLockOwner(stalePath))) {
     await rm(stalePath, { recursive: true, force: true });
   }
   return true;
@@ -443,7 +464,8 @@ async function acquireRootSkillActiveStateLock(rootPath: string): Promise<RootSk
       await mkdir(lockPath);
       createdLockDirectory = true;
       createdLockStat = await stat(lockPath);
-      await writeFile(lockOwnerPath(lockPath), token, { flag: 'wx' });
+      await writeFile(lockPendingPath(lockPath, token), token, { flag: 'wx' });
+      await rename(lockPendingPath(lockPath, token), lockOwnerPath(lockPath, token));
       return { path: lockPath, token };
     } catch (error) {
       if (createdLockDirectory) {
@@ -498,7 +520,24 @@ async function acquireRootSkillActiveStateLock(rootPath: string): Promise<RootSk
 
 async function releaseRootSkillActiveStateLock(lock: RootSkillActiveLock): Promise<void> {
   if (await readLockOwner(lock.path) !== lock.token) return;
-  await rm(lock.path, { recursive: true, force: true }).catch(() => undefined);
+  const releasedPath = lockReleasedPath(lock.path, lock.token);
+  try {
+    await writeFile(releasedPath, lock.token, { flag: 'wx' });
+    await unlink(lockOwnerPath(lock.path, lock.token));
+  } catch {
+    await unlink(releasedPath).catch(() => undefined);
+    return;
+  }
+
+  try {
+    if ((await readdir(lock.path)).length === 0) {
+      await rmdir(lock.path);
+    }
+  } catch {
+    // A takeover or successor won the path race; never remove its lock.
+  } finally {
+    await unlink(releasedPath).catch(() => undefined);
+  }
 }
 
 async function withRootSkillActiveStateLock<T>(rootPath: string, operation: (lock: RootSkillActiveLock) => Promise<T>): Promise<T> {
@@ -597,27 +636,28 @@ async function writeSkillActiveStateCopiesToPaths(
   lock?: RootSkillActiveLock,
 ): Promise<void> {
   const normalized = { version: 1, ...state };
-  if (rootState !== null && lock) {
-    const currentRoot = await readRootStateForWrite(rootPath);
-    const nextRoot = sessionPath
-      ? mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim())
-      : { version: 1, ...(rootState ?? normalized) };
-    await writeRootSkillActiveStateAtomically(rootPath, nextRoot, beforeCommit, lock);
-  } else if (rootState !== null) {
-    await withRootSkillActiveStateLock(rootPath, async (ownedLock) => {
-      const currentRoot = await readRootStateForWrite(rootPath);
-      const nextRoot = sessionPath
-        ? mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim())
-        : { version: 1, ...(rootState ?? normalized) };
-      await writeRootSkillActiveStateAtomically(rootPath, nextRoot, beforeCommit, ownedLock);
-    });
-  }
-
-  if (sessionPath) {
+  const writeSessionCopy = async (): Promise<void> => {
+    if (!sessionPath) return;
     const sessionPayload = `${JSON.stringify(normalized, null, 2)}\n`;
     await mkdir(dirname(sessionPath), { recursive: true });
     await beforeCommit?.({ site: 'skill-active.session-copy', kind: 'write', path: sessionPath });
     await writeFile(sessionPath, sessionPayload);
+  };
+  const writeRootTransaction = async (ownedLock: RootSkillActiveLock): Promise<void> => {
+    const currentRoot = await readRootStateForWrite(rootPath);
+    const nextRoot = sessionPath
+      ? mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim())
+      : { version: 1, ...(rootState ?? normalized) };
+    await writeRootSkillActiveStateAtomically(rootPath, nextRoot, beforeCommit, ownedLock);
+    await writeSessionCopy();
+  };
+
+  if (rootState !== null && lock) {
+    await writeRootTransaction(lock);
+  } else if (rootState !== null) {
+    await withRootSkillActiveStateLock(rootPath, writeRootTransaction);
+  } else {
+    await writeSessionCopy();
   }
 }
 

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,6 +67,8 @@ function rootWriterWorkerSource(): string {
     const readyPath = process.env.READY_PATH;
     const releasePath = process.env.RELEASE_PATH;
     const errorPath = process.env.ERROR_PATH;
+    const sessionReadyPath = process.env.SESSION_READY_PATH;
+    const sessionReleasePath = process.env.SESSION_RELEASE_PATH;
     const rootPath = stateDir + '/skill-active-state.json';
     try {
       const { writeSkillActiveStateCopiesForStateDir } = await import(${JSON.stringify(new URL('../skill-active.js', import.meta.url).href)});
@@ -76,9 +78,15 @@ function rootWriterWorkerSource(): string {
         version: 1, active: true, skill, phase, session_id: sessionId,
         active_skills: [{ skill, phase, active: true, session_id: sessionId }],
       }, sessionId, root, { beforeCommit: async (event) => {
-        if (event.site !== 'skill-active.root-copy') return;
-        await writeFile(readyPath, 'ready');
-        while (!existsSync(releasePath)) await new Promise(resolve => setTimeout(resolve, 10));
+        if (event.site === 'skill-active.root-copy') {
+          await writeFile(readyPath, 'ready');
+          while (!existsSync(releasePath)) await new Promise(resolve => setTimeout(resolve, 10));
+          return;
+        }
+        if (event.site === 'skill-active.session-copy' && sessionReadyPath && sessionReleasePath) {
+          await writeFile(sessionReadyPath, 'ready');
+          while (!existsSync(sessionReleasePath)) await new Promise(resolve => setTimeout(resolve, 10));
+        }
       }});
     } catch (error) {
       await writeFile(errorPath, JSON.stringify({ code: error?.code, message: String(error?.message ?? error) }));
@@ -676,6 +684,61 @@ describe('skill-active state helpers', () => {
     });
   });
 
+  it('does not release a successor lock after cross-process takeover', async () => {
+    await withTempRepo('omx-skill-active-successor-release-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const rootPath = join(stateDir, 'skill-active-state.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(rootPath, `${JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'ralph',
+        active_skills: [{ skill: 'ralph', phase: 'old', active: true, session_id: 'release-owner' }],
+      }, null, 2)}\n`);
+      const readyPath = join(stateDir, 'release-owner.ready');
+      const releasePath = join(stateDir, 'release-owner.release');
+      const sessionReadyPath = join(stateDir, 'release-owner.session-ready');
+      const sessionReleasePath = join(stateDir, 'release-owner.session-release');
+      const errorPath = join(stateDir, 'release-owner.error');
+      const worker = spawn(process.execPath, ['--input-type=module', '-e', rootWriterWorkerSource()], {
+        env: {
+          ...process.env,
+          STATE_DIR: stateDir,
+          SESSION_ID: 'release-owner',
+          SKILL: 'ralph',
+          PHASE: 'updated',
+          READY_PATH: readyPath,
+          RELEASE_PATH: releasePath,
+          SESSION_READY_PATH: sessionReadyPath,
+          SESSION_RELEASE_PATH: sessionReleasePath,
+          ERROR_PATH: errorPath,
+        },
+        stdio: 'ignore',
+      });
+      const done = new Promise<number | null>((resolve) => worker.once('close', resolve));
+      await waitForPath(readyPath);
+      await writeFile(releasePath, 'release-root');
+      await waitForPath(sessionReadyPath);
+
+      const lockPath = `${rootPath}.lock`;
+      const ownerEntry = (await readdir(lockPath)).find((entry) => entry.startsWith('owner-'));
+      assert.ok(ownerEntry);
+      const ownerToken = await readFile(join(lockPath, ownerEntry), 'utf8');
+      const successorPath = `${lockPath}.old-owner`;
+      await rename(lockPath, successorPath);
+      await mkdir(lockPath);
+      const successorToken = 'successor-token';
+      await writeFile(join(lockPath, `owner-${successorToken}`), successorToken);
+      await writeFile(sessionReleasePath, 'release-session');
+
+      assert.equal(await done, 0);
+      assert.equal(await readFile(join(lockPath, `owner-${successorToken}`), 'utf8'), successorToken);
+      assert.equal(await readFile(join(successorPath, ownerEntry), 'utf8'), ownerToken);
+      assert.equal(existsSync(errorPath), false);
+      await rm(lockPath, { recursive: true, force: true });
+      await rm(successorPath, { recursive: true, force: true });
+    });
+  });
   it('rejects live stale takeover, cleans dead stale locks, and preserves recovery', async () => {
     await withTempRepo('omx-skill-active-stale-lock-', async (cwd) => {
       const stateDir = join(cwd, '.omx', 'state');
