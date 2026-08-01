@@ -653,9 +653,17 @@ describe('skill-active state helpers', () => {
       };
       const first = launch('proc-a', 'ralph', 'new-a');
       const second = launch('proc-b', 'team', 'new-b');
-      await Promise.race([waitForReadyOrError(first.readyPath, first.errorPath), waitForReadyOrError(second.readyPath, second.errorPath)]);
+      const firstReady = await Promise.race([
+        waitForReadyOrError(first.readyPath, first.errorPath).then(async (outcome) => {
+          if (outcome !== 'ready') throw new Error(await readFile(first.errorPath, 'utf8'));
+          return first;
+        }),
+        waitForReadyOrError(second.readyPath, second.errorPath).then(async (outcome) => {
+          if (outcome !== 'ready') throw new Error(await readFile(second.errorPath, 'utf8'));
+          return second;
+        }),
+      ]);
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
-      const firstReady = existsSync(first.readyPath) ? first : second;
       const secondReady = firstReady === first ? second : first;
       assert.equal(existsSync(secondReady.readyPath), false);
       await writeFile(firstReady.releasePath, 'release');
