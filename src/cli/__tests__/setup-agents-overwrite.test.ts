@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
+import { writeSessionStart } from '../../hooks/session.js';
 import {
   addGeneratedAgentsMarker,
   OMX_MANAGED_AGENTS_END_MARKER,
@@ -74,18 +75,8 @@ async function runSetupWithCapturedLogs(
   }
 }
 
-async function readCurrentLinuxStartTicks(): Promise<number | undefined> {
-  if (process.platform !== 'linux') return undefined;
-  try {
-    const stat = await readFile('/proc/self/stat', 'utf-8');
-    const commandEnd = stat.lastIndexOf(')');
-    if (commandEnd === -1) return undefined;
-    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-    const ticks = Number(fields[19]);
-    return Number.isFinite(ticks) ? ticks : undefined;
-  } catch {
-    return undefined;
-  }
+async function writeActiveSessionFixture(cwd: string): Promise<void> {
+  await writeSessionStart(cwd, 'sess-test');
 }
 
 describe('omx setup AGENTS refresh behavior', () => {
@@ -823,19 +814,10 @@ describe('omx setup AGENTS refresh behavior', () => {
     const restoreHome = setMockHome(home);
     const existing = '# active session file\n';
     try {
-      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), existing);
-      await writeFile(
-        join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({
-          session_id: 'sess-test',
-          started_at: new Date().toISOString(),
-          cwd: wd,
-          pid: process.pid,
-          pid_start_ticks: pidStartTicks,
-        }, null, 2)
-      );
+      await writeActiveSessionFixture(wd);
+
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
@@ -865,19 +847,10 @@ describe('omx setup AGENTS refresh behavior', () => {
     const restoreHome = setMockHome(home);
     const existing = '# active session file\n';
     try {
-      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), existing);
-      await writeFile(
-        join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({
-          session_id: 'sess-test',
-          started_at: new Date().toISOString(),
-          cwd: wd,
-          pid: process.pid,
-          pid_start_ticks: pidStartTicks,
-        }, null, 2)
-      );
+      await writeActiveSessionFixture(wd);
+
       const statePath = join(wd, '.omx', 'setup-scope.json');
 
       for (const [mergeAgentsPolicy, expected] of [
@@ -908,19 +881,10 @@ describe('omx setup AGENTS refresh behavior', () => {
     const restoreHome = setMockHome(home);
     const existing = '# active plugin project file\n';
     try {
-      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), existing);
-      await writeFile(
-        join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({
-          session_id: 'sess-test',
-          started_at: new Date().toISOString(),
-          cwd: wd,
-          pid: process.pid,
-          pid_start_ticks: pidStartTicks,
-        }, null, 2)
-      );
+      await writeActiveSessionFixture(wd);
+
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
@@ -951,19 +915,10 @@ describe('omx setup AGENTS refresh behavior', () => {
     const restoreHome = setMockHome(home);
     const existing = '# active plugin project file\n';
     try {
-      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), existing);
-      await writeFile(
-        join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({
-          session_id: 'sess-test',
-          started_at: new Date().toISOString(),
-          cwd: wd,
-          pid: process.pid,
-          pid_start_ticks: pidStartTicks,
-        }, null, 2)
-      );
+      await writeActiveSessionFixture(wd);
+
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
@@ -1017,19 +972,9 @@ describe('omx setup AGENTS refresh behavior', () => {
     const restoreHome = setMockHome(home);
     const existing = '# active session file\n';
     try {
-      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), existing);
-      await writeFile(
-        join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({
-          session_id: 'sess-test',
-          started_at: new Date().toISOString(),
-          cwd: wd,
-          pid: process.pid,
-          pid_start_ticks: pidStartTicks,
-        }, null, 2)
-      );
+      await writeActiveSessionFixture(wd);
 
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
