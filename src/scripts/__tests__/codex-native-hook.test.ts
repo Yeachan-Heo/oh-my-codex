@@ -17144,8 +17144,7 @@ exit 0
 
 			const previousPath = process.env.PATH;
 			try {
-				// Keep only the active Node runtime plus system directories; omit workspace shims and ambient PATH entries.
-				process.env.PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
+				process.env.PATH = "/usr/bin:/bin";
 				const cleanPathCanonicalStateWrite = await preToolUse(
 					{
 						hook_event_name: "PreToolUse",
@@ -17154,7 +17153,7 @@ exit 0
 						tool_name: "Bash",
 						tool_use_id: "tool-di-clean-path-canonical-state-write",
 						tool_input: {
-							command: `env FOO=bar node dist/cli/omx.js state write --input ${safeStateWriteInput} --json`,
+							command: `env FOO=bar ${JSON.stringify(process.execPath)} dist/cli/omx.js state write --input ${safeStateWriteInput} --json`,
 						},
 					},
 					{ cwd },
