@@ -17142,6 +17142,59 @@ exit 0
 				);
 			}
 
+			const previousPath = process.env.PATH;
+			try {
+				process.env.PATH = "/usr/bin:/bin";
+				const cleanPathCanonicalStateWrite = await preToolUse(
+					{
+						hook_event_name: "PreToolUse",
+						cwd,
+						session_id: "sess-di-artifact",
+						tool_name: "Bash",
+						tool_use_id: "tool-di-clean-path-canonical-state-write",
+						tool_input: {
+							command: `env FOO=bar node dist/cli/omx.js state write --input ${safeStateWriteInput} --json`,
+						},
+					},
+					{ cwd },
+				);
+				assert.equal(cleanPathCanonicalStateWrite.outputJson, null, "canonical clean-PATH state write should reach backend validation");
+				const cleanPathReadOnlyInspection = await preToolUse(
+					{
+						hook_event_name: "PreToolUse",
+						cwd,
+						session_id: "sess-di-artifact",
+						tool_name: "Bash",
+						tool_use_id: "tool-di-clean-path-read-only-inspection",
+						tool_input: {
+							command: "sed -n '1,20p' src/runtime.ts; perl -ne 'print if $. < 3' src/runtime.ts",
+						},
+					},
+					{ cwd },
+				);
+				assert.equal(cleanPathReadOnlyInspection.outputJson, null, "sed/perl inspection should remain read-only under clean PATH");
+				for (const [toolUseId, command] of [
+					["tool-di-clean-path-sed-mutation", "sed -Ei 's/old/new/' src/runtime.ts"],
+					["tool-di-clean-path-perl-mutation", "perl -0pi -e 's/old/new/' src/runtime.ts"],
+				] as const) {
+					const cleanPathMutation = await preToolUse(
+						{
+							hook_event_name: "PreToolUse",
+							cwd,
+							session_id: "sess-di-artifact",
+							tool_name: "Bash",
+							tool_use_id: toolUseId,
+							tool_input: { command },
+						},
+						{ cwd },
+					);
+					assert.equal(cleanPathMutation.outputJson?.decision, "block", command);
+				}
+			} finally {
+				if (previousPath === undefined) delete process.env.PATH;
+				else process.env.PATH = previousPath;
+			}
+
 			const safeArtifactInputFile = join(
 				cwd,
 				".omx",
