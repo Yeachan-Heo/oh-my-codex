@@ -303,21 +303,23 @@ describe('runPtyResult failure contracts', () => {
     assert.equal(calls.at(-1)?.[0], 'kill-pane');
   });
 
-  it('surfaces capture failure without losing the child status', () => {
+  it('rejects capture failure from status alone without losing the child status', () => {
     const { result } = runWithDisplayState('1 7', {
-      'capture-pane': { status: 1, stdout: '', stderr: 'capture failed', error: 'capture failed' },
+      'capture-pane': { status: 1, stdout: '', stderr: 'capture status only', error: '' },
     });
     assert.equal(result.status, 7);
-    assert.match(result.error, /capture failed/);
-    assert.equal(result.stderr, 'capture failed');
+    assert.match(result.error, /capture-pane failed with status 1/);
+    assert.match(result.error, /capture status only/);
+    assert.equal(result.stderr, 'capture status only');
   });
 
-  it('surfaces cleanup failure after a successful child exit', () => {
+  it('rejects cleanup failure from status alone after a successful child exit', () => {
     const { result } = runWithDisplayState('1 0', {
-      'kill-pane': { status: 1, stdout: '', stderr: 'cleanup failed', error: 'cleanup failed' },
+      'kill-pane': { status: 1, stdout: '', stderr: 'cleanup status only', error: '' },
     });
     assert.equal(result.status, 0);
-    assert.match(result.error, /cleanup failed/);
-    assert.equal(result.stderr, 'cleanup failed');
+    assert.match(result.error, /kill-pane failed with status 1/);
+    assert.match(result.error, /cleanup status only/);
+    assert.equal(result.stderr, 'cleanup status only');
   });
 });

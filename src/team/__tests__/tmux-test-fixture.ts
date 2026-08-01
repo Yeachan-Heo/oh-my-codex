@@ -213,6 +213,18 @@ interface PtyCommandRunner {
   sleep?: () => void;
 }
 
+function ptyRunnerFailure(
+  label: string,
+  result: { status: number | null; stderr: string; error: string },
+): string {
+  if (result.status === 0 && result.error === '') return '';
+  const detail = result.error || result.stderr;
+  if (result.status !== 0) {
+    return `${label} failed with status ${String(result.status)}${detail === '' ? '' : `: ${detail}`}`;
+  }
+  return `${label} failed${detail === '' ? '' : `: ${detail}`}`;
+}
+
 export function runPtyResult(
   command: string,
   options: PtyCommandRunner & {
@@ -253,7 +265,7 @@ export function runPtyResult(
   }
   const outputResult = options.runResult(['capture-pane', '-p', '-t', paneId, '-S', '-']);
   const cleanupResult = options.runResult(['kill-pane', '-t', paneId]);
-  const errors = [outputResult.error, cleanupResult.error].filter(Boolean).join('; ');
+  const errors = [ptyRunnerFailure('capture-pane', outputResult), ptyRunnerFailure('kill-pane', cleanupResult)].filter(Boolean).join('; ');
   if (status === null) {
     return {
       status: null,
