@@ -1,5 +1,6 @@
+import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
-import { mkdir, readFile, readdir, unlink, writeFile } from 'fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getBaseStateDir, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
@@ -12,6 +13,20 @@ import { readNeutralizedRoutingOverlay } from '../ralplan/documented-leader-pref
 
 export const SKILL_ACTIVE_STATE_MODE = 'skill-active';
 export const SKILL_ACTIVE_STATE_FILE = `${SKILL_ACTIVE_STATE_MODE}-state.json`;
+
+const ROOT_SKILL_ACTIVE_LOCK_TIMEOUT_MS = 2_000;
+const ROOT_SKILL_ACTIVE_LOCK_RETRY_MS = 10;
+const ROOT_SKILL_ACTIVE_LOCK_STALE_MS = 10_000;
+
+export class SkillActiveStateWriteError extends Error {
+  readonly code: 'lock-timeout' | 'malformed-root' | 'atomic-replace-failed';
+
+  constructor(code: SkillActiveStateWriteError['code'], message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'SkillActiveStateWriteError';
+    this.code = code;
+  }
+}
 
 export const CANONICAL_WORKFLOW_SKILLS = [
   'autopilot',
@@ -73,6 +88,7 @@ export interface SyncCanonicalSkillStateOptions {
   source?: string;
   allSessions?: boolean;
   beforeCommit?: BeforeWritableCommit;
+  rootLockHeld?: boolean;
 }
 
 function safeString(value: unknown): string {
@@ -326,6 +342,118 @@ export async function readSkillActiveState(path: string): Promise<SkillActiveSta
   }
 }
 
+async function readRootStateForWrite(rootPath: string): Promise<SkillActiveStateLike | null> {
+  let raw: string;
+  try {
+    raw = await readFile(rootPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new SkillActiveStateWriteError('malformed-root', `malformed root skill-active state: ${rootPath}`, { cause: error });
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new SkillActiveStateWriteError('malformed-root', `malformed root skill-active state: ${rootPath}`);
+  }
+  return normalizeSkillActiveState(parsed) ?? parsed as SkillActiveStateLike;
+}
+
+async function sleepForRootLock(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ROOT_SKILL_ACTIVE_LOCK_RETRY_MS));
+}
+
+async function withRootSkillActiveStateLock<T>(rootPath: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = `${rootPath}.lock`;
+  const deadline = Date.now() + ROOT_SKILL_ACTIVE_LOCK_TIMEOUT_MS;
+  await mkdir(dirname(rootPath), { recursive: true });
+
+  for (;;) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch {
+      try {
+        const lockAge = Date.now() - (await stat(lockPath)).mtimeMs;
+        if (lockAge > ROOT_SKILL_ACTIVE_LOCK_STALE_MS) {
+          await rm(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // The lock may have been released between mkdir and stat; retry.
+      }
+      if (Date.now() >= deadline) {
+        throw new SkillActiveStateWriteError('lock-timeout', `timed out waiting for root skill-active lock: ${lockPath}`);
+      }
+      await sleepForRootLock();
+    }
+  }
+
+  try {
+    return await operation();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function stateWithActiveEntries(
+  base: SkillActiveStateLike | null,
+  entries: SkillActiveEntry[],
+  fallbackMode: string,
+): SkillActiveStateLike {
+  const inherited = entries.length > 0 ? clearTerminalSkillActiveMarkers({ ...(base ?? {}) }) : { ...(base ?? {}) };
+  const primarySkill = pickPrimaryWorkflowMode(safeString(inherited.skill).trim(), entries.map((entry) => entry.skill), fallbackMode);
+  const primaryEntry = entries.find((entry) => entry.skill === primarySkill) ?? entries[0];
+  return {
+    ...inherited,
+    version: 1,
+    active: entries.length > 0,
+    skill: primaryEntry?.skill || primarySkill || fallbackMode,
+    phase: primaryEntry?.phase || safeString(inherited.phase).trim(),
+    activated_at: primaryEntry?.activated_at || safeString(inherited.activated_at).trim(),
+    active_skills: entries,
+  };
+}
+
+function mergeRootStateForSession(
+  currentRoot: SkillActiveStateLike | null,
+  sessionState: SkillActiveStateLike,
+  sessionId: string,
+): SkillActiveStateLike {
+  const currentEntries = listActiveSkills(currentRoot ?? {});
+  const hasCurrentSessionEntry = currentEntries.some((entry) => safeString(entry.session_id).trim() === sessionId);
+  const incomingEntries = hasCurrentSessionEntry
+    ? listActiveSkills(sessionState).filter((entry) => safeString(entry.session_id).trim() === sessionId)
+    : [];
+  const mergedEntries = [
+    ...currentEntries.filter((entry) => safeString(entry.session_id).trim() !== sessionId),
+    ...incomingEntries,
+  ];
+  return stateWithActiveEntries(currentRoot ?? sessionState, mergedEntries, sessionState.skill || 'skill-active');
+}
+
+async function writeRootSkillActiveStateAtomically(
+  rootPath: string,
+  rootState: SkillActiveStateLike,
+  beforeCommit?: BeforeWritableCommit,
+): Promise<void> {
+  const tempPath = `${rootPath}.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const payload = `${JSON.stringify({ version: 1, ...rootState }, null, 2)}\n`;
+  await beforeCommit?.({ site: 'skill-active.root-copy', kind: 'write', path: rootPath });
+  try {
+    await writeFile(tempPath, payload);
+    await rename(tempPath, rootPath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    if (error instanceof SkillActiveStateWriteError) throw error;
+    throw new SkillActiveStateWriteError('atomic-replace-failed', `failed to atomically replace root skill-active state: ${rootPath}`, { cause: error });
+  }
+}
+
 export async function writeSkillActiveStateCopies(
   cwd: string,
   state: SkillActiveStateLike,
@@ -341,10 +469,10 @@ export async function writeSkillActiveStateCopiesForStateDir(
   state: SkillActiveStateLike,
   sessionId?: string,
   rootState?: SkillActiveStateLike | null,
-  options: { beforeCommit?: BeforeWritableCommit } = {},
+  options: { beforeCommit?: BeforeWritableCommit; rootLockHeld?: boolean } = {},
 ): Promise<void> {
   const { rootPath, sessionPath } = getSkillActiveStatePathsForStateDir(stateDir, sessionId);
-  await writeSkillActiveStateCopiesToPaths(rootPath, sessionPath, state, rootState, options.beforeCommit);
+  await writeSkillActiveStateCopiesToPaths(rootPath, sessionPath, state, rootState, options.beforeCommit, options.rootLockHeld);
 }
 
 async function writeSkillActiveStateCopiesToPaths(
@@ -353,20 +481,27 @@ async function writeSkillActiveStateCopiesToPaths(
   state: SkillActiveStateLike,
   rootState?: SkillActiveStateLike | null,
   beforeCommit?: BeforeWritableCommit,
+  rootLockHeld = false,
 ): Promise<void> {
   const normalized = { version: 1, ...state };
-  const normalizedRoot = rootState === null
-    ? null
-    : { version: 1, ...(rootState ?? normalized) };
-  if (normalizedRoot !== null) {
-    const rootPayload = JSON.stringify(normalizedRoot, null, 2);
-    await mkdir(dirname(rootPath), { recursive: true });
-    await beforeCommit?.({ site: 'skill-active.root-copy', kind: 'write', path: rootPath });
-    await writeFile(rootPath, rootPayload);
+  if (rootState !== null && rootLockHeld) {
+    const currentRoot = await readRootStateForWrite(rootPath);
+    const nextRoot = sessionPath
+      ? mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim())
+      : { version: 1, ...(rootState ?? normalized) };
+    await writeRootSkillActiveStateAtomically(rootPath, nextRoot, beforeCommit);
+  } else if (rootState !== null) {
+    await withRootSkillActiveStateLock(rootPath, async () => {
+      const currentRoot = await readRootStateForWrite(rootPath);
+      const nextRoot = sessionPath
+        ? mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim())
+        : { version: 1, ...(rootState ?? normalized) };
+      await writeRootSkillActiveStateAtomically(rootPath, nextRoot, beforeCommit);
+    });
   }
 
   if (sessionPath) {
-    const sessionPayload = JSON.stringify(normalized, null, 2);
+    const sessionPayload = `${JSON.stringify(normalized, null, 2)}\n`;
     await mkdir(dirname(sessionPath), { recursive: true });
     await beforeCommit?.({ site: 'skill-active.session-copy', kind: 'write', path: sessionPath });
     await writeFile(sessionPath, sessionPayload);
@@ -403,6 +538,18 @@ export function tracksCanonicalWorkflowSkill(mode: string): mode is CanonicalWor
 }
 
 export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkillStateOptions): Promise<void> {
+  const baseStateDir = options.baseStateDir ?? getBaseStateDir(options.cwd);
+  const { rootPath } = getSkillActiveStatePathsForStateDir(baseStateDir);
+  if (options.rootLockHeld) {
+    await syncCanonicalSkillStateForModeUnlocked(options);
+    return;
+  }
+  await withRootSkillActiveStateLock(rootPath, async () => {
+    await syncCanonicalSkillStateForModeUnlocked({ ...options, baseStateDir, rootLockHeld: true });
+  });
+}
+
+async function syncCanonicalSkillStateForModeUnlocked(options: SyncCanonicalSkillStateOptions): Promise<void> {
   const {
     cwd,
     baseStateDir = getBaseStateDir(cwd),
@@ -421,7 +568,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
   if (!tracksCanonicalWorkflowSkill(mode)) return;
 
   const { rootPath, sessionPath } = getSkillActiveStatePathsForStateDir(baseStateDir, sessionId);
-  const existingRoot = await readSkillActiveState(rootPath);
+  const existingRoot = await readRootStateForWrite(rootPath);
   const existingSession = sessionPath ? await readSkillActiveState(sessionPath) : null;
   if (!existingRoot && !existingSession && !active && !options.allSessions) return;
 
@@ -521,6 +668,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
       );
     await writeSkillActiveStateCopiesForStateDir(baseStateDir, nextSessionState, sessionId, nextRootState, {
       beforeCommit: options.beforeCommit,
+      rootLockHeld: true,
     });
     return;
   }
@@ -550,6 +698,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
   const nextRootState = applyEntriesToState(existingRoot, nextRootEntries, mode);
   await writeSkillActiveStateCopiesForStateDir(baseStateDir, nextRootState, undefined, nextRootState, {
     beforeCommit: options.beforeCommit,
+    rootLockHeld: true,
   });
 
   const sessionsDir = join(baseStateDir, 'sessions');
@@ -586,6 +735,7 @@ export async function syncCanonicalSkillStateForMode(options: SyncCanonicalSkill
     );
     await writeSkillActiveStateCopiesForStateDir(baseStateDir, nextSessionState, sessionId, nextRootState, {
       beforeCommit: options.beforeCommit,
+      rootLockHeld: true,
     });
   }
 }

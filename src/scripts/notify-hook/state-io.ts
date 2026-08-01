@@ -6,6 +6,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { validateSessionId } from '../../mcp/state-paths.js';
 import { asNumber, safeString } from './utils.js';
+import { SKILL_ACTIVE_STATE_FILE, writeSkillActiveStateCopiesForStateDir } from '../../state/skill-active.js';
 
 
 export { readdir };
@@ -223,6 +224,16 @@ export async function writeScopedJson(
   explicitSessionId: string | undefined,
   value: unknown,
 ): Promise<void> {
+  if (fileName === SKILL_ACTIVE_STATE_FILE) {
+    const rootState = explicitSessionId ? await readJsonIfExists(join(baseStateDir, fileName), null) : value;
+    await writeSkillActiveStateCopiesForStateDir(
+      baseStateDir,
+      value as Record<string, unknown>,
+      explicitSessionId,
+      rootState,
+    );
+    return;
+  }
   const targetPath = await getScopedStatePath(baseStateDir, fileName, explicitSessionId);
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(targetPath, JSON.stringify(value, null, 2));
