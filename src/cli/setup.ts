@@ -689,7 +689,14 @@ function nativeHookTransactionTopologyEqual(
 ): boolean {
 	return left.kind === "absent" || right.kind === "absent"
 		? left.kind === right.kind
-		: left.mode === right.mode;
+		: nativeHookTransactionModesEqual(left.mode, right.mode);
+}
+
+function nativeHookTransactionModesEqual(left: number, right: number): boolean {
+	if (process.platform !== "win32") return left === right;
+	// Windows only preserves the writable/read-only distinction for chmod modes.
+	// For example, a requested 0600 file is reported by lstat as 0666.
+	return Boolean(left & 0o222) === Boolean(right & 0o222);
 }
 
 function isMissingPathError(error: unknown): boolean {

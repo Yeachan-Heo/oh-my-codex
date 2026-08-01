@@ -13,7 +13,7 @@ export interface RegularFileDurabilityTracker {
 	degraded: boolean;
 }
 
-function isUnsupportedWindowsRegularFileSync(
+function isUnsupportedWindowsSync(
 	error: unknown,
 	platform: NodeJS.Platform,
 ): boolean {
@@ -38,8 +38,23 @@ export async function syncRegularFile(
 		await handle.sync();
 		return "synced";
 	} catch (error) {
-		if (!isUnsupportedWindowsRegularFileSync(error, platform)) throw error;
+		if (!isUnsupportedWindowsSync(error, platform)) throw error;
 		return "unsupported-windows-eperm";
+	}
+}
+
+/**
+ * Windows does not support fsync for directory handles and reports EPERM.
+ * Preserve every other platform/error pair as fatal.
+ */
+export async function syncDirectoryHandle(
+	handle: Pick<FileHandle, "sync">,
+	platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+	try {
+		await handle.sync();
+	} catch (error) {
+		if (!isUnsupportedWindowsSync(error, platform)) throw error;
 	}
 }
 

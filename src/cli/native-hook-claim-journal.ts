@@ -3,6 +3,7 @@ import { constants } from "fs";
 import { copyFile, link, open, lstat, mkdir, readFile, rm, type FileHandle } from "fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "path";
 import {
+	syncDirectoryHandle,
 	syncRegularFile,
 	type RegularFileSyncOutcome,
 } from "../utils/file-durability.js";
@@ -48,10 +49,10 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-async function fsyncDirectory(path: string): Promise<void> {
+async function fsyncDirectory(path: string, platform: NodeJS.Platform): Promise<void> {
 	const handle = await open(path, "r");
 	try {
-		await handle.sync();
+		await syncDirectoryHandle(handle, platform);
 	} finally {
 		await handle.close();
 	}
@@ -63,7 +64,7 @@ export function createNativeHookClaimJournalDurability(
 	return {
 		platform,
 		syncRegularFile: (handle) => syncRegularFile(handle, platform),
-		syncDirectory: fsyncDirectory,
+		syncDirectory: (path) => fsyncDirectory(path, platform),
 	};
 }
 

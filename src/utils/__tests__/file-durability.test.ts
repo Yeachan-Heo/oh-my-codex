@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
 	emitDegradedDurabilityWarning,
 	recordRegularFileSyncOutcome,
+	syncDirectoryHandle,
 	syncRegularFile,
 	type RegularFileDurabilityTracker,
 } from "../file-durability.js";
@@ -22,6 +23,29 @@ test("regular-file sync returns the Windows EPERM durability outcome", async () 
 test("regular-file sync returns synced after a successful sync", async () => {
 	assert.equal(await syncRegularFile({ sync: async () => {} }, "win32"), "synced");
 });
+
+test("directory sync tolerates Windows EPERM", async () => {
+	await assert.doesNotReject(
+		syncDirectoryHandle({ sync: async () => { throw errno("EPERM"); } }, "win32"),
+	);
+});
+
+test("directory sync succeeds when fsync is supported", async () => {
+	await assert.doesNotReject(syncDirectoryHandle({ sync: async () => {} }, "linux"));
+});
+
+for (const { description, platform, failure } of [
+	{ description: "Linux EPERM", platform: "linux", failure: errno("EPERM") },
+	{ description: "Windows EACCES", platform: "win32", failure: errno("EACCES") },
+	{ description: "Windows message-only EPERM", platform: "win32", failure: new Error("EPERM") },
+] as const) {
+	test(`directory sync preserves fatal error identity for ${description}`, async () => {
+		await assert.rejects(
+			syncDirectoryHandle({ sync: async () => { throw failure; } }, platform),
+			(error: unknown) => error === failure,
+		);
+	});
+}
 
 for (const { description, platform, failure } of [
 	{ description: "Linux string EPERM", platform: "linux", failure: errno("EPERM") },
