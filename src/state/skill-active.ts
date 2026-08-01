@@ -371,19 +371,43 @@ function lockOwnerPath(lockPath: string, token?: string): string {
   return join(lockPath, token ? `owner-${token}` : 'owner');
 }
 
-async function readLockOwner(lockPath: string): Promise<string | null> {
+
+type LockOwnerMetadata =
+  | { kind: 'valid'; token: string }
+  | { kind: 'ownerless' }
+  | { kind: 'ambiguous' };
+
+async function inspectLockOwner(lockPath: string): Promise<LockOwnerMetadata> {
   try {
     const entries = await readdir(lockPath);
     const ownerEntries = entries.filter((entry) => entry === 'owner' || entry.startsWith('owner-'));
-    if (ownerEntries.length !== 1) return null;
+    const knownOwnerlessEntries = entries.filter((entry) => entry.startsWith('pending-') || entry.startsWith('released-'));
+    if (ownerEntries.length === 0) {
+      if (entries.length === 0) return { kind: 'ownerless' };
+      if (entries.length === 1 && knownOwnerlessEntries.length === 1) {
+        const entry = knownOwnerlessEntries[0];
+        const expectedToken = entry.slice(entry.indexOf('-') + 1);
+        const content = (await readFile(join(lockPath, entry), 'utf-8')).trim();
+        return content === expectedToken ? { kind: 'ownerless' } : { kind: 'ambiguous' };
+      }
+      return { kind: 'ambiguous' };
+    }
+    if (ownerEntries.length !== 1 || entries.length !== 1) return { kind: 'ambiguous' };
     const ownerName = ownerEntries[0];
     const owner = (await readFile(join(lockPath, ownerName), 'utf-8')).trim();
-    if (!owner) return null;
-    if (ownerName === 'owner') return owner;
-    return ownerName.slice('owner-'.length) === owner ? owner : null;
+    if (!owner) return { kind: 'ambiguous' };
+    if (ownerName === 'owner' || ownerName.slice('owner-'.length) === owner) {
+      return { kind: 'valid', token: owner };
+    }
+    return { kind: 'ambiguous' };
   } catch {
-    return null;
+    return { kind: 'ambiguous' };
   }
+}
+
+async function readLockOwner(lockPath: string): Promise<string | null> {
+  const metadata = await inspectLockOwner(lockPath);
+  return metadata.kind === 'valid' ? metadata.token : null;
 }
 
 async function assertRootSkillActiveLockOwner(lock: RootSkillActiveLock): Promise<void> {
@@ -413,25 +437,21 @@ function lockReleasedPath(lockPath: string, token: string): string {
 
 async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
   const firstStat = await stat(lockPath);
+  const firstMetadata = await inspectLockOwner(lockPath);
+  if (firstMetadata.kind !== 'ownerless') return false;
   const firstEntries = await readdir(lockPath);
-  const releasedEntry = firstEntries.length === 1 && firstEntries[0].startsWith('released-');
   const pendingEntry = firstEntries.length === 1 && firstEntries[0].startsWith('pending-');
-  if (!releasedEntry && (!pendingEntry && Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS)) return false;
-  if (await readLockOwner(lockPath)) return false;
+  if (!pendingEntry && Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS) return false;
 
-  const firstEntry = firstEntries[0];
-  if (firstEntry && (releasedEntry || pendingEntry)) {
-    const entryToken = firstEntry.slice(firstEntry.indexOf('-') + 1);
-    if ((await readFile(join(lockPath, firstEntry), 'utf-8')).trim() !== entryToken) return false;
-  }
   const confirmedStat = await stat(lockPath);
+  const confirmedMetadata = await inspectLockOwner(lockPath);
   const confirmedEntries = await readdir(lockPath);
   if (
-    confirmedStat.mtimeMs !== firstStat.mtimeMs
+    confirmedMetadata.kind !== 'ownerless'
+    || confirmedStat.mtimeMs !== firstStat.mtimeMs
     || confirmedStat.ctimeMs !== firstStat.ctimeMs
     || confirmedEntries.length !== firstEntries.length
-    || confirmedEntries[0] !== firstEntry
-    || await readLockOwner(lockPath)
+    || confirmedEntries[0] !== firstEntries[0]
   ) return false;
 
   const stalePath = `${lockPath}.stale-${process.pid}-${randomBytes(6).toString('hex')}`;
@@ -441,8 +461,12 @@ async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
     return false;
   }
 
-  if (!(await readLockOwner(stalePath))) {
-    await rm(stalePath, { recursive: true, force: true });
+  try {
+    if ((await inspectLockOwner(stalePath)).kind === 'ownerless') {
+      await rm(stalePath, { recursive: true, force: true });
+    }
+  } catch {
+    // The path was replaced or removed; leave any successor untouched.
   }
   return true;
 }
@@ -467,23 +491,23 @@ async function acquireRootSkillActiveStateLock(rootPath: string): Promise<RootSk
       await writeFile(lockPendingPath(lockPath, token), token, { flag: 'wx' });
       await rename(lockPendingPath(lockPath, token), lockOwnerPath(lockPath, token));
       return { path: lockPath, token };
-    } catch (error) {
+    } catch {
       if (createdLockDirectory) {
         try {
           const currentStat = await stat(lockPath);
           if (
-            !await readLockOwner(lockPath)
+            (await inspectLockOwner(lockPath)).kind === 'ownerless'
             && (await readdir(lockPath)).length === 0
             && createdLockStat
             && currentStat.mtimeMs === createdLockStat.mtimeMs
             && currentStat.ctimeMs === createdLockStat.ctimeMs
           ) {
-            await rm(lockPath, { recursive: true, force: true });
+            await rmdir(lockPath);
           }
         } catch {
-          // The path may have been atomically taken over; never remove a successor.
+          // The path may have been atomically taken over or removed; retry without cleanup.
         }
-        throw error;
+        continue;
       }
       try {
         const observedToken = await readLockOwner(lockPath);

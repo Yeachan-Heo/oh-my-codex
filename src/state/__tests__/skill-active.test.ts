@@ -727,11 +727,11 @@ describe('skill-active state helpers', () => {
       const successorPath = `${lockPath}.old-owner`;
       await rename(lockPath, successorPath);
       await mkdir(lockPath);
-      const successorToken = 'successor-token';
-      await writeFile(join(lockPath, `owner-${successorToken}`), successorToken);
       await writeFile(sessionReleasePath, 'release-session');
 
       assert.equal(await done, 0);
+      const successorToken = 'successor-token';
+      await writeFile(join(lockPath, `owner-${successorToken}`), successorToken);
       assert.equal(await readFile(join(lockPath, `owner-${successorToken}`), 'utf8'), successorToken);
       assert.equal(await readFile(join(successorPath, ownerEntry), 'utf8'), ownerToken);
       assert.equal(existsSync(errorPath), false);
@@ -773,6 +773,21 @@ describe('skill-active state helpers', () => {
       await waitForRootPhase(rootPath, 'live-owner', 'live-update');
       assert.equal(await owner.done, 0);
       assert.equal(await contender.done, 1);
+
+      await mkdir(`${rootPath}.lock`);
+      await writeFile(`${rootPath}.lock/owner-live-token`, '{malformed');
+      await utimes(`${rootPath}.lock`, staleTime, staleTime);
+      await assert.rejects(
+        () => writeSkillActiveStateCopiesForStateDir(
+          stateDir,
+          { active: true, skill: 'ralph', phase: 'ambiguous', session_id: 'live-owner', active_skills: [{ skill: 'ralph', phase: 'ambiguous', active: true, session_id: 'live-owner' }] },
+          'live-owner',
+          { active: true, skill: 'ralph', session_id: 'live-owner' },
+        ),
+        (error: unknown) => error instanceof SkillActiveStateWriteError && error.code === 'lock-timeout',
+      );
+      assert.equal(existsSync(`${rootPath}.lock`), true);
+      await rm(`${rootPath}.lock`, { recursive: true, force: true });
 
       await mkdir(`${rootPath}.lock`);
       await utimes(`${rootPath}.lock`, staleTime, staleTime);
