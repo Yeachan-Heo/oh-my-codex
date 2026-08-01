@@ -1,6 +1,7 @@
+import { spawn } from 'node:child_process';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +22,68 @@ async function withTempRepo(prefix: string, run: (cwd: string) => Promise<void>)
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+}
+
+async function waitForPath(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function waitForReadyOrError(readyPath: string, errorPath: string): Promise<'ready' | 'error'> {
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(readyPath) && !existsSync(errorPath)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${readyPath} or ${errorPath}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  return existsSync(errorPath) ? 'error' : 'ready';
+}
+
+async function waitForRootPhase(path: string, sessionId: string, phase: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try {
+      const state = JSON.parse(await readFile(path, 'utf8')) as { active_skills?: Array<{ session_id?: string; phase?: string }> };
+      if (state.active_skills?.some((entry) => entry.session_id === sessionId && entry.phase === phase)) return;
+    } catch {
+      // The atomic replacement may be between visibility checks; retry.
+    }
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${sessionId}=${phase}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function rootWriterWorkerSource(): string {
+  return `
+    import { existsSync } from 'node:fs';
+    import { mkdir, readFile, writeFile } from 'node:fs/promises';
+    const stateDir = process.env.STATE_DIR;
+    const sessionId = process.env.SESSION_ID;
+    const skill = process.env.SKILL;
+    const phase = process.env.PHASE;
+    const readyPath = process.env.READY_PATH;
+    const releasePath = process.env.RELEASE_PATH;
+    const errorPath = process.env.ERROR_PATH;
+    const rootPath = stateDir + '/skill-active-state.json';
+    try {
+      const { writeSkillActiveStateCopiesForStateDir } = await import(${JSON.stringify(new URL('../skill-active.js', import.meta.url).href)});
+      const root = JSON.parse(await readFile(rootPath, 'utf8'));
+      await mkdir(stateDir + '/sessions/' + sessionId, { recursive: true });
+      await writeSkillActiveStateCopiesForStateDir(stateDir, {
+        version: 1, active: true, skill, phase, session_id: sessionId,
+        active_skills: [{ skill, phase, active: true, session_id: sessionId }],
+      }, sessionId, root, { beforeCommit: async (event) => {
+        if (event.site !== 'skill-active.root-copy') return;
+        await writeFile(readyPath, 'ready');
+        while (!existsSync(releasePath)) await new Promise(resolve => setTimeout(resolve, 10));
+      }});
+    } catch (error) {
+      await writeFile(errorPath, JSON.stringify({ code: error?.code, message: String(error?.message ?? error) }));
+      process.exitCode = 1;
+    }
+  `;
 }
 async function withStateRootEnv<T>(env: Partial<Record<'OMX_ROOT' | 'OMX_STATE_ROOT' | 'OMX_TEAM_STATE_ROOT', string>>, run: () => Promise<T>): Promise<T> {
   const previousOmxRoot = process.env.OMX_ROOT;
@@ -553,6 +616,103 @@ describe('skill-active state helpers', () => {
         { active: true, skill: 'ralph', session_id: 'sess-recovery' },
       );
       assert.equal(JSON.parse(await readFile(rootPath, 'utf-8')).active_skills[0].phase, 'recovered');
+    });
+  });
+  it('serializes genuine multi-process root contention', async () => {
+    await withTempRepo('omx-skill-active-process-rmw-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const rootPath = join(stateDir, 'skill-active-state.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(rootPath, `${JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'ralph',
+        active_skills: [
+          { skill: 'ralph', phase: 'old-a', active: true, session_id: 'proc-a' },
+          { skill: 'team', phase: 'old-b', active: true, session_id: 'proc-b' },
+        ],
+      }, null, 2)}\n`);
+      const worker = rootWriterWorkerSource();
+      const launch = (sessionId: string, skill: string, phase: string) => {
+        const readyPath = join(stateDir, `${sessionId}.ready`);
+        const releasePath = join(stateDir, `${sessionId}.release`);
+        const errorPath = join(stateDir, `${sessionId}.error`);
+        const child = spawn(process.execPath, ['--input-type=module', '-e', worker], {
+          env: { ...process.env, STATE_DIR: stateDir, SESSION_ID: sessionId, SKILL: skill, PHASE: phase, READY_PATH: readyPath, RELEASE_PATH: releasePath, ERROR_PATH: errorPath },
+          stdio: 'ignore',
+        });
+        return { child, done: new Promise<number | null>((resolve) => child.once('close', resolve)), readyPath, releasePath, errorPath };
+      };
+      const first = launch('proc-a', 'ralph', 'new-a');
+      const second = launch('proc-b', 'team', 'new-b');
+      await Promise.race([waitForReadyOrError(first.readyPath, first.errorPath), waitForReadyOrError(second.readyPath, second.errorPath)]);
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const firstReady = existsSync(first.readyPath) ? first : second;
+      const secondReady = firstReady === first ? second : first;
+      assert.equal(existsSync(secondReady.readyPath), false);
+      await writeFile(firstReady.releasePath, 'release');
+      await waitForPath(secondReady.readyPath);
+      await writeFile(secondReady.releasePath, 'release');
+      await waitForRootPhase(rootPath, 'proc-a', 'new-a');
+      await waitForRootPhase(rootPath, 'proc-b', 'new-b');
+      firstReady.child.kill();
+      secondReady.child.kill();
+
+      const final = JSON.parse(await readFile(rootPath, 'utf8')) as { active_skills: Array<{ session_id?: string; phase?: string }> };
+      assert.deepEqual(
+        Object.fromEntries(final.active_skills.map((entry) => [entry.session_id, entry.phase])),
+        { 'proc-a': 'new-a', 'proc-b': 'new-b' },
+      );
+      assert.equal(existsSync(`${rootPath}.lock`), false);
+    });
+  });
+
+  it('rejects live stale takeover, cleans dead stale locks, and preserves recovery', async () => {
+    await withTempRepo('omx-skill-active-stale-lock-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const rootPath = join(stateDir, 'skill-active-state.json');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(rootPath, `${JSON.stringify({
+        version: 1,
+        active: true,
+        skill: 'ralph',
+        active_skills: [{ skill: 'ralph', phase: 'old', active: true, session_id: 'live-owner' }],
+      }, null, 2)}\n`);
+      const worker = rootWriterWorkerSource();
+      const launch = (sessionId: string, phase: string) => {
+        const readyPath = join(stateDir, `${sessionId}.ready`);
+        const releasePath = join(stateDir, `${sessionId}.release`);
+        const errorPath = join(stateDir, `${sessionId}.error`);
+        const child = spawn(process.execPath, ['--input-type=module', '-e', worker], {
+          env: { ...process.env, STATE_DIR: stateDir, SESSION_ID: sessionId, SKILL: 'ralph', PHASE: phase, READY_PATH: readyPath, RELEASE_PATH: releasePath, ERROR_PATH: errorPath },
+          stdio: 'ignore',
+        });
+        return { child, done: new Promise<number | null>((resolve) => child.once('close', resolve)), readyPath, releasePath, errorPath };
+      };
+      const owner = launch('live-owner', 'live-update');
+      await waitForPath(owner.readyPath);
+      const staleTime = new Date(Date.now() - 60_000);
+      await utimes(`${rootPath}.lock`, staleTime, staleTime);
+      const contender = launch('contender', 'should-not-win');
+      assert.equal(await waitForReadyOrError(contender.readyPath, contender.errorPath), 'error');
+      assert.equal(JSON.parse(await readFile(contender.errorPath, 'utf8')).code, 'lock-timeout');
+      assert.equal(existsSync(contender.readyPath), false);
+      await writeFile(owner.releasePath, 'release');
+      await waitForRootPhase(rootPath, 'live-owner', 'live-update');
+      owner.child.kill();
+      contender.child.kill();
+
+      await mkdir(`${rootPath}.lock`);
+      await writeFile(`${rootPath}.lock/owner`, '2147483647-dead-owner-token');
+      await utimes(`${rootPath}.lock`, staleTime, staleTime);
+      await writeSkillActiveStateCopiesForStateDir(
+        stateDir,
+        { active: true, skill: 'ralph', phase: 'recovered', session_id: 'live-owner', active_skills: [{ skill: 'ralph', phase: 'recovered', active: true, session_id: 'live-owner' }] },
+        'live-owner',
+        { active: true, skill: 'ralph', session_id: 'live-owner' },
+      );
+      assert.equal(existsSync(`${rootPath}.lock`), false);
+      assert.equal(JSON.parse(await readFile(rootPath, 'utf8')).active_skills[0].phase, 'recovered');
     });
   });
 });
