@@ -55,6 +55,14 @@ async function waitForRootPhase(path: string, sessionId: string, phase: string):
   }
 }
 
+async function waitForPathGone(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path} to disappear`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function rootWriterWorkerSource(): string {
   return `
     import { existsSync } from 'node:fs';
@@ -701,6 +709,7 @@ describe('skill-active state helpers', () => {
       await waitForRootPhase(rootPath, 'live-owner', 'live-update');
       owner.child.kill();
       contender.child.kill();
+      await waitForPathGone(`${rootPath}.lock`);
 
       await mkdir(`${rootPath}.lock`);
       await writeFile(`${rootPath}.lock/owner`, '2147483647-dead-owner-token');
