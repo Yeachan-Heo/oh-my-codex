@@ -16661,7 +16661,7 @@ function hasExactConductorOrchestrationOptionSchema(commandName: string, words: 
   let required: Set<string>;
   if (isUltragoalCreate) {
     permitted = new Set(["--brief", "--goal", "--codex-goal-mode", "--force", "--json"]);
-    required = new Set(["--brief"]);
+    required = new Set(["--brief", "--force"]);
   } else if (command === "ultragoal" && subcommand === "steer") {
     permitted = new Set(["--kind", "--target-goal-id", "--evidence", "--rationale", "--json"]);
     required = new Set(["--kind", "--target-goal-id", "--evidence", "--rationale"]);

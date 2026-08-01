@@ -33255,6 +33255,7 @@ PY`,
               "omx ultragoal create-goals --brief 'Issue 3397' --goal 'Fix::Correct parser' --goal 'Verify::Run regressions' --codex-goal-mode aggregate --force --json",
             );
             for (const command of [
+              "omx ultragoal create-goals --brief 'Issue 3397' --json",
               "omx ultragoal create-goals --brief 'Issue 3397' --force --force --json",
               "omx ultragoal create-goals --brief 'Issue 3397' --force --unknown --json",
               "omx ultragoal create-goals --brief-file brief.md --force --json",
