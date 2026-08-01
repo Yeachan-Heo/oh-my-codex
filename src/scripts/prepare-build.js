@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, rmSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { existsSync, realpathSync, rmSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const requiredDistFiles = [
@@ -12,14 +12,39 @@ if (requiredDistFiles.every((file) => existsSync(file))) {
   process.exit(0);
 }
 
-const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const tscBin = process.platform === 'win32'
   ? join(process.cwd(), 'node_modules', '.bin', 'tsc.cmd')
   : join(process.cwd(), 'node_modules', '.bin', 'tsc');
 const nodeModulesDir = join(process.cwd(), 'node_modules');
 
+function resolveNpmCommand() {
+  const candidates = [
+    process.env.npm_execpath,
+    process.platform === 'win32'
+      ? join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      : undefined,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (!isAbsolute(candidate)) continue;
+    try {
+      return {
+        command: realpathSync(process.execPath),
+        commandArgs: [realpathSync(candidate)],
+      };
+    } catch {
+      // Try the next trusted lifecycle/runtime-relative npm CLI candidate.
+    }
+  }
+  if (process.platform !== 'win32') {
+    return { command: 'npm', commandArgs: [] };
+  }
+  throw new Error('omx prepare: unable to resolve the npm CLI from npm_execpath or the Node runtime');
+}
+
+const npmCommand = resolveNpmCommand();
+
 function runNpm(args, env = process.env) {
-  return spawnSync(npmBin, args, {
+  return spawnSync(npmCommand.command, [...npmCommand.commandArgs, ...args], {
     cwd: process.cwd(),
     stdio: process.env.npm_config_json === 'true' ? ['inherit', 'ignore', 'inherit'] : 'inherit',
     env,
@@ -66,11 +91,7 @@ const pathWithLocalBins = [
   process.env.PATH ?? '',
 ].filter(Boolean).join(delimiter);
 
-const buildResult = spawnSync(npmBin, ['run', 'build'], {
-  cwd: process.cwd(),
-  stdio: process.env.npm_config_json === 'true' ? ['inherit', 'ignore', 'inherit'] : 'inherit',
-  env: { ...process.env, PATH: pathWithLocalBins },
-});
+const buildResult = runNpm(['run', 'build'], { ...process.env, PATH: pathWithLocalBins });
 exitOnFailure(buildResult, 'npm build');
 
 if (shouldCleanupBootstrappedDependencies) {
