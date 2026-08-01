@@ -55,13 +55,6 @@ async function waitForRootPhase(path: string, sessionId: string, phase: string):
   }
 }
 
-async function waitForPathGone(path: string, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path} to disappear`);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-}
 
 function rootWriterWorkerSource(): string {
   return `
@@ -671,9 +664,8 @@ describe('skill-active state helpers', () => {
       await writeFile(secondReady.releasePath, 'release');
       await waitForRootPhase(rootPath, 'proc-a', 'new-a');
       await waitForRootPhase(rootPath, 'proc-b', 'new-b');
-      firstReady.child.kill();
-      secondReady.child.kill();
-      await waitForPathGone(`${rootPath}.lock`);
+      assert.equal(await firstReady.done, 0);
+      assert.equal(await secondReady.done, 0);
 
       const final = JSON.parse(await readFile(rootPath, 'utf8')) as { active_skills: Array<{ session_id?: string; phase?: string }> };
       assert.deepEqual(
@@ -716,9 +708,8 @@ describe('skill-active state helpers', () => {
       assert.equal(existsSync(contender.readyPath), false);
       await writeFile(owner.releasePath, 'release');
       await waitForRootPhase(rootPath, 'live-owner', 'live-update');
-      owner.child.kill();
-      contender.child.kill();
-      await waitForPathGone(`${rootPath}.lock`);
+      assert.equal(await owner.done, 0);
+      assert.equal(await contender.done, 1);
 
       await mkdir(`${rootPath}.lock`);
       await utimes(`${rootPath}.lock`, staleTime, staleTime);
