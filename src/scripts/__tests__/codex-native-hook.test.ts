@@ -17144,7 +17144,8 @@ exit 0
 
 			const previousPath = process.env.PATH;
 			try {
-				process.env.PATH = "/usr/bin:/bin";
+				// Keep only the active Node runtime plus system directories; omit workspace shims and ambient PATH entries.
+				process.env.PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
 				const cleanPathCanonicalStateWrite = await preToolUse(
 					{
 						hook_event_name: "PreToolUse",
