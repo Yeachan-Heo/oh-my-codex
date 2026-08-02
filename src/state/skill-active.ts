@@ -675,6 +675,43 @@ export async function updateRootSkillActiveStateForStateDir(
   });
 }
 
+export async function writeSkillActiveStateWithPrimaryTransactionForStateDir(
+  stateDir: string,
+  state: SkillActiveStateLike,
+  sessionId: string,
+  primaryPath: string,
+  primaryWrite: () => Promise<void>,
+  options: { beforeCommit?: BeforeWritableCommit } = {},
+): Promise<void> {
+  const { rootPath, sessionPath } = getSkillActiveStatePathsForStateDir(stateDir, sessionId);
+  if (sessionPath !== primaryPath) throw new Error('skill-active primary path is not session-scoped');
+  const normalized = { version: 1, ...state };
+  const sessionPayload = `${JSON.stringify(normalized, null, 2)}\n`;
+
+  await withRootSkillActiveStateLock(rootPath, async (lock) => {
+    const currentRoot = await readRootStateForWrite(rootPath);
+    const nextRoot = mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim());
+    const previousPrimary = existsSync(primaryPath) ? await readFile(primaryPath) : null;
+    const previousRoot = existsSync(rootPath) ? await readFile(rootPath) : null;
+    let primaryCommitted = false;
+    try {
+      await primaryWrite();
+      primaryCommitted = true;
+      await writeRootSkillActiveStateAtomically(rootPath, nextRoot, options.beforeCommit, lock);
+      await options.beforeCommit?.({ site: 'skill-active.session-copy', kind: 'write', path: sessionPath });
+      await writeFile(sessionPath, sessionPayload);
+    } catch (error) {
+      if (primaryCommitted) {
+        if (previousPrimary === null) await unlink(primaryPath).catch(() => undefined);
+        else await writeFile(primaryPath, previousPrimary);
+      }
+      if (previousRoot === null) await unlink(rootPath).catch(() => undefined);
+      else await writeFile(rootPath, previousRoot);
+      throw error;
+    }
+  });
+}
+
 async function writeSkillActiveStateCopiesToPaths(
   rootPath: string,
   sessionPath: string | undefined,

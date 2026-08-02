@@ -48,6 +48,7 @@ import {
   type SkillActiveEntry,
   type SkillActiveStateLike,
   writeSkillActiveStateCopiesForStateDir,
+  writeSkillActiveStateWithPrimaryTransactionForStateDir,
 } from './skill-active.js';
 import {
   buildWorkflowTransitionError,
@@ -844,6 +845,7 @@ export async function executeStateOperation(
         let validationError: string | null = null;
         let transitionMessage: string | undefined;
         let ensureRalphArtifacts = false;
+        let skillActivePrimaryCommitted = false;
 
         await withStateWriteLock(path, async () => {
           let existing: Record<string, unknown> = {};
@@ -1078,8 +1080,23 @@ export async function executeStateOperation(
 
           const merged = withModeRuntimeContext(existing, mergedRaw);
           const payload = JSON.stringify(merged, null, 2);
-          await beforeCommit({ site: 'mode.primary', kind: 'write', path });
-          await writeAtomicFile(path, payload);
+          if (mode === SKILL_ACTIVE_STATE_MODE && effectiveSessionId) {
+            await writeSkillActiveStateWithPrimaryTransactionForStateDir(
+              baseStateDir,
+              merged,
+              effectiveSessionId,
+              path,
+              async () => {
+                await beforeCommit({ site: 'mode.primary', kind: 'write', path });
+                await writeAtomicFile(path, payload);
+              },
+              { beforeCommit },
+            );
+            skillActivePrimaryCommitted = true;
+          } else {
+            await beforeCommit({ site: 'mode.primary', kind: 'write', path });
+            await writeAtomicFile(path, payload);
+          }
         });
 
         if (validationError) {
@@ -1090,9 +1107,11 @@ export async function executeStateOperation(
         }
 
         if (mode === SKILL_ACTIVE_STATE_MODE) {
-          const state = await readSkillActiveState(path);
-          if (state) {
-            await writeSkillActiveStateCopiesForStateDir(baseStateDir, state, effectiveSessionId, undefined, { beforeCommit });
+          if (!skillActivePrimaryCommitted) {
+            const state = await readSkillActiveState(path);
+            if (state) {
+              await writeSkillActiveStateCopiesForStateDir(baseStateDir, state, effectiveSessionId, undefined, { beforeCommit });
+            }
           }
         } else {
           if (mode === 'ralph' && ensureRalphArtifacts) {
