@@ -653,6 +653,20 @@ export async function writeSkillActiveStateCopiesForStateDir(
   await writeSkillActiveStateCopiesToPaths(rootPath, sessionPath, state, rootState, options.beforeCommit);
 }
 
+export async function updateRootSkillActiveStateForStateDir(
+  stateDir: string,
+  update: (currentRoot: SkillActiveStateLike | null) => SkillActiveStateLike | null,
+  options: { beforeCommit?: BeforeWritableCommit } = {},
+): Promise<void> {
+  const { rootPath } = getSkillActiveStatePathsForStateDir(stateDir);
+  await withRootSkillActiveStateLock(rootPath, async (lock) => {
+    const currentRoot = await readRootStateForWrite(rootPath);
+    const nextRoot = update(currentRoot);
+    if (nextRoot === null) return;
+    await writeRootSkillActiveStateAtomically(rootPath, nextRoot, options.beforeCommit, lock);
+  });
+}
+
 async function writeSkillActiveStateCopiesToPaths(
   rootPath: string,
   sessionPath: string | undefined,
@@ -671,6 +685,10 @@ async function writeSkillActiveStateCopiesToPaths(
   };
   const writeRootTransaction = async (ownedLock: RootSkillActiveLock): Promise<void> => {
     const currentRoot = await readRootStateForWrite(rootPath);
+    if (sessionPath && currentRoot === null) {
+      await writeSessionCopy();
+      return;
+    }
     const nextRoot = sessionPath
       ? mergeRootStateForSession(currentRoot, normalized, safeString(normalized.session_id).trim())
       : { version: 1, ...(rootState ?? normalized) };

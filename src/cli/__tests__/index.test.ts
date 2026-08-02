@@ -1456,16 +1456,67 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     let writerCalls = 0;
 
     await cleanupPostLaunchModeStateFiles(wd, sessionId, {
-      writeRootState: async (rootDir, nextState) => {
+      writeRootState: async (rootDir, update) => {
         writerCalls += 1;
-        await writeSkillActiveStateCopiesForStateDir(rootDir, nextState, undefined, nextState);
+        const concurrentRoot = {
+          ...rootState,
+          active_skills: [
+            ...rootState.active_skills,
+            { skill: 'team', phase: 'running', active: true, session_id: 'sess-concurrent' },
+          ],
+        };
+        const nextState = update(concurrentRoot);
+        assert.ok(nextState);
+        await writeSkillActiveStateCopiesForStateDir(rootDir, nextState);
       },
     });
 
     assert.equal(writerCalls, 1);
     const persisted = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf8')) as typeof rootState;
-    assert.equal(persisted.active, false);
-    assert.deepEqual(persisted.active_skills, []);
+    assert.equal(persisted.active, true);
+    assert.deepEqual(persisted.active_skills, [{ skill: 'team', phase: 'running', active: true, session_id: 'sess-concurrent' }]);
+  });
+  it('preserves a process-level session update before root scrub cleanup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-postlaunch-process-scrub-'));
+    const sessionId = 'sess-process-scrub';
+    const stateDir = join(wd, '.omx', 'state');
+    const rootPath = join(stateDir, 'skill-active-state.json');
+    const rootState = {
+      version: 1,
+      active: true,
+      skill: 'ralph',
+      session_id: sessionId,
+      active_skills: [{ skill: 'ralph', phase: 'executing', active: true, session_id: sessionId }],
+    };
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(rootPath, `${JSON.stringify(rootState, null, 2)}\n`, 'utf8');
+      const updateScript = `
+        import { readFile, writeFile } from 'node:fs/promises';
+        import { writeSkillActiveStateCopiesForStateDir } from './dist/state/skill-active.js';
+        const stateDir = process.env.STATE_DIR;
+        const current = JSON.parse(await readFile(process.env.ROOT_PATH, 'utf8'));
+        current.active_skills.push({ skill: 'team', phase: 'running', active: true, session_id: 'sess-process-concurrent' });
+        await writeSkillActiveStateCopiesForStateDir(stateDir, current, undefined, current);
+      `;
+      const update = spawnSync(process.execPath, ['--input-type=module', '-e', updateScript], {
+        cwd: repoRoot,
+        env: { ...process.env, STATE_DIR: stateDir, ROOT_PATH: rootPath },
+        encoding: 'utf8',
+      });
+      assert.equal(update.status, 0, update.stderr);
+
+      const scrub = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { cleanupPostLaunchModeStateFiles } from './dist/cli/index.js';
+        await cleanupPostLaunchModeStateFiles(${JSON.stringify(wd)}, ${JSON.stringify(sessionId)});
+      `], { cwd: repoRoot, env: { ...process.env }, encoding: 'utf8' });
+      assert.equal(scrub.status, 0, scrub.stderr);
+
+      const persisted = JSON.parse(await readFile(rootPath, 'utf8')) as typeof rootState;
+      assert.deepEqual(persisted.active_skills, [{ skill: 'team', phase: 'running', active: true, session_id: 'sess-process-concurrent' }]);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 
   it("normalizes stale terminal deep-interview locks during postLaunch cleanup", async () => {

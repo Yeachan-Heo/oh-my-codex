@@ -15,6 +15,7 @@ import {
   resolveScopedStateDir,
   writeScopedJson,
 } from '../notify-hook/state-io.js';
+import { SkillActiveStateWriteError } from '../../state/skill-active.js';
 
 describe('notify-hook state I/O session authority', () => {
   it('uses an explicit session id before the current session pointer', async () => {
@@ -235,6 +236,34 @@ describe('notify-hook state I/O session authority', () => {
     } finally {
       if (typeof previousOmxSessionId === 'string') process.env.OMX_SESSION_ID = previousOmxSessionId;
       else delete process.env.OMX_SESSION_ID;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+  it('fails explicit skill-active writes closed on malformed root without session divergence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-notify-state-io-malformed-root-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-explicit-malformed-root';
+      const sessionPath = join(stateDir, 'sessions', sessionId, 'skill-active-state.json');
+      const rootBytes = '{"active":true,\n';
+      const sessionBytes = '{"active":true,"skill":"old"}\n';
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(join(stateDir, 'skill-active-state.json'), rootBytes, 'utf8');
+      await writeFile(sessionPath, sessionBytes, 'utf8');
+
+      await assert.rejects(
+        () => writeScopedJson(stateDir, 'skill-active-state.json', sessionId, {
+          active: true,
+          skill: 'new',
+          phase: 'executing',
+          session_id: sessionId,
+          active_skills: [{ skill: 'new', phase: 'executing', active: true, session_id: sessionId }],
+        }),
+        (error) => error instanceof SkillActiveStateWriteError && error.code === 'malformed-root',
+      );
+      assert.equal(await readFile(join(stateDir, 'skill-active-state.json'), 'utf8'), rootBytes);
+      assert.equal(await readFile(sessionPath, 'utf8'), sessionBytes);
+    } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });

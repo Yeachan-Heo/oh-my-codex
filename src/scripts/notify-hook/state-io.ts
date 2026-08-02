@@ -225,12 +225,10 @@ export async function writeScopedJson(
   value: unknown,
 ): Promise<void> {
   if (fileName === SKILL_ACTIVE_STATE_FILE) {
-    const rootState = explicitSessionId ? await readJsonIfExists(join(baseStateDir, fileName), null) : value;
     await writeSkillActiveStateCopiesForStateDir(
       baseStateDir,
       value as Record<string, unknown>,
       explicitSessionId,
-      rootState,
     );
     return;
   }
