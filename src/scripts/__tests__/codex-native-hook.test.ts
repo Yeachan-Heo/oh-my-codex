@@ -33332,6 +33332,113 @@ PY`,
       await rm(cwd, { recursive: true, force: true });
     }
   });
+  it("enforces the exact same-root session lock inspect grammar under ultragoal Conductor (#3411)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3411-lock-inspect-"));
+    const foreignCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3411-foreign-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-3411-lock-inspect";
+      const leaderThreadId = "thread-3411-lock-inspect";
+      await mkdir(join(cwd, ".git"), { recursive: true });
+      await writeNativeMappedSessionState(cwd, stateDir, sessionId, leaderThreadId, leaderThreadId);
+      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "planning",
+        session_id: sessionId,
+        workingDirectory: cwd,
+      });
+
+      await withCleanAmbientNodeRuntimeEnvironment(async () => {
+        await withTrustedWorkspaceOmxCli(cwd, async (_omxCommand, trustedPath) => {
+          const runCommand = async (command: string, overrides: Record<string, unknown> = {}) => dispatchCodexNativeHook(
+            {
+              hook_event_name: "PreToolUse",
+              cwd,
+              session_id: sessionId,
+              thread_id: leaderThreadId,
+              agent_id: leaderThreadId,
+              tool_name: "Bash",
+              tool_use_id: `tool-3411-lock-inspect-${Math.random()}`,
+              tool_input: { command },
+              ...overrides,
+            },
+            { cwd },
+          );
+          const assertAllowed = async (command: string) => {
+            const result = await runCommand(command);
+            assert.equal(result.outputJson, null, `${command}: ${JSON.stringify(result)}`);
+          };
+          const assertBlocked = async (command: string, overrides?: Record<string, unknown>) => {
+            const result = await runCommand(command, overrides);
+            assert.equal(result.outputJson?.decision, "block", `${command} (policy cwd ${cwd}, foreign cwd ${foreignCwd}): ${JSON.stringify(result)}`);
+          };
+
+          const inheritedPath = process.env.PATH;
+          process.env.PATH = trustedPath;
+          try {
+            for (const command of [
+              "omx session lock inspect --json",
+              `omx session lock inspect --cwd ${cwd} --json`,
+              `omx session lock inspect --json --cwd=${cwd}`,
+              `omx session lock inspect --cwd=${cwd}`,
+            ]) await assertAllowed(command);
+
+            for (const command of [
+              `omx session lock inspect --cwd ${foreignCwd} --json`,
+              "omx session lock recover --json",
+              `omx session lock recover --cwd ${cwd} --json`,
+              "omx session lock inspect --unknown --json",
+              "omx session lock inspect --json --json",
+              `omx session lock inspect --cwd ${cwd} --cwd ${cwd} --json`,
+              "omx session lock inspect --cwd --json",
+              "omx session lock inspect --cwd= --json",
+              "omx session lock inspect positional --json",
+              "omx session lock inspect --cwd $(pwd) --json",
+              "omx session lock inspect --cwd `pwd` --json",
+              "omx session lock inspect --cwd $PWD --json",
+              "printf ready && omx session lock inspect --json",
+              "omx session lock inspect --json | cat",
+              "sh -c 'omx session lock inspect --json'",
+              "(omx session lock inspect --json)",
+            ]) await assertBlocked(command);
+
+            await assertBlocked(`omx session lock inspect --cwd ${cwd} --json`, {
+              session_id: "foreign-session",
+            });
+            await assertBlocked(`omx session lock inspect --cwd ${cwd} --json`, {
+              agent_id: "child-thread",
+              thread_id: "child-thread",
+            });
+
+            const attackerDir = await mkdtemp(join(tmpdir(), "omx-native-hook-3411-impostor-"));
+            try {
+              await writeFile(join(attackerDir, "omx"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+              process.env.PATH = `${attackerDir}:${trustedPath}`;
+              await assertBlocked("omx session lock inspect --json");
+            } finally {
+              await rm(attackerDir, { recursive: true, force: true });
+              process.env.PATH = trustedPath;
+            }
+
+            process.env.NODE_OPTIONS = "--require=./payload.cjs";
+            try {
+              await assertBlocked("omx session lock inspect --json");
+            } finally {
+              delete process.env.NODE_OPTIONS;
+            }
+          } finally {
+            if (inheritedPath === undefined) delete process.env.PATH;
+            else process.env.PATH = inheritedPath;
+          }
+        });
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(foreignCwd, { recursive: true, force: true });
+    }
+  });
   it("blocks an untrusted omx shim ahead of the trusted workspace CLI on PATH under ultragoal conductor planning (#3343)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3343-untrusted-shim-"));
     try {

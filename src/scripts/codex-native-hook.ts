@@ -5714,11 +5714,12 @@ function classifyPreToolUseMutationTransport(
     if (
       rawCommand === command
       && (isAllowedOmxReadOnlyCommand(command, cwd) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command))
-    ) return "read-only";
+    ) return isAllowedOmxSessionLockInspectCommand(command, cwd) ? "bash" : "read-only";
     return rawCommand !== command
       || commandHasDeepInterviewWriteIntent(command, 0, cwd)
       || collectOmxStateCommandOperations(command, "write").length > 0
       || commandHasNestedCliMutationIntent(command)
+      || omxOrGjcReadOnlyShapeMatches(command)
       || classifyConductorExecutableRuntime(command, 0, cwd) !== null
       ? "bash"
       : "read-only";
@@ -10071,6 +10072,7 @@ function isAllowedOmxNestedHelpForm(args: readonly string[]): boolean {
 // untrusted binary, shell-function shadow, invalid state spelling, or unsafe
 // sparkshell mode.
 function omxOrGjcReadOnlyShapeMatches(command: string): boolean {
+  if (/^\s*(?:omx|gjc)\s+session\s+lock\s+(?:inspect|recover)(?:\s|$)/.test(command)) return true;
   if (!isSingleLiteralShellInvocation(command)) return false;
   const words = literalInvocationWords(command);
   const index = skipLiteralLeadingAssignments(words);
@@ -10082,7 +10084,48 @@ function omxOrGjcReadOnlyShapeMatches(command: string): boolean {
   if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
   if (args[0] === "state" && ["read", "get-status", "status"].includes(args[1] ?? "")) return true;
   if (args[0] === "sparkshell") return true;
+  if (args[0] === "session" && args[1] === "lock" && (args[2] === "inspect" || args[2] === "recover")) return true;
   return args[0] === "cleanup" && args.includes("--dry-run");
+
+}
+
+function isAllowedOmxSessionLockInspectCommand(command: string, cwd: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
+  const commandName = commandNameFromShellWord(words[index] ?? "");
+  if (commandName !== "omx" && commandName !== "gjc") return false;
+  const args = words.slice(index + 1).filter(Boolean);
+  if (args[0] !== "session" || args[1] !== "lock" || args[2] !== "inspect") return false;
+
+  let sawJson = false;
+  let sawCwd = false;
+  for (let cursor = 3; cursor < args.length; cursor += 1) {
+    const arg = args[cursor] ?? "";
+    if (arg === "--json") {
+      if (sawJson) return false;
+      sawJson = true;
+      continue;
+    }
+    if (arg === "--cwd") {
+      if (sawCwd) return false;
+      const value = args[cursor + 1] ?? "";
+      if (!value || value.startsWith("-")) return false;
+      if (!sameFilePath(value, cwd)) return false;
+      sawCwd = true;
+      cursor += 1;
+      continue;
+    }
+    if (arg.startsWith("--cwd=")) {
+      if (sawCwd) return false;
+      const value = arg.slice("--cwd=".length);
+      if (!value || !sameFilePath(value, cwd)) return false;
+      sawCwd = true;
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
@@ -10104,6 +10147,7 @@ function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h" || args[0] === "--version" || args[0] === "-v")) return true;
   if (args.length === 1 && (args[0] === "help" || args[0] === "status" || args[0] === "version")) return true;
   if (isAllowedOmxNestedHelpForm(args)) return true;
+  if (isAllowedOmxSessionLockInspectCommand(command, cwd)) return true;
   if (args[0] === "state" && OMX_STATE_READ_ONLY_OPERATIONS.has(args[1] ?? "")) {
     return stateReadTrailingArgsAreSafe(args.slice(2));
   }
@@ -20645,7 +20689,12 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     } else if (mutationTransport !== "read-only") {
       const shellMutations = extractConductorBashMutations(command, cwd, policyCwd);
       const bashEvaluation = evaluateConductorBashWrite(cwd, command, 0, sessionId, policyCwd, rawCommand);
-      blocked = !bashEvaluation.allowed;
+      const recognizedOmxReadOnlyShape = omxOrGjcReadOnlyShapeMatches(command);
+      const trustedOmxReadOnly = isAllowedOmxReadOnlyCommand(command, policyCwd);
+      const trustedSessionLockInspect = trustedOmxReadOnly && isAllowedOmxSessionLockInspectCommand(command, policyCwd);
+      blocked = !trustedSessionLockInspect && (
+        !bashEvaluation.allowed || (recognizedOmxReadOnlyShape && !trustedOmxReadOnly)
+      );
       const canonicalStateCommand = canonicalizeOmxStateTransportCommand(command);
       const bashStateOperations = collectOmxStateCommandOperations(canonicalStateCommand, "write");
       if (bashStateOperations.length > 0) {
