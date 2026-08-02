@@ -1439,6 +1439,7 @@ describe("cleanupPostLaunchModeStateFiles", () => {
       assert.deepEqual(sessionCanonical.active_skills, []);
     }
     assert.deepEqual(warnings, []);
+  });
   it('routes root skill-active cleanup through the locked root writer', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-postlaunch-root-writer-'));
     const sessionId = 'sess-root-writer';
@@ -1465,7 +1466,6 @@ describe("cleanupPostLaunchModeStateFiles", () => {
     const persisted = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf8')) as typeof rootState;
     assert.equal(persisted.active, false);
     assert.deepEqual(persisted.active_skills, []);
-  });
   });
 
   it("normalizes stale terminal deep-interview locks during postLaunch cleanup", async () => {
