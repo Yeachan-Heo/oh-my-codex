@@ -229,6 +229,8 @@ export async function writeScopedJson(
       baseStateDir,
       value as Record<string, unknown>,
       explicitSessionId,
+      undefined,
+      { sessionOnlyWhenRootMissing: Boolean(explicitSessionId) },
     );
     return;
   }

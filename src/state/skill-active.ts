@@ -347,7 +347,7 @@ async function readRootStateForWrite(rootPath: string): Promise<SkillActiveState
     raw = await readFile(rootPath, 'utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+    throw new SkillActiveStateWriteError('malformed-root', `unreadable root skill-active state: ${rootPath}`, { cause: error });
   }
 
   let parsed: unknown;
@@ -647,10 +647,18 @@ export async function writeSkillActiveStateCopiesForStateDir(
   state: SkillActiveStateLike,
   sessionId?: string,
   rootState?: SkillActiveStateLike | null,
-  options: { beforeCommit?: BeforeWritableCommit } = {},
+  options: { beforeCommit?: BeforeWritableCommit; sessionOnlyWhenRootMissing?: boolean } = {},
 ): Promise<void> {
   const { rootPath, sessionPath } = getSkillActiveStatePathsForStateDir(stateDir, sessionId);
-  await writeSkillActiveStateCopiesToPaths(rootPath, sessionPath, state, rootState, options.beforeCommit);
+  await writeSkillActiveStateCopiesToPaths(
+    rootPath,
+    sessionPath,
+    state,
+    rootState,
+    options.beforeCommit,
+    undefined,
+    options.sessionOnlyWhenRootMissing,
+  );
 }
 
 export async function updateRootSkillActiveStateForStateDir(
@@ -674,6 +682,7 @@ async function writeSkillActiveStateCopiesToPaths(
   rootState?: SkillActiveStateLike | null,
   beforeCommit?: BeforeWritableCommit,
   lock?: RootSkillActiveLock,
+  sessionOnlyWhenRootMissing = false,
 ): Promise<void> {
   const normalized = { version: 1, ...state };
   const writeSessionCopy = async (): Promise<void> => {
@@ -685,7 +694,7 @@ async function writeSkillActiveStateCopiesToPaths(
   };
   const writeRootTransaction = async (ownedLock: RootSkillActiveLock): Promise<void> => {
     const currentRoot = await readRootStateForWrite(rootPath);
-    if (sessionPath && currentRoot === null) {
+    if (sessionPath && sessionOnlyWhenRootMissing && currentRoot === null) {
       await writeSessionCopy();
       return;
     }
