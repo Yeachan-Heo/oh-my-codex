@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { getBaseStateDir, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import {
@@ -441,7 +441,17 @@ async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
   if (firstMetadata.kind !== 'ownerless') return false;
   const firstEntries = await readdir(lockPath);
   const pendingEntry = firstEntries.length === 1 && firstEntries[0].startsWith('pending-');
-  if (!pendingEntry && Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS) return false;
+  const markerPrefix = `${basename(lockPath)}.released-`;
+  const markerEntries = (await readdir(dirname(lockPath))).filter((entry) => entry.startsWith(markerPrefix));
+  if (markerEntries.length > 1) return false;
+  let releaseMarkerPath: string | undefined;
+  if (markerEntries.length === 1) {
+    const markerName = markerEntries[0];
+    const markerToken = markerName.slice(markerPrefix.length);
+    if ((await readFile(join(dirname(lockPath), markerName), 'utf-8')).trim() !== markerToken) return false;
+    releaseMarkerPath = join(dirname(lockPath), markerName);
+  }
+  if (!releaseMarkerPath && !pendingEntry && Date.now() - firstStat.mtimeMs <= ROOT_SKILL_ACTIVE_LOCK_STALE_MS) return false;
 
   const confirmedStat = await stat(lockPath);
   const confirmedMetadata = await inspectLockOwner(lockPath);
@@ -464,6 +474,7 @@ async function reclaimOwnerlessStaleLock(lockPath: string): Promise<boolean> {
   try {
     if ((await inspectLockOwner(stalePath)).kind === 'ownerless') {
       await rm(stalePath, { recursive: true, force: true });
+      if (releaseMarkerPath) await unlink(releaseMarkerPath).catch(() => undefined);
     }
   } catch {
     // The path was replaced or removed; leave any successor untouched.
@@ -553,15 +564,6 @@ async function releaseRootSkillActiveStateLock(lock: RootSkillActiveLock): Promi
     return;
   }
 
-  try {
-    if ((await readdir(lock.path)).length === 0) {
-      await rmdir(lock.path);
-    }
-  } catch {
-    // A takeover or successor won the path race; never remove its lock.
-  } finally {
-    await unlink(releasedPath).catch(() => undefined);
-  }
 }
 
 async function withRootSkillActiveStateLock<T>(rootPath: string, operation: (lock: RootSkillActiveLock) => Promise<T>): Promise<T> {

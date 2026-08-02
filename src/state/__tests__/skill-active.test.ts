@@ -581,7 +581,10 @@ describe('skill-active state helpers', () => {
           { skill: 'team', session_id: 'sess-b', phase: 'updated' },
         ],
       );
-      assert.deepEqual(await readdir(stateDir), ['sessions', 'skill-active-state.json']);
+      assert.deepEqual((await readdir(stateDir)).filter((entry) => !entry.startsWith('skill-active-state.json.lock')), ['sessions', 'skill-active-state.json']);
+      await rm(`${rootPath}.lock`, { recursive: true, force: true });
+      const releaseMarkers = (await readdir(stateDir)).filter((entry) => entry.startsWith('skill-active-state.json.lock.released-'));
+      await Promise.all(releaseMarkers.map((entry) => rm(join(stateDir, entry), { force: true })));
     });
   });
 
@@ -615,8 +618,8 @@ describe('skill-active state helpers', () => {
         (error: unknown) => error instanceof SkillActiveStateWriteError && error.code === 'malformed-root',
       );
       assert.equal(await readFile(rootPath, 'utf-8'), malformed);
-      assert.equal(existsSync(`${rootPath}.lock`), false);
 
+      await rm(`${rootPath}.lock`, { recursive: true, force: true });
       await writeFile(rootPath, `${JSON.stringify({ version: 1, active: true, skill: 'ralph', active_skills: [{ skill: 'ralph', active: true, session_id: 'sess-recovery' }] }, null, 2)}\n`);
       await writeSkillActiveStateCopiesForStateDir(
         stateDir,
@@ -680,7 +683,6 @@ describe('skill-active state helpers', () => {
         Object.fromEntries(final.active_skills.map((entry) => [entry.session_id, entry.phase])),
         { 'proc-a': 'new-a', 'proc-b': 'new-b' },
       );
-      assert.equal(existsSync(`${rootPath}.lock`), false);
     });
   });
 
@@ -730,6 +732,7 @@ describe('skill-active state helpers', () => {
       await writeFile(sessionReleasePath, 'release-session');
 
       assert.equal(await done, 0);
+      assert.deepEqual(await readdir(lockPath), []);
       const successorToken = 'successor-token';
       await writeFile(join(lockPath, `owner-${successorToken}`), successorToken);
       assert.equal(await readFile(join(lockPath, `owner-${successorToken}`), 'utf8'), successorToken);
@@ -772,6 +775,7 @@ describe('skill-active state helpers', () => {
       await writeFile(owner.releasePath, 'release');
       await waitForRootPhase(rootPath, 'live-owner', 'live-update');
       assert.equal(await owner.done, 0);
+      await rm(`${rootPath}.lock`, { recursive: true, force: true });
       assert.equal(await contender.done, 1);
 
       await mkdir(`${rootPath}.lock`);
@@ -788,6 +792,21 @@ describe('skill-active state helpers', () => {
       );
       assert.equal(existsSync(`${rootPath}.lock`), true);
       await rm(`${rootPath}.lock`, { recursive: true, force: true });
+      await mkdir(`${rootPath}.lock`);
+      await mkdir(`${rootPath}.lock/owner-unreadable`);
+      await utimes(`${rootPath}.lock`, staleTime, staleTime);
+      await assert.rejects(
+        () => writeSkillActiveStateCopiesForStateDir(
+          stateDir,
+          { active: true, skill: 'ralph', phase: 'unreadable', session_id: 'live-owner', active_skills: [{ skill: 'ralph', phase: 'unreadable', active: true, session_id: 'live-owner' }] },
+          'live-owner',
+          { active: true, skill: 'ralph', session_id: 'live-owner' },
+        ),
+        (error: unknown) => error instanceof SkillActiveStateWriteError && error.code === 'lock-timeout',
+      );
+      assert.equal(existsSync(`${rootPath}.lock`), true);
+      await rm(`${rootPath}.lock`, { recursive: true, force: true });
+
 
       await mkdir(`${rootPath}.lock`);
       await utimes(`${rootPath}.lock`, staleTime, staleTime);
@@ -797,8 +816,8 @@ describe('skill-active state helpers', () => {
         'live-owner',
         { active: true, skill: 'ralph', session_id: 'live-owner' },
       );
-      assert.equal(existsSync(`${rootPath}.lock`), false);
       assert.equal(JSON.parse(await readFile(rootPath, 'utf8')).active_skills[0].phase, 'ownerless-recovered');
+      await rm(`${rootPath}.lock`, { recursive: true, force: true });
 
       await mkdir(`${rootPath}.lock`);
       await writeFile(`${rootPath}.lock/owner`, '2147483647-dead-owner-token');
@@ -809,7 +828,6 @@ describe('skill-active state helpers', () => {
         'live-owner',
         { active: true, skill: 'ralph', session_id: 'live-owner' },
       );
-      assert.equal(existsSync(`${rootPath}.lock`), false);
       assert.equal(JSON.parse(await readFile(rootPath, 'utf8')).active_skills[0].phase, 'recovered');
     });
   });
