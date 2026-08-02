@@ -13,6 +13,7 @@ import {
   syncCanonicalSkillStateForMode,
   writeSkillActiveStateCopies,
   writeSkillActiveStateCopiesForStateDir,
+  writeSkillActiveStateWithPrimaryTransactionForStateDir,
 } from '../skill-active.js';
 
 async function withTempRepo(prefix: string, run: (cwd: string) => Promise<void>): Promise<void> {
@@ -740,6 +741,43 @@ describe('skill-active state helpers', () => {
       assert.equal(existsSync(errorPath), false);
       await rm(lockPath, { recursive: true, force: true });
       await rm(successorPath, { recursive: true, force: true });
+    });
+  });
+  it('does not restore a successor root after primary transaction lock loss', async () => {
+    await withTempRepo('omx-skill-active-successor-rollback-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const rootPath = join(stateDir, 'skill-active-state.json');
+      const sessionId = 'sess-successor-rollback';
+      const sessionPath = join(stateDir, 'sessions', sessionId, 'skill-active-state.json');
+      const lockPath = `${rootPath}.lock`;
+      const successorPath = `${lockPath}.successor`;
+      const previousRoot = `${JSON.stringify({ version: 1, active: true, skill: 'old', active_skills: [{ skill: 'old', active: true, session_id: sessionId }] }, null, 2)}\n`;
+      const successorRoot = `${JSON.stringify({ version: 1, active: true, skill: 'successor', active_skills: [{ skill: 'successor', active: true, session_id: 'successor-session' }] }, null, 2)}\n`;
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(rootPath, previousRoot);
+      await writeFile(sessionPath, `${JSON.stringify({ active: true, skill: 'old' }, null, 2)}\n`);
+
+      await assert.rejects(
+        () => writeSkillActiveStateWithPrimaryTransactionForStateDir(
+          stateDir,
+          { active: true, skill: 'new', phase: 'executing', session_id: sessionId, active_skills: [{ skill: 'new', phase: 'executing', active: true, session_id: sessionId }] },
+          sessionId,
+          sessionPath,
+          async () => writeFile(sessionPath, 'primary-new'),
+          {
+            beforeCommit: async (event) => {
+              if (event.site !== 'skill-active.session-copy') return;
+              await rename(lockPath, successorPath);
+              await mkdir(lockPath);
+              await writeFile(join(lockPath, 'owner-successor-token'), 'successor-token');
+              await writeFile(rootPath, successorRoot);
+            },
+          },
+        ),
+        (error) => error instanceof SkillActiveStateWriteError && error.code === 'lock-lost',
+      );
+      assert.equal(await readFile(rootPath, 'utf8'), successorRoot);
+      assert.equal(await readFile(join(lockPath, 'owner-successor-token'), 'utf8'), 'successor-token');
     });
   });
   it('rejects live stale takeover, cleans dead stale locks, and preserves recovery', async () => {

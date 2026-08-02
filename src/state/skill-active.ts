@@ -632,6 +632,29 @@ async function writeRootSkillActiveStateAtomically(
   }
 }
 
+
+async function restoreRootSkillActiveStateBytesIfOwned(
+  rootPath: string,
+  previousRoot: Buffer | null,
+  lock: RootSkillActiveLock,
+): Promise<void> {
+  await assertRootSkillActiveLockOwner(lock);
+  if (previousRoot === null) {
+    await unlink(rootPath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
+    return;
+  }
+  const tempPath = `${rootPath}.rollback-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  try {
+    await writeFile(tempPath, previousRoot);
+    await assertRootSkillActiveLockOwner(lock);
+    await rename(tempPath, rootPath);
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+  }
+}
+
 export async function writeSkillActiveStateCopies(
   cwd: string,
   state: SkillActiveStateLike,
@@ -699,15 +722,20 @@ export async function writeSkillActiveStateWithPrimaryTransactionForStateDir(
       primaryCommitted = true;
       await writeRootSkillActiveStateAtomically(rootPath, nextRoot, options.beforeCommit, lock);
       await options.beforeCommit?.({ site: 'skill-active.session-copy', kind: 'write', path: sessionPath });
+      await assertRootSkillActiveLockOwner(lock);
       await writeFile(sessionPath, sessionPayload);
     } catch (error) {
+      let rollbackError: unknown;
       if (primaryCommitted) {
         if (previousPrimary === null) await unlink(primaryPath).catch(() => undefined);
         else await writeFile(primaryPath, previousPrimary);
       }
-      if (previousRoot === null) await unlink(rootPath).catch(() => undefined);
-      else await writeFile(rootPath, previousRoot);
-      throw error;
+      try {
+        await restoreRootSkillActiveStateBytesIfOwned(rootPath, previousRoot, lock);
+      } catch (ownershipOrRestoreError) {
+        rollbackError = ownershipOrRestoreError;
+      }
+      throw rollbackError ?? error;
     }
   });
 }
