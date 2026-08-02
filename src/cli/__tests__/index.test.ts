@@ -101,6 +101,7 @@ import {
   guardDetachedHudDeferredMutation,
 } from "../index.js";
 import { buildResumeArgsWithPreservedFlags, stripHotswapArg } from "../../auth/hotswap.js";
+import { writeSkillActiveStateCopiesForStateDir } from '../../state/skill-active.js';
 import { mergeConfig, repairConfigIfNeeded } from "../../config/generator.js";
 import { ensureReusableNodeModules } from "../../utils/repo-deps.js";
 import { readAllState } from "../../hud/state.js";
@@ -1438,6 +1439,33 @@ describe("cleanupPostLaunchModeStateFiles", () => {
       assert.deepEqual(sessionCanonical.active_skills, []);
     }
     assert.deepEqual(warnings, []);
+  it('routes root skill-active cleanup through the locked root writer', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-postlaunch-root-writer-'));
+    const sessionId = 'sess-root-writer';
+    const stateDir = join(wd, '.omx', 'state');
+    const rootState = {
+      version: 1,
+      active: true,
+      skill: 'ralph',
+      session_id: sessionId,
+      active_skills: [{ skill: 'ralph', phase: 'executing', active: true, session_id: sessionId }],
+    };
+    await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+    await writeFile(join(stateDir, 'skill-active-state.json'), `${JSON.stringify(rootState, null, 2)}\n`, 'utf8');
+    let writerCalls = 0;
+
+    await cleanupPostLaunchModeStateFiles(wd, sessionId, {
+      writeRootState: async (rootDir, nextState) => {
+        writerCalls += 1;
+        await writeSkillActiveStateCopiesForStateDir(rootDir, nextState, undefined, nextState);
+      },
+    });
+
+    assert.equal(writerCalls, 1);
+    const persisted = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf8')) as typeof rootState;
+    assert.equal(persisted.active, false);
+    assert.deepEqual(persisted.active_skills, []);
+  });
   });
 
   it("normalizes stale terminal deep-interview locks during postLaunch cleanup", async () => {

@@ -117,6 +117,7 @@ import {
   listActiveSkills,
   readSkillActiveState,
   syncCanonicalSkillStateForMode,
+  writeSkillActiveStateCopiesForStateDir,
   type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
@@ -5348,6 +5349,7 @@ interface PostLaunchModeCleanupDependencies {
   readFile?: typeof import("fs/promises").readFile;
   writeFile?: typeof import("fs/promises").writeFile;
   sleep?: (ms: number) => Promise<void>;
+  writeRootState?: (stateDir: string, state: SkillActiveStateLike) => Promise<void>;
   writeWarn?: (line: string) => void;
   now?: () => Date;
 }
@@ -5462,7 +5464,7 @@ async function scrubPostLaunchRootSkillActiveForSession(
   stateDir: string,
   sessionId: string,
   nowIso: string,
-  writeFileFn: typeof import("fs/promises").writeFile,
+  writeRootStateFn: (stateDir: string, state: SkillActiveStateLike) => Promise<void>,
   rootStateBeforeCleanup?: SkillActiveStateLike | null,
 ): Promise<void> {
   const normalizedSessionId = cleanPostLaunchString(sessionId);
@@ -5497,7 +5499,7 @@ async function scrubPostLaunchRootSkillActiveForSession(
     post_launch_reconciled_at: nowIso,
     post_launch_reconciliation_reason: "terminal_session_cleanup",
   };
-  await writeFileFn(rootPath, JSON.stringify(nextRoot, null, 2));
+  await writeRootStateFn(stateDir, nextRoot);
 }
 
 function buildRecoveredPostLaunchModeState(
@@ -5561,6 +5563,16 @@ export async function cleanupPostLaunchModeStateFiles(
     ? [getStateDir(cwd, sessionId)]
     : [getBaseStateDir(cwd)];
   const rootStateDir = getBaseStateDir(cwd);
+  const writeRootState = dependencies.writeRootState ?? ((stateDir: string, state: SkillActiveStateLike) => (
+    writeSkillActiveStateCopiesForStateDir(stateDir, state, undefined, state)
+  ));
+  const writeModeState = async (stateDir: string, mode: string, path: string, state: Record<string, unknown>): Promise<void> => {
+    if (stateDir === rootStateDir && mode === SKILL_ACTIVE_STATE_MODE) {
+      await writeRootState(stateDir, state);
+      return;
+    }
+    await writeFile(path, JSON.stringify(state, null, 2));
+  };
   const rootSkillActiveStateBeforeCleanup = sessionId
     ? await readSkillActiveState(getSkillActiveStatePathsForStateDir(rootStateDir).rootPath)
     : null;
@@ -5585,16 +5597,10 @@ export async function cleanupPostLaunchModeStateFiles(
         if (result.kind === "recoverable") {
           try {
             const completedAt = now().toISOString();
-            await writeFile(
-              path,
-              JSON.stringify(
-                mode === SKILL_ACTIVE_STATE_MODE
-                  ? buildRecoveredPostLaunchSkillActiveState(completedAt)
-                  : buildRecoveredPostLaunchModeState(mode, completedAt),
-                null,
-                2,
-              ),
-            );
+            const recoveredState = mode === SKILL_ACTIVE_STATE_MODE
+              ? buildRecoveredPostLaunchSkillActiveState(completedAt)
+              : buildRecoveredPostLaunchModeState(mode, completedAt);
+            await writeModeState(stateDir, mode, path, recoveredState);
             if (isTrackedWorkflowMode(mode)) {
               await syncCanonicalSkillStateForMode({
                 cwd,
@@ -5629,12 +5635,12 @@ export async function cleanupPostLaunchModeStateFiles(
           : normalizeTerminalWorkflowState(result.state, { mode, nowIso: completedAt });
         if (normalized.changed) {
           result.state = normalized.state;
-          await writeFile(path, JSON.stringify(result.state, null, 2));
+          await writeModeState(stateDir, mode, path, result.state);
         }
         if (mode === "ralph") {
           const completedAt = now().toISOString();
           if (markRalphCompletionAuditBlockedForPostLaunch(result.state, cwd, completedAt)) {
-            await writeFile(path, JSON.stringify(result.state, null, 2));
+            await writeModeState(stateDir, mode, path, result.state);
             await syncCanonicalSkillStateForMode({
               cwd,
               baseStateDir: rootStateDir,
@@ -5663,7 +5669,7 @@ export async function cleanupPostLaunchModeStateFiles(
           result.state.phase = "complete";
           result.state.updated_at = completedAt;
           result.state.active_skills = [];
-          await writeFile(path, JSON.stringify(result.state, null, 2));
+          await writeModeState(stateDir, mode, path, result.state);
           continue;
         }
         result.state.active = false;
@@ -5674,7 +5680,7 @@ export async function cleanupPostLaunchModeStateFiles(
           result.state.interrupted_at = completedAt;
           result.state.stop_reason = cleanPostLaunchString(result.state.stop_reason) || "session_exit";
         }
-        await writeFile(path, JSON.stringify(result.state, null, 2));
+        await writeModeState(stateDir, mode, path, result.state);
         if (isTrackedWorkflowMode(mode)) {
           await syncCanonicalSkillStateForMode({
             cwd,
@@ -5702,7 +5708,7 @@ export async function cleanupPostLaunchModeStateFiles(
           rootStateDir,
           sessionId,
           now().toISOString(),
-          writeFile,
+          writeRootState,
           rootSkillActiveStateBeforeCleanup,
         );
       }
