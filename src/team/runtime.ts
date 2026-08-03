@@ -637,17 +637,20 @@ function collectAuthorizedSharedSessionWorkerPaneIds(
 function isSharedSessionHudPaneReclaimable(params: {
   paneId: string;
   persistedHudPaneId: string | null;
-  leaderOwnedHudPaneIds: string[];
   teamPaneOwnerId: string;
   onOwnerReadError?: (paneId: string, error: string) => void;
 }): boolean {
-  const { paneId, persistedHudPaneId, leaderOwnedHudPaneIds, teamPaneOwnerId, onOwnerReadError } = params;
+  const { paneId, persistedHudPaneId, teamPaneOwnerId, onOwnerReadError } = params;
   const expectedOwnerId = teamPaneOwnerId.trim();
   if (!expectedOwnerId) return false;
   const owner = readPaneTeamOwnerTagResult(paneId);
   if (owner.status === 'value') return owner.value === expectedOwnerId;
   if (paneId !== persistedHudPaneId) return false;
-  if (owner.status === 'missing') return leaderOwnedHudPaneIds.includes(paneId);
+  // A restored standalone HUD deliberately retains only its leader-scoped HUD
+  // metadata, not the Team pane-owner tag. Once restoration debt is finalized,
+  // preserving that pane is safer than treating persisted config as authority
+  // to reclaim it on a retried shutdown.
+  if (owner.status === 'missing') return false;
   onOwnerReadError?.(paneId, owner.error);
   return false;
 }
@@ -5140,7 +5143,6 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       ? sharedSessionTopology.hudPaneIds.filter((paneId) => isSharedSessionHudPaneReclaimable({
         paneId,
         persistedHudPaneId: hudPaneId,
-        leaderOwnedHudPaneIds: sharedSessionTopology.leaderOwnedHudPaneIds,
         teamPaneOwnerId: tmuxPaneOwnerId,
         onOwnerReadError: (candidateHudPaneId, error) => {
           warnOwnerReadError('HUD pane', candidateHudPaneId, error);

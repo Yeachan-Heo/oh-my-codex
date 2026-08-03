@@ -249,7 +249,7 @@ TASK_ID=$(echo "$CREATE_JSON" | jq -r '.data.task.id')
 CLAIM_JSON=$(omx team api claim-task --input "{\"team_name\":\"e2e-team-demo\",\"task_id\":\"$TASK_ID\",\"worker\":\"worker-1\",\"expected_version\":1}" --json)
 CLAIM_TOKEN=$(echo "$CLAIM_JSON" | jq -r '.data.claimToken')
 
-omx team api transition-task-status --input "{\"team_name\":\"e2e-team-demo\",\"task_id\":\"$TASK_ID\",\"from\":\"in_progress\",\"to\":\"completed\",\"claim_token\":\"$CLAIM_TOKEN\"}" --json
+omx team api transition-task-status --input "{\"team_name\":\"e2e-team-demo\",\"task_id\":\"$TASK_ID\",\"worker\":\"worker-1\",\"from\":\"in_progress\",\"to\":\"completed\",\"claim_token\":\"$CLAIM_TOKEN\"}" --json
 ```
 
 ### 7.2 Mailbox/message flow
@@ -350,7 +350,7 @@ CLAIM_JSON=$(omx team api claim-task --input "{\"team_name\":\"$TEAM_NAME\",\"ta
 CLAIM_TOKEN=$(echo "$CLAIM_JSON" | jq -r '.data.claimToken')
 
 echo "[5/8] transition task -> completed"
-omx team api transition-task-status --input "{\"team_name\":\"$TEAM_NAME\",\"task_id\":\"$TASK_ID\",\"from\":\"in_progress\",\"to\":\"completed\",\"claim_token\":\"$CLAIM_TOKEN\"}" --json
+omx team api transition-task-status --input "{\"team_name\":\"$TEAM_NAME\",\"task_id\":\"$TASK_ID\",\"worker\":\"worker-1\",\"from\":\"in_progress\",\"to\":\"completed\",\"claim_token\":\"$CLAIM_TOKEN\"}" --json
 
 echo "[6/8] mailbox flow"
 omx team api send-message --input "{\"team_name\":\"$TEAM_NAME\",\"from_worker\":\"leader-fixed\",\"to_worker\":\"worker-1\",\"body\":\"ACK one-shot\"}" --json

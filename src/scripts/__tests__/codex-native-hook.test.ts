@@ -15,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { DOCUMENT_REFRESH_EXEMPTION_PREFIX } from "../../document-refresh/enforcer.js";
@@ -69,6 +69,7 @@ import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
 import { digestTeamWorkerCapabilityToken } from "../../team/worker-capability.js";
 
+const TEST_OMX_ENTRY_PATH = fileURLToPath(new URL("../../cli/omx.js", import.meta.url));
 
 const ARGUMENT_PRODUCING_RUNTIME_DENIAL_COMMANDS = [
   ["node-xargs-wrapper-read", `printf x | xargs node -e "require('fs').readFileSync('src/victim.ts','utf8')"`],
@@ -512,6 +513,7 @@ async function configureAuthoritativeTeamWorker(
   process.env.OMX_TEAM_STATE_ROOT = stateRoot;
   process.env.OMX_TEAM_LEADER_CWD = cwd;
   process.env.OMX_TEAM_WORKER_CAPABILITY = "test-worker-capability-token";
+  process.env.OMX_ENTRY_PATH = TEST_OMX_ENTRY_PATH;
   process.env.OMX_SESSION_ID = "leader-session";
 }
 
@@ -799,6 +801,7 @@ const TEAM_ENV_KEYS = [
   "OMX_TEAM_WORKER",
   "OMX_TEAM_INTERNAL_WORKER",
   "OMX_TEAM_WORKER_CAPABILITY",
+  "OMX_ENTRY_PATH",
   "OMX_TEAM_STATE_ROOT",
   "OMX_TEAM_LEADER_CWD",
   "OMX_TEAM_MODE",
@@ -5740,6 +5743,8 @@ PY`,
         pid: process.pid,
       });
       await configureAuthoritativeTeamWorker(cwd, "binding-team");
+      const configBefore = await readFile(join(stateDir, "team", "binding-team", "config.json"), "utf-8");
+      const teamApiPrefix = `${JSON.stringify(process.execPath)} ${JSON.stringify(TEST_OMX_ENTRY_PATH)} team api`;
       await writeSessionSkillActiveState(stateDir, "leader-session", "team", "team-exec");
       await writeJson(join(stateDir, "sessions", "leader-session", "team-state.json"), {
         active: true,
@@ -5758,19 +5763,10 @@ PY`,
       }, { cwd, sessionOwnerPid: process.pid });
 
       const identityPath = join(stateDir, "team", "binding-team", "workers", "worker-1", "identity.json");
-      const boundIdentity = JSON.parse(await readFile(identityPath, "utf-8")) as Record<string, unknown>;
-      assert.equal(boundIdentity.native_session_id, "worker-native-binding");
-      for (const fileName of ["config.json", "manifest.v2.json"]) {
-        const teamMetadata = JSON.parse(await readFile(
-          join(stateDir, "team", "binding-team", fileName),
-          "utf-8",
-        )) as { workers?: Array<{ name?: string; native_session_id?: string }> };
-        assert.equal(
-          teamMetadata.workers?.find((worker) => worker.name === "worker-1")?.native_session_id,
-          "worker-native-binding",
-          fileName,
-        );
-      }
+      const bindingPath = join(dirname(identityPath), "native-session-binding.json");
+      const boundSession = JSON.parse(await readFile(bindingPath, "utf-8")) as Record<string, unknown>;
+      assert.equal(boundSession.native_session_id, "worker-native-binding");
+      assert.equal(await readFile(join(stateDir, "team", "binding-team", "config.json"), "utf-8"), configBefore);
       assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
 
       const sourceWrite = await dispatchCodexNativeHook({
@@ -5790,15 +5786,15 @@ PY`,
         tool_name: "Bash",
         tool_use_id: "tool-worker-native-binding-api",
         tool_input: {
-          command: `omx team api send-message --input '{"team_name":"binding-team","from_worker":"worker-1","to_worker":"leader-fixed","body":"ACK"}' --json`,
+          command: `${teamApiPrefix} send-message --input '{"team_name":"binding-team","from_worker":"worker-1","to_worker":"leader-fixed","body":"ACK"}' --json`,
         },
       }, { cwd });
       assert.equal(teamApiWrite.outputJson, null);
 
       for (const [toolUseId, command] of [
-        ["claim", `omx team api claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`],
-        ["transition", `omx team api transition-task-status --input '{"team_name":"binding-team","task_id":"1","from":"in_progress","to":"completed","claim_token":"claim-token","result":"done"}' --json`],
-        ["mailbox", `omx team api mailbox-mark-delivered --input '{"team_name":"binding-team","worker":"worker-1","message_id":"message-1"}' --json`],
+        ["claim", `${teamApiPrefix} claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`],
+        ["transition", `${teamApiPrefix} transition-task-status --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1","from":"in_progress","to":"completed","claim_token":"claim-token","result":"done"}' --json`],
+        ["mailbox", `${teamApiPrefix} mailbox-mark-delivered --input '{"team_name":"binding-team","worker":"worker-1","message_id":"message-1"}' --json`],
       ] as const) {
         const teamControlPlaneWrite = await dispatchCodexNativeHook({
           hook_event_name: "PreToolUse",
@@ -5810,6 +5806,67 @@ PY`,
         }, { cwd });
         assert.equal(teamControlPlaneWrite.outputJson, null, toolUseId);
       }
+			const trustedBinDir = join(cwd, "trusted-bin");
+			await mkdir(trustedBinDir, { recursive: true });
+			await symlink(TEST_OMX_ENTRY_PATH, join(trustedBinDir, "omx"));
+
+			for (const [name, mutateEnvironment, command] of [
+				[
+					"inline NODE_OPTIONS",
+					() => () => {},
+					`NODE_OPTIONS=--require=./payload.cjs ${teamApiPrefix} claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`,
+				],
+				[
+					"inherited NODE_OPTIONS",
+					() => {
+						const previous = process.env.NODE_OPTIONS;
+						process.env.NODE_OPTIONS = "--require=./payload.cjs";
+						return () => previous === undefined ? delete process.env.NODE_OPTIONS : (process.env.NODE_OPTIONS = previous);
+					},
+					`${teamApiPrefix} claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`,
+				],
+				[
+					"inherited node function",
+					() => {
+						const key = "BASH_FUNC_node%%";
+						const previous = process.env[key];
+						process.env[key] = "() { printf owned > src/pwned.ts; }";
+						return () => previous === undefined ? delete process.env[key] : (process.env[key] = previous);
+					},
+					`${teamApiPrefix} claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`,
+				],
+				[
+					"inherited omx function",
+					() => {
+						const key = "BASH_FUNC_omx%%";
+						const previousFunction = process.env[key];
+						const previousPath = process.env.PATH;
+						process.env[key] = "() { printf owned > src/pwned.ts; }";
+						process.env.PATH = `${trustedBinDir}:${previousPath ?? ""}`;
+						return () => {
+							if (previousFunction === undefined) delete process.env[key];
+							else process.env[key] = previousFunction;
+							if (previousPath === undefined) delete process.env.PATH;
+							else process.env.PATH = previousPath;
+						};
+					},
+					`omx team api claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`,
+				],
+			] as const) {
+				const restore = mutateEnvironment();
+				try {
+					const poisonedTeamApiWrite = await dispatchCodexNativeHook({
+						hook_event_name: "PreToolUse",
+						cwd,
+						session_id: "worker-native-binding",
+						tool_name: "Bash",
+						tool_input: { command },
+					}, { cwd });
+					assert.equal(poisonedTeamApiWrite.outputJson?.decision, "block", name);
+				} finally {
+					restore();
+				}
+			}
 
       const crossTeamApiWrite = await dispatchCodexNativeHook({
         hook_event_name: "PreToolUse",
@@ -5818,10 +5875,34 @@ PY`,
         tool_name: "Bash",
         tool_use_id: "tool-worker-native-binding-cross-team-api",
         tool_input: {
-          command: `omx team api claim-task --input '{"team_name":"foreign-team","task_id":"1","worker":"worker-1"}' --json`,
+          command: `${teamApiPrefix} claim-task --input '{"team_name":"foreign-team","task_id":"1","worker":"worker-1"}' --json`,
         },
       }, { cwd });
       assert.equal(crossTeamApiWrite.outputJson?.decision, "block");
+
+      const crossWorkerTransition = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "worker-native-binding",
+        tool_name: "Bash",
+        tool_input: {
+          command: `${teamApiPrefix} transition-task-status --input '{"team_name":"binding-team","task_id":"1","worker":"worker-2","from":"in_progress","to":"completed","claim_token":"claim-token"}' --json`,
+        },
+      }, { cwd });
+      assert.equal(crossWorkerTransition.outputJson?.decision, "block");
+
+      const untrustedEntryPath = join(cwd, "omx.js");
+      await writeFile(untrustedEntryPath, "process.exit(0);\n", "utf8");
+      const untrustedOmxExecutable = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "worker-native-binding",
+        tool_name: "Bash",
+        tool_input: {
+          command: `${JSON.stringify(process.execPath)} ${JSON.stringify(untrustedEntryPath)} team api claim-task --input '{"team_name":"binding-team","task_id":"1","worker":"worker-1"}' --json`,
+        },
+      }, { cwd });
+      assert.equal(untrustedOmxExecutable.outputJson?.decision, "block");
 
       process.env.OMX_TEAM_WORKER_CAPABILITY = "wrong-worker-capability-token";
       const wrongCapabilityWrite = await dispatchCodexNativeHook({
@@ -5841,8 +5922,8 @@ PY`,
         cwd,
         session_id: "forged-worker-native",
       }, { cwd, sessionOwnerPid: process.pid });
-      const reboundIdentity = JSON.parse(await readFile(identityPath, "utf-8")) as Record<string, unknown>;
-      assert.equal(reboundIdentity.native_session_id, "worker-native-binding");
+      const reboundSession = JSON.parse(await readFile(bindingPath, "utf-8")) as Record<string, unknown>;
+      assert.equal(reboundSession.native_session_id, "worker-native-binding");
 
       const forgedWrite = await dispatchCodexNativeHook({
         hook_event_name: "PreToolUse",
@@ -5884,11 +5965,63 @@ PY`,
       }, { cwd, sessionOwnerPid: process.pid });
       await materialized;
 
-      const identity = JSON.parse(await readFile(
-        join(stateRoot, "team", teamName, "workers", "worker-1", "identity.json"),
+      const binding = JSON.parse(await readFile(
+        join(stateRoot, "team", teamName, "workers", "worker-1", "native-session-binding.json"),
         "utf-8",
       )) as { native_session_id?: string };
-      assert.equal(identity.native_session_id, "worker-native-startup-race");
+      assert.equal(binding.native_session_id, "worker-native-startup-race");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("binds on the next hook event when metadata arrives after the SessionStart window", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-late-metadata-"));
+    try {
+      const teamName = "late-metadata-team";
+      const stateRoot = join(cwd, ".omx", "state");
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%10";
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_STATE_ROOT = stateRoot;
+      process.env.OMX_TEAM_LEADER_CWD = cwd;
+      process.env.OMX_TEAM_WORKER_CAPABILITY = "test-worker-capability-token";
+      process.env.OMX_SESSION_ID = "leader-session";
+
+      const materialized = (async () => {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_100));
+        await configureAuthoritativeTeamWorker(cwd, teamName);
+      })();
+      await dispatchCodexNativeHook({
+        hook_event_name: "SessionStart",
+        cwd,
+        session_id: "worker-native-late-metadata",
+      }, { cwd, sessionOwnerPid: process.pid });
+      assert.equal(existsSync(join(
+        stateRoot,
+        "team",
+        teamName,
+        "workers",
+        "worker-1",
+        "native-session-binding.json",
+      )), false);
+
+      await materialized;
+      const writeAfterMetadata = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: "worker-native-late-metadata",
+        tool_name: "Edit",
+        tool_input: { file_path: "src/late-metadata.ts", old_string: "a", new_string: "b" },
+      }, { cwd });
+      assert.equal(writeAfterMetadata.outputJson, null);
+
+      const binding = JSON.parse(await readFile(
+        join(stateRoot, "team", teamName, "workers", "worker-1", "native-session-binding.json"),
+        "utf-8",
+      )) as { native_session_id?: string };
+      assert.equal(binding.native_session_id, "worker-native-late-metadata");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -5935,8 +6068,12 @@ PY`,
       const identity = JSON.parse(await readFile(
         join(leaderCwd, ".omx", "state", "team", "detached-binding-team", "workers", "worker-1", "identity.json"),
         "utf-8",
-      )) as { native_session_id?: string; worktree_path?: string };
-      assert.equal(identity.native_session_id, "detached-worker-native");
+      )) as { worktree_path?: string };
+      const binding = JSON.parse(await readFile(
+        join(leaderCwd, ".omx", "state", "team", "detached-binding-team", "workers", "worker-1", "native-session-binding.json"),
+        "utf-8",
+      )) as { native_session_id?: string };
+      assert.equal(binding.native_session_id, "detached-worker-native");
       assert.equal(identity.worktree_path, workerCwd);
     } finally {
       await rm(leaderCwd, { recursive: true, force: true });
@@ -13373,6 +13510,54 @@ exit 0
 		}
 	});
 
+	it("blocks structurally wrapped direct Team invocations outside tmux", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-team-wrappers-"));
+		try {
+			for (const [name, command] of [
+				["command", "command omx team status durable-team"],
+				["exec", "exec omx team status durable-team"],
+				["nohup", "nohup omx team status durable-team"],
+				["timeout", "timeout 5s omx team status durable-team"],
+				["nice", "nice -n 5 omx team status durable-team"],
+				["stdbuf", "stdbuf -o0 omx team status durable-team"],
+			] as const) {
+				const result = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					source: "codex-app",
+					session_id: `sess-team-wrapper-${name}`,
+					tool_name: "Bash",
+					tool_input: { command },
+				}, { cwd });
+				assert.equal(result.outputJson?.decision, "block", name);
+			}
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("blocks nice/stdbuf wrapped HUD invocations outside tmux", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-hud-wrappers-"));
+		try {
+			for (const [name, command] of [
+				["nice", "nice -n 5 omx hud"],
+				["stdbuf", "stdbuf -e0 omx hud"],
+			] as const) {
+				const result = await dispatchCodexNativeHook({
+					hook_event_name: "PreToolUse",
+					cwd,
+					source: "codex-app",
+					session_id: `sess-hud-wrapper-${name}`,
+					tool_name: "Bash",
+					tool_input: { command },
+				}, { cwd });
+				assert.equal(result.outputJson?.decision, "block", name);
+			}
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("preserves direct CLI outside-tmux omx team Bash behavior", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-team-cli-outside-"),
@@ -15104,10 +15289,11 @@ exit 0
 					native_session_id: "sess-di-artifact",
 					runtime_capability: workerCapability(workerName, cwd, workerCapabilityToken),
 				});
-				const teamAuthority = {
-					name: teamName,
-					created_at: teamCreatedAt,
-					leader_pane_id: "%1",
+					const teamAuthority = {
+						name: teamName,
+						created_at: teamCreatedAt,
+						leader: { session_id: "sess-di-artifact" },
+						leader_pane_id: "%1",
 					leader_cwd: cwd,
 					team_state_root: stateDir,
 					workers: [{

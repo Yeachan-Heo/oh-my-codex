@@ -11857,6 +11857,78 @@ esac
     }
   });
 
+  it('shutdownTeam preserves a restored standalone HUD after debt finalization', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-restored-hud-finalized-'));
+    const teamName = 'team-restored-hud-finalized';
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-restored-hud-finalized-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.7b"
+    ;;
+  list-panes)
+    case "$*" in
+      *"-a -F #{pane_id}"*)
+        printf "%%11\t0\t2000000011\n%%12\t0\t2000000012\n"
+        if [ ! -f "${tmuxLogPath}.killed-%13" ]; then printf "%%13\t0\t2000000013\n"; fi
+        ;;
+      *"-F #{pane_dead} #{pane_pid}"*) exit 1 ;;
+      *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\t\\\"exec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%%11' node /tmp/bin/omx.js hud --watch # omx_source_receipt\\\"\\n%%13\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-restored-hud-finalized/worker-1 codex\\n"
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  show-option)
+    case "$*" in
+      *"-p -t %11 @omx_team_pane_owner_id"*|*"-p -t %13 @omx_team_pane_owner_id"*)
+        echo "team:team-restored-hud-finalized"
+        ;;
+      *"-p -t %12 @omx_team_pane_owner_id"*) exit 1 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  kill-pane)
+    : > "${tmuxLogPath}.killed-$3"
+    ;;
+  resize-pane|select-pane|run-shell) ;;
+  *) ;;
+esac
+`,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState(teamName, 'finalized restored HUD retry test', 'executor', 1, cwd);
+          const config = await readTeamConfig(teamName, cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.tmux_pane_owner_id = 'team:team-restored-hud-finalized';
+          config.leader_pane_id = '%11';
+          config.leader_pane_pid = 2000000011;
+          config.hud_pane_id = '%12';
+          config.hud_pane_pid = 2000000012;
+          config.workers[0]!.pane_id = '%13';
+          config.workers[0]!.pid = 2000000013;
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam(teamName, cwd, { force: true });
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.doesNotMatch(tmuxLog, /split-window/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam preserves leader exclusion while tearing down the hud pane', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-exclusions-'));
     try {

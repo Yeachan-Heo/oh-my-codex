@@ -851,6 +851,7 @@ export async function executeTeamApiOperation(
       case 'transition-task-status': {
         const teamName = String(opArgs.team_name || '').trim();
         const taskId = String(opArgs.task_id || '').trim();
+        const worker = String(opArgs.worker || '').trim();
         const from = String(opArgs.from || '').trim();
         const to = String(opArgs.to || '').trim();
         const claimToken = String(opArgs.claim_token || '').trim();
@@ -879,6 +880,7 @@ export async function executeTeamApiOperation(
           {
             result: typeof transitionResult === 'string' ? transitionResult : undefined,
             error: typeof transitionError === 'string' ? transitionError : undefined,
+            worker: worker || undefined,
           },
         );
         return { ok: true, operation, data: result as unknown as Record<string, unknown> };

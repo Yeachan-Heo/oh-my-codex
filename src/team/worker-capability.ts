@@ -1,4 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { link, open, readFile, unlink } from 'fs/promises';
+import { join } from 'path';
 
 export const TEAM_WORKER_CAPABILITY_ENV = 'OMX_TEAM_WORKER_CAPABILITY';
 
@@ -18,6 +20,70 @@ export interface TeamWorkerRuntimeCapability {
 export interface IssuedTeamWorkerRuntimeCapability {
   token: string;
   metadata: TeamWorkerRuntimeCapability;
+}
+
+export interface TeamWorkerNativeSessionBinding {
+  version: 1;
+  team_name: string;
+  worker_name: string;
+  native_session_id: string;
+  leader_session_id: string;
+  team_created_at: string;
+  worker_cwd: string;
+  team_state_root: string;
+  capability_sha256: string;
+  bound_at: string;
+}
+
+export function teamWorkerNativeSessionBindingPath(stateRoot: string, teamName: string, workerName: string): string {
+  return join(stateRoot, 'team', teamName, 'workers', workerName, 'native-session-binding.json');
+}
+
+export async function readTeamWorkerNativeSessionBinding(
+  stateRoot: string,
+  teamName: string,
+  workerName: string,
+): Promise<TeamWorkerNativeSessionBinding | null> {
+  try {
+    const parsed = JSON.parse(await readFile(
+      teamWorkerNativeSessionBindingPath(stateRoot, teamName, workerName),
+      'utf8',
+    )) as TeamWorkerNativeSessionBinding;
+    return parsed && parsed.version === 1 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function bindTeamWorkerNativeSession(
+  stateRoot: string,
+  binding: TeamWorkerNativeSessionBinding,
+): Promise<TeamWorkerNativeSessionBinding | null> {
+  const bindingPath = teamWorkerNativeSessionBindingPath(stateRoot, binding.team_name, binding.worker_name);
+  const temporaryPath = `${bindingPath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
+  let handle;
+  try {
+    handle = await open(temporaryPath, 'wx', 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  try {
+    await handle.writeFile(JSON.stringify(binding, null, 2), 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await link(temporaryPath, bindingPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    if (code !== 'EEXIST') throw error;
+  } finally {
+    await unlink(temporaryPath).catch(() => {});
+  }
+  return await readTeamWorkerNativeSessionBinding(stateRoot, binding.team_name, binding.worker_name);
 }
 
 export function digestTeamWorkerCapabilityToken(token: string): string {

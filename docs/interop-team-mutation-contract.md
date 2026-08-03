@@ -20,7 +20,7 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
 2. Claim with optimistic version:
    - `omx team api claim-task --json`
 3. Transition terminal state with claim token:
-   - `omx team api transition-task-status --json` (`in_progress -> completed|failed`)
+   - `omx team api transition-task-status --json` (`in_progress -> completed|failed`, with `worker` matching the claim owner)
 4. Use `omx team api release-task-claim --json` only for rollback/requeue-to-pending flows.
 
 ## Legacy MCP -> CLI migration table

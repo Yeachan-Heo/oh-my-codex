@@ -139,7 +139,6 @@ export interface WorkerInfo {
   team_state_root?: string;
   leader_cwd?: string;
   leader_session_id?: string;
-  native_session_id?: string;
   runtime_capability?: TeamWorkerRuntimeCapability;
 }
 
@@ -1900,7 +1899,7 @@ export async function transitionTaskStatus(
   to: TeamTask['status'],
   claimToken: string,
   cwd: string,
-  terminalData?: { result?: string; error?: string },
+  terminalData?: { result?: string; error?: string; worker?: string },
 ): Promise<TransitionTaskResult> {
   return await withTeamTaskBarrier(teamName, cwd, async () => {
     await recoverTeamMembershipTaskTransaction(teamName, cwd);

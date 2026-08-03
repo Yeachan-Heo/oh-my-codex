@@ -361,7 +361,7 @@ const TEAM_API_OPERATION_OPTIONAL_FIELDS: Partial<Record<TeamApiOperation, strin
   'update-task': ['subject', 'description', 'blocked_by', 'requires_code_change'],
   'claim-task': ['expected_version'],
   'cleanup': ['force', 'confirm_issues'],
-  'transition-task-status': ['result', 'error'],
+  'transition-task-status': ['worker', 'result', 'error'],
   'read-shutdown-ack': ['min_updated_at'],
   'write-worker-identity': [
     'assigned_tasks', 'pid', 'pane_id', 'working_dir',

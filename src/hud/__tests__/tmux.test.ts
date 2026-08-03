@@ -275,6 +275,18 @@ describe('HUD pane ownership helpers', () => {
     });
   });
 
+  it('reads ownership from tmux 3.7b whole-command quoting with a receipt comment', () => {
+    const [pane] = parseTmuxPaneSnapshot(
+      `%3\tnode\t"exec env OMX_SESSION_ID='%0' OMX_TMUX_HUD_OWNER=1 ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%0' '/node' '/omx.js' hud --watch # omx_source_receipt"`,
+    );
+
+    assert.deepEqual(readHudPaneOwner(pane!), {
+      sessionId: '%0',
+      leaderPaneId: '%0',
+    });
+    assert.equal(hudPaneMatchesOwner(pane!, { leaderPaneId: '%0' }), true);
+  });
+
   it('splits tmux octal-escaped control separators from live list-panes output', () => {
     const escapedSeparator = '\\037';
     const panes = parseTmuxPaneSnapshot(

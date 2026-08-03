@@ -109,7 +109,7 @@ ${renderCodeGraphInstructions(options.toolContext)}
 5. Read task files from \`${options.teamStateRoot}/team/${options.teamName}/tasks/task-<id>.json\` using bare \`task_id\` values in APIs.
 6. Use claim-safe lifecycle APIs only:
    - \`omx team api claim-task --json\`
-   - \`omx team api transition-task-status --json\`
+   - \`omx team api transition-task-status --json\` with \`worker: "${options.workerName}"\`
    - \`omx team api release-task-claim --json\` only for rollback to pending
 7. Use mailbox delivery flow:
    - \`omx team api mailbox-list --input "{\"team_name\":\"${options.teamName}\",\"worker\":\"${options.workerName}\"}" --json\`
@@ -372,6 +372,7 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
    This ensures your changes are available for incremental integration into the leader branch.
 10. On completion/failure, use lifecycle transition APIs:
    - \`omx team api transition-task-status --json\` with from \`"in_progress"\` to \`"completed"\` or \`"failed"\`
+   - Always include \`worker: "<your-worker-name>"\`; the transition must match the claim owner
    - Include \`result\` (for completed) or \`error\` (for failed) in the transition patch
 11. Use \`omx team api release-task-claim --json\` only for rollback/requeue to \`pending\` (not for completion)
 12. Update your status: write {"state": "idle", "updated_at": "<current ISO timestamp>"} to <team_state_root>/team/${teamName}/workers/{your-name}/status.json
@@ -905,7 +906,7 @@ ${approvedContextSection}${workerGoalSection}
 9. After completing work, commit your changes before reporting completion:
    \`git add -A && git commit -m "task: <task-subject>"\`
    This ensures your changes are available for incremental integration into the leader branch.
-10. Complete/fail it via lifecycle transition API (\`omx team api transition-task-status --json\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`result\`/\`error\`)
+10. Complete/fail it via lifecycle transition API (\`omx team api transition-task-status --json\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`worker: "${workerName}"\` and \`result\`/\`error\`)
 11. Use \`omx team api release-task-claim --json\` only for rollback to \`pending\`
 12. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to \`${teamStateRoot}/team/${teamName}/workers/${workerName}/status.json\`
 13. Wait for the next instruction from the lead
@@ -1024,7 +1025,7 @@ ${workerGoalSection}
 5. After completing work, commit your changes before reporting completion:
    \`git add -A && git commit -m "task: <task-subject>"\`
    This ensures your changes are available for incremental integration into the leader branch.
-6. Complete/fail via lifecycle transition API (\`omx team api transition-task-status --json\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`result\`/\`error\`)
+6. Complete/fail via lifecycle transition API (\`omx team api transition-task-status --json\`) from \`"in_progress"\` to \`"completed"\` or \`"failed"\` (include \`worker: "${workerName}"\` and \`result\`/\`error\`)
 7. Use \`omx team api release-task-claim --json\` only for rollback to \`pending\`
 8. Write \`{"state": "idle", "updated_at": "<current ISO timestamp>"}\` to your status file
 

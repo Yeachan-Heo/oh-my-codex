@@ -51,7 +51,6 @@ export interface WorkerInfo {
   team_state_root?: string;
   leader_cwd?: string;
   leader_session_id?: string;
-  native_session_id?: string;
   runtime_capability?: TeamWorkerRuntimeCapability;
 }
 

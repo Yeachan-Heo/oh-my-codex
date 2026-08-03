@@ -311,6 +311,19 @@ function lexPosixWords(command: string): string[] | null {
   return words;
 }
 
+function normalizeTmuxRenderedStartCommand(command: string): string {
+  const trimmed = command.trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return trimmed;
+  const renderedWords = lexPosixWords(trimmed);
+  if (renderedWords?.length !== 1) return trimmed;
+  const unwrapped = renderedWords[0]!.trim();
+  return /^(?:exec\s+)?env(?:\s|$)/.test(unwrapped) ? unwrapped : trimmed;
+}
+
+function hudOwnerMetadataCommand(pane: TmuxPaneSnapshot): string {
+  return normalizeTmuxRenderedStartCommand(pane.startCommand);
+}
+
 function parsePosixHudEnvAssignments(command: string): PosixHudEnvAssignments {
   const values = new Map<string, string[]>();
   const attempted = HUD_OWNER_ENV_KEYS.some((key) => command.includes(key));
@@ -490,7 +503,7 @@ function hasAmbiguousHudOwnerMetadata(command: string): boolean {
 }
 
 export function readHudPaneOwner(pane: TmuxPaneSnapshot): HudPaneOwner {
-  const command = `${pane.startCommand} ${pane.currentCommand}`;
+  const command = hudOwnerMetadataCommand(pane);
   const rawLeaderPaneId = parseHudEnvAssignment(command, OMX_TMUX_HUD_LEADER_PANE_ENV);
   if (
     hasAmbiguousHudOwnerMetadata(command)
@@ -505,12 +518,12 @@ export function readHudPaneOwner(pane: TmuxPaneSnapshot): HudPaneOwner {
 }
 
 function hasHudPaneOwnerMetadata(pane: TmuxPaneSnapshot): boolean {
-  const command = `${pane.startCommand} ${pane.currentCommand}`;
+  const command = hudOwnerMetadataCommand(pane);
   return hasHudOwnerMetadataAttempt(command) && !hasAmbiguousHudOwnerMetadata(command);
 }
 
 export function hasValidHudOwnerMarker(pane: TmuxPaneSnapshot): boolean {
-  const command = `${pane.startCommand} ${pane.currentCommand}`;
+  const command = hudOwnerMetadataCommand(pane);
   if (hasAmbiguousHudOwnerMetadata(command)) return false;
   return parseHudEnvAssignment(command, OMX_TMUX_HUD_OWNER_ENV) === '1';
 }
@@ -565,7 +578,7 @@ export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner 
   const wantsSession = wantedSessionIds.length > 0;
   const wantsLeaderPane = wantedLeaderPaneId !== null;
   if (!wantsSession && !wantsLeaderPane) return true;
-  if (hasAmbiguousHudOwnerMetadata(`${pane.startCommand} ${pane.currentCommand}`)) return false;
+  if (hasAmbiguousHudOwnerMetadata(hudOwnerMetadataCommand(pane))) return false;
 
   const paneOwner = readHudPaneOwner(pane);
   const sessionMatches = wantsSession && wantedSessionIds.includes(paneOwner.sessionId ?? '');

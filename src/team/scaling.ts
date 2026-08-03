@@ -193,7 +193,7 @@ function runScalePaneTransaction(
 ): boolean {
   const result = spawnSync('tmux', [
     'if-shell', '-F', '-t', pane.paneId, buildScalePaneAuthorityCondition(pane),
-    `${effect} \\; display-message -p ${quoteTmuxCommand(receipt)}`,
+    `${effect} ; display-message -p ${quoteTmuxCommand(receipt)}`,
     "display-message -p ''",
   ], { encoding: 'utf-8' });
   return result.status === 0 && hasExactScaleReceipt(result.stdout || '', receipt);
@@ -211,7 +211,7 @@ function tagScalePaneWithAuthority(pane: ScalePaneBirth, teamOwnerId: string): S
   const receipt = scaleTransactionReceipt();
   const result = spawnSync('tmux', [
     'if-shell', '-F', '-t', pane.paneId, condition,
-    `set-option -p -t ${pane.paneId} @omx_team_pane_owner_id ${quoteTmuxCommand(teamOwnerId)} \\; display-message -p ${quoteTmuxCommand(receipt)}`,
+    `set-option -p -t ${pane.paneId} @omx_team_pane_owner_id ${quoteTmuxCommand(teamOwnerId)} ; display-message -p ${quoteTmuxCommand(receipt)}`,
     "display-message -p ''",
   ], { encoding: 'utf-8' });
   if (result.status !== 0 || !hasExactScaleReceipt(result.stdout || '', receipt)) return null;
@@ -560,7 +560,7 @@ async function notifyWorkerPaneOutcome(
     };
     if (!runScalePaneTransaction(
       pane,
-      `send-keys -t ${paneId} -l ${quoteTmuxCommand(message)} \\; send-keys -t ${paneId} C-m`,
+      `send-keys -t ${paneId} -l ${quoteTmuxCommand(message)} ; send-keys -t ${paneId} C-m`,
     )) {
       throw new Error(`scale_up_final_send_authority_lost:${paneId}`);
     }
@@ -1316,6 +1316,13 @@ export async function scaleUp(
       await writeWorkerIdentity(sanitized, workerName, workerInfo, leaderCwd);
       throwIfScaleUpFailureInjected(env, 'identity');
 
+      addedWorkers.push(workerInfo);
+      config.workers.push(workerInfo);
+      config.worker_count = config.workers.length;
+      config.next_worker_index = nextIndex;
+      await saveTeamConfig(config, leaderCwd);
+      throwIfScaleUpFailureInjected(env, 'config');
+
 
       // Wait for worker readiness
       const readyTimeoutMs = resolveWorkerReadyTimeoutMs(env);
@@ -1468,13 +1475,6 @@ export async function scaleUp(
       }
       throwIfScaleUpFailureInjected(env, 'post-dispatch-rollback');
 
-      addedWorkers.push(workerInfo);
-      config.workers.push(workerInfo);
-      config.worker_count = config.workers.length;
-      config.next_worker_index = nextIndex;
-      throwIfScaleUpFailureInjected(env, 'config');
-
-      await saveTeamConfig(config, leaderCwd);
       throwIfScaleUpFailureInjected(env, 'finalization');
       } catch (error) {
         return await rollbackScaleUp(

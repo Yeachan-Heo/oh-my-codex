@@ -1177,34 +1177,88 @@ function commandInvokesOmxSubcommand(command: string, subcommand: string): boole
   for (let commandStart = 0; commandStart < tokens.length; commandStart = nextCommandStart(tokens, commandStart)) {
     const commandEnd = nextCommandStart(tokens, commandStart);
     let index = commandStart;
-
-    while (index < commandEnd && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) {
-      index += 1;
-    }
-
-    while (index < commandEnd && isEnvExecutableToken(tokens[index]?.value ?? "")) {
-      index += 1;
-      while (index < commandEnd) {
-        const token = tokens[index]?.value ?? "";
-        if (token === "--") {
+    let wrapperRejected = false;
+    for (let unwrapCount = 0; unwrapCount < 8 && index < commandEnd; unwrapCount += 1) {
+      while (index < commandEnd && isInlineShellEnvAssignment(tokens[index]?.value ?? "")) index += 1;
+      const wrapper = shellCommandBasename(tokens[index]?.value ?? "");
+      if (wrapper === "env") {
+        index += 1;
+        while (index < commandEnd) {
+          const token = tokens[index]?.value ?? "";
+          if (token === "--") { index += 1; break; }
+          if (isInlineShellEnvAssignment(token) || token === "-i" || token === "--ignore-environment" || token.startsWith("--unset=")) {
+            index += 1;
+            continue;
+          }
+          if (token.startsWith("-")) { index += envOptionConsumesNextValue(token) ? 2 : 1; continue; }
+          break;
+        }
+        continue;
+      }
+      if (wrapper === "command") {
+        index += 1;
+        if (["-v", "-V"].includes(tokens[index]?.value ?? "")) { wrapperRejected = true; break; }
+        while (["-p", "--"].includes(tokens[index]?.value ?? "")) index += 1;
+        continue;
+      }
+      if (["builtin", "nohup", "setsid"].includes(wrapper)) {
+        index += 1;
+        while ((tokens[index]?.value ?? "").startsWith("-")) index += 1;
+        continue;
+      }
+      if (wrapper === "exec") {
+        index += 1;
+        while (index < commandEnd) {
+          const token = tokens[index]?.value ?? "";
+          if (token === "--") { index += 1; break; }
+          if (token === "-a") { index += 2; continue; }
+          if (token === "-c" || token === "-l") { index += 1; continue; }
+          break;
+        }
+        continue;
+      }
+      if (wrapper === "time") {
+        index += 1;
+        while (["-p", "--"].includes(tokens[index]?.value ?? "")) index += 1;
+        continue;
+      }
+      if (wrapper === "timeout") {
+        index += 1;
+        while (index < commandEnd) {
+          const token = tokens[index]?.value ?? "";
+          if (token === "--") { index += 1; break; }
+          if (token === "-k" || token === "--kill-after" || token === "-s" || token === "--signal") { index += 2; continue; }
+          if (token.startsWith("-")) { index += 1; continue; }
           index += 1;
           break;
         }
-        if (isInlineShellEnvAssignment(token)) {
-          index += 1;
-          continue;
-        }
-        if (token === "-i" || token === "--ignore-environment" || token.startsWith("--unset=")) {
-          index += 1;
-          continue;
-        }
-        if (token.startsWith("-")) {
-          index += envOptionConsumesNextValue(token) ? 2 : 1;
-          continue;
-        }
-        break;
+        continue;
       }
+      if (wrapper === "nice") {
+        index += 1;
+        while (index < commandEnd) {
+          const token = tokens[index]?.value ?? "";
+          if (token === "--") { index += 1; break; }
+          if (token === "-n" || token === "--adjustment") { index += 2; continue; }
+          if (/^-(?:n)?\d+$/.test(token) || token.startsWith("--adjustment=")) { index += 1; continue; }
+          break;
+        }
+        continue;
+      }
+      if (wrapper === "stdbuf") {
+        index += 1;
+        while (index < commandEnd) {
+          const token = tokens[index]?.value ?? "";
+          if (token === "--") { index += 1; break; }
+          if (["-i", "-o", "-e", "--input", "--output", "--error"].includes(token)) { index += 2; continue; }
+          if (/^-[ioe].+/.test(token) || /^--(?:input|output|error)=/.test(token)) { index += 1; continue; }
+          break;
+        }
+        continue;
+      }
+      break;
     }
+    if (wrapperRejected) continue;
 
     const rawToken = tokens[index]?.value || "";
     const token = rawToken.replace(/\\/g, "/").split("/").pop() || "";

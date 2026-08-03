@@ -1943,6 +1943,19 @@ describe('teamCommand api', () => {
     }
   });
 
+  it('documents worker as optional for public transition callers', async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+      await teamCommand(['api', 'transition-task-status', '--help']);
+      assert.equal(logs.length, 1);
+      assert.match(logs[0] ?? '', /Optional input fields:\s+- worker\s+- result\s+- error/);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
   it('prints operation-specific help for omx team api <operation> help alias', async () => {
     const logs: string[] = [];
     const originalLog = console.log;
@@ -2334,6 +2347,7 @@ describe('teamCommand api', () => {
         JSON.stringify({
           team_name: 'lifecycle-team',
           task_id: taskId,
+          worker: 'worker-1',
           from: 'in_progress',
           to: 'completed',
           claim_token: claimToken,

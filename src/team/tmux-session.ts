@@ -341,6 +341,14 @@ function sourceTransactionReceipt(): string {
   return `omx_source_${process.pid}_${Date.now()}_${randomBytes(16).toString('hex')}`;
 }
 
+export function buildSourceAuthorizedEffectCommand(effect: string, receipt: string): string {
+  return `${effect} ; display-message -p ${shellQuoteSingle(receipt)}`;
+}
+
+export function buildSplitWindowReceiptFormat(receipt: string): string {
+  return `#{pane_id}\t${receipt}`;
+}
+
 function bindSplitReceiptToPaneCommand(command: string, receipt: string): string {
   return `${command} # ${receipt}`;
 }
@@ -349,7 +357,7 @@ function bindSplitReceiptToPaneCommand(command: string, receipt: string): string
 function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: string, receipt: string = sourceTransactionReceipt()): string {
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    `${effect} \\; display-message -p ${shellQuoteSingle(receipt)}`,
+    buildSourceAuthorizedEffectCommand(effect, receipt),
     "display-message -p ''",
   ]);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);
@@ -374,7 +382,7 @@ function runSourceAuthorizedSplit(
   const effect = buildEffect(receipt);
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    effect.replace("-F '#{pane_id}'", `-F '#{pane_id}\\t${receipt}'`),
+    effect.replace("-F '#{pane_id}'", `-F '${buildSplitWindowReceiptFormat(receipt)}'`),
     "display-message -p ''",
   ], true);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);
@@ -2106,6 +2114,7 @@ function buildWorkerStartupScriptContent(
     `unset ${OMX_TMUX_HUD_OWNER_ENV} ${OMX_TMUX_HUD_LEADER_PANE_ENV}`,
     `cd ${shellQuoteSingle(translatePathForMsys(cwd))}`,
     envExports,
+    'rm -f -- "$0"',
     `exec ${shellQuoteSingle(launchSpec.shell)} -c ${shellQuoteSingle(`${rcPrefix}${pathPrefix}${cliInvocation}`)}`,
     '',
   ].filter((line) => line !== '').join('\n');

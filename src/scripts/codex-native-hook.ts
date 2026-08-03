@@ -71,20 +71,20 @@ import {
   readTeamConfig,
   readTeamManifestV2,
   readTeamPhase,
-  saveTeamConfig,
-  writeWorkerIdentity,
   writeTeamLeaderAttention,
   writeTeamPhase,
-  type WorkerInfo,
 } from "../team/state.js";
 import {
+  bindTeamWorkerNativeSession,
   capabilityTokenMatches,
+  readTeamWorkerNativeSessionBinding,
   TEAM_WORKER_CAPABILITY_ENV,
 } from "../team/worker-capability.js";
 import { parseTeamNoticeLedgerPrompt, reconcileTeamNoticeLedger } from "../team/notice-ledger.js";
 import {
   canonicalizeComparablePath,
   omxNotepadPath,
+  resolveOmxCliEntryPath,
   resolveProjectMemoryPath,
   sameFilePath,
 } from "../utils/paths.js";
@@ -3007,6 +3007,8 @@ async function hasAuthoritativeTeamWorkerContext(
   };
   if (![identity, manifestWorker, configWorker].every(capabilityMatches)) return false;
   const identityCapability = safeObject(identity.runtime_capability);
+  const leader = safeObject(manifest.leader);
+  if (safeString(leader.session_id).trim() !== safeString(identityCapability.leader_session_id).trim()) return false;
   for (const worker of [identity, manifestWorker, configWorker]) {
     if (safeString(worker.leader_session_id).trim() !== safeString(identityCapability.leader_session_id).trim()) return false;
     if (!pathMatches(worker.leader_cwd, canonicalLeaderCwd)) return false;
@@ -3014,9 +3016,19 @@ async function hasAuthoritativeTeamWorkerContext(
   const expectedSession = normalizeSessionId(expectedNativeSessionId);
   if (expectedNativeSessionId && !expectedSession) return false;
   if (expectedSession) {
-    for (const worker of [identity, manifestWorker, configWorker]) {
-      if (normalizeSessionId(safeString(worker.native_session_id)) !== expectedSession) return false;
-    }
+    const binding = await readTeamWorkerNativeSessionBinding(
+      canonicalStateRoot,
+      workerContext.teamName,
+      workerContext.workerName,
+    );
+    if (!binding) return false;
+    if (binding.team_name !== workerContext.teamName || binding.worker_name !== workerContext.workerName) return false;
+    if (normalizeSessionId(binding.native_session_id) !== expectedSession) return false;
+    if (binding.leader_session_id !== safeString(identityCapability.leader_session_id).trim()) return false;
+    if (binding.team_created_at !== safeString(config.created_at).trim()) return false;
+    if (binding.capability_sha256 !== safeString(identityCapability.token_sha256).trim()) return false;
+    if (!pathMatches(binding.team_state_root, canonicalStateRoot)) return false;
+    if (!pathMatches(binding.worker_cwd, canonicalCwd)) return false;
   }
   for (const state of [manifest, config]) {
     if (safeString(state.name).trim() !== workerContext.teamName) return false;
@@ -3034,6 +3046,8 @@ async function hasAuthoritativeTeamWorkerContext(
     if (workingDir && !pathMatches(workingDir, canonicalCwd)) return false;
     if (worktreePath && !pathMatches(worktreePath, canonicalCwd)) return false;
   }
+  const teamPhase = await readTeamPhase(workerContext.teamName, cwd).catch(() => null);
+  if (teamPhase && ["complete", "failed", "cancelled"].includes(safeString(teamPhase.current_phase).trim())) return false;
   return true;
 }
 
@@ -3061,26 +3075,20 @@ async function bindAuthoritativeTeamWorkerNativeSession(
   const identityPath = join(stateRoot, "team", workerContext.teamName, "workers", workerContext.workerName, "identity.json");
   const identity = await readJsonIfExists(identityPath);
   if (!identity) return false;
-  const config = await readTeamConfig(workerContext.teamName, cwd).catch(() => null);
-  const configWorker = config?.workers.find((worker) => worker.name === workerContext.workerName);
-  if (!config || !configWorker) return false;
-  const existingSessionIds = [identity.native_session_id, configWorker.native_session_id]
-    .map((value) => normalizeSessionId(safeString(value)))
-    .filter(Boolean);
-  if (existingSessionIds.some((value) => value !== normalizedSessionId)) return false;
+  const capability = safeObject(identity.runtime_capability);
   try {
-    if (normalizeSessionId(safeString(configWorker.native_session_id)) !== normalizedSessionId) {
-      configWorker.native_session_id = normalizedSessionId;
-      await saveTeamConfig(config, cwd);
-    }
-    if (normalizeSessionId(safeString(identity.native_session_id)) !== normalizedSessionId) {
-      await writeWorkerIdentity(
-        workerContext.teamName,
-        workerContext.workerName,
-        { ...identity, native_session_id: normalizedSessionId } as unknown as WorkerInfo,
-        cwd,
-      );
-    }
+    await bindTeamWorkerNativeSession(stateRoot, {
+      version: 1,
+      team_name: workerContext.teamName,
+      worker_name: workerContext.workerName,
+      native_session_id: normalizedSessionId,
+      leader_session_id: safeString(capability.leader_session_id).trim(),
+      team_created_at: safeString(capability.team_created_at).trim(),
+      worker_cwd: safeString(capability.worker_cwd).trim(),
+      team_state_root: safeString(capability.team_state_root).trim(),
+      capability_sha256: safeString(capability.token_sha256).trim(),
+      bound_at: new Date().toISOString(),
+    });
   } catch {
     return false;
   }
@@ -10720,7 +10728,47 @@ const TEAM_WORKER_MUTATING_API_OPERATIONS = new Set([
   "update-worker-heartbeat",
 ]);
 
-function parseAuthorizedTeamWorkerApiCommand(command: string): {
+function resolveLiteralExecutablePath(executable: string, cwd: string): string | null {
+  if (!executable) return null;
+  if (executable.includes("/") || executable.includes("\\")) {
+    return isAbsolute(executable) ? executable : resolve(cwd, executable);
+  }
+  for (const directory of safeString(process.env.PATH).split(delimiter)) {
+    if (!directory) continue;
+    const candidate = join(directory, executable);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function trustedTeamApiSubcommandIndex(
+  command: string,
+  literalWords: string[],
+  commandIndex: number,
+  cwd: string,
+): number | null {
+  if (literalWords.slice(0, commandIndex).some(isEnvironmentAssignmentWord)) return null;
+  if (commandHasUnsafeDynamicLoaderEnvironment(command) || commandHasUnsafeLeadingRuntimeEnvironment(command)) return null;
+  const unsafeInheritedNames = [...OMX_GJC_TRUSTED_CONTEXT_UNSAFE_INHERITED_ENV_NAMES, ...CONDUCTOR_NODE_OUTPUT_ENVIRONMENT_NAMES];
+  if (unsafeInheritedNames.some((name) => safeString(process.env[name]).trim() !== "")) return null;
+  const trustedEntry = resolveOmxCliEntryPath({ cwd, env: process.env });
+  if (!trustedEntry) return null;
+  const executableWord = literalWords[commandIndex] ?? "";
+  const executable = basename(executableWord).toLowerCase();
+  const executableName = executable.replace(/\.exe$/i, "");
+  if (safeString(process.env[`BASH_FUNC_${executableName}%%`]).trim() !== "") return null;
+  if (executable === "node" || executable === "node.exe") {
+    const nodePath = resolveLiteralExecutablePath(executableWord, cwd);
+    const targetPath = resolveLiteralExecutablePath(literalWords[commandIndex + 1] ?? "", cwd);
+    if (!nodePath || !targetPath || !sameFilePath(nodePath, process.execPath) || !sameFilePath(targetPath, trustedEntry)) return null;
+    return commandIndex + 2;
+  }
+  if (executable !== "omx" && executable !== "omx.js") return null;
+  const invokedPath = resolveLiteralExecutablePath(executableWord, cwd);
+  return invokedPath && sameFilePath(invokedPath, trustedEntry) ? commandIndex + 1 : null;
+}
+
+function parseAuthorizedTeamWorkerApiCommand(command: string, cwd: string): {
   operation: string;
   input: Record<string, unknown>;
 } | null {
@@ -10733,14 +10781,8 @@ function parseAuthorizedTeamWorkerApiCommand(command: string): {
   const literalWords = words as string[];
   const commandIndex = findWrappedCommandPositionIndex(rawWords, 0);
   if (commandIndex === null) return null;
-  const executable = basename(literalWords[commandIndex] ?? "").toLowerCase();
-  let subcommandIndex = commandIndex + 1;
-  if (executable === "node" || executable === "node.exe") {
-    if (basename(literalWords[subcommandIndex] ?? "").toLowerCase() !== "omx.js") return null;
-    subcommandIndex += 1;
-  } else if (executable !== "omx" && executable !== "omx.js") {
-    return null;
-  }
+  const subcommandIndex = trustedTeamApiSubcommandIndex(command, literalWords, commandIndex, cwd);
+  if (subcommandIndex === null) return null;
   if (literalWords[subcommandIndex] !== "team" || literalWords[subcommandIndex + 1] !== "api") return null;
   const operation = literalWords[subcommandIndex + 2] ?? "";
   if (!TEAM_WORKER_MUTATING_API_OPERATIONS.has(operation)) return null;
@@ -10769,9 +10811,9 @@ function parseAuthorizedTeamWorkerApiCommand(command: string): {
   return { operation, input };
 }
 
-function isAuthorizedTeamWorkerApiCommand(command: string): boolean {
+function isAuthorizedTeamWorkerApiCommand(command: string, cwd: string): boolean {
   const workerContext = readTeamWorkerEnvironment();
-  const parsed = parseAuthorizedTeamWorkerApiCommand(command);
+  const parsed = parseAuthorizedTeamWorkerApiCommand(command, cwd);
   if (!workerContext || !parsed) return false;
   const teamName = safeString(parsed.input.team_name).trim();
   if (teamName && teamName !== workerContext.teamName) return false;
@@ -10784,6 +10826,7 @@ function isAuthorizedTeamWorkerApiCommand(command: string): boolean {
     "mailbox-mark-delivered",
     "mailbox-mark-notified",
     "claim-task",
+    "transition-task-status",
     "release-task-claim",
     "update-worker-heartbeat",
   ].includes(parsed.operation) && worker !== workerContext.workerName) return false;
@@ -10807,7 +10850,7 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") return true;
   if (mutationTransport === "unknown" || mutationTransport === "state" || mutationTransport === "goal-lifecycle") return true;
   if (toolName === "Bash") {
-    if (isAuthorizedTeamWorkerApiCommand(command)) return false;
+    if (isAuthorizedTeamWorkerApiCommand(command, cwd)) return false;
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
     let effectiveCwd = cwd;
@@ -22609,9 +22652,8 @@ export async function dispatchCodexNativeHook(
   let isSubagentSessionStart = false;
   const authoritativeTeamWorker = declaredTeamWorker
     && candidateWorkerPayloadSessionId !== ""
-    && (hookEventName === "SessionStart"
-      ? await bindAuthoritativeTeamWorkerNativeSession(cwd, candidateWorkerPayloadSessionId)
-      : await hasAuthoritativeTeamWorkerContext(cwd, candidateWorkerPayloadSessionId));
+    && (await hasAuthoritativeTeamWorkerContext(cwd, candidateWorkerPayloadSessionId)
+      || await bindAuthoritativeTeamWorkerNativeSession(cwd, candidateWorkerPayloadSessionId));
   const authoritativeWorkerPayloadSessionId = authoritativeTeamWorker
     && candidateWorkerPayloadSessionId
     && (!pointer.state || !payloadMatchesSessionPointer(candidateWorkerPayloadSessionId, pointer.state))

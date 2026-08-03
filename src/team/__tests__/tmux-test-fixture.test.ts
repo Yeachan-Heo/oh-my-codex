@@ -5,6 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 import { buildPtyScriptCommand, isRealTmuxAvailable, runPtyResult, tmuxSessionExists, withTempTmuxSession } from './tmux-test-fixture.js';
+import {
+  buildSourceAuthorizedEffectCommand,
+  buildSplitWindowReceiptFormat,
+  parseSplitWindowPaneId,
+} from '../tmux-session.js';
 
 function skipUnlessTmux(t: TestContext): void {
   if (!isRealTmuxAvailable()) {
@@ -38,6 +43,41 @@ function uniqueAmbientSessionName(): string {
 }
 
 describe('withTempTmuxSession', () => {
+  it('executes source-authorized Team transactions on the private real tmux server', async (t) => {
+    skipUnlessTmux(t);
+    await withTempTmuxSession(async (fixture) => {
+      const receipt = 'source-authority-receipt';
+      const output = fixture.run([
+        'if-shell', '-F', '-t', fixture.leaderPaneId, '#{==:#{pane_dead},0}',
+        buildSourceAuthorizedEffectCommand(
+          `set-option -p -t ${fixture.leaderPaneId} @omx_source_authority_test tagged`,
+          receipt,
+        ),
+        "display-message -p ''",
+      ]);
+      assert.equal(output, receipt);
+      assert.equal(
+        fixture.run(['show-option', '-qv', '-p', '-t', fixture.leaderPaneId, '@omx_source_authority_test']),
+        'tagged',
+      );
+    });
+  });
+
+  it('returns a parseable pane and receipt from a guarded split on the private real tmux server', async (t) => {
+    skipUnlessTmux(t);
+    await withTempTmuxSession(async (fixture) => {
+      const receipt = 'split-receipt';
+      const output = fixture.run([
+        'if-shell', '-F', '-t', fixture.leaderPaneId, '#{==:#{pane_dead},0}',
+        `split-window -h -t ${fixture.leaderPaneId} -d -P -F '${buildSplitWindowReceiptFormat(receipt)}' 'sleep 60 # ${receipt}'`,
+        "display-message -p ''",
+      ]);
+      const paneId = parseSplitWindowPaneId(output, receipt);
+      assert.match(paneId ?? '', /^%\d+$/);
+      assert.notEqual(paneId, fixture.leaderPaneId);
+    });
+  });
+
   it('provides isolated tmux env and cleans up on success', async (t) => {
     skipUnlessTmux(t);
     const ambientTmux = process.env.TMUX;

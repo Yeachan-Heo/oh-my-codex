@@ -324,7 +324,7 @@ Examples:
 ```bash
 omx team api send-message --input '{"team_name":"my-team","from_worker":"worker-1","to_worker":"leader-fixed","body":"ACK"}' --json
 omx team api claim-task --input '{"team_name":"my-team","task_id":"1","worker":"worker-1"}' --json
-omx team api transition-task-status --input '{"team_name":"my-team","task_id":"1","from":"in_progress","to":"completed","claim_token":"<token>"}' --json
+omx team api transition-task-status --input '{"team_name":"my-team","task_id":"1","worker":"worker-1","from":"in_progress","to":"completed","claim_token":"<token>"}' --json
 ```
 
 `--json` responses include stable metadata for automation:

@@ -108,9 +108,11 @@ current worker pane recorded under the strictly resolved Team state root. Each
 launch receives a random run-scoped worker capability; only its digest and its
 Team, worker, leader-session, leader-cwd, worker-cwd, shared-state-root, and Team
 lifecycle bindings are persisted in worker identity/config/manifest metadata.
-The worker's first authoritative `SessionStart` binds its actual native Codex
-session ID exactly once. Later writes require that bound ID plus the capability,
-pane, paths, and metadata to agree. The shared `OMX_TEAM_STATE_ROOT` remains
+The worker's first authoritative hook event binds its actual native Codex
+session ID exactly once in a worker-scoped `native-session-binding.json` record;
+the hook does not rewrite leader-owned Team config or manifest records. Later
+writes require that bound ID plus the capability, pane, paths, and metadata to
+agree. The shared `OMX_TEAM_STATE_ROOT` remains
 leader-owned and does not require a detached worker to impersonate the leader
 cwd. Validated standalone worker API calls are limited to the current Team and
 worker; cross-Team payloads, protected workflow state, arbitrary state trees,

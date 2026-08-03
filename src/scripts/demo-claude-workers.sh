@@ -164,8 +164,9 @@ for i in $(seq 1 "$WORKER_COUNT"); do
     TRANSITION_INPUT="$(jq -nc \
       --arg team "$TEAM_NAME" \
       --arg task "$TASK_ID" \
+      --arg worker "$WORKER_NAME" \
       --arg token "$CLAIM_TOKEN" \
-      '{team_name:$team,task_id:$task,from:"in_progress",to:"completed",claim_token:$token}')"
+      '{team_name:$team,task_id:$task,worker:$worker,from:"in_progress",to:"completed",claim_token:$token}')"
     omx team api transition-task-status --input "$TRANSITION_INPUT" --json >/dev/null
     echo "  $WORKER_NAME completed task $TASK_ID"
   fi

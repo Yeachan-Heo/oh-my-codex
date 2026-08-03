@@ -119,7 +119,7 @@ export async function claimTask(
 
 function extractDelegationComplianceEvidence(
   task: TeamTaskV2,
-  terminalData: { result?: string; error?: string } | undefined,
+  terminalData: { result?: string; error?: string; worker?: string } | undefined,
 ): TeamTaskDelegationComplianceEvidence | null {
   const plan = task.delegation;
   if (!plan || plan.mode === 'none') return null;
@@ -151,7 +151,7 @@ function requiresDelegationComplianceEvidence(task: TeamTaskV2): boolean {
 
 function extractCoordinationComplianceEvidence(
   task: TeamTaskV2,
-  terminalData: { result?: string; error?: string } | undefined,
+  terminalData: { result?: string; error?: string; worker?: string } | undefined,
 ): TeamTaskCoordinationComplianceEvidence | null {
   if (task.coordination?.mode !== 'coordinated') return null;
 
@@ -195,7 +195,7 @@ export async function transitionTaskStatus(
   from: TeamTaskStatus,
   to: TeamTaskStatus,
   claimToken: string,
-  terminalData: { result?: string; error?: string } | undefined,
+  terminalData: { result?: string; error?: string; worker?: string } | undefined,
   deps: TransitionDeps,
 ): Promise<TransitionTaskResult> {
   if (!deps.canTransitionTaskStatus(from, to)) return { ok: false, error: 'invalid_transition' };
@@ -210,6 +210,9 @@ export async function transitionTaskStatus(
     if (v.status !== from) return { ok: false as const, error: 'invalid_transition' as const };
 
     if (!v.owner || !v.claim || v.claim.owner !== v.owner || v.claim.token !== claimToken) {
+      return { ok: false as const, error: 'claim_conflict' as const };
+    }
+    if (terminalData?.worker && (v.owner !== terminalData.worker || v.claim.owner !== terminalData.worker)) {
       return { ok: false as const, error: 'claim_conflict' as const };
     }
     if (new Date(v.claim.leased_until) <= new Date()) return { ok: false as const, error: 'lease_expired' as const };

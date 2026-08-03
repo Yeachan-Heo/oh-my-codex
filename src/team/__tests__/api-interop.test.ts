@@ -1231,10 +1231,34 @@ describe('executeTeamApiOperation: transition-task-status', () => {
 
   it('rejects invalid status values', async () => {
     const result = await executeTeamApiOperation('transition-task-status', {
-      team_name: 'x', task_id: '1', from: 'invalid', to: 'completed', claim_token: 'tok',
+      team_name: 'x', task_id: '1', worker: 'worker-1', from: 'invalid', to: 'completed', claim_token: 'tok',
     }, '/tmp');
     assert.equal(result.ok, false);
     if (!result.ok) assert.match(result.error.message, /valid task statuses/);
+  });
+
+  it('preserves legacy caller compatibility when worker is omitted', async () => {
+    const { cwd, cleanup } = await setupTeam('transition-legacy-caller');
+    try {
+      const task = await createTask('transition-legacy-caller', { subject: 'legacy', description: 'd', status: 'pending' }, cwd);
+      const claim = await executeTeamApiOperation('claim-task', {
+        team_name: 'transition-legacy-caller', task_id: task.id, worker: 'worker-1',
+      }, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+
+      const transition = await executeTeamApiOperation('transition-task-status', {
+        team_name: 'transition-legacy-caller',
+        task_id: task.id,
+        from: 'in_progress',
+        to: 'completed',
+        claim_token: String(claim.data.claimToken),
+      }, cwd);
+      assert.equal(transition.ok, true);
+      if (transition.ok) assert.equal(transition.data.ok, true);
+    } finally {
+      await cleanup();
+    }
   });
 
   it('persists optional result and error payloads', async () => {
@@ -1252,6 +1276,7 @@ describe('executeTeamApiOperation: transition-task-status', () => {
       const completedTransition = await executeTeamApiOperation('transition-task-status', {
         team_name: 'transition-payload',
         task_id: completedTask.id,
+        worker: 'worker-1',
         from: 'in_progress',
         to: 'completed',
         claim_token: completedClaimToken,
@@ -1275,6 +1300,7 @@ describe('executeTeamApiOperation: transition-task-status', () => {
       const failedTransition = await executeTeamApiOperation('transition-task-status', {
         team_name: 'transition-payload',
         task_id: failedTask.id,
+        worker: 'worker-1',
         from: 'in_progress',
         to: 'failed',
         claim_token: failedClaimToken,
@@ -1290,15 +1316,44 @@ describe('executeTeamApiOperation: transition-task-status', () => {
     }
   });
 
+  it('rejects a transition when the declared worker does not own the claim', async () => {
+    const { cwd, cleanup } = await setupTeam('transition-worker-binding');
+    try {
+      const task = await createTask('transition-worker-binding', { subject: 'owned', description: 'd', status: 'pending' }, cwd);
+      const claim = await executeTeamApiOperation('claim-task', {
+        team_name: 'transition-worker-binding', task_id: task.id, worker: 'worker-1',
+      }, cwd);
+      assert.equal(claim.ok, true);
+      if (!claim.ok) return;
+
+      const transition = await executeTeamApiOperation('transition-task-status', {
+        team_name: 'transition-worker-binding',
+        task_id: task.id,
+        worker: 'worker-2',
+        from: 'in_progress',
+        to: 'completed',
+        claim_token: String(claim.data.claimToken),
+      }, cwd);
+      assert.equal(transition.ok, true);
+      if (transition.ok) assert.equal(transition.data.error, 'claim_conflict');
+
+      const reread = await readTask('transition-worker-binding', task.id, cwd);
+      assert.equal(reread?.status, 'in_progress');
+      assert.equal(reread?.owner, 'worker-1');
+    } finally {
+      await cleanup();
+    }
+  });
+
   it('rejects non-string result and error payloads', async () => {
     const badResult = await executeTeamApiOperation('transition-task-status', {
-      team_name: 'x', task_id: '1', from: 'in_progress', to: 'completed', claim_token: 'tok', result: true,
+      team_name: 'x', task_id: '1', worker: 'worker-1', from: 'in_progress', to: 'completed', claim_token: 'tok', result: true,
     }, '/tmp');
     assert.equal(badResult.ok, false);
     if (!badResult.ok) assert.match(badResult.error.message, /result must be a string/);
 
     const badError = await executeTeamApiOperation('transition-task-status', {
-      team_name: 'x', task_id: '1', from: 'in_progress', to: 'failed', claim_token: 'tok', error: 42,
+      team_name: 'x', task_id: '1', worker: 'worker-1', from: 'in_progress', to: 'failed', claim_token: 'tok', error: 42,
     }, '/tmp');
     assert.equal(badError.ok, false);
     if (!badError.ok) assert.match(badError.error.message, /error must be a string/);

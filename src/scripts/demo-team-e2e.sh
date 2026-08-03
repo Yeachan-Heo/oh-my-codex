@@ -148,8 +148,9 @@ echo "[5/8] transition task -> completed"
 TRANSITION_INPUT="$(jq -nc \
   --arg team "$TEAM_NAME" \
   --arg task "$TASK_ID" \
+  --arg worker "worker-1" \
   --arg token "$CLAIM_TOKEN" \
-  '{team_name:$team,task_id:$task,from:"in_progress",to:"completed",claim_token:$token}')"
+  '{team_name:$team,task_id:$task,worker:$worker,from:"in_progress",to:"completed",claim_token:$token}')"
 omx team api transition-task-status --input "$TRANSITION_INPUT" --json >/dev/null
 
 echo "[6/8] mailbox flow"
