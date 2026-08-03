@@ -66,6 +66,7 @@ import {
   type TeamEventType,
 } from './contracts.js';
 import type { TeamReminderIntent } from './reminder-intents.js';
+import type { TeamWorkerRuntimeCapability } from './worker-capability.js';
 import type { WorktreeMode } from './worktree.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import { normalizeTeamTaskCoordinationPlanForStorage } from './coordination-protocol.js';
@@ -136,6 +137,10 @@ export interface WorkerInfo {
   worktree_detached?: boolean;
   worktree_created?: boolean;
   team_state_root?: string;
+  leader_cwd?: string;
+  leader_session_id?: string;
+  native_session_id?: string;
+  runtime_capability?: TeamWorkerRuntimeCapability;
 }
 
 export interface WorkerHeartbeat {

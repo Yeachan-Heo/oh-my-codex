@@ -51,7 +51,7 @@ Setup-owned trust state is limited to those generated wrapper identities; user h
 | wiki startup context | `SessionStart` | `session-start` | native | Wiki session-start context can append a compact `omx_wiki/` summary when wiki pages exist; startup writes stay config-gated |
 | `keyword-detector` | `UserPromptSubmit` | `keyword-detector` | native | Persists skill activation state and can add prompt-side developer context for top-level prompts; native subagent prompt text is treated as delegated task text, so literal workflow keywords inside a child prompt do not activate nested workflow state; `$ralph` prompt routing seeds workflow state only and does not launch `omx ralph --prd ...` |
 | ultragoal bounded steering | `UserPromptSubmit` | `ultragoal` artifacts | native | Only explicit structured directives such as `OMX_ULTRAGOAL_STEER: { ... }`, `omx.ultragoal.steer: { ... }`, or `omx ultragoal steer: { ... }` are parsed; accepted/rejected/deduped attempts route through `steerUltragoal`, append `.omx/ultragoal/ledger.jsonl`, and add advisory context without changing keyword precedence |
-| `pre-tool-use` | `PreToolUse` | `pre-tool-use` | native-partial | Native behavior cautions on Bash `rm -rf dist`, blocks inspectable inline `git commit` commands until Lore-format structure + the required `Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer are present only when explicitly opted in with `OMX_LORE_COMMIT_GUARD=1`, emits non-blocking document-refresh warnings for mapped staged commit changes that lack rule-scoped docs/spec refresh evidence, and blocks `close_agent` / parallel close cleanup before it starts when a fresh native subagent capacity blocker was recorded |
+| `pre-tool-use` | `PreToolUse` | `pre-tool-use` | native-partial | Native behavior cautions on Bash `rm -rf dist`, structurally classifies direct OMX subcommands instead of matching quoted prompt/search text, binds Team workers to their launched runtime capability and actual native session, blocks inspectable inline `git commit` commands until Lore-format structure + the required `Co-authored-by: OmX <omx@oh-my-codex.dev>` trailer are present only when explicitly opted in with `OMX_LORE_COMMIT_GUARD=1`, emits non-blocking document-refresh warnings for mapped staged commit changes that lack rule-scoped docs/spec refresh evidence, and blocks `close_agent` / parallel close cleanup before it starts when a fresh native subagent capacity blocker was recorded |
 | native `PreToolUse` stdout schema | `PreToolUse` | CLI stdout | native | Codex CLI 0.141.0 accepts only `systemMessage` for `PreToolUse`; the native CLI writer strips internal `decision`, `reason`, `stopReason`, `continue`, and `hookSpecificOutput` fields before stdout while preserving richer internal dispatch results for tests and non-stdout callers. |
 | `post-tool-use` | `PostToolUse` | `post-tool-use` | native-partial | Built-in Bash behavior covers command-not-found / permission-denied / missing-path guidance only from stderr or non-zero Bash results, ignores failure-looking strings from successful source/log reads, keeps MCP transport-death guidance scoped to MCP-like tool calls, and records a short-lived `.omx/state/native-subagent-capacity-blocker.json` when native subagent spawn/collab output reports `agent thread limit reached`; document-refresh commit warnings use PreToolUse advisory output, with PostToolUse reserved as a future fallback if Codex advisory semantics change |
 | Ralph/persistence stop handling | `Stop` | `stop` | native-partial | Native adapter uses the documented native Stop continuation contract (`decision: "block"` + `reason`) for active Ralph runs, emits a single JSON object on Stop stdout even for no-op Stop decisions, emits deterministic JSON continuation output if Stop dispatch fails before normal handling, no-ops immediately when the selected session pointer belongs to a foreign cwd or the Stop session is unmatched, and bounds other unusable session-pointer authorization failures to one diagnostic block per Stop replay chain so active Stop-hook replays no-op instead of looping forever |
@@ -104,9 +104,25 @@ raw-command matching.
 Official Team worker roots may omit both `agent_id` and legacy `thread_id`.
 After Main-root exclusion, OMX preserves their established exemption only when
 the Team environment agrees with the durable worker identity, Team config, and
-current worker pane recorded under the strictly resolved Team state root. A
-leader native-session match wins before this check, and a payload with any named
-unknown or foreign identity cannot borrow the Team exemption.
+current worker pane recorded under the strictly resolved Team state root. Each
+launch receives a random run-scoped worker capability; only its digest and its
+Team, worker, leader-session, leader-cwd, worker-cwd, shared-state-root, and Team
+lifecycle bindings are persisted in worker identity/config/manifest metadata.
+The worker's first authoritative `SessionStart` binds its actual native Codex
+session ID exactly once. Later writes require that bound ID plus the capability,
+pane, paths, and metadata to agree. The shared `OMX_TEAM_STATE_ROOT` remains
+leader-owned and does not require a detached worker to impersonate the leader
+cwd. Validated standalone worker API calls are limited to the current Team and
+worker; cross-Team payloads, protected workflow state, arbitrary state trees,
+shell compounds, dynamic input, and capability/session rebinding fail closed.
+A leader native-session match wins before this check, and a payload with any
+named unknown or foreign identity cannot borrow the Team exemption.
+
+Outside tmux, direct `omx team ...` and `node .../omx.js team ...` executable
+forms remain blocked with launch guidance. Classification is command-structural:
+quoted arguments, search patterns, heredoc bodies, and an `omx --tmux ...`
+bootstrap prompt may mention the same words without being treated as a direct
+Team invocation. The same structural rule applies to the native HUD guard.
 
 Known read-only MCP compatibility tools are governed by an explicit name contract,
 not a read-looking prefix heuristic. The audited contract covers filesystem/state

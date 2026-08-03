@@ -2,6 +2,7 @@ import type { TeamPhase, TerminalPhase } from '../orchestrator.js';
 import type { TeamDispatchRequestStatus, TeamEventType, TeamTaskStatus } from '../contracts.js';
 import type { TeamReminderIntent } from '../reminder-intents.js';
 import type { WorktreeMode } from '../worktree.js';
+import type { TeamWorkerRuntimeCapability } from '../worker-capability.js';
 
 export interface StartupCleanupPane {
   pane_id: string;
@@ -48,6 +49,10 @@ export interface WorkerInfo {
   worktree_detached?: boolean;
   worktree_created?: boolean;
   team_state_root?: string;
+  leader_cwd?: string;
+  leader_session_id?: string;
+  native_session_id?: string;
+  runtime_capability?: TeamWorkerRuntimeCapability;
 }
 
 export interface WorkerHeartbeat {

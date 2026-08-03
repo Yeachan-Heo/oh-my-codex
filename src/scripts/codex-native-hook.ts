@@ -71,9 +71,16 @@ import {
   readTeamConfig,
   readTeamManifestV2,
   readTeamPhase,
+  saveTeamConfig,
+  writeWorkerIdentity,
   writeTeamLeaderAttention,
   writeTeamPhase,
+  type WorkerInfo,
 } from "../team/state.js";
+import {
+  capabilityTokenMatches,
+  TEAM_WORKER_CAPABILITY_ENV,
+} from "../team/worker-capability.js";
 import { parseTeamNoticeLedgerPrompt, reconcileTeamNoticeLedger } from "../team/notice-ledger.js";
 import {
   canonicalizeComparablePath,
@@ -2939,7 +2946,10 @@ function hasRawTeamWorkerDeclaration(): boolean {
     || safeString(process.env.OMX_TEAM_WORKER).trim() !== "";
 }
 
-async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> {
+async function hasAuthoritativeTeamWorkerContext(
+  cwd: string,
+  expectedNativeSessionId = "",
+): Promise<boolean> {
   const workerContext = readTeamWorkerEnvironment();
   if (!workerContext) return false;
 
@@ -2979,6 +2989,35 @@ async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> 
   if (safeString(identity.pane_id).trim() !== currentPaneId) return false;
   if (!pathMatches(identity.team_state_root, canonicalStateRoot)) return false;
   if (!pathMatches(identity.worktree_path ?? identity.working_dir, canonicalCwd)) return false;
+  const capabilityToken = safeString(process.env[TEAM_WORKER_CAPABILITY_ENV]).trim();
+  if (!capabilityToken) return false;
+  const capabilityMatches = (record: Record<string, unknown>): boolean => {
+    const capability = safeObject(record.runtime_capability);
+    if (Number(capability.version) !== 1) return false;
+    if (safeString(capability.team_name).trim() !== workerContext.teamName) return false;
+    if (safeString(capability.worker_name).trim() !== workerContext.workerName) return false;
+    if (safeString(capability.leader_session_id).trim() === "") return false;
+    if (safeString(capability.leader_session_id).trim() !== safeString(record.leader_session_id).trim()) return false;
+    if (safeString(capability.team_created_at).trim() !== safeString(config.created_at).trim()) return false;
+    if (safeString(capability.team_created_at).trim() !== safeString(manifest.created_at).trim()) return false;
+    if (!pathMatches(capability.team_state_root, canonicalStateRoot)) return false;
+    if (!pathMatches(capability.worker_cwd, canonicalCwd)) return false;
+    if (!pathMatches(capability.leader_cwd, canonicalLeaderCwd)) return false;
+    return capabilityTokenMatches(capabilityToken, safeString(capability.token_sha256));
+  };
+  if (![identity, manifestWorker, configWorker].every(capabilityMatches)) return false;
+  const identityCapability = safeObject(identity.runtime_capability);
+  for (const worker of [identity, manifestWorker, configWorker]) {
+    if (safeString(worker.leader_session_id).trim() !== safeString(identityCapability.leader_session_id).trim()) return false;
+    if (!pathMatches(worker.leader_cwd, canonicalLeaderCwd)) return false;
+  }
+  const expectedSession = normalizeSessionId(expectedNativeSessionId);
+  if (expectedNativeSessionId && !expectedSession) return false;
+  if (expectedSession) {
+    for (const worker of [identity, manifestWorker, configWorker]) {
+      if (normalizeSessionId(safeString(worker.native_session_id)) !== expectedSession) return false;
+    }
+  }
   for (const state of [manifest, config]) {
     if (safeString(state.name).trim() !== workerContext.teamName) return false;
     if (safeString(state.leader_pane_id).trim() === currentPaneId) return false;
@@ -2996,6 +3035,56 @@ async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> 
     if (worktreePath && !pathMatches(worktreePath, canonicalCwd)) return false;
   }
   return true;
+}
+
+async function bindAuthoritativeTeamWorkerNativeSession(
+  cwd: string,
+  nativeSessionId: string,
+): Promise<boolean> {
+  const normalizedSessionId = normalizeSessionId(nativeSessionId);
+  const workerContext = readTeamWorkerEnvironment();
+  if (!normalizedSessionId || !workerContext) return false;
+  if (!safeString(process.env[TEAM_WORKER_CAPABILITY_ENV]).trim()) return false;
+  if (!safeString(process.env.TMUX_PANE).trim()) return false;
+  let startupMetadataReady = false;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await hasAuthoritativeTeamWorkerContext(cwd)) {
+      startupMetadataReady = true;
+      break;
+    }
+    if (attempt < 39) await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+  }
+  if (!startupMetadataReady) return false;
+
+  const stateRoot = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
+  if (!stateRoot) return false;
+  const identityPath = join(stateRoot, "team", workerContext.teamName, "workers", workerContext.workerName, "identity.json");
+  const identity = await readJsonIfExists(identityPath);
+  if (!identity) return false;
+  const config = await readTeamConfig(workerContext.teamName, cwd).catch(() => null);
+  const configWorker = config?.workers.find((worker) => worker.name === workerContext.workerName);
+  if (!config || !configWorker) return false;
+  const existingSessionIds = [identity.native_session_id, configWorker.native_session_id]
+    .map((value) => normalizeSessionId(safeString(value)))
+    .filter(Boolean);
+  if (existingSessionIds.some((value) => value !== normalizedSessionId)) return false;
+  try {
+    if (normalizeSessionId(safeString(configWorker.native_session_id)) !== normalizedSessionId) {
+      configWorker.native_session_id = normalizedSessionId;
+      await saveTeamConfig(config, cwd);
+    }
+    if (normalizeSessionId(safeString(identity.native_session_id)) !== normalizedSessionId) {
+      await writeWorkerIdentity(
+        workerContext.teamName,
+        workerContext.workerName,
+        { ...identity, native_session_id: normalizedSessionId } as unknown as WorkerInfo,
+        cwd,
+      );
+    }
+  } catch {
+    return false;
+  }
+  return await hasAuthoritativeTeamWorkerContext(cwd, normalizedSessionId);
 }
 
 async function resolveTeamStateDirForWorkerContext(
@@ -3847,6 +3936,7 @@ async function resolvePreToolUseSessionBinding(
   stateDir: string,
   payload: CodexHookPayload,
   allowSharedTeamRoot = false,
+  authorizedWorkerNativeSessionId = "",
 ): Promise<PreToolUseSessionBinding> {
   const currentSession = allowSharedTeamRoot
     ? await readRootSessionStateFromStateDir(stateDir).catch(() => null)
@@ -3855,6 +3945,11 @@ async function resolvePreToolUseSessionBinding(
   const aliases = payloadAliasValues(payload, ["session_id", "sessionId"]);
   const knownAliases = sessionPointerAliases(currentSession);
   const nativeIdentityAliases = sessionNativeIdentityAliases(currentSession);
+  const workerNativeSessionId = normalizeSessionId(authorizedWorkerNativeSessionId);
+  if (workerNativeSessionId) {
+    knownAliases.add(workerNativeSessionId);
+    nativeIdentityAliases.add(workerNativeSessionId);
+  }
   return {
     canonicalSessionId,
     payloadSessionAliases: knownAliases,
@@ -10614,6 +10709,87 @@ function buildPlanningStateScopeDeny(modeLabel: string, phase: string): Record<s
   };
 }
 
+const TEAM_WORKER_MUTATING_API_OPERATIONS = new Set([
+  "send-message",
+  "broadcast",
+  "mailbox-mark-delivered",
+  "mailbox-mark-notified",
+  "claim-task",
+  "transition-task-status",
+  "release-task-claim",
+  "update-worker-heartbeat",
+]);
+
+function parseAuthorizedTeamWorkerApiCommand(command: string): {
+  operation: string;
+  input: Record<string, unknown>;
+} | null {
+  if (!command.trim() || /[$`\r\n]/.test(command)) return null;
+  const segments = splitShellCommandSegments(stripHeredocBodiesForCommandScan(command));
+  if (segments.length !== 1 || segments[0]?.trim() !== command.trim()) return null;
+  const rawWords = tokenizeShellWords(segments[0] ?? "");
+  const words = rawWords.map((word) => shellWordLiteral(word));
+  if (words.some((word) => word === null)) return null;
+  const literalWords = words as string[];
+  const commandIndex = findWrappedCommandPositionIndex(rawWords, 0);
+  if (commandIndex === null) return null;
+  const executable = basename(literalWords[commandIndex] ?? "").toLowerCase();
+  let subcommandIndex = commandIndex + 1;
+  if (executable === "node" || executable === "node.exe") {
+    if (basename(literalWords[subcommandIndex] ?? "").toLowerCase() !== "omx.js") return null;
+    subcommandIndex += 1;
+  } else if (executable !== "omx" && executable !== "omx.js") {
+    return null;
+  }
+  if (literalWords[subcommandIndex] !== "team" || literalWords[subcommandIndex + 1] !== "api") return null;
+  const operation = literalWords[subcommandIndex + 2] ?? "";
+  if (!TEAM_WORKER_MUTATING_API_OPERATIONS.has(operation)) return null;
+
+  let input: Record<string, unknown> = {};
+  for (let index = subcommandIndex + 3; index < literalWords.length; index += 1) {
+    const word = literalWords[index] ?? "";
+    if (word === "--json") continue;
+    let rawInput = "";
+    if (word === "--input") {
+      rawInput = literalWords[index + 1] ?? "";
+      index += 1;
+    } else if (word.startsWith("--input=")) {
+      rawInput = word.slice("--input=".length);
+    } else {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(rawInput) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      input = parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return { operation, input };
+}
+
+function isAuthorizedTeamWorkerApiCommand(command: string): boolean {
+  const workerContext = readTeamWorkerEnvironment();
+  const parsed = parseAuthorizedTeamWorkerApiCommand(command);
+  if (!workerContext || !parsed) return false;
+  const teamName = safeString(parsed.input.team_name).trim();
+  if (teamName && teamName !== workerContext.teamName) return false;
+  const fromWorker = safeString(parsed.input.from_worker).trim();
+  if (fromWorker && fromWorker !== workerContext.workerName) return false;
+  const worker = safeString(parsed.input.worker).trim();
+  if (worker && worker !== workerContext.workerName) return false;
+  if ((parsed.operation === "send-message" || parsed.operation === "broadcast") && fromWorker !== workerContext.workerName) return false;
+  if ([
+    "mailbox-mark-delivered",
+    "mailbox-mark-notified",
+    "claim-task",
+    "release-task-claim",
+    "update-worker-heartbeat",
+  ].includes(parsed.operation) && worker !== workerContext.workerName) return false;
+  return teamName === "" || teamName === workerContext.teamName;
+}
+
 function teamWorkerMutationTargetsProtectedWorkflowState(
   payload: CodexHookPayload,
   toolName: string,
@@ -10631,6 +10807,7 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
   if (toolName === "mcp__omx_state__state_clear" || toolName === "mcp__omx_state__state_write") return true;
   if (mutationTransport === "unknown" || mutationTransport === "state" || mutationTransport === "goal-lifecycle") return true;
   if (toolName === "Bash") {
+    if (isAuthorizedTeamWorkerApiCommand(command)) return false;
     if (collectOmxStateCommandOperations(command, "write").length > 0
       || findUnquotedOmxStateCommandIndexes(command, "clear").length > 0) return true;
     let effectiveCwd = cwd;
@@ -11108,7 +11285,7 @@ async function resolvePreToolUseWriteActor(
   if (payloadHasOwnerIdentityClaim(payload)) return "native-child";
   if (!payloadAgentId && isTypedAgentRolePayload(payload, cwd)) return "native-child";
   if (payloadAgentId || payloadThreadId) return "native-child";
-  return (await hasAuthoritativeTeamWorkerContext(cwd)) ? "team-worker" : "native-child";
+  return (await hasAuthoritativeTeamWorkerContext(cwd, payloadSessionId)) ? "team-worker" : "native-child";
 }
 
 function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
@@ -22430,7 +22607,11 @@ export async function dispatchCodexNativeHook(
   let resolvedNativeSessionId = nativeSessionId;
   let skipCanonicalSessionStartContext = false;
   let isSubagentSessionStart = false;
-  const authoritativeTeamWorker = declaredTeamWorker && await hasAuthoritativeTeamWorkerContext(cwd);
+  const authoritativeTeamWorker = declaredTeamWorker
+    && candidateWorkerPayloadSessionId !== ""
+    && (hookEventName === "SessionStart"
+      ? await bindAuthoritativeTeamWorkerNativeSession(cwd, candidateWorkerPayloadSessionId)
+      : await hasAuthoritativeTeamWorkerContext(cwd, candidateWorkerPayloadSessionId));
   const authoritativeWorkerPayloadSessionId = authoritativeTeamWorker
     && candidateWorkerPayloadSessionId
     && (!pointer.state || !payloadMatchesSessionPointer(candidateWorkerPayloadSessionId, pointer.state))
@@ -22966,20 +23147,22 @@ export async function dispatchCodexNativeHook(
       };
     }
   } else if (hookEventName === "PreToolUse") {
-    const identitylessTeamWorkerContext = !readPayloadAgentId(payload)
+    const payloadSessionId = readPayloadSessionId(payload);
+    const identitylessTeamWorkerPayload = !readPayloadAgentId(payload)
       && !safeString(payload.agentId).trim()
       && !safeString(payload.threadId).trim()
       && !readPayloadThreadId(payload)
       && !payloadHasOwnerIdentityClaim(payload)
-      && !hasSubagentThreadSpawnProvenance(payload)
-      && await hasAuthoritativeTeamWorkerContext(cwd);
+      && !hasSubagentThreadSpawnProvenance(payload);
+    const identitylessTeamWorkerContext = identitylessTeamWorkerPayload
+      && await hasAuthoritativeTeamWorkerContext(cwd, payloadSessionId);
     const sessionBinding = await resolvePreToolUseSessionBinding(
       policyCwd,
       stateDir,
       payload,
       identitylessTeamWorkerContext,
+      identitylessTeamWorkerContext ? payloadSessionId : "",
     );
-    const payloadSessionId = readPayloadSessionId(payload);
     const rootPointerConflict = await readLiveRootSessionPointerConflict(stateDir, payloadSessionId);
     const mutationTransport = classifyPreToolUseMutationTransport(
       payload,
@@ -23032,7 +23215,18 @@ export async function dispatchCodexNativeHook(
       });
       if (directCancel.kind !== "not-direct-cancel") outputJson = directCancel.output;
     }
-    if (!outputJson && !policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
+    if (
+      !outputJson
+      && declaredTeamWorker
+      && identitylessTeamWorkerPayload
+      && !identitylessTeamWorkerContext
+      && mutationTransport !== "read-only"
+    ) {
+      outputJson = buildConductorSessionProvenanceDeny(
+        { mode: "team", phase: "active" },
+        "the declared Team worker does not match its bound native session capability",
+      );
+    } else if (!outputJson && !policyRoot.valid && policyRoot.statePresent && mutationTransport !== "read-only") {
       outputJson = buildConductorSessionProvenanceDeny(
         { mode: "conductor", phase: "active" },
         "the selected workflow state root has no usable canonical session cwd",

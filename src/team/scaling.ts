@@ -77,6 +77,11 @@ import { composeRoleInstructionsForRole } from '../agents/native-config.js';
 import { codexPromptsDir } from '../utils/paths.js';
 import { resolveCodexHomeForLaunch } from '../cli/codex-home.js';
 import {
+  issueTeamWorkerRuntimeCapability,
+  TEAM_WORKER_CAPABILITY_ENV,
+  type IssuedTeamWorkerRuntimeCapability,
+} from './worker-capability.js';
+import {
   parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
   resolveAgentDefaultModel,
@@ -648,6 +653,9 @@ export async function scaleUp(
     let nextIndex = initialNextIndex;
     const sessionName = config.tmux_session;
     const manifest = await readTeamManifestV2(sanitized, leaderCwd);
+    const leaderSessionId = manifest?.leader?.session_id?.trim()
+      || env.OMX_SESSION_ID?.trim()
+      || config.tmux_session;
     const dispatchPolicy = normalizeTeamPolicy(manifest?.policy, {
       display_mode: manifest?.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
       worker_launch_mode: config.worker_launch_mode,
@@ -1104,6 +1112,7 @@ export async function scaleUp(
       let workerCwd = leaderCwd;
       let cmd: string;
       let rawRolePromptContent: string | null = null;
+      let issuedCapability: IssuedTeamWorkerRuntimeCapability | null = null;
       try {
         preparedWorkerDirectoryOwner.set(workerDirPath, workerName);
         await mkdir(workerDirPath, { recursive: true });
@@ -1168,10 +1177,20 @@ export async function scaleUp(
           : rolePromptContent
             ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, runtimeRole, rolePromptContent)
             : teamInstructionsPath;
+        issuedCapability = issueTeamWorkerRuntimeCapability({
+          teamName: sanitized,
+          workerName,
+          leaderSessionId,
+          leaderCwd,
+          teamStateRoot,
+          workerCwd,
+          teamCreatedAt: config.created_at,
+        });
         const extraEnv: Record<string, string> = {
           OMX_TEAM_STATE_ROOT: teamStateRoot,
           OMX_TEAM_LEADER_CWD: leaderCwd,
           OMX_MODEL_INSTRUCTIONS_FILE: instructionsFilePath,
+          [TEAM_WORKER_CAPABILITY_ENV]: issuedCapability.token,
           ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
         };
         if (workerWorkspace) {
@@ -1251,6 +1270,12 @@ export async function scaleUp(
         );
       }
       const paneId = createdPane.paneId;
+      if (!issuedCapability) {
+        return await rollbackScaleUp(
+          `scale_up_worker_capability_unavailable:${workerName}`,
+          { paneId, workerName, worktreePath: workerWorkspace?.worktreePath },
+        );
+      }
       const workerInfo: ScaleUpWorkerInfo = {
         name: workerName,
         index: workerIndex,
@@ -1268,6 +1293,9 @@ export async function scaleUp(
         worktree_detached: workerWorkspace ? workerWorkspace.detached : undefined,
         worktree_created: workerWorkspace ? workerWorkspace.created : undefined,
         team_state_root: teamStateRoot,
+        leader_cwd: leaderCwd,
+        leader_session_id: leaderSessionId,
+        runtime_capability: issuedCapability.metadata,
       };
 
 

@@ -48,6 +48,11 @@ import {
 import { readExactPaneProofSync, readExactPaneProofsSync, type ExactPaneProof } from './exact-pane.js';
 import { reconcileScaleDownCleanupDebt } from './scaling.js';
 import {
+  issueTeamWorkerRuntimeCapability,
+  TEAM_WORKER_CAPABILITY_ENV,
+  type TeamWorkerRuntimeCapability,
+} from './worker-capability.js';
+import {
   teamInit as initTeamState,
   DEFAULT_MAX_WORKERS,
   teamReadConfig as readTeamConfig,
@@ -3704,6 +3709,8 @@ export async function startTeam(
       workerLaunchArgs: readonly string[];
       workerCli: TeamWorkerCli;
       toolContext: ReturnType<typeof resolveWorktreeToolContext>;
+      capabilityToken: string;
+      runtimeCapability: TeamWorkerRuntimeCapability;
     }>;
 
     for (let i = 1; i <= workerCount; i++) {
@@ -3766,6 +3773,15 @@ export async function startTeam(
       );
       const trigger = triggerDirective.text;
       const initialPrompt = workerCli === 'gemini' ? trigger : undefined;
+      const issuedCapability = issueTeamWorkerRuntimeCapability({
+        teamName: sanitized,
+        workerName,
+        leaderSessionId,
+        leaderCwd,
+        teamStateRoot,
+        workerCwd: workerWorkspace.cwd,
+        teamCreatedAt: config.created_at,
+      });
       if (initialPrompt) {
         await writeWorkerInbox(sanitized, workerName, inbox, leaderCwd);
       }
@@ -3783,6 +3799,8 @@ export async function startTeam(
         workerLaunchArgs,
         workerCli,
         toolContext,
+        capabilityToken: issuedCapability.token,
+        runtimeCapability: issuedCapability.metadata,
       });
     }
 
@@ -3792,6 +3810,7 @@ export async function startTeam(
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
         [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
         OMX_TEAM_DISPLAY_NAME: displayName,
+        [TEAM_WORKER_CAPABILITY_ENV]: plan.capabilityToken,
         ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
         ...worktreeToolContextEnv(plan.toolContext),
       };
@@ -3834,6 +3853,9 @@ export async function startTeam(
         worktree_detached: workerWorkspace.worktreeDetached,
         worktree_created: workerWorkspace.worktreeCreated,
         team_state_root: teamStateRoot,
+        leader_cwd: leaderCwd,
+        leader_session_id: leaderSessionId,
+        runtime_capability: bootstrapPlan.runtimeCapability,
       };
 
       const persistedPanePid = config?.workers[workerIndex - 1]?.pid;
@@ -3865,6 +3887,9 @@ export async function startTeam(
         config.workers[workerIndex - 1].worktree_detached = workerWorkspace.worktreeDetached;
         config.workers[workerIndex - 1].worktree_created = workerWorkspace.worktreeCreated;
         config.workers[workerIndex - 1].team_state_root = teamStateRoot;
+        config.workers[workerIndex - 1].leader_cwd = leaderCwd;
+        config.workers[workerIndex - 1].leader_session_id = leaderSessionId;
+        config.workers[workerIndex - 1].runtime_capability = bootstrapPlan.runtimeCapability;
       }
 
       await writeWorkerIdentity(sanitized, bootstrapPlan.workerName, identity, leaderCwd);

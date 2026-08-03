@@ -954,8 +954,19 @@ exit 0
       assert.equal(createdTask?.role, 'writer');
       assert.equal(createdTask?.owner, 'worker-2');
 
-      const workerIdentity = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'identity.json'), 'utf-8')) as { role?: string };
+      const workerIdentity = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'identity.json'), 'utf-8')) as {
+        role?: string;
+        leader_cwd?: string;
+        leader_session_id?: string;
+        runtime_capability?: { team_name?: string; worker_name?: string; token_sha256?: string };
+      };
       assert.equal(workerIdentity.role, 'writer');
+      assert.equal(workerIdentity.leader_cwd, cwd);
+      assert.ok(workerIdentity.leader_session_id);
+      assert.equal(workerIdentity.runtime_capability?.team_name, 'scale-up-role');
+      assert.equal(workerIdentity.runtime_capability?.worker_name, 'worker-2');
+      assert.match(workerIdentity.runtime_capability?.token_sha256 ?? '', /^[a-f0-9]{64}$/);
+      assert.match(await readFile(workerStartupScriptPath(cwd, 'scale-up-role', 'worker-2'), 'utf-8'), /OMX_TEAM_WORKER_CAPABILITY/);
 
       const inbox = await readFile(join(cwd, '.omx', 'state', 'team', 'scale-up-role', 'workers', 'worker-2', 'inbox.md'), 'utf-8');
       assert.match(inbox, /Task 2/);

@@ -6147,6 +6147,7 @@ fs.writeFileSync(path.join(logDir, 'env.json'), JSON.stringify({
   cwd: process.cwd(),
   teamStateRoot: process.env.OMX_TEAM_STATE_ROOT || '',
   worker: process.env.OMX_TEAM_WORKER || '',
+  workerCapability: process.env.OMX_TEAM_WORKER_CAPABILITY || '',
 }));
 process.stdin.on('data', (chunk) => {
   fs.appendFileSync(path.join(logDir, 'stdin.log'), chunk.toString());
@@ -6208,10 +6209,32 @@ process.on('SIGTERM', () => process.exit(0));
         cwd: string;
         teamStateRoot: string;
         worker: string;
+        workerCapability: string;
       };
       assert.equal(envLog.cwd, workerPath);
       assert.equal(envLog.teamStateRoot, join(repo, '.omx', 'state'));
       assert.equal(envLog.worker, 'team-detached-worktree-paths/worker-1');
+      assert.match(envLog.workerCapability, /^[A-Za-z0-9_-]{40,}$/);
+      const workerIdentity = JSON.parse(await readFile(
+        join(repo, '.omx', 'state', 'team', runtime.teamName, 'workers', 'worker-1', 'identity.json'),
+        'utf-8',
+      )) as {
+        leader_cwd?: string;
+        leader_session_id?: string;
+        runtime_capability?: {
+          team_name?: string;
+          worker_name?: string;
+          worker_cwd?: string;
+          token_sha256?: string;
+        };
+      };
+      assert.equal(workerIdentity.leader_cwd, repo);
+      assert.ok(workerIdentity.leader_session_id);
+      assert.equal(workerIdentity.runtime_capability?.team_name, runtime.teamName);
+      assert.equal(workerIdentity.runtime_capability?.worker_name, 'worker-1');
+      assert.equal(workerIdentity.runtime_capability?.worker_cwd, workerPath);
+      assert.match(workerIdentity.runtime_capability?.token_sha256 ?? '', /^[a-f0-9]{64}$/);
+      assert.equal(workerIdentity.runtime_capability?.token_sha256?.includes(envLog.workerCapability), false);
       const rootAgents = await readFile(join(workerPath, 'AGENTS.md'), 'utf-8');
       assert.match(rootAgents, /Team Worker Runtime Instructions/);
       assert.match(rootAgents, new RegExp(`Inbox path: .*${runtime.teamName}/workers/worker-1/inbox\\.md`));
