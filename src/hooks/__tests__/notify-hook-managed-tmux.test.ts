@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,30 +15,7 @@ import {
 } from '../../scripts/notify-hook/managed-tmux.js';
 import { writeSessionStart } from '../session.js';
 
-function readLinuxStartTicks(pid: number): number | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-    const commandEnd = stat.lastIndexOf(')');
-    if (commandEnd === -1) return null;
-    const remainder = stat.slice(commandEnd + 1).trim();
-    const fields = remainder.split(/\s+/);
-    if (fields.length <= 19) return null;
-    const startTicks = Number(fields[19]);
-    return Number.isFinite(startTicks) ? startTicks : null;
-  } catch {
-    return null;
-  }
-}
 
-function readLinuxCmdline(pid: number): string | null {
-  try {
-    const raw = readFileSync(`/proc/${pid}/cmdline`);
-    const text = raw.toString('utf-8').replace(/\0+/g, ' ').trim();
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
-  }
-}
 
 describe('notify-hook managed tmux windows fallback', () => {
   async function withFakeTmux(cwd: string, script: string, run: () => Promise<void>): Promise<void> {
@@ -478,15 +455,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -569,15 +538,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -660,15 +621,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -739,15 +692,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -830,15 +775,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -921,15 +858,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -1012,15 +941,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -1104,15 +1025,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -1205,15 +1118,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
@@ -1296,15 +1201,7 @@ exit 1
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(fakeBinDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-        session_id: sessionId,
-        started_at: new Date().toISOString(),
-        cwd,
-        pid: process.pid,
-        platform: process.platform,
-        pid_start_ticks: readLinuxStartTicks(process.pid),
-        pid_cmdline: readLinuxCmdline(process.pid),
-      }, null, 2));
+      await writeSessionStart(cwd, sessionId);
 
       const fakeTmux = `#!/usr/bin/env bash
 set -eu
