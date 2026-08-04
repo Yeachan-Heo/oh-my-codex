@@ -97,14 +97,14 @@
     "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@napi-rs/lzma": "1.4.1",
-    "tar-stream": "2.2.0",
+    "tar-stream": "3.2.0",
     "yauzl": "3.4.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
     "@types/node": "^26.0.0",
-    "@types/tar-stream": "2.2.3",
+    "@types/tar-stream": "3.1.4",
     "@types/yauzl": "3.4.0",
     "@types/yazl": "3.3.1",
     "c8": "^11.0.0",
