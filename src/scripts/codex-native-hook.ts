@@ -9728,6 +9728,7 @@ function isDirectOmxCancelCommand(command: string, options: { allowForce?: boole
 
 type DirectCancelDenyReason =
   | "invalid_command"
+  | "execution_context"
   | "session_binding"
   | "actor_authority"
   | "active_state"
@@ -9794,6 +9795,9 @@ async function handleDirectOmxCancel(input: {
   if (!workflow) return { kind: "not-direct-cancel" };
   if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: workflow === "ultragoal" })) {
     return { kind: "denied", reason: "invalid_command", output: directCancelOutput("invalid_command") };
+  }
+  if (!directOmxCancelCommandHasTrustedExecutionContext(input.command, input.cwd)) {
+    return { kind: "denied", reason: "execution_context", output: directCancelOutput("execution_context") };
   }
   if (
     !hookCancelSessionIdIsSafe(input.canonicalSessionId)
@@ -17715,8 +17719,9 @@ function conductorWorkspaceNpmBinPathMayResolveRepositoryExecutable(
 
 // The hook's own Node executable may be user-managed, but only its exact canonical identity is trusted.
 function conductorExecutableHasTrustedCurrentNodeRuntimeIdentity(commandName: string, commandPath: string): boolean {
-  const commandBase = shellWordBaseName(commandPath).toLowerCase();
-  if ((commandName !== "node" && commandName !== "node.exe") || commandBase !== commandName) return false;
+  const normalizedCommandName = commandName.toLowerCase().replace(/\.exe$/, "");
+  const normalizedCommandBase = shellWordBaseName(commandPath).toLowerCase().replace(/\.exe$/, "");
+  if (normalizedCommandName !== "node" || normalizedCommandBase !== normalizedCommandName) return false;
   try {
     const canonical = realpathSync(commandPath);
     if (canonical !== realpathSync(process.execPath)) return false;
@@ -18086,9 +18091,9 @@ function conductorDeclaredPackageCliPath(packageRoot: string, commandName: strin
       || isAbsolute(declaredTarget)
     ) return null;
     const target = resolve(canonicalPackageRoot, declaredTarget);
-    if (target === canonicalPackageRoot || !target.startsWith(`${canonicalPackageRoot}/`)) return null;
+    if (!conductorPathIsInsideRoot(canonicalPackageRoot, target) || target === canonicalPackageRoot) return null;
     const canonicalTarget = realpathSync(target);
-    return canonicalTarget === canonicalPackageRoot || !canonicalTarget.startsWith(`${canonicalPackageRoot}/`)
+    return canonicalTarget === canonicalPackageRoot || !conductorPathIsInsideRoot(canonicalPackageRoot, canonicalTarget)
       ? null
       : canonicalTarget;
   } catch {
@@ -18103,6 +18108,139 @@ function conductorKnownPackageCliPath(commandName: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizedNpmShimContent(path: string): string | null {
+  try {
+    if (!lstatSync(path).isFile()) return null;
+    return readFileSync(path, "utf-8").replace(/\r\n/g, "\n");
+  } catch {
+    return null;
+  }
+}
+
+function expectedNpmPosixShim(target: string): string {
+  return `#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")
+
+case \`uname\` in
+    *CYGWIN*|*MINGW*|*MSYS*)
+        if command -v cygpath > /dev/null 2>&1; then
+            basedir=\`cygpath -w "$basedir"\`
+        fi
+    ;;
+esac
+
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/${target}" "$@"
+else${" "}
+  exec node  "$basedir/${target}" "$@"
+fi
+`;
+}
+
+function expectedNpmCmdShim(target: string): string {
+  const windowsTarget = target.replace(/\//g, "\\");
+  return `@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\\node.exe" (
+  SET "_prog=%dp0%\\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${windowsTarget}" %*
+`;
+}
+
+function expectedNpmPowerShellShim(target: string): string {
+  return `#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}
+$ret=0
+if (Test-Path "$basedir/node$exe") {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "$basedir/node$exe"  "$basedir/${target}" $args
+  } else {
+    & "$basedir/node$exe"  "$basedir/${target}" $args
+  }
+  $ret=$LASTEXITCODE
+} else {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "node$exe"  "$basedir/${target}" $args
+  } else {
+    & "node$exe"  "$basedir/${target}" $args
+  }
+  $ret=$LASTEXITCODE
+}
+exit $ret
+`;
+}
+
+// Native Windows npm installs expose a PowerShell script plus cmd/sh siblings
+// instead of a symlink directly to package.json's bin target. Trust that
+// resolution only when every present sibling is an exact npm-generated shim
+// for this hook package's canonical CLI. Any modified or extra executable
+// variant in the resolving directory keeps the command fail-closed.
+function conductorWindowsNpmPackageShimSetIsTrusted(
+  commandName: string,
+  binDirectory: string,
+  expectedCandidate: string | null,
+  state: ShellPosixState,
+  rootCwd: string,
+): boolean | null {
+  if (process.platform !== "win32" || expectedCandidate === null) return null;
+  const cmdPath = join(binDirectory, `${commandName}.cmd`);
+  const powerShellPath = join(binDirectory, `${commandName}.ps1`);
+  if (!existsSync(cmdPath) && !existsSync(powerShellPath)) return null;
+
+  const target = "node_modules/oh-my-codex/dist/cli/omx.js";
+  try {
+    const canonicalBinDirectory = realpathSync(binDirectory);
+    const canonicalRoot = realpathSync(resolve(rootCwd));
+    if (conductorPathIsInsideRoot(canonicalRoot, canonicalBinDirectory)) return false;
+    const canonicalTarget = realpathSync(join(canonicalBinDirectory, ...target.split("/")));
+    if (canonicalTarget !== expectedCandidate) return false;
+  } catch {
+    return false;
+  }
+
+  const expectedByPath = new Map<string, string>([
+    [join(binDirectory, commandName), expectedNpmPosixShim(target)],
+    [cmdPath, expectedNpmCmdShim(target)],
+    [powerShellPath, expectedNpmPowerShellShim(target)],
+  ]);
+  if ([...expectedByPath.keys()].some((path) => !existsSync(path))) return false;
+  const pathCandidates = conductorExecutablePathCandidates(binDirectory, commandName, state);
+  if (!pathCandidates) return false;
+  const possibleVariants = [...new Set([...pathCandidates, powerShellPath])];
+  for (const path of possibleVariants) {
+    if (!existsSync(path)) continue;
+    const expected = expectedByPath.get(path);
+    if (expected === undefined || normalizedNpmShimContent(path) !== expected) return false;
+  }
+  const localNodePaths = [join(binDirectory, "node"), join(binDirectory, "node.exe")];
+  for (const localNodePath of localNodePaths) {
+    if (existsSync(localNodePath) && !conductorPackageCliNodeInterpreterIsTrusted(localNodePath, rootCwd)) return false;
+  }
+  return localNodePaths.every(existsSync)
+    || conductorPackageCliHasTrustedNodeInterpreter(expectedCandidate, state, rootCwd);
 }
 
 function conductorWorkspacePackageCliCandidateIsTrusted(
@@ -18190,6 +18328,14 @@ function conductorResolvedPackageCliCandidateIsTrusted(
         return false;
       }
     }
+    const windowsNpmShimTrust = conductorWindowsNpmPackageShimSetIsTrusted(
+      commandName,
+      binDirectory,
+      expectedCandidate,
+      state,
+      rootCwd,
+    );
+    if (windowsNpmShimTrust !== null) return windowsNpmShimTrust;
     const candidates = conductorExecutablePathCandidates(binDirectory, commandName, state);
     if (!candidates) return false;
     let candidate: string | undefined;

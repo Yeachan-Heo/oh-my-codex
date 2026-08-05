@@ -302,6 +302,22 @@ describe("deep-interview Ouroboros contract", () => {
 		);
 	});
 
+	it("routes user cancellation through the exact canonical lifecycle command", () => {
+		const stopContract = deepInterviewSkill.match(
+			/<Escalation_And_Stop_Conditions>([\s\S]*?)<\/Escalation_And_Stop_Conditions>/,
+		)?.[1] ?? "";
+
+		assert.match(stopContract, /User says stop\/cancel\/abort.*exact bare command `omx cancel`/i);
+		assert.match(stopContract, /exact read-only command `omx state get-status --json`/i);
+		assert.match(stopContract, /neither standalone deep-interview nor a supervising Autopilot lifecycle/i);
+		assert.match(stopContract, /deep-interview phase remains active/i);
+		assert.match(stopContract, /do not substitute `omx state clear`, `omx state write`/i);
+		assert.match(stopContract, /direct edits\/deletes under `\.omx\/state\/\*\*`/i);
+		assert.match(stopContract, /leading environment assignments, wrappers, or chained commands/i);
+		assert.match(stopContract, /permissionDecisionReason: "cancelled_exact_session"/i);
+		assert.match(stopContract, /successful hook-owned cancellation/i);
+	});
+
 	it("teaches canonical single-choice vs multi-answerable omx question payloads", () => {
 		assert.match(
 			deepInterviewSkill,

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { dispatchCodexNativeHook } from "../codex-native-hook.js";
 
@@ -62,6 +63,94 @@ async function denialFixture(command: string, mutate?: (f: Fixture) => Promise<v
   } finally { await rm(f.cwd, { recursive: true, force: true }); }
 }
 
+async function withTrustedOmx<T>(run: () => Promise<T>): Promise<T> {
+  const bin = await mkdtemp(join(tmpdir(), "omx-3293-trusted-bin-"));
+  try {
+    await symlink(realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js")), join(bin, "omx"));
+    return await withEnv({ PATH: [bin, dirname(process.execPath)].join(delimiter) }, run);
+  } finally {
+    await rm(bin, { recursive: true, force: true });
+  }
+}
+
+async function standaloneDeepInterviewFixture(sessionId = "session-standalone-deep-interview") {
+  const cwd = await mkdtemp(join(tmpdir(), "omx-3293-standalone-cancel-"));
+  const stateDir = join(cwd, ".omx", "state");
+  const threadId = `thread-${sessionId}`;
+  const sessionDir = join(stateDir, "sessions", sessionId);
+  await json(join(stateDir, "session.json"), { session_id: sessionId, cwd, leader_thread_id: threadId });
+  await json(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: threadId, threads: { [threadId]: { thread_id: threadId, kind: "leader" } } } } });
+  await json(join(sessionDir, "deep-interview-state.json"), { active: true, mode: "deep-interview", current_phase: "intent-first", session_id: sessionId, thread_id: threadId, workingDirectory: cwd });
+  await json(join(sessionDir, "skill-active-state.json"), { active: true, skill: "deep-interview", phase: "intent-first", session_id: sessionId, thread_id: threadId, active_skills: [{ active: true, skill: "deep-interview", phase: "intent-first", session_id: sessionId, thread_id: threadId }] });
+  return { cwd, stateDir, sessionDir, sessionId, threadId };
+}
+
+const npmShimTarget = "node_modules/oh-my-codex/dist/cli/omx.js";
+const npmPosixShim = `#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")
+
+case \`uname\` in
+    *CYGWIN*|*MINGW*|*MSYS*)
+        if command -v cygpath > /dev/null 2>&1; then
+            basedir=\`cygpath -w "$basedir"\`
+        fi
+    ;;
+esac
+
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/${npmShimTarget}" "$@"
+else${" "}
+  exec node  "$basedir/${npmShimTarget}" "$@"
+fi
+`;
+const npmCmdShim = `@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\\node.exe" (
+  SET "_prog=%dp0%\\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\oh-my-codex\\dist\\cli\\omx.js" %*
+`;
+const npmPowerShellShim = `#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}
+$ret=0
+if (Test-Path "$basedir/node$exe") {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "$basedir/node$exe"  "$basedir/${npmShimTarget}" $args
+  } else {
+    & "$basedir/node$exe"  "$basedir/${npmShimTarget}" $args
+  }
+  $ret=$LASTEXITCODE
+} else {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "node$exe"  "$basedir/${npmShimTarget}" $args
+  } else {
+    & "node$exe"  "$basedir/${npmShimTarget}" $args
+  }
+  $ret=$LASTEXITCODE
+}
+exit $ret
+`;
+
 describe("issue #3293 hook-owned cancellation", () => {
   it("handles bare deep-interview cancellation, terminalizes both files, and does not execute Bash", async () => {
     const f = await fixture();
@@ -69,7 +158,7 @@ describe("issue #3293 hook-owned cancellation", () => {
       const sentinel = join(f.cwd, "plugin-sentinel");
       await mkdir(join(f.cwd, ".omx", "hooks"), { recursive: true });
       await writeFile(join(f.cwd, ".omx", "hooks", "sentinel.mjs"), `import { writeFile } from 'node:fs/promises'; await writeFile(${JSON.stringify(sentinel)}, 'ran');`);
-      const result = await preTool(f, "omx cancel");
+      const result = await withTrustedOmx(() => preTool(f, "omx cancel"));
       assert.equal(result.outputJson?.decision, "block");
       assert.match(JSON.stringify(result.outputJson), /cancelled_exact_session/);
       assert.equal(JSON.parse(await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8")).active, false);
@@ -78,10 +167,79 @@ describe("issue #3293 hook-owned cancellation", () => {
     } finally { await rm(f.cwd, { recursive: true, force: true }); }
   });
 
+  it("handles the native Windows npm shim set and rejects a modified PowerShell shim", { skip: process.platform !== "win32" }, async () => {
+    const f = await fixture("session-hook-cancel-windows-npm");
+    const bin = await mkdtemp(join(tmpdir(), "omx-3293-windows-npm-bin-"));
+    try {
+      const installedCli = join(bin, ...npmShimTarget.split("/"));
+      await mkdir(dirname(installedCli), { recursive: true });
+      await symlink(realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js")), installedCli);
+      await writeFile(join(bin, "omx"), npmPosixShim);
+      await writeFile(join(bin, "omx.cmd"), npmCmdShim.replace(/\n/g, "\r\n"));
+      await writeFile(join(bin, "omx.ps1"), `${npmPowerShellShim}Write-Output attacker\n`);
+
+      await withEnv({ PATH: [bin, dirname(process.execPath)].join(delimiter) }, async () => {
+        const activeContent = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8");
+        assertValueFreeDenial(await preTool(f, "omx cancel"), f, activeContent, "modified native Windows npm shim");
+        assert.equal(JSON.parse(await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8")).active, true);
+
+        await writeFile(join(bin, "omx.ps1"), npmPowerShellShim);
+        const result = await preTool(f, "omx cancel");
+        assert.equal(result.outputJson?.decision, "block");
+        assert.match(JSON.stringify(result.outputJson), /cancelled_exact_session/);
+        assert.equal(JSON.parse(await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8")).active, false);
+        assert.equal(JSON.parse(await readFile(join(f.sessionDir, "skill-active-state.json"), "utf8")).active, false);
+      });
+    } finally {
+      await rm(f.cwd, { recursive: true, force: true });
+      await rm(bin, { recursive: true, force: true });
+    }
+  });
+
+  it("permits standalone Desktop cancellation only through the exact trusted Windows npm shim set", { skip: process.platform !== "win32" }, async () => {
+    const f = await standaloneDeepInterviewFixture();
+    const bin = await mkdtemp(join(tmpdir(), "omx-3313-windows-npm-bin-"));
+    try {
+      const installedCli = join(bin, ...npmShimTarget.split("/"));
+      await mkdir(dirname(installedCli), { recursive: true });
+      await symlink(realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js")), installedCli);
+      await writeFile(join(bin, "omx"), npmPosixShim);
+      await writeFile(join(bin, "omx.cmd"), npmCmdShim.replace(/\n/g, "\r\n"));
+      await writeFile(join(bin, "omx.ps1"), `${npmPowerShellShim}Write-Output attacker\n`);
+
+      await withEnv({ PATH: [bin, dirname(process.execPath)].join(delimiter), PATHEXT: ".COM;.EXE;.BAT;.CMD" }, async () => {
+        const statePath = join(f.sessionDir, "deep-interview-state.json");
+        const activeContent = await readFile(statePath, "utf8");
+        assertValueFreeDenial(await preTool(f, "omx cancel"), f, activeContent, "modified standalone PowerShell npm shim");
+        assert.equal(await readFile(statePath, "utf8"), activeContent);
+
+        await writeFile(join(bin, "omx.ps1"), npmPowerShellShim);
+        await writeFile(join(bin, "node.exe"), "attacker");
+        assertValueFreeDenial(await preTool(f, "omx cancel"), f, activeContent, "adjacent untrusted node.exe");
+        assert.equal(await readFile(statePath, "utf8"), activeContent);
+        await rm(join(bin, "node.exe"), { force: true });
+
+        await writeFile(join(bin, "omx.js"), "attacker");
+        await withEnv({ PATHEXT: ".JS;.CMD" }, async () => {
+          assertValueFreeDenial(await preTool(f, "omx cancel"), f, activeContent, "custom PATHEXT shadow");
+          assert.equal(await readFile(statePath, "utf8"), activeContent);
+        });
+        await rm(join(bin, "omx.js"), { force: true });
+
+        const allowed = await preTool(f, "omx cancel");
+        assert.equal(allowed.outputJson, null);
+        assert.equal(await readFile(statePath, "utf8"), activeContent);
+      });
+    } finally {
+      await rm(f.cwd, { recursive: true, force: true });
+      await rm(bin, { recursive: true, force: true });
+    }
+  });
+
   it("stops repeatedly without continuation, reactivation, or terminal-byte changes", async () => {
     const f = await fixture();
     try {
-      await preTool(f, "omx cancel");
+      await withTrustedOmx(() => preTool(f, "omx cancel"));
       const paths = [join(f.sessionDir, "autopilot-state.json"), join(f.sessionDir, "skill-active-state.json")];
       const terminal = await Promise.all(paths.map((path) => readFile(path)));
       assert.equal((await stop(f)).outputJson, null);
@@ -101,7 +259,8 @@ describe("issue #3293 hook-owned cancellation", () => {
       await json(join(otherDir, "autopilot-state.json"), otherAutopilot);
       await json(join(otherDir, "skill-active-state.json"), otherSkill);
       const before = await Promise.all([readFile(join(otherDir, "autopilot-state.json")), readFile(join(otherDir, "skill-active-state.json"))]);
-      await preTool(f, "omx cancel");
+      await withTrustedOmx(() => preTool(f, "omx cancel"));
+      assert.equal(JSON.parse(await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8")).active, false);
       assert.deepEqual(await Promise.all([readFile(join(otherDir, "autopilot-state.json")), readFile(join(otherDir, "skill-active-state.json"))]), before);
     } finally { await rm(f.cwd, { recursive: true, force: true }); }
   });

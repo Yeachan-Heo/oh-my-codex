@@ -512,7 +512,9 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 </Tool_Usage>
 
 <Escalation_And_Stop_Conditions>
-- User says stop/cancel/abort -> persist state and stop
+- User says stop/cancel/abort -> run the exact bare command `omx cancel` immediately, then run the exact read-only command `omx state get-status --json` and verify that neither standalone deep-interview nor a supervising Autopilot lifecycle in its deep-interview phase remains active before reporting success
+- Cancellation must use only that canonical CLI path: do not substitute `omx state clear`, `omx state write`, direct edits/deletes under `.omx/state/**`, shell redirection, leading environment assignments, wrappers, or chained commands
+- If PreToolUse returns `permissionDecisionReason: "cancelled_exact_session"`, treat that as successful hook-owned cancellation (the external command is intentionally suppressed) and still perform the read-only inactive-state verification
 - Ambiguity stalls for 3 rounds (+/- 0.05) -> force Ontologist mode once
 - Max rounds reached -> proceed with explicit residual-risk warning
 - All dimensions >= 0.9 -> allow early crystallization even before max rounds
