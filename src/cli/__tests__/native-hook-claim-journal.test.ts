@@ -170,7 +170,7 @@ test("claim journal treats only injected Windows regular-file EPERM as degraded"
 				order.push("regular");
 				return "unsupported-windows-eperm";
 			},
-			syncDirectory: async () => { order.push("directory"); },
+			syncDirectory: async () => { order.push("directory"); return "synced"; },
 		});
 		assert.equal(outcome, "unsupported-windows-eperm");
 		assert.deepEqual(order, ["directory", "regular", "directory"]);
@@ -193,18 +193,48 @@ test("claim journal keeps POSIX regular-file and directory EPERM fatal", async (
 			persistNativeHookClaimJournalWithDurability(root, entry, {
 				platform: "linux",
 				syncRegularFile: async () => { throw regularError; },
-				syncDirectory: async () => undefined,
+				syncDirectory: async () => "synced",
 			}),
 			(error) => error === regularError,
 		);
 		const directoryError = Object.assign(new Error("EPERM"), { code: "EPERM" });
 		await assert.rejects(
 			persistNativeHookClaimJournalWithDurability(root, entry, {
-				platform: "win32",
+				platform: "linux",
 				syncRegularFile: async () => "synced",
 				syncDirectory: async () => { throw directoryError; },
 			}),
 			(error) => error === directoryError,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim journal continues when Windows directory sync reports unsupported EPERM", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-directory-durability-"));
+	try {
+		const order: string[] = [];
+		const outcome = await persistNativeHookClaimJournalWithDurability(root, {
+			canonicalPath: join(root, "hooks.json"),
+			claimPath: join(root, ".hooks.json.claim"),
+			before: Buffer.from("before\n"),
+			after: null,
+		}, {
+			platform: "win32",
+			syncRegularFile: async () => {
+				order.push("regular");
+				return "synced";
+			},
+			syncDirectory: async () => {
+				order.push("directory");
+				return "unsupported-windows-eperm";
+			},
+		});
+		assert.equal(outcome, "synced");
+		assert.deepEqual(order, ["directory", "regular", "directory"]);
+		await assert.doesNotReject(
+			readFile(join(root, ".omx", "native-hook-claim-journal.json")),
 		);
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -224,7 +254,7 @@ test("claim journal recovery returns independent recovered and no-op outcomes", 
 		const recovered = await recoverNativeHookClaimJournalWithDurability(root, {
 			platform: "win32",
 			syncRegularFile: async () => "unsupported-windows-eperm",
-			syncDirectory: async () => undefined,
+			syncDirectory: async () => "synced",
 		});
 		assert.deepEqual(recovered, { recovered: true, outcome: "unsupported-windows-eperm" });
 		assert.deepEqual(

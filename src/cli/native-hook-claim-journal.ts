@@ -3,14 +3,18 @@ import { constants } from "fs";
 import { copyFile, link, open, lstat, mkdir, readFile, rm, type FileHandle } from "fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "path";
 import {
+	recordDirectorySyncOutcome,
+	syncDirectory,
 	syncRegularFile,
+	type DirectorySyncOutcome,
+	type RegularFileDurabilityTracker,
 	type RegularFileSyncOutcome,
 } from "../utils/file-durability.js";
 
 export interface NativeHookClaimJournalDurability {
 	platform: NodeJS.Platform;
 	syncRegularFile(handle: Pick<FileHandle, "sync">): Promise<RegularFileSyncOutcome>;
-	syncDirectory(path: string): Promise<void>;
+	syncDirectory(path: string): Promise<DirectorySyncOutcome>;
 }
 
 interface ClaimJournalEntry {
@@ -48,31 +52,52 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-async function fsyncDirectory(path: string): Promise<void> {
+async function fsyncDirectory(
+	path: string,
+	platform: NodeJS.Platform,
+): Promise<DirectorySyncOutcome> {
 	const handle = await open(path, "r");
 	try {
-		await handle.sync();
+		return await syncDirectory(handle, platform);
 	} finally {
 		await handle.close();
 	}
 }
 
+export function wrapNativeHookClaimJournalDurability(
+	durability: NativeHookClaimJournalDurability,
+	tracker?: RegularFileDurabilityTracker,
+): NativeHookClaimJournalDurability {
+	if (!tracker) return durability;
+	return {
+		platform: durability.platform,
+		syncRegularFile: durability.syncRegularFile,
+		async syncDirectory(path: string) {
+			const outcome = await durability.syncDirectory(path);
+			recordDirectorySyncOutcome(tracker, outcome);
+			return outcome;
+		},
+	};
+}
+
 export function createNativeHookClaimJournalDurability(
 	platform: NodeJS.Platform = process.platform,
+	tracker?: RegularFileDurabilityTracker,
 ): NativeHookClaimJournalDurability {
-	return {
+	return wrapNativeHookClaimJournalDurability({
 		platform,
 		syncRegularFile: (handle) => syncRegularFile(handle, platform),
-		syncDirectory: fsyncDirectory,
-	};
+		syncDirectory: (path) => fsyncDirectory(path, platform),
+	}, tracker);
 }
 
 export async function syncNativeHookClaimParent(
 	path: string,
 	durability: NativeHookClaimJournalDurability,
-): Promise<void> {
-	await durability.syncDirectory(dirname(path));
+): Promise<DirectorySyncOutcome> {
+	return durability.syncDirectory(dirname(path));
 }
+
 
 export async function restoreNativeHookClaimNoClobber(
 	claimPath: string,

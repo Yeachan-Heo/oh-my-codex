@@ -2839,7 +2839,7 @@ command = "node"
 							throw Object.assign(new Error("injected Windows EPERM"), { code: "EPERM" });
 						},
 					}, "win32"),
-					syncDirectory: async () => undefined,
+					syncDirectory: async () => "synced",
 				});
 				process.stderr.write = ((chunk: string | Uint8Array) => {
 					stderr.push(String(chunk));
@@ -2865,13 +2865,47 @@ command = "node"
 		}
 	});
 
+	it("recovers a claim journal after Windows directory-fsync EPERM with one degraded-durability warning", async () => {
+		const originalStderrWrite = process.stderr.write;
+		const stderr: string[] = [];
+		try {
+			await withRecoverableDoctorClaimJournal(async (codexHomeDir) => {
+				const restoreDurability = setDoctorClaimJournalDurabilityForTest({
+					platform: "win32",
+					syncRegularFile: async () => "synced",
+					syncDirectory: async () => "unsupported-windows-eperm",
+				});
+				process.stderr.write = ((chunk: string | Uint8Array) => {
+					stderr.push(String(chunk));
+					return true;
+				}) as typeof process.stderr.write;
+				try {
+					await doctor();
+					assert.equal(await readFile(join(codexHomeDir, "hooks.json"), "utf-8"), "{\"hooks\":{}}\n");
+					await assert.rejects(
+						readFile(join(codexHomeDir, ".omx", "native-hook-claim-journal.json")),
+						/ENOENT/,
+					);
+				} finally {
+					restoreDurability();
+				}
+			});
+			assert.equal(stderr.length, 1);
+			assert.match(stderr[0]!, /Windows EPERM directory fsync/);
+			assert.match(stderr[0]!, /native-hook claim-journal recovery/);
+			assert.match(stderr[0]!, /degraded durability/);
+		} finally {
+			process.stderr.write = originalStderrWrite;
+		}
+	});
+
 	it("keeps non-EPERM regular-file and directory claim-journal sync failures fatal", async () => {
 		const regularError = Object.assign(new Error("injected regular-file EIO"), { code: "EIO" });
 		await withRecoverableDoctorClaimJournal(async () => {
 			const restoreDurability = setDoctorClaimJournalDurabilityForTest({
 				platform: "win32",
 				syncRegularFile: async () => { throw regularError; },
-				syncDirectory: async () => undefined,
+				syncDirectory: async () => "synced",
 			});
 			try {
 				await assert.rejects(doctor(), (error) => error === regularError);
@@ -2883,7 +2917,7 @@ command = "node"
 		const directoryError = Object.assign(new Error("injected directory EPERM"), { code: "EPERM" });
 		await withRecoverableDoctorClaimJournal(async () => {
 			const restoreDurability = setDoctorClaimJournalDurabilityForTest({
-				platform: "win32",
+				platform: "linux",
 				syncRegularFile: async () => "synced",
 				syncDirectory: async () => { throw directoryError; },
 			});

@@ -14,6 +14,7 @@ import {
   recoverNativeHookClaimJournal,
   syncNativeHookClaimParent as syncNativeHookClaimParentWithDurability,
   restoreNativeHookClaimNoClobber as restoreNativeHookClaimNoClobberWithDurability,
+  wrapNativeHookClaimJournalDurability,
   type NativeHookClaimJournalDurability,
 } from "./native-hook-claim-journal.js";
 import {
@@ -60,6 +61,7 @@ import {
   emitDegradedDurabilityWarning,
   recordRegularFileSyncOutcome,
   syncRegularFile,
+  type DirectorySyncOutcome,
   type RegularFileSyncOutcome,
   type RegularFileDurabilityTracker,
 } from "../utils/file-durability.js";
@@ -898,35 +900,49 @@ function transactionTemporaryPath(
   );
 }
 
-function uninstallClaimJournalDurability() {
-  return uninstallClaimJournalDurabilityOverride
-    ?? createNativeHookClaimJournalDurability();
+function uninstallClaimJournalDurability(
+  tracker?: RegularFileDurabilityTracker,
+  platform: NodeJS.Platform = process.platform,
+): NativeHookClaimJournalDurability {
+  return wrapNativeHookClaimJournalDurability(
+    uninstallClaimJournalDurabilityOverride
+      ?? createNativeHookClaimJournalDurability(platform),
+    tracker,
+  );
 }
 
-async function clearNativeHookClaimJournal(root: string): Promise<void> {
-  return clearNativeHookClaimJournalWithDurability(root, uninstallClaimJournalDurability());
+async function clearNativeHookClaimJournal(
+  root: string,
+  tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
+  return clearNativeHookClaimJournalWithDurability(root, uninstallClaimJournalDurability(tracker));
 }
 
 async function persistNativeHookClaimJournal(
   root: string,
   entry: Parameters<typeof persistNativeHookClaimJournalWithDurability>[1],
+  tracker?: RegularFileDurabilityTracker,
 ): Promise<RegularFileSyncOutcome> {
-  return persistNativeHookClaimJournalWithDurability(root, entry, uninstallClaimJournalDurability());
+  return persistNativeHookClaimJournalWithDurability(root, entry, uninstallClaimJournalDurability(tracker));
 }
 
 async function restoreNativeHookClaimNoClobber(
   claimPath: string,
   destinationPath: string,
+  tracker?: RegularFileDurabilityTracker,
 ): Promise<RegularFileSyncOutcome> {
   return restoreNativeHookClaimNoClobberWithDurability(
     claimPath,
     destinationPath,
-    uninstallClaimJournalDurability(),
+    uninstallClaimJournalDurability(tracker),
   );
 }
 
-async function syncNativeHookClaimParent(path: string): Promise<void> {
-  return syncNativeHookClaimParentWithDurability(path, uninstallClaimJournalDurability());
+async function syncNativeHookClaimParent(
+  path: string,
+  tracker?: RegularFileDurabilityTracker,
+): Promise<DirectorySyncOutcome> {
+  return syncNativeHookClaimParentWithDurability(path, uninstallClaimJournalDurability(tracker));
 }
 
 function transactionClaimPath(path: string): string {
@@ -943,7 +959,7 @@ async function restoreUninstallClaim(
 ): Promise<void> {
   recordRegularFileSyncOutcome(
     tracker,
-    await restoreNativeHookClaimNoClobber(claimPath, destinationPath),
+    await restoreNativeHookClaimNoClobber(claimPath, destinationPath, tracker),
   );
 }
 
@@ -1190,12 +1206,12 @@ async function atomicReplaceFile(
           claimPath,
           before: expectedCurrent.bytes,
           after: content,
-        }),
+        }, options.durabilityTracker),
       );
       journaledClaim = true;
       await rename(mutation.snapshot.path, claimPath);
       claimCreated = true;
-      await syncNativeHookClaimParent(claimPath);
+      await syncNativeHookClaimParent(claimPath, options.durabilityTracker);
       await assertSnapshotAtPath(claimPath, expectedCurrent, "replacement claim");
     }
     await copyFile(temporaryPath, mutation.snapshot.path, constants.COPYFILE_EXCL);
@@ -1206,18 +1222,18 @@ async function atomicReplaceFile(
     } finally {
       await installedHandle.close();
     }
-    await syncNativeHookClaimParent(mutation.snapshot.path);
+    await syncNativeHookClaimParent(mutation.snapshot.path, options.durabilityTracker);
     const actual = await captureCurrentSnapshot(mutation.snapshot);
     if (actual.bytes === null || actual.mode !== mutation.snapshot.mode || !actual.bytes.equals(content)) {
       throw new Error(`Read-back verification failed for replacement ${mutation.snapshot.path}.`);
     }
     if (claimCreated && claimPath) {
       await rm(claimPath);
-      await syncNativeHookClaimParent(claimPath);
+      await syncNativeHookClaimParent(claimPath, options.durabilityTracker);
       claimCreated = false;
     }
     if (journaledClaim && controlledRoot) {
-      await clearNativeHookClaimJournal(controlledRoot);
+      await clearNativeHookClaimJournal(controlledRoot, options.durabilityTracker);
       journaledClaim = false;
     }
     await rm(temporaryPath);
@@ -1243,11 +1259,11 @@ async function atomicReplaceFile(
     if (claimCreated && claimPath) {
       try {
         await restoreUninstallClaim(claimPath, mutation.snapshot.path, options.durabilityTracker);
-        await syncNativeHookClaimParent(mutation.snapshot.path);
+        await syncNativeHookClaimParent(mutation.snapshot.path, options.durabilityTracker);
         claimCreated = false;
         const controlledRoot = mutation.snapshot.topology?.root;
         if (journaledClaim && controlledRoot) {
-          await clearNativeHookClaimJournal(controlledRoot);
+          await clearNativeHookClaimJournal(controlledRoot, options.durabilityTracker);
           journaledClaim = false;
         }
       } catch (recoveryError) {
@@ -1324,11 +1340,11 @@ async function stageAndRemoveFile(
           claimPath,
           before: mutation.snapshot.bytes,
           after: null,
-        }),
+        }, options.durabilityTracker),
       );
     }
     await rename(mutation.snapshot.path, claimPath);
-    if (controlledRoot) await syncNativeHookClaimParent(claimPath);
+    if (controlledRoot) await syncNativeHookClaimParent(claimPath, options.durabilityTracker);
     execution.appliedSnapshot = {
       path: mutation.snapshot.path,
       content: null,
@@ -1345,8 +1361,8 @@ async function stageAndRemoveFile(
     } catch (error) {
       try {
         await restoreUninstallClaim(claimPath, mutation.snapshot.path, options.durabilityTracker);
-        if (controlledRoot) await syncNativeHookClaimParent(mutation.snapshot.path);
-        if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot);
+        if (controlledRoot) await syncNativeHookClaimParent(mutation.snapshot.path, options.durabilityTracker);
+        if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot, options.durabilityTracker);
         execution.appliedSnapshot = undefined;
         execution.phase = "prepared";
       } catch (recoveryError) {
@@ -1357,8 +1373,8 @@ async function stageAndRemoveFile(
       throw error;
     }
     await rm(claimPath);
-    if (controlledRoot) await syncNativeHookClaimParent(claimPath);
-    if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot);
+    if (controlledRoot) await syncNativeHookClaimParent(claimPath, options.durabilityTracker);
+    if (controlledRoot) await clearNativeHookClaimJournal(controlledRoot, options.durabilityTracker);
     await options.transactionFailureInjector?.("after-remove");
     await assertControlledTopologyCurrent(mutation.snapshot.topology);
     const absent = await captureCurrentSnapshot(mutation.snapshot);
@@ -1826,8 +1842,10 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
     const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
     const recovery = await recoverNativeHookClaimJournal(
       scopeDirs.codexHomeDir,
-      uninstallClaimJournalDurabilityOverride
-        ?? createNativeHookClaimJournalDurability(options.transactionPlatform ?? process.platform),
+      uninstallClaimJournalDurability(
+        recoveryTracker,
+        options.transactionPlatform ?? process.platform,
+      ),
     );
     recordRegularFileSyncOutcome(recoveryTracker, recovery.outcome);
     emitDegradedDurabilityWarning("native-hook claim-journal recovery", recoveryTracker);

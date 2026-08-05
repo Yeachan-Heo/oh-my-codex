@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
 	chmod,
 	cp,
@@ -19,6 +19,7 @@ import { basename, dirname, join } from "node:path";
 import { parse as parseToml } from "@iarna/toml";
 import {
 	decideWindowsNativeHookShimReference,
+	setNativeHookClaimJournalDurabilityForTest,
 	setNativeHookTransactionFailureInjectorForTest,
 	setSetupLatePhaseFailureInjectorForTest,
 	setNativeHookTransactionPlatformForTest,
@@ -28,6 +29,7 @@ import {
 } from "../setup.js";
 import { resolveSetupRefreshArgs } from "../update.js";
 import { uninstall } from "../uninstall.js";
+import { doctor } from "../doctor.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
 import {
 	OMX_DEVELOPER_INSTRUCTIONS,
@@ -3229,6 +3231,165 @@ describe("omx setup install mode behavior", () => {
 		} finally {
 			process.stderr.write = originalStderrWrite;
 			resetSync();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("completes Windows native-hook transactions with one directory fsync EPERM warning", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-directory-fsync-eperm-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const resetRegularSync = setNativeHookTransactionRegularFileSyncForTest(async () => undefined);
+		let directorySyncCalls = 0;
+		const stderr: string[] = [];
+		const originalStderrWrite = process.stderr.write;
+		process.stderr.write = ((chunk: string | Uint8Array) => {
+			stderr.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		const resetDurability = setNativeHookClaimJournalDurabilityForTest({
+			platform: "win32",
+			syncRegularFile: async () => "synced",
+			syncDirectory: async () => {
+				directorySyncCalls += 1;
+				return "unsupported-windows-eperm";
+			},
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await writeFile(
+						join(codexHomeDir, "config.toml"),
+						'notify = ["node", "/tmp/user-notify.js"]\n',
+					);
+					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					assert.ok(directorySyncCalls > 0);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
+					assert.equal(
+						existsSync(buildManagedCodexNativeHookWindowsShimPath(codexHomeDir)),
+						true,
+					);
+					assert.equal(existsSync(join(codexHomeDir, "config.toml")), true);
+				});
+				assert.deepEqual(
+					stderr.filter((line) => line.includes("native-hook setup")),
+					["[omx] warning: Windows EPERM directory fsync unsupported in native-hook setup; operation succeeded with degraded durability.\n"],
+				);
+			});
+		} finally {
+			process.stderr.write = originalStderrWrite;
+			resetDurability();
+			resetRegularSync();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	for (const fixture of [
+		{ platform: "win32" as const, code: "EACCES" },
+		{ platform: "linux" as const, code: "EPERM" },
+	]) {
+		it(`fails native-hook setup for ${fixture.platform} directory fsync ${fixture.code}`, async () => {
+			const wd = await mkdtemp(join(tmpdir(), "omx-setup-directory-fsync-fatal-"));
+			const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+			const resetDurability = setNativeHookClaimJournalDurabilityForTest({
+				platform: fixture.platform,
+				syncRegularFile: async () => "synced",
+				syncDirectory: async () => {
+					throw Object.assign(new Error(`${fixture.code}: fsync`), { code: fixture.code });
+				},
+			});
+			try {
+				await withIsolatedUserHome(wd, async () => {
+					await withTempCwd(wd, async () => {
+						await assert.rejects(
+							setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+							new RegExp(fixture.code),
+						);
+					});
+				});
+			} finally {
+				resetDurability();
+				resetPlatform();
+				await rm(wd, { recursive: true, force: true });
+			}
+		});
+	}
+
+	it("accepts Windows synthetic mode drift while retaining file identity", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-mode-drift-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const tempPath = (path: string, purpose: "write" | "delete") =>
+			join(dirname(path), `.${basename(path)}.mode-${purpose}.tmp`);
+		const resetTemporaryPath = setNativeHookTransactionTemporaryPathForTest(tempPath);
+		let checkedIdentity = 0;
+		const resetFailureInjector = setNativeHookTransactionFailureInjectorForTest((stage, artifact) => {
+			if (stage !== "before_rename") return;
+			const temporaryPath = tempPath(artifact.path, "write");
+			const before = lstatSync(temporaryPath);
+			chmodSync(temporaryPath, 0o666);
+			const after = lstatSync(temporaryPath);
+			assert.equal(after.dev, before.dev);
+			assert.equal(after.ino, before.ino);
+			checkedIdentity += 1;
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+					await writeFile(configPath, 'notify = ["node", "/tmp/user-notify.js"]\n');
+					chmodSync(configPath, 0o600);
+					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+				});
+			});
+			assert.ok(checkedIdentity >= 4);
+		} finally {
+			resetFailureInjector();
+			resetTemporaryPath();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects Windows writable-bit drift with unchanged bytes and file identity", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-readonly-drift-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const tempPath = (path: string, purpose: "write" | "delete") =>
+			join(dirname(path), `.${basename(path)}.readonly-${purpose}.tmp`);
+		const resetTemporaryPath = setNativeHookTransactionTemporaryPathForTest(tempPath);
+		let checkedIdentity = 0;
+		const resetFailureInjector = setNativeHookTransactionFailureInjectorForTest((stage, artifact) => {
+			if (stage !== "before_rename") return;
+			const temporaryPath = tempPath(artifact.path, "write");
+			const before = lstatSync(temporaryPath);
+			const beforeBytes = readFileSync(temporaryPath);
+			chmodSync(temporaryPath, 0o444);
+			const after = lstatSync(temporaryPath);
+			assert.deepEqual(readFileSync(temporaryPath), beforeBytes);
+			assert.equal(after.dev, before.dev);
+			assert.equal(after.ino, before.ino);
+			assert.equal(after.nlink, before.nlink);
+			assert.notEqual(after.mode & 0o200, before.mode & 0o200);
+			checkedIdentity += 1;
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const configPath = join(codexHomeDir, "config.toml");
+					const original = 'notify = ["node", "/tmp/user-notify.js"]\n';
+					await writeFile(configPath, original);
+					chmodSync(configPath, 0o600);
+					await assert.rejects(
+						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						/read-back changed/,
+					);
+					assert.equal(await readFile(configPath, "utf-8"), original);
+				});
+			});
+			assert.equal(checkedIdentity, 1);
+		} finally {
+			resetFailureInjector();
+			resetTemporaryPath();
 			resetPlatform();
 			await rm(wd, { recursive: true, force: true });
 		}
