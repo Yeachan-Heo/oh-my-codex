@@ -5,7 +5,7 @@ description: Alias for $plan --consensus
 
 # Ralplan (Consensus Planning Alias)
 
-Ralplan is a shorthand alias for `$plan --consensus`. It drives Planner, Architect, and Critic planning and records their review lifecycle with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). That local lifecycle never authorizes an execution handoff: an official host-issued receipt verified through a documented non-user-mintable host surface is required. Scholastic is an advisory native agent/persona for ontology-heavy planning evidence, not part of the lifecycle.
+Ralplan is a shorthand alias for `$plan --consensus`. It drives Planner, Architect, and Critic planning and records their review lifecycle with **RALPLAN-DR structured deliberation** (short mode by default, deliberate mode for high-risk work). This fork compiles the `local_owner_lifecycle` authority policy: a valid, fresh, ordered, distinct native Architect→Critic approving pair authorizes an execution handoff. This policy is not a `host_consensus_receipt`. Scholastic is an advisory native agent/persona for ontology-heavy planning evidence, not part of the authorizing lifecycle.
 
 ## Usage
 
@@ -20,7 +20,7 @@ $ralplan "task description"
 
 ## Ontology-heavy review
 
-For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself records Architect→Critic lifecycle evidence only; neither those reviews nor Scholastic evidence is a durable execution authorization.
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but it is not part of the authorizing Architect→Critic lifecycle and cannot replace either required review.
 
 ## Usage with interactive mode
 
@@ -62,11 +62,13 @@ The consensus workflow:
    d. Return to Critic evaluation
    e. Repeat this loop until Critic returns `APPROVE` or 5 iterations are reached
    f. If 5 iterations are reached without `APPROVE`, present the best version to the user
-6. On Critic approval *(--interactive only)*: present the plan for review, change requests, rejection, or selection of a **requested future execution lane**. A local Critic approval is lifecycle-only and must not offer or begin an execution handoff while the host receipt verifier is unavailable.
-7. *(--interactive only)* Record the user's planning disposition and any requested future execution lane; do not invoke `$ultragoal`, `$team`, `$ralph`, or another implementation lane without a verified official host receipt.
-8. On local Architect→Critic approval, preserve the plan and reviews with `ralplan_consensus_gate.complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`. Report the host blocker and stop rather than implementing directly.
+6. On Critic approval *(--interactive only)*: present the plan for review, change requests, rejection, or selection of a **requested future execution lane**.
+7. *(--interactive only)* Record the user's planning disposition and any requested future execution lane.
+8. After validating a fresh, ordered, distinct native Architect→Critic approving pair, preserve the plan and reviews with `ralplan_consensus_gate.complete:true`, `blocked_reason:null`, and `authority_policy:"local_owner_lifecycle"`, then hand off to the selected execution lane. If validation fails, keep `complete:false` and report the specific lifecycle blocker.
 
-> **Important:** Steps 3 and 4 MUST run sequentially as role-specific subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`; their completed approvals establish local lifecycle evidence only and cannot satisfy the durable execution gate.
+> **Important:** Steps 3 and 4 MUST run sequentially as role-specific native subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`. Both reviews must approve, use distinct native thread identities, and be fresh for the current planning pass. Adapted roles, prompt labels, trackers alone, parallel/reversed reviews, and reused stale reviews cannot satisfy the gate.
+
+At the start of each planning pass, preserve the system-stamped `ralplan_pass_started_at`. When recording each completed review, copy the matched current-session tracker thread's exact `completed_at` into the review record. The gate requires tracker `provenance_kind:"native_subagent"`, exact timestamp binding, completion at or after the pass boundary, and strict tracker-observed Architect completion before Critic completion.
 
 ## Planning/Execution Boundary
 
@@ -75,7 +77,7 @@ The consensus workflow:
 The canonical flow is:
 
 ```
-$ralplan -> local Architect→Critic lifecycle evidence -> verified official host receipt -> explicit execution lane -> $ultragoal | $team | $ralph
+$ralplan -> validated native Architect→Critic lifecycle -> authority_policy:local_owner_lifecycle -> explicit execution lane -> $ultragoal | $team | $ralph
 ```
 
 Before any execution lane begins, ralplan must emit terminal planning state (complete, paused, failed, or waiting for input) and the durable handoff record below. Do not continue from consensus planning into direct code edits in the same ralplan session.
@@ -87,24 +89,25 @@ Ralplan is not complete, skippable, or ready for execution merely because `.omx/
 Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handoff, persist a durable handoff record that distinguishes:
 
 - `planning_artifacts`: PRD/test-spec paths.
-- `ralplan_architect_review`: the completed Architect review with an approving verdict.
-- `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
-- `ralplan_consensus_gate.complete:true` only after an official host-issued receipt is verified through a documented non-user-mintable host surface. Architect/Critic reviews, trackers, artifacts, and local receipt-shaped fields remain lifecycle or trace evidence only; until the verifier exists, persist `complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
+- `ralplan_architect_review`: the completed native Architect review with an approving verdict and current-pass provenance.
+- `ralplan_critic_review`: the completed native Critic review with an approving verdict, distinct thread identity, and a completion time after the Architect review.
+- `ralplan_pass_started_at`: the system-stamped lower bound for this planning pass; return/re-review passes cannot fall back to an older workflow start time.
+- `ralplan_consensus_gate.complete:true`, `blocked_reason:null`, and `authority_policy:"local_owner_lifecycle"` only after the current lifecycle pair passes provenance, role, approval, freshness, distinctness, and ordering validation.
 
-If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Even after both reviews approve, they complete only the local review lifecycle; do not start execution until an official host receipt verifier authorizes the transition. Existing plan/test-spec files and local review artifacts are never permission to skip ralplan or execute.
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Existing plan/test-spec files, user-written gate fields, adapted-role evidence, same-thread reviews, reversed ordering, and stale approvals are never permission to skip Ralplan or execute. The optional host verifier remains a stronger future authority mode; do not describe `local_owner_lifecycle` evidence as a host receipt.
 
 Follow the Plan skill's full documentation for consensus mode details.
 
 ## Goal-Mode Follow-up Suggestions
 
-When a verified official host receipt permits an execution handoff, include product-facing goal-mode suggestions alongside the existing Ralph and team options. Until then, record any requested lane as non-executing planning guidance and keep `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
+When `local_owner_lifecycle` validation permits an execution handoff, include product-facing goal-mode suggestions alongside the existing Ralph and Team options.
 
 - `$ultragoal` — **default goal-mode follow-up** for implementation or general goal-oriented follow-up plans that should become durable Codex/OMX goals with sequential completion tracking.
 - `$autoresearch-goal` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable.
 - `$performance-goal` — optimization/performance follow-up when the plan centers on speed, latency, throughput, memory, benchmark, or other measurable performance work.
 
 Keep `$team` as a first-class execution option and keep `$ralph` available only as an explicit fallback where appropriate: use Ultragoal as the default durable goal-mode follow-up, Team for coordinated parallel implementation, and Ralph only for intentionally selected persistent single-owner completion/verification pressure. For parallelizable durable-goal delivery, recommend `$ultragoal` + `$team` together: Ultragoal remains the leader-owned `.omx/ultragoal` ledger/Codex-goal wrapper while Team runs parallel lanes and returns checkpoint-ready evidence. Do not present Ralph as the recommended follow-up when durable goal tracking is needed; present Ultragoal as the superseding default, with Team for parallel delivery and Ralph only as an explicit fallback when its narrow persistence loop is specifically desired.
-Use the available-agent-types roster to produce explicit role/staffing allocation, reasoning-by-lane guidance, concrete launch hints (including `omx team` when parallel delivery is justified), and team verification responsibilities for any future receipt-authorized execution path.
+Use the available-agent-types roster to produce explicit role/staffing allocation, reasoning-by-lane guidance, concrete launch hints (including `omx team` when parallel delivery is justified), and team verification responsibilities for the authorized execution path.
 
 ## Pre-context Intake
 
@@ -184,8 +187,8 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
    - **Planner** creates initial plan (which files, what auth method, what tests)
    - **Architect** reviews for soundness
    - **Critic** validates quality and testability
-5. Architect and Critic approval completes the local planning lifecycle only. Persist `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"` and report the host blocker.
-6. Execution does not begin until a verified official host receipt authorizes the selected handoff path.
+5. Validate that the current Architect and Critic approvals are native, fresh, approving, ordered, and from distinct threads.
+6. Persist `ralplan_consensus_gate.complete:true`, `blocked_reason:null`, and `authority_policy:"local_owner_lifecycle"`, then begin the selected execution handoff.
 
 ### Troubleshooting
 

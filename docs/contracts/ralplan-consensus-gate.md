@@ -1,22 +1,43 @@
 # Ralplan Consensus Gate Contract
 
-The `ralplan -> ultragoal` transition is fail-closed. Architect and Critic lifecycle evidence is useful diagnostic data, but cannot authorize a transition by itself.
+The `ralplan -> ultragoal` transition is fail-closed. This fork compiles one active authority policy:
+
+```json
+{
+  "authority_policy": "local_owner_lifecycle"
+}
+```
+
+Under this policy, only a valid, fresh, ordered, distinct native Architect→Critic approving pair authorizes the transition.
 
 ## Authority boundary
 
-A successful transition requires a documented, versioned, official host-issued consensus receipt verified directly through an official host integration. The receipt must bind the exact transition session, installed Architect and Critic roles, distinct host thread identities, approved artifact digests, strict Architect-before-Critic order, issuer, version, and replay protection.
+A successful transition requires all of the following lifecycle evidence for the current planning pass:
 
-No current official host receipt integration exists. Production consensus therefore returns the exact blocker:
+- native-subagent provenance for both reviews;
+- the installed `architect` role followed by the installed `critic` role;
+- an approving verdict from both roles;
+- completed, distinct native thread identities;
+- strict Architect-before-Critic ordering; and
+- reviews newer than the return-to-Ralplan boundary, when the workflow is revising a prior plan.
 
-```text
-documented_host_consensus_receipt_unavailable
+A successful gate result is:
+
+```json
+{
+  "complete": true,
+  "blockedReason": null,
+  "authority_policy": "local_owner_lifecycle"
+}
 ```
 
-The gate must not read a receipt from `.omx`, repository files, user-local files, environment variables, stdin, CLI arguments, transcripts, pointers, trackers, markers, task names, prompts, or review artifact fields. Those carriers are same-user writable and are not authority.
+Plans, PRD/test-spec paths, user-written gate fields, receipt-shaped local data, prompt role labels, task names, transcripts, pointers, tracker records alone, adapted-role evidence, same-thread reviews, reversed ordering, non-approving verdicts, and stale approvals cannot authorize the transition. The gate reports the specific lifecycle blocker and keeps `complete:false` when validation fails.
 
-## Phase 1 receipt protocol
+This policy is a local product-owner authority choice. It is not a `host_consensus_receipt`, and implementations and documentation must never represent it as one.
 
-Phase 1 defines a verifier scaffold without enabling a production positive path. Codex supplies the result as the opaque object `{receipt: String}`. The string is a compact JWS:
+## Optional stronger host receipt protocol
+
+The Phase 1 verifier scaffold defines a future, stronger host authority mode without enabling a production host-receipt path. Codex supplies the result as the opaque object `{receipt: String}`. The string is a compact JWS:
 
 ```text
 BASE64URL(protected-header) + "." + BASE64URL(payload) + "." + BASE64URL(Ed25519-signature)
@@ -58,9 +79,9 @@ Production capability is available only when all three bindings exist together:
 2. a compiled, pinned issuer trust root shipped through a reviewed trust-root channel; and
 3. a replay-safe online consume operation with atomic single-use semantics.
 
-Phase 1 supplies none of those production bindings, so capability detection reports all three missing and the gate remains unavailable. A partial implementation is still unavailable. Capability detection is not receipt verification and cannot authorize a transition.
+Phase 1 supplies none of those production bindings, so host-receipt capability detection reports all three missing. A partial host implementation remains unavailable. Capability detection is not receipt verification and cannot authorize a transition under a future host-receipt policy.
 
-Enablement is tracked in [OMX issue #3438](https://github.com/Yeachan-Heo/oh-my-codex/issues/3438) and the corresponding [Codex host issue #37016](https://github.com/openai/codex/issues/37016). Issue text, comments, and linked artifacts are coordination evidence only; they are not a trust root or receipt transport.
+Issue text, comments, and linked artifacts are coordination evidence only; they are not a trust root or receipt transport.
 
 ## Routing and lifecycle evidence
 
@@ -71,21 +92,23 @@ Review artifacts can describe native lifecycle observations using:
 - `session_id`: the transition session id
 - `thread_id`: the native lane thread id
 - `tracker_path`: `.omx/state/subagent-tracking.json`
+- `completed_at`: exactly the matched tracker thread's completion timestamp
+- `ralplan_pass_started_at`: a system-stamped pass boundary on the enclosing Ralplan/Autopilot state
 
-`agent_type`, `agent_role`, `provenance_kind`, session/thread IDs, tracker roles/modes/completion, task names, routing markers, transcripts, and local review artifacts are routing, lifecycle, or diagnostic data only. A same-user child can forge them. They never satisfy the receipt requirement.
+The `local_owner_lifecycle` validator evaluates the review records and native tracking evidence together. It requires current-session tracker entries with exact native provenance and roles, exact review-to-tracker completion timestamp binding, both completions at or after the current pass boundary, and strict tracker-observed Architect-before-Critic order. Return passes require their own explicit `ralplan_pass_started_at`. No single field, marker, tracker entry, transcript, or locally authored `complete:true` value is sufficient on its own. The positive result comes from validating the complete pair against the compiled policy.
 
-Typed `native_subagent` Architect and Critic lanes may still be tracked for diagnostics. A valid lifecycle pair uses distinct threads, completed lanes, and Architect-before-Critic ordering. A roleless legacy lane, `omx_adapted` lane, pending/bound role intent, claimant token, leader attestation, or historical routing marker is inert and cannot release consensus.
+Typed `native_subagent` Architect and Critic lanes must be tracked for validation. A roleless legacy lane, `omx_adapted` lane, pending/bound role intent, claimant token, leader attestation, or historical routing marker is inert and cannot release consensus. When the native task surface reports `role_routing_unavailable`, adapted Planner, Architect, Critic, role-intent, and consensus authority remain subject to `omx ralplan preflight --json`; `unsupported_documented_leader_proof` stops that adapted authority path.
 
 ## Diagnostics
 
-When lifecycle evidence is present, the gate may render diagnostics for the expected tracker schema, current session, Architect/Critic thread IDs, session/thread existence, thread kinds, completion, distinctness, ordering, and remediation. These diagnostics explain lifecycle quality; they are not a receipt verifier.
+The gate renders diagnostics for the expected tracker schema, current session, Architect/Critic thread IDs, session/thread existence, thread kinds, completion, approval, distinctness, ordering, freshness, and remediation. These diagnostics explain why the compiled lifecycle policy passed or failed; they are not a receipt verifier.
 
-Every production result remains incomplete until the official verifier is available and validates a receipt. The unavailable result includes `blockedReason: "documented_host_consensus_receipt_unavailable"`.
+Invalid or missing evidence remains fail-closed. Representative blockers include `native_subagent_consensus_evidence_missing`, `non_approving_ralplan_consensus_review`, and `missing_sequential_architect_then_critic_approval`.
 
-Fresh default Autopilot checks verifier capability before starting `deep-interview` or Ralplan review lanes. Deterministic verifier absence terminalizes the fresh Autopilot run with the same exact blocker, avoiding review work that cannot advance. The capability check is not receipt verification and never authorizes a transition; direct/manual Ralplan and existing active Autopilot sessions keep their diagnostic and resumability behavior.
+Fresh default Autopilot does not terminalize solely because the optional host verifier is unavailable. It proceeds to Ralplan and applies the compiled `local_owner_lifecycle` policy. Existing active Autopilot sessions retain their diagnostic and resumability behavior.
 
 ## Future enablement
 
-Enable a positive path only after official documentation specifies a non-user-mintable host receipt channel and OMX implements direct verification for that documented version and surface. Tests must prove that injected local JSON, environment, transcript, tracker, marker, and review artifacts cannot mint or substitute the receipt. Until then, preserve the fail-closed blocker and treat typed routing/lifecycle as non-authoritative.
+The host verifier may become an optional stronger authority policy only after official documentation specifies a non-user-mintable host receipt channel and OMX implements direct verification for that documented version and surface. Tests must prove that injected local JSON, environment, transcript, tracker, marker, and review artifacts cannot mint or substitute the receipt. Adding that mode must not relabel existing `local_owner_lifecycle` decisions as host receipts or weaken the local policy's provenance, role, approval, distinctness, ordering, and freshness checks.
 
 See [the Phase 1 receipt ADR](../adr/codex-host-consensus-receipt-phase-1.md), [ADR 3212](../adr/3212-same-user-native-child-auth-boundary.md), and [ADR 3194](../adr/3194-codex-01445-documented-leader-proof.md).

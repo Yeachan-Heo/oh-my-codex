@@ -108,6 +108,30 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function localOwnerConsensusGate(reviewCycle?: number): Record<string, unknown> {
+  const cycle = reviewCycle === undefined ? {} : { review_cycle: reviewCycle };
+  return {
+    complete: true,
+    sequence: ['architect-review', 'critic-review'],
+    ralplan_architect_review: {
+      agent_role: 'architect',
+      verdict: 'approve',
+      provenance_kind: 'native_subagent',
+      thread_id: 'thread-architect',
+      sequence_index: 1,
+      ...cycle,
+    },
+    ralplan_critic_review: {
+      agent_role: 'critic',
+      verdict: 'approve',
+      provenance_kind: 'native_subagent',
+      thread_id: 'thread-critic',
+      sequence_index: 2,
+      ...cycle,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // RALPLAN stage tests
 // ---------------------------------------------------------------------------
@@ -128,7 +152,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(result.status, 'failed');
     assert.equal((result.artifacts as Record<string, unknown>).stage, 'ralplan');
     assert.ok((result.artifacts as Record<string, unknown>).instruction);
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.error, 'native_subagent_consensus_evidence_missing');
   });
 
   it('canSkip returns false when no plans directory exists', () => {
@@ -168,22 +192,19 @@ describe('RALPLAN Stage', () => {
     const result = await stage.run(makeCtx({
       artifacts: {
         ralplan: {
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1 },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2 },
-          },
+          ralplanConsensusGate: localOwnerConsensusGate(),
         },
       },
     }));
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
     assert.equal((result.artifacts as Record<string, unknown>).planningComplete, false);
+    assert.equal((result.artifacts.ralplanConsensusGate as { complete?: boolean }).complete, true);
+    assert.equal((result.artifacts.ralplanConsensusGate as { authority_policy?: string }).authority_policy, 'local_owner_lifecycle');
   });
 
-  it('canSkip fails closed when local Architect and Critic lifecycle evidence lacks an official host receipt', async () => {
+  it('canSkip accepts ordered distinct native Architect then Critic lifecycle evidence', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -194,14 +215,34 @@ describe('RALPLAN Stage', () => {
       artifacts: {
         ralplan: {
           ralplanConsensusGate: {
-            complete: true,
+            ...localOwnerConsensusGate(),
             documented_host_consensus_receipt: { issuer: 'official-host', verdict: 'approve' },
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect approved' },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic approved after architect' },
           },
         },
       },
-    })), false);
+    })), true);
+  });
+
+  it('run completes when planning artifacts and local-owner consensus are complete', async () => {
+    const plansDir = join(tempDir, '.omx', 'plans');
+    await mkdir(plansDir, { recursive: true });
+    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
+    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
+
+    const result = await createRalplanStage().run(makeCtx({
+      artifacts: { ralplan: { ralplanConsensusGate: localOwnerConsensusGate() } },
+    }));
+    const gate = result.artifacts.ralplanConsensusGate as {
+      complete?: boolean;
+      authority_policy?: string | null;
+      blockedReason?: string | null;
+    };
+
+    assert.equal(result.status, 'completed');
+    assert.equal(result.error, undefined);
+    assert.equal(gate.complete, true);
+    assert.equal(gate.authority_policy, 'local_owner_lifecycle');
+    assert.equal(gate.blockedReason, null);
   });
 
   it('strict Autopilot canSkip rejects artifact-only or codex_exec consensus evidence', async () => {
@@ -574,20 +615,7 @@ describe('RALPLAN Stage', () => {
         return_to_ralplan_reason: 'Code review requested a plan update.',
         review_cycle: 1,
         ralplan: {
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: {
-              agent_role: 'architect',
-              verdict: 'approve',
-              completed_at: '2026-06-12T09:00:00.000Z',
-            },
-            ralplan_critic_review: {
-              agent_role: 'critic',
-              verdict: 'approve',
-              completed_at: '2026-06-12T09:05:00.000Z',
-            },
-          },
+          ralplanConsensusGate: localOwnerConsensusGate(),
         },
       },
     }));
@@ -595,12 +623,12 @@ describe('RALPLAN Stage', () => {
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.error, 'native_subagent_consensus_evidence_missing');
     assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
   });
 
-  it('run retains fresh nested review lifecycle artifacts but fails closed without an official host receipt', async () => {
+  it('run accepts fresh nested local-owner lifecycle evidence after a review loop', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
     await mkdir(plansDir, { recursive: true });
     await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
@@ -613,22 +641,18 @@ describe('RALPLAN Stage', () => {
         review_cycle: 1,
         ralplan: {
           review_cycle: 2,
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', review_cycle: 2, completed_at: '2026-06-12T10:00:00.000Z' },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', review_cycle: 2, completed_at: '2026-06-12T10:05:00.000Z' },
-          },
+          ralplanConsensusGate: localOwnerConsensusGate(2),
         },
       },
     }));
     const artifacts = result.artifacts as Record<string, unknown>;
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
+    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; authority_policy?: string | null; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
 
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.status, 'completed');
+    assert.equal(result.error, undefined);
+    assert.equal(gate.complete, true);
+    assert.equal(gate.authority_policy, 'local_owner_lifecycle');
+    assert.equal(gate.blockedReason, null);
     assert.ok(gate.ralplan_architect_review);
     assert.ok(gate.ralplan_critic_review);
   });
@@ -646,20 +670,7 @@ describe('RALPLAN Stage', () => {
         review_cycle: 1,
         ralplan: {
           review_cycle: 2,
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: {
-              agent_role: 'architect',
-              verdict: 'approve',
-              completed_at: '2026-06-12T10:00:00.000Z',
-            },
-            ralplan_critic_review: {
-              agent_role: 'critic',
-              verdict: 'approve',
-              completed_at: '2026-06-12T10:05:00.000Z',
-            },
-          },
+          ralplanConsensusGate: localOwnerConsensusGate(),
         },
       },
     }));
@@ -667,9 +678,9 @@ describe('RALPLAN Stage', () => {
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.error, 'native_subagent_consensus_evidence_missing');
     assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(gate.blockedReason, 'native_subagent_consensus_evidence_missing');
   });
 
   it('canSkip returns false when nested code-review artifacts are non-clean', async () => {
@@ -702,7 +713,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(artifacts.planningComplete, false);
   });
 
-  it('completes planning and review lifecycle but fails runtime release without an official host receipt', async () => {
+  it('completes runtime planning with ordered distinct native local-owner reviews', async () => {
     const stage = createRalplanStage({
       executor: {
         async draft() {
@@ -714,10 +725,10 @@ describe('RALPLAN Stage', () => {
           return { summary: 'drafted', planPath: prdPath, artifacts: { runtimeDrafted: true } };
         },
         async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
+          return { verdict: 'approve', summary: 'architect ok', provenance_kind: 'native_subagent', thread_id: 'runtime-architect' };
         },
         async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
+          return { verdict: 'approve', summary: 'critic ok', provenance_kind: 'native_subagent', thread_id: 'runtime-critic' };
         },
       },
     });
@@ -726,34 +737,42 @@ describe('RALPLAN Stage', () => {
     const artifacts = result.artifacts as Record<string, unknown>;
     const gate = artifacts.ralplanConsensusGate as {
       complete?: boolean;
+      authority_policy?: string | null;
       blockedReason?: string;
       ralplan_architect_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
       ralplan_critic_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
     };
 
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.status, 'completed');
+    assert.equal(result.error, undefined);
     assert.equal(artifacts.runtime, true);
-    assert.equal(artifacts.planningComplete, false);
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(artifacts.planningComplete, true);
+    assert.equal(gate.complete, true);
+    assert.equal(gate.authority_policy, 'local_owner_lifecycle');
+    assert.equal(gate.blockedReason, null);
     assert.deepEqual(gate.ralplan_architect_review, {
       agent_role: 'architect',
       verdict: 'approve',
       summary: 'architect ok',
+      provenance_kind: 'native_subagent',
+      thread_id: 'runtime-architect',
       iteration: 1,
+      sequence_index: 1,
     });
     assert.deepEqual(gate.ralplan_critic_review, {
       agent_role: 'critic',
       verdict: 'approve',
       summary: 'critic ok',
+      provenance_kind: 'native_subagent',
+      thread_id: 'runtime-critic',
       iteration: 1,
+      sequence_index: 2,
     });
     assert.equal(artifacts.iteration, 1);
     assert.equal(artifacts.runtimeDrafted, true);
   });
 
-  it('retains mismatched planning artifacts but rejects release without an official host receipt', async () => {
+  it('retains local-owner consensus but rejects mismatched planning artifacts', async () => {
     const stage = createRalplanStage({
       executor: {
         async draft() {
@@ -765,10 +784,10 @@ describe('RALPLAN Stage', () => {
           return { summary: 'drafted mismatched artifacts', planPath: prdPath };
         },
         async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
+          return { verdict: 'approve', summary: 'architect ok', provenance_kind: 'native_subagent', thread_id: 'runtime-architect' };
         },
         async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
+          return { verdict: 'approve', summary: 'critic ok', provenance_kind: 'native_subagent', thread_id: 'runtime-critic' };
         },
       },
     });
@@ -777,26 +796,27 @@ describe('RALPLAN Stage', () => {
     const artifacts = result.artifacts as Record<string, unknown>;
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
     assert.equal(artifacts.planningComplete, false);
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; authority_policy?: string | null; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
+    assert.equal(gate.complete, true);
+    assert.equal(gate.authority_policy, 'local_owner_lifecycle');
+    assert.equal(gate.blockedReason, null);
     assert.ok(gate.ralplan_architect_review);
     assert.ok(gate.ralplan_critic_review);
   });
 
-  it('retains review lifecycle evidence but rejects release without planning artifacts or an official host receipt', async () => {
+  it('retains local-owner lifecycle evidence but rejects missing planning artifacts', async () => {
     const stage = createRalplanStage({
       executor: {
         async draft() {
           return { summary: 'draft without files' };
         },
         async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
+          return { verdict: 'approve', summary: 'architect ok', provenance_kind: 'native_subagent', thread_id: 'runtime-architect' };
         },
         async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
+          return { verdict: 'approve', summary: 'critic ok', provenance_kind: 'native_subagent', thread_id: 'runtime-critic' };
         },
       },
     });
@@ -805,11 +825,12 @@ describe('RALPLAN Stage', () => {
     const artifacts = result.artifacts as Record<string, unknown>;
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
     assert.equal(artifacts.planningComplete, false);
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; authority_policy?: string | null; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
+    assert.equal(gate.complete, true);
+    assert.equal(gate.authority_policy, 'local_owner_lifecycle');
+    assert.equal(gate.blockedReason, null);
     assert.ok(gate.ralplan_architect_review);
     assert.ok(gate.ralplan_critic_review);
   });
@@ -826,10 +847,10 @@ describe('RALPLAN Stage', () => {
           return { summary: 'drafted', planPath: prdPath };
         },
         async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
+          return { verdict: 'approve', summary: 'architect ok', provenance_kind: 'native_subagent', thread_id: 'runtime-architect' };
         },
         async criticReview() {
-          return { verdict: 'iterate', summary: 'critic needs changes' };
+          return { verdict: 'iterate', summary: 'critic needs changes', provenance_kind: 'native_subagent', thread_id: 'runtime-critic' };
         },
       },
       maxIterations: 1,
@@ -852,13 +873,19 @@ describe('RALPLAN Stage', () => {
       agent_role: 'architect',
       verdict: 'approve',
       summary: 'architect ok',
+      provenance_kind: 'native_subagent',
+      thread_id: 'runtime-architect',
       iteration: 1,
+      sequence_index: 1,
     });
     assert.deepEqual(gate.ralplan_critic_review, {
       agent_role: 'critic',
       verdict: 'iterate',
       summary: 'critic needs changes',
+      provenance_kind: 'native_subagent',
+      thread_id: 'runtime-critic',
       iteration: 1,
+      sequence_index: 2,
     });
   });
 

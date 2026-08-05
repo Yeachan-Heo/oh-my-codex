@@ -12,7 +12,7 @@
 - Opt-in Herdr lifecycle/status bridge Phase 1 (#3241, #3242).
 - Ralplan review authority remains fail-closed without an official host consensus receipt, and autopilot preflight fails before deep-interview and Architect/Critic review work when the receipt verifier is unavailable (#3270).
 
-> **Current status / supersession (ADR 3212):** Local leader attestation and adapted role intent no longer authorize. Typed routing/tracker evidence are lifecycle/diagnostic only. On `role_routing_unavailable` adapted Ralplan authority attempts, installed role-intent/preflight fails closed with `unsupported_documented_leader_proof`. Consensus is unavailable with `documented_host_consensus_receipt_unavailable` absent an official host receipt.
+> **Current status / supersession:** The 0.20.4 host-receipt preflight bullet records historical release behavior. This fork now compiles `authority_policy: "local_owner_lifecycle"`: a fresh, approving, tracker-backed native Architect review followed by a fresh, approving, tracker-backed native Critic review, with distinct completed native thread identities, authorizes Ralplan handoff. This local lifecycle authority is never a `host_consensus_receipt`. The former receipt-only policy reported `documented_host_consensus_receipt_unavailable`; that blocker is historical and does not describe the current compiled policy. Adapted role-intent still does not authorize, and `role_routing_unavailable` adapted authority attempts still fail with `unsupported_documented_leader_proof`.
 
 ## Additional fixes
 

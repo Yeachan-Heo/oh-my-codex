@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { agentsInit } from '../agents-init.js';
+import { writeSessionStart } from '../../hooks/session.js';
 
 function runOmx(
   cwd: string,
@@ -39,20 +40,6 @@ async function withCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
     return await fn();
   } finally {
     process.chdir(previous);
-  }
-}
-
-async function readCurrentLinuxStartTicks(): Promise<number | undefined> {
-  if (process.platform !== 'linux') return undefined;
-  try {
-    const stat = await readFile('/proc/self/stat', 'utf-8');
-    const commandEnd = stat.lastIndexOf(')');
-    if (commandEnd === -1) return undefined;
-    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-    const ticks = Number(fields[19]);
-    return Number.isFinite(ticks) ? ticks : undefined;
-  } catch {
-    return undefined;
   }
 }
 
@@ -157,21 +144,11 @@ describe('omx agents-init', () => {
   it('protects project-root AGENTS.md during an active OMX session', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-agents-init-'));
     try {
-      const pidStartTicks = await readCurrentLinuxStartTicks();
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
       await mkdir(join(wd, 'src'), { recursive: true });
       await writeFile(join(wd, 'AGENTS.md'), '# unmanaged\n');
       await writeFile(join(wd, 'src', 'index.ts'), 'export const x = 1;\n');
-      await writeFile(
-        join(wd, '.omx', 'state', 'session.json'),
-        JSON.stringify({
-          session_id: 'session-1',
-          started_at: new Date().toISOString(),
-          cwd: wd,
-          pid: process.pid,
-          pid_start_ticks: pidStartTicks,
-        }, null, 2),
-      );
+      await writeSessionStart(wd, 'session-1');
 
       await withCwd(wd, async () => {
         await agentsInit({ force: true });

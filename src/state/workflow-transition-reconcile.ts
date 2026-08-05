@@ -24,6 +24,7 @@ import {
   buildAutopilotDeepInterviewRalplanGateError,
   canAdvanceAutopilotDeepInterviewToRalplan,
 } from '../autopilot/deep-interview-gate.js';
+import { buildRalplanConsensusGateFromSources } from '../ralplan/consensus-gate.js';
 
 interface TransitionStateLike {
   active?: unknown;
@@ -131,6 +132,28 @@ async function completeSourceModeState(
   const transitionMessage = `mode transiting: ${sourceMode} -> ${destinationMode}`;
   const candidatePaths = [modeStatePathForRoot(sourceMode, cwd, sessionId, baseStateDir)];
   const completedPaths: string[] = [];
+
+  if (sourceMode === 'ralplan') {
+    const ralplanStatePath = candidatePaths[0];
+    const ralplanState = await readJsonIfExists(ralplanStatePath, {
+      mode: sourceMode,
+      throwOnParseError: true,
+    });
+    const gate = buildRalplanConsensusGateFromSources(
+      ralplanState
+        ? [{ source: ralplanStatePath, value: ralplanState, sessionId }]
+        : [],
+      { cwd, sessionId, requireNativeSubagents: true },
+    );
+    if (!gate.complete) {
+      const details = gate.blockedDetails?.length
+        ? ` Details: ${gate.blockedDetails.join('; ')}.`
+        : '';
+      throw new Error(
+        `Cannot transition ralplan -> ${destinationMode}: ${gate.blockedReason ?? 'missing_consensus'}.${details}`,
+      );
+    }
+  }
 
   for (const candidatePath of candidatePaths) {
     const existing = await readJsonIfExists(candidatePath, {
@@ -258,9 +281,6 @@ export async function reconcileWorkflowTransition(
   const currentModes = options.currentModes
     ? [...options.currentModes].filter(isTrackedWorkflowMode)
     : await visibleTrackedModes(cwd, sessionId, baseStateDir);
-  if (currentModes.includes('ralplan') && requestedMode !== 'ralplan') {
-    throw new Error(`Cannot transition ralplan -> ${requestedMode}: documented_host_consensus_receipt_unavailable. Official host consensus receipt verifier is unavailable.`);
-  }
   const decision = evaluateWorkflowTransition(currentModes, requestedMode);
 
   if (!decision.allowed) {

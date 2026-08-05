@@ -1,6 +1,10 @@
 # ADR: Codex host-consensus receipt verifier Phase 1
 
-**Status:** Accepted, unavailable in production
+**Status:** Accepted as optional future-policy design; superseded as the active Ralplan gate
+
+## Current policy supersession
+
+This ADR still defines the optional compact-JWS host-receipt design, but that design is not the authority policy compiled by this fork. The active `authority_policy: "local_owner_lifecycle"` authorizes Ralplan handoff from a fresh, approving, tracker-backed native Architect review followed by a fresh, approving, tracker-backed native Critic review, with distinct completed native thread identities. That local lifecycle decision is never a `host_consensus_receipt` and does not weaken or partially satisfy the cryptographic protocol below. The original Phase 1 design remains below as historical and future-policy context.
 
 ## Context
 

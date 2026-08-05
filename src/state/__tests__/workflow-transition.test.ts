@@ -11,6 +11,7 @@ import {
   readActiveWorkflowModes,
 } from '../workflow-transition.js';
 import { reconcileWorkflowTransition } from '../workflow-transition-reconcile.js';
+import { subagentTrackingPath } from '../../subagents/tracker.js';
 
 const STATE_ENV_KEYS = [
   'OMX_ROOT',
@@ -36,6 +37,78 @@ async function withIsolatedStateEnv(fn: () => Promise<void>): Promise<void> {
       else delete process.env[key];
     }
   }
+}
+
+function nativeRalplanConsensusState(
+  sessionId: string,
+  overrides: { architect?: Record<string, unknown>; critic?: Record<string, unknown> } = {},
+): Record<string, unknown> {
+  return {
+    active: true,
+    mode: 'ralplan',
+    current_phase: 'review',
+    session_id: sessionId,
+    ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
+    ralplan_consensus_gate: {
+      complete: true,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: {
+        agent_role: 'architect',
+        verdict: 'approve',
+        provenance_kind: 'native_subagent',
+        thread_id: 'architect-thread',
+        sequence_index: 1,
+        completed_at: '2026-05-28T00:00:00.000Z',
+        ...overrides.architect,
+      },
+      ralplan_critic_review: {
+        agent_role: 'critic',
+        verdict: 'approve',
+        provenance_kind: 'native_subagent',
+        thread_id: 'critic-thread',
+        sequence_index: 2,
+        completed_at: '2026-05-28T00:02:00.000Z',
+        ...overrides.critic,
+      },
+    },
+  };
+}
+
+async function writeNativeRalplanTracker(cwd: string, sessionId: string): Promise<void> {
+  const completedAt = '2026-05-28T00:02:00.000Z';
+  const trackerPath = subagentTrackingPath(cwd);
+  await mkdir(join(trackerPath, '..'), { recursive: true });
+  await writeFile(trackerPath, JSON.stringify({
+    schemaVersion: 1,
+    sessions: {
+      [sessionId]: {
+        session_id: sessionId,
+        updated_at: completedAt,
+        threads: {
+          'architect-thread': {
+            thread_id: 'architect-thread',
+            kind: 'subagent',
+            provenance_kind: 'native_subagent',
+            role: 'architect',
+            first_seen_at: '2026-05-28T00:00:00.000Z',
+            last_seen_at: '2026-05-28T00:00:00.000Z',
+            completed_at: '2026-05-28T00:00:00.000Z',
+            turn_count: 1,
+          },
+          'critic-thread': {
+            thread_id: 'critic-thread',
+            kind: 'subagent',
+            provenance_kind: 'native_subagent',
+            role: 'critic',
+            first_seen_at: '2026-05-28T00:01:00.000Z',
+            last_seen_at: completedAt,
+            completed_at: completedAt,
+            turn_count: 1,
+          },
+        },
+      },
+    },
+  }, null, 2));
 }
 
 describe('workflow transition rules', () => {
@@ -438,6 +511,138 @@ describe('workflow transition rules', () => {
         const boxedMode = JSON.parse(await readFile(join(sessionDir, 'deep-interview-state.json'), 'utf-8')) as Record<string, unknown>;
         assert.equal(boxedMode.active, true);
         assert.equal(boxedMode.current_phase, 'interviewing');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('permits ralplan handoff after ordered native Architect then Critic approval', async () => {
+    await withIsolatedStateEnv(async () => {
+      const root = await mkdtemp(join(tmpdir(), 'omx-workflow-ralplan-owner-approved-'));
+      try {
+        const wd = join(root, 'source');
+        const baseStateDir = join(root, 'boxed-state');
+        const sessionId = 'sess-ralplan-owner-approved';
+        const sessionDir = join(baseStateDir, 'sessions', sessionId);
+        const ralplanPath = join(sessionDir, 'ralplan-state.json');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          ralplanPath,
+          JSON.stringify(nativeRalplanConsensusState(sessionId), null, 2),
+          'utf-8',
+        );
+        await writeFile(
+          join(sessionDir, 'skill-active-state.json'),
+          JSON.stringify({
+            version: 1,
+            active: true,
+            skill: 'ralplan',
+            phase: 'review',
+            session_id: sessionId,
+            active_skills: [{ skill: 'ralplan', phase: 'review', active: true, session_id: sessionId }],
+          }, null, 2),
+          'utf-8',
+        );
+        await writeNativeRalplanTracker(wd, sessionId);
+
+        const transition = await reconcileWorkflowTransition(wd, 'ultragoal', {
+          action: 'start',
+          sessionId,
+          source: 'test',
+          baseStateDir,
+        });
+
+        assert.equal(transition.transitionMessage, 'mode transiting: ralplan -> ultragoal');
+        assert.deepEqual(transition.autoCompletedModes, ['ralplan']);
+        assert.deepEqual(transition.completedPaths, [ralplanPath]);
+        const ralplan = JSON.parse(await readFile(ralplanPath, 'utf-8')) as Record<string, unknown>;
+        assert.equal(ralplan.active, false);
+        assert.equal(ralplan.current_phase, 'completed');
+        assert.equal(ralplan.transition_target_mode, 'ultragoal');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('keeps ralplan active when native consensus evidence is invalid', async () => {
+    await withIsolatedStateEnv(async () => {
+      const root = await mkdtemp(join(tmpdir(), 'omx-workflow-ralplan-owner-invalid-'));
+      try {
+        const wd = join(root, 'source');
+        const baseStateDir = join(root, 'boxed-state');
+        const sessionId = 'sess-ralplan-owner-invalid';
+        const sessionDir = join(baseStateDir, 'sessions', sessionId);
+        const ralplanPath = join(sessionDir, 'ralplan-state.json');
+        const initialState = nativeRalplanConsensusState(sessionId, {
+          architect: { provenance_kind: 'omx_adapted' },
+        });
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(ralplanPath, JSON.stringify(initialState, null, 2), 'utf-8');
+        await writeFile(
+          join(sessionDir, 'skill-active-state.json'),
+          JSON.stringify({
+            version: 1,
+            active: true,
+            skill: 'ralplan',
+            phase: 'review',
+            session_id: sessionId,
+            active_skills: [{ skill: 'ralplan', phase: 'review', active: true, session_id: sessionId }],
+          }, null, 2),
+          'utf-8',
+        );
+
+        await assert.rejects(
+          reconcileWorkflowTransition(wd, 'ultragoal', {
+            action: 'start',
+            sessionId,
+            source: 'test',
+            baseStateDir,
+          }),
+          /Cannot transition ralplan -> ultragoal: native_subagent_consensus_evidence_missing\. Details:.*provenance_kind/i,
+        );
+
+        assert.deepEqual(
+          JSON.parse(await readFile(ralplanPath, 'utf-8')),
+          initialState,
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('keeps ralplan active when the Critic approval is missing', async () => {
+    await withIsolatedStateEnv(async () => {
+      const root = await mkdtemp(join(tmpdir(), 'omx-workflow-ralplan-owner-incomplete-'));
+      try {
+        const wd = join(root, 'source');
+        const baseStateDir = join(root, 'boxed-state');
+        const sessionId = 'sess-ralplan-owner-incomplete';
+        const sessionDir = join(baseStateDir, 'sessions', sessionId);
+        const ralplanPath = join(sessionDir, 'ralplan-state.json');
+        const initialState = nativeRalplanConsensusState(sessionId);
+        const consensusGate = initialState.ralplan_consensus_gate as Record<string, unknown>;
+        delete consensusGate.ralplan_critic_review;
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(ralplanPath, JSON.stringify(initialState, null, 2), 'utf-8');
+
+        await assert.rejects(
+          reconcileWorkflowTransition(wd, 'team', {
+            action: 'start',
+            sessionId,
+            source: 'test',
+            baseStateDir,
+            currentModes: ['ralplan'],
+          }),
+          /Cannot transition ralplan -> team: native_subagent_consensus_evidence_missing\. Details: critic review is missing/i,
+        );
+
+        assert.deepEqual(
+          JSON.parse(await readFile(ralplanPath, 'utf-8')),
+          initialState,
+        );
       } finally {
         await rm(root, { recursive: true, force: true });
       }

@@ -19,6 +19,7 @@ import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/
 import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
 import {
   buildRalplanConsensusGateForCwd,
+  readLocalRalplanConsensusStateCandidates,
   shouldBlockFreshAutopilotForRalplanReceipt,
   type RalplanConsensusBlockedReason,
   type RalplanHostConsensusReceiptVerifierCapability,
@@ -826,6 +827,7 @@ async function persistStatefulSkillSeedState(
         ralplan: null,
         ralplan_consensus_gate: {
           required: true,
+          authority_policy: null,
           sequence: ['architect-review', 'critic-review'],
           planning_artifacts_are_not_consensus: true,
           required_review_roles: ['architect', 'critic'],
@@ -3939,12 +3941,10 @@ export async function recordSkillActivation(
     match.skill === 'autopilot'
     && matchedModeState?.active === true
     && !matchedModeTerminal
-    && shouldBlockFreshAutopilotForRalplanReceipt(
-      dependencies.getRalplanHostConsensusReceiptVerifierCapability?.(),
-    )
+    && previous?.active !== true
   ) {
     const phase = safeString(matchedModeState.current_phase).trim() || 'deep-interview';
-    const preserved = previous ?? {
+    const preserved = applyProvenanceOwner({
       version: 1 as const,
       active: true,
       skill: 'autopilot',
@@ -3953,10 +3953,14 @@ export async function recordSkillActivation(
       activated_at: safeString(matchedModeState.started_at).trim() || nowIso,
       updated_at: safeString(matchedModeState.updated_at).trim() || nowIso,
       source: 'keyword-detector' as const,
-      session_id: input.sessionId,
-      active_skills: [{ skill: 'autopilot', active: true, phase, session_id: input.sessionId }],
-    };
-    return {
+      session_id: input.sessionId ?? (safeString(matchedModeState.session_id).trim() || undefined),
+      owner_codex_session_id: safeString(matchedModeState.owner_codex_session_id).trim() || undefined,
+      thread_id: input.threadId ?? (safeString(matchedModeState.thread_id).trim() || undefined),
+      turn_id: input.turnId ?? (safeString(matchedModeState.turn_id).trim() || undefined),
+      active_skills: [],
+    });
+    preserved.active_skills = buildActiveSkills(preserved);
+    const reconstructed = {
       ...preserved,
       initialized_mode: 'autopilot',
       initialized_state_path: resolveSeedStateFilePath(
@@ -3965,6 +3969,17 @@ export async function recordSkillActivation(
         input.sessionId ?? preserved.session_id,
       ).relativePath,
     };
+    try {
+      await writeSkillActiveStateCopiesForStateDir(
+        input.stateDir,
+        reconstructed,
+        input.sessionId,
+        selectRootSkillStateCopy(previousRoot, reconstructed, input.sessionId, suppressRootMutation),
+      );
+    } catch (error) {
+      console.warn('[omx] warning: failed to reconstruct canonical Autopilot state', error);
+    }
+    return reconstructed;
   }
   if (classification.reservedInput === 'omx-question-answered' && matchedModeTerminal) return null;
   const preserveActivatedAt = sameSkill && !matchedModeTerminal && (sameKeyword || sameSkillContinuation);
@@ -4499,7 +4514,11 @@ export function applyRalplanGate(
 
   const cwd = options.cwd ?? process.cwd();
   const planningComplete = isPlanningComplete(readPlanningArtifacts(cwd));
+  const consensusSessionId = readLocalRalplanConsensusStateCandidates(cwd)
+    .find((candidate) => typeof candidate.sessionId === 'string')
+    ?.sessionId;
   const consensusEvidence = buildRalplanConsensusGateForCwd(cwd, {
+    sessionId: consensusSessionId,
     requireNativeSubagents: options.requireNativeSubagents,
   });
   const consensusComplete = consensusEvidence.complete;

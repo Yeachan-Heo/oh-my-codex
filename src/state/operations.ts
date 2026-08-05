@@ -964,6 +964,14 @@ export async function executeStateOperation(
 
           if (
             mode === 'autopilot'
+            && currentAutopilotChildPhase !== 'ralplan'
+            && nextAutopilotChildPhase === 'ralplan'
+          ) {
+            mergedRaw.ralplan_pass_started_at = new Date().toISOString();
+          }
+
+          if (
+            mode === 'autopilot'
             && currentAutopilotChildPhase === 'deep-interview'
             && isAutopilotSuccessfulTerminalState(mergedRaw)
           ) {

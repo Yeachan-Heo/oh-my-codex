@@ -20,6 +20,15 @@ export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
 export type RalplanConsensusBlockedReason =
   typeof RALPLAN_CONSENSUS_BLOCKED_REASONS[keyof typeof RALPLAN_CONSENSUS_BLOCKED_REASONS];
 
+export type RalplanAuthorityPolicy = 'local_owner_lifecycle' | 'official_host_receipt';
+
+/**
+ * Package-level authority policy for this OMX fork. This is deliberately not
+ * selected from repository state, environment variables, or receipt-shaped
+ * user input.
+ */
+export const RALPLAN_AUTHORITY_POLICY: RalplanAuthorityPolicy = 'local_owner_lifecycle';
+
 export type { RalplanHostConsensusReceiptVerifierCapability } from './host-consensus-receipt.js';
 
 /**
@@ -33,7 +42,11 @@ export function getRalplanHostConsensusReceiptVerifierCapability(): RalplanHostC
 export function shouldBlockFreshAutopilotForRalplanReceipt(
   capability: RalplanHostConsensusReceiptVerifierCapability = getRalplanHostConsensusReceiptVerifierCapability(),
 ): boolean {
-  return capability === 'unavailable';
+  return getRalplanAuthorityPolicy() === 'official_host_receipt' && capability === 'unavailable';
+}
+
+export function getRalplanAuthorityPolicy(): RalplanAuthorityPolicy {
+  return RALPLAN_AUTHORITY_POLICY;
 }
 
 export interface RalplanNativeReviewDiagnostic {
@@ -62,6 +75,7 @@ export interface RalplanConsensusGateDiagnostic {
 
 export interface RalplanConsensusGateEvidence {
   complete: boolean;
+  authority_policy: 'local_owner_lifecycle' | null;
   sequence: ['architect-review', 'critic-review'];
   ralplan_architect_review: Record<string, unknown> | null;
   ralplan_critic_review: Record<string, unknown> | null;
@@ -87,39 +101,83 @@ type ConsensusResolution = {
   kind: 'valid';
   ralplan_architect_review: Record<string, unknown>;
   ralplan_critic_review: Record<string, unknown>;
+  passBoundary: ConsensusPassBoundary;
 } | {
   kind: 'invalid';
   ralplan_architect_review: Record<string, unknown> | null;
   ralplan_critic_review: Record<string, unknown> | null;
   blockedDetails: string[];
+  passBoundary: ConsensusPassBoundary;
 };
 
+interface ConsensusPassBoundary {
+  timestamp: string | null;
+  problem: string | null;
+}
 
 export function buildRalplanConsensusGateFromSources(
   sources: RalplanConsensusSource[],
-  _options: RalplanNativeSubagentConsensusOptions = {},
+  options: RalplanNativeSubagentConsensusOptions = {},
 ): RalplanConsensusGateEvidence {
-  // Tracker, transcripts, artifact fields, and agent types are lifecycle diagnostics.
-  // They are all writable by the same user that requests this transition, so they
-  // cannot serve as an authorization boundary. An official host receipt verifier is
-  // required before any of this evidence can authorize a release.
-  let lifecycleEvidence: (ConsensusResolution & { source: string }) | null = null;
+  let lifecycleEvidence: (ConsensusResolution & { source: string; sessionId?: string }) | null = null;
   for (const candidate of sources) {
     const evidence = resolveConsensusEvidence(candidate.value);
-    if (evidence && isConsensusEvidenceNewerThanSelected(evidence, lifecycleEvidence)) {
-      lifecycleEvidence = { ...evidence, source: candidate.source };
+    if (evidence && !lifecycleEvidence) {
+      lifecycleEvidence = {
+        ...evidence,
+        source: candidate.source,
+        ...(candidate.sessionId ? { sessionId: candidate.sessionId } : {}),
+      };
     }
   }
 
+  if (lifecycleEvidence?.kind === 'valid') {
+    const blockedDetails = nativeSubagentTrackingProblems(lifecycleEvidence, options);
+    if (blockedDetails.length > 0) {
+      lifecycleEvidence = {
+        kind: 'invalid',
+        ralplan_architect_review: lifecycleEvidence.ralplan_architect_review,
+        ralplan_critic_review: lifecycleEvidence.ralplan_critic_review,
+        blockedDetails,
+        passBoundary: lifecycleEvidence.passBoundary,
+        source: lifecycleEvidence.source,
+        ...(lifecycleEvidence.sessionId ? { sessionId: lifecycleEvidence.sessionId } : {}),
+      };
+    }
+  }
+
+  const complete = lifecycleEvidence?.kind === 'valid';
+  const blockedReason = complete ? null : consensusBlockedReason(lifecycleEvidence);
   return {
-    complete: false,
+    complete,
+    authority_policy: complete ? 'local_owner_lifecycle' : null,
     sequence: ['architect-review', 'critic-review'],
     ralplan_architect_review: lifecycleEvidence?.ralplan_architect_review ?? null,
     ralplan_critic_review: lifecycleEvidence?.ralplan_critic_review ?? null,
     source: lifecycleEvidence?.source ?? null,
-    blockedReason: RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable,
-    blockedDetails: ['official host consensus receipt verifier is unavailable'],
+    blockedReason,
+    ...(lifecycleEvidence?.kind === 'invalid'
+      ? { blockedDetails: lifecycleEvidence.blockedDetails }
+      : {}),
   };
+}
+
+function consensusBlockedReason(
+  evidence: (ConsensusResolution & { source: string; sessionId?: string }) | null,
+): RalplanConsensusBlockedReason {
+  if (!evidence) return RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing;
+  if (evidence.kind === 'valid') {
+    return RALPLAN_CONSENSUS_BLOCKED_REASONS.missingSequentialApproval;
+  }
+  if (evidence.blockedDetails.some((detail) =>
+    /not approve|blocking signal|lacks approving evidence/i.test(detail))) {
+    return RALPLAN_CONSENSUS_BLOCKED_REASONS.nonApprovingReview;
+  }
+  if (evidence.blockedDetails.some((detail) =>
+    /native tracker|provenance_kind|thread_id|agent_role=.*missing/i.test(detail))) {
+    return RALPLAN_CONSENSUS_BLOCKED_REASONS.nativeSubagentEvidenceMissing;
+  }
+  return RALPLAN_CONSENSUS_BLOCKED_REASONS.missingSequentialApproval;
 }
 
 export function buildRalplanConsensusGateForCwd(
@@ -135,10 +193,11 @@ export function buildRalplanConsensusGateForCwd(
     }));
   return buildRalplanConsensusGateFromSources([
     ...(options.artifacts ? [
-      { source: 'stage-context-artifacts', value: options.artifacts },
+      { source: 'stage-context-artifacts', value: options.artifacts, sessionId: options.sessionId },
       {
         source: 'stage-context-ralplan-artifact',
         value: withParentReturnToRalplanContext(options.artifacts.ralplan, options.artifacts),
+        sessionId: options.sessionId,
       },
     ] : []),
     ...localStateCandidates,
@@ -190,23 +249,12 @@ export function readLocalRalplanConsensusStateCandidates(
 function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
+  const passBoundary = consensusPassBoundary(record);
 
-  const returnToRalplanCycle = isReturnToRalplanCycle(record);
-  const advancedReviewCycle = explicitFreshnessReviewCycle(record);
-  const staleReturnToRalplanCycle = returnToRalplanCycle && advancedReviewCycle === null;
-  const directGate = resolveDirectGate(record);
-  let deferredOrderedDirectGate: ConsensusResolution | null = null;
-  if (directGate) {
-    if (!returnToRalplanCycle) return directGate;
-    if (advancedReviewCycle !== null) {
-      if (reviewsCarryFreshnessCycle(directGate, advancedReviewCycle)) return directGate;
-    } else if (!hasExplicitReturnToRalplanReviewCycle(record) && consensusEvidenceOrder(directGate) !== null) {
-      deferredOrderedDirectGate = directGate;
-    }
-  }
+  const directGate = resolveDirectGate(record, passBoundary);
+  if (directGate) return directGate;
 
-  const handoffArtifactsAreStale = staleReturnToRalplanCycle;
-  const topLevelHandoffArtifacts = handoffArtifactsAreStale ? null : asRecord(record.handoff_artifacts);
+  const topLevelHandoffArtifacts = asRecord(record.handoff_artifacts);
   if (topLevelHandoffArtifacts) {
     const evidence = resolveConsensusEvidence(withParentReturnToRalplanContext(topLevelHandoffArtifacts, record));
     if (evidence) return evidence;
@@ -214,18 +262,12 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
 
   const stateRecord = asRecord(record.state);
   const stateHasOwnReturnLoopContext = stateRecord !== null && isReturnToRalplanCycle(stateRecord);
-  const stateHandoffArtifacts = handoffArtifactsAreStale && !stateHasOwnReturnLoopContext
-    ? null
-    : asRecord(stateRecord?.handoff_artifacts);
+  const stateHandoffArtifacts = asRecord(stateRecord?.handoff_artifacts);
   if (stateHandoffArtifacts) {
     const stateContext = stateHasOwnReturnLoopContext ? stateRecord : record;
     const evidence = resolveConsensusEvidence(withParentReturnToRalplanContext(stateHandoffArtifacts, stateContext));
     if (evidence) return evidence;
   }
-
-  if (deferredOrderedDirectGate) return deferredOrderedDirectGate;
-
-  if (returnToRalplanCycle && advancedReviewCycle === null) return null;
 
   const directArchitectReview = asRecord(record.ralplan_architect_review);
   const directCriticReview = asRecord(record.ralplan_critic_review);
@@ -235,19 +277,12 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
     && isApproveReview(directCriticReview, 'critic')
     && hasDistinctNativeReviewThreads(directArchitectReview, directCriticReview)
     && isCriticNotBeforeArchitect(directArchitectReview, directCriticReview)
-    && (
-      !returnToRalplanCycle
-      || (advancedReviewCycle !== null && reviewPairCarriesFreshnessCycle(
-        directArchitectReview,
-        directCriticReview,
-        advancedReviewCycle,
-      ))
-    )
   ) {
     return {
       kind: 'valid',
       ralplan_architect_review: directArchitectReview,
       ralplan_critic_review: directCriticReview,
+      passBoundary,
     };
   }
 
@@ -265,16 +300,8 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
       && isApproveReview(criticReview, 'critic')
       && hasDistinctNativeReviewThreads(architectReview, criticReview)
       && isCriticNotBeforeArchitect(architectReview, criticReview)
-      && (
-        !returnToRalplanCycle
-        || (advancedReviewCycle !== null && reviewPairCarriesFreshnessCycle(
-          architectReview,
-          criticReview,
-          advancedReviewCycle,
-        ))
-      )
     ) {
-      return { kind: 'valid', ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return { kind: 'valid', ralplan_architect_review: architectReview, ralplan_critic_review: criticReview, passBoundary };
     }
   }
 
@@ -288,23 +315,18 @@ function resolveConsensusEvidence(value: unknown): ConsensusResolution | null {
       && isApproveReview(criticReview, 'critic')
       && hasDistinctNativeReviewThreads(architectReview, criticReview)
       && isCriticNotBeforeArchitect(architectReview, criticReview)
-      && (
-        !returnToRalplanCycle
-        || (advancedReviewCycle !== null && reviewPairCarriesFreshnessCycle(
-          architectReview,
-          criticReview,
-          advancedReviewCycle,
-        ))
-      )
     ) {
-      return { kind: 'valid', ralplan_architect_review: architectReview, ralplan_critic_review: criticReview };
+      return { kind: 'valid', ralplan_architect_review: architectReview, ralplan_critic_review: criticReview, passBoundary };
     }
   }
 
   return null;
 }
 
-function resolveDirectGate(record: Record<string, unknown>): ConsensusResolution | null {
+function resolveDirectGate(
+  record: Record<string, unknown>,
+  passBoundary: ConsensusPassBoundary,
+): ConsensusResolution | null {
   const gate = record.ralplanConsensusGate ?? record.ralplan_consensus_gate;
   if (gate && typeof gate === 'object') {
     const gateRecord = gate as Record<string, unknown>;
@@ -326,43 +348,172 @@ function resolveDirectGate(record: Record<string, unknown>): ConsensusResolution
         kind: 'valid',
         ralplan_architect_review: architectReview,
         ralplan_critic_review: criticReview,
+        passBoundary,
       };
     }
 
-    if (gateRecord.complete === true) {
+    if (hasDirectGateLifecycleEvidence(gateRecord, architectReview, criticReview)) {
       const blockedDetails = [
         ...reviewApprovalProblems(architectReview, 'architect'),
         ...reviewApprovalProblems(criticReview, 'critic'),
       ];
+      if (gateRecord.complete !== true) {
+        blockedDetails.push('consensus gate is incomplete');
+      }
       if (!hasArchitectThenCriticSequence(gateRecord)) {
         blockedDetails.push('consensus review sequence is not architect-review then critic-review');
       }
       if (!isCriticNotBeforeArchitect(architectReview, criticReview)) {
-        blockedDetails.push('direct review order is not proven strictly architect-before-critic');
+        blockedDetails.push('direct review order is structurally contradictory or incomplete');
       }
       if (!hasDistinctNativeReviewThreads(architectReview, criticReview)) {
         blockedDetails.push('consensus reviews must use distinct native_subagent thread_id values');
       }
-      if (blockedDetails.length > 0) {
-        return {
-          kind: 'invalid',
-          ralplan_architect_review: architectReview,
-          ralplan_critic_review: criticReview,
-          blockedDetails,
-        };
-      }
+      return {
+        kind: 'invalid',
+        ralplan_architect_review: architectReview,
+        ralplan_critic_review: criticReview,
+        blockedDetails,
+        passBoundary,
+      };
     }
   }
 
   return null;
 }
 
+function hasDirectGateLifecycleEvidence(
+  gate: Record<string, unknown>,
+  architectReview: Record<string, unknown> | null,
+  criticReview: Record<string, unknown> | null,
+): boolean {
+  return typeof gate.complete === 'boolean'
+    || architectReview !== null
+    || criticReview !== null
+    || Array.isArray(gate.sequence);
+}
+
+function nativeSubagentTrackingProblems(
+  evidence: ConsensusResolution & { source: string; sessionId?: string },
+  options: RalplanNativeSubagentConsensusOptions,
+): string[] {
+  const issues: string[] = [];
+  if (evidence.passBoundary.problem) issues.push(evidence.passBoundary.problem);
+  const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+  const sessionId = typeof options.sessionId === 'string' ? options.sessionId.trim() : '';
+  if (!cwd) issues.push('native tracker cwd is missing');
+  if (!sessionId || validateLocalSessionId(sessionId).length === 0) {
+    issues.push('native tracker session_id is missing or invalid');
+  }
+  if (evidence.sessionId && evidence.sessionId !== sessionId) {
+    issues.push(`native tracker source session_id=${evidence.sessionId} does not match current session_id=${sessionId || 'missing'}`);
+  }
+
+  for (const [role, review] of [
+    ['architect', evidence.ralplan_architect_review],
+    ['critic', evidence.ralplan_critic_review],
+  ] as const) {
+    const reviewSessionId = trimmedString(review?.session_id ?? review?.sessionId);
+    if (reviewSessionId && reviewSessionId !== sessionId) {
+      issues.push(`native tracker ${role} review session_id=${reviewSessionId} does not match current session_id=${sessionId || 'missing'}`);
+    }
+  }
+
+  if (!cwd || !sessionId || validateLocalSessionId(sessionId).length === 0) return issues;
+  const trackerPath = join(getBaseStateDir(cwd), 'subagent-tracking.json');
+  if (!existsSync(trackerPath)) {
+    issues.push(`native tracker is missing at ${trackerPath}`);
+    return issues;
+  }
+
+  const tracker = readJsonState(trackerPath);
+  const sessions = asRecord(tracker?.sessions);
+  const session = asRecord(sessions?.[sessionId]);
+  if (tracker?.schemaVersion !== 1 || !sessions || !session || session.session_id !== sessionId) {
+    issues.push(`native tracker session_id=${sessionId} is missing or malformed`);
+    return issues;
+  }
+  const threads = asRecord(session.threads);
+  if (!threads) {
+    issues.push(`native tracker session_id=${sessionId} has no thread records`);
+    return issues;
+  }
+
+  const completionTimes: Partial<Record<'architect' | 'critic', number>> = {};
+  for (const [role, review] of [
+    ['architect', evidence.ralplan_architect_review],
+    ['critic', evidence.ralplan_critic_review],
+  ] as const) {
+    const threadId = trimmedString(review?.thread_id ?? review?.threadId);
+    const thread = threadId ? asRecord(threads[threadId]) : null;
+    if (!threadId || !thread || thread.thread_id !== threadId) {
+      issues.push(`native tracker ${role} thread_id=${threadId || 'missing'} is not tracked in session_id=${sessionId}`);
+      continue;
+    }
+    if (thread.kind !== 'subagent') {
+      issues.push(`native tracker ${role} thread_id=${threadId} kind=${String(thread.kind || 'missing')} is not subagent`);
+    }
+    if (thread.provenance_kind !== 'native_subagent') {
+      issues.push(`native tracker ${role} thread_id=${threadId} provenance_kind=${String(thread.provenance_kind || 'missing')} is not native_subagent`);
+    }
+    const trackedRole = trimmedString(thread.role ?? thread.mode);
+    if (trackedRole !== role) {
+      issues.push(`native tracker ${role} thread_id=${threadId} role=${trackedRole || 'missing'} is not ${role}`);
+    }
+    const trackedCompletedAt = trimmedString(thread.completed_at);
+    if (!trackedCompletedAt) {
+      issues.push(`native tracker ${role} thread_id=${threadId} has no completion evidence`);
+      continue;
+    }
+    const trackedCompletionTime = timestampValue(trackedCompletedAt);
+    if (trackedCompletionTime === null) {
+      issues.push(`native tracker ${role} thread_id=${threadId} completed_at is invalid`);
+      continue;
+    }
+    completionTimes[role] = trackedCompletionTime;
+
+    const reviewCompletedAt = trimmedString(review?.completed_at ?? review?.completedAt);
+    if (!reviewCompletedAt) {
+      issues.push(`${role} review completed_at is missing and cannot be bound to native tracker completion`);
+    } else if (reviewCompletedAt !== trackedCompletedAt) {
+      issues.push(`${role} review completed_at=${reviewCompletedAt} does not exactly match native tracker completed_at=${trackedCompletedAt}`);
+    }
+  }
+
+  const architectCompletedAt = completionTimes.architect;
+  const criticCompletedAt = completionTimes.critic;
+  if (architectCompletedAt !== undefined && criticCompletedAt !== undefined) {
+    if (criticCompletedAt <= architectCompletedAt) {
+      issues.push('native tracker completion order is not strictly architect-before-critic');
+    }
+    const passStartedAt = evidence.passBoundary.timestamp
+      ? timestampValue(evidence.passBoundary.timestamp)
+      : null;
+    if (passStartedAt !== null) {
+      if (architectCompletedAt < passStartedAt) {
+        issues.push('native tracker architect completion predates ralplan_pass_started_at');
+      }
+      if (criticCompletedAt < passStartedAt) {
+        issues.push('native tracker critic completion predates ralplan_pass_started_at');
+      }
+    }
+  }
+
+  return issues;
+}
+
+function trimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 export function withParentReturnToRalplanContext(value: unknown, parent: Record<string, unknown>): unknown {
   const reason = parent.return_to_ralplan_reason ?? parent.returnToRalplanReason;
-  if (typeof reason !== 'string' || reason.trim() === '' || !value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return value;
   }
   const record = value as Record<string, unknown>;
+  const parentBoundary = consensusPassBoundary(parent);
+  const hasReturnReason = typeof reason === 'string' && reason.trim() !== '';
   const parentReviewCycle = numericValue(
     parent.return_to_ralplan_parent_review_cycle
       ?? parent.returnToRalplanParentReviewCycle
@@ -373,99 +524,58 @@ export function withParentReturnToRalplanContext(value: unknown, parent: Record<
   return {
     ...record,
     review_cycle: inheritedReviewCycle,
-    current_phase: parent.current_phase ?? parent.currentPhase ?? 'ralplan',
-    return_to_ralplan_reason: reason,
-    return_to_ralplan_parent_review_cycle: parentReviewCycle,
+    ...(hasReturnReason ? {
+      current_phase: parent.current_phase ?? parent.currentPhase ?? 'ralplan',
+      return_to_ralplan_reason: reason,
+      return_to_ralplan_parent_review_cycle: parentReviewCycle,
+    } : {}),
+    ralplan_pass_started_at:
+      record.ralplan_pass_started_at
+      ?? record.ralplanPassStartedAt
+      ?? parent.ralplan_pass_started_at
+      ?? parent.ralplanPassStartedAt
+      ?? parentBoundary.timestamp
+      ?? undefined,
   };
 }
 
-function explicitFreshnessReviewCycle(record: Record<string, unknown>): number | null {
-  const parentReviewCycle = numericValue(
-    record.return_to_ralplan_parent_review_cycle ?? record.returnToRalplanParentReviewCycle,
-  );
-  const candidateReviewCycle = numericValue(record.review_cycle ?? record.reviewCycle);
-  return parentReviewCycle !== null
-    && candidateReviewCycle !== null
-    && candidateReviewCycle > parentReviewCycle
-    ? candidateReviewCycle
-    : null;
-}
-
-function reviewsCarryFreshnessCycle(evidence: ConsensusResolution, reviewCycle: number): boolean {
-  return reviewPairCarriesFreshnessCycle(
-    evidence.ralplan_architect_review,
-    evidence.ralplan_critic_review,
-    reviewCycle,
-  );
-}
-
-function isConsensusEvidenceNewerThanSelected(
-  evidence: ConsensusResolution,
-  selected: (ConsensusResolution & { source: string }) | null,
-): boolean {
-  if (!selected) return true;
-  const evidenceCycle = consensusEvidenceReviewCycle(evidence);
-  const selectedCycle = consensusEvidenceReviewCycle(selected);
-  if (evidenceCycle !== null || selectedCycle !== null) {
-    if (selectedCycle === null) return true;
-    if (evidenceCycle === null) return false;
-    if (evidenceCycle !== selectedCycle) return evidenceCycle > selectedCycle;
+function consensusPassBoundary(record: Record<string, unknown>): ConsensusPassBoundary {
+  const explicitRaw = record.ralplan_pass_started_at ?? record.ralplanPassStartedAt;
+  const explicit = trimmedString(explicitRaw);
+  if (explicitRaw !== undefined) {
+    return timestampValue(explicit) === null
+      ? { timestamp: null, problem: 'ralplan_pass_started_at is missing or invalid' }
+      : { timestamp: explicit, problem: null };
   }
 
-  const evidenceOrder = consensusEvidenceOrder(evidence);
-  const selectedOrder = consensusEvidenceOrder(selected);
-  if (evidenceOrder !== null || selectedOrder !== null) {
-    if (selectedOrder === null) return true;
-    if (evidenceOrder === null) return false;
-    if (evidenceOrder.domain !== selectedOrder.domain) return false;
-    if (evidenceOrder.value !== selectedOrder.value) return evidenceOrder.value > selectedOrder.value;
+  const reviewCycle = numericValue(record.review_cycle ?? record.reviewCycle);
+  const requiresExplicitBoundary = isReturnToRalplanCycle(record)
+    || (reviewCycle !== null && reviewCycle > 1);
+  if (requiresExplicitBoundary) {
+    return {
+      timestamp: null,
+      problem: 'current return-to-Ralplan pass requires explicit ralplan_pass_started_at freshness boundary',
+    };
   }
 
-  return false;
-}
-
-function consensusEvidenceReviewCycle(evidence: ConsensusResolution): number | null {
-  return maxKnownNumber(
-    numericValue(evidence.ralplan_architect_review?.review_cycle ?? evidence.ralplan_architect_review?.reviewCycle),
-    numericValue(evidence.ralplan_critic_review?.review_cycle ?? evidence.ralplan_critic_review?.reviewCycle),
-  );
-}
-
-function consensusEvidenceOrder(evidence: ConsensusResolution): ReviewOrder | null {
-  const architectOrder = reviewOrderValue(evidence.ralplan_architect_review ?? {});
-  const criticOrder = reviewOrderValue(evidence.ralplan_critic_review ?? {});
-  if (architectOrder === null) return criticOrder;
-  if (criticOrder === null) return architectOrder;
-  if (architectOrder.domain !== criticOrder.domain) return null;
-  return architectOrder.value >= criticOrder.value ? architectOrder : criticOrder;
-}
-
-function maxKnownNumber(left: number | null, right: number | null): number | null {
-  if (left === null) return right;
-  if (right === null) return left;
-  return Math.max(left, right);
-}
-
-function hasExplicitReturnToRalplanReviewCycle(record: Record<string, unknown>): boolean {
-  return numericValue(record.review_cycle ?? record.reviewCycle) !== null
-    || numericValue(record.return_to_ralplan_parent_review_cycle ?? record.returnToRalplanParentReviewCycle) !== null;
-}
-function reviewPairCarriesFreshnessCycle(
-  architectReview: Record<string, unknown> | null,
-  criticReview: Record<string, unknown> | null,
-  reviewCycle: number,
-): boolean {
-  return reviewCarriesFreshnessCycle(architectReview, reviewCycle)
-    && reviewCarriesFreshnessCycle(criticReview, reviewCycle);
-}
-
-function reviewCarriesFreshnessCycle(review: Record<string, unknown> | null, reviewCycle: number): boolean {
-  const cycle = numericValue(review?.review_cycle ?? review?.reviewCycle);
-  return cycle !== null && cycle >= reviewCycle;
+  const initialStartedAt = trimmedString(record.started_at ?? record.startedAt);
+  if (timestampValue(initialStartedAt) === null) {
+    return {
+      timestamp: null,
+      problem: 'initial Ralplan pass requires started_at or ralplan_pass_started_at freshness boundary',
+    };
+  }
+  return { timestamp: initialStartedAt, problem: null };
 }
 
 function numericValue(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function timestampValue(value: unknown): number | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -493,6 +603,23 @@ function hasDistinctNativeReviewThreads(
   const architectThreadId = typeof architectReview?.thread_id === 'string' ? architectReview.thread_id.trim() : '';
   const criticThreadId = typeof criticReview?.thread_id === 'string' ? criticReview.thread_id.trim() : '';
   return Boolean(architectThreadId) && Boolean(criticThreadId) && architectThreadId !== criticThreadId;
+}
+
+/**
+ * Non-authoritative structural check used while assembling a lifecycle record.
+ * A true result never grants local-owner authority; the authoritative gate also
+ * requires current-session tracker binding, pass freshness, and tracker order.
+ */
+export function hasNonAuthoritativeStructurallyOrderedRalplanReviewPair(
+  architectReviewValue: unknown,
+  criticReviewValue: unknown,
+): boolean {
+  const architectReview = asRecord(architectReviewValue);
+  const criticReview = asRecord(criticReviewValue);
+  return isApproveReview(architectReview, 'architect')
+    && isApproveReview(criticReview, 'critic')
+    && hasDistinctNativeReviewThreads(architectReview, criticReview)
+    && isCriticNotBeforeArchitect(architectReview, criticReview);
 }
 
 function reviewApprovalProblems(value: Record<string, unknown> | null, agentRole: 'architect' | 'critic'): string[] {
@@ -537,11 +664,6 @@ function hasArchitectThenCriticSequence(value: Record<string, unknown>): boolean
   return value.sequence[0] === 'architect-review' && value.sequence[1] === 'critic-review';
 }
 
-interface ReviewOrder {
-  domain: 'sequence' | 'timestamp';
-  value: number;
-}
-
 function isCriticNotBeforeArchitect(
   architectReview: Record<string, unknown> | null,
   criticReview: Record<string, unknown> | null,
@@ -560,14 +682,6 @@ function isCriticNotBeforeArchitect(
   const architectTimestamp = reviewTimestampValue(architectReview);
   const criticTimestamp = reviewTimestampValue(criticReview);
   return architectTimestamp !== null && criticTimestamp !== null && criticTimestamp > architectTimestamp;
-}
-
-
-function reviewOrderValue(review: Record<string, unknown>): ReviewOrder | null {
-  const sequence = reviewSequenceValue(review);
-  if (sequence !== null) return { domain: 'sequence', value: sequence };
-  const timestamp = reviewTimestampValue(review);
-  return timestamp === null ? null : { domain: 'timestamp', value: timestamp };
 }
 
 function reviewSequenceValue(review: Record<string, unknown>): number | null {

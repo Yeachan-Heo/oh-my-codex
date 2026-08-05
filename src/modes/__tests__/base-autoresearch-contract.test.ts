@@ -38,6 +38,7 @@ describe('modes/base autoresearch contract integration', () => {
       assert.equal(started.mode, 'ralplan');
       assert.equal(started.active, true);
       assert.equal(started.transition_message, 'mode transiting: deep-interview -> ralplan');
+      assert.equal(started.ralplan_pass_started_at, started.started_at);
 
       const completed = JSON.parse(
         await readFile(join(wd, '.omx', 'state', 'deep-interview-state.json'), 'utf-8'),
@@ -45,6 +46,34 @@ describe('modes/base autoresearch contract integration', () => {
       assert.equal(completed.active, false);
       assert.equal(completed.current_phase, 'completed');
       assert.equal(typeof completed.completed_at, 'string');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('updateModeState stamps the system boundary when Autopilot enters ralplan', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-autopilot-ralplan-boundary-'));
+    try {
+      await startMode('autopilot', 'plan and execute', 5, wd);
+      await updateModeState('autopilot', {
+        current_phase: 'deep-interview',
+        state: {
+          deep_interview_gate: {
+            status: 'complete',
+            rationale: 'Requirements are ready for Ralplan.',
+          },
+          handoff_artifacts: {
+            deep_interview: { summary: 'Ready for consensus planning.' },
+          },
+        },
+      }, wd);
+      const entered = await updateModeState('autopilot', {
+        current_phase: 'ralplan',
+        ralplan_pass_started_at: '2000-01-01T00:00:00.000Z',
+      }, wd);
+
+      assert.notEqual(entered.ralplan_pass_started_at, '2000-01-01T00:00:00.000Z');
+      assert.ok(Number.isFinite(Date.parse(String(entered.ralplan_pass_started_at))));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

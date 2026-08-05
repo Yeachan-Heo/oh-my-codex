@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -117,7 +117,7 @@ describe("issue #3369 Autopilot Ralplan state-machine self-lock", () => {
   });
 
   it("treats blank optional skill owners as absent for exact-session cancel", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "omx-3369-blank-owner-"));
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "omx-3369-blank-owner-")));
     const sessionId = "sess-3369-blank-owner";
     const nativeSessionId = "native-3369-blank-owner";
     const stateDir = join(cwd, ".omx", "state");
@@ -168,7 +168,7 @@ describe("issue #3369 Autopilot Ralplan state-machine self-lock", () => {
     }
   });
 
-  it("blocks fresh Autopilot admission before creating state files", async () => {
+  it("blocks Ralplan-to-Autopilot transition without local-owner lifecycle evidence", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-3369-fresh-admission-"));
     try {
       await withEnv({ OMX_ROOT: cwd, OMX_SESSION_ID: undefined }, async () => {
@@ -201,7 +201,7 @@ describe("issue #3369 Autopilot Ralplan state-machine self-lock", () => {
           session_id: "sess-3369-fresh",
         });
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ""), /documented_host_consensus_receipt_unavailable/);
+        assert.match(String((response.payload as { error?: string }).error || ""), /native_subagent_consensus_evidence_missing/);
         await assert.rejects(readFile(join(sessionDir, "autopilot-state.json")));
       });
     } finally {

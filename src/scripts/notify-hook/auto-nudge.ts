@@ -46,7 +46,7 @@ const DEEP_INTERVIEW_ABORT_PATTERNS = ['aborted', 'cancelled', 'canceled'];
 const DEEP_INTERVIEW_SUCCESS_PATTERNS = ['interview completed', 'interview complete', 'interview finished', 'final summary ready'];
 const DEEP_INTERVIEW_ABORT_INPUTS = new Set(['abort', 'cancel', 'stop']);
 const DEEP_INTERVIEW_BLOCKED_APPROVAL_PREFIXES = new Set(['next i should']);
-const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing']);
+const SKILL_PHASES = new Set(['planning', 'executing', 'reviewing', 'completing', 'ralplan', 'deep-interview']);
 const DEFAULT_AUTO_NUDGE_TTL_MS = 30_000;
 
 function normalizeSkillPhase(phase) {
@@ -158,6 +158,7 @@ export function normalizeSkillActiveState(raw) {
   const skill = safeString(raw.skill);
   if (!skill) return null;
   return {
+    ...raw,
     version: asNumber(raw.version) ?? 1,
     active: raw.active !== false,
     skill,
@@ -167,6 +168,9 @@ export function normalizeSkillActiveState(raw) {
     updated_at: safeString(raw.updated_at),
     source: safeString(raw.source),
     owner_codex_session_id: safeString(raw.owner_codex_session_id),
+    active_skills: Array.isArray(raw.active_skills)
+      ? raw.active_skills.map((entry) => (entry && typeof entry === 'object' ? { ...entry } : entry))
+      : raw.active_skills,
     input_lock: normalizeInputLock(raw.input_lock),
   };
 }
@@ -243,14 +247,19 @@ export async function syncSkillStateFromTurn(stateDir, payload, invocationSessio
   const previousPhase = normalizeSkillPhase(skillState.phase);
   const inferredPhase = inferSkillPhaseFromText(lastMessage, previousPhase);
   const explicitDeepInterviewSuccess = skillState.skill === 'deep-interview' && looksLikeDeepInterviewSuccess(lastMessage);
-  const nextPhase = skillState.skill === 'deep-interview'
-    && inferredPhase === 'completing'
-    && previousPhase !== 'completing'
-    && !explicitDeepInterviewSuccess
+  const lifecycleManagedAutopilot = skillState.skill === 'autopilot';
+  const nextPhase = lifecycleManagedAutopilot
     ? previousPhase
-    : inferredPhase;
+    : skillState.skill === 'deep-interview'
+      && inferredPhase === 'completing'
+      && previousPhase !== 'completing'
+      && !explicitDeepInterviewSuccess
+      ? previousPhase
+      : inferredPhase;
   skillState.phase = nextPhase;
-  skillState.active = nextPhase !== 'completing';
+  if (!lifecycleManagedAutopilot) {
+    skillState.active = nextPhase !== 'completing';
+  }
 
   if (skillState.skill === 'autoresearch') {
     const completion = await readAutoresearchCompletionStatus(payload.cwd || process.cwd(), invocationSessionId);
@@ -272,6 +281,15 @@ export async function syncSkillStateFromTurn(stateDir, payload, invocationSessio
   if (releaseReason && isDeepInterviewAutoApprovalLocked(skillState)) {
     releaseDeepInterviewInputLock(skillState, releaseReason, nowIso);
   }
+  if (Array.isArray(skillState.active_skills)) {
+    skillState.active_skills = skillState.active === false
+      ? skillState.active_skills.filter((entry) => safeString(entry?.skill) !== skillState.skill)
+      : skillState.active_skills.map((entry) => (
+          safeString(entry?.skill) === skillState.skill
+            ? { ...entry, active: true, phase: skillState.phase, updated_at: nowIso }
+            : entry
+        ));
+  }
   await persistSkillActiveState(stateDir, invocationSessionId, skillState);
 
   if (skillState.skill === 'deep-interview' || previousSkillState?.skill === 'deep-interview') {
@@ -290,7 +308,15 @@ export async function isDeepInterviewStateActive(stateDir, sessionId) {
   const modeState = typeof sessionId === 'string' && sessionId.trim()
     ? await readScopedJsonIfExists(stateDir, 'deep-interview-state.json', sessionId, null)
     : await readJsonIfExists(join(stateDir, 'deep-interview-state.json'), null);
-  return Boolean(modeState && modeState.active === true);
+  if (modeState && modeState.active === true) return true;
+
+  const skillState = await loadSkillActiveState(stateDir, sessionId);
+  return Boolean(
+    skillState
+    && skillState.active === true
+    && skillState.skill === 'autopilot'
+    && skillState.phase === 'deep-interview',
+  );
 }
 
 export async function isDeepInterviewInputLockActive(stateDir, sessionId) {

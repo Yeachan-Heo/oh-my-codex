@@ -1,6 +1,10 @@
 # ADR 3212: Same-user native-child authentication boundary
 
-**Status:** Accepted
+**Status:** Accepted; Ralplan consensus consequence superseded in this fork
+
+## Current policy supersession
+
+The same-user authentication boundary, adapted-role restrictions, and prohibition on treating any single local carrier as proof remain in force. The consensus consequence below is superseded by the compile-time `authority_policy: "local_owner_lifecycle"`. The current gate authorizes Ralplan handoff from a fresh, approving, tracker-backed native Architect→Critic pair whose completed reviews use distinct native thread identities and satisfy strict Architect-before-Critic order for the current planning pass. The validated pair provides local lifecycle authority; it is never a `host_consensus_receipt`. The original decision text remains below as historical context.
 
 ## Decision
 

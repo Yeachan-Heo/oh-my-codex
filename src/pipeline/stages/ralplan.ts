@@ -129,8 +129,8 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             stage: 'ralplan',
             ralplanConsensusGate: consensusGate,
             instruction: consensusComplete
-              ? `Run RALPLAN consensus planning for: ${ctx.task}`
-              : `Remain in RALPLAN for: ${ctx.task}. Architect and Critic reviews are lifecycle evidence only; do not hand off to execution until an official host-issued receipt is verified through the documented non-user-mintable host surface. Until then record documented_host_consensus_receipt_unavailable.`,
+              ? `RALPLAN is authorized by local_owner_lifecycle for: ${ctx.task}`
+              : `Remain in RALPLAN for: ${ctx.task}. Handoff requires fresh ordered approvals from distinct native Architect and Critic threads under local_owner_lifecycle.`,
           },
           duration_ms: Date.now() - startTime,
           error,
@@ -180,6 +180,7 @@ function runtimeConsensusGateDiagnostic(value: unknown): RalplanConsensusGateEvi
     : [];
   return {
     complete: false,
+    authority_policy: null,
     sequence: ['architect-review', 'critic-review'],
     ralplan_architect_review: asRecord(gate.ralplan_architect_review ?? gate.architect_review),
     ralplan_critic_review: asRecord(gate.ralplan_critic_review ?? gate.critic_review),

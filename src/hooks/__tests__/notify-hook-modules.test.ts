@@ -397,6 +397,39 @@ describe('notify-hook/auto-nudge – normalizeSkillActiveState', () => {
     assert.equal(state.phase, 'executing');
     assert.equal(state.active, true);
   });
+
+  it('preserves canonical workflow ownership and active-skill entries while normalizing', async () => {
+    const { normalizeSkillActiveState } = await loadModule('notify-hook/auto-nudge.js');
+    const activeSkills = [{
+      skill: 'autopilot',
+      phase: 'deep-interview',
+      active: true,
+      session_id: 'sess-autopilot',
+      thread_id: 'thread-autopilot',
+      turn_id: 'turn-autopilot',
+    }];
+    const state = normalizeSkillActiveState({
+      version: 1,
+      active: true,
+      skill: 'autopilot',
+      phase: 'deep-interview',
+      session_id: 'sess-autopilot',
+      thread_id: 'thread-autopilot',
+      turn_id: 'turn-autopilot',
+      initialized_mode: 'autopilot',
+      initialized_state_path: 'sessions/sess-autopilot/autopilot-state.json',
+      active_skills: activeSkills,
+    });
+
+    assert.equal(state?.phase, 'deep-interview');
+    assert.equal(state?.session_id, 'sess-autopilot');
+    assert.equal(state?.thread_id, 'thread-autopilot');
+    assert.equal(state?.turn_id, 'turn-autopilot');
+    assert.equal(state?.initialized_mode, 'autopilot');
+    assert.equal(state?.initialized_state_path, 'sessions/sess-autopilot/autopilot-state.json');
+    assert.deepEqual(state?.active_skills, activeSkills);
+    assert.notStrictEqual(state?.active_skills, activeSkills);
+  });
 });
 
 describe('notify-hook/auto-nudge – inferSkillPhaseFromText', () => {

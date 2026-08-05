@@ -1,6 +1,10 @@
 # ADR 3194: Documented leader proof for Codex 0.144.5–0.145.0
 
-**Status:** Accepted
+**Status:** Accepted; Ralplan consensus consequence superseded in this fork
+
+## Current policy supersession
+
+The adapted-leader-proof and Team-launch decisions below remain in force. The statements below that typed native lifecycle evidence cannot authorize Ralplan consensus are superseded by the compile-time `authority_policy: "local_owner_lifecycle"`. Under the current policy, a fresh, approving, tracker-backed native Architect review followed by a fresh, approving, tracker-backed native Critic review, with distinct completed native thread identities, authorizes Ralplan handoff. This is local lifecycle authority and must never be called a `host_consensus_receipt`. The original decision text remains below as historical context.
 
 ## Decision
 

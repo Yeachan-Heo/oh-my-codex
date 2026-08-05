@@ -156,9 +156,9 @@ The requested transition is not allowed and no state is changed.
 | From | To | Result |
 |---|---|---|
 | `deep-interview` | `ralplan` | evidence-gated auto-complete: requires a durable deep-interview completion gate or explicit user-authorized skip; a satisfied/cleared question obligation alone is not enough |
-| `ralplan` | `team` | auto-complete `ralplan`, start `team` |
-| `ralplan` | `ralph` | auto-complete `ralplan`, start `ralph` |
-| `ralplan` | `autopilot` | auto-complete `ralplan`, start `autopilot` |
+| `ralplan` | `team` | consensus-gated auto-complete: validate the compiled authority policy, then start `team` |
+| `ralplan` | `ralph` | consensus-gated auto-complete: validate the compiled authority policy, then start `ralph` |
+| `ralplan` | `autopilot` | consensus-gated auto-complete: validate the compiled authority policy, then start `autopilot` |
 | `autopilot` | `ralplan` | denied as a peer transition; represent supervised ralplan by updating `autopilot.current_phase` |
 | `team` | `ralph` | allowed overlap |
 | `ralph` | `team` | allowed overlap |
@@ -172,11 +172,11 @@ entering its `ralplan` child stage. Review/QA loopbacks should keep
 `autopilot-state.json` active and set `current_phase: "ralplan"` rather than
 starting standalone `ralplan` over Autopilot.
 
-Inside Autopilot, `ralplan` consensus requires an official host-issued receipt verified through a documented host integration. No such verifier exists today, so production fails closed with `documented_host_consensus_receipt_unavailable`. Native Architect/Critic lanes, `codex_exec` outputs, trackers, and authored planning artifacts remain lifecycle or trace evidence only.
+This fork compiles `authority_policy: "local_owner_lifecycle"` for Ralplan consensus. The gate completes only after validating a fresh native Architect approval followed by a fresh native Critic approval for the current planning pass. Both reviews must approve, use distinct native thread identities, and satisfy strict Architect-before-Critic ordering. A successful result persists `complete:true`, `blockedReason:null`, and `authority_policy:"local_owner_lifecycle"`.
 
-Phase 1 now defines an inert, strict compact-JWS Ed25519 receipt protocol and verifier scaffold. Its numeric-version challenge binds a fresh nonce, audience, exact root session, and domain-separated raw requirements/plan evidence digest; atomic consume binds that challenge, receipt ID, and signed-token hash. Production capability remains unavailable until a documented Codex host transport, compiled pinned issuer trust root, and replay-safe online consume operation are all implemented; no receipt or key authority is discovered from repository or `.omx` state, environment, stdin, CLI arguments, transcripts, or trackers. Enablement is tracked by [OMX #3438](https://github.com/Yeachan-Heo/oh-my-codex/issues/3438) and [Codex #37016](https://github.com/openai/codex/issues/37016). See the [receipt ADR](./adr/codex-host-consensus-receipt-phase-1.md) and [consensus contract](./contracts/ralplan-consensus-gate.md).
+Plans, PRD/test-spec paths, user-written gate fields, prompt role labels, tracker records alone, `codex_exec` output, adapted-role evidence, same-thread reviews, reversed ordering, non-approving reviews, and stale approvals do not satisfy the policy. When the workflow returns to Ralplan after review or QA findings, only a newer Architect→Critic pair can authorize the next handoff. Adapted Ralplan authority remains subject to the native role-routing preflight and its documented-root-proof restrictions.
 
-Fresh default Autopilot also performs a capability-only preflight before entering `deep-interview` or launching Ralplan review work. When the installed surface deterministically has no documented host receipt verifier, Autopilot terminalizes immediately with the same exact blocker. This preflight is an expense/lifecycle decision only: an available capability does not authorize execution, active Autopilot continuations remain resumable, and direct/manual Ralplan remains inspectable.
+The strict compact-JWS Ed25519 host receipt verifier remains available as an optional, stronger future authority mode. Its scaffold binds a nonce, audience, exact root session, raw requirements/plan evidence digest, pinned issuer, and replay-safe consumption. The `local_owner_lifecycle` result is not a `host_consensus_receipt`, must never be represented as one, and does not relax the host verifier's cryptographic contract. See the [receipt ADR](./adr/codex-host-consensus-receipt-phase-1.md) and [consensus contract](./contracts/ralplan-consensus-gate.md).
 
 ## Planning-like vs execution-like
 
@@ -240,6 +240,7 @@ These rules should remain true unless intentionally changed:
 
 - rollback to planning never auto-completes
 - non-allowlisted transitions remain blocked
+- transitions away from active `ralplan` require a complete gate under the compiled authority policy
 - `ultrawork` overlap-any must not weaken `ralplan-first` gating
 - native-hook output is a presentation layer over shared transition results, not a separate decision engine
 - compatibility sync must not resurrect completed source modes

@@ -28,10 +28,22 @@ async function readScopedRalplanState(cwd: string, sessionId: string): Promise<R
   return JSON.parse(await readFile(sessionStatePath(cwd, sessionId), 'utf-8'));
 }
 
-async function writeNativeSubagentTracking(cwd: string, sessionId: string): Promise<void> {
-  const architectCompletedAt = '2026-05-28T00:00:00.000Z';
-  const criticStartedAt = '2026-05-28T00:05:00.000Z';
-  const criticCompletedAt = '2026-05-28T00:10:00.000Z';
+async function writePlanningArtifacts(cwd: string, slug: string): Promise<string> {
+  const plansDir = join(cwd, '.omx', 'plans');
+  await mkdir(plansDir, { recursive: true });
+  const prdPath = join(plansDir, `prd-${slug}.md`);
+  await writeFile(prdPath, '# plan\n');
+  await writeFile(join(plansDir, `test-spec-${slug}.md`), '# tests\n');
+  return prdPath;
+}
+
+async function writeNativeSubagentTracking(
+  cwd: string,
+  sessionId: string,
+): Promise<{ architectCompletedAt: string; criticCompletedAt: string }> {
+  const architectCompletedAt = new Date(Date.now() + 1_000).toISOString();
+  const criticStartedAt = new Date(Date.now() + 2_000).toISOString();
+  const criticCompletedAt = new Date(Date.now() + 3_000).toISOString();
   const trackingPath = subagentTrackingPath(cwd);
   await mkdir(join(trackingPath, '..'), { recursive: true });
   await writeFile(trackingPath, JSON.stringify({
@@ -57,6 +69,7 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
             completed_at: architectCompletedAt,
             turn_count: 1,
             role: 'architect',
+            provenance_kind: 'native_subagent',
           },
           'thread-critic': {
             thread_id: 'thread-critic',
@@ -66,11 +79,13 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
             completed_at: criticCompletedAt,
             turn_count: 1,
             role: 'critic',
+            provenance_kind: 'native_subagent',
           },
         },
       },
     },
   }, null, 2));
+  return { architectCompletedAt, criticCompletedAt };
 }
 
 async function writeAdaptedSubagentTracking(cwd: string, sessionId: string): Promise<void> {
@@ -136,7 +151,7 @@ describe('ralplan runtime', () => {
     }
   });
 
-  it('retains authored lifecycle evidence but fails closed without a host receipt verifier', async () => {
+  it('rejects approval records that are not native subagent evidence', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-'));
     const sessionId = 'sess-ralplan-success';
     try {
@@ -163,7 +178,13 @@ describe('ralplan runtime', () => {
           seenPhases.push(String(state.current_phase));
           assert.equal(state.current_phase, 'architect-review');
           assert.equal(state.iteration, 1);
-          return { verdict: 'approve', summary: 'architect-ok', artifacts: { architected: true } };
+          return {
+            verdict: 'approve',
+            summary: 'architect-ok',
+            artifacts: { architected: true },
+            agent_role: 'architect',
+            thread_id: 'thread-architect',
+          };
         },
         async criticReview() {
           const state = await readScopedRalplanState(cwd, sessionId);
@@ -172,14 +193,14 @@ describe('ralplan runtime', () => {
           assert.equal(state.iteration, 1);
           return { verdict: 'approve', summary: 'critic-ok', artifacts: { critiqued: true } };
         },
-      }, { task: 'implement live ralplan runtime', cwd });
+      }, { task: 'implement live ralplan runtime', cwd, maxIterations: 1 });
 
       assert.equal(result.status, 'failed');
       assert.equal(result.phase, 'failed');
       assert.equal(result.iteration, 1);
       assert.equal(result.planningComplete, false);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-      assert.deepEqual(seenPhases, ['draft', 'architect-review', 'critic-review']);
+      assert.equal(result.error, 'ralplan_architect_review_provenance_invalid: expected provenance_kind=native_subagent');
+      assert.deepEqual(seenPhases, ['draft', 'architect-review']);
       assert.equal(existsSync(join(cwd, '.omx', 'state', 'ralplan-state.json')), false);
       assert.equal(existsSync(sessionStatePath(cwd, sessionId)), true);
 
@@ -188,11 +209,244 @@ describe('ralplan runtime', () => {
       assert.equal(finalState?.current_phase, 'failed');
       assert.equal(finalState?.iteration, 1);
       assert.equal(finalState?.planning_complete, false);
-      assert.match(String(finalState?.status_message || ''), /official host consensus receipt verifier/);
-      assert.equal(finalState?.latest_architect_verdict, 'approve');
-      assert.equal(finalState?.latest_critic_verdict, 'approve');
-      assert.equal((finalState?.ralplan_consensus_gate as { blocked_reason?: string } | undefined)?.blocked_reason, 'documented_host_consensus_receipt_unavailable');
+      assert.match(String(finalState?.status_message || ''), /encountered an error/);
+      assert.equal(finalState?.latest_architect_verdict, undefined);
+      assert.equal(finalState?.latest_critic_verdict, undefined);
+      assert.equal((finalState?.ralplan_consensus_gate as { blocked_reason?: string } | undefined)?.blocked_reason, 'architect_review_missing_or_not_approved');
       assert.equal(Array.isArray(finalState?.review_history), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('completes an ordered native pair using runtime-stamped sequence indices', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-stamped-order-'));
+    const sessionId = 'sess-ralplan-runtime-stamped-order';
+    try {
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
+      const result = await runRalplanConsensus({
+        async draft() {
+          return { planPath: await writePlanningArtifacts(cwd, 'runtime-stamped-order') };
+        },
+        async architectReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            completed_at: completion.architectCompletedAt,
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
+        },
+      }, { task: 'runtime stamps ordered reviews', cwd, sessionId, maxIterations: 1 });
+
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.authority_policy, 'local_owner_lifecycle');
+      assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.sequence_index, 1);
+      assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.sequence_index, 2);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an explicit session isolated from a different current-session pointer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-explicit-session-'));
+    const pointerSessionId = 'sess-ralplan-pointer';
+    const explicitSessionId = 'sess-ralplan-explicit';
+    try {
+      await writeSessionPointer(cwd, pointerSessionId);
+      const pointerState = {
+        active: true,
+        mode: 'ralplan',
+        current_phase: 'pointer-sentinel',
+        marker: 'must-remain-untouched',
+      };
+      await mkdir(join(sessionStatePath(cwd, pointerSessionId), '..'), { recursive: true });
+      await writeFile(sessionStatePath(cwd, pointerSessionId), JSON.stringify(pointerState, null, 2));
+      const completion = await writeNativeSubagentTracking(cwd, explicitSessionId);
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          const explicitState = await readScopedRalplanState(cwd, explicitSessionId);
+          assert.equal(explicitState.current_phase, 'draft');
+          return { planPath: await writePlanningArtifacts(cwd, 'explicit-session') };
+        },
+        async architectReview() {
+          const explicitState = await readScopedRalplanState(cwd, explicitSessionId);
+          assert.equal(explicitState.current_phase, 'architect-review');
+          return {
+            verdict: 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            completed_at: completion.architectCompletedAt,
+          };
+        },
+        async criticReview() {
+          const explicitState = await readScopedRalplanState(cwd, explicitSessionId);
+          assert.equal(explicitState.current_phase, 'critic-review');
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
+        },
+      }, {
+        task: 'keep explicit session isolated',
+        cwd,
+        sessionId: explicitSessionId,
+        maxIterations: 1,
+      });
+
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      const explicitFinalState = await readScopedRalplanState(cwd, explicitSessionId);
+      assert.equal(explicitFinalState.current_phase, 'complete');
+      assert.equal(explicitFinalState.active, false);
+      assert.deepEqual(await readScopedRalplanState(cwd, pointerSessionId), pointerState);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps runtime-stamped review order monotonic when Architect iterates before approval', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-architect-iterate-order-'));
+    const sessionId = 'sess-ralplan-architect-iterate-order';
+    try {
+      await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          return { planPath: await writePlanningArtifacts(cwd, 'architect-iterate-order') };
+        },
+        async architectReview(ctx) {
+          return {
+            verdict: ctx.iteration === 1 ? 'iterate' : 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            completed_at: completion.architectCompletedAt,
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
+        },
+      }, {
+        task: 'runtime preserves review event order across iterations',
+        cwd,
+        sessionId,
+        maxIterations: 2,
+        requireNativeSubagents: true,
+      });
+
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      assert.deepEqual(result.architectReviews.map((review) => review.sequence_index), [1, 2]);
+      assert.deepEqual(result.criticReviews.map((review) => review.sequence_index), [3]);
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.authority_policy, 'local_owner_lifecycle');
+      assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.sequence_index, 2);
+      assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.sequence_index, 3);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks caller-supplied sequence indices that reverse Architect and Critic order', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-reversed-sequence-'));
+    try {
+      const result = await runRalplanConsensus({
+        async draft() {
+          return { planPath: await writePlanningArtifacts(cwd, 'reversed-sequence') };
+        },
+        async architectReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            sequence_index: 2,
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            sequence_index: 1,
+          };
+        },
+      }, { task: 'reject reversed sequence evidence', cwd, maxIterations: 1 });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.authority_policy, null);
+      assert.equal(
+        result.ralplanConsensusGate.blocked_reason,
+        'missing_sequential_architect_then_critic_approval',
+      );
+      assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.sequence_index, 2);
+      assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.sequence_index, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks timestamp evidence that conflicts with Architect-then-Critic sequence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-reversed-timestamp-'));
+    try {
+      const result = await runRalplanConsensus({
+        async draft() {
+          return { planPath: await writePlanningArtifacts(cwd, 'reversed-timestamp') };
+        },
+        async architectReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            sequence_index: 1,
+            completed_at: '2026-08-05T12:10:00.000Z',
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            sequence_index: 2,
+            completed_at: '2026-08-05T12:05:00.000Z',
+          };
+        },
+      }, { task: 'reject conflicting timestamp evidence', cwd, maxIterations: 1 });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.authority_policy, null);
+      assert.equal(
+        result.ralplanConsensusGate.blocked_reason,
+        'missing_sequential_architect_then_critic_approval',
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -200,39 +454,49 @@ describe('ralplan runtime', () => {
 
   it('records planning-only terminal state when consensus approves without a selected execution lane', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-planning-only-'));
+    const sessionId = 'sess-ralplan-runtime-planning-only';
     try {
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
       const result = await runRalplanConsensus({
         async draft() {
-          return { summary: 'draft lifecycle evidence' };
+          return {
+            summary: 'draft lifecycle evidence',
+            planPath: await writePlanningArtifacts(cwd, 'planning-only'),
+          };
         },
         async architectReview() {
           return {
             agent_role: 'architect',
             verdict: 'approve',
-            thread_id: 'architect-thread',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
             sequence_index: 1,
+            completed_at: completion.architectCompletedAt,
           };
         },
         async criticReview() {
           return {
             agent_role: 'critic',
             verdict: 'approve',
-            thread_id: 'critic-thread',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
             sequence_index: 2,
+            completed_at: completion.criticCompletedAt,
           };
         },
       }, {
-        task: 'fail closed without host receipt verifier',
+        task: 'complete local-owner planning without execution handoff',
         cwd,
+        sessionId,
         maxIterations: 1,
-        selectedExecutionLane: 'ultragoal',
       });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.phase, 'failed');
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(result.ralplanConsensusGate.complete, false);
-      assert.equal(result.ralplanConsensusGate.blocked_reason, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      assert.equal(result.phase, 'complete');
+      assert.equal(result.error, undefined);
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.blocked_reason, null);
       assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.agent_role, 'architect');
       assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.agent_role, 'critic');
       assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
@@ -243,7 +507,10 @@ describe('ralplan runtime', () => {
 
   it('does not start execution handoff from local lifecycle approval', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-execution-handoff-'));
+    const sessionId = 'sess-ralplan-runtime-execution-handoff';
     try {
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
       const result = await runRalplanConsensus({
         async draft() {
           const plansDir = join(cwd, '.omx', 'plans');
@@ -255,17 +522,25 @@ describe('ralplan runtime', () => {
         },
         async architectReview() {
           assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
-          return { verdict: 'approve', summary: 'architect ok' };
+          return {
+            verdict: 'approve', summary: 'architect ok', agent_role: 'architect',
+            provenance_kind: 'native_subagent', thread_id: 'thread-architect',
+            completed_at: completion.architectCompletedAt,
+          };
         },
         async criticReview() {
           assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
-          return { verdict: 'approve', summary: 'critic ok' };
+          return {
+            verdict: 'approve', summary: 'critic ok', agent_role: 'critic',
+            provenance_kind: 'native_subagent', thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
         },
-      }, { task: 'approval starts ultragoal', cwd, maxIterations: 1, selectedExecutionLane: 'ultragoal' });
+      }, { task: 'approval does not start ultragoal', cwd, sessionId, maxIterations: 1, selectedExecutionLane: 'ultragoal' });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(result.executionHandoffStarted, undefined);
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      assert.equal(result.error, undefined);
+      assert.equal(result.executionHandoffStarted, false);
       assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
       const finalState = await readModeState('ralplan', cwd);
       assert.equal(finalState?.handoff_artifacts, undefined);
@@ -276,7 +551,10 @@ describe('ralplan runtime', () => {
 
   it('passes and enforces reusable Architect lane on re-review iterations', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-architect-reuse-'));
+    const sessionId = 'sess-ralplan-runtime-architect-reuse';
     try {
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
       const architectThreads: Array<string | undefined> = [];
       const result = await runRalplanConsensus({
         async draft(ctx) {
@@ -293,15 +571,24 @@ describe('ralplan runtime', () => {
             verdict: 'approve',
             summary: `architect-${ctx.iteration}`,
             agent_role: 'architect',
+            provenance_kind: 'native_subagent',
             thread_id: ctx.reusableRoleLanes.architect?.thread_id ?? 'thread-architect',
+            completed_at: completion.architectCompletedAt,
           };
         },
         async criticReview(ctx) {
-          return { verdict: ctx.iteration === 1 ? 'iterate' : 'approve', summary: `critic-${ctx.iteration}` };
+          return {
+            verdict: ctx.iteration === 1 ? 'iterate' : 'approve',
+            summary: `critic-${ctx.iteration}`,
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
         },
-      }, { task: 'reuse architect lane', cwd, maxIterations: 3 });
+      }, { task: 'reuse architect lane', cwd, sessionId, maxIterations: 3 });
 
-      assert.equal(result.status, 'failed');
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
       assert.deepEqual(architectThreads, [undefined, 'thread-architect']);
       assert.deepEqual(result.architectReviews.map((review) => review.thread_id), ['thread-architect', 'thread-architect']);
     } finally {
@@ -311,7 +598,10 @@ describe('ralplan runtime', () => {
 
   it('fails closed when a re-review Architect pass spawns a fresh lane without a new-lane reason', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-architect-reuse-deny-'));
+    const sessionId = 'sess-ralplan-runtime-architect-reuse-deny';
     try {
+      await writeSessionPointer(cwd, sessionId);
+      await writeNativeSubagentTracking(cwd, sessionId);
       const result = await runRalplanConsensus({
         async draft(ctx) {
           const plansDir = join(cwd, '.omx', 'plans');
@@ -326,13 +616,20 @@ describe('ralplan runtime', () => {
             verdict: 'approve',
             summary: `architect-${ctx.iteration}`,
             agent_role: 'architect',
+            provenance_kind: 'native_subagent',
             thread_id: ctx.iteration === 1 ? 'thread-architect-1' : 'thread-architect-2',
           };
         },
         async criticReview(ctx) {
-          return { verdict: ctx.iteration === 1 ? 'iterate' : 'approve', summary: `critic-${ctx.iteration}` };
+          return {
+            verdict: ctx.iteration === 1 ? 'iterate' : 'approve',
+            summary: `critic-${ctx.iteration}`,
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+          };
         },
-      }, { task: 'reject fresh architect lane', cwd, maxIterations: 3 });
+      }, { task: 'reject fresh architect lane', cwd, sessionId, maxIterations: 3 });
 
       assert.equal(result.status, 'failed');
       assert.match(result.error || '', /ralplan_architect_lane_reuse_required/);
@@ -480,15 +777,210 @@ describe('ralplan runtime', () => {
     }
   });
 
+  it('does not relabel completed non-review tracker threads from review payloads', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-no-authority-relabel-'));
+    const sessionId = 'sess-ralplan-no-authority-relabel';
+    try {
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
+      const trackingPath = subagentTrackingPath(cwd);
+      const tracking = JSON.parse(await readFile(trackingPath, 'utf-8')) as {
+        sessions: Record<string, { threads: Record<string, Record<string, unknown>> }>;
+      };
+      tracking.sessions[sessionId].threads['thread-architect'] = {
+        ...tracking.sessions[sessionId].threads['thread-architect'],
+        role: 'executor',
+        mode: 'executor',
+      };
+      tracking.sessions[sessionId].threads['thread-critic'] = {
+        ...tracking.sessions[sessionId].threads['thread-critic'],
+        role: 'planner',
+        mode: 'planner',
+      };
+      await writeFile(trackingPath, JSON.stringify(tracking, null, 2));
+
+      const result = await runRalplanConsensus({
+        async draft() {
+          return { planPath: await writePlanningArtifacts(cwd, 'no-authority-relabel') };
+        },
+        async architectReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            completed_at: completion.architectCompletedAt,
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
+        },
+      }, {
+        task: 'review payload cannot mint tracker authority',
+        cwd,
+        sessionId,
+        maxIterations: 1,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.authority_policy, null);
+      const finalTracking = JSON.parse(await readFile(trackingPath, 'utf-8')) as {
+        sessions: Record<string, {
+          threads: Record<string, {
+            role?: string;
+            mode?: string;
+            provenance_kind?: string;
+            completed_at?: string;
+          }>;
+        }>;
+      };
+      assert.deepEqual(
+        {
+          role: finalTracking.sessions[sessionId].threads['thread-architect'].role,
+          mode: finalTracking.sessions[sessionId].threads['thread-architect'].mode,
+          provenance_kind: finalTracking.sessions[sessionId].threads['thread-architect'].provenance_kind,
+          completed_at: finalTracking.sessions[sessionId].threads['thread-architect'].completed_at,
+        },
+        {
+          role: 'executor',
+          mode: 'executor',
+          provenance_kind: 'native_subagent',
+          completed_at: completion.architectCompletedAt,
+        },
+      );
+      assert.deepEqual(
+        {
+          role: finalTracking.sessions[sessionId].threads['thread-critic'].role,
+          mode: finalTracking.sessions[sessionId].threads['thread-critic'].mode,
+          provenance_kind: finalTracking.sessions[sessionId].threads['thread-critic'].provenance_kind,
+          completed_at: finalTracking.sessions[sessionId].threads['thread-critic'].completed_at,
+        },
+        {
+          role: 'planner',
+          mode: 'planner',
+          provenance_kind: 'native_subagent',
+          completed_at: completion.criticCompletedAt,
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not relabel or recomplete reused non-review threads through two draft iterations', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-no-draft-authority-relabel-'));
+    const sessionId = 'sess-ralplan-no-draft-authority-relabel';
+    try {
+      await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
+      const trackingPath = subagentTrackingPath(cwd);
+      const tracking = JSON.parse(await readFile(trackingPath, 'utf-8')) as {
+        sessions: Record<string, { threads: Record<string, Record<string, unknown>> }>;
+      };
+      tracking.sessions[sessionId].threads['thread-architect'] = {
+        ...tracking.sessions[sessionId].threads['thread-architect'],
+        role: 'executor',
+        mode: 'executor',
+      };
+      tracking.sessions[sessionId].threads['thread-critic'] = {
+        ...tracking.sessions[sessionId].threads['thread-critic'],
+        role: 'planner',
+        mode: 'planner',
+      };
+      await writeFile(trackingPath, JSON.stringify(tracking, null, 2));
+
+      const result = await runRalplanConsensus({
+        async draft(ctx) {
+          return {
+            planPath: await writePlanningArtifacts(cwd, `no-draft-authority-relabel-${ctx.iteration}`),
+            thread_id: ctx.iteration === 1 ? 'thread-architect' : 'thread-critic',
+            agent_role: ctx.iteration === 1 ? 'architect' : 'critic',
+          };
+        },
+        async architectReview(ctx) {
+          return {
+            verdict: ctx.iteration === 1 ? 'iterate' : 'approve',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+          };
+        },
+        async criticReview() {
+          return {
+            verdict: 'approve',
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+          };
+        },
+      }, {
+        task: 'draft payload cannot mint tracker authority',
+        cwd,
+        sessionId,
+        maxIterations: 2,
+      });
+
+      assert.equal(result.status, 'failed');
+      assert.equal(result.iteration, 2);
+      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.ralplanConsensusGate.authority_policy, null);
+      const finalTracking = JSON.parse(await readFile(trackingPath, 'utf-8')) as {
+        sessions: Record<string, {
+          threads: Record<string, {
+            role?: string;
+            mode?: string;
+            provenance_kind?: string;
+            completed_at?: string;
+          }>;
+        }>;
+      };
+      assert.deepEqual(
+        {
+          role: finalTracking.sessions[sessionId].threads['thread-architect'].role,
+          mode: finalTracking.sessions[sessionId].threads['thread-architect'].mode,
+          provenance_kind: finalTracking.sessions[sessionId].threads['thread-architect'].provenance_kind,
+          completed_at: finalTracking.sessions[sessionId].threads['thread-architect'].completed_at,
+        },
+        {
+          role: 'executor',
+          mode: 'executor',
+          provenance_kind: 'native_subagent',
+          completed_at: completion.architectCompletedAt,
+        },
+      );
+      assert.deepEqual(
+        {
+          role: finalTracking.sessions[sessionId].threads['thread-critic'].role,
+          mode: finalTracking.sessions[sessionId].threads['thread-critic'].mode,
+          provenance_kind: finalTracking.sessions[sessionId].threads['thread-critic'].provenance_kind,
+          completed_at: finalTracking.sessions[sessionId].threads['thread-critic'].completed_at,
+        },
+        {
+          role: 'planner',
+          mode: 'planner',
+          provenance_kind: 'native_subagent',
+          completed_at: completion.criticCompletedAt,
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves existing tracker completion for review threads without native-required mode', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-preserve-completion-'));
     const sessionId = 'sess-ralplan-preserve-completion';
-    const architectCompletedAt = '2026-05-28T00:00:00.000Z';
-    const criticCompletedAt = '2026-05-28T00:10:00.000Z';
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
-      await writeNativeSubagentTracking(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -503,16 +995,20 @@ describe('ralplan runtime', () => {
           return {
             verdict: 'approve',
             summary: 'architect ok',
+            provenance_kind: 'native_subagent',
             thread_id: 'thread-architect',
             agent_role: 'architect',
+            completed_at: completion.architectCompletedAt,
           };
         },
         async criticReview() {
           return {
             verdict: 'approve',
             summary: 'critic ok',
+            provenance_kind: 'native_subagent',
             thread_id: 'thread-critic',
             agent_role: 'critic',
+            completed_at: completion.criticCompletedAt,
           };
         },
       }, {
@@ -522,13 +1018,13 @@ describe('ralplan runtime', () => {
         maxIterations: 1,
       });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      assert.equal(result.error, undefined);
       const tracking = JSON.parse(await readFile(subagentTrackingPath(cwd), 'utf-8')) as {
         sessions?: Record<string, { threads?: Record<string, { completed_at?: string }> }>;
       };
-      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-architect']?.completed_at, architectCompletedAt);
-      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-critic']?.completed_at, criticCompletedAt);
+      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-architect']?.completed_at, completion.architectCompletedAt);
+      assert.equal(tracking.sessions?.[sessionId]?.threads?.['thread-critic']?.completed_at, completion.criticCompletedAt);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -605,7 +1101,7 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
-      await writeNativeSubagentTracking(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -626,6 +1122,7 @@ describe('ralplan runtime', () => {
             artifact_path: '.omx/artifacts/architect.md',
             agent_role: 'architect',
             tracker_path: '.omx/state/subagent-tracking.json',
+            completed_at: completion.architectCompletedAt,
           };
         },
         async criticReview() {
@@ -638,6 +1135,7 @@ describe('ralplan runtime', () => {
             artifact_path: '.omx/artifacts/critic.md',
             agent_role: 'critic',
             tracker_path: '.omx/state/subagent-tracking.json',
+            completed_at: completion.criticCompletedAt,
           };
         },
       }, {
@@ -648,9 +1146,12 @@ describe('ralplan runtime', () => {
         requireNativeSubagents: true,
       });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.ralplanConsensusGate.complete, false);
-      assert.equal(result.ralplanConsensusGate.blocked_reason, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
+      assert.equal(result.phase, 'complete');
+      assert.equal(result.planningComplete, true);
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.authority_policy, 'local_owner_lifecycle');
+      assert.equal(result.ralplanConsensusGate.blocked_reason, null);
       assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.thread_id, 'thread-architect');
       assert.equal(result.ralplanConsensusGate.ralplan_critic_review?.thread_id, 'thread-critic');
     } finally {
@@ -665,6 +1166,7 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
       await writeAdaptedSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
@@ -780,6 +1282,7 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
+      await writeNativeSubagentTracking(cwd, sessionId);
 
       let criticCalls = 0;
       const result = await runRalplanConsensus({
@@ -792,13 +1295,19 @@ describe('ralplan runtime', () => {
           return { summary: 'draft', planPath: prdPath };
         },
         async architectReview() {
-          return { verdict: 'iterate', summary: 'architect needs changes' };
+          return {
+            verdict: 'iterate',
+            summary: 'architect needs changes',
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+          };
         },
         async criticReview() {
           criticCalls += 1;
           return { verdict: 'approve', summary: 'should not run' };
         },
-      }, { task: 'reject before critic', cwd, maxIterations: 1 });
+      }, { task: 'reject before critic', cwd, sessionId, maxIterations: 1 });
 
       assert.equal(result.status, 'failed');
       assert.equal(criticCalls, 0);
@@ -823,6 +1332,7 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
+      const completion = await writeNativeSubagentTracking(cwd, sessionId);
 
       const draftIterations: number[] = [];
       const criticVerdicts: string[] = [];
@@ -844,7 +1354,14 @@ describe('ralplan runtime', () => {
         async architectReview(ctx) {
           const state = await readScopedRalplanState(cwd, sessionId);
           assert.equal(state.current_phase, 'architect-review');
-          return { verdict: 'approve', summary: `architect-${ctx.iteration}` };
+          return {
+            verdict: 'approve',
+            summary: `architect-${ctx.iteration}`,
+            agent_role: 'architect',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-architect',
+            completed_at: completion.architectCompletedAt,
+          };
         },
         async criticReview(ctx) {
           const state = await readScopedRalplanState(cwd, sessionId);
@@ -852,18 +1369,25 @@ describe('ralplan runtime', () => {
           criticCalls += 1;
           const verdict = criticCalls === 1 ? 'iterate' : 'approve';
           criticVerdicts.push(verdict);
-          return { verdict, summary: `critic-${ctx.iteration}-${verdict}` };
+          return {
+            verdict,
+            summary: `critic-${ctx.iteration}-${verdict}`,
+            agent_role: 'critic',
+            provenance_kind: 'native_subagent',
+            thread_id: 'thread-critic',
+            completed_at: completion.criticCompletedAt,
+          };
         },
-      }, { task: 'loop until approval', cwd, maxIterations: 3 });
+      }, { task: 'loop until approval', cwd, sessionId, maxIterations: 3 });
 
-      assert.equal(result.status, 'failed');
+      assert.equal(result.status, 'completed', result.error ?? JSON.stringify(result.ralplanConsensusGate));
       assert.equal(result.iteration, 2);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.error, undefined);
       assert.deepEqual(draftIterations, [1, 2]);
       assert.deepEqual(criticVerdicts, ['iterate', 'approve']);
 
       const finalState = await readModeState('ralplan', cwd);
-      assert.equal(finalState?.current_phase, 'failed');
+      assert.equal(finalState?.current_phase, 'complete');
       assert.equal(finalState?.iteration, 2);
       assert.equal((finalState?.review_history as Array<unknown>).length, 2);
     } finally {
@@ -877,6 +1401,7 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
+      await writeNativeSubagentTracking(cwd, sessionId);
       const plansDir = join(cwd, '.omx', 'plans');
       await mkdir(plansDir, { recursive: true });
       await writeFile(join(plansDir, 'prd-reject.md'), '# plan\n');
@@ -910,6 +1435,7 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
+      await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
@@ -921,18 +1447,25 @@ describe('ralplan runtime', () => {
           return { summary: 'draft mismatched artifacts', planPath: prdPath };
         },
         async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
+          return {
+            verdict: 'approve', summary: 'architect ok', agent_role: 'architect',
+            provenance_kind: 'native_subagent', thread_id: 'thread-architect',
+          };
         },
         async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
+          return {
+            verdict: 'approve', summary: 'critic ok', agent_role: 'critic',
+            provenance_kind: 'native_subagent', thread_id: 'thread-critic',
+          };
         },
-      }, { task: 'approve with mismatched artifacts', cwd, maxIterations: 1 });
+      }, { task: 'approve with mismatched artifacts', cwd, sessionId, maxIterations: 1 });
 
       assert.equal(result.status, 'failed');
       assert.equal(result.phase, 'failed');
       assert.equal(result.planningComplete, false);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.authority_policy, 'local_owner_lifecycle');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -944,29 +1477,37 @@ describe('ralplan runtime', () => {
     try {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
+      await writeNativeSubagentTracking(cwd, sessionId);
 
       const result = await runRalplanConsensus({
         async draft() {
           return { summary: 'draft without prd/test spec' };
         },
         async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
+          return {
+            verdict: 'approve', summary: 'architect ok', agent_role: 'architect',
+            provenance_kind: 'native_subagent', thread_id: 'thread-architect',
+          };
         },
         async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
+          return {
+            verdict: 'approve', summary: 'critic ok', agent_role: 'critic',
+            provenance_kind: 'native_subagent', thread_id: 'thread-critic',
+          };
         },
-      }, { task: 'approve without artifacts', cwd, maxIterations: 1 });
+      }, { task: 'approve without artifacts', cwd, sessionId, maxIterations: 1 });
 
       assert.equal(result.status, 'failed');
       assert.equal(result.phase, 'failed');
       assert.equal(result.planningComplete, false);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(result.ralplanConsensusGate.complete, false);
+      assert.equal(result.error, 'ralplan_planning_artifacts_missing_after_consensus');
+      assert.equal(result.ralplanConsensusGate.complete, true);
+      assert.equal(result.ralplanConsensusGate.authority_policy, 'local_owner_lifecycle');
 
       const finalState = await readModeState('ralplan', cwd);
       assert.equal(finalState?.current_phase, 'failed');
       assert.equal(finalState?.planning_complete, false);
-      assert.equal(finalState?.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(finalState?.error, 'ralplan_planning_artifacts_missing_after_consensus');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -89,9 +89,33 @@ function sourcesForState(label: string, state: JsonObject | null | undefined): A
   return sources;
 }
 
+function hasExplicitConsensusLifecycle(state: JsonObject | null | undefined): boolean {
+  if (!state) return false;
+  const nested = nestedState(state);
+  const candidates = [
+    state,
+    nested,
+    handoffArtifacts(state),
+    handoffArtifacts(nested),
+    ralplanHandoff(state),
+    ralplanHandoff(nested),
+  ].filter((candidate): candidate is JsonObject => candidate !== null);
+  return candidates.some((candidate) => [
+    'ralplan_consensus_gate',
+    'ralplanConsensusGate',
+    'ralplan_architect_review',
+    'ralplan_critic_review',
+    'review_history',
+    'architectReviews',
+    'criticReviews',
+  ].some((key) => Object.prototype.hasOwnProperty.call(candidate, key)));
+}
+
 function gateSources(input: AutopilotRalplanUltragoalGateInput) {
+  if (hasExplicitConsensusLifecycle(input.nextState)) {
+    return sourcesForState('next-autopilot-state', input.nextState);
+  }
   return [
-    ...sourcesForState('next-autopilot-state', input.nextState),
     ...sourcesForState('current-autopilot-state', input.currentState),
   ];
 }
@@ -112,14 +136,16 @@ export function canAdvanceAutopilotRalplanToUltragoal(
       unsupportedNativeSubagentGuidance: unsupportedGuidance,
     };
   }
-  // Resolve both states as one ordered evidence set. The consensus resolver selects
-  // the freshest lifecycle record, including a newer invalid next-state record,
-  // while the invariant host-receipt blocker prevents every local record from authorizing execution.
+  // An explicit next-state lifecycle is authoritative for this transition attempt,
+  // including incomplete/reset records. Current state is fallback only when next
+  // state carries no lifecycle field at all.
+  // This fork authorizes only a valid native Architect -> Critic pair under the
+  // compile-time local_owner_lifecycle policy.
   const evidence = buildRalplanConsensusGateFromSources(gateSources(input), options);
   if (evidence.complete) {
     return {
       allowed: true,
-      reason: 'tracker-backed native ralplan architect and critic consensus evidence',
+      reason: 'local owner authority from ordered native ralplan architect and critic approvals',
       evidence,
       unsupportedNativeSubagentGuidance: unsupportedGuidance,
     };

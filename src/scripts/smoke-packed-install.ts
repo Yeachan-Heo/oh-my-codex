@@ -210,14 +210,26 @@ export const PACKED_INSTALL_NATIVE_HOOK_REGRESSION_PROMPTS = [
 
 export function assertPackedRegressionWorkflowState(
   testCase: { readonly name: string; readonly expectedSkill: string },
-  skillState: { readonly active?: boolean; readonly skill?: string; readonly phase?: string; readonly error?: string; readonly active_skills?: readonly unknown[] },
+  skillState: {
+    readonly active?: boolean;
+    readonly skill?: string;
+    readonly phase?: string;
+    readonly active_skills?: readonly {
+      readonly active?: boolean;
+      readonly skill?: string;
+      readonly phase?: string;
+    }[];
+  },
 ): void {
+  const [activeSkill] = skillState.active_skills ?? [];
   const matchesExpectedState = testCase.expectedSkill === 'autopilot'
-    ? skillState.active === false
+    ? skillState.active === true
       && skillState.skill === 'autopilot'
-      && skillState.phase === 'failed'
-      && skillState.error === 'documented_host_consensus_receipt_unavailable'
-      && skillState.active_skills?.length === 0
+      && skillState.phase === 'deep-interview'
+      && skillState.active_skills?.length === 1
+      && activeSkill?.active === true
+      && activeSkill.skill === 'autopilot'
+      && activeSkill.phase === 'deep-interview'
     : skillState.active === true && skillState.skill === testCase.expectedSkill;
   if (!matchesExpectedState) {
     throw new Error(`packed regression ${testCase.name} persisted unexpected workflow state`);
@@ -227,7 +239,7 @@ export function assertPackedRegressionWorkflowState(
 export function shouldPackedRegressionStopBlock(
   testCase: { readonly expectedSkill: string | null; readonly expectedStopBlock: boolean },
 ): boolean {
-  return testCase.expectedSkill === 'autopilot' ? false : testCase.expectedStopBlock;
+  return testCase.expectedStopBlock;
 }
 
 export function buildPackedRegressionEnvironment(

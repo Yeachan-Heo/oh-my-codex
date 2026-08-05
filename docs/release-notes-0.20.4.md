@@ -4,6 +4,8 @@ Release date: 2026-07-28
 
 `0.20.4` is a patch release covering the exact frozen range `v0.20.3..73cb50c125c11aca0654b8841e690f011eb5f43f`. It contains 62 merged product PRs (one additive, backward-compatible feature plus reliability, workflow-safety, native-hook trust, and path-canonicalization fixes).
 
+> **Current fork policy / supersession:** The host-receipt preflight entry below records 0.20.4 behavior. This fork now compiles `authority_policy: "local_owner_lifecycle"`: a fresh, approving, tracker-backed native Architect review followed by a fresh, approving, tracker-backed native Critic review, with distinct completed native thread identities, authorizes Ralplan handoff. This local lifecycle authority is never a `host_consensus_receipt`. Adapted role-intent restrictions remain unchanged.
+
 ## Highlights
 
 - **Dead session-pointer lock recovery** — canonical session-pointer locks are now recovered when positively dead, with identity-revalidated, no-clobber reversible claims. Recovery checkpoints are resumable, swapped claims are preserved, failed claims are rolled back, and recovery directories are atomically quarantined (#3261, #3262; issue #3256).

@@ -127,6 +127,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     handoff_artifacts: {
       ralplan_consensus_gate: {
         required: true,
+        authority_policy: null,
         sequence: ['architect-review', 'critic-review'],
         planning_artifacts_are_not_consensus: true,
         required_review_roles: ['architect', 'critic'],

@@ -39,14 +39,15 @@ Autopilot must not run a separate broad expansion/planning/execution/QA/validati
    - Ground the task with pre-context intake and the deep-interview artifact.
    - Current ownership rule: Autopilot records `planning_routing` in state before heavy planning. When the Autopilot/main model resolves to a cheap/mini lane (for example `o4-mini`, `*-mini`, `*spark*`, or an explicitly cheap/economy/lite model name), the initial planning/decomposition owner is dedicated `[planner]`; otherwise `[main]` may keep ownership for backward compatibility. A configured `agentModels.planner` is an explicit opt-in that forces dedicated `[planner]` ownership even when `[main]` is not cheap/mini.
    - Run or resume `$ralplan` to produce/update PRD and test-spec artifacts. If `planning_routing.owner` is `planner`, use the dedicated `[planner]` role for the initial Planner draft/decomposition before the Architect→Critic consensus gates.
-   - PRD/test-spec files alone are not completion evidence. Local Architect→Critic approvals are lifecycle evidence, not handoff authority. Ralplan may hand off only after an official host-issued receipt is verified through a documented non-user-mintable host surface; until then retain the reviews with `ralplan_consensus_gate.complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
-   - On every revised planning pass, require subsequent `Architect` approval first and subsequent `Critic` approval second. These ordered reviews remain lifecycle evidence only and never replace the official host receipt.
+   - PRD/test-spec files alone are not completion evidence. This fork compiles the `local_owner_lifecycle` authority policy: Ralplan may hand off only after validating a fresh, ordered, distinct native Architect→Critic approving pair. This authority is not a `host_consensus_receipt`.
+   - On every revised planning pass, require a fresh native `Architect` approval first and a fresh native `Critic` approval second, from distinct thread identities. Adapted roles, prompt labels, trackers alone, parallel/reversed reviews, and stale approvals cannot satisfy the gate.
+   - Preserve the system-stamped `ralplan_pass_started_at` on every entry or return to Ralplan, and bind each review's `completed_at` exactly to its current-session native tracker completion. The tracker must identify the native role/provenance and observe Architect completion strictly before Critic completion.
    - When returning from a non-clean review or QA pass, include `return_to_ralplan_reason` and the findings as first-class planning input.
    - If either review is missing, blocked, out of order, or non-approving, remain in `ralplan` or report an explicit blocker/max-iteration outcome; do not progress to `$ultragoal`, `$team`, `$ralph`, or implementation.
-   - Required handoff artifact: planning artifacts, lifecycle-only Architect→Critic reviews, and a verified official host receipt authorizing `ralplan_consensus_gate.complete:true`. Without that receipt, remain in `ralplan` and report the host blocker.
+   - Required handoff artifact: planning artifacts plus the validated Architect→Critic reviews authorizing `ralplan_consensus_gate.complete:true`, `blocked_reason:null`, and `authority_policy:"local_owner_lifecycle"`.
 
 3. **Phase `ultragoal`** — durable implementation + verification loop
-   - Run `$ultragoal` only from ralplan artifacts whose consensus gate is authorized by a verified official host receipt.
+   - Run `$ultragoal` only from Ralplan artifacts whose consensus gate is complete under the compiled authority policy.
    - Ultragoal owns durable Codex goal handoffs, `.omx/ultragoal` ledger checkpoints, implementation, tests, build/lint/typecheck evidence, cleanup, and final review gate discipline.
    - Use `$team` only inside an active Ultragoal story when the story clearly benefits from coordinated parallel execution (for example independent file/module lanes, broad test matrix work, or multi-domain implementation). Team remains explicit and leader-owned; Ultragoal keeps the goal/ledger state.
    - Required handoff artifact: implementation evidence, changed-file summary, verification evidence, and Ultragoal ledger/checkpoint references suitable for `$code-review`.
@@ -121,6 +122,7 @@ Required fields:
       "required_review_roles": ["architect", "critic"],
       "ralplan_architect_review": null,
       "ralplan_critic_review": null,
+      "authority_policy": null,
       "complete": false
     },
     "ultragoal": null,
@@ -145,7 +147,7 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ralp
   - **Optional execution contract foundation**: when a downstream handoff explicitly sets `execution_contract_required:true`, persist a complete structured `execution_contract` under `handoff_artifacts.deep_interview` before leaving deep-interview. The canonical schema is `version:1`, `execution_stride:"task"|"deliverable"|"milestone"`, `source:"deep-interview"`, `selected_by:"user"|"default"`, `allow_task_shrink:<boolean>`, non-empty `completion_unit`, non-empty `stop_condition`, `acceptance_coverage_scope:"task"|"deliverable"|"milestone"`, and `shrink_policy:"allowed"|"ask_before_shrink"|"deny_unless_blocked"`.
   - Stride semantics are binding only when `execution_contract_required:true`: `task` means `allow_task_shrink:true`, `acceptance_coverage_scope:"task"`, `shrink_policy:"allowed"`; `deliverable` means `allow_task_shrink:false`, `acceptance_coverage_scope:"deliverable"`, `shrink_policy:"ask_before_shrink"`; `milestone` means `allow_task_shrink:false`, `acceptance_coverage_scope:"milestone"`, `shrink_policy:"deny_unless_blocked"`.
   - Preserve legacy behavior when `execution_contract_required` is absent or false. Do not infer stride from prose, broadness, phase names, snapshots, or task size; this foundation only validates an explicit structured contract and deliberately uses `milestone` rather than `phase`. New artifacts must write canonical snake_case keys under `handoff_artifacts.deep_interview`; the runtime may read legacy camelCase field/marker aliases and direct/nested `execution_contract` locations only as compatibility input.
-- **On ralplan -> ultragoal**: only after `ralplan_consensus_gate.complete:true` from an official host-issued receipt verified through a documented non-user-mintable host surface. Native-subagent Architect/Critic lanes, tracker records, `codex_exec`, and artifact approvals are lifecycle or trace evidence only. Until that verifier exists, keep `current_phase:"ralplan"` and persist `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
+- **On ralplan -> ultragoal**: only after the gate validates a fresh, ordered, distinct native Architect→Critic approving pair and persists `ralplan_consensus_gate.complete:true`, `blocked_reason:null`, and `authority_policy:"local_owner_lifecycle"`. Local JSON, user-written markers, role labels, tracker records, `codex_exec`, adapted-role evidence, same-thread reviews, reversed ordering, and stale approvals cannot mint this result. Never label this authority a `host_consensus_receipt`.
 - **On missing ralplan consensus evidence**: keep `current_phase:"ralplan"`, persist `ralplan_consensus_gate.complete:false` with `blocked_reason`, and report an explicit blocker or max-iteration outcome instead of handing off to execution.
 - **On ultragoal -> code-review**: set `current_phase:"code-review"`, persist implementation/test/ledger evidence under `handoff_artifacts.ultragoal`.
 - **On code-review -> ultraqa**: set `current_phase:"ultraqa"` only after a real `$code-review` stage/subagent has produced durable evidence; persist the clean review under `handoff_artifacts.code_review` with its source thread/tool/stage reference. Do not author `review_verdict:{clean:true}` from the leader's own summary.
@@ -190,7 +192,7 @@ Pipeline state should use `current_phase` values that match the same phase names
 
 <Final_Checklist>
 - [ ] Phase `deep-interview` produced/updated clarified requirements or a concise spec
-- [ ] Phase `ralplan` produced/updated planning artifacts and preserved subsequent Architect→Critic approvals as lifecycle-only evidence; it advanced only with a verified official host receipt, or remained in `ralplan` with `complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
+- [ ] Phase `ralplan` produced/updated planning artifacts and advanced only after a fresh, ordered, distinct native Architect→Critic approving pair set `complete:true`, `blocked_reason:null`, and `authority_policy:"local_owner_lifecycle"`; otherwise it remained in `ralplan` with the specific validation blocker.
 - [ ] Phase `ultragoal` implemented and verified the plan with fresh evidence and durable ledger/checkpoint references
 - [ ] Phase `rework` was used for implementation-only review fixes when applicable, with findings scoped to a fresh code-review cycle
 - [ ] `$team` was used only if the active Ultragoal story needed coordinated parallel work, or explicitly recorded as not needed

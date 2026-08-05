@@ -2523,7 +2523,7 @@ PY`,
       { name: "directive-continue-code-review", prompt: "continue $code-review", expectedSkill: "code-review", expectedStopBlock: false },
       { name: "directive-documentation", prompt: "use $ralplan is the consensus-planning command", expectedSkill: null },
       { name: "g1a-ordered-multi-skill", prompt: "$ralplan, $autopilot; $team", expectedSkill: "ralplan", expectedDeferredSkills: ["autopilot", "team"], expectedActiveSkills: ["ralplan"], expectedActiveDetailSkills: ["ralplan"], insideTmux: true },
-      { name: "g1c-duplicate-alias", prompt: "$autopilot $oh-my-codex:autopilot build it", expectedSkill: "autopilot", expectedDeferredSkills: [], expectedActiveSkills: [] },
+      { name: "g1c-duplicate-alias", prompt: "$autopilot $oh-my-codex:autopilot build it", expectedSkill: "autopilot", expectedDeferredSkills: [], expectedActiveSkills: ["autopilot"] },
       { name: "b3-longer-valid-fence", prompt: "```text\n$ralplan plan it\n````\n$ralplan plan it", expectedSkill: "ralplan" },
       { name: "b4-shorter-invalid-fence", prompt: "````text\n$ralplan plan it\n```\n$autopilot build it", expectedSkill: null },
       { name: "b5-different-marker-invalid-fence", prompt: "```text\n$ralplan plan it\n~~~\n$autopilot build it", expectedSkill: null },
@@ -2773,25 +2773,21 @@ PY`,
 
         const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
         const skillStatePath = join(sessionDir, "skill-active-state.json");
-        const expectsAutopilotDenial = testCase.expectedSkill === "autopilot";
         if (testCase.expectedSkill === null) {
           assert.equal(existsSync(skillStatePath), false, testCase.name);
         } else {
           const skillState = JSON.parse(await readFile(skillStatePath, "utf-8")) as { active?: boolean; skill?: string; phase?: string; error?: string; deferred_skills?: string[]; active_skills?: Array<{ skill?: string }> };
-          if (expectsAutopilotDenial) {
-            assert.equal(skillState.active, false, testCase.name);
-            assert.equal(skillState.skill, "autopilot", testCase.name);
-            assert.equal(skillState.phase, "failed", testCase.name);
-            assert.equal(skillState.error, "documented_host_consensus_receipt_unavailable", testCase.name);
-            assert.deepEqual(skillState.active_skills, [], testCase.name);
+          assert.equal(skillState.active, true, testCase.name);
+          assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
+          if (testCase.expectedSkill === "autopilot") {
+            assert.equal(skillState.phase, "deep-interview", testCase.name);
+            assert.equal(skillState.error, undefined, testCase.name);
+            assert.deepEqual(skillState.active_skills?.map((entry) => entry.skill), ["autopilot"], testCase.name);
             const guidance = String((submit.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)?.hookSpecificOutput?.additionalContext ?? "");
-            assert.match(guidance, /documented_host_consensus_receipt_unavailable/, testCase.name);
-            assert.doesNotMatch(guidance, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/, testCase.name);
+            assert.match(guidance, /Autopilot protocol:/, testCase.name);
+            assert.doesNotMatch(guidance, /documented_host_consensus_receipt_unavailable/, testCase.name);
             assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false, testCase.name);
             assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false, testCase.name);
-          } else {
-            assert.equal(skillState.active, true, testCase.name);
-            assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
           }
           if ("expectedDeferredSkills" in testCase) {
             assert.deepEqual(skillState.deferred_skills ?? [], testCase.expectedDeferredSkills, testCase.name);
@@ -2818,7 +2814,7 @@ PY`,
           thread_id: `thread-${testCase.name}`,
           turn_id: `stop-${testCase.name}`,
         }, { cwd });
-        if (testCase.expectedSkill === null || expectsAutopilotDenial) {
+        if (testCase.expectedSkill === null) {
           assert.equal(stop.outputJson, null, testCase.name);
         } else if ("expectedStopBlock" in testCase && !testCase.expectedStopBlock) {
           assert.notEqual((stop.outputJson as { decision?: string } | null)?.decision, "block", testCase.name);
@@ -2972,7 +2968,7 @@ PY`,
       { name: "directive-continue-code-review", prompt: "continue $code-review", expectedSkill: "code-review", expectedStopBlock: false },
       { name: "directive-documentation", prompt: "use $ralplan is the consensus-planning command", expectedSkill: null },
       { name: "g1a-ordered-multi-skill", prompt: "$ralplan, $autopilot; $team", expectedSkill: "ralplan", expectedDeferredSkills: ["autopilot", "team"], expectedActiveSkills: ["ralplan"], expectedActiveDetailSkills: ["ralplan"], insideTmux: true },
-      { name: "g1c-duplicate-alias", prompt: "$autopilot $oh-my-codex:autopilot build it", expectedSkill: "autopilot", expectedDeferredSkills: [], expectedActiveSkills: [] },
+      { name: "g1c-duplicate-alias", prompt: "$autopilot $oh-my-codex:autopilot build it", expectedSkill: "autopilot", expectedDeferredSkills: [], expectedActiveSkills: ["autopilot"] },
       { name: "b3-longer-valid-fence", prompt: "```text\n$ralplan plan it\n````\n$ralplan plan it", expectedSkill: "ralplan" },
       { name: "b4-shorter-invalid-fence", prompt: "````text\n$ralplan plan it\n```\n$autopilot build it", expectedSkill: null },
       { name: "b5-different-marker-invalid-fence", prompt: "```text\n$ralplan plan it\n~~~\n$autopilot build it", expectedSkill: null },
@@ -3266,7 +3262,6 @@ PY`,
 
         const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
         const skillStatePath = join(sessionDir, "skill-active-state.json");
-        const expectsAutopilotDenial = testCase.expectedSkill === "autopilot";
         if (testCase.expectedSkill === null) {
           assert.equal(existsSync(skillStatePath), false, testCase.name);
           assert.equal(existsSync(join(sessionDir, "ralplan-state.json")), false, testCase.name);
@@ -3281,20 +3276,17 @@ PY`,
             deferred_skills?: string[];
             active_skills?: Array<{ skill?: string }>;
           };
-          if (expectsAutopilotDenial) {
-            assert.equal(skillState.active, false, testCase.name);
-            assert.equal(skillState.skill, "autopilot", testCase.name);
-            assert.equal(skillState.phase, "failed", testCase.name);
-            assert.equal(skillState.error, "documented_host_consensus_receipt_unavailable", testCase.name);
-            assert.deepEqual(skillState.active_skills, [], testCase.name);
+          assert.equal(skillState.active, true, testCase.name);
+          assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
+          if (testCase.expectedSkill === "autopilot") {
+            assert.equal(skillState.phase, "deep-interview", testCase.name);
+            assert.equal(skillState.error, undefined, testCase.name);
+            assert.deepEqual(skillState.active_skills?.map((entry) => entry.skill), ["autopilot"], testCase.name);
             const guidance = String((submit.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? "");
-            assert.match(guidance, /documented_host_consensus_receipt_unavailable/, testCase.name);
-            assert.doesNotMatch(guidance, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/, testCase.name);
+            assert.match(guidance, /Autopilot protocol:/, testCase.name);
+            assert.doesNotMatch(guidance, /documented_host_consensus_receipt_unavailable/, testCase.name);
             assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false, testCase.name);
             assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false, testCase.name);
-          } else {
-            assert.equal(skillState.active, true, testCase.name);
-            assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
           }
           if ("expectedDeferredSkills" in testCase) {
             assert.deepEqual(skillState.deferred_skills ?? [], testCase.expectedDeferredSkills, testCase.name);
@@ -3321,7 +3313,7 @@ PY`,
           thread_id: `thread-${caseIndex}`,
           turn_id: `stop-${caseIndex}`,
         }, { cwd, env }));
-        if (testCase.expectedSkill === null || expectsAutopilotDenial) assert.deepEqual(stop, {}, testCase.name);
+        if (testCase.expectedSkill === null) assert.deepEqual(stop, {}, testCase.name);
         else if ("expectedStopBlock" in testCase && !testCase.expectedStopBlock) {
           assert.notEqual(stop.decision, "block", testCase.name);
         } else assert.equal(stop.decision, "block", testCase.name);
@@ -3331,7 +3323,7 @@ PY`,
     }
   });
 
-  it("keeps terminal Autopilot failed and inactive when disabled-Team restart lacks host receipt verification", async () => {
+  it("restarts terminal Autopilot into canonical deep-interview state when Team mode is disabled", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-disabled-team-terminal-restart-"));
     const sessionId = "sess-disabled-team-terminal-restart";
     const threadId = "thread-disabled-team-terminal-restart";
@@ -3364,13 +3356,13 @@ PY`,
         prompt: "$team $autopilot retry",
       }, { cwd });
       assert.equal(restart.skillState?.skill, "autopilot");
-      assert.equal(restart.skillState?.active, false);
-      assert.equal(restart.skillState?.phase, "failed");
-      assert.equal(restart.skillState?.error, "documented_host_consensus_receipt_unavailable");
-      assert.deepEqual(restart.skillState?.active_skills, []);
+      assert.equal(restart.skillState?.active, true);
+      assert.equal(restart.skillState?.phase, "deep-interview");
+      assert.equal(restart.skillState?.error, undefined);
+      assert.deepEqual(restart.skillState?.active_skills?.map((entry) => entry.skill), ["autopilot"]);
       const restartGuidance = String((restart.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)?.hookSpecificOutput?.additionalContext ?? "");
-      assert.match(restartGuidance, /documented_host_consensus_receipt_unavailable/);
-      assert.doesNotMatch(restartGuidance, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/);
+      assert.match(restartGuidance, /Autopilot protocol:/);
+      assert.doesNotMatch(restartGuidance, /documented_host_consensus_receipt_unavailable|\$team/);
       assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), false);
 
       const restartedState = JSON.parse(await readFile(autopilotPath, "utf-8")) as {
@@ -3379,9 +3371,9 @@ PY`,
         error?: string;
       };
       assert.notDeepEqual(await readFile(autopilotPath), before);
-      assert.equal(restartedState.active, false);
-      assert.equal(restartedState.current_phase, "failed");
-      assert.equal(restartedState.error, "documented_host_consensus_receipt_unavailable");
+      assert.equal(restartedState.active, true);
+      assert.equal(restartedState.current_phase, "deep-interview");
+      assert.equal(restartedState.error, undefined);
       assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
       assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
 
@@ -3396,7 +3388,8 @@ PY`,
         cwd,
         env: { ...process.env, OMX_ROOT: "", OMX_STATE_ROOT: "" },
       }));
-      assert.deepEqual(stop, {});
+      assert.equal(stop.decision, "block");
+      assert.match(String(stop.reason ?? ""), /Autopilot is still active/i);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -9776,7 +9769,7 @@ standardMaxRounds = 15
 		}
 	});
 
-	it("denies fresh autopilot activation at host-receipt preflight before protocol guidance", async () => {
+	it("activates fresh autopilot into canonical deep-interview state", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-autopilot-ralplan-gate-"),
 		);
@@ -9796,10 +9789,10 @@ standardMaxRounds = 15
 
 			assert.equal(result.omxEventName, "keyword-detector");
 			assert.equal(result.skillState?.skill, "autopilot");
-			assert.equal(result.skillState?.active, false);
-			assert.equal(result.skillState?.phase, "failed");
-			assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
-			assert.deepEqual(result.skillState?.active_skills, []);
+			assert.equal(result.skillState?.active, true);
+			assert.equal(result.skillState?.phase, "deep-interview");
+			assert.equal(result.skillState?.error, undefined);
+			assert.deepEqual(result.skillState?.active_skills?.map((entry) => entry.skill), ["autopilot"]);
 			const message = String(
 				(
 					result.outputJson as {
@@ -9807,15 +9800,21 @@ standardMaxRounds = 15
 					}
 				)?.hookSpecificOutput?.additionalContext || "",
 			);
-			assert.match(message, /documented_host_consensus_receipt_unavailable/);
-			assert.doesNotMatch(message, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/);
+			assert.match(message, /Autopilot protocol:/);
+			assert.doesNotMatch(message, /documented_host_consensus_receipt_unavailable/);
 			const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-ralplan-gate");
 			const autopilotState = JSON.parse(
 				await readFile(join(sessionDir, "autopilot-state.json"), "utf-8"),
-			) as { active?: boolean; current_phase?: string; error?: string };
-			assert.equal(autopilotState.active, false);
-			assert.equal(autopilotState.current_phase, "failed");
-			assert.equal(autopilotState.error, "documented_host_consensus_receipt_unavailable");
+			) as {
+				active?: boolean;
+				current_phase?: string;
+				error?: string;
+				ralplan_consensus_gate?: { required?: boolean; authority_policy?: string | null };
+			};
+			assert.equal(autopilotState.active, true);
+			assert.equal(autopilotState.current_phase, "deep-interview");
+			assert.equal(autopilotState.error, undefined);
+			assert.equal(autopilotState.ralplan_consensus_gate, undefined);
 			assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
 			assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
 		} finally {
@@ -9823,7 +9822,7 @@ standardMaxRounds = 15
 		}
 	});
 
-	it("denies fresh autopilot activation after capacity-only native subagent evidence", async () => {
+	it("activates fresh autopilot after unrelated capacity-only native subagent evidence", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-autopilot-capacity-native-"),
 		);
@@ -9858,9 +9857,9 @@ standardMaxRounds = 15
 
 			assert.equal(result.omxEventName, "keyword-detector");
 			assert.equal(result.skillState?.skill, "autopilot");
-			assert.equal(result.skillState?.active, false);
-			assert.equal(result.skillState?.phase, "failed");
-			assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
+			assert.equal(result.skillState?.active, true);
+			assert.equal(result.skillState?.phase, "deep-interview");
+			assert.equal(result.skillState?.error, undefined);
 			const message = String(
 				(
 					result.outputJson as {
@@ -9868,8 +9867,8 @@ standardMaxRounds = 15
 					}
 				)?.hookSpecificOutput?.additionalContext || "",
 			);
-			assert.match(message, /documented_host_consensus_receipt_unavailable/);
-			assert.doesNotMatch(message, /Autopilot protocol:|Conductor mode contract:|deep-interview -> ralplan -> ultragoal/);
+			assert.match(message, /Autopilot protocol:/);
+			assert.doesNotMatch(message, /documented_host_consensus_receipt_unavailable/);
 			const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-capacity-native");
 			assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
 			assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
@@ -9878,7 +9877,7 @@ standardMaxRounds = 15
 		}
 	});
 
-	it("denies unsupported fresh autopilot activation at host-receipt preflight", async () => {
+	it("activates fresh autopilot into deep-interview even when native subagents are unsupported", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-autopilot-unsupported-native-"),
 		);
@@ -9898,9 +9897,9 @@ standardMaxRounds = 15
 			);
 
 			assert.equal(result.skillState?.skill, "autopilot");
-			assert.equal(result.skillState?.active, false);
-			assert.equal(result.skillState?.phase, "failed");
-			assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
+			assert.equal(result.skillState?.active, true);
+			assert.equal(result.skillState?.phase, "deep-interview");
+			assert.equal(result.skillState?.error, undefined);
 			const message = String(
 				(
 					result.outputJson as {
@@ -9908,8 +9907,8 @@ standardMaxRounds = 15
 					}
 				)?.hookSpecificOutput?.additionalContext || "",
 			);
-			assert.match(message, /documented_host_consensus_receipt_unavailable/);
-			assert.doesNotMatch(message, /Autopilot protocol:|Conductor mode contract:|deep-interview -> ralplan -> ultragoal/);
+			assert.match(message, /Autopilot protocol:/);
+			assert.doesNotMatch(message, /documented_host_consensus_receipt_unavailable/);
 			const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-unsupported-native");
 			assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
 			assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
@@ -11426,7 +11425,7 @@ export async function onHookEvent(event) {
     }
   });
 
-  it("denies fresh leading Autopilot invocations on native and CLI prompt submits", async () => {
+  it("activates fresh leading Autopilot invocations on native and CLI prompt submits", async () => {
     for (const source of ["codex-app", "cli"] as const) {
       const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-direct-${source}-`));
       const sessionId = `sess-direct-${source}`;
@@ -11445,9 +11444,9 @@ export async function onHookEvent(event) {
         );
 
         assert.equal(result.skillState?.skill, "autopilot");
-        assert.equal(result.skillState?.active, false);
-        assert.equal(result.skillState?.phase, "failed");
-        assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
+        assert.equal(result.skillState?.active, true);
+        assert.equal(result.skillState?.phase, "deep-interview");
+        assert.equal(result.skillState?.error, undefined);
         assert.equal(
           existsSync(join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json")),
           true,
@@ -28070,7 +28069,7 @@ PY`,
     }
   });
 
-  it("blocks Stop release after owner-session ralplan CLI completion when only local lifecycle evidence is available", async () => {
+  it("releases Stop after owner-session ralplan CLI completion with ordered local-owner lifecycle evidence", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-ralplan-owner-alias-complete-"));
     const previousSessionId = process.env.OMX_SESSION_ID;
     try {
@@ -28127,6 +28126,7 @@ PY`,
           provenance_kind: "native_subagent",
           session_id: nativeSessionId,
           thread_id: "thread-architect",
+          completed_at: architectCompletedAt,
           artifact_path: ".omx/artifacts/architect.md",
           tracker_path: ".omx/state/subagent-tracking.json",
         },
@@ -28136,6 +28136,8 @@ PY`,
           provenance_kind: "native_subagent",
           session_id: nativeSessionId,
           thread_id: "thread-critic",
+          started_at: criticStartedAt,
+          completed_at: criticCompletedAt,
           artifact_path: ".omx/artifacts/critic.md",
           tracker_path: ".omx/state/subagent-tracking.json",
         },
@@ -28152,16 +28154,19 @@ PY`,
         workingDirectory: cwd,
       });
 
-      assert.equal(writeResult.isError, true);
-      assert.match(
-        String((writeResult.payload as { error?: unknown }).error ?? ""),
-        /documented_host_consensus_receipt_unavailable/,
-      );
-      const preservedRalplan = JSON.parse(
+      assert.notEqual(writeResult.isError, true);
+      const completedRalplan = JSON.parse(
         await readFile(join(stateDir, "sessions", nativeSessionId, "ralplan-state.json"), "utf-8"),
-      ) as Record<string, unknown>;
-      assert.equal(preservedRalplan.active, true);
-      assert.equal(preservedRalplan.current_phase, "planning");
+      ) as {
+        active?: boolean;
+        current_phase?: string;
+        ralplan_consensus_gate?: { complete?: boolean; authority_policy?: string };
+      };
+      assert.equal(completedRalplan.active, false);
+      assert.equal(completedRalplan.current_phase, "complete");
+      assert.equal(completedRalplan.ralplan_consensus_gate?.complete, true);
+      assert.equal(completedRalplan.ralplan_consensus_gate?.authority_policy, "local_owner_lifecycle");
+      assert.doesNotMatch(JSON.stringify(completedRalplan), /host_consensus_receipt/);
       const result = await dispatchCodexNativeHook(
         {
           hook_event_name: "Stop",
@@ -28172,15 +28177,7 @@ PY`,
       );
 
       assert.equal(result.omxEventName, "stop");
-      assert.equal(result.outputJson?.decision, "block");
-      assert.equal(
-        result.outputJson?.stopReason,
-        "skill_ralplan_planning_continue_artifact",
-      );
-      assert.match(
-        String(result.outputJson?.reason ?? ""),
-        /ralplan|planning/i,
-      );
+      assert.equal(result.outputJson, null);
     } finally {
       if (typeof previousSessionId === "string") process.env.OMX_SESSION_ID = previousSessionId;
       else delete process.env.OMX_SESSION_ID;
@@ -38485,7 +38482,7 @@ describe("codex native hook triage integration", () => {
     }
   });
 
-  it("makes fresh autopilot preflight denial observable in state, HUD context, and prompt guidance", async () => {
+  it("makes fresh autopilot deep-interview activation observable in state, HUD context, and prompt guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-observable-"));
     try {
       await mkdir(join(cwd, ".omx", "state"), { recursive: true });
@@ -38504,17 +38501,17 @@ describe("codex native hook triage integration", () => {
       );
 
       assert.equal(result.skillState?.skill, "autopilot");
-      assert.equal(result.skillState?.active, false);
-      assert.equal(result.skillState?.phase, "failed");
-      assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
-      assert.deepEqual(result.skillState?.active_skills, []);
+      assert.equal(result.skillState?.active, true);
+      assert.equal(result.skillState?.phase, "deep-interview");
+      assert.equal(result.skillState?.error, undefined);
+      assert.deepEqual(result.skillState?.active_skills?.map((entry) => entry.skill), ["autopilot"]);
 
       const additionalContext = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
       );
-      assert.match(additionalContext, /denied workflow keyword "\$autopilot" -> autopilot/);
-      assert.match(additionalContext, /documented_host_consensus_receipt_unavailable/);
-      assert.doesNotMatch(additionalContext, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/);
+      assert.match(additionalContext, /detected workflow keyword "\$autopilot" -> autopilot/);
+      assert.match(additionalContext, /Autopilot protocol:/);
+      assert.doesNotMatch(additionalContext, /documented_host_consensus_receipt_unavailable/);
 
       const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-observable");
       const statePath = join(sessionDir, "autopilot-state.json");
@@ -38523,21 +38520,21 @@ describe("codex native hook triage integration", () => {
         current_phase: string;
         error?: string;
       };
-      assert.equal(modeState.active, false);
-      assert.equal(modeState.current_phase, "failed");
-      assert.equal(modeState.error, "documented_host_consensus_receipt_unavailable");
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, "deep-interview");
+      assert.equal(modeState.error, undefined);
       assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
       assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
 
       const hudState = await readAllState(cwd);
-      assert.equal(hudState.autopilot, null);
-      assert.doesNotMatch(renderHud(hudState, "focused"), /autopilot:/);
+      assert.equal(hudState.autopilot?.active, true);
+      assert.match(renderHud(hudState, "focused"), /autopilot:/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it("keeps fresh autopilot preflight denial free of Team handoff guidance when Team mode is disabled", async () => {
+  it("keeps fresh autopilot activation free of Team handoff guidance when Team mode is disabled", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-observable-no-team-"));
     try {
       await mkdir(join(cwd, ".omx", "state"), { recursive: true });
@@ -38560,14 +38557,14 @@ describe("codex native hook triage integration", () => {
       );
 
       assert.equal(result.skillState?.skill, "autopilot");
-      assert.equal(result.skillState?.active, false);
-      assert.equal(result.skillState?.phase, "failed");
-      assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
+      assert.equal(result.skillState?.active, true);
+      assert.equal(result.skillState?.phase, "deep-interview");
+      assert.equal(result.skillState?.error, undefined);
       const additionalContext = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
       );
-      assert.match(additionalContext, /documented_host_consensus_receipt_unavailable/);
-      assert.doesNotMatch(additionalContext, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal|\$team/);
+      assert.match(additionalContext, /Autopilot protocol:/);
+      assert.doesNotMatch(additionalContext, /documented_host_consensus_receipt_unavailable|\$team/);
       const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-observable-no-team");
       assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
       assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
@@ -38616,7 +38613,7 @@ describe("codex native hook triage integration", () => {
     }
   });
 
-  it("makes bare fresh autopilot preflight denial observable in state and prompt guidance", async () => {
+  it("makes bare fresh autopilot deep-interview activation observable in state and prompt guidance", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-autopilot-bare-observable-"));
     try {
       await mkdir(join(cwd, ".omx", "state"), { recursive: true });
@@ -38635,17 +38632,17 @@ describe("codex native hook triage integration", () => {
       );
 
       assert.equal(result.skillState?.skill, "autopilot");
-      assert.equal(result.skillState?.active, false);
-      assert.equal(result.skillState?.phase, "failed");
-      assert.equal(result.skillState?.error, "documented_host_consensus_receipt_unavailable");
-      assert.deepEqual(result.skillState?.active_skills, []);
+      assert.equal(result.skillState?.active, true);
+      assert.equal(result.skillState?.phase, "deep-interview");
+      assert.equal(result.skillState?.error, undefined);
+      assert.deepEqual(result.skillState?.active_skills?.map((entry) => entry.skill), ["autopilot"]);
 
       const additionalContext = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
       );
-      assert.match(additionalContext, /denied workflow keyword "autopilot" -> autopilot/);
-      assert.match(additionalContext, /documented_host_consensus_receipt_unavailable/);
-      assert.doesNotMatch(additionalContext, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/);
+      assert.match(additionalContext, /detected workflow keyword "autopilot" -> autopilot/);
+      assert.match(additionalContext, /Autopilot protocol:/);
+      assert.doesNotMatch(additionalContext, /documented_host_consensus_receipt_unavailable/);
 
       const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-bare-observable");
       const statePath = join(sessionDir, "autopilot-state.json");
@@ -38654,9 +38651,9 @@ describe("codex native hook triage integration", () => {
         current_phase: string;
         error?: string;
       };
-      assert.equal(modeState.active, false);
-      assert.equal(modeState.current_phase, "failed");
-      assert.equal(modeState.error, "documented_host_consensus_receipt_unavailable");
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.current_phase, "deep-interview");
+      assert.equal(modeState.error, undefined);
       assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false);
       assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false);
     } finally {

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
-import { readModeState } from '../../modes/base.js';
+import { readModeState, readModeStateForExplicitSession } from '../../modes/base.js';
 import {
   runPipeline,
   canResumePipeline,
@@ -61,6 +61,30 @@ function makeThrowingStage(name: string, message: string): PipelineStage {
     name,
     async run(): Promise<StageResult> {
       throw new Error(message);
+    },
+  };
+}
+
+function localOwnerConsensusGate(reviewCycle?: number): Record<string, unknown> {
+  const cycle = reviewCycle === undefined ? {} : { review_cycle: reviewCycle };
+  return {
+    complete: true,
+    sequence: ['architect-review', 'critic-review'],
+    ralplan_architect_review: {
+      agent_role: 'architect',
+      verdict: 'approve',
+      provenance_kind: 'native_subagent',
+      thread_id: 'thread-architect',
+      sequence_index: 1,
+      ...cycle,
+    },
+    ralplan_critic_review: {
+      agent_role: 'critic',
+      verdict: 'approve',
+      provenance_kind: 'native_subagent',
+      thread_id: 'thread-critic',
+      sequence_index: 2,
+      ...cycle,
     },
   };
 }
@@ -245,20 +269,7 @@ describe('Pipeline Orchestrator', () => {
       let ralplanRuns = 0;
       const structuralRalplan = createRalplanStage();
       const staleRalplanArtifacts = {
-        ralplanConsensusGate: {
-          complete: true,
-          sequence: ['architect-review', 'critic-review'],
-          ralplan_architect_review: {
-            agent_role: 'architect',
-            verdict: 'approve',
-            completed_at: '2026-06-12T09:00:00.000Z',
-          },
-          ralplan_critic_review: {
-            agent_role: 'critic',
-            verdict: 'approve',
-            completed_at: '2026-06-12T09:05:00.000Z',
-          },
-        },
+        ralplanConsensusGate: localOwnerConsensusGate(),
       };
 
       const ralplanStage: PipelineStage = {
@@ -302,10 +313,10 @@ describe('Pipeline Orchestrator', () => {
       assert.equal(result.status, 'failed');
       assert.equal(result.failedStage, 'ralplan');
       assert.equal(ralplanRuns, 2);
-      assert.equal(result.stageResults.ralplan.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.stageResults.ralplan.error, 'native_subagent_consensus_evidence_missing');
     });
 
-    it('stops at ralplan before default quality gates when the host receipt is unavailable', async () => {
+    it('stops at ralplan before default quality gates when local-owner consensus evidence is missing', async () => {
       const order: string[] = [];
       let qaRuns = 0;
       const stages: PipelineStage[] = [
@@ -355,7 +366,7 @@ describe('Pipeline Orchestrator', () => {
           cwd: tempDir,
           maxRalphIterations: 3,
         }),
-        /documented_host_consensus_receipt_unavailable/,
+        /ralplan consensus lacks tracker-backed native architect and critic lanes/,
       );
       assert.deepEqual(order, [
         'deep-interview:skip-check',
@@ -363,6 +374,149 @@ describe('Pipeline Orchestrator', () => {
       ]);
       assert.equal(qaRuns, 0);
     });
+
+    it('advances from ralplan when the stage returns a complete local-owner consensus gate', async () => {
+      const sessionId = 'local-owner-handoff-session';
+      const completedAt = '2026-06-12T10:03:00.000Z';
+      const stateDir = join(tempDir, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'subagent-tracking.json'), JSON.stringify({
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            updated_at: completedAt,
+            threads: {
+              'thread-architect': {
+                thread_id: 'thread-architect',
+                kind: 'subagent',
+                provenance_kind: 'native_subagent',
+                role: 'architect',
+                completed_at: completedAt,
+              },
+              'thread-critic': {
+                thread_id: 'thread-critic',
+                kind: 'subagent',
+                provenance_kind: 'native_subagent',
+                role: 'critic',
+                completed_at: completedAt,
+              },
+            },
+          },
+        },
+      }));
+      let executionRuns = 0;
+      const result = await runPipeline({
+        name: 'local-owner-handoff',
+        task: 'advance after local-owner consensus',
+        stages: [
+          makeStage('ralplan', {
+            artifacts: {
+              ralplanConsensusGate: {
+                ...localOwnerConsensusGate(),
+                authority_policy: 'local_owner_lifecycle',
+              },
+            },
+          }),
+          {
+            name: 'ultragoal',
+            async run(): Promise<StageResult> {
+              executionRuns += 1;
+              return { status: 'completed', artifacts: { implemented: true }, duration_ms: 0 };
+            },
+          },
+          makeStage('code-review', {
+            artifacts: {
+              review_verdict: {
+                stage: 'code-review',
+                recommendation: 'APPROVE',
+                architectural_status: 'CLEAR',
+                clean: true,
+                artifact_path: '.omx/reviews/local-owner-handoff.json',
+              },
+              return_to_ralplan_reason: null,
+            },
+          }),
+          makeStage('ultraqa', {
+            artifacts: {
+              qa_verdict: {
+                stage: 'ultraqa',
+                clean: true,
+                skipped: false,
+                url: 'https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/owner-handoff',
+              },
+              return_to_ralplan_reason: null,
+            },
+          }),
+        ],
+        cwd: tempDir,
+        sessionId,
+      });
+
+      assert.equal(result.status, 'completed');
+      assert.equal(executionRuns, 1);
+      const ext = await readModeStateForExplicitSession('autopilot', sessionId, tempDir);
+      const handoffArtifacts = ext?.handoff_artifacts as Record<string, unknown> | undefined;
+      const gate = handoffArtifacts?.ralplan_consensus_gate as {
+        complete?: boolean;
+        authority_policy?: string | null;
+      } | undefined;
+      assert.equal(gate?.complete, true);
+      assert.equal(gate?.authority_policy, 'local_owner_lifecycle');
+    });
+
+    for (const { name, gate, expectedError } of [
+      {
+        name: 'incomplete',
+        gate: { ...localOwnerConsensusGate(), complete: false },
+        expectedError: /missing ralplan consensus gate with tracker-backed native architect and critic lanes\. Details: consensus gate is incomplete\./,
+      },
+      {
+        name: 'adapted',
+        gate: {
+          ...localOwnerConsensusGate(),
+          ralplan_architect_review: {
+            ...(localOwnerConsensusGate().ralplan_architect_review as Record<string, unknown>),
+            provenance_kind: 'omx_adapted',
+          },
+        },
+        expectedError: /ralplan consensus lacks tracker-backed native architect and critic lanes/,
+      },
+      {
+        name: 'nonapproving',
+        gate: {
+          ...localOwnerConsensusGate(),
+          ralplan_critic_review: {
+            ...(localOwnerConsensusGate().ralplan_critic_review as Record<string, unknown>),
+            verdict: 'iterate',
+          },
+        },
+        expectedError: /non-approving architect or critic review evidence/,
+      },
+    ] as const) {
+      it(`does not advance from ralplan with ${name} local-owner evidence`, async () => {
+        let executionRuns = 0;
+        await assert.rejects(
+          () => runPipeline({
+            name: `local-owner-${name}-blocked`,
+            task: `block ${name} local-owner evidence`,
+            stages: [
+              makeStage('ralplan', { artifacts: { ralplanConsensusGate: gate } }),
+              {
+                name: 'ultragoal',
+                async run(): Promise<StageResult> {
+                  executionRuns += 1;
+                  return { status: 'completed', artifacts: {}, duration_ms: 0 };
+                },
+              },
+            ],
+            cwd: tempDir,
+          }),
+          expectedError,
+        );
+        assert.equal(executionRuns, 0);
+      });
+    }
 
     it('fails after bounded non-clean code-review cycles', async () => {
       const stages: PipelineStage[] = [
@@ -394,7 +548,7 @@ describe('Pipeline Orchestrator', () => {
     });
 
 
-    it('does not reach final completion cleanup when ralplan lacks a host receipt', async () => {
+    it('does not reach final completion cleanup when ralplan lacks local-owner consensus', async () => {
       let reviewRuns = 0;
       const stages: PipelineStage[] = [
         makeStage('ralplan', { artifacts: { plan: 'approved' } }),
@@ -440,7 +594,7 @@ describe('Pipeline Orchestrator', () => {
           stages,
           cwd: tempDir,
         }),
-        /documented_host_consensus_receipt_unavailable/,
+        /ralplan consensus lacks tracker-backed native architect and critic lanes/,
       );
       assert.equal(reviewRuns, 0);
     });
@@ -548,7 +702,7 @@ describe('Pipeline Orchestrator', () => {
       assert.ok(ran.includes('after-skip'));
     });
 
-    it('persists a blocked ralplan lifecycle artifact without advancing when the host receipt is unavailable', async () => {
+    it('skips completed ralplan state and advances with durable local-owner evidence', async () => {
       const plansDir = join(tempDir, '.omx', 'plans');
       const stateDir = join(tempDir, '.omx', 'state');
       await mkdir(plansDir, { recursive: true });
@@ -560,10 +714,8 @@ describe('Pipeline Orchestrator', () => {
         current_phase: 'complete',
         planning_complete: true,
         ralplan_consensus_gate: {
+          ...localOwnerConsensusGate(),
           documented_host_consensus_receipt: { issuer: 'official-host', verdict: 'approve' },
-          complete: true,
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1, summary: 'architect ok' },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2, summary: 'critic ok' },
         },
       }));
 
@@ -574,19 +726,21 @@ describe('Pipeline Orchestrator', () => {
         cwd: tempDir,
       });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.stageResults.ralplan.status, 'failed');
-      assert.equal(result.stageResults.ralplan.error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(result.stageResults.after, undefined);
+      assert.equal(result.status, 'completed');
+      assert.equal(result.stageResults.ralplan.status, 'skipped');
+      assert.equal(result.stageResults.ralplan.error, undefined);
+      assert.equal(result.stageResults.after.status, 'completed');
 
       const ext = await readPipelineState(tempDir);
       const handoffs = ext?.handoff_artifacts as Record<string, unknown> | undefined;
-      const persistedRalplan = handoffs?.ralplan as { ralplanConsensusGate?: { complete?: boolean; blockedReason?: string } } | undefined;
-      assert.equal(persistedRalplan?.ralplanConsensusGate?.complete, false);
-      assert.equal(persistedRalplan?.ralplanConsensusGate?.blockedReason, 'documented_host_consensus_receipt_unavailable');
-      const gate = result.stageResults.ralplan.artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
-      assert.equal(gate.complete, false);
-      assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
+      const persistedRalplan = handoffs?.ralplan as { ralplanConsensusGate?: { complete?: boolean; authority_policy?: string | null; blockedReason?: string | null } } | undefined;
+      assert.equal(persistedRalplan?.ralplanConsensusGate?.complete, true);
+      assert.equal(persistedRalplan?.ralplanConsensusGate?.authority_policy, 'local_owner_lifecycle');
+      assert.equal(persistedRalplan?.ralplanConsensusGate?.blockedReason, null);
+      const gate = result.stageResults.ralplan.artifacts.ralplanConsensusGate as { complete?: boolean; authority_policy?: string | null; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
+      assert.equal(gate.complete, true);
+      assert.equal(gate.authority_policy, 'local_owner_lifecycle');
+      assert.equal(gate.blockedReason, null);
       assert.ok(gate.ralplan_architect_review);
       assert.ok(gate.ralplan_critic_review);
     });
@@ -951,21 +1105,22 @@ describe('Pipeline Orchestrator', () => {
         name: 'deep-interview',
         async run(): Promise<StageResult> {
           stageRuns += 1;
-          return { status: 'completed', artifacts: {}, duration_ms: 0 };
+          return { status: 'failed', artifacts: {}, duration_ms: 0, error: 'probe-stage-ran' };
         },
       }],
     }));
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(stageRuns, 0);
+    assert.equal(result.error, 'probe-stage-ran');
+    assert.equal(stageRuns, 1);
     assert.equal(await readFile(rootPath, 'utf-8'), rawRoot);
-    const sessionState = JSON.parse(await readFile(sessionPath, 'utf-8')) as { active?: boolean; current_phase?: string };
+    const sessionState = JSON.parse(await readFile(sessionPath, 'utf-8')) as { active?: boolean; current_phase?: string; error?: string };
     assert.equal(sessionState.active, false);
     assert.equal(sessionState.current_phase, 'failed');
+    assert.equal(sessionState.error, 'probe-stage-ran');
   });
 
-  it('preflights a fresh default Autopilot before any stage or transition callback when receipt verification is unavailable', async () => {
+  it('does not host-preflight-block a fresh Autopilot under local-owner authority', async () => {
     let stageRuns = 0;
     let transitions = 0;
     const result = await runPipeline(createAutopilotPipelineConfig('preflight receipt verification', {
@@ -974,23 +1129,27 @@ describe('Pipeline Orchestrator', () => {
         name: 'deep-interview',
         async run(): Promise<StageResult> {
           stageRuns += 1;
-          return { status: 'completed', artifacts: {}, duration_ms: 0 };
+          return { status: 'failed', artifacts: {}, duration_ms: 0, error: 'probe-stage-ran' };
         },
       }],
       onStageTransition: () => { transitions += 1; },
     }));
 
     assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(stageRuns, 0);
+    assert.equal(result.error, 'probe-stage-ran');
+    assert.equal(stageRuns, 1);
     assert.equal(transitions, 0);
     const state = await readModeState('autopilot', tempDir);
     assert.equal(state?.active, false);
     assert.equal(state?.current_phase, 'failed');
-    assert.equal(state?.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(state?.error, 'probe-stage-ran');
   });
 
-  it('does not preflight-block the future verifier-capable path', () => {
+  it('does not preflight-block local-owner authority even when host verification is unavailable', () => {
+    assert.equal(shouldBlockFreshAutopilotForRalplanReceipt('unavailable'), false);
+  });
+
+  it('does not preflight-block the verifier-capable path', () => {
     assert.equal(shouldBlockFreshAutopilotForRalplanReceipt('available'), false);
   });
 

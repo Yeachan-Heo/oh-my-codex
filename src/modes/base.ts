@@ -195,6 +195,7 @@ export async function startMode(
   }
   await mkdir(scope.stateDir, { recursive: true });
 
+  const startedAt = new Date().toISOString();
   const stateBase: ModeState = {
     active: true,
     mode,
@@ -202,7 +203,8 @@ export async function startMode(
     max_iterations: maxIterations,
     current_phase: 'starting',
     task_description: taskDescription,
-    started_at: new Date().toISOString(),
+    started_at: startedAt,
+    ...(mode === 'ralplan' ? { ralplan_pass_started_at: startedAt } : {}),
     ...(transitionMessage ? { transition_message: transitionMessage } : {}),
     ...(mode === 'ralph' && scope.sessionId ? { owner_omx_session_id: scope.sessionId } : {}),
   };
@@ -381,6 +383,9 @@ async function updateModeStateInternal(
   if (mode === 'autopilot') {
     const currentAutopilotChildPhase = deriveAutopilotChildPhase({ ...current, mode: 'autopilot' });
     const nextAutopilotChildPhase = deriveAutopilotChildPhase({ ...normalizedBase, mode: 'autopilot' });
+    if (currentAutopilotChildPhase !== 'ralplan' && nextAutopilotChildPhase === 'ralplan') {
+      normalizedBase.ralplan_pass_started_at = new Date().toISOString();
+    }
     const completionTransitionError = validateAutopilotCompletionTransition(
       current as Record<string, unknown>,
       normalizedBase as Record<string, unknown>,

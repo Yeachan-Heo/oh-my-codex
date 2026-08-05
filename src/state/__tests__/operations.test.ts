@@ -139,8 +139,8 @@ async function writeNativeSubagentTracking(cwd: string, sessionId: string): Prom
         updated_at: criticCompletedAt,
         threads: {
           'thread-leader': { thread_id: 'thread-leader', kind: 'leader', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, turn_count: 1 },
-          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, completed_at: architectCompletedAt, turn_count: 1, mode: 'architect' },
-          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', first_seen_at: criticStartedAt, last_seen_at: criticCompletedAt, completed_at: criticCompletedAt, turn_count: 1, mode: 'critic' },
+          'thread-architect': { thread_id: 'thread-architect', kind: 'subagent', provenance_kind: 'native_subagent', first_seen_at: architectCompletedAt, last_seen_at: architectCompletedAt, completed_at: architectCompletedAt, turn_count: 1, mode: 'architect' },
+          'thread-critic': { thread_id: 'thread-critic', kind: 'subagent', provenance_kind: 'native_subagent', first_seen_at: criticStartedAt, last_seen_at: criticCompletedAt, completed_at: criticCompletedAt, turn_count: 1, mode: 'critic' },
         },
       },
     },
@@ -157,6 +157,7 @@ function ralplanConsensusGate(
   return {
     required: true,
     complete: true,
+    authority_policy: provenanceKind === 'native_subagent' ? 'local_owner_lifecycle' : null,
     sequence: ['architect-review', 'critic-review'],
     planning_artifacts_are_not_consensus: true,
     required_review_roles: ['architect', 'critic'],
@@ -167,6 +168,7 @@ function ralplanConsensusGate(
       provenance_kind: provenanceKind,
       session_id: sessionId,
       thread_id: architectThread,
+      completed_at: '2026-05-28T00:00:00.000Z',
       artifact_path: '.omx/artifacts/architect.md',
       tracker_path: '.omx/state/subagent-tracking.json',
     },
@@ -177,6 +179,7 @@ function ralplanConsensusGate(
       provenance_kind: provenanceKind,
       session_id: sessionId,
       thread_id: criticThread,
+      completed_at: '2026-05-28T00:02:00.000Z',
       artifact_path: '.omx/artifacts/critic.md',
       tracker_path: '.omx/state/subagent-tracking.json',
     },
@@ -1095,7 +1098,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('rejects a completed ralplan state transition when only local review lifecycle evidence is present', async () => {
+  it('completes ralplan under local owner authority after ordered native reviews', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-complete-'));
     try {
       const sessionId = 'sess-ralplan-complete';
@@ -1112,12 +1115,14 @@ describe('state operations directory initialization', () => {
         active: true,
         current_phase: 'planning',
         session_id: sessionId,
+        ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
       }, null, 2));
       await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
         mode: 'ralplan',
         active: true,
         current_phase: 'planning',
         session_id: sessionId,
+        ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
       }, null, 2));
       const staleSkillState = {
         version: 1,
@@ -1153,40 +1158,38 @@ describe('state operations directory initialization', () => {
         ralplan_consensus_gate: consensusGate,
       });
 
-      assert.equal(response.isError, true);
-      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
+      assert.equal(response.isError, undefined);
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootRalplan, sessionRalplan]) {
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'planning');
-        assert.equal(state.status, undefined);
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal(state.status, 'complete');
         assert.equal(state.session_id, sessionId);
+        assert.equal(
+          (state.ralplan_consensus_gate as Record<string, unknown>).authority_policy,
+          'local_owner_lifecycle',
+        );
       }
 
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootSkill, sessionSkill]) {
-        assert.equal(state.active, true);
-        assert.equal(state.phase, 'planning');
-        assert.deepEqual(state.active_skills, [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }]);
+        assert.equal(state.active, false);
+        assert.equal(state.phase, 'complete');
+        assert.deepEqual(state.active_skills, []);
       }
 
       const listed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
       });
-      assert.deepEqual(listed.payload, { active_modes: ['ralplan'] });
+      assert.deepEqual(listed.payload, { active_modes: [] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('rejects a ralplan release when runtime and workspace trackers only provide local review lifecycle evidence', async () => {
+  it('rejects ralplan completion when the authoritative runtime tracker lags behind a workspace copy', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-runtime-lag-complete-'));
     const stateRoot = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-runtime-lag-root-'));
     try {
@@ -1258,11 +1261,15 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
+        assert.match(
+          String((response.payload as { error?: unknown }).error ?? ''),
+          /native_subagent_consensus_evidence_missing|native tracker/i,
+        );
         const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
         assert.equal(sessionRalplan.active, true);
         assert.equal(sessionRalplan.current_phase, 'planning');
         assert.equal(sessionRalplan.status, undefined);
+        assert.equal(sessionRalplan.ralplan_consensus_gate, undefined);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1300,7 +1307,7 @@ describe('state operations directory initialization', () => {
       });
 
       assert.equal(response.isError, true);
-      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /native_subagent_consensus_evidence_missing/);
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(sessionRalplan.active, true);
       assert.equal(sessionRalplan.current_phase, 'planning');
@@ -1629,7 +1636,7 @@ describe('state operations directory initialization', () => {
       });
 
       assert.equal(response.isError, true);
-      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
+      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /native_subagent_consensus_evidence_missing/);
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(sessionRalplan.active, true);
       assert.equal(sessionRalplan.current_phase, 'planning');
@@ -1639,7 +1646,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('rejects terminal writes that reuse existing local tracker review lifecycle evidence', async () => {
+  it('accepts terminal writes that reuse valid local owner lifecycle evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-existing-consensus-'));
     try {
       const sessionId = 'sess-ralplan-existing-consensus';
@@ -1656,6 +1663,7 @@ describe('state operations directory initialization', () => {
         active: true,
         current_phase: 'planning',
         session_id: sessionId,
+        ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
         ralplan_consensus_gate: consensusGate,
       }, null, 2));
 
@@ -1667,13 +1675,13 @@ describe('state operations directory initialization', () => {
         terminal_reason: 'existing tracker-backed consensus complete',
       });
 
-      assert.equal(response.isError, true);
-      assert.match(String((response.payload as { error?: unknown }).error ?? ''), /documented_host_consensus_receipt_unavailable/);
+      assert.equal(response.isError, undefined);
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(sessionRalplan.active, true);
-      assert.equal(sessionRalplan.current_phase, 'planning');
+      assert.equal(sessionRalplan.active, false);
+      assert.equal(sessionRalplan.current_phase, 'complete');
       const finalGate = sessionRalplan.ralplan_consensus_gate as Record<string, unknown>;
       assert.equal(finalGate.complete, true);
+      assert.equal(finalGate.authority_policy, 'local_owner_lifecycle');
       assert.deepEqual(finalGate.required_review_roles, ['architect', 'critic']);
       assert.equal((finalGate.ralplan_architect_review as Record<string, unknown>).provenance_kind, 'native_subagent');
       assert.equal((finalGate.ralplan_critic_review as Record<string, unknown>).provenance_kind, 'native_subagent');
@@ -1682,7 +1690,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('updateModeState rejects completed ralplan release without an official host receipt', async () => {
+  it('updateModeState completes ralplan under local owner lifecycle authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ralplan-complete-update-mode-'));
     try {
       const sessionId = 'sess-ralplan-complete-update-mode';
@@ -1699,12 +1707,14 @@ describe('state operations directory initialization', () => {
         active: true,
         current_phase: 'planning',
         session_id: sessionId,
+        ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
       }, null, 2));
       await writeFile(join(sessionDir, 'ralplan-state.json'), JSON.stringify({
         mode: 'ralplan',
         active: true,
         current_phase: 'planning',
         session_id: sessionId,
+        ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
       }, null, 2));
       const staleSkillState = {
         version: 1,
@@ -1722,48 +1732,44 @@ describe('state operations directory initialization', () => {
       await writeFile(join(stateDir, 'skill-active-state.json'), JSON.stringify(staleSkillState, null, 2));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify(staleSkillState, null, 2));
 
-      await assert.rejects(
-        () => updateModeState('ralplan', {
-          active: false,
-          current_phase: 'complete',
-          terminal_reason: 'runtime consensus complete',
-          ralplan_consensus_gate: consensusGate,
-        }, wd),
-        /documented_host_consensus_receipt_unavailable/,
-      );
+      await updateModeState('ralplan', {
+        active: false,
+        current_phase: 'complete',
+        terminal_reason: 'runtime consensus complete',
+        ralplan_consensus_gate: consensusGate,
+      }, wd);
 
       const rootRalplan = JSON.parse(await readFile(join(stateDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootRalplan, sessionRalplan]) {
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'planning');
-        assert.equal(state.status, undefined);
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal(state.status, 'complete');
         assert.equal(state.session_id, sessionId);
+        assert.equal(
+          (state.ralplan_consensus_gate as Record<string, unknown>).authority_policy,
+          'local_owner_lifecycle',
+        );
       }
 
       const rootSkill = JSON.parse(await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       const sessionSkill = JSON.parse(await readFile(join(sessionDir, 'skill-active-state.json'), 'utf-8')) as Record<string, unknown>;
       for (const state of [rootSkill, sessionSkill]) {
-        assert.equal(state.active, true);
-        assert.equal(state.phase, 'planning');
-        assert.deepEqual(state.active_skills, [{
-          skill: 'ralplan',
-          phase: 'planning',
-          active: true,
-          session_id: sessionId,
-        }]);
+        assert.equal(state.active, false);
+        assert.equal(state.phase, 'complete');
+        assert.deepEqual(state.active_skills, []);
       }
 
       const rootListed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
       });
-      assert.deepEqual(rootListed.payload, { active_modes: ['ralplan'] });
+      assert.deepEqual(rootListed.payload, { active_modes: [] });
 
       const sessionListed = await executeStateOperation('state_list_active', {
         workingDirectory: wd,
         session_id: sessionId,
       });
-      assert.deepEqual(sessionListed.payload, { active_modes: ['ralplan'] });
+      assert.deepEqual(sessionListed.payload, { active_modes: [] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1796,7 +1802,7 @@ describe('state operations directory initialization', () => {
             complete: true,
           },
         }, wd),
-        /documented_host_consensus_receipt_unavailable/,
+        /native_subagent_consensus_evidence_missing/,
       );
 
       const sessionRalplan = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
@@ -2236,6 +2242,7 @@ describe('state operations directory initialization', () => {
         assert.equal(state.active, true);
         assert.equal(state.mode, 'autopilot');
         assert.equal(state.current_phase, 'ralplan');
+        assert.equal(typeof state.ralplan_pass_started_at, 'string');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -3368,6 +3375,7 @@ describe('state operations directory initialization', () => {
             active: true,
             mode: 'autopilot',
             current_phase: 'ralplan',
+            ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
             state: {
               handoff_artifacts: {
                 ralplan: {
@@ -3449,6 +3457,7 @@ describe('state operations directory initialization', () => {
             active: true,
             mode: 'autopilot',
             current_phase: 'ralplan',
+            ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
             state: {
               handoff_artifacts: {
                 ralplan: {
@@ -3470,7 +3479,9 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
+        const error = String((response.payload as { error?: string }).error || '');
+        assert.match(error, /ralplan consensus lacks tracker-backed native architect and critic lanes/i);
+        assert.match(error, /provenance_kind=codex_exec is not native_subagent/i);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -3613,7 +3624,8 @@ describe('state operations directory initialization', () => {
 
           assert.equal(response.isError, true);
           const error = String((response.payload as { error?: string }).error || '');
-          assert.match(error, /documented_host_consensus_receipt_unavailable/);
+          assert.match(error, /non-approving architect or critic review evidence/i);
+          assert.match(error, new RegExp(`${lane} review verdict=iterate is not approve`, 'i'));
           const state = JSON.parse(
             await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
           ) as Record<string, unknown>;
@@ -3626,7 +3638,7 @@ describe('state operations directory initialization', () => {
   }
 
 
-  it('explains when native ralplan reviews are not present in subagent tracking', async () => {
+  it('denies a self-declared native lifecycle pair without tracker-backed authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-native-missing-tracker-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -3660,9 +3672,14 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        const error = String((response.payload as { error?: string }).error || '');
-        assert.match(error, /documented_host_consensus_receipt_unavailable/);
-        assert.match(error, /official host consensus receipt verifier is unavailable/i);
+        assert.match(
+          String((response.payload as { error?: unknown }).error ?? ''),
+          /tracker-backed|native_subagent_consensus_evidence_missing/i,
+        );
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -3707,7 +3724,9 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
+        const error = String((response.payload as { error?: string }).error || '');
+        assert.match(error, /ralplan consensus lacks tracker-backed native architect and critic lanes/i);
+        assert.match(error, /distinct native_subagent thread_id values/i);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -3743,7 +3762,10 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
+        assert.match(
+          String((response.payload as { error?: string }).error || ''),
+          /ralplan consensus lacks tracker-backed native architect and critic lanes/i,
+        );
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
@@ -3924,6 +3946,48 @@ describe('state operations directory initialization', () => {
         assert.equal(state.active, true);
         assert.equal(state.current_phase, 'rework');
         assert.equal(state.review_cycle, 2);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('stamps a fresh system Ralplan pass boundary when Autopilot returns to planning', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-return-boundary-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-return-boundary';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, 'autopilot-state.json'),
+          JSON.stringify({
+            active: true,
+            mode: 'autopilot',
+            current_phase: 'code-review',
+            review_cycle: 1,
+            ralplan_pass_started_at: '2026-01-01T00:00:00.000Z',
+          }, null, 2),
+        );
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          review_cycle: 2,
+          ralplan_pass_started_at: '2000-01-01T00:00:00.000Z',
+          return_to_ralplan_reason: 'Latest code review requested architectural replanning.',
+        });
+
+        assert.equal(response.isError, undefined);
+        const state = JSON.parse(
+          await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
+        ) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+        assert.notEqual(state.ralplan_pass_started_at, '2000-01-01T00:00:00.000Z');
+        assert.ok(Number.isFinite(Date.parse(String(state.ralplan_pass_started_at))));
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -4451,7 +4515,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot ralplan to ultragoal self-write with tracker-backed native lifecycle evidence', async () => {
+  it('allows Autopilot ralplan to ultragoal self-write with local owner lifecycle authority', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-native-allow-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -4465,6 +4529,7 @@ describe('state operations directory initialization', () => {
             active: true,
             mode: 'autopilot',
             current_phase: 'ralplan',
+            ralplan_pass_started_at: '2026-05-27T23:59:00.000Z',
             state: {
               handoff_artifacts: {
                 ralplan: {
@@ -4485,12 +4550,15 @@ describe('state operations directory initialization', () => {
           current_phase: 'ultragoal',
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
+        assert.equal(response.isError, undefined);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
-        assert.equal(state.current_phase, 'ralplan');
+        assert.equal(state.current_phase, 'ultragoal');
+        const nestedState = state.state as Record<string, unknown>;
+        const handoffArtifacts = nestedState.handoff_artifacts as Record<string, unknown>;
+        const finalGate = handoffArtifacts.ralplan_consensus_gate as Record<string, unknown>;
+        assert.equal(finalGate.authority_policy, 'local_owner_lifecycle');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -4944,4 +5012,3 @@ function assertPrefix(events: WritableEvent[], expected: WritableEvent[]): void 
     }
   });
 });
-

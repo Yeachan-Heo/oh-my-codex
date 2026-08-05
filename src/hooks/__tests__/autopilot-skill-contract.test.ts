@@ -70,7 +70,7 @@ describe('autopilot skill default Ultragoal contract', () => {
 
   it('requires sequential ralplan Architect and Critic consensus before execution handoff', () => {
     assert.match(autopilotSkill, /PRD\/test-spec files alone are not completion evidence/i);
-    assert.match(autopilotSkill, /subsequent `Architect` approval first.*subsequent `Critic` approval second/is);
+    assert.match(autopilotSkill, /fresh native `Architect` approval first.*fresh native `Critic` approval second/is);
     assert.doesNotMatch(autopilotSkill, /records an `Architect` approval first/i);
     assert.match(autopilotSkill, /ralplan_consensus_gate/);
     assert.match(autopilotSkill, /missing ralplan consensus evidence/i);
