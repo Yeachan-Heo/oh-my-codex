@@ -8048,6 +8048,7 @@ async function cancelModes(
             : skill
         ));
       }
+      entry.state = normalizeTerminalWorkflowState(entry.state, { mode, nowIso }).state;
       changed.add(mode);
       if (reportIfWasActive && wasActive && mode !== SKILL_ACTIVE_STATE_MODE) reported.add(mode);
     };
@@ -8121,6 +8122,14 @@ async function cancelModes(
       for (const [mode, entry] of states.entries()) {
         if (entry.state.active === true) cancelMode(mode, "cancelled", true);
       }
+    }
+
+    for (const [mode, entry] of states.entries()) {
+      if (entry.state.active === true) continue;
+      const normalized = normalizeTerminalWorkflowState(entry.state, { mode, nowIso });
+      if (!normalized.changed) continue;
+      entry.state = normalized.state;
+      changed.add(mode);
     }
 
     const assertRunAuthority = (): void => {

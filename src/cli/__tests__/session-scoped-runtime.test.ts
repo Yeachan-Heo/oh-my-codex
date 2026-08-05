@@ -143,6 +143,79 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
+  it('releases standalone deep-interview locks when cancellation reaches a terminal state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-deep-interview-cancel-lock-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'deep-interview-session';
+      const scopedDir = join(stateDir, 'sessions', sessionId);
+      const statePath = join(scopedDir, 'deep-interview-state.json');
+      await mkdir(scopedDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: sessionId,
+        cwd: wd,
+        state_root: stateDir,
+      }));
+      await writeFile(statePath, JSON.stringify({
+        active: true,
+        mode: 'deep-interview',
+        current_phase: 'intent-first',
+        session_id: sessionId,
+        input_lock: {
+          active: true,
+          status: 'active',
+          acquired_at: '2026-08-05T00:00:00.000Z',
+          released_at: '',
+        },
+        question_enforcement: {
+          status: 'pending',
+          question_id: 'question-1',
+        },
+      }));
+
+      const cancelResult = runOmx(wd, 'cancel');
+      if (cancelResult.error && /(EPERM|EACCES)/i.test(cancelResult.error.message)) return;
+      assert.equal(cancelResult.status, 0, cancelResult.stderr || cancelResult.stdout);
+      assert.match(cancelResult.stdout, /Cancelled: deep-interview/);
+
+      const updated = JSON.parse(await readFile(statePath, 'utf-8'));
+      assert.equal(updated.active, false);
+      assert.equal(updated.current_phase, 'cancelled');
+      assert.equal(updated.input_lock.active, false);
+      assert.equal(updated.input_lock.status, 'released');
+      assert.equal(updated.input_lock.released_at, updated.completed_at);
+      assert.equal(updated.input_lock.release_reason, 'terminal_state_normalization');
+      assert.equal(updated.question_enforcement.status, 'cleared');
+      assert.equal(updated.question_enforcement.clear_reason, 'abort');
+
+      const completedAt = updated.completed_at;
+      updated.input_lock = {
+        active: true,
+        status: 'active',
+        acquired_at: '2026-08-05T00:00:00.000Z',
+        released_at: '',
+      };
+      updated.question_enforcement = {
+        status: 'pending',
+        question_id: 'question-2',
+      };
+      await writeFile(statePath, JSON.stringify(updated));
+
+      const repairResult = runOmx(wd, 'cancel');
+      assert.equal(repairResult.status, 0, repairResult.stderr || repairResult.stdout);
+      assert.match(repairResult.stdout, /No active modes to cancel/);
+      const repaired = JSON.parse(await readFile(statePath, 'utf-8'));
+      assert.equal(repaired.completed_at, completedAt);
+      assert.equal(repaired.input_lock.active, false);
+      assert.equal(repaired.input_lock.status, 'released');
+      assert.equal(repaired.input_lock.release_reason, 'terminal_state_normalization');
+      assert.equal(repaired.question_enforcement.status, 'cleared');
+      assert.equal(repaired.question_enforcement.clear_reason, 'abort');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not mutate an unmatched implicit OMX session, including force cleanup', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-unmatched-session-'));
     try {
