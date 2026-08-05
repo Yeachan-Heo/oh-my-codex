@@ -291,7 +291,8 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
 	const recovery = await recoverNativeHookClaimJournal(
 		paths.codexHomeDir,
-		doctorClaimJournalDurabilityOverride ?? createNativeHookClaimJournalDurability(),
+		doctorClaimJournalDurabilityOverride ??
+			createNativeHookClaimJournalDurability(process.platform, recoveryTracker),
 	);
 	recordRegularFileSyncOutcome(recoveryTracker, recovery.outcome);
 	emitDegradedDurabilityWarning("native-hook claim-journal recovery", recoveryTracker);

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	emitDegradedDurabilityWarning,
+	recordDirectorySyncOutcome,
 	recordRegularFileSyncOutcome,
+	syncDirectory,
 	syncRegularFile,
 	type RegularFileDurabilityTracker,
 } from "../file-durability.js";
@@ -22,6 +24,30 @@ test("regular-file sync returns the Windows EPERM durability outcome", async () 
 test("regular-file sync returns synced after a successful sync", async () => {
 	assert.equal(await syncRegularFile({ sync: async () => {} }, "win32"), "synced");
 });
+
+test("directory sync returns the Windows EPERM durability outcome", async () => {
+	const outcome = await syncDirectory(
+		{ sync: async () => { throw errno("EPERM"); } },
+		"win32",
+	);
+	assert.equal(outcome, "unsupported-windows-eperm");
+});
+
+test("directory sync returns synced after a successful sync", async () => {
+	assert.equal(await syncDirectory({ sync: async () => {} }, "win32"), "synced");
+});
+
+for (const { description, platform, failure } of [
+	{ description: "Linux EPERM", platform: "linux", failure: errno("EPERM") },
+	{ description: "Windows EACCES", platform: "win32", failure: errno("EACCES") },
+] as const) {
+	test(`directory sync preserves fatal error identity for ${description}`, async () => {
+		await assert.rejects(
+			syncDirectory({ sync: async () => { throw failure; } }, platform),
+			(error: unknown) => error === failure,
+		);
+	});
+}
 
 for (const { description, platform, failure } of [
 	{ description: "Linux string EPERM", platform: "linux", failure: errno("EPERM") },
@@ -68,4 +94,23 @@ test("a throwing stderr sink cannot fail an already successful transaction", () 
 	} finally {
 		process.stderr.write = originalWrite;
 	}
+});
+
+test("durability warning accurately names directory degradation", () => {
+	const tracker: RegularFileDurabilityTracker = { degraded: false };
+	recordDirectorySyncOutcome(tracker, "unsupported-windows-eperm");
+	const originalWrite = process.stderr.write;
+	const warnings: string[] = [];
+	process.stderr.write = ((value: string) => {
+		warnings.push(value);
+		return true;
+	}) as typeof process.stderr.write;
+	try {
+		emitDegradedDurabilityWarning("native-hook setup", tracker);
+	} finally {
+		process.stderr.write = originalWrite;
+	}
+	assert.deepEqual(warnings, [
+		"[omx] warning: Windows EPERM directory fsync unsupported in native-hook setup; operation succeeded with degraded durability.\n",
+	]);
 });

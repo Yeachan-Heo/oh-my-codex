@@ -439,6 +439,13 @@ omx wiki refresh --json
 Native Windows remains a secondary path, and WSL2 is generally the better choice if you want a Windows-hosted setup.
 On native Windows, OMX accepts `psmux` as the tmux-compatible binary for the existing tmux-backed paths it already uses.
 
+Native Windows filesystems may report `EPERM` when Node.js requests `fsync()`
+on an otherwise valid regular-file or directory handle. OMX treats only that
+exact Windows capability failure as degraded durability after a successful
+native-hook transaction and emits one warning. Non-Windows errors, other error
+codes, unsafe paths or links, concurrent content changes, and transaction
+validation failures remain fatal.
+
 | Platform | Install |
 | --- | --- |
 | macOS | `brew install tmux` |
