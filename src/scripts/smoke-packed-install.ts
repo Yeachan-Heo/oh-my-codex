@@ -2343,6 +2343,44 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       });
       validateHookStdout(eventName, result.stdout as string);
     }
+    const collaborationCwd = join(smokeCwd, 'flattened-collaboration-nested-lifecycle');
+    mkdirSync(collaborationCwd, { recursive: true });
+    const collaborationResult = run(process.execPath, [realpathSync(hookScript)], {
+      cwd: collaborationCwd,
+      env: buildPackedProbeEnv({
+        OMX_SOURCE_CWD: collaborationCwd,
+        OMX_STARTUP_CWD: collaborationCwd,
+      }),
+      input: JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        cwd: collaborationCwd,
+        session_id: 'packed-flattened-collaboration-nested-lifecycle',
+        thread_id: 'packed-flattened-collaboration-nested-lifecycle-thread',
+        tool_name: 'collaborationlist_agents',
+        tool_response: {
+          agents: [
+            { agent_name: '/root', agent_status: 'running' },
+            {
+              agent_name: '/root/reviewer',
+              agent_status: {
+                completed: 'Child report discusses an unavailable and unsupported optional adapter.',
+              },
+            },
+          ],
+        },
+      }),
+    });
+    if (collaborationResult.status !== 0 || String(collaborationResult.stderr) !== '') {
+      throw new Error('packed flattened collaboration nested lifecycle hook invocation failed');
+    }
+    validateHookStdout('PostToolUse', String(collaborationResult.stdout));
+    const collaborationStateDir = join(collaborationCwd, '.omx', 'state');
+    if (existsSync(join(collaborationStateDir, 'native-subagent-support.json'))) {
+      throw new Error('packed flattened collaboration nested lifecycle persisted a native support blocker');
+    }
+    if (existsSync(join(collaborationStateDir, 'native-subagent-capacity-blocker.json'))) {
+      throw new Error('packed flattened collaboration nested lifecycle persisted a capacity blocker');
+    }
     const pluginHookScript = join(packageRoot, 'plugins', 'oh-my-codex', 'hooks', 'codex-native-hook.mjs');
     const pluginChildScript = join(smokeCwd, 'packed-plugin-oversized-child.mjs');
     const pluginLauncher = join(smokeCwd, process.platform === 'win32' ? 'packed-plugin-oversized.cmd' : 'packed-plugin-oversized.sh');

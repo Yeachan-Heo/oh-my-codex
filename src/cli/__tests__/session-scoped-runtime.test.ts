@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile, readFile } from 'fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'fs/promises';
 
 import { existsSync, realpathSync } from 'fs';
 import { dirname, join } from 'path';
@@ -782,7 +782,7 @@ describe('CLI session-scoped state parity', () => {
     }
   });
 
-  it('neutralizes exact-owner routing-only Ralplan before preflight denial', async () => {
+  it('keeps exact-owner routing-only Ralplan active after preflight denial', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralplan-preflight-owner-'));
     try {
       const stateDir = join(wd, '.omx', 'state');
@@ -814,7 +814,7 @@ describe('CLI session-scoped state parity', () => {
       await writeFile(rootTeamPath, rootTeam);
       await writeFile(rootSkillPath, rootSkill);
       await writeFile(rootStopPath, rootStop);
-
+      const sessionEntries = await readdir(sessionDir);
 
       const preflightResult = runOmxWithEnv(wd, { OMX_SESSION_ID: sessionId }, 'ralplan', 'preflight', '--json');
       assert.equal(preflightResult.status, 1, preflightResult.stderr || preflightResult.stdout);
@@ -828,10 +828,11 @@ describe('CLI session-scoped state parity', () => {
         readModeState('ralplan', wd),
         readSkillActiveState(sessionSkillPath),
       ]);
-      assert.equal(state?.active, false);
-      assert.equal(state?.current_phase, 'cancelled');
-      assert.equal(skillState?.active, false);
-      assert.equal(skillState?.current_phase, 'cancelled');
+      assert.equal(state?.active, true);
+      assert.equal(skillState?.active, true);
+      const postPreflightEntries = await readdir(sessionDir);
+      assert.deepEqual(postPreflightEntries, sessionEntries);
+      assert.equal(postPreflightEntries.some((name) => name.startsWith('.ralplan-neutralization-')), false);
       assert.equal(await readFile(rootTeamPath, 'utf-8'), rootTeam);
       assert.equal(await readFile(rootSkillPath, 'utf-8'), rootSkill);
       assert.equal(await readFile(rootStopPath, 'utf-8'), rootStop);

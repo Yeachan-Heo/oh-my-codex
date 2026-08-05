@@ -28,7 +28,7 @@ The packaged plugin uses `OMX_CODEX_LAUNCH_ID` and `OMX_ENTRY_PATH` only as a sp
 
 ## Preflight mutation boundary
 
-Direct hook and direct role-intent CLI denials are zero-write. `omx ralplan preflight --json` may only neutralize an exact current keyword-detector Ralplan routing seed after strict session-scoped, regular-file, bounded, schema, identity, and no-progress checks. It does not call general mode cancellation, reconcile workflow state, or modify pointers, trackers, markers, runtime/HUD state, foreign state, stale state, or substantive work.
+Direct hook and direct role-intent CLI denials are zero-write. Earlier `omx ralplan preflight --json` implementations could neutralize an exact current keyword-detector Ralplan routing seed after strict session-scoped checks. The current preflight is a state-preserving compatibility diagnostic: it returns `unsupported_documented_leader_proof` without calling general mode cancellation, reconciling workflow state, or modifying pointers, trackers, markers, runtime/HUD state, foreign state, stale state, or substantive work.
 
 The exact preflight and installed-role CLI result is:
 

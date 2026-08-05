@@ -22616,6 +22616,37 @@ PY`,
     }
   });
 
+  it("does not persist blockers from nested-only flattened collaboration lifecycle evidence", async () => {
+    for (const toolName of ["collaboration.list_agents", "collaborationlist_agents"]) {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-collab-nested-lifecycle-"));
+      try {
+        await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse",
+          cwd,
+          session_id: "sess-nested-lifecycle",
+          thread_id: "thread-nested-lifecycle",
+          tool_name: toolName,
+          tool_response: {
+            agents: [
+              { agent_name: "/root", agent_status: "running" },
+              {
+                agent_name: "/root/reviewer",
+                agent_status: {
+                  completed: "Child report discusses an unavailable and unsupported optional adapter.",
+                },
+              },
+            ],
+          },
+        }, { cwd });
+        const stateDir = join(cwd, ".omx", "state");
+        assert.equal(existsSync(join(stateDir, "native-subagent-support.json")), false, toolName);
+        assert.equal(existsSync(join(stateDir, "native-subagent-capacity-blocker.json")), false, toolName);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("blocks flattened close_agent cleanup after recent native subagent capacity exhaustion", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-flattened-collab-capacity-close-block-"));
     try {

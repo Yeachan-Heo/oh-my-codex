@@ -100,20 +100,33 @@ test('packed 0.144.5 fixture is sanitized, pointer-free, and kept separate from 
   assert.equal(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE.session_id.includes('-'), true);
 });
 
-test('packed plugin collaboration success stays authoritative over unrelated child prose', () => {
-  const packedResponse = JSON.stringify({
+test('source parser regression keeps collaboration results authoritative over unrelated child prose', () => {
+  const successfulResponse = JSON.stringify({
     success: true,
     status: 'completed',
-    output: 'Packed/plugin child succeeded; an optional adapter was unavailable, unsupported, and not found.',
+    agents: [{ agent_name: '/root', agent_status: 'running' }],
+    output: 'Child succeeded; an optional adapter was unavailable, unsupported, and not found.',
   });
   for (const toolName of [
     'collaboration.spawn_agent',
     'collaboration.list_agents',
+    'collaborationlist_agents',
     'collaboration.followup_task',
     'collaboration.wait_agent',
   ]) {
-    assert.equal(parseNativeSubagentResultDisposition(toolName, packedResponse).kind, 'success', toolName);
+    assert.equal(parseNativeSubagentResultDisposition(toolName, successfulResponse).kind, 'success', toolName);
   }
+
+  const nestedLifecycleOnly = JSON.stringify({
+    agents: [
+      { agent_name: '/root', agent_status: 'running' },
+      {
+        agent_name: '/root/reviewer',
+        agent_status: { completed: 'Optional adapter is unavailable and unsupported.' },
+      },
+    ],
+  });
+  assert.equal(parseNativeSubagentResultDisposition('collaborationlist_agents', nestedLifecycleOnly).kind, 'unknown');
 });
 
 test('packed lifecycle keeps the pinned newline-delimited Codex app-server envelopes literal', () => {

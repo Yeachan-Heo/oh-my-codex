@@ -76,7 +76,7 @@ Existing routing-capable callers continue to use explicit `agent_type` with an i
 
 - Adapted Ralplan Planner, Architect, Critic, role-intent, and consensus authority are unavailable when the native surface reports `role_routing_unavailable`.
 - Direct role-intent writes fail deterministically with `unsupported_documented_leader_proof` for installed roles.
-- Keyword routing may seed ordinary Ralplan selection state before the model can inspect the native task schema; that state is not authority. The explicit preflight neutralizes only an exact current keyword seed before returning failure. Direct hook and CLI denials are zero-write.
+- Keyword routing may seed ordinary Ralplan selection state before the model can inspect the native task schema; that state is not authority. Earlier implementations neutralized an exact current keyword seed before returning failure. The current explicit preflight is a state-preserving compatibility diagnostic: it returns the same fail-closed result without mutating routing or workflow state. Direct hook and CLI denials are zero-write.
 - Ordinary native planning, lifecycle, state, status, health, HUD, runtime, setup, install, sync, and unrelated delegation do not enter this preflight; their existing controls remain in force.
 - Typed native role-routing and lifecycle guidance remains valid where `agent_type` is exposed; it cannot release `ralplan -> ultragoal` without the official host receipt required by ADR 3212.
 - Exact `omx team N:agent-type "literal task"` launch remains unavailable on Codex 0.145.0 because the hook payload lacks documented non-user-mintable Main-root proof; syntax, local state, and missing child fields cannot substitute for it.

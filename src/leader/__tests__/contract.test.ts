@@ -331,6 +331,23 @@ describe('leader conductor contract', () => {
     }).kind, 'success');
   });
 
+  it('keeps nested collaboration lifecycle evidence non-authoritative and non-failing', () => {
+    for (const toolName of ['collaboration.list_agents', 'collaborationlist_agents']) {
+      const disposition = parseNativeSubagentResultDisposition(toolName, {
+        agents: [
+          { agent_name: '/root', agent_status: 'running' },
+          {
+            agent_name: '/root/reviewer',
+            agent_status: {
+              completed: 'Child report discusses an unavailable and unsupported optional adapter.',
+            },
+          },
+        ],
+      });
+      assert.equal(disposition.kind, 'unknown', toolName);
+    }
+  });
+
   it('handles contradictory structured result fields deterministically', () => {
     assert.equal(parseNativeSubagentResultDisposition('collaboration.wait_agent', {
       success: true,

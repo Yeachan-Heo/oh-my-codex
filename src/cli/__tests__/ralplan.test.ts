@@ -20,20 +20,18 @@ describe('#3194 ralplan CLI unsupported-only surface', () => {
   it('documents only fail-closed adapted-authority diagnostics', () => {
     assert.match(RALPLAN_HELP, /fail-closed adapted-authority diagnostics/);
     assert.match(RALPLAN_HELP, /Required only when native role routing is unavailable and adapted Ralplan authority is requested/);
+    assert.match(RALPLAN_HELP, /State-preserving diagnostic only/);
     assert.match(RALPLAN_HELP, /Ordinary work remains under its own workflow gates/);
     assert.match(RALPLAN_HELP, /Compatibility diagnostic only: installed roles are denied with unsupported_documented_leader_proof/);
     assert.doesNotMatch(RALPLAN_HELP, /validated role intents/i);
   });
-  it('fails the explicit adapted-surface preflight without unproven mutation', async () => {
+  it('fails the explicit adapted-surface preflight without state mutation', async () => {
     let resolved = false;
-    let neutralized = false;
     const result = await invoke(['preflight', '--json'], {
       resolveInstalledRoleName: () => { resolved = true; return 'architect'; },
-      neutralizeOwnedRoutingRalplan: async () => { neutralized = true; return false; },
     });
     assert.equal(result.exitCode, 1);
     assert.equal(resolved, false);
-    assert.equal(neutralized, true);
     assert.deepEqual(result.stderr, []);
     assert.deepEqual(JSON.parse(result.stdout.join('\n')), { ok: false, reason: 'unsupported_documented_leader_proof' });
   });
