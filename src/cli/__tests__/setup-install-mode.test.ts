@@ -3353,6 +3353,49 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("rejects Windows writable-bit drift with unchanged bytes and file identity", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-readonly-drift-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const tempPath = (path: string, purpose: "write" | "delete") =>
+			join(dirname(path), `.${basename(path)}.readonly-${purpose}.tmp`);
+		const resetTemporaryPath = setNativeHookTransactionTemporaryPathForTest(tempPath);
+		let checkedIdentity = 0;
+		const resetFailureInjector = setNativeHookTransactionFailureInjectorForTest((stage, artifact) => {
+			if (stage !== "before_rename") return;
+			const temporaryPath = tempPath(artifact.path, "write");
+			const before = lstatSync(temporaryPath);
+			const beforeBytes = readFileSync(temporaryPath);
+			chmodSync(temporaryPath, 0o444);
+			const after = lstatSync(temporaryPath);
+			assert.deepEqual(readFileSync(temporaryPath), beforeBytes);
+			assert.equal(after.dev, before.dev);
+			assert.equal(after.ino, before.ino);
+			assert.equal(after.nlink, before.nlink);
+			assert.notEqual(after.mode & 0o200, before.mode & 0o200);
+			checkedIdentity += 1;
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await writeFile(
+						join(codexHomeDir, "config.toml"),
+						'notify = ["node", "/tmp/user-notify.js"]\n',
+					);
+					await assert.rejects(
+						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						/read-back changed/,
+					);
+				});
+			});
+			assert.equal(checkedIdentity, 1);
+		} finally {
+			resetFailureInjector();
+			resetTemporaryPath();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("orders Windows plugin-transition mutations as hooks, shim, then config", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-hook-removal-"));
 		const forwardOrder: string[] = [];

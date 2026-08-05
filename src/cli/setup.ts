@@ -719,11 +719,13 @@ function nativeHookTransactionTopologyMatchesAcrossOpen(
 	if (
 		nativeHookPlatform() === "win32" &&
 		left.kind === "regular_file" &&
-		right.kind === "regular_file"
+		right.kind === "regular_file" &&
+		((left.mode === 0o600 && right.mode === 0o666) ||
+			(left.mode === 0o666 && right.mode === 0o600))
 	) {
-		// Windows synthesizes Unix permission bits, so chmod(0o600) can read back
-		// as 0o666. Cross-open ownership still requires exact bytes, volume/file
-		// identity (dev + ino), and link count in the full snapshot comparison.
+		// Windows can synthesize requested 0o600 as 0o666. Keep this exception
+		// exact so writable/read-only changes remain ownership failures. Cross-open
+		// ownership also requires bytes, dev, ino, and nlink in the full snapshot.
 		return true;
 	}
 	return nativeHookTransactionTopologyEqual(left, right);
