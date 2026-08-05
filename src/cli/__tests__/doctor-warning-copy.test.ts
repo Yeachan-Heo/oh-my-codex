@@ -2839,7 +2839,7 @@ command = "node"
 							throw Object.assign(new Error("injected Windows EPERM"), { code: "EPERM" });
 						},
 					}, "win32"),
-					syncDirectory: async () => undefined,
+					syncDirectory: async () => "synced",
 				});
 				process.stderr.write = ((chunk: string | Uint8Array) => {
 					stderr.push(String(chunk));
@@ -2871,7 +2871,7 @@ command = "node"
 			const restoreDurability = setDoctorClaimJournalDurabilityForTest({
 				platform: "win32",
 				syncRegularFile: async () => { throw regularError; },
-				syncDirectory: async () => undefined,
+				syncDirectory: async () => "synced",
 			});
 			try {
 				await assert.rejects(doctor(), (error) => error === regularError);

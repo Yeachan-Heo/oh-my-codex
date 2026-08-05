@@ -3,14 +3,18 @@ import { constants } from "fs";
 import { copyFile, link, open, lstat, mkdir, readFile, rm, type FileHandle } from "fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "path";
 import {
+	recordDirectorySyncOutcome,
+	syncDirectory,
 	syncRegularFile,
+	type DirectorySyncOutcome,
+	type RegularFileDurabilityTracker,
 	type RegularFileSyncOutcome,
 } from "../utils/file-durability.js";
 
 export interface NativeHookClaimJournalDurability {
 	platform: NodeJS.Platform;
 	syncRegularFile(handle: Pick<FileHandle, "sync">): Promise<RegularFileSyncOutcome>;
-	syncDirectory(path: string): Promise<void>;
+	syncDirectory(path: string): Promise<DirectorySyncOutcome>;
 }
 
 interface ClaimJournalEntry {
@@ -48,10 +52,13 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
-async function fsyncDirectory(path: string): Promise<void> {
+async function fsyncDirectory(
+	path: string,
+	platform: NodeJS.Platform,
+): Promise<DirectorySyncOutcome> {
 	const handle = await open(path, "r");
 	try {
-		await handle.sync();
+		return await syncDirectory(handle, platform);
 	} finally {
 		await handle.close();
 	}
@@ -59,19 +66,34 @@ async function fsyncDirectory(path: string): Promise<void> {
 
 export function createNativeHookClaimJournalDurability(
 	platform: NodeJS.Platform = process.platform,
+	tracker?: RegularFileDurabilityTracker,
 ): NativeHookClaimJournalDurability {
 	return {
 		platform,
 		syncRegularFile: (handle) => syncRegularFile(handle, platform),
-		syncDirectory: fsyncDirectory,
+		async syncDirectory(path) {
+			const outcome = await fsyncDirectory(path, platform);
+			if (tracker) recordDirectorySyncOutcome(tracker, outcome);
+			return outcome;
+		},
 	};
+}
+
+function sameStableFileIdentity(
+	left: { dev: number; ino: number },
+	right: { dev: number; ino: number },
+	platform: NodeJS.Platform,
+): boolean {
+	// Windows file-index metadata is not a stable cross-open ownership token.
+	// Callers pair this with controlled paths, exact bytes, and expected link counts.
+	return platform === "win32" || (left.dev === right.dev && left.ino === right.ino);
 }
 
 export async function syncNativeHookClaimParent(
 	path: string,
 	durability: NativeHookClaimJournalDurability,
-): Promise<void> {
-	await durability.syncDirectory(dirname(path));
+): Promise<DirectorySyncOutcome> {
+	return durability.syncDirectory(dirname(path));
 }
 
 export async function restoreNativeHookClaimNoClobber(
@@ -111,12 +133,15 @@ export async function restoreNativeHookClaimNoClobber(
 		readFile(destinationPath),
 		lstat(destinationPath),
 	]);
+	const expectedLinks = linked ? 2 : 1;
 	if (
-		currentClaimStat.dev !== claimStat.dev ||
-		currentClaimStat.ino !== claimStat.ino ||
+		currentClaimStat.isSymbolicLink() || !currentClaimStat.isFile() ||
+		destinationStat.isSymbolicLink() || !destinationStat.isFile() ||
+		currentClaimStat.nlink !== expectedLinks || destinationStat.nlink !== expectedLinks ||
+		!sameStableFileIdentity(currentClaimStat, claimStat, durability.platform) ||
 		!currentClaimBytes.equals(claimBytes) ||
 		!destinationBytes.equals(claimBytes) ||
-		(linked && (currentClaimStat.dev !== destinationStat.dev || currentClaimStat.ino !== destinationStat.ino))
+		(linked && !sameStableFileIdentity(currentClaimStat, destinationStat, durability.platform))
 	) {
 		throw new Error(`Native hook claim changed during restore: ${claimPath}.`);
 	}
@@ -243,10 +268,13 @@ export async function recoverNativeHookClaimJournal(
 		if (
 			!canonicalStat.isSymbolicLink() && canonicalStat.isFile() && canonicalStat.nlink === 2 &&
 			!claimStat.isSymbolicLink() && claimStat.isFile() && claimStat.nlink === 2 &&
-			canonicalStat.dev === claimStat.dev && canonicalStat.ino === claimStat.ino
+			sameStableFileIdentity(canonicalStat, claimStat, durability.platform)
 		) {
-			const bytes = await readFile(parsed.canonicalPath);
-			if (digest(bytes) !== parsed.beforeHash) {
+			const [canonicalBytes, claimBytes] = await Promise.all([
+				readFile(parsed.canonicalPath),
+				readFile(parsed.claimPath),
+			]);
+			if (!canonicalBytes.equals(claimBytes) || digest(canonicalBytes) !== parsed.beforeHash) {
 				throw new Error("Native hook claim journal cannot finalize a linked restore with changed bytes.");
 			}
 			await rm(parsed.claimPath);

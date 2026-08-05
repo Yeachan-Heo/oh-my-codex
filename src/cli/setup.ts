@@ -48,6 +48,7 @@ import {
 } from "../utils/paths.js";
 import {
 	emitDegradedDurabilityWarning,
+	recordDirectorySyncOutcome,
 	recordRegularFileSyncOutcome,
 	syncRegularFile,
 	type RegularFileDurabilityTracker,
@@ -633,35 +634,54 @@ function nativeHookPlatform(): NodeJS.Platform {
 }
 
 
-function nativeHookClaimJournalDurability() {
-	return nativeHookClaimJournalDurabilityOverride
-		?? createNativeHookClaimJournalDurability(nativeHookPlatform());
+function nativeHookClaimJournalDurability(tracker?: RegularFileDurabilityTracker) {
+	if (!nativeHookClaimJournalDurabilityOverride) {
+		return createNativeHookClaimJournalDurability(nativeHookPlatform(), tracker);
+	}
+	const durability = nativeHookClaimJournalDurabilityOverride;
+	if (!tracker) return durability;
+	return {
+		...durability,
+		async syncDirectory(path: string) {
+			const outcome = await durability.syncDirectory(path);
+			recordDirectorySyncOutcome(tracker, outcome);
+			return outcome;
+		},
+	};
 }
 
-async function clearNativeHookClaimJournal(root: string): Promise<void> {
-	return clearNativeHookClaimJournalWithDurability(root, nativeHookClaimJournalDurability());
+async function clearNativeHookClaimJournal(
+	root: string,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
+	return clearNativeHookClaimJournalWithDurability(root, nativeHookClaimJournalDurability(tracker));
 }
 
 async function persistNativeHookClaimJournal(
 	root: string,
 	entry: Parameters<typeof persistNativeHookClaimJournalWithDurability>[1],
+	tracker?: RegularFileDurabilityTracker,
 ): Promise<RegularFileSyncOutcome> {
-	return persistNativeHookClaimJournalWithDurability(root, entry, nativeHookClaimJournalDurability());
+	return persistNativeHookClaimJournalWithDurability(root, entry, nativeHookClaimJournalDurability(tracker));
 }
 
 async function restoreNativeHookClaimNoClobber(
 	claimPath: string,
 	destinationPath: string,
+	tracker?: RegularFileDurabilityTracker,
 ): Promise<RegularFileSyncOutcome> {
 	return restoreNativeHookClaimNoClobberWithDurability(
 		claimPath,
 		destinationPath,
-		nativeHookClaimJournalDurability(),
+		nativeHookClaimJournalDurability(tracker),
 	);
 }
 
-async function syncNativeHookClaimParent(path: string): Promise<void> {
-	return syncNativeHookClaimParentWithDurability(path, nativeHookClaimJournalDurability());
+async function syncNativeHookClaimParent(
+	path: string,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
+	await syncNativeHookClaimParentWithDurability(path, nativeHookClaimJournalDurability(tracker));
 }
 async function syncNativeHookRegularFile(
 	handle: Awaited<ReturnType<typeof open>>,
@@ -904,6 +924,14 @@ function nativeHookTransactionSnapshotsEqual(
 	left: NativeHookTransactionArtifactSnapshot,
 	right: NativeHookTransactionArtifactSnapshot,
 ): boolean {
+	if (nativeHookPlatform() === "win32") {
+		// Windows can synthesize Unix mode bits and expose unstable file-index
+		// metadata across closed/reopened handles. captureNativeHookTransactionArtifact
+		// still enforces a single-link regular file and a stable identity during
+		// each read; cross-read ownership is proven by the controlled path and bytes.
+		return hookTransactionBytesEqual(left.bytes, right.bytes) &&
+			left.topology.kind === right.topology.kind;
+	}
 	return (
 		hookTransactionBytesEqual(left.bytes, right.bytes) &&
 		nativeHookTransactionTopologyEqual(left.topology, right.topology) &&
@@ -917,6 +945,10 @@ function nativeHookTransactionSnapshotMatchesExpected(
 	snapshot: NativeHookTransactionArtifactSnapshot,
 	expected: Pick<NativeHookTransactionArtifactSnapshot, "bytes" | "topology">,
 ): boolean {
+	if (nativeHookPlatform() === "win32") {
+		return hookTransactionBytesEqual(snapshot.bytes, expected.bytes) &&
+			snapshot.topology.kind === expected.topology.kind;
+	}
 	return (
 		hookTransactionBytesEqual(snapshot.bytes, expected.bytes) &&
 		nativeHookTransactionTopologyEqual(snapshot.topology, expected.topology)
@@ -1170,7 +1202,7 @@ async function restoreNativeHookClaim(
 ): Promise<void> {
 	recordRegularFileSyncOutcome(
 		tracker,
-		await restoreNativeHookClaimNoClobber(claimPath, destinationPath),
+		await restoreNativeHookClaimNoClobber(claimPath, destinationPath, tracker),
 	);
 }
 
@@ -1282,7 +1314,7 @@ async function atomicWriteNativeHookTransactionArtifact(
 						claimPath,
 						before: expectedCurrent.bytes,
 						after: content,
-					}),
+					}, tracker),
 				);
 				await refreshNativeHookTransactionAncestorPrecondition(
 					ancestorPrecondition,
@@ -1292,7 +1324,7 @@ async function atomicWriteNativeHookTransactionArtifact(
 			}
 			await rename(artifact.path, claimPath);
 			claimCreated = true;
-			if (journaledClaim) await syncNativeHookClaimParent(claimPath);
+			if (journaledClaim) await syncNativeHookClaimParent(claimPath, tracker);
 			await assertNativeHookTransactionArtifactSnapshot(
 				claimPath,
 				`${artifact.label} replacement claim`,
@@ -1310,7 +1342,7 @@ async function atomicWriteNativeHookTransactionArtifact(
 		} finally {
 			await installedHandle.close();
 		}
-		await syncNativeHookClaimParent(artifact.path);
+		await syncNativeHookClaimParent(artifact.path, tracker);
 		const installedSnapshot = await assertNativeHookTransactionArtifactState(
 			artifact.path,
 			artifact.label,
@@ -1319,11 +1351,11 @@ async function atomicWriteNativeHookTransactionArtifact(
 		);
 		if (claimCreated && claimPath) {
 			await rm(claimPath);
-			await syncNativeHookClaimParent(claimPath);
+			await syncNativeHookClaimParent(claimPath, tracker);
 			claimCreated = false;
 		}
 		if (journaledClaim) {
-			await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot);
+			await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot, tracker);
 			journaledClaim = false;
 		}
 		await rm(temporaryPath);
@@ -1344,10 +1376,10 @@ async function atomicWriteNativeHookTransactionArtifact(
 		if (claimCreated && claimPath) {
 			try {
 				await restoreNativeHookClaim(claimPath, artifact.path, tracker);
-				await syncNativeHookClaimParent(artifact.path);
+				await syncNativeHookClaimParent(artifact.path, tracker);
 				claimCreated = false;
 				if (journaledClaim) {
-					await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot);
+					await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot, tracker);
 					journaledClaim = false;
 				}
 			} catch (recoveryError) {
@@ -1388,7 +1420,8 @@ async function assertNativeHookTransactionArtifactState(
 	context: "precondition" | "rollback" | "read-back",
 ): Promise<NativeHookTransactionArtifactSnapshot> {
 	const actual = await captureNativeHookTransactionArtifact(path, label);
-	if (!nativeHookTransactionSnapshotMatchesExpected(actual, expected)) {
+	const matches = nativeHookTransactionSnapshotMatchesExpected(actual, expected);
+	if (!matches) {
 		if (context === "rollback") {
 			throw new Error(
 				`Native hook transaction rollback preserved ${path} for manual recovery because ${label} no longer matches the transaction-owned version.`,
@@ -1407,7 +1440,8 @@ async function assertNativeHookTransactionArtifactSnapshot(
 	context: "precondition" | "rollback" | "read-back",
 ): Promise<NativeHookTransactionArtifactSnapshot> {
 	const actual = await captureNativeHookTransactionArtifact(path, label);
-	if (!nativeHookTransactionSnapshotsEqual(actual, expected)) {
+	const matches = nativeHookTransactionSnapshotsEqual(actual, expected);
+	if (!matches) {
 		if (context === "rollback") {
 			throw new Error(
 				`Native hook transaction rollback preserved ${path} for manual recovery because ${label} no longer matches the transaction-owned version.`,
@@ -1600,11 +1634,11 @@ async function applyNativeHookTransactionArtifact(
 					claimPath,
 					before: artifact.before.bytes!,
 					after: null,
-				}),
+				}, tracker),
 			);
 		}
 		await rename(artifact.path, claimPath);
-		if (journaledClaim) await syncNativeHookClaimParent(claimPath);
+		if (journaledClaim) await syncNativeHookClaimParent(claimPath, tracker);
 		const entry: AppliedNativeHookTransactionArtifact = {
 			artifact,
 			appliedSnapshot: { bytes: null, topology: { kind: "absent" } },
@@ -1631,9 +1665,9 @@ async function applyNativeHookTransactionArtifact(
 					`${artifact.label} removal claim`,
 				);
 				await restoreNativeHookClaim(claimPath, artifact.path, tracker);
-				if (journaledClaim) await syncNativeHookClaimParent(artifact.path);
+				if (journaledClaim) await syncNativeHookClaimParent(artifact.path, tracker);
 				if (journaledClaim) {
-					await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot);
+					await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot, tracker);
 				}
 				await assertNativeHookTransactionArtifactSnapshot(
 					artifact.path,
@@ -1652,9 +1686,9 @@ async function applyNativeHookTransactionArtifact(
 
 		}
 		await rm(claimPath);
-		if (journaledClaim) await syncNativeHookClaimParent(claimPath);
+		if (journaledClaim) await syncNativeHookClaimParent(claimPath, tracker);
 		if (journaledClaim) {
-			await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot);
+			await clearNativeHookClaimJournal(ancestorPrecondition.controlledRoot, tracker);
 		}
 		originalRemoved = true;
 		injectNativeHookTransactionFailure("after_remove", artifact);
@@ -3931,7 +3965,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
 		const recovery = await recoverNativeHookClaimJournal(
 			scopeDirs.codexHomeDir,
-			nativeHookClaimJournalDurability(),
+			nativeHookClaimJournalDurability(recoveryTracker),
 		);
 		recordRegularFileSyncOutcome(recoveryTracker, recovery.outcome);
 		if (recovery.recovered) {

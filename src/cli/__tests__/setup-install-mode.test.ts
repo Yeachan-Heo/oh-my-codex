@@ -19,6 +19,7 @@ import { basename, dirname, join } from "node:path";
 import { parse as parseToml } from "@iarna/toml";
 import {
 	decideWindowsNativeHookShimReference,
+	setNativeHookClaimJournalDurabilityForTest,
 	setNativeHookTransactionFailureInjectorForTest,
 	setSetupLatePhaseFailureInjectorForTest,
 	setNativeHookTransactionPlatformForTest,
@@ -27,6 +28,7 @@ import {
 	setup,
 } from "../setup.js";
 import { resolveSetupRefreshArgs } from "../update.js";
+import { doctor } from "../doctor.js";
 import { uninstall } from "../uninstall.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
 import {
@@ -3233,6 +3235,124 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("completes Windows native-hook transactions with one directory fsync EPERM warning", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-directory-fsync-eperm-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const resetRegularSync = setNativeHookTransactionRegularFileSyncForTest(async () => undefined);
+		let directorySyncCalls = 0;
+		const stderr: string[] = [];
+		const originalStderrWrite = process.stderr.write;
+		process.stderr.write = ((chunk: string | Uint8Array) => {
+			stderr.push(String(chunk));
+			return true;
+		}) as typeof process.stderr.write;
+		const resetDurability = setNativeHookClaimJournalDurabilityForTest({
+			platform: "win32",
+			syncRegularFile: async () => "synced",
+			syncDirectory: async () => {
+				directorySyncCalls += 1;
+				return "unsupported-windows-eperm";
+			},
+		});
+		let doctorOutput = "";
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await writeFile(
+						join(codexHomeDir, "config.toml"),
+						'notify = ["node", "/tmp/user-notify.js"]\n',
+					);
+					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					doctorOutput = await captureConsoleOutput(() => doctor());
+				});
+				assert.ok(directorySyncCalls > 0);
+				assert.equal(existsSync(buildManagedCodexNativeHookWindowsShimPath(codexHomeDir)), true);
+				assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
+				assert.equal(existsSync(join(codexHomeDir, ".omx", "notify-dispatch.json")), true);
+				assert.doesNotThrow(() => parseToml(readFileSync(join(codexHomeDir, "config.toml"), "utf-8")));
+			});
+			assert.match(doctorOutput, /\[OK\] Config:/);
+			assert.match(doctorOutput, /\[OK\] Native hooks:/);
+			assert.deepEqual(
+				stderr.filter((line) => line.includes("native-hook setup")),
+				["[omx] warning: Windows EPERM directory fsync unsupported in native-hook setup; operation succeeded with degraded durability.\n"],
+			);
+		} finally {
+			process.stderr.write = originalStderrWrite;
+			resetDurability();
+			resetRegularSync();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	for (const fixture of [
+		{ platform: "win32" as const, code: "EACCES" },
+		{ platform: "linux" as const, code: "EPERM" },
+	]) {
+		it(`fails native-hook setup for ${fixture.platform} directory fsync ${fixture.code}`, async () => {
+			const wd = await mkdtemp(join(tmpdir(), "omx-setup-directory-fsync-fatal-"));
+			const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+			const resetDurability = setNativeHookClaimJournalDurabilityForTest({
+				platform: fixture.platform,
+				syncRegularFile: async () => "synced",
+				syncDirectory: async () => {
+					throw Object.assign(new Error(`${fixture.code}: fsync`), { code: fixture.code });
+				},
+			});
+			try {
+				await withIsolatedUserHome(wd, async () => {
+					await withTempCwd(wd, async () => {
+						await assert.rejects(
+							setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+							new RegExp(fixture.code),
+						);
+					});
+				});
+			} finally {
+				resetDurability();
+				resetPlatform();
+				await rm(wd, { recursive: true, force: true });
+			}
+		});
+	}
+
+	it("accepts hash-identical Windows temporary read-back with a different file identity", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-identity-drift-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const tempPath = (path: string, purpose: "write" | "delete") =>
+			join(dirname(path), `.${basename(path)}.identity-${purpose}.tmp`);
+		const resetTemporaryPath = setNativeHookTransactionTemporaryPathForTest(tempPath);
+		let replacements = 0;
+		const resetFailureInjector = setNativeHookTransactionFailureInjectorForTest((stage, artifact) => {
+			if (stage !== "before_rename") return;
+			const temporaryPath = tempPath(artifact.path, "write");
+			const replacementPath = `${temporaryPath}.replacement`;
+			writeFileSync(replacementPath, readFileSync(temporaryPath));
+			rmSync(temporaryPath);
+			renameSync(replacementPath, temporaryPath);
+			replacements += 1;
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await writeFile(
+						join(codexHomeDir, "config.toml"),
+						'notify = ["node", "/tmp/user-notify.js"]\n',
+					);
+					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+				});
+				assert.ok(replacements >= 4);
+				assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
+				assert.equal(existsSync(join(codexHomeDir, ".omx", "notify-dispatch.json")), true);
+			});
+		} finally {
+			resetFailureInjector();
+			resetTemporaryPath();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 	it("orders Windows plugin-transition mutations as hooks, shim, then config", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-hook-removal-"));
 		const forwardOrder: string[] = [];
@@ -5364,8 +5484,9 @@ describe("omx setup install mode behavior", () => {
 			}
 		}
 	});
-	it("preserves a same-byte foreign replacement made immediately after a native-hook rename", async () => {
+	it("accepts a same-byte Windows replacement made immediately after a native-hook rename", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-immediate-post-rename-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
 		let resetFailureInjector: (() => void) | undefined;
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -5390,24 +5511,22 @@ describe("omx setup install mode behavior", () => {
 							assert.notEqual(replacedInode, ownedInode);
 						},
 					);
-					await assert.rejects(
-						setup({
-							scope: "user",
-							installMode: "legacy",
-							skipNativeAgentRefresh: true,
-							codexFeaturesProbe: () => null,
-							codexVersionProbe: () => null,
-						}),
-						/rollback failed/,
-					);
+					await setup({
+						scope: "user",
+						installMode: "legacy",
+						skipNativeAgentRefresh: true,
+						codexFeaturesProbe: () => null,
+						codexVersionProbe: () => null,
+					});
 					assert.ok(replacement);
 					assert.ok(replacedInode);
 					assert.deepEqual(await readFile(hooksPath), replacement);
-					assert.deepEqual(await readFile(configPath), configBefore);
+					assert.notDeepEqual(await readFile(configPath), configBefore);
 				});
 			});
 		} finally {
 			resetFailureInjector?.();
+			resetPlatform();
 			await rm(wd, { recursive: true, force: true });
 		}
 	});

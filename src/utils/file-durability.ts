@@ -1,6 +1,7 @@
 import type { FileHandle } from "fs/promises";
 
 export type RegularFileSyncOutcome = "synced" | "unsupported-windows-eperm";
+export type DirectorySyncOutcome = "synced" | "unsupported-windows-eperm";
 
 export type DurabilityWarningSubsystem =
 	| "session pointer start/reconcile"
@@ -11,9 +12,11 @@ export type DurabilityWarningSubsystem =
 
 export interface RegularFileDurabilityTracker {
 	degraded: boolean;
+	regularFileDegraded?: boolean;
+	directoryDegraded?: boolean;
 }
 
-function isUnsupportedWindowsRegularFileSync(
+function isUnsupportedWindowsSync(
 	error: unknown,
 	platform: NodeJS.Platform,
 ): boolean {
@@ -38,7 +41,25 @@ export async function syncRegularFile(
 		await handle.sync();
 		return "synced";
 	} catch (error) {
-		if (!isUnsupportedWindowsRegularFileSync(error, platform)) throw error;
+		if (!isUnsupportedWindowsSync(error, platform)) throw error;
+		return "unsupported-windows-eperm";
+	}
+}
+
+/**
+ * Windows can also report EPERM when fsync is unsupported for an otherwise
+ * valid directory handle. Keep the capability boundary as narrow as the
+ * regular-file fallback: every other platform/error pair remains fatal.
+ */
+export async function syncDirectory(
+	handle: Pick<FileHandle, "sync">,
+	platform: NodeJS.Platform = process.platform,
+): Promise<DirectorySyncOutcome> {
+	try {
+		await handle.sync();
+		return "synced";
+	} catch (error) {
+		if (!isUnsupportedWindowsSync(error, platform)) throw error;
 		return "unsupported-windows-eperm";
 	}
 }
@@ -47,7 +68,18 @@ export function recordRegularFileSyncOutcome(
 	tracker: RegularFileDurabilityTracker,
 	outcome: RegularFileSyncOutcome,
 ): void {
-	tracker.degraded ||= outcome === "unsupported-windows-eperm";
+	if (outcome !== "unsupported-windows-eperm") return;
+	tracker.degraded = true;
+	tracker.regularFileDegraded = true;
+}
+
+export function recordDirectorySyncOutcome(
+	tracker: RegularFileDurabilityTracker,
+	outcome: DirectorySyncOutcome,
+): void {
+	if (outcome !== "unsupported-windows-eperm") return;
+	tracker.degraded = true;
+	tracker.directoryDegraded = true;
 }
 
 export function emitDegradedDurabilityWarning(
@@ -55,9 +87,14 @@ export function emitDegradedDurabilityWarning(
 	tracker: RegularFileDurabilityTracker,
 ): void {
 	if (!tracker.degraded) return;
+	const target = tracker.directoryDegraded
+		? tracker.regularFileDegraded
+			? "regular-file and directory fsync"
+			: "directory fsync"
+		: "regular-file fsync";
 	try {
 		process.stderr.write(
-			`[omx] warning: Windows EPERM regular-file fsync unsupported in ${subsystem}; operation succeeded with degraded durability.\n`,
+			`[omx] warning: Windows EPERM ${target} unsupported in ${subsystem}; operation succeeded with degraded durability.\n`,
 		);
 	} catch {
 		// Diagnostics must not fail an already committed transaction.

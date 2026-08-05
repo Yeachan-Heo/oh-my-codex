@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,6 +8,7 @@ import {
 	createNativeHookClaimJournalDurability,
 	persistNativeHookClaimJournal as persistNativeHookClaimJournalWithDurability,
 	recoverNativeHookClaimJournal as recoverNativeHookClaimJournalWithDurability,
+	restoreNativeHookClaimNoClobber,
 } from "../native-hook-claim-journal.js";
 
 const durability = createNativeHookClaimJournalDurability();
@@ -170,10 +171,66 @@ test("claim journal treats only injected Windows regular-file EPERM as degraded"
 				order.push("regular");
 				return "unsupported-windows-eperm";
 			},
-			syncDirectory: async () => { order.push("directory"); },
+			syncDirectory: async () => { order.push("directory"); return "synced"; },
 		});
 		assert.equal(outcome, "unsupported-windows-eperm");
 		assert.deepEqual(order, ["directory", "regular", "directory"]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim journal rejects paths outside its controlled root", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-controlled-root-"));
+	try {
+		await assert.rejects(
+			persistNativeHookClaimJournal(root, {
+				canonicalPath: join(root, "..", "foreign-hooks.json"),
+				claimPath: join(root, ".hooks.json.claim"),
+				before: Buffer.from("before\n"),
+				after: null,
+			}),
+			/outside controlled root/,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim restore rejects an unexpected hard-linked claim", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-hard-link-"));
+	try {
+		const claimPath = join(root, ".hooks.json.claim");
+		await writeFile(claimPath, "before\n");
+		await link(claimPath, join(root, "foreign-link"));
+		await assert.rejects(
+			restoreNativeHookClaimNoClobber(
+				claimPath,
+				join(root, "hooks.json"),
+				durability,
+			),
+			/refuses unsafe claim/,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("claim journal continues when Windows directory sync reports unsupported EPERM", async () => {
+	const root = await mkdtemp(join(tmpdir(), "omx-claim-directory-durability-"));
+	try {
+		const outcome = await persistNativeHookClaimJournalWithDurability(root, {
+			canonicalPath: join(root, "hooks.json"),
+			claimPath: join(root, ".hooks.json.claim"),
+			before: Buffer.from("before\n"),
+			after: null,
+		}, {
+			platform: "win32",
+			syncRegularFile: async () => "synced",
+			syncDirectory: async () => "unsupported-windows-eperm",
+		});
+		assert.equal(outcome, "synced");
+		await assert.doesNotReject(readFile(join(root, ".omx", "native-hook-claim-journal.json")));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -193,14 +250,14 @@ test("claim journal keeps POSIX regular-file and directory EPERM fatal", async (
 			persistNativeHookClaimJournalWithDurability(root, entry, {
 				platform: "linux",
 				syncRegularFile: async () => { throw regularError; },
-				syncDirectory: async () => undefined,
+				syncDirectory: async () => "synced",
 			}),
 			(error) => error === regularError,
 		);
 		const directoryError = Object.assign(new Error("EPERM"), { code: "EPERM" });
 		await assert.rejects(
 			persistNativeHookClaimJournalWithDurability(root, entry, {
-				platform: "win32",
+				platform: "linux",
 				syncRegularFile: async () => "synced",
 				syncDirectory: async () => { throw directoryError; },
 			}),
@@ -224,7 +281,7 @@ test("claim journal recovery returns independent recovered and no-op outcomes", 
 		const recovered = await recoverNativeHookClaimJournalWithDurability(root, {
 			platform: "win32",
 			syncRegularFile: async () => "unsupported-windows-eperm",
-			syncDirectory: async () => undefined,
+			syncDirectory: async () => "synced",
 		});
 		assert.deepEqual(recovered, { recovered: true, outcome: "unsupported-windows-eperm" });
 		assert.deepEqual(
