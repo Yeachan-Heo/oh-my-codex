@@ -1,11 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getBaseStateDir, resolveWorkingDirectoryForState } from '../state/paths.js';
+import {
+  CODEX_HOST_CONSENSUS_RECEIPT_FAILURE_REASONS,
+  getCodexHostConsensusVerifierReadiness,
+  type RalplanHostConsensusReceiptVerifierCapability,
+} from './host-consensus-receipt.js';
 
 
 
 export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
-  documentedHostConsensusReceiptUnavailable: 'documented_host_consensus_receipt_unavailable',
+  documentedHostConsensusReceiptUnavailable:
+    CODEX_HOST_CONSENSUS_RECEIPT_FAILURE_REASONS.documentedHostConsensusReceiptUnavailable,
   nativeSubagentEvidenceMissing: 'native_subagent_consensus_evidence_missing',
   nonApprovingReview: 'non_approving_ralplan_consensus_review',
   missingSequentialApproval: 'missing_sequential_architect_then_critic_approval',
@@ -14,14 +20,14 @@ export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
 export type RalplanConsensusBlockedReason =
   typeof RALPLAN_CONSENSUS_BLOCKED_REASONS[keyof typeof RALPLAN_CONSENSUS_BLOCKED_REASONS];
 
-export type RalplanHostConsensusReceiptVerifierCapability = 'available' | 'unavailable';
+export type { RalplanHostConsensusReceiptVerifierCapability } from './host-consensus-receipt.js';
 
 /**
  * Reports whether this host can verify the official receipt that authorizes a
  * Ralplan handoff. Local lifecycle artifacts remain diagnostics either way.
  */
 export function getRalplanHostConsensusReceiptVerifierCapability(): RalplanHostConsensusReceiptVerifierCapability {
-  return 'unavailable';
+  return getCodexHostConsensusVerifierReadiness().capability;
 }
 
 export function shouldBlockFreshAutopilotForRalplanReceipt(

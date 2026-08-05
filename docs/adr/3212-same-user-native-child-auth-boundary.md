@@ -22,6 +22,8 @@ Architect and Critic lifecycle evidence remains observable, including ordering a
 
 Future enablement requires official documentation and a reviewed implementation that verifies the issuer, receipt version, exact session, installed Architect and Critic roles, distinct host thread identities, artifact digests, strict Architect-before-Critic order, and replay binding through the official host surface before any release. Observed behavior or a locally serialized receipt is insufficient.
 
+The [Phase 1 host-consensus receipt ADR](./codex-host-consensus-receipt-phase-1.md) defines the inert protocol and verifier scaffold used to test those requirements. It does not alter this decision or supply production authority.
+
 ## Packaged plugin boundary
 
 The packaged plugin uses `OMX_CODEX_LAUNCH_ID` and `OMX_ENTRY_PATH` only as a spoofable, non-secret routing discriminator. Its bounded `plugin-hook-routing` record may preserve owner, plain, inherited-nested, and related-child delegation behavior, but is consumed by no source-hook, consensus, or authorization decision. The launcher creates or reads no native-anchor key, HMAC, signed claim, or `plugin-hook-launches` authority record.
