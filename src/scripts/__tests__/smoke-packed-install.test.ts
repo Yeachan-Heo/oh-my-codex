@@ -1,12 +1,13 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import {
+  assertPackedLaunchCwdPreserved,
   assertInstalledPluginSurface,
   assertInstalledReasoningDeclarationContract,
   assertInstalledReasoningRuntimeContract,
@@ -18,6 +19,7 @@ import {
   buildNativeHookSmokePayload,
   ensureRepoDependencies,
   hasUsableNodeModules,
+  buildPackedProbeEnv,
   buildPackedRegressionEnvironment,
   CODEX_APP_SERVER_TIMEOUTS,
   CodexAppServer,
@@ -42,8 +44,11 @@ import {
   parseNpmPackJsonOutput,
   parseCodexHooksListResult,
   probeCodexVersion,
+  parseArgs,
   resolveGitCommonDir,
   resolveReusableNodeModulesSource,
+  replacePathKeyCaseInsensitive,
+  resolvePackedSmokeRuntimeBinary,
   validateHookStdout,
   shouldPackedRegressionStopBlock,
   assertCodexBatchWriteResult,
@@ -66,6 +71,126 @@ function createFakeCodexAppServer(
   return new CodexAppServer(child as never);
 }
 
+
+test('packed smoke resolves and validates the platform-aware repo runtime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'omx-packed-runtime-'));
+  try {
+    const debugDir = join(root, 'target', 'debug');
+    await mkdir(debugDir, { recursive: true });
+    const runtimePath = join(debugDir, 'omx-runtime');
+    await writeFile(runtimePath, '#!/bin/sh\nexit 0\n');
+    await chmod(runtimePath, 0o755);
+    assert.equal(resolvePackedSmokeRuntimeBinary(root, { platform: 'linux' }), runtimePath);
+
+    const windowsRuntimePath = join(debugDir, 'omx-runtime.exe');
+    await writeFile(windowsRuntimePath, 'windows executable fixture');
+    assert.equal(resolvePackedSmokeRuntimeBinary(root, { platform: 'win32' }), windowsRuntimePath);
+    assert.throws(
+      () => resolvePackedSmokeRuntimeBinary(root, { platform: 'linux', candidate: 'relative/omx-runtime' }),
+      /must be absolute/,
+    );
+    assert.equal(
+      resolvePackedSmokeRuntimeBinary(root, { platform: 'linux', candidate: runtimePath }),
+      runtimePath,
+    );
+    assert.throws(
+      () => resolvePackedSmokeRuntimeBinary(join(root, 'missing'), { platform: 'linux' }),
+      /run "npm run build:runtime"/,
+    );
+    const nonExecutablePath = join(root, 'non-executable-runtime');
+    await writeFile(nonExecutablePath, 'not executable');
+    await chmod(nonExecutablePath, 0o644);
+    assert.throws(
+      () => resolvePackedSmokeRuntimeBinary(root, { platform: 'linux', candidate: nonExecutablePath }),
+      /executable regular file/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('packed probe env strips ambient runtime and supports default, absent, and explicit provisioning', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'omx-packed-probe-env-'));
+  try {
+    const debugDir = join(root, 'target', 'debug');
+    await mkdir(debugDir, { recursive: true });
+    const runtimePath = join(debugDir, 'omx-runtime');
+    await writeFile(runtimePath, '#!/bin/sh\nexit 0\n');
+    await chmod(runtimePath, 0o755);
+
+    const defaultEnv = buildPackedProbeEnv(
+      { OMX_RUNTIME_BINARY: '/tmp/ambient-decoy' },
+      { repoRoot: root },
+    );
+    assert.equal(defaultEnv.OMX_RUNTIME_BINARY, runtimePath);
+    const absentEnv = buildPackedProbeEnv({}, { runtimeBinary: null });
+    assert.equal(Object.hasOwn(absentEnv, 'OMX_RUNTIME_BINARY'), false);
+    const explicitEnv = buildPackedProbeEnv({}, { runtimeBinary: runtimePath });
+    assert.equal(explicitEnv.OMX_RUNTIME_BINARY, runtimePath);
+    assert.throws(
+      () => buildPackedProbeEnv({}, { runtimeBinary: 'relative/omx-runtime' }),
+      /must be absolute/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('packed fail-closed PATH replacement removes a win32-shaped decoy runtime and every casing variant', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'omx-packed-path-isolation-'));
+  try {
+    const decoyDir = join(root, 'decoy');
+    const isolatedDir = join(root, 'isolated');
+    await mkdir(decoyDir);
+    await mkdir(isolatedDir);
+    const decoyRuntime = join(decoyDir, 'omx-runtime.exe');
+    await writeFile(decoyRuntime, 'decoy');
+    await access(decoyRuntime);
+
+    const env = replacePathKeyCaseInsensitive(
+      { Path: decoyDir, PATH: join(root, 'other'), KEEP: '1' },
+      isolatedDir,
+    );
+    const pathKeys = Object.keys(env).filter((key) => key.toUpperCase() === 'PATH');
+    assert.deepEqual(pathKeys, ['Path']);
+    assert.equal(env.Path, isolatedDir);
+    assert.equal(env.Path.split(delimiter).includes(decoyDir), false);
+    assert.equal(env.KEEP, '1');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('packed fail-closed PATH replacement creates a single POSIX key when absent', () => {
+  const env = replacePathKeyCaseInsensitive({ KEEP: '1' }, '/isolated');
+  assert.deepEqual(env, { KEEP: '1', PATH: '/isolated' });
+});
+
+test('packed launch cwd assertion accepts filesystem aliases and rejects distinct directories', async () => {
+  if (process.platform === 'win32') return;
+  const root = await mkdtemp(join(tmpdir(), 'omx-packed-cwd-'));
+  try {
+    const realDir = join(root, 'real');
+    const otherDir = join(root, 'other');
+    const aliasDir = join(root, 'alias');
+    await mkdir(realDir);
+    await mkdir(otherDir);
+    await symlink(realDir, aliasDir);
+    assert.doesNotThrow(() => assertPackedLaunchCwdPreserved(realDir, aliasDir, 'cwd mismatch'));
+    assert.throws(
+      () => assertPackedLaunchCwdPreserved(realDir, otherDir, 'cwd mismatch'),
+      /cwd mismatch: expected .* received /,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('packed smoke arguments expose a probe-only mode and reject unknown flags', () => {
+  assert.deepEqual(parseArgs([]), { failClosedProbe: false });
+  assert.deepEqual(parseArgs(['--fail-closed-probe']), { failClosedProbe: true });
+  assert.throws(() => parseArgs(['--unknown']), /Unknown argument/);
+});
 
 test('packed install smoke retains narrow boot commands and adds the isolated lifecycle separately', () => {
   assert.deepEqual(PACKED_INSTALL_SMOKE_CORE_COMMANDS, [

@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { TextDecoder } from 'node:util';
@@ -30,6 +30,7 @@ import {
   ensureReusableNodeModules,
 } from '../utils/repo-deps.js';
 import { escapeTomlString } from '../utils/toml.js';
+import { sameFilePath } from '../utils/paths.js';
 
 
 export {
@@ -1251,8 +1252,44 @@ export const PACKED_INSTALL_PLUGIN_MCP_TARGETS = [
 const PACKED_INSTALL_OPERATIONAL_PROBE_TIMEOUT_MS = 5_000;
 const PACKED_INSTALL_COMMAND_TIMEOUT_MS = 120_000;
 
+export interface PackedProbeEnvOptions {
+  runtimeBinary?: string | null;
+  repoRoot?: string;
+}
 
-function buildPackedProbeEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+function runtimeBinaryName(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'omx-runtime.exe' : 'omx-runtime';
+}
+
+function validatePackedSmokeRuntimeBinary(candidate: string, platform: NodeJS.Platform): string {
+  if (!isAbsolute(candidate)) {
+    throw new Error(`packed smoke runtime override must be absolute: ${candidate}`);
+  }
+  let stats;
+  try {
+    stats = statSync(candidate);
+  } catch {
+    throw new Error(`packed smoke requires omx-runtime at "${candidate}"; run "npm run build:runtime"`);
+  }
+  if (!stats.isFile() || (platform !== 'win32' && (stats.mode & 0o111) === 0)) {
+    throw new Error(`packed smoke runtime must be an executable regular file: ${candidate}`);
+  }
+  return candidate;
+}
+
+export function resolvePackedSmokeRuntimeBinary(
+  repoRoot: string = process.cwd(),
+  options: { platform?: NodeJS.Platform; candidate?: string } = {},
+): string {
+  const platform = options.platform ?? process.platform;
+  const candidate = options.candidate ?? resolve(join(repoRoot, 'target', 'debug', runtimeBinaryName(platform)));
+  return validatePackedSmokeRuntimeBinary(candidate, platform);
+}
+
+export function buildPackedProbeEnv(
+  overrides: NodeJS.ProcessEnv = {},
+  options: PackedProbeEnvOptions = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     const upper = key.toUpperCase();
@@ -1274,7 +1311,26 @@ function buildPackedProbeEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessE
     if (value === undefined) delete env[key];
     else env[key] = value;
   }
+  if (options.runtimeBinary === null) {
+    delete env.OMX_RUNTIME_BINARY;
+  } else {
+    env.OMX_RUNTIME_BINARY = options.runtimeBinary === undefined
+      ? resolvePackedSmokeRuntimeBinary(options.repoRoot)
+      : validatePackedSmokeRuntimeBinary(options.runtimeBinary, process.platform);
+  }
   return env;
+}
+
+export function replacePathKeyCaseInsensitive(env: NodeJS.ProcessEnv, value: string): NodeJS.ProcessEnv {
+  const result = { ...env };
+  let pathKey: string | undefined;
+  for (const key of Object.keys(result)) {
+    if (key.toUpperCase() !== 'PATH') continue;
+    pathKey ??= key;
+    delete result[key];
+  }
+  result[pathKey ?? 'PATH'] = value;
+  return result;
 }
 
 export interface PackedInstallNpmFile {
@@ -1729,7 +1785,7 @@ async function assertInstalledReasoningArtifacts(packageRoot: string): Promise<v
 function smokeInstalledRootReasoningRejections(omxPath: string, cwd: string): void {
   const codexHome = mkdtempSync(join(tmpdir(), 'omx-packed-root-reasoning-'));
   try {
-    const env = buildPackedProbeEnv({ CODEX_HOME: codexHome });
+    const env = buildPackedProbeEnv({ CODEX_HOME: codexHome }, { runtimeBinary: null });
     const configPath = join(codexHome, 'config.toml');
     const usageResult = spawnSync(omxPath, ['reasoning'], { cwd, encoding: 'utf-8', env });
     if (usageResult.status !== 0) {
@@ -1784,8 +1840,18 @@ function readFakeCodexLaunches(capturePath: string): FakeCodexLaunch[] {
   if (!existsSync(capturePath)) return [];
   return parseFakeCodexLaunches(readFileSync(capturePath, 'utf-8'));
 }
+export function assertPackedLaunchCwdPreserved(
+  expectedCwd: string,
+  receivedCwd: string,
+  message: string,
+): void {
+  if (!sameFilePath(expectedCwd, receivedCwd)) {
+    throw new Error(`${message}: expected ${expectedCwd}, received ${receivedCwd}`);
+  }
+}
 
-function smokeInstalledLaunchArgumentBoundary(omxPath: string): void {
+
+function smokeInstalledLaunchArgumentBoundary(omxPath: string, runtimeBinary: string): void {
   const smokeRoot = mkdtempSync(join(tmpdir(), 'omx-packed-launch-boundary-'));
   const modelInstructionsPath = join(smokeRoot, 'model-instructions.md');
   try {
@@ -1842,7 +1908,7 @@ function smokeInstalledLaunchArgumentBoundary(omxPath: string): void {
       OMX_MODEL_INSTRUCTIONS_FILE: modelInstructionsPath,
       OMX_LAUNCH_POLICY: 'direct',
       OMX_PACKED_FAKE_CODEX_CAPTURE_PATH: capturePath,
-    });
+    }, { runtimeBinary });
     delete env.OMX_NOTIFY_TEMP_CONTRACT;
     delete env.OMX_TEAM_WORKER_LAUNCH_ARGS;
     writeFileSync(modelInstructionsPath, '# Packed launch boundary instructions\n');
@@ -1895,9 +1961,11 @@ function smokeInstalledLaunchArgumentBoundary(omxPath: string): void {
         expectedCodexArgs,
         'omx must inject model instructions before -- and preserve exact post-marker argument boundaries',
       );
-      if (launch.cwd !== launchCwd) {
-        throw new Error(`omx must not change cwd for post-marker arguments: expected ${launchCwd}, received ${launch.cwd}`);
-      }
+      assertPackedLaunchCwdPreserved(
+        launchCwd,
+        launch.cwd,
+        'omx must not change cwd for post-marker arguments',
+      );
       if (launch.OMX_NOTIFY_TEMP_CONTRACT !== null) {
         throw new Error(`omx must not activate temporary notification routing for post-marker arguments: ${JSON.stringify(launch)}`);
       }
@@ -2034,9 +2102,11 @@ function smokeInstalledLaunchArgumentBoundary(omxPath: string): void {
       `model_instructions_file="${escapeTomlString(modelInstructionsPath)}"`,
       ...twoMarkerArgs.slice(1),
     ], 'the first literal -- must terminate OMX parsing and preserve every later argv element');
-    if (twoMarkerLaunch.cwd !== launchCwd) {
-      throw new Error(`the first literal -- must preserve launch cwd: expected ${launchCwd}, received ${twoMarkerLaunch.cwd}`);
-    }
+    assertPackedLaunchCwdPreserved(
+      launchCwd,
+      twoMarkerLaunch.cwd,
+      'the first literal -- must preserve launch cwd',
+    );
     if (twoMarkerLaunch.OMX_NOTIFY_TEMP_CONTRACT !== null) {
       throw new Error(`the first literal -- must not activate notification routing: ${JSON.stringify(twoMarkerLaunch)}`);
     }
@@ -2051,6 +2121,7 @@ function usage(): string {
   return [
     'Usage: node scripts/smoke-packed-install.mjs',
     '',
+    '  --fail-closed-probe  install the package, assert the runtime-absent fail-closed denial, and exit',
     'Creates an npm tarball, installs it into an isolated prefix, and smoke tests the installed omx CLI.',
     'Release smoke validates installed CLI boot, native-hook dispatch, packaged artifacts, installed reasoning boundaries, and the isolated setup/rerun/uninstall lifecycle; Codex trust checks run when the pinned CLI is present.',
   ].join('\n');
@@ -2109,14 +2180,20 @@ export function ensureRepoDependencies(repoRoot: string, options: EnsureRepoDeps
   };
 }
 
-function parseArgs(argv: string[]): void {
+export function parseArgs(argv: string[]): { failClosedProbe: boolean } {
+  let failClosedProbe = false;
   for (const token of argv) {
     if (token === '--help' || token === '-h') {
       console.log(usage());
       process.exit(0);
     }
+    if (token === '--fail-closed-probe') {
+      failClosedProbe = true;
+      continue;
+    }
     throw new Error(`Unknown argument: ${token}\n${usage()}`);
   }
+  return { failClosedProbe };
 }
 
 function run(cmd: string, args: readonly string[], options: Record<string, unknown> = {}): ReturnType<typeof spawnSync> {
@@ -2338,7 +2415,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
           OMX_SESSION_ID: `packed-install-smoke-${eventName}`,
           OMX_SOURCE_CWD: smokeCwd,
           OMX_STARTUP_CWD: smokeCwd,
-        }),
+        }, { runtimeBinary: null }),
         input: JSON.stringify(payload),
       });
       validateHookStdout(eventName, result.stdout as string);
@@ -2350,7 +2427,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       env: buildPackedProbeEnv({
         OMX_SOURCE_CWD: collaborationCwd,
         OMX_STARTUP_CWD: collaborationCwd,
-      }),
+      }, { runtimeBinary: null }),
       input: JSON.stringify({
         hook_event_name: 'PostToolUse',
         cwd: collaborationCwd,
@@ -2540,7 +2617,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
       OMX_ROOT: hookRoot,
       OMX_SOURCE_CWD: smokeCwd,
       OMX_STARTUP_CWD: smokeCwd,
-    });
+    }, { runtimeBinary: null });
     const officialTeamRootPayload = {
       hook_event_name: 'PreToolUse',
       cwd: smokeCwd,
@@ -5203,7 +5280,7 @@ function smokeInstalledPluginHookLauncher(packageRoot: string, omxPath: string):
       OMX_ENTRY_PATH: omxPath,
       OMX_CODEX_LAUNCH_ID: 'packed-plugin-hook-launch',
       OMX_PACKED_PLUGIN_HOOK_CAPTURE_PATH: capturePath,
-    });
+    }, { runtimeBinary: null });
     const runProbe = (
       name: string,
       payload: Record<string, unknown>,
@@ -5353,7 +5430,7 @@ function smokeInstalledMcpTargets(omxPath: string): void {
       OMX_TEAM_WORKER: '',
       OMX_TEAM_WORKER_LAUNCH_ARGS: '',
       OMX_NOTIFY_TEMP_CONTRACT: '',
-    });
+    }, { runtimeBinary: null });
     for (const [serverName, target, expectedServerName] of PACKED_INSTALL_PLUGIN_MCP_TARGETS) {
       const result = spawnSync(omxPath, ['mcp-serve', target], {
         cwd: smokeRoot,
@@ -5387,6 +5464,103 @@ function smokeInstalledMcpTargets(omxPath: string): void {
     rmSync(smokeRoot, { recursive: true, force: true });
   }
 }
+function smokeInstalledFailClosedDenial(omxPath: string, packageRoot: string): void {
+  if (process.platform === 'linux') {
+    console.log('fail-closed probe: skipped on linux');
+    return;
+  }
+
+  const smokeRoot = mkdtempSync(join(tmpdir(), 'omx-packed-fail-closed-'));
+  try {
+    const fakeBinDir = join(smokeRoot, 'bin');
+    const launchCwd = join(smokeRoot, 'cwd');
+    const codexHome = join(smokeRoot, 'codex-home');
+    const isolatedHome = join(smokeRoot, 'home');
+    const capturePath = join(smokeRoot, 'fake-codex-argv.jsonl');
+    const modelInstructionsPath = join(smokeRoot, 'model-instructions.md');
+    mkdirSync(fakeBinDir, { recursive: true });
+    mkdirSync(launchCwd, { recursive: true });
+    mkdirSync(codexHome, { recursive: true });
+    mkdirSync(isolatedHome, { recursive: true });
+    writeFileSync(modelInstructionsPath, '# Packed fail-closed probe instructions\n');
+
+    const fakeCodexSource = [
+      'const { appendFileSync, existsSync } = require("node:fs");',
+      'const path = require("node:path");',
+      'const capturePath = process.env.OMX_PACKED_FAKE_CODEX_CAPTURE_PATH;',
+      'if (!capturePath) process.exit(2);',
+      'appendFileSync(capturePath, `${JSON.stringify({',
+      '  argv: process.argv.slice(2),',
+      '  cwd: process.cwd(),',
+      '  hasResumeSqlite: existsSync(path.join(process.env.CODEX_HOME ?? "", "state_5.sqlite")),',
+      '  OMX_NOTIFY_TEMP_CONTRACT: process.env.OMX_NOTIFY_TEMP_CONTRACT ?? null,',
+      '  OMX_TEAM_WORKER_LAUNCH_ARGS: process.env.OMX_TEAM_WORKER_LAUNCH_ARGS ?? null,',
+      '})}\\n`);',
+    ].join('\n');
+    if (process.platform === 'win32') {
+      const fakeCodexScript = join(fakeBinDir, 'codex.cjs');
+      writeFileSync(fakeCodexScript, fakeCodexSource);
+      writeFileSync(join(fakeBinDir, 'codex.cmd'), [
+        '@echo off',
+        `"${process.execPath}" "${fakeCodexScript}" %*`,
+      ].join('\r\n'));
+    } else {
+      const fakeCodexPath = join(fakeBinDir, 'codex');
+      writeFileSync(fakeCodexPath, `#!/usr/bin/env node\n${fakeCodexSource}\n`);
+      chmodSync(fakeCodexPath, 0o755);
+    }
+
+    const systemPathEntries = process.platform === 'win32'
+      ? [join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')]
+      : ['/usr/bin', '/bin'];
+    const isolatedPathEntries = [fakeBinDir, dirname(process.execPath), ...systemPathEntries];
+    const runtimeName = runtimeBinaryName(process.platform);
+    for (const entry of isolatedPathEntries) {
+      if (existsSync(join(entry, runtimeName))) {
+        throw new Error(`fail-closed probe PATH unexpectedly contains ${runtimeName}: ${entry}`);
+      }
+    }
+    for (const profile of ['debug', 'release']) {
+      const workspaceCandidate = join(packageRoot, 'target', profile, runtimeName);
+      if (existsSync(workspaceCandidate)) {
+        throw new Error(`fail-closed probe installed package unexpectedly contains runtime candidate: ${workspaceCandidate}`);
+      }
+    }
+
+    let env = buildPackedProbeEnv({
+      CODEX_HOME: codexHome,
+      HOME: isolatedHome,
+      USERPROFILE: isolatedHome,
+      OMX_BYPASS_DEFAULT_SYSTEM_PROMPT: '1',
+      OMX_MODEL_INSTRUCTIONS_FILE: modelInstructionsPath,
+      OMX_LAUNCH_POLICY: 'direct',
+      OMX_PACKED_FAKE_CODEX_CAPTURE_PATH: capturePath,
+    }, { runtimeBinary: null });
+    env = replacePathKeyCaseInsensitive(env, isolatedPathEntries.join(delimiter));
+    console.log(`fail-closed probe PATH: ${isolatedPathEntries.join(delimiter)}`);
+
+    const result = spawnSync(omxPath, ['--', 'packed-fail-closed-probe'], {
+      cwd: launchCwd,
+      encoding: 'utf-8',
+      env,
+      timeout: PACKED_INSTALL_OPERATIONAL_PROBE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
+    const launches = readFakeCodexLaunches(capturePath);
+    if (launches.length !== 1) {
+      throw new Error(`fail-closed probe must launch fake Codex exactly once: ${JSON.stringify(launches)}`);
+    }
+    const stderr = String(result.stderr ?? '');
+    if (result.status === 0 || !stderr.includes('session_pointer_unusable')) {
+      throw new Error(`fail-closed probe expected session_pointer_unusable denial, received status ${String(result.status)}\n${stderr}`);
+    }
+    console.log(`fail-closed probe denial: ${stderr.trim()}`);
+    console.log('fail-closed probe: denial observed');
+  } finally {
+    rmSync(smokeRoot, { recursive: true, force: true });
+  }
+}
+
 
 export function parseNpmPackJsonOutput(stdout: string): PackedInstallNpmPackResult[] {
   const start = stdout.lastIndexOf('\n[');
@@ -5398,7 +5572,7 @@ export function parseNpmPackJsonOutput(stdout: string): PackedInstallNpmPackResu
 }
 
 async function main(): Promise<void> {
-  parseArgs(process.argv.slice(2));
+  const { failClosedProbe } = parseArgs(process.argv.slice(2));
 
   const repoRoot = process.cwd();
   const tempRoot = mkdtempSync(join(tmpdir(), 'omx-packed-install-'));
@@ -5416,7 +5590,7 @@ async function main(): Promise<void> {
     CODEX_HOME: installCodexHome,
     npm_config_cache: installNpmCache,
     NPM_CONFIG_CACHE: installNpmCache,
-  });
+  }, { runtimeBinary: null });
 
   let tarballPath: string | undefined;
   try {
@@ -5441,8 +5615,14 @@ async function main(): Promise<void> {
     await assertInstalledReasoningArtifacts(packageRoot);
 
     const omxPath = join(prefixDir, process.platform === 'win32' ? '' : 'bin', npmBinName('omx'));
+    if (failClosedProbe) {
+      smokeInstalledFailClosedDenial(omxPath, packageRoot);
+      return;
+    }
+    const runtimeBinary = resolvePackedSmokeRuntimeBinary(repoRoot);
+    console.log(`packed smoke runtime: ${runtimeBinary}`);
     smokeInstalledRootReasoningRejections(omxPath, repoRoot);
-    smokeInstalledLaunchArgumentBoundary(omxPath);
+    smokeInstalledLaunchArgumentBoundary(omxPath, runtimeBinary);
     smokeInstalledPluginHookLauncher(packageRoot, omxPath);
     smokeInstalledMcpTargets(omxPath);
     for (const argv of PACKED_INSTALL_SMOKE_CORE_COMMANDS) {
