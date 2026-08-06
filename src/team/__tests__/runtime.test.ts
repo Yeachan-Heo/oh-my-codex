@@ -638,6 +638,11 @@ function teamStateTestPath(cwd: string, ...parts: string[]): string {
   return join(stateRoot, ...parts);
 }
 
+async function settleReceiptInterval(timer: NodeJS.Timeout | null, pending: Promise<unknown> | null): Promise<void> {
+  if (timer) clearInterval(timer);
+  await pending;
+}
+
 async function withMockTmuxFixture<T>(
   options: {
     dirPrefix: string;
@@ -1848,7 +1853,9 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
     const prevStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     const prevStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptNotifier: NodeJS.Timeout | null = null;
+    let receiptNotifierPending: Promise<unknown> | null = null;
     let progressWriter: NodeJS.Timeout | null = null;
+    let progressWriterPending: Promise<unknown> | null = null;
 
     try {
       await withMockTmuxFixture(
@@ -1955,14 +1962,14 @@ esac
           const expectedTeamName = buildInternalTeamName('team-startup-window', resolveTeamIdentityScope(process.env));
 
           receiptNotifier = setInterval(() => {
-            void markPendingInboxDispatchesNotified(expectedTeamName, cwd, {
+            receiptNotifierPending ??= markPendingInboxDispatchesNotified(expectedTeamName, cwd, {
               toWorker: 'worker-1',
               lastReason: 'test_notified_receipt',
-            }).catch(() => {});
+            }).catch(() => {}).finally(() => { receiptNotifierPending = null; });
           }, 20);
 
           progressWriter = setTimeout(() => {
-            void writeWorkerStatus(
+            progressWriterPending = writeWorkerStatus(
               expectedTeamName,
               'worker-1',
               {
@@ -1971,7 +1978,7 @@ esac
                 updated_at: new Date().toISOString(),
               },
               cwd,
-            ).catch(() => {});
+            ).catch(() => {}).finally(() => { progressWriterPending = null; });
           }, 6_000);
 
           const runtime = await withoutTeamWorkerEnv(() =>
@@ -1989,8 +1996,9 @@ esac
         },
       );
     } finally {
-      if (receiptNotifier) clearInterval(receiptNotifier);
+      await settleReceiptInterval(receiptNotifier, receiptNotifierPending);
       if (progressWriter) clearTimeout(progressWriter);
+      await progressWriterPending;
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
       if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
@@ -2034,6 +2042,7 @@ esac
     const prevStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     const prevStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptFailer: NodeJS.Timeout | null = null;
+    let receiptFailerPending: Promise<unknown> | null = null;
 
     try {
       await withMockTmuxFixture(
@@ -2140,7 +2149,7 @@ esac
           const expectedTeamName = buildInternalTeamName('team-startup-no-evidence', resolveTeamIdentityScope(process.env));
 
           receiptFailer = setInterval(() => {
-            void (async () => {
+            receiptFailerPending ??= (async () => {
               const requests = await listDispatchRequests(
                 expectedTeamName,
                 cwd,
@@ -2157,7 +2166,7 @@ esac
                   cwd,
                 ).catch(() => {});
               }
-            })();
+            })().catch(() => {}).finally(() => { receiptFailerPending = null; });
           }, 20);
 
           await assert.rejects(
@@ -2173,10 +2182,9 @@ esac
             /(worker_notify_failed:worker-1:codex_startup_no_evidence_after_fallback|startup_rollback_pane_proof_unavailable:%2:pane_proof_lost_during_process_teardown)/,
           );
 
-          if (receiptFailer) {
-            clearInterval(receiptFailer);
-            receiptFailer = null;
-          }
+          await settleReceiptInterval(receiptFailer, receiptFailerPending);
+          receiptFailer = null;
+          receiptFailerPending = null;
 
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.match(tmuxLog, /send-keys -t %2 -l --/);
@@ -2184,7 +2192,7 @@ esac
         },
       );
     } finally {
-      if (receiptFailer) clearInterval(receiptFailer);
+      await settleReceiptInterval(receiptFailer, receiptFailerPending);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
       if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
@@ -3854,6 +3862,7 @@ process.stdin.resume();`),
     const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     let receiptNotifier: NodeJS.Timeout | null = null;
+    let receiptNotifierPending: Promise<unknown> | null = null;
     let runtimeTeamName: string | null = null;
 
     try {
@@ -3932,7 +3941,7 @@ esac
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES = '1';
 
           receiptNotifier = setInterval(() => {
-            void markPendingInboxDispatchesNotified('team-ready-prompt-evidence', cwd);
+            receiptNotifierPending ??= markPendingInboxDispatchesNotified('team-ready-prompt-evidence', cwd).catch(() => {}).finally(() => { receiptNotifierPending = null; });
           }, 20);
 
           const runtime = await withoutTeamWorkerEnv(() =>
@@ -3969,7 +3978,7 @@ esac
         },
       );
     } finally {
-      if (receiptNotifier) clearInterval(receiptNotifier);
+      await settleReceiptInterval(receiptNotifier, receiptNotifierPending);
       if (runtimeTeamName) await shutdownTeam(runtimeTeamName, cwd, { force: true }).catch(() => {});
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
@@ -4007,6 +4016,7 @@ esac
     const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     const teamName = `trt-${process.pid}-${Date.now().toString(36)}`;
     let receiptNotifier: NodeJS.Timeout | null = null;
+    let receiptNotifierPending: Promise<unknown> | null = null;
     let runtimeTeamName: string | null = null;
 
     try {
@@ -4077,7 +4087,7 @@ esac
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptNotifier = setInterval(() => {
-            void markPendingInboxDispatchesNotified(teamName, cwd);
+            receiptNotifierPending ??= markPendingInboxDispatchesNotified(teamName, cwd).catch(() => {}).finally(() => { receiptNotifierPending = null; });
           }, 20);
 
           await assert.rejects(
@@ -4099,7 +4109,7 @@ esac
         },
       );
     } finally {
-      if (receiptNotifier) clearInterval(receiptNotifier);
+      await settleReceiptInterval(receiptNotifier, receiptNotifierPending);
       if (runtimeTeamName) await shutdownTeam(runtimeTeamName, cwd, { force: true }).catch(() => {});
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
@@ -4132,6 +4142,7 @@ esac
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptDeliverer: NodeJS.Timeout | null = null;
+    let receiptDelivererPending: Promise<unknown> | null = null;
     let runtimeTeamName: string | null = null;
 
     try {
@@ -4229,9 +4240,9 @@ esac
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptDeliverer = setInterval(() => {
-            void (async () => {
+            receiptDelivererPending ??= (async () => {
               await markPendingInboxDispatchesDelivered('team-parallel-ready', cwd);
-            })();
+            })().catch(() => {}).finally(() => { receiptDelivererPending = null; });
           }, 20);
 
           const runtime = await withoutTeamWorkerEnv(() =>
@@ -4260,7 +4271,7 @@ esac
         },
       );
     } finally {
-      if (receiptDeliverer) clearInterval(receiptDeliverer);
+      await settleReceiptInterval(receiptDeliverer, receiptDelivererPending);
       if (runtimeTeamName) await shutdownTeam(runtimeTeamName, cwd, { force: true }).catch(() => {});
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
@@ -4296,6 +4307,7 @@ esac
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptFailer: NodeJS.Timeout | null = null;
+    let receiptFailerPending: Promise<unknown> | null = null;
     let runtime: TeamRuntime | null = null;
     const teamName = 'team-no-startup-evidence';
     let observedNoEvidenceRequest = false;
@@ -4397,7 +4409,7 @@ process.on('SIGTERM', () => process.exit(0));
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptFailer = setInterval(() => {
-            void (async () => {
+            receiptFailerPending ??= (async () => {
               const runtimeTeamName = await resolveRuntimeTeamName(cwd, teamName);
               const requests = await listDispatchRequests(runtimeTeamName, cwd, { kind: 'inbox' }).catch(() => []);
               for (const request of requests) {
@@ -4412,7 +4424,7 @@ process.on('SIGTERM', () => process.exit(0));
                   cwd,
                 ).catch(() => {});
               }
-            })();
+            })().catch(() => {}).finally(() => { receiptFailerPending = null; });
           }, 20);
 
           await assert.rejects(
@@ -4436,7 +4448,7 @@ process.on('SIGTERM', () => process.exit(0));
         },
       );
     } finally {
-      if (receiptFailer) clearInterval(receiptFailer);
+      await settleReceiptInterval(receiptFailer, receiptFailerPending);
       if (runtime) {
         await shutdownTeam(teamName, cwd, { force: true }).catch(() => {});
       }
@@ -4483,6 +4495,7 @@ process.on('SIGTERM', () => process.exit(0));
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptFailer: NodeJS.Timeout | null = null;
+    let receiptFailerPending: Promise<unknown> | null = null;
 
     try {
       await withMockTmuxFixture(
@@ -4580,7 +4593,7 @@ esac
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptFailer = setInterval(() => {
-            void (async () => {
+            receiptFailerPending ??= (async () => {
               const requests = await listDispatchRequests('team-parallel-dead-pane', cwd, { kind: 'inbox' }).catch(() => []);
               for (const request of requests) {
                 if (request.status !== 'pending') continue;
@@ -4593,7 +4606,7 @@ esac
                   cwd,
                 ).catch(() => {});
               }
-            })();
+            })().catch(() => {}).finally(() => { receiptFailerPending = null; });
           }, 20);
 
           await assert.rejects(
@@ -4618,7 +4631,7 @@ esac
         },
       );
     } finally {
-      if (receiptFailer) clearInterval(receiptFailer);
+      await settleReceiptInterval(receiptFailer, receiptFailerPending);
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
       if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
@@ -5170,6 +5183,7 @@ esac
     const previousStartupDispatchRetries = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
     const previousStartupDispatchRetryDelay = process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
     let receiptFailer: NodeJS.Timeout | null = null;
+    let receiptFailerPending: Promise<unknown> | null = null;
 
     try {
       await withMockTmuxFixture(
@@ -5270,7 +5284,7 @@ process.on('SIGTERM', () => process.exit(0));
           process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = '50';
 
           receiptFailer = setInterval(() => {
-            void (async () => {
+            receiptFailerPending ??= (async () => {
               const activeTeamName = await resolveRuntimeTeamName(cwd, 'team-materialize-before-evidence');
               runtimeTeamName = activeTeamName;
               const requests = await listDispatchRequests(activeTeamName, cwd, { kind: 'inbox' }).catch(() => []);
@@ -5285,7 +5299,7 @@ process.on('SIGTERM', () => process.exit(0));
                   cwd,
                 ).catch(() => {});
               }
-            })();
+            })().catch(() => {}).finally(() => { receiptFailerPending = null; });
           }, 20);
 
           const teamPromise = withoutTeamWorkerEnv(() =>
@@ -5340,7 +5354,7 @@ process.on('SIGTERM', () => process.exit(0));
         },
       );
     } finally {
-      if (receiptFailer) clearInterval(receiptFailer);
+      await settleReceiptInterval(receiptFailer, receiptFailerPending);
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;
       if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;

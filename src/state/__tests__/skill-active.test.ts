@@ -60,7 +60,7 @@ async function waitForRootPhase(path: string, sessionId: string, phase: string):
 function rootWriterWorkerSource(): string {
   return `
     import { existsSync } from 'node:fs';
-    import { mkdir, readFile, writeFile } from 'node:fs/promises';
+    import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
     const stateDir = process.env.STATE_DIR;
     const sessionId = process.env.SESSION_ID;
     const skill = process.env.SKILL;
@@ -90,7 +90,9 @@ function rootWriterWorkerSource(): string {
         }
       }});
     } catch (error) {
-      await writeFile(errorPath, JSON.stringify({ code: error?.code, message: String(error?.message ?? error) }));
+      const errorTempPath = errorPath + '.tmp-' + process.pid;
+      await writeFile(errorTempPath, JSON.stringify({ code: error?.code, message: String(error?.message ?? error) }));
+      await rename(errorTempPath, errorPath);
       process.exitCode = 1;
     }
   `;
@@ -803,18 +805,28 @@ describe('skill-active state helpers', () => {
         return { child, done: new Promise<number | null>((resolve) => child.once('close', resolve)), readyPath, releasePath, errorPath };
       };
       const owner = launch('live-owner', 'live-update');
-      await waitForPath(owner.readyPath);
       const staleTime = new Date(Date.now() - 60_000);
-      await utimes(`${rootPath}.lock`, staleTime, staleTime);
-      const contender = launch('contender', 'should-not-win');
-      assert.equal(await waitForReadyOrError(contender.readyPath, contender.errorPath), 'error');
-      assert.equal(JSON.parse(await readFile(contender.errorPath, 'utf8')).code, 'lock-timeout');
-      assert.equal(existsSync(contender.readyPath), false);
-      await writeFile(owner.releasePath, 'release');
-      await waitForRootPhase(rootPath, 'live-owner', 'live-update');
-      assert.equal(await owner.done, 0);
-      await rm(`${rootPath}.lock`, { recursive: true, force: true });
-      assert.equal(await contender.done, 1);
+      let contender: ReturnType<typeof launch> | null = null;
+      try {
+        await waitForPath(owner.readyPath);
+        await utimes(`${rootPath}.lock`, staleTime, staleTime);
+        contender = launch('contender', 'should-not-win');
+        assert.equal(await waitForReadyOrError(contender.readyPath, contender.errorPath), 'error');
+        assert.equal(JSON.parse(await readFile(contender.errorPath, 'utf8')).code, 'lock-timeout');
+        assert.equal(existsSync(contender.readyPath), false);
+        await writeFile(owner.releasePath, 'release');
+        await waitForRootPhase(rootPath, 'live-owner', 'live-update');
+        assert.equal(await owner.done, 0);
+        await rm(`${rootPath}.lock`, { recursive: true, force: true });
+        assert.equal(await contender.done, 1);
+      } finally {
+        await writeFile(owner.releasePath, 'release').catch(() => {});
+        if (contender) await writeFile(contender.releasePath, 'release').catch(() => {});
+        owner.child.kill('SIGKILL');
+        contender?.child.kill('SIGKILL');
+        await owner.done;
+        if (contender) await contender.done;
+      }
 
       await mkdir(`${rootPath}.lock`);
       await writeFile(`${rootPath}.lock/owner-live-token`, '{malformed');
