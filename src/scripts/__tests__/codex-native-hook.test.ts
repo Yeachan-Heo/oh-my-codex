@@ -22544,16 +22544,41 @@ PY`,
         }, { cwd });
         assert.equal(result.outputJson, null, `${tool_name} with installed role should not be blocked during ralplan`);
       }
-      // Non-spawn collaboration tools still blocked
-      const blockedList = await dispatchCodexNativeHook({
-        hook_event_name: "PreToolUse",
-        cwd,
-        session_id: sessionId,
-        thread_id: leaderThreadId,
-        tool_name: "collaborationlist_agents",
-        tool_input: {},
-      }, { cwd });
-      assert.equal(blockedList.outputJson?.decision, "block");
+
+      const customRole = "custom-consensus-bypass";
+      const agentsDir = join(cwd, ".codex", "agents");
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(join(agentsDir, `${customRole}.toml`), "# installed custom role\n");
+      for (const [agent_type, expectedReason] of [
+        ["executor", /not a recognized read-only or explicitly authorized planning mutation transport/],
+        ["debugger", /not a recognized read-only or explicitly authorized planning mutation transport/],
+        [customRole, /not a recognized read-only or explicitly authorized planning mutation transport/],
+        ["", /not a recognized read-only or explicitly authorized planning mutation transport/],
+        ["planner!", /unknown or not installed/],
+      ] as const) {
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: leaderThreadId,
+          tool_name: "collaborationspawn_agent",
+          tool_input: agent_type ? { agent_type, message: "must not bypass consensus role boundary" } : {},
+        }, { cwd });
+        assert.equal(result.outputJson?.decision, "block", `${agent_type || "empty"} role must be denied`);
+        assert.match(String(result.outputJson?.reason ?? ""), expectedReason, `${agent_type || "empty"} role deny reason`);
+      }
+      // Dotted and flattened non-spawn collaboration transports remain blocked.
+      for (const tool_name of ["collaborationlist_agents", "collaboration.list_agents"]) {
+        const blockedList = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: leaderThreadId,
+          tool_name,
+          tool_input: {},
+        }, { cwd });
+        assert.equal(blockedList.outputJson?.decision, "block", `${tool_name} must remain blocked`);
+      }
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

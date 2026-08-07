@@ -10700,6 +10700,8 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
 
 
 
+const RALPLAN_CONSENSUS_NATIVE_ROLE_NAMES = new Set(["planner", "architect", "critic"]);
+
 async function buildRalplanPreToolUseBoundaryOutput(
   payload: CodexHookPayload,
   cwd: string,
@@ -10750,14 +10752,16 @@ async function buildRalplanPreToolUseBoundaryOutput(
   let blocked = false;
   let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
-  // Allow typed native consensus delegation (planner/architect/critic) during
-  // Ralplan planning. The unknown-role deny (buildNativeUnknownRolePreToolUseOutput)
-  // already ran upstream and blocked uninstalled roles; reaching here with a spawn
-  // tool means the role is installed. Only spawn tools with installed roles pass;
-  // implementation tools and unknown transports remain blocked (#3451-B).
+  // Allow only installed Planner/Architect/Critic native consensus delegation
+  // during Ralplan planning. The upstream unknown-role deny blocks uninstalled
+  // roles. Other installed roles (including executor) are not consensus lanes,
+  // so they and every non-spawn transport remain fail-closed (#3451-B).
   if (mutationTransport === "orchestration" && isNativeSubagentSpawnToolName(toolName)) {
     const requestedSpawnRole = readRequestedSpawnRole(payload);
-    if (requestedSpawnRole && resolveInstalledRoleName(requestedSpawnRole, undefined, cwd) !== null) {
+    if (
+      RALPLAN_CONSENSUS_NATIVE_ROLE_NAMES.has(requestedSpawnRole)
+      && resolveInstalledRoleName(requestedSpawnRole, undefined, cwd) !== null
+    ) {
       return null;
     }
   }
