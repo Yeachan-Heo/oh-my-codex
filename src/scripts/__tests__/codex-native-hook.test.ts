@@ -22485,7 +22485,6 @@ PY`,
     try {
       const { sessionId, leaderThreadId } = await writeFlattenedCollaborationRalplanFixture(cwd);
       for (const [tool_name, tool_input] of [
-        ["collaborationspawn_agent", { agent_type: "planner", message: "draft the plan" }],
         ["collaborationlist_agents", {}],
         ["collaborationfollowup_task", {}],
         ["collaborationwait_agent", {}],
@@ -22520,6 +22519,41 @@ PY`,
       assert.equal(blocked.outputJson?.decision, "block");
       const reason = String(blocked.outputJson?.reason ?? "");
       assert.match(reason, /not a recognized read-only or explicitly authorized planning mutation transport|OWNER_CONFIRMATION_REQUIRED/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows installed-role spawn_agent consensus delegation during active ralplan planning (#3451-B)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-3451-ralplan-consensus-spawn-"));
+    try {
+      const { sessionId, leaderThreadId } = await writeFlattenedCollaborationRalplanFixture(cwd);
+      // Spawn with an installed role (planner) should pass through the ralplan boundary
+      for (const [tool_name, tool_input] of [
+        ["collaborationspawn_agent", { agent_type: "planner", message: "draft the plan" }],
+        ["collaboration.spawn_agent", { agent_type: "architect", message: "review the plan" }],
+        ["spawn_agent", { agent_type: "critic", message: "critique the plan" }],
+      ] as const) {
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          thread_id: leaderThreadId,
+          tool_name,
+          tool_input,
+        }, { cwd });
+        assert.equal(result.outputJson, null, `${tool_name} with installed role should not be blocked during ralplan`);
+      }
+      // Non-spawn collaboration tools still blocked
+      const blockedList = await dispatchCodexNativeHook({
+        hook_event_name: "PreToolUse",
+        cwd,
+        session_id: sessionId,
+        thread_id: leaderThreadId,
+        tool_name: "collaborationlist_agents",
+        tool_input: {},
+      }, { cwd });
+      assert.equal(blockedList.outputJson?.decision, "block");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -274,6 +274,20 @@ export function listTransitionActiveSkills(raw: unknown, sessionId?: string): Sk
   return entries.filter((entry) => safeString(entry.session_id).trim().length === 0);
 }
 
+/**
+ * Matches an active-skill entry to a normalized session id for
+ * deactivation/clear purposes. An entry matches when:
+ *   - its `session_id` equals the normalized session id (normal path), OR
+ *   - its `session_id` is empty AND its `owner_codex_session_id` equals the
+ *     normalized session id (unscoped root entry owned by the session).
+ * This prevents stale root-scoped entries from surviving a mode clear (#3451-A).
+ */
+function entryMatchesSessionOrOwner(entry: SkillActiveEntry, normalizedSessionId: string): boolean {
+  if (safeString(entry.session_id).trim() === normalizedSessionId) return true;
+  return safeString(entry.session_id).trim().length === 0
+    && safeString(entry.owner_codex_session_id).trim() === normalizedSessionId;
+}
+
 /** Owner metadata for read-only provenance preflight; never infers ownership from storage. */
 export function listSkillActiveOwnerCodexSessionIds(raw: unknown): string[] {
   if (!raw || typeof raw !== 'object') return [];
@@ -599,13 +613,14 @@ function mergeRootStateForSession(
   sessionState: SkillActiveStateLike,
   sessionId: string,
 ): SkillActiveStateLike {
+  const normalizedSessionId = safeString(sessionId).trim();
   const currentEntries = listActiveSkills(currentRoot ?? {});
-  const hasCurrentSessionEntry = currentEntries.some((entry) => safeString(entry.session_id).trim() === sessionId);
+  const hasCurrentSessionEntry = currentEntries.some((entry) => entryMatchesSessionOrOwner(entry, normalizedSessionId));
   const incomingEntries = hasCurrentSessionEntry
-    ? listActiveSkills(sessionState).filter((entry) => safeString(entry.session_id).trim() === sessionId)
+    ? listActiveSkills(sessionState).filter((entry) => entryMatchesSessionOrOwner(entry, normalizedSessionId))
     : [];
   const mergedEntries = [
-    ...currentEntries.filter((entry) => safeString(entry.session_id).trim() !== sessionId),
+    ...currentEntries.filter((entry) => !entryMatchesSessionOrOwner(entry, normalizedSessionId)),
     ...incomingEntries,
   ];
   return stateWithActiveEntries(currentRoot ?? sessionState, mergedEntries, sessionState.skill || 'skill-active');
@@ -915,11 +930,11 @@ async function syncCanonicalSkillStateForModeUnlocked(
 
     const nextSessionRootEntries = rootEntries.filter((entry) => !(
       entry.skill === mode
-      && safeString(entry.session_id).trim() === normalizedSessionId
+      && entryMatchesSessionOrOwner(entry, normalizedSessionId)
     ));
     const nextRootEntries = allRootEntries.filter((entry) => !(
       entry.skill === mode
-      && safeString(entry.session_id).trim() === normalizedSessionId
+      && entryMatchesSessionOrOwner(entry, normalizedSessionId)
     ));
 
     const nextSessionState = applyEntriesToState(
@@ -928,6 +943,7 @@ async function syncCanonicalSkillStateForModeUnlocked(
       mode,
       normalizedSessionId,
     );
+    nextSessionState.session_id = normalizedSessionId;
     const nextRootState = nextRootEntries.length > 0
       ? applyEntriesToState(existingRoot, nextRootEntries, mode)
       : applyEntriesToState(

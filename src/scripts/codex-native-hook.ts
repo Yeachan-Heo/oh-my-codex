@@ -10750,6 +10750,17 @@ async function buildRalplanPreToolUseBoundaryOutput(
   let blocked = false;
   let blockedDetail = "implementation/write tools are blocked until an explicit execution handoff workflow is activated";
 
+  // Allow typed native consensus delegation (planner/architect/critic) during
+  // Ralplan planning. The unknown-role deny (buildNativeUnknownRolePreToolUseOutput)
+  // already ran upstream and blocked uninstalled roles; reaching here with a spawn
+  // tool means the role is installed. Only spawn tools with installed roles pass;
+  // implementation tools and unknown transports remain blocked (#3451-B).
+  if (mutationTransport === "orchestration" && isNativeSubagentSpawnToolName(toolName)) {
+    const requestedSpawnRole = readRequestedSpawnRole(payload);
+    if (requestedSpawnRole && resolveInstalledRoleName(requestedSpawnRole, undefined, cwd) !== null) {
+      return null;
+    }
+  }
   if (toolName === "Bash") {
     blocked = !isAllowedRalplanBashWrite(cwd, command, activeState, sessionId, readPreToolUseRawCommand(payload));
     if (blocked) {

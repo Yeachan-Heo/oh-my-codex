@@ -881,4 +881,68 @@ describe('skill-active state helpers', () => {
       assert.equal(JSON.parse(await readFile(rootPath, 'utf8')).active_skills[0].phase, 'recovered');
     });
   });
+
+  it('removes root-scoped stale ralplan entry owned by the session when clearing, even when session_id is empty (#3451-A)', async () => {
+    await withTempRepo('omx-skill-active-3451-owner-clear-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(stateDir, { recursive: true });
+      const sessionId = 'sess-3451-owner';
+      // Seed root skill-active with a root-scoped ralplan entry (empty session_id)
+      // owned by the current session via owner_codex_session_id. The entryKey
+      // dedup (skill::session_id) prevents two same-skill unscoped entries, so we
+      // also seed a different-skill entry to verify only the matching entry clears.
+      await writeSkillActiveStateCopiesForStateDir(
+        stateDir,
+        {
+          active: true,
+          skill: 'ralplan',
+          phase: 'planning',
+          session_id: undefined,
+          owner_codex_session_id: sessionId,
+          active_skills: [
+            { skill: 'ralplan', phase: 'planning', active: true, session_id: undefined, owner_codex_session_id: sessionId },
+            { skill: 'team', phase: 'running', active: true, session_id: undefined, owner_codex_session_id: 'other-session' },
+          ],
+        },
+        undefined,
+        {
+          active: true,
+          skill: 'ralplan',
+          phase: 'planning',
+          active_skills: [
+            { skill: 'ralplan', phase: 'planning', active: true, session_id: undefined, owner_codex_session_id: sessionId },
+            { skill: 'team', phase: 'running', active: true, session_id: undefined, owner_codex_session_id: 'other-session' },
+          ],
+        },
+      );
+
+      // Clear ralplan for the current session
+      await syncCanonicalSkillStateForMode({
+        cwd,
+        mode: 'ralplan',
+        active: false,
+        sessionId,
+        ownerCodexSessionId: sessionId,
+        nowIso: '2026-08-07T00:00:00.000Z',
+      });
+
+      const rootState = JSON.parse(
+        await readFile(join(stateDir, 'skill-active-state.json'), 'utf-8'),
+      ) as { active_skills?: Array<{ skill: string; owner_codex_session_id?: string }> };
+
+      const remaining = rootState.active_skills ?? [];
+      // The ralplan entry owned by the current session must be removed
+      assert.equal(
+        remaining.some((e) => e.skill === 'ralplan'),
+        false,
+        'stale root-scoped ralplan entry owned by the current session should be removed',
+      );
+      // The team entry owned by the other session must survive
+      assert.equal(
+        remaining.some((e) => e.skill === 'team' && e.owner_codex_session_id === 'other-session'),
+        true,
+        'team entry owned by a different session should survive',
+      );
+    });
+  });
 });
