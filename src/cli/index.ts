@@ -209,6 +209,7 @@ import {
   planWorktreeTarget,
   ensureWorktree,
 } from "../team/worktree.js";
+import { resolveVerifiedDetachedTeamContext, type VerifiedDetachedTeamContext } from "../team/state-root.js";
 import { ensureReusableNodeModules } from "../utils/repo-deps.js";
 import { resolveWorktreeToolContext, worktreeToolContextEnv } from "../utils/worktree-tool-context.js";
 import {
@@ -2355,6 +2356,7 @@ export function captureMadmaxWorktreeRuntimeContext(options: {
 
   const inheritedRoot = resolveInheritedMadmaxRoot(env);
   if (!inheritedRoot) return undefined;
+  if (!madmaxInheritedContextMatchesLaunch(options.sourceCwd, options.originalLaunchArgs, env)) return undefined;
 
   const sourceCwd = env.OMX_SOURCE_CWD?.trim() || options.sourceCwd;
   const worktreeCwd = options.worktreeCwd?.trim();
@@ -2804,14 +2806,16 @@ export async function withMadmaxDetachedContextLock<T>(
 
 function readMadmaxRunMetadata(
   runRoot: string,
-): { cwd?: string; detached_launch_context?: string } | null {
+): { cwd?: string; source_cwd?: string; detached_launch_context?: string } | null {
   try {
     const parsed = JSON.parse(readFileSync(join(runRoot, ".omxbox-run.json"), "utf-8")) as {
       cwd?: unknown;
+      source_cwd?: unknown;
       detached_launch_context?: unknown;
     };
     return {
       ...(typeof parsed.cwd === "string" ? { cwd: parsed.cwd } : {}),
+      ...(typeof parsed.source_cwd === "string" ? { source_cwd: parsed.source_cwd } : {}),
       ...(typeof parsed.detached_launch_context === "string"
         ? { detached_launch_context: parsed.detached_launch_context }
         : {}),
@@ -2839,13 +2843,29 @@ function madmaxInheritedContextMatchesLaunch(
   const metadata = readMadmaxRunMetadata(inheritedRoot);
   if (!metadata) return false;
   if (metadata.cwd && metadata.cwd !== inheritedRoot) return false;
+  const sourceCwd = env.OMX_SOURCE_CWD?.trim();
+  if (!sourceCwd || !metadata.source_cwd || metadata.source_cwd !== sourceCwd) return false;
   if (metadata.detached_launch_context !== context) return false;
   const expectedContext = buildMadmaxDetachedLaunchContextKey(cwd, [...launchArgs], inheritedRoot);
   return expectedContext === context;
 }
 
-function isMadmaxDetachedGuardEnabled(env: NodeJS.ProcessEnv): boolean {
-  return env.OMXBOX_ACTIVE === "1" && typeof env[OMX_MADMAX_DETACHED_CONTEXT_ENV] === "string";
+
+function resolveVerifiedMadmaxDetachedContext(
+  cwd: string,
+  launchArgs: readonly string[],
+  env: NodeJS.ProcessEnv,
+): VerifiedMadmaxDetachedContext | undefined {
+  if (!madmaxInheritedContextMatchesLaunch(cwd, launchArgs, env)) return undefined;
+  const inheritedRoot = resolveInheritedMadmaxRoot(env);
+  const context = env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
+  if (!inheritedRoot || !context) return undefined;
+  return {
+    root: resolveLaunchPath(cwd, inheritedRoot),
+    sourceCwd: env.OMX_SOURCE_CWD?.trim() || cwd,
+    context,
+    runsRoot: resolveMadmaxRunsRoot(env),
+  };
 }
 
 function cleanupCurrentMadmaxReuseRunRoot(env: NodeJS.ProcessEnv, runsRoot: string): void {
@@ -3776,6 +3796,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
   }
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
   activateMadmaxIsolationIfNeeded("launch", args, launchCwd, process.env);
+  const verifiedMadmaxLaunchContext = resolveVerifiedMadmaxDetachedContext(launchCwd, args, process.env);
   const persistentCodexHomeForLaunch = resolveCodexHomeForLaunch(launchCwd, process.env);
   const workerSparkModel = resolveWorkerSparkModel(
     passthroughArgs,
@@ -3918,6 +3939,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       projectLocalCodexHomeForCleanup,
       preparedCodexHome.runtimeCodexHomeForCleanup,
       madmaxWorktreeRuntimeContext,
+      verifiedMadmaxLaunchContext,
     );
     postLaunchHandledExternally = launchResult.postLaunchHandledExternally;
   } catch (error) {
@@ -4702,7 +4724,7 @@ function buildDetachedWindowsLeaderCommand(
   const payload = Buffer.from(JSON.stringify({
     cwd, sessionName, sessionId, codexCmd, codexHomeOverride,
     projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup,
-    ...(parentEnv ? { parentEnv: detachedSessionParentEnvironment(parentEnv) } : {}),
+    ...(parentEnv ? { parentEnv: detachedSessionParentEnvironment(parentEnv, true) } : {}),
     readyPath, preLaunchOptions,
   })).toString("base64url");
   const invocation = `& ${quotePowerShellArg(process.execPath)} ${quotePowerShellArg(omxBin)} __detached-session-leader ${quotePowerShellArg(payload)}`;
@@ -4954,6 +4976,140 @@ export function releaseTmuxExtendedKeysLease(
 
 
 
+export const DETACHED_LAUNCH_CONTROL_PLANE_KEYS = [
+  "OMX_SESSION_ID",
+  "CODEX_SESSION_ID",
+  "SESSION_ID",
+  "OMX_TMUX_HUD_OWNER",
+  "OMX_TMUX_HUD_LEADER_PANE",
+  "OMX_ROOT",
+  "OMX_STATE_ROOT",
+  "OMX_TEAM_STATE_ROOT",
+  "OMXBOX_ACTIVE",
+  "OMX_SOURCE_CWD",
+  "OMX_MADMAX_DETACHED_CONTEXT",
+  "OMX_RUNS_DIR",
+  "OMX_TEAM_LEADER_CWD",
+  "OMX_TEAM_WORKER",
+  "OMX_TEAM_INTERNAL_WORKER",
+] as const;
+
+export type DetachedLaunchControlPlaneKey = (typeof DETACHED_LAUNCH_CONTROL_PLANE_KEYS)[number];
+export type DetachedLaunchControlPlaneValues = Record<DetachedLaunchControlPlaneKey, string>;
+
+export interface DetachedLaunchControlPlane {
+  readonly values: Readonly<DetachedLaunchControlPlaneValues>;
+  readonly keys: readonly DetachedLaunchControlPlaneKey[];
+}
+
+const DETACHED_LAUNCH_CONTROL_PLANE_KEY_SET = new Set<string>(DETACHED_LAUNCH_CONTROL_PLANE_KEYS);
+
+function isDetachedLaunchControlPlaneKey(key: string, caseInsensitive = false): key is DetachedLaunchControlPlaneKey {
+  return caseInsensitive
+    ? DETACHED_LAUNCH_CONTROL_PLANE_KEY_SET.has(key.toUpperCase())
+    : DETACHED_LAUNCH_CONTROL_PLANE_KEY_SET.has(key);
+}
+
+function emptyDetachedLaunchControlPlaneValues(): DetachedLaunchControlPlaneValues {
+  return Object.fromEntries(
+    DETACHED_LAUNCH_CONTROL_PLANE_KEYS.map((key) => [key, ""]),
+  ) as DetachedLaunchControlPlaneValues;
+}
+
+function resolveDetachedRootValue(cwd: string, raw: string): string {
+  return isCrossPlatformAbsolutePath(raw) ? raw : resolve(cwd, raw);
+}
+
+interface VerifiedMadmaxDetachedContext {
+  readonly root: string;
+  readonly sourceCwd: string;
+  readonly context: string;
+  readonly runsRoot: string;
+}
+
+export function buildDetachedLaunchControlPlane(options: {
+  cwd: string;
+  sessionId: string;
+  env?: NodeJS.ProcessEnv;
+  omxRootOverride?: string;
+  runtimeContext?: MadmaxWorktreeRuntimeContext;
+  leaderPaneId?: string;
+  verifiedTeamContext?: VerifiedDetachedTeamContext;
+  verifiedMadmaxContext?: VerifiedMadmaxDetachedContext;
+}): DetachedLaunchControlPlane {
+  const env = options.env ?? process.env;
+  const values = emptyDetachedLaunchControlPlaneValues();
+  values.OMX_SESSION_ID = options.sessionId;
+  values.OMX_TMUX_HUD_OWNER = "1";
+  values.OMX_TMUX_HUD_LEADER_PANE = options.leaderPaneId ?? "";
+
+  const runtimeContext = options.runtimeContext;
+  const verifiedMadmaxContext = options.verifiedMadmaxContext;
+  if (runtimeContext && verifiedMadmaxContext) {
+    values.OMX_ROOT = verifiedMadmaxContext.root;
+    values.OMXBOX_ACTIVE = "1";
+    values.OMX_SOURCE_CWD = verifiedMadmaxContext.sourceCwd;
+    values.OMX_MADMAX_DETACHED_CONTEXT = verifiedMadmaxContext.context;
+    values.OMX_RUNS_DIR = verifiedMadmaxContext.runsRoot;
+  } else {
+    const madmaxGuardPresent = env.OMXBOX_ACTIVE === "1";
+    const teamRoot = env.OMX_TEAM_STATE_ROOT?.trim();
+    const root = env.OMX_ROOT?.trim();
+    const stateRoot = env.OMX_STATE_ROOT?.trim();
+    const resolvedStateRoot = stateRoot ? resolveDetachedRootValue(options.cwd, stateRoot) : undefined;
+    const explicitOverrideWins = Boolean(
+      options.omxRootOverride?.trim()
+      && !teamRoot
+      && !root
+      && (!resolvedStateRoot || resolveDetachedRootValue(options.cwd, options.omxRootOverride!.trim()) !== resolvedStateRoot),
+    );
+    if (teamRoot) values.OMX_TEAM_STATE_ROOT = resolveDetachedRootValue(options.cwd, teamRoot);
+    if (!madmaxGuardPresent) {
+      if (explicitOverrideWins) values.OMX_ROOT = resolveDetachedRootValue(options.cwd, options.omxRootOverride!.trim());
+      else if (!teamRoot && root) values.OMX_ROOT = resolveDetachedRootValue(options.cwd, root);
+      else if (!teamRoot && stateRoot) values.OMX_STATE_ROOT = resolvedStateRoot!;
+      else if (!teamRoot && options.omxRootOverride?.trim()) values.OMX_ROOT = resolveDetachedRootValue(options.cwd, options.omxRootOverride.trim());
+    }
+
+    if (verifiedMadmaxContext) {
+      values.OMX_ROOT = verifiedMadmaxContext.root;
+      values.OMX_STATE_ROOT = "";
+      values.OMX_TEAM_STATE_ROOT = "";
+      values.OMXBOX_ACTIVE = "1";
+      values.OMX_SOURCE_CWD = verifiedMadmaxContext.sourceCwd;
+      values.OMX_MADMAX_DETACHED_CONTEXT = verifiedMadmaxContext.context;
+      values.OMX_RUNS_DIR = verifiedMadmaxContext.runsRoot;
+    }
+  }
+
+  const verifiedTeam = options.verifiedTeamContext;
+  if (verifiedTeam && !verifiedMadmaxContext) {
+    values.OMX_ROOT = "";
+    values.OMX_STATE_ROOT = "";
+    values.OMXBOX_ACTIVE = "";
+    values.OMX_SOURCE_CWD = "";
+    values.OMX_MADMAX_DETACHED_CONTEXT = "";
+    values.OMX_RUNS_DIR = "";
+    values.OMX_TEAM_STATE_ROOT = verifiedTeam.stateRoot;
+    values.OMX_TEAM_LEADER_CWD = verifiedTeam.leaderCwd;
+    values.OMX_TEAM_WORKER = verifiedTeam.worker;
+    values.OMX_TEAM_INTERNAL_WORKER = verifiedTeam.internalWorker;
+  }
+
+  return Object.freeze({
+    values: Object.freeze(values),
+    keys: DETACHED_LAUNCH_CONTROL_PLANE_KEYS,
+  });
+}
+
+export const resolveDetachedLaunchControlPlane = buildDetachedLaunchControlPlane;
+
+function detachedLaunchControlPlaneEnv(controlPlane: DetachedLaunchControlPlane): Record<string, string> {
+  return Object.fromEntries(
+    DETACHED_LAUNCH_CONTROL_PLANE_KEYS.map((key) => [key, controlPlane.values[key]]),
+  );
+}
+
 const SHELL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DETACHED_SESSION_PANE_ENV_KEYS = new Set([
   "TERM",
@@ -4965,10 +5121,17 @@ const DETACHED_SESSION_PANE_ENV_KEYS = new Set([
   "LINES",
 ]);
 
-function detachedSessionParentEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+function detachedSessionParentEnvironment(
+  env: NodeJS.ProcessEnv,
+  caseInsensitive = false,
+): Record<string, string> {
   const values: Record<string, string> = {};
   for (const key of Object.keys(env).sort()) {
-    if (!SHELL_ENV_NAME_PATTERN.test(key) || DETACHED_SESSION_PANE_ENV_KEYS.has(key)) continue;
+    if (
+      !SHELL_ENV_NAME_PATTERN.test(key)
+      || DETACHED_SESSION_PANE_ENV_KEYS.has(key)
+      || isDetachedLaunchControlPlaneKey(key, caseInsensitive)
+    ) continue;
     const value = env[key];
     if (typeof value === "string" && !value.includes("\0")) values[key] = value;
   }
@@ -5045,6 +5208,7 @@ export function buildDetachedSessionBootstrapSteps(
     enableNotifyFallbackAuthority: false,
     worktreeDirty: false,
   },
+  controlPlane?: DetachedLaunchControlPlane,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? buildDetachedWindowsLeaderCommand(
@@ -5057,25 +5221,13 @@ export function buildDetachedSessionBootstrapSteps(
         projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup, parentEnvFilePath,
         releaseMarkerPath, preLaunchOptions, omxBin,
       );
-  const resolvedEnvStateRoot = env.OMX_STATE_ROOT?.trim()
-    ? resolveLaunchPath(cwd, env.OMX_STATE_ROOT.trim())
-    : undefined;
-  const hasExplicitRootOverride = Boolean(
-    env.OMX_ROOT?.trim()
-      || (omxRootOverride && omxRootOverride !== resolvedEnvStateRoot),
-  );
-  const hudRuntimeRoot = env.OMX_TEAM_STATE_ROOT?.trim()
-    ? resolveHudRuntimeRootForLaunch(cwd, env)
-    : hasExplicitRootOverride
-      ? {
-          omxRoot: omxRootOverride,
-          rootSource: resolveHudRuntimeRootSource(omxRootOverride, env),
-        }
-      : resolveHudRuntimeRootForLaunch(cwd, env);
-  const hudRuntimeEnv = buildHudRuntimeEnv({
-    sessionId,
-    ...hudRuntimeRoot,
-  }).env;
+  const launchControlPlane = controlPlane ?? buildDetachedLaunchControlPlane({
+    cwd,
+    sessionId: sessionId ?? "",
+    env,
+    omxRootOverride,
+  });
+  const controlPlaneEnv = detachedLaunchControlPlaneEnv(launchControlPlane);
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -5086,15 +5238,10 @@ export function buildDetachedSessionBootstrapSteps(
     sessionName,
     "-c",
     cwd,
+    ...DETACHED_LAUNCH_CONTROL_PLANE_KEYS.flatMap((key) => ["-e", `${key}=${controlPlaneEnv[key]}`]),
     ...(workerLaunchArgs ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
-    ...Object.entries(hudRuntimeEnv).map(([key, value]) => ["-e", `${key}=${value}`]).flat(),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(sqliteHomeOverride ? ["-e", `${CODEX_SQLITE_HOME_ENV}=${sqliteHomeOverride}`] : []),
-    ...(env.OMXBOX_ACTIVE ? ["-e", `OMXBOX_ACTIVE=${env.OMXBOX_ACTIVE}`] : []),
-    ...(env.OMX_SOURCE_CWD ? ["-e", `OMX_SOURCE_CWD=${env.OMX_SOURCE_CWD}`] : []),
-    ...(env[OMX_MADMAX_DETACHED_CONTEXT_ENV]
-      ? ["-e", `${OMX_MADMAX_DETACHED_CONTEXT_ENV}=${env[OMX_MADMAX_DETACHED_CONTEXT_ENV]}`]
-      : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
       : []),
@@ -5907,6 +6054,7 @@ async function runCodex(
   projectLocalCodexHomeForCleanup?: string,
   runtimeCodexHomeForCleanup?: string,
   runtimeContext?: MadmaxWorktreeRuntimeContext,
+  verifiedMadmaxContext?: VerifiedMadmaxDetachedContext,
 ): Promise<{ postLaunchHandledExternally: boolean }> {
   void preLaunchOptions;
   const launchArgs = injectModelInstructionsBypassArgs(
@@ -5921,19 +6069,57 @@ async function runCodex(
     throw new Error("Unable to resolve OMX launcher path for tmux HUD bootstrap");
   }
   const runtimeEnvOverlay = buildMadmaxWorktreeRuntimeEnvOverlay(runtimeContext);
+  let verifiedTeamContext: VerifiedDetachedTeamContext | undefined;
+  if (launchPolicy === "detached-tmux") {
+    try {
+      verifiedTeamContext = await resolveVerifiedDetachedTeamContext(cwd, process.env);
+    } catch {
+      verifiedTeamContext = undefined;
+    }
+  }
+  const verifiedMadmaxContextForLaunch = verifiedMadmaxContext ?? (
+    runtimeContext?.madmaxDetachedContext
+      ? {
+          root: runtimeContext.omxRoot,
+          sourceCwd: runtimeContext.sourceCwd,
+          context: runtimeContext.madmaxDetachedContext,
+          runsRoot: resolveMadmaxRunsRoot(process.env),
+        }
+      : resolveVerifiedMadmaxDetachedContext(cwd, launchArgs, process.env)
+  );
+  const detachedControlPlane = launchPolicy === "detached-tmux"
+    ? buildDetachedLaunchControlPlane({
+        cwd,
+        sessionId,
+        env: process.env,
+        omxRootOverride: runtimeContext?.omxRoot ?? resolveOmxRootForLaunch(cwd, process.env),
+        runtimeContext,
+        verifiedMadmaxContext: verifiedMadmaxContextForLaunch,
+        verifiedTeamContext,
+      })
+    : undefined;
+  const detachedSelectedStateEnv = detachedControlPlane
+    ? { ...process.env, ...detachedLaunchControlPlaneEnv(detachedControlPlane) }
+    : undefined;
   const omxRootOverride = runtimeContext?.omxRoot ?? resolveOmxRootForLaunch(cwd, process.env);
   const currentPaneId = process.env.TMUX_PANE;
   const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext
     ? { omxRoot: runtimeContext.omxRoot, rootSource: 'omx-root-env' }
     : resolveHudRuntimeRootForLaunch(cwd, process.env);
-  const hudRuntimeEnv = {
-    ...buildHudRuntimeEnv({
-      sessionId,
-      leaderPaneId: currentPaneId,
-      ...hudRuntimeRoot,
-    }).env,
-    ...runtimeEnvOverlay,
-  };
+  const hudRuntimeEnv = detachedControlPlane
+    ? Object.fromEntries(
+        DETACHED_LAUNCH_CONTROL_PLANE_KEYS
+          .map((key) => [key, detachedControlPlane.values[key]])
+          .filter(([, value]) => value !== ""),
+      )
+    : {
+        ...buildHudRuntimeEnv({
+          sessionId,
+          leaderPaneId: currentPaneId,
+          ...hudRuntimeRoot,
+        }).env,
+        ...runtimeEnvOverlay,
+      };
   const hudEnvArgs = Object.entries(hudRuntimeEnv).map(([key, value]) => `${key}=${value}`);
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
@@ -6115,8 +6301,8 @@ async function runCodex(
       ? buildWindowsDetachedChildCommand("codex", launchArgs)
       : null;
     const sessionName = buildDetachedTmuxSessionName(cwd, sessionId);
-    const contextKey = runtimeContext?.madmaxDetachedContext ?? process.env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
-    const runsRoot = resolveMadmaxRunsRoot(process.env);
+    const contextKey = detachedControlPlane?.values.OMX_MADMAX_DETACHED_CONTEXT.trim() || undefined;
+    const runsRoot = detachedControlPlane?.values.OMX_RUNS_DIR || resolveMadmaxRunsRoot(process.env);
     const detachedLaunchNonce = randomUUID();
     const releaseMarkerPath = join(
       omxRoot(cwd),
@@ -6147,6 +6333,7 @@ async function runCodex(
             enableNotifyFallbackAuthority: preLaunchOptions.enableNotifyFallbackAuthority,
             worktreeDirty: preLaunchOptions.worktreeDirty,
           },
+          detachedControlPlane,
         );
         for (const step of bootstrapSteps) {
           try {
@@ -6231,14 +6418,14 @@ async function runCodex(
             return detachedLeaderPaneId;
           },
           updateNameMetadata: async () => {
-            const state = await readSessionState(cwd);
+            const state = await readSessionState(cwd, detachedSelectedStateEnv);
             if (state?.session_id !== sessionId || state.tmux_session_name !== sessionName) {
               throw new Error("detached session-name metadata was not committed by the leader");
             }
             return "committed-released";
           },
           updatePaneMetadata: async (_binding, pane) => {
-            const state = await readSessionState(cwd);
+            const state = await readSessionState(cwd, detachedSelectedStateEnv);
             if (state?.session_id !== sessionId || state.tmux_pane_id !== pane) {
               throw new Error("detached pane metadata was not committed by the leader");
             }
@@ -6328,7 +6515,7 @@ async function runCodex(
       return { postLaunchHandledExternally: true };
     };
 
-    if (isMadmaxDetachedGuardEnabled(process.env) && contextKey) {
+    if (contextKey) {
       return await withMadmaxDetachedContextLock(runsRoot, contextKey, launchDetachedSession);
     }
     return await launchDetachedSession();
@@ -6555,7 +6742,10 @@ function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLea
 }
 
 async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise<void> {
-  for (const [key, value] of Object.entries(payload.parentEnv ?? {})) process.env[key] = value;
+  for (const [key, value] of Object.entries(payload.parentEnv ?? {})) {
+    if (isDetachedLaunchControlPlaneKey(key, process.platform === "win32")) continue;
+    process.env[key] = value;
+  }
   const established = await establishPreLaunchBinding(payload.cwd, payload.sessionId);
   const binding = established.binding;
   let ownedRecord: DetachedActiveRecordOwnership | undefined;

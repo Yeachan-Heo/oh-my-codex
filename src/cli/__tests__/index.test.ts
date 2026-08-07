@@ -99,6 +99,8 @@ import {
   DETACHED_TMUX_HISTORY_LIMIT,
   isExistingTmuxWindowTooCrampedForLaunchHud,
   guardDetachedHudDeferredMutation,
+  DETACHED_LAUNCH_CONTROL_PLANE_KEYS,
+  buildDetachedLaunchControlPlane,
 } from "../index.js";
 import { buildResumeArgsWithPreservedFlags, stripHotswapArg } from "../../auth/hotswap.js";
 import { writeSkillActiveStateCopiesForStateDir } from '../../state/skill-active.js';
@@ -206,6 +208,7 @@ describe("madmax state isolation", () => {
       const runDir = createMadmaxIsolatedRoot(wd, ["--madmax", "--high"], env);
       env.OMX_ROOT = runDir;
       env.OMXBOX_ACTIVE = "1";
+      env.OMX_SOURCE_CWD = wd;
 
       assert.equal(
         shouldAutoIsolateMadmaxLaunch("launch", ["--madmax", "--high"], env, wd),
@@ -229,30 +232,40 @@ describe("madmax state isolation", () => {
     );
   });
 
-  it("captures madmax worktree context from parsed worktree state, not remaining args", () => {
+  it("captures madmax worktree context from parsed worktree state, not remaining args", async () => {
     const sourceCwd = "/repo/source";
     const worktreeCwd = "/repo/.worktrees/session";
-    const runDir = "/runs/run-issue-3043";
-    const context = captureMadmaxWorktreeRuntimeContext({
-      originalLaunchArgs: ["--madmax", "--worktree", "--version"],
-      worktreeEnabled: true,
-      sourceCwd,
-      worktreeCwd,
-      env: {
-        OMX_ROOT: runDir,
-        OMXBOX_ACTIVE: "1",
-        OMX_SOURCE_CWD: sourceCwd,
-        OMX_MADMAX_DETACHED_CONTEXT: "ctx-3043",
-      },
-    });
+    const runDir = await mkdtemp(join(tmpdir(), "omx-run-issue-3043-"));
+    try {
+      const detachedContext = buildMadmaxDetachedLaunchContextKey(sourceCwd, ["--madmax", "--worktree", "--version"], runDir);
+      await writeFile(join(runDir, ".omxbox-run.json"), JSON.stringify({
+        cwd: runDir,
+        source_cwd: sourceCwd,
+        detached_launch_context: detachedContext,
+      }));
+      const context = captureMadmaxWorktreeRuntimeContext({
+        originalLaunchArgs: ["--madmax", "--worktree", "--version"],
+        worktreeEnabled: true,
+        sourceCwd,
+        worktreeCwd,
+        env: {
+          OMX_ROOT: runDir,
+          OMXBOX_ACTIVE: "1",
+          OMX_SOURCE_CWD: sourceCwd,
+          OMX_MADMAX_DETACHED_CONTEXT: detachedContext,
+        },
+      });
 
-    assert.deepEqual(context, {
-      omxRoot: runDir,
-      sourceCwd,
-      worktreeCwd,
-      madmaxDetachedContext: "ctx-3043",
-      boxedActive: true,
-    });
+      assert.deepEqual(context, {
+        omxRoot: runDir,
+        sourceCwd,
+        worktreeCwd,
+        madmaxDetachedContext: detachedContext,
+        boxedActive: true,
+      });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
   });
 
   it("does not capture ordinary worktree or unboxed madmax launches", () => {
@@ -4205,7 +4218,7 @@ describe("detached tmux new-session sequencing", () => {
     );
   });
 
-  it("buildDetachedSessionBootstrapSteps forwards boxed env to detached tmux session", () => {
+  it("clears unverified boxed env from detached tmux sessions", () => {
     const steps = buildDetachedSessionBootstrapSteps(
       "omx-demo",
       "/tmp/boxed-runtime",
@@ -4227,16 +4240,16 @@ describe("detached tmux new-session sequencing", () => {
     );
     const newSession = steps.find((step) => step.name === "new-session");
     assert.ok(newSession);
-    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/boxed-runtime"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMX_ROOT=/tmp/boxed-runtime"), false);
     assert.equal(
       newSession.args.some((arg) => arg === "OMX_STATE_ROOT=/tmp/boxed-state-root"),
       false,
     );
     assert.equal(newSession.args.some((arg) => arg === "OMX_TMUX_HUD_OWNER=1"), true);
-    assert.equal(newSession.args.some((arg) => arg === "OMXBOX_ACTIVE=1"), true);
+    assert.equal(newSession.args.some((arg) => arg === "OMXBOX_ACTIVE=1"), false);
     assert.equal(
       newSession.args.some((arg) => arg === "OMX_SOURCE_CWD=/tmp/source-project"),
-      true,
+      false,
     );
   });
 
@@ -4687,7 +4700,7 @@ exit 0
     assert.match(source, /const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext\s*\? \{ omxRoot: runtimeContext\.omxRoot, rootSource: 'omx-root-env' \}\s*: resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
     assert.match(
       source,
-      /const hudRuntimeEnv = \{\s*\.\.\.buildHudRuntimeEnv\(\{\s*sessionId,\s*leaderPaneId: currentPaneId,\s*\.\.\.hudRuntimeRoot,\s*\}\)\.env,\s*\.\.\.runtimeEnvOverlay,\s*\};\s*const hudEnvArgs = Object\.entries\(hudRuntimeEnv\)\.map\(\(\[key, value\]\) => `\$\{key\}=\$\{value\}`\)/,
+      /const hudRuntimeEnv = detachedControlPlane\s*\? Object\.fromEntries\([\s\S]*?\)\s*:\s*\{\s*\.\.\.buildHudRuntimeEnv\(/,
     );
     assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
     assert.match(
@@ -5802,7 +5815,6 @@ describe("Windows detached leader environment", () => {
       CUSTOM_VALUE: "retained",
       OMX_CODEX_LAUNCH_ID: "launch-id",
       OMX_NOTIFY_TEMP_CONTRACT: "{\"active\":true}",
-      OMX_ROOT: "C:/project/.omx-run",
       OMX_TEAM_WORKER_LAUNCH_ARGS: "[\"--model\",\"gpt-5\"]",
       PATH: "C:/runtime-shim;C:/parent/bin",
     });
@@ -6290,5 +6302,172 @@ describe("isExistingTmuxWindowTooCrampedForLaunchHud (#2754)", () => {
   it("honors an explicit minimum-height override", () => {
     assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(41, 40), false);
     assert.equal(isExistingTmuxWindowTooCrampedForLaunchHud(39, 40), true);
+  });
+});
+
+describe("detached control-plane binding", () => {
+  it("emits one stable assignment for every managed key and clears poisoned identity", () => {
+    const env: NodeJS.ProcessEnv = {
+      OMX_ROOT: "",
+      OMX_STATE_ROOT: "",
+      OMX_TEAM_STATE_ROOT: "",
+      OMX_RUNS_DIR: "/foreign/runs",
+      OMX_TEAM_LEADER_CWD: "/foreign",
+      OMX_TEAM_WORKER: "foreign/worker-1",
+      OMX_TEAM_INTERNAL_WORKER: "foreign/worker-1",
+    };
+    const controlPlane = buildDetachedLaunchControlPlane({ cwd: "/tmp/project", sessionId: "sess-binding", env });
+    assert.deepEqual([...controlPlane.keys], [...DETACHED_LAUNCH_CONTROL_PLANE_KEYS]);
+    assert.deepEqual(Object.keys(controlPlane.values), [...DETACHED_LAUNCH_CONTROL_PLANE_KEYS]);
+    assert.equal(controlPlane.values.OMX_SESSION_ID, "sess-binding");
+    assert.equal(controlPlane.values.OMX_TMUX_HUD_OWNER, "1");
+    for (const key of [
+      "CODEX_SESSION_ID", "SESSION_ID", "OMX_TMUX_HUD_LEADER_PANE", "OMX_ROOT", "OMX_STATE_ROOT",
+      "OMX_TEAM_STATE_ROOT", "OMXBOX_ACTIVE", "OMX_SOURCE_CWD", "OMX_MADMAX_DETACHED_CONTEXT", "OMX_RUNS_DIR",
+      "OMX_TEAM_LEADER_CWD", "OMX_TEAM_WORKER", "OMX_TEAM_INTERNAL_WORKER",
+    ] as const) assert.equal(controlPlane.values[key], "", `${key} must be cleared`);
+
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-binding", "/tmp/project", "codex", "hud", null, undefined, null, false, "sess-binding",
+      undefined, undefined, undefined, env, undefined, undefined, undefined, undefined, undefined, undefined, controlPlane,
+    );
+    const newSession = steps.find((step) => step.name === "new-session");
+    assert.ok(newSession);
+    const managedAssignments = newSession.args.filter((arg) =>
+      DETACHED_LAUNCH_CONTROL_PLANE_KEYS.some((key) => arg.startsWith(`${key}=`)),
+    );
+    assert.equal(managedAssignments.length, DETACHED_LAUNCH_CONTROL_PLANE_KEYS.length);
+    assert.deepEqual(
+      managedAssignments.map((assignment) => assignment.slice(0, assignment.indexOf("="))),
+      [...DETACHED_LAUNCH_CONTROL_PLANE_KEYS],
+    );
+  });
+
+  it("preserves selected explicit roots and valid Madmax runs identity", () => {
+    const explicit = buildDetachedLaunchControlPlane({
+      cwd: "/tmp/project", sessionId: "sess-explicit",
+      env: { OMX_ROOT: "/tmp/selected-root", OMX_STATE_ROOT: "/tmp/stale-state" },
+    });
+    assert.equal(explicit.values.OMX_ROOT, "/tmp/selected-root");
+    assert.equal(explicit.values.OMX_STATE_ROOT, "");
+    assert.equal(explicit.values.OMX_RUNS_DIR, "");
+
+    const madmax = buildDetachedLaunchControlPlane({
+      cwd: "/tmp/project", sessionId: "sess-madmax",
+      omxRootOverride: "/tmp/run-root",
+      verifiedMadmaxContext: {
+        root: "/tmp/run-root",
+        sourceCwd: "/tmp/project",
+        context: "ctx-madmax",
+        runsRoot: "/tmp/outer-runs",
+      },
+      env: {
+        OMX_ROOT: "/tmp/run-root", OMXBOX_ACTIVE: "1", OMX_SOURCE_CWD: "/tmp/project",
+        OMX_MADMAX_DETACHED_CONTEXT: "ctx-madmax", OMX_RUNS_DIR: "/tmp/outer-runs",
+      },
+    });
+    assert.deepEqual(
+      [madmax.values.OMX_ROOT, madmax.values.OMXBOX_ACTIVE, madmax.values.OMX_SOURCE_CWD,
+        madmax.values.OMX_MADMAX_DETACHED_CONTEXT, madmax.values.OMX_RUNS_DIR],
+      ["/tmp/run-root", "1", "/tmp/project", "ctx-madmax", "/tmp/outer-runs"],
+    );
+    const poisoned = buildDetachedLaunchControlPlane({
+      cwd: "/tmp/project", sessionId: "sess-poisoned", omxRootOverride: "/foreign/root",
+      env: {
+        OMX_ROOT: "/foreign/root", OMXBOX_ACTIVE: "1", OMX_SOURCE_CWD: "/foreign/source",
+        OMX_MADMAX_DETACHED_CONTEXT: "poisoned-context", OMX_RUNS_DIR: "/foreign/runs",
+      },
+    });
+    assert.deepEqual(
+      [poisoned.values.OMX_ROOT, poisoned.values.OMX_SOURCE_CWD,
+        poisoned.values.OMX_MADMAX_DETACHED_CONTEXT, poisoned.values.OMX_RUNS_DIR],
+      ["", "", "", ""],
+    );
+
+  });
+  it("preserves an explicit team root while clearing unverified boxed lineage and worker tuple", () => {
+    const cases = [
+      {
+        name: "boxed guard without worker tuple",
+        env: {
+          OMX_TEAM_STATE_ROOT: "/tmp/explicit-team-root",
+          OMX_ROOT: "/tmp/poison-root",
+          OMX_STATE_ROOT: "/tmp/poison-state-root",
+          OMXBOX_ACTIVE: "1",
+          OMX_SOURCE_CWD: "/tmp/poison-source",
+          OMX_MADMAX_DETACHED_CONTEXT: "poison-context",
+          OMX_RUNS_DIR: "/tmp/poison-runs",
+        },
+      },
+      {
+        name: "boxed guard with poisoned worker tuple",
+        env: {
+          OMX_TEAM_STATE_ROOT: "/tmp/explicit-team-root",
+          OMX_ROOT: "/tmp/poison-root",
+          OMX_STATE_ROOT: "/tmp/poison-state-root",
+          OMXBOX_ACTIVE: "1",
+          OMX_SOURCE_CWD: "/tmp/poison-source",
+          OMX_MADMAX_DETACHED_CONTEXT: "poison-context",
+          OMX_RUNS_DIR: "/tmp/poison-runs",
+          OMX_TEAM_LEADER_CWD: "/tmp/poison-leader",
+          OMX_TEAM_WORKER: "poison-team/worker-1",
+          OMX_TEAM_INTERNAL_WORKER: "poison-team/worker-2",
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const controlPlane = buildDetachedLaunchControlPlane({
+        cwd: "/tmp/project",
+        sessionId: `sess-${testCase.name.replaceAll(" ", "-")}`,
+        env: testCase.env,
+      });
+      assert.equal(controlPlane.values.OMX_TEAM_STATE_ROOT, "/tmp/explicit-team-root", testCase.name);
+      for (const key of [
+        "OMX_ROOT", "OMX_STATE_ROOT", "OMXBOX_ACTIVE", "OMX_SOURCE_CWD",
+        "OMX_MADMAX_DETACHED_CONTEXT", "OMX_RUNS_DIR", "OMX_TEAM_LEADER_CWD",
+        "OMX_TEAM_WORKER", "OMX_TEAM_INTERNAL_WORKER",
+      ] as const) {
+        assert.equal(controlPlane.values[key], "", `${testCase.name}: ${key} must be cleared`);
+      }
+    }
+  });
+
+  it("keeps unrelated parent configuration while filtering exact managed replay names", () => {
+    const serialized = serializeDetachedSessionParentEnv({
+      OMX_ROOT: "/foreign/root", omx_root: "/foreign/mixed-case-root",
+      OMX_TEAM_WORKER: "foreign/worker", Omx_Notify_Fallback: "1",
+      PROVIDER_SENTINEL: "provider-value", Path: "/system/path",
+    });
+    assert.doesNotMatch(serialized, /export OMX_ROOT=/);
+    assert.doesNotMatch(serialized, /export OMX_TEAM_WORKER=/);
+    assert.match(serialized, /export omx_root='/);
+    assert.match(serialized, /export PROVIDER_SENTINEL='provider-value'/);
+    assert.match(serialized, /export Path='\/system\/path'/);
+    assert.match(serialized, /export Omx_Notify_Fallback='1'/);
+  });
+  it("filters every managed Windows case variant while preserving unrelated configuration", () => {
+    const env: NodeJS.ProcessEnv = {
+      oMx_RoOt: "/foreign/root",
+      OmX_TeAm_WorkEr: "foreign/worker",
+      OMX_PROVIDER_URL: "https://provider.invalid",
+      Path: "/system/path",
+      Omx_Notify_Fallback: "1",
+    };
+    const steps = buildDetachedSessionBootstrapSteps(
+      "omx-windows-binding", "/tmp/project", "codex", "hud", null, undefined, null, true, "sess-windows",
+      undefined, undefined, undefined, env,
+    );
+    const command = steps[0]?.args.at(-1) ?? "";
+    const encoded = /__detached-session-leader [^A-Za-z0-9_-]*([A-Za-z0-9_-]{40,})/.exec(command)?.[1];
+    assert.ok(encoded);
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as {
+      parentEnv?: Record<string, string>;
+    };
+    assert.equal(payload.parentEnv?.oMx_RoOt, undefined);
+    assert.equal(payload.parentEnv?.OmX_TeAm_WorkEr, undefined);
+    assert.equal(payload.parentEnv?.OMX_PROVIDER_URL, "https://provider.invalid");
+    assert.equal(payload.parentEnv?.Path, "/system/path");
+    assert.equal(payload.parentEnv?.Omx_Notify_Fallback, "1");
   });
 });

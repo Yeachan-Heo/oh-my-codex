@@ -4,9 +4,54 @@ import { readFile, readdir } from 'fs/promises';
 import {
   classifySessionStateLiveness,
   isSessionStateUsable,
-  readUsableSessionState,
   type SessionState,
 } from '../hooks/session.js';
+
+export const VERIFIED_SESSION_BINDING_FIELDS = [
+  'session_id',
+  'native_session_id',
+  'codex_session_id',
+  'previous_native_session_id',
+  'owner_omx_session_id',
+  'owner_codex_session_id',
+] as const;
+
+export type VerifiedSessionBindingField = (typeof VERIFIED_SESSION_BINDING_FIELDS)[number];
+
+export type CanonicalSessionBindingStatus =
+  | 'resolution-error'
+  | 'absent'
+  | 'read-error'
+  | 'malformed'
+  | 'missing-recorded-cwd'
+  | 'root-mismatch'
+  | 'foreign-cwd'
+  | 'usable'
+  | 'stale-dead'
+  | 'identity-indeterminate';
+
+export interface CanonicalSessionBindingSnapshot {
+  cwd: string;
+  status: CanonicalSessionBindingStatus;
+  rootSource?: StateRootSource;
+  baseStateDir?: string;
+  selectedSessionJson?: string;
+  recordedCwd?: string;
+  state?: SessionState;
+  raw?: string;
+  liveness?: 'usable' | 'stale-dead' | 'identity-indeterminate';
+  verifiedAliases: Partial<Record<VerifiedSessionBindingField, string>>;
+}
+
+function verifiedSessionAliases(state: SessionState): Partial<Record<VerifiedSessionBindingField, string>> {
+  const raw = state as SessionState & Record<string, unknown>;
+  const aliases: Partial<Record<VerifiedSessionBindingField, string>> = {};
+  for (const field of VERIFIED_SESSION_BINDING_FIELDS) {
+    const normalized = normalizeSessionId(raw[field]);
+    if (normalized) aliases[field] = normalized;
+  }
+  return aliases;
+}
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 export const STATE_MODE_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -259,7 +304,18 @@ function sessionPointerMatchesId(pointer: Record<string, unknown>, sessionId: st
   ].some((value) => normalizeSessionId(value) === sessionId);
 }
 
-function discoverSessionAuthorityBaseStateDir(workingDirectory?: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+interface SessionAuthorityObservation {
+  baseStateDir: string;
+  raw: string;
+  state: SessionState;
+  recordedCwd: string;
+}
+
+function discoverSessionAuthorityBaseStateDir(
+  workingDirectory?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  onMatch?: (observation: SessionAuthorityObservation) => void,
+): string | undefined {
   const sessionId = normalizeSessionId(env[OMX_SESSION_ID_ENV]);
   if (!sessionId) return undefined;
 
@@ -282,7 +338,8 @@ function discoverSessionAuthorityBaseStateDir(workingDirectory?: string, env: No
     const pointerPath = join(canonicalCandidate, 'session.json');
     if (existsSync(pointerPath)) {
       try {
-        const parsed = JSON.parse(readFileSync(pointerPath, 'utf8')) as unknown;
+        const raw = readFileSync(pointerPath, 'utf8');
+        const parsed = JSON.parse(raw) as unknown;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           const state = parsed as SessionState;
           const recordedCwd = typeof state.cwd === 'string'
@@ -299,6 +356,7 @@ function discoverSessionAuthorityBaseStateDir(workingDirectory?: string, env: No
             && isWithinRoot(observedCwd, recordedCwd)
             && isSessionStateUsable(state, recordedCwd)) {
             matches.push(canonicalCandidate);
+            onMatch?.({ baseStateDir: canonicalCandidate, raw, state, recordedCwd });
           }
         }
       } catch {
@@ -368,6 +426,263 @@ export function getBaseStateDir(workingDirectory?: string, env: NodeJS.ProcessEn
   return getBaseStateDirWithSource(workingDirectory, env).baseStateDir;
 }
 
+function bindingRootSelector(env: NodeJS.ProcessEnv): { source: StateRootSource; selector: string } | undefined {
+  if (typeof env[OMX_TEAM_STATE_ROOT_ENV] === 'string' && env[OMX_TEAM_STATE_ROOT_ENV].trim() !== '') {
+    return { source: 'team-env', selector: OMX_TEAM_STATE_ROOT_ENV };
+  }
+  if (typeof env[OMX_ROOT_ENV] === 'string' && env[OMX_ROOT_ENV].trim() !== '') {
+    return { source: 'omx-root-env', selector: OMX_ROOT_ENV };
+  }
+  if (typeof env[OMX_STATE_ROOT_ENV] === 'string' && env[OMX_STATE_ROOT_ENV].trim() !== '') {
+    return { source: 'omx-state-root-env', selector: OMX_STATE_ROOT_ENV };
+  }
+  return undefined;
+}
+
+/**
+ * Read the selected session pointer once and classify its canonical binding.
+ * This is intentionally read-only: it never probes fallback roots, repairs
+ * pointers, touches tmux, or mutates the supplied environment.
+ */
+export async function readCanonicalSessionBindingSnapshot(
+  workingDirectory?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<CanonicalSessionBindingSnapshot> {
+  let cwd: string;
+  try {
+    cwd = resolveWorkingDirectoryForState(workingDirectory, env);
+  } catch {
+    let fallbackCwd = process.cwd();
+    try {
+      if (typeof workingDirectory === 'string' && workingDirectory.trim()) fallbackCwd = resolvePath(workingDirectory);
+    } catch {
+      // Keep the process cwd as a safe diagnostic anchor.
+    }
+    return {
+      cwd: fallbackCwd,
+      ...(bindingRootSelector(env) ? { rootSource: bindingRootSelector(env)?.source } : normalizeSessionId(env[OMX_SESSION_ID_ENV]) ? { rootSource: 'session-authority' as const } : {}),
+      status: 'resolution-error',
+      verifiedAliases: {},
+    };
+  }
+
+  let resolved: { baseStateDir: string; rootSource: StateRootSource };
+  let selectedObservation: SessionAuthorityObservation | undefined;
+  try {
+    const teamStateRootOverride = env[OMX_TEAM_STATE_ROOT_ENV]?.trim();
+    const omxRootOverride = env[OMX_ROOT_ENV]?.trim();
+    const omxStateRootOverride = env[OMX_STATE_ROOT_ENV]?.trim();
+    if (teamStateRootOverride) {
+      resolved = validateResolvedBaseStateDir(resolveWorkingDirectoryForState(teamStateRootOverride, env), 'team-env', env);
+    } else if (omxRootOverride) {
+      resolved = validateResolvedBaseStateDir(join(resolveWorkingDirectoryForState(omxRootOverride, env), '.omx', 'state'), 'omx-root-env', env);
+    } else if (omxStateRootOverride) {
+      resolved = validateResolvedBaseStateDir(join(resolveWorkingDirectoryForState(omxStateRootOverride, env), '.omx', 'state'), 'omx-state-root-env', env);
+    } else {
+      const sessionAuthority = discoverSessionAuthorityBaseStateDir(cwd, env, (observation) => {
+        selectedObservation = observation;
+      });
+      if (sessionAuthority) {
+        resolved = validateResolvedBaseStateDir(sessionAuthority, 'session-authority', env);
+      } else {
+        resolved = validateResolvedBaseStateDir(join(cwd, '.omx', 'state'), 'cwd-default', env);
+      }
+    }
+  } catch {
+    const selector = bindingRootSelector(env);
+    return {
+      cwd,
+      ...(selector ? { rootSource: selector.source } : normalizeSessionId(env[OMX_SESSION_ID_ENV]) ? { rootSource: 'session-authority' as const } : {}),
+      status: 'resolution-error',
+      verifiedAliases: {},
+    };
+  }
+
+  const baseStateDir = resolved.baseStateDir;
+  const selectedSessionJson = join(baseStateDir, 'session.json');
+  let raw: string;
+  let parsed: unknown;
+  if (selectedObservation && selectedObservation.baseStateDir === baseStateDir) {
+    raw = selectedObservation.raw;
+    parsed = selectedObservation.state;
+  } else {
+    try {
+      raw = await readFile(selectedSessionJson, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          cwd,
+          baseStateDir,
+          rootSource: resolved.rootSource,
+          selectedSessionJson,
+          status: 'absent',
+          verifiedAliases: {},
+        };
+      }
+      return {
+        cwd,
+        baseStateDir,
+        rootSource: resolved.rootSource,
+        selectedSessionJson,
+        status: 'read-error',
+        verifiedAliases: {},
+      };
+    }
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {
+        cwd,
+        baseStateDir,
+        rootSource: resolved.rootSource,
+        selectedSessionJson,
+        raw,
+        status: 'malformed',
+        verifiedAliases: {},
+      };
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      raw,
+      status: 'malformed',
+      verifiedAliases: {},
+    };
+  }
+
+  const state = parsed as SessionState;
+  const aliases = verifiedSessionAliases(state);
+  if (!aliases.session_id) {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      raw,
+      state,
+      status: 'malformed',
+      verifiedAliases: aliases,
+    };
+  }
+
+  const recordedCwdRaw = typeof state.cwd === 'string' ? state.cwd.trim() : '';
+  if (Object.prototype.hasOwnProperty.call(state, 'state_root') && typeof state.state_root === 'string' && state.state_root.trim() === '') {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      raw,
+      state,
+      status: 'malformed',
+      verifiedAliases: aliases,
+    };
+  }
+  if (!recordedCwdRaw) {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      raw,
+      state,
+      status: 'missing-recorded-cwd',
+      verifiedAliases: aliases,
+    };
+  }
+
+  let recordedCwd: string;
+  let canonicalBaseStateDir: string;
+  let canonicalObservedCwd: string;
+  try {
+    recordedCwd = canonicalizeExistingPath(resolvePath(recordedCwdRaw));
+    canonicalBaseStateDir = canonicalizeExistingPath(baseStateDir);
+    canonicalObservedCwd = canonicalizeExistingPath(resolvePath(cwd));
+  } catch {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      raw,
+      state,
+      status: 'read-error',
+      verifiedAliases: aliases,
+    };
+  }
+
+  const explicitRoot = typeof state.state_root === 'string' && state.state_root.trim() !== ''
+    ? state.state_root.trim()
+    : undefined;
+  let recordedStateRoot: string;
+  try {
+    recordedStateRoot = explicitRoot
+      ? canonicalizeExistingPath(resolvePath(explicitRoot))
+      : canonicalizeExistingPath(join(recordedCwd, '.omx', 'state'));
+  } catch {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      recordedCwd,
+      raw,
+      state,
+      status: 'root-mismatch',
+      verifiedAliases: aliases,
+    };
+  }
+  if (recordedStateRoot !== canonicalBaseStateDir) {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      recordedCwd,
+      raw,
+      state,
+      status: 'root-mismatch',
+      verifiedAliases: aliases,
+    };
+  }
+  if (!isWithinRoot(canonicalObservedCwd, recordedCwd)) {
+    return {
+      cwd,
+      baseStateDir,
+      rootSource: resolved.rootSource,
+      selectedSessionJson,
+      recordedCwd,
+      raw,
+      state,
+      status: 'foreign-cwd',
+      verifiedAliases: aliases,
+    };
+  }
+
+  let liveness: 'usable' | 'stale-dead' | 'identity-indeterminate';
+  try {
+    liveness = classifySessionStateLiveness(state);
+  } catch {
+    liveness = 'identity-indeterminate';
+  }
+  return {
+    cwd,
+    baseStateDir,
+    rootSource: resolved.rootSource,
+    selectedSessionJson,
+    recordedCwd,
+    raw,
+    state,
+    liveness,
+    status: liveness,
+    verifiedAliases: aliases,
+  };
+}
+
 export function getStateDir(workingDirectory?: string, sessionId?: string): string {
   const base = getBaseStateDir(workingDirectory);
   return sessionId ? join(base, 'sessions', sessionId) : base;
@@ -410,6 +725,7 @@ function resolveCanonicalSessionId(candidate: string | undefined, metadata: Reso
 }
 
 interface AuthoritativeSessionSnapshot {
+  baseStateDir: string;
   raw: string;
   state: SessionState;
   recordedCwd: string;
@@ -428,53 +744,33 @@ interface AuthoritativeSessionSnapshot {
  */
 async function readAuthoritativeSessionSnapshotFromBaseStateDir(
   cwd: string,
-  baseStateDir = getBaseStateDir(cwd),
+  baseStateDir?: string,
+  selectedSnapshot?: CanonicalSessionBindingSnapshot,
 ): Promise<AuthoritativeSessionSnapshot | null> {
-  const sessionPath = join(baseStateDir, 'session.json');
-  let raw: string;
-  try {
-    raw = await readFile(sessionPath, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+  const snapshot = selectedSnapshot ?? await readCanonicalSessionBindingSnapshot(cwd);
+  const selectedBaseStateDir = baseStateDir ?? snapshot.baseStateDir;
+  if (!selectedBaseStateDir) return null;
+  if (snapshot.status === 'read-error') {
+    throw new Error('selected session pointer read failed');
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    if (error instanceof SyntaxError) return null;
-    throw error;
+  if (
+    !snapshot.raw
+    || !snapshot.state
+    || !snapshot.recordedCwd
+    || !snapshot.baseStateDir
+    || canonicalizeExistingPath(snapshot.baseStateDir) !== canonicalizeExistingPath(selectedBaseStateDir)
+    || !['usable', 'stale-dead', 'identity-indeterminate'].includes(snapshot.status)
+  ) {
+    return null;
   }
-  // JSON null, arrays, and scalars are syntactically valid but are not pointer
-  // objects; treat them as malformed so they fail closed on the stable
-  // unusable-session error instead of throwing on property access.
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-  const state = parsed as SessionState;
-  const recordedCwd = typeof state.cwd === 'string' ? canonicalizeExistingPath(resolvePath(state.cwd)) : '';
-  const recordedStateRoot = typeof state.state_root === 'string'
-    ? canonicalizeExistingPath(resolvePath(state.state_root))
-    : recordedCwd
-      ? canonicalizeExistingPath(join(recordedCwd, '.omx', 'state'))
-      : '';
-  const canonicalBaseStateDir = canonicalizeExistingPath(baseStateDir);
-  const canonicalObservedCwd = canonicalizeExistingPath(resolvePath(cwd));
-  const authorityOwnsObservedCwd = Boolean(
-    recordedCwd
-    && recordedStateRoot === canonicalBaseStateDir
-    && isWithinRoot(canonicalObservedCwd, recordedCwd),
-  );
-  if (!authorityOwnsObservedCwd) return null;
-  return { raw, state, recordedCwd };
+  return {
+    baseStateDir: selectedBaseStateDir,
+    raw: snapshot.raw,
+    state: snapshot.state,
+    recordedCwd: snapshot.recordedCwd,
+  };
 }
 
-async function readUsableSessionStateFromBaseStateDir(
-  cwd: string,
-  baseStateDir = getBaseStateDir(cwd),
-): Promise<SessionState | null> {
-  const snapshot = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, baseStateDir);
-  return snapshot && isSessionStateUsable(snapshot.state, snapshot.recordedCwd) ? snapshot.state : null;
-}
 function normalizeSessionMetadata(state: SessionState | null, sourcePath?: string): ResolvedSessionMetadata | undefined {
   const sessionId = normalizeSessionId(state?.session_id);
   if (!state || !sessionId) return undefined;
@@ -519,18 +815,29 @@ function normalizeSessionMetadata(state: SessionState | null, sourcePath?: strin
 
 export async function readSessionMetadataFromBaseStateDir(
   cwd: string,
-  baseStateDir = getBaseStateDir(cwd),
+  baseStateDir?: string,
 ): Promise<ResolvedSessionMetadata | undefined> {
-  const sessionPath = join(baseStateDir, 'session.json');
-  const session = await readUsableSessionStateFromBaseStateDir(cwd, baseStateDir);
+  const snapshot = await readCanonicalSessionBindingSnapshot(cwd);
+  const selectedBaseStateDir = baseStateDir ?? snapshot.baseStateDir;
+  if (!selectedBaseStateDir) return undefined;
+  const sessionPath = join(selectedBaseStateDir, 'session.json');
+  const authoritative = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, selectedBaseStateDir, snapshot);
+  const session = authoritative && isSessionStateUsable(authoritative.state, authoritative.recordedCwd)
+    ? authoritative.state
+    : null;
   return normalizeSessionMetadata(session, sessionPath);
 }
 
 export async function readCurrentSessionId(workingDirectory?: string): Promise<string | undefined> {
   const cwd = resolveWorkingDirectoryForState(workingDirectory);
-  const baseStateDir = getBaseStateDir(cwd);
+  const snapshot = await readCanonicalSessionBindingSnapshot(cwd);
+  const baseStateDir = snapshot.baseStateDir ?? getBaseStateDir(cwd);
   const envSessionId = readSessionIdFromEnvironment();
-  const metadata = await readSessionMetadataFromBaseStateDir(cwd, baseStateDir);
+  const authoritative = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, baseStateDir, snapshot);
+  const metadata = normalizeSessionMetadata(
+    authoritative && isSessionStateUsable(authoritative.state, authoritative.recordedCwd) ? authoritative.state : null,
+    join(baseStateDir, 'session.json'),
+  );
   if (envSessionId) return resolveCanonicalSessionId(envSessionId, metadata);
 
   if (metadata?.sessionId) return metadata.sessionId;
@@ -540,7 +847,9 @@ export async function readCurrentSessionId(workingDirectory?: string): Promise<s
     return undefined;
   }
 
-  return (await readUsableSessionState(cwd))?.session_id;
+  return authoritative && isSessionStateUsable(authoritative.state, authoritative.recordedCwd)
+    ? authoritative.state.session_id
+    : undefined;
 }
 
 function isKnownSessionAlias(sessionId: string, metadata: ResolvedSessionMetadata): boolean {
@@ -627,10 +936,11 @@ export async function resolveWritableStateScope(
   explicitSessionId?: string,
 ): Promise<ResolvedStateScope> {
   const cwd = resolveWorkingDirectoryForState(workingDirectory);
-  const baseStateDir = getBaseStateDir(cwd);
+  const canonicalSnapshot = await readCanonicalSessionBindingSnapshot(cwd);
+  const baseStateDir = canonicalSnapshot.baseStateDir ?? getBaseStateDir(cwd);
   let selectedDecisionSnapshotReadOrdinalForTests = 0;
   let recoveryStabilityRereadOrdinalForTests = 0;
-  const snapshot = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, baseStateDir);
+  const snapshot = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, baseStateDir, canonicalSnapshot);
   const liveness = snapshot ? classifySessionStateLiveness(snapshot.state) : undefined;
   const metadata = normalizeSessionMetadata(
     snapshot && liveness === 'usable' ? snapshot.state : null,

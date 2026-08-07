@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -9,6 +9,7 @@ import {
   resolveWorkerNotifyTeamStateRootPath,
   resolveWorkerTeamStateRoot,
   resolveWorkerTeamStateRootPath,
+  resolveVerifiedDetachedTeamContext,
 } from '../state-root.js';
 import { resolveTeamStateDirForWorker } from '../../scripts/notify-hook/team-worker.js';
 
@@ -58,7 +59,7 @@ describe('state-root', () => {
     stateRoot: string,
     teamName: string,
     filename: 'config.json' | 'manifest.v2.json',
-    workers: Array<{ name: string }>,
+    workers: Array<{ name: string; worktree_path?: string }>,
     extra: Record<string, unknown> = {},
   ) {
     const teamDir = join(stateRoot, 'team', teamName);
@@ -282,5 +283,79 @@ describe('state-root', () => {
     });
     assert.equal(mismatch.ok, false);
     assert.equal(mismatch.reason, 'identity_worktree_mismatch');
+  });
+
+  it('returns only a coherent verified detached team tuple', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-verified-team-context-'));
+    const leader = join(root, 'leader');
+    const worktree = join(root, 'worker');
+    const stateRoot = join(leader, '.omx', 'state');
+    try {
+      await mkdir(leader, { recursive: true });
+      await mkdir(worktree, { recursive: true });
+      await writeIdentity(stateRoot, 'team-a', 'worker-1', worktree);
+      const metadata = {
+        leader_cwd: leader,
+        team_state_root: stateRoot,
+        display_name: 'display-team',
+        requested_name: 'display-team',
+      };
+      await writeTeamMetadata(stateRoot, 'team-a', 'manifest.v2.json', [{ name: 'worker-1', worktree_path: worktree }], metadata);
+      await writeTeamMetadata(stateRoot, 'team-a', 'config.json', [{ name: 'worker-1', worktree_path: worktree }], metadata);
+
+      const env = {
+        OMX_TEAM_STATE_ROOT: stateRoot,
+        OMX_TEAM_LEADER_CWD: leader,
+        OMX_TEAM_WORKER: 'display-team/worker-1',
+        OMX_TEAM_INTERNAL_WORKER: 'team-a/worker-1',
+      };
+      const verified = await resolveVerifiedDetachedTeamContext(worktree, env);
+      assert.deepEqual(verified, {
+        stateRoot,
+        leaderCwd: leader,
+        worker: 'display-team/worker-1',
+        internalWorker: 'team-a/worker-1',
+      });
+      assert.equal(
+        await resolveVerifiedDetachedTeamContext(worktree, {
+          ...env,
+          OMX_TEAM_INTERNAL_WORKER: undefined,
+        }),
+        undefined,
+        'public OMX_TEAM_WORKER alone must never establish canonical team proof',
+      );
+
+      assert.equal(
+        await resolveVerifiedDetachedTeamContext(worktree, { ...env, OMX_TEAM_LEADER_CWD: join(root, 'missing-leader') }),
+        undefined,
+      );
+      const foreignLeader = join(root, 'foreign-leader');
+      await mkdir(foreignLeader, { recursive: true });
+      assert.equal(
+        await resolveVerifiedDetachedTeamContext(worktree, { ...env, OMX_TEAM_LEADER_CWD: foreignLeader }),
+        undefined,
+      );
+      const displayAlias = await resolveVerifiedDetachedTeamContext(
+        worktree,
+        { ...env, OMX_TEAM_WORKER: 'other-team/worker-1' },
+      );
+      assert.deepEqual(displayAlias, {
+        stateRoot,
+        leaderCwd: leader,
+        worker: 'other-team/worker-1',
+        internalWorker: 'team-a/worker-1',
+      });
+      assert.equal(
+        await resolveVerifiedDetachedTeamContext(worktree, { ...env, OMX_TEAM_WORKER: 'team-a/worker-2' }),
+        undefined,
+      );
+      await writeFile(
+        join(stateRoot, 'team', 'team-a', 'workers', 'worker-1', 'identity.json'),
+        JSON.stringify({ name: 'foreign-worker', worktree_path: worktree, team_state_root: stateRoot }),
+      );
+      assert.equal(await resolveVerifiedDetachedTeamContext(worktree, env), undefined);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

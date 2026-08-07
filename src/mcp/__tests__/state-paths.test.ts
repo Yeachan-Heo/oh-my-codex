@@ -29,6 +29,8 @@ import {
   validateStateModeSegment,
   validateSessionId,
   WRITABLE_STATE_SCOPE_ERRORS,
+  readCanonicalSessionBindingSnapshot,
+  VERIFIED_SESSION_BINDING_FIELDS,
 
 } from '../state-paths.js';
 
@@ -117,6 +119,110 @@ describe('normalizeSessionId', () => {
     assert.equal(normalizeSessionId(' sess-normalized '), 'sess-normalized');
     assert.equal(normalizeSessionId('bad/session'), undefined);
     assert.equal(normalizeSessionId(123), undefined);
+  });
+});
+
+describe('canonical session binding snapshot', () => {
+  it('accepts a descendant cwd through session authority and keeps the pointer bytes unchanged', async () => {
+    const root = await mkRealTemp('omx-binding-descendant-');
+    const nested = join(root, 'nested', 'child');
+    const env = { OMX_SESSION_ID: 'sess-descendant' };
+    try {
+      const stateDir = getBaseStateDir(root);
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(nested, { recursive: true });
+      const pointer = JSON.stringify({ session_id: 'sess-descendant', cwd: root, state_root: stateDir });
+      await writeFile(join(stateDir, 'session.json'), pointer);
+
+      const snapshot = await readCanonicalSessionBindingSnapshot(nested, env);
+      assert.equal(snapshot.status, 'usable');
+      assert.equal(snapshot.rootSource, 'session-authority');
+      assert.equal(snapshot.recordedCwd, root);
+      assert.equal(snapshot.baseStateDir, stateDir);
+      assert.equal(await readFile(join(stateDir, 'session.json'), 'utf8'), pointer);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a selected pointer whose explicit state root mismatches the selected root', async () => {
+    const root = await mkRealTemp('omx-binding-root-mismatch-');
+    const selectedRoot = join(root, 'selected');
+    const env = { OMX_ROOT: selectedRoot };
+    try {
+      const stateDir = getBaseStateDir(root, env);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'sess-mismatch', cwd: root, state_root: join(root, 'foreign-state'),
+      }));
+      const snapshot = await readCanonicalSessionBindingSnapshot(root, env);
+      assert.equal(snapshot.status, 'root-mismatch');
+      assert.equal(snapshot.rootSource, 'omx-root-env');
+      assert.equal(snapshot.baseStateDir, stateDir);
+      assert.equal(snapshot.selectedSessionJson, join(stateDir, 'session.json'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the legacy cwd-derived root and only exposes the six verified aliases', async () => {
+    const root = await mkRealTemp('omx-binding-legacy-aliases-');
+    try {
+      const stateDir = getBaseStateDir(root);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'sess-canonical', native_session_id: 'native-id', codex_session_id: 'codex-id',
+        previous_native_session_id: 'previous-id', owner_omx_session_id: 'owner-omx', owner_codex_session_id: 'owner-codex',
+        owner_codex_thread_id: 'thread-must-not-bind', tmux_pane_id: '%9', tmux_session_name: 'foreign-tmux',
+        display_name: 'display-must-not-bind', owner_unknown_id: 'unknown-must-not-bind', cwd: root,
+      }));
+      const snapshot = await readCanonicalSessionBindingSnapshot(root, {});
+      assert.equal(snapshot.status, 'usable');
+      assert.equal(snapshot.baseStateDir, stateDir);
+      assert.deepEqual(Object.keys(snapshot.verifiedAliases), [...VERIFIED_SESSION_BINDING_FIELDS]);
+      assert.deepEqual(snapshot.verifiedAliases, {
+        session_id: 'sess-canonical', native_session_id: 'native-id', codex_session_id: 'codex-id',
+        previous_native_session_id: 'previous-id', owner_omx_session_id: 'owner-omx', owner_codex_session_id: 'owner-codex',
+      });
+      assert.equal((snapshot.verifiedAliases as Record<string, string | undefined>).owner_codex_thread_id, undefined);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it('fails closed when state_root is present but blank', async () => {
+    const root = await mkRealTemp('omx-binding-blank-state-root-');
+    try {
+      const stateDir = getBaseStateDir(root);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'sess-blank-root', cwd: root, state_root: '   ',
+      }));
+      const snapshot = await readCanonicalSessionBindingSnapshot(root, {});
+      assert.equal(snapshot.status, 'malformed');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('compares selected and recorded roots by realpath', async () => {
+    const realRoot = await mkRealTemp('omx-binding-real-root-');
+    const linkParent = await mkRealTemp('omx-binding-link-parent-');
+    const linkedRoot = join(linkParent, 'workspace-link');
+    try {
+      await symlink(realRoot, linkedRoot, process.platform === 'win32' ? 'junction' : 'dir');
+      const stateDir = getBaseStateDir(realRoot);
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'sess-realpath', cwd: realRoot, state_root: stateDir,
+      }));
+      const snapshot = await readCanonicalSessionBindingSnapshot(linkedRoot, { OMX_ROOT: linkedRoot });
+      assert.equal(snapshot.status, 'usable');
+      assert.ok(snapshot.baseStateDir);
+      assert.equal(await realpath(snapshot.baseStateDir), await realpath(stateDir));
+    } finally {
+      await rm(realRoot, { recursive: true, force: true });
+      await rm(linkParent, { recursive: true, force: true });
+    }
   });
 });
 
@@ -602,7 +708,11 @@ describe('state paths', () => {
       const stateDir = getBaseStateDir(wd);
       await mkdir(join(stateDir, 'sessions', 'sess-current'), { recursive: true });
       await mkdir(stateDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess-current' }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: 'sess-current',
+        cwd: wd,
+        state_root: stateDir,
+      }));
 
       const paths = await getReadScopedStateFilePaths('hud-state.json', wd, undefined, {
         rootFallback: false,

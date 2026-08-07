@@ -29,6 +29,12 @@ import {
 	codexAgentsDir,
 } from "../utils/paths.js";
 import {
+  readCanonicalSessionBindingSnapshot,
+  normalizeSessionId,
+  type CanonicalSessionBindingSnapshot,
+  type StateRootSource,
+} from "../mcp/state-paths.js";
+import {
 	classifySpawnError,
 	spawnPlatformCommandSync,
 } from "../utils/platform-command.js";
@@ -280,6 +286,250 @@ function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
 	};
 }
 
+type BindingSelectorName = "OMX_SESSION_ID" | "CODEX_SESSION_ID" | "SESSION_ID";
+const BINDING_SELECTOR_NAMES: readonly BindingSelectorName[] = [
+  "OMX_SESSION_ID",
+  "CODEX_SESSION_ID",
+  "SESSION_ID",
+];
+
+const ROOT_SELECTOR_BY_SOURCE: Partial<Record<StateRootSource, string>> = {
+  "team-env": "OMX_TEAM_STATE_ROOT",
+  "omx-root-env": "OMX_ROOT",
+  "omx-state-root-env": "OMX_STATE_ROOT",
+};
+
+function bindingEnvironmentRootSelector(env: NodeJS.ProcessEnv): { source: StateRootSource; selector: string } | undefined {
+  if (env.OMX_TEAM_STATE_ROOT?.trim()) return { source: "team-env", selector: "OMX_TEAM_STATE_ROOT" };
+  if (env.OMX_ROOT?.trim()) return { source: "omx-root-env", selector: "OMX_ROOT" };
+  if (env.OMX_STATE_ROOT?.trim()) return { source: "omx-state-root-env", selector: "OMX_STATE_ROOT" };
+  return undefined;
+}
+
+function printableBindingComponent(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+
+function safeSelectedSessionJsonLabel(_path: string | undefined): string | undefined {
+  return _path ? "session.json" : undefined;
+}
+export function sanitizeBindingDiagnosticLine(value: string): string {
+  const sanitized = printableBindingComponent(value);
+  if (sanitized.length <= 240) return sanitized;
+  return `${sanitized.slice(0, 239)}…`;
+}
+
+function selectorEvaluation(
+  snapshot: CanonicalSessionBindingSnapshot,
+  env: NodeJS.ProcessEnv,
+): { nonblank: BindingSelectorName[]; bad: BindingSelectorName[] } {
+  const nonblank: BindingSelectorName[] = [];
+  const bad: BindingSelectorName[] = [];
+  const aliases = new Set(Object.values(snapshot.verifiedAliases ?? {}));
+  for (const name of BINDING_SELECTOR_NAMES) {
+    const raw = env[name];
+    if (typeof raw !== "string" || raw.trim() === "") continue;
+    nonblank.push(name);
+    const normalized = normalizeSessionId(raw);
+    const accepted = snapshot.status === "stale-dead"
+      ? normalized !== undefined && normalized === snapshot.verifiedAliases?.session_id
+      : snapshot.status === "usable"
+        ? normalized !== undefined && aliases.has(normalized)
+        : false;
+    if (!accepted) bad.push(name);
+  }
+  return { nonblank, bad };
+}
+
+
+export const evaluateStateRootSessionBinding = selectorEvaluation;
+function bindingRecoveryAction(
+  snapshot: CanonicalSessionBindingSnapshot,
+  rootSelector: string | undefined,
+  badSelectors: readonly BindingSelectorName[],
+): string {
+  const rootClear = rootSelector ? `clear ${rootSelector} only if unintended; ` : "";
+  const selectorFix = badSelectors.length > 0 ? "clear or correct listed selectors; " : "";
+  if (snapshot.status === "resolution-error") {
+    const resolutionRecovery = rootSelector
+      ? `${rootClear}then relaunch from intended workspace`
+      : "inspect runtime root policy and relaunch";
+    return `${selectorFix}${resolutionRecovery}`;
+  }
+  if (snapshot.status === "absent") {
+    return `${selectorFix}${rootClear}relaunch`;
+  }
+  if (snapshot.status === "read-error") {
+    return `${selectorFix}${rootClear}inspect selected session.json path/access; relaunch`;
+  }
+  if (snapshot.status === "stale-dead") {
+    return `${selectorFix}${rootClear}inspect selected session.json; confirm owner state; terminate only verified owner if necessary (still-live owner only); relaunch`;
+  }
+  return `${selectorFix}${rootClear}inspect selected session.json; verify owner; terminate only verified owner if necessary; relaunch`;
+}
+
+function compactCappedBindingRecoveryAction(
+  snapshot: CanonicalSessionBindingSnapshot,
+  rootSelector: string | undefined,
+  badSelectors: readonly BindingSelectorName[],
+): string {
+  const selectorFix = badSelectors.length > 0 ? "clear or correct listed selectors;" : "";
+  const rootClear = rootSelector ? `clear ${rootSelector} only if unintended;` : "";
+  const ownerTermination = snapshot.status === "stale-dead"
+    || snapshot.status === "foreign-cwd"
+    || snapshot.status === "malformed"
+    || snapshot.status === "identity-indeterminate"
+    ? "terminate only verified owner if necessary;"
+    : "";
+  if (ownerTermination) return `${selectorFix}${rootClear}${ownerTermination}relaunch`;
+  if (snapshot.status === "read-error") return `${selectorFix}${rootClear}inspect;relaunch`;
+  return `${selectorFix}${rootClear}relaunch`;
+}
+
+export function formatStateRootSessionBindingDiagnostic(
+  snapshot: CanonicalSessionBindingSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+  badSelectors?: readonly BindingSelectorName[],
+): string {
+  const failedSelectorSet = new Set(badSelectors ?? selectorEvaluation(snapshot, env).bad);
+  const failedSelectors = BINDING_SELECTOR_NAMES.filter((name) => failedSelectorSet.has(name));
+  const reportBadSelectors = failedSelectors;
+  const inferred = snapshot.rootSource ? undefined : bindingEnvironmentRootSelector(env);
+  const source = snapshot.rootSource ?? inferred?.source ?? "cwd-default";
+  const rootSelector = ROOT_SELECTOR_BY_SOURCE[source] ?? inferred?.selector;
+  const pointer = snapshot.status;
+  const unsafe = (pointer !== "usable" && pointer !== "absent") || failedSelectors.length > 0;
+  const fields = [
+    `src=${source}`,
+    ...(rootSelector && unsafe ? [`root_selector=${rootSelector}`] : []),
+    `ptr=${pointer}`,
+    ...(unsafe ? ["binding check made no mutation"] : []),
+    `fix=${bindingRecoveryAction(snapshot, rootSelector, failedSelectors)}`,
+    ...(safeSelectedSessionJsonLabel(snapshot.selectedSessionJson)
+      ? [`selected_session_json=${safeSelectedSessionJsonLabel(snapshot.selectedSessionJson)}`]
+      : []),
+    ...(reportBadSelectors.length > 0 ? [`bad_selectors=${reportBadSelectors.join(",")}`] : []),
+  ];
+  const raw = fields.join(" ");
+  if (raw.length <= 240 && !(rootSelector && unsafe)) return sanitizeBindingDiagnosticLine(raw);
+
+  const staticFields = [
+    `src=${source}`,
+    ...(rootSelector && unsafe ? [`root_selector=${rootSelector}`] : []),
+    `ptr=${pointer}`,
+    ...(unsafe ? ["binding check made no mutation"] : []),
+  ];
+  // Capped output is assembled from whole fields; selector/session evidence is never
+  // truncated. The tail form keeps the selected-path proof atomic when all selectors are present.
+  const compactRecovery = compactCappedBindingRecoveryAction(snapshot, rootSelector, failedSelectors);
+  const selectedSessionLabel = safeSelectedSessionJsonLabel(snapshot.selectedSessionJson);
+  const badSelectorsField = reportBadSelectors.length > 0
+    ? `bad_selectors=${reportBadSelectors.join(",")}`
+    : undefined;
+  const compactPointerCode = pointer === "identity-indeterminate"
+    ? "indet"
+    : pointer === "resolution-error"
+      ? "resolve"
+      : pointer === "missing-recorded-cwd"
+        ? "missing"
+        : pointer === "root-mismatch"
+          ? "root"
+          : pointer === "foreign-cwd"
+            ? "foreign"
+            : pointer === "stale-dead"
+              ? "stale"
+              : pointer === "read-error"
+                ? "read"
+                : pointer;
+  if (rootSelector && unsafe) {
+    const canonicalFields = [
+      `src=${source}`,
+      `root=${rootSelector}`,
+      `clear=${rootSelector}-if-unintended`,
+      `ptr=${compactPointerCode}`,
+      ...(failedSelectors.length > 0 ? ["fix=clear/correct"] : []),
+      "no-mutation",
+      ...(compactRecovery.includes("terminate only verified owner if necessary")
+        ? ["owner=terminate-verified-only-if-needed"]
+        : []),
+      ...(selectedSessionLabel ? ["selected=session.json"] : []),
+      ...(badSelectorsField ? [badSelectorsField] : []),
+    ];
+    return canonicalFields.join(";");
+  }
+  const buildCompactFields = (
+    selectedEvidence: string | undefined,
+    recovery: string,
+    includeFixLabel = true,
+  ): string[] => [
+    ...staticFields,
+    ...(includeFixLabel ? [`fix=${recovery}`] : [recovery]),
+    ...(selectedEvidence ? [selectedEvidence] : []),
+    ...(badSelectorsField ? [badSelectorsField] : []),
+  ];
+  const compactWithFullEvidence = buildCompactFields(
+    selectedSessionLabel ? `selected_session_json=${selectedSessionLabel}` : undefined,
+    compactRecovery,
+  ).join(";");
+  if (compactWithFullEvidence.length <= 240) return sanitizeBindingDiagnosticLine(compactWithFullEvidence);
+
+  const selectedTail = selectedSessionLabel ? "session.json" : undefined;
+  const compactWithTailEvidence = buildCompactFields(selectedTail, compactRecovery).join(";");
+  if (compactWithTailEvidence.length <= 240) return sanitizeBindingDiagnosticLine(compactWithTailEvidence);
+
+  const compactWithoutFixLabel = buildCompactFields(selectedTail, compactRecovery, false).join(";");
+  if (compactWithoutFixLabel.length <= 240) return sanitizeBindingDiagnosticLine(compactWithoutFixLabel);
+
+  const compactPointer = pointer === "identity-indeterminate"
+    ? "indet"
+    : pointer === "resolution-error"
+      ? "resolve"
+      : pointer === "missing-recorded-cwd"
+        ? "missing"
+        : pointer === "root-mismatch"
+          ? "root"
+          : pointer === "foreign-cwd"
+            ? "foreign"
+            : pointer === "stale-dead"
+              ? "stale"
+              : pointer === "read-error"
+                ? "read"
+                : pointer;
+  const fallbackFields = [
+    `src=${source}`,
+    ...(rootSelector && unsafe
+      ? [`root=${rootSelector}`, `clear=${rootSelector}-if-unintended`]
+      : []),
+    `ptr=${compactPointer}`,
+    ...(failedSelectors.length > 0 ? ["fix=clear/correct"] : []),
+    "no-mutation",
+    ...(compactRecovery.includes("terminate only verified owner if necessary")
+      ? ["owner=terminate-verified-only-if-needed"]
+      : []),
+    ...(selectedSessionLabel ? ["selected=session.json"] : []),
+    ...(badSelectorsField ? [badSelectorsField] : []),
+  ];
+  return sanitizeBindingDiagnosticLine(fallbackFields.join(";"));
+}
+
+export function checkStateRootSessionBinding(
+  snapshot: CanonicalSessionBindingSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+): Check {
+  const evaluation = selectorEvaluation(snapshot, env);
+  let status: Check["status"] = "fail";
+  if (snapshot.status === "absent" && evaluation.bad.length === 0) status = "pass";
+  else if (snapshot.status === "stale-dead" && evaluation.bad.length === 0) status = "warn";
+  else if (snapshot.status === "usable" && evaluation.bad.length === 0) status = "pass";
+  const message = formatStateRootSessionBindingDiagnostic(snapshot, env, evaluation.bad);
+  return { name: "State root/session binding", status, message };
+}
+
 export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (options.team) {
 		await doctorTeam();
@@ -287,6 +537,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	}
 
 	const cwd = process.cwd();
+  const bindingSnapshot = await readCanonicalSessionBindingSnapshot(cwd, process.env);
 	const scopeResolution = await resolveDoctorScope(cwd);
 	const paths = resolveDoctorPaths(cwd, scopeResolution.scope);
 	const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
@@ -445,7 +696,16 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	);
 
 	// Check 8: State directory
-	checks.push(checkDirectory("State dir", paths.stateDir));
+  if (bindingSnapshot.status === "resolution-error") {
+    checks.push({
+      name: "State dir",
+      status: "fail",
+      message: "effective root unavailable (binding resolution-error)",
+    });
+  } else {
+    checks.push(checkDirectory("State dir", bindingSnapshot.baseStateDir ?? paths.stateDir));
+  }
+  checks.push(checkStateRootSessionBinding(bindingSnapshot, process.env));
 	checks.push(await checkRepoArtifactOwnership(cwd));
 
 	// Check 9: MCP servers configured

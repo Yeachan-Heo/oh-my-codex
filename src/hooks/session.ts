@@ -277,9 +277,12 @@ export function normalizeSessionId(value: unknown): string | undefined {
 }
 
 /** Resolve the one exact pointer path used by an operation. */
-export function resolveSessionPointerContext(cwd: string): SessionPointerContext {
-  const normalizedCwd = resolveWorkingDirectoryForState(cwd);
-  const { baseStateDir, rootSource } = getBaseStateDirWithSource(normalizedCwd);
+export function resolveSessionPointerContext(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): SessionPointerContext {
+  const normalizedCwd = resolveWorkingDirectoryForState(cwd, env);
+  const { baseStateDir, rootSource } = getBaseStateDirWithSource(normalizedCwd, env);
   const pointerPath = join(baseStateDir, SESSION_FILE);
   return {
     cwd: normalizedCwd,
@@ -1031,9 +1034,12 @@ export async function readUsableSessionStateFromContext(context: SessionPointerC
 }
 
 /** Read current session state from the exact selected root. */
-export async function readSessionState(cwd: string): Promise<SessionState | null> {
+export async function readSessionState(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<SessionState | null> {
   try {
-    return await readSessionStateFromContext(resolveSessionPointerContext(cwd));
+    return await readSessionStateFromContext(resolveSessionPointerContext(cwd, env));
   } catch {
     return null;
   }
