@@ -847,9 +847,18 @@ export async function readCurrentSessionId(workingDirectory?: string): Promise<s
     return undefined;
   }
 
-  return authoritative && isSessionStateUsable(authoritative.state, authoritative.recordedCwd)
-    ? authoritative.state.session_id
-    : undefined;
+  if (authoritative && isSessionStateUsable(authoritative.state, authoritative.recordedCwd)) {
+    return authoritative.state.session_id;
+  }
+  // Legacy HUD readers may carry only a local session_id pointer. This is never
+  // used for explicit, foreign, malformed, or otherwise contaminated roots.
+  if (snapshot.status !== 'missing-recorded-cwd') return undefined;
+  try {
+    const raw = JSON.parse(await readFile(join(baseStateDir, 'session.json'), 'utf-8')) as Record<string, unknown>;
+    return typeof raw.session_id === 'string' ? normalizeSessionId(raw.session_id) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isKnownSessionAlias(sessionId: string, metadata: ResolvedSessionMetadata): boolean {
