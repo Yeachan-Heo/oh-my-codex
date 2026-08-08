@@ -27,11 +27,12 @@ describe('notify-hook team worker state-root fail-closed behavior', () => {
     const result = runNotifyHook(cwd, {
       ...process.env,
       OMX_TEAM_WORKER: 'demo-team/worker-1',
+      OMX_TEAM_INTERNAL_WORKER: 'demo-team/worker-1',
       OMX_TEAM_STATE_ROOT: join(cwd, 'missing-shared-state'),
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(existsSync(join(cwd, '.omx', 'state')), false);
-    assert.equal(existsSync(join(cwd, '.omx', 'logs')), true);
+    assert.equal(existsSync(join(cwd, '.omx', 'logs')), false);
   });
 });

@@ -260,6 +260,7 @@ function runNotifyHook(
       OMX_TEAM_WORKER: '',
       OMX_TEAM_LEADER_NUDGE_MS: '9999999',
       OMX_TEAM_LEADER_STALE_MS: '9999999',
+      ...(extraEnv.OMX_TEAM_WORKER ? { OMX_TEAM_INTERNAL_WORKER: extraEnv.OMX_TEAM_WORKER } : {}),
       ...extraEnv,
     },
   });

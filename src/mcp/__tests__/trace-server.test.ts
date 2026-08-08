@@ -15,7 +15,7 @@ describe('trace-server session-scoped mode discovery', () => {
       const stateDir = join(wd, '.omx', 'state');
       const sessionDir = join(wd, '.omx', 'state', 'sessions', 'sess1');
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess1' }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sess1', cwd: wd, state_root: stateDir }));
 
       await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
         active: true,
@@ -44,7 +44,7 @@ describe('trace-server session-scoped mode discovery', () => {
       const sessionB = join(stateDir, 'sessions', 'sessB');
       await mkdir(sessionA, { recursive: true });
       await mkdir(sessionB, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sessA' }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: 'sessA', cwd: wd, state_root: stateDir }));
 
       await writeFile(join(sessionA, 'ralph-state.json'), JSON.stringify({
         active: true,

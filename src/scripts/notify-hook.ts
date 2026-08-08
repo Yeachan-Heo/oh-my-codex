@@ -638,15 +638,26 @@ async function main() {
   const isTurnComplete = isTurnCompletePayload(payload);
   const isNotifyFallbackTaskComplete = isNotifyFallbackTaskCompletePayload(payload);
 
-  // Team worker detection via environment variable
-  const teamWorkerEnv = process.env.OMX_TEAM_INTERNAL_WORKER || process.env.OMX_TEAM_WORKER; // e.g., "fix-ts/worker-1"
-  const parsedTeamWorker = parseTeamWorkerEnv(teamWorkerEnv);
+  // Team worker detection is authorized only by a syntactically valid internal identity.
+  // Public OMX_TEAM_WORKER is a display alias and must never authorize worker or leader writes.
+  const rawInternalTeamWorker = safeString(process.env.OMX_TEAM_INTERNAL_WORKER).trim();
+  const rawPublicTeamWorker = safeString(process.env.OMX_TEAM_WORKER).trim();
+  const parsedInternalTeamWorker = parseTeamWorkerEnv(rawInternalTeamWorker);
+  const parsedPublicTeamWorker = parseTeamWorkerEnv(rawPublicTeamWorker);
+  const hasTeamWorkerDeclaration = rawInternalTeamWorker !== '' || rawPublicTeamWorker !== '';
+  if (hasTeamWorkerDeclaration && (!parsedInternalTeamWorker
+    || (rawPublicTeamWorker !== '' && !parsedPublicTeamWorker)
+    || (parsedPublicTeamWorker && parsedPublicTeamWorker.workerName !== parsedInternalTeamWorker.workerName))) {
+    return;
+  }
+  const parsedTeamWorker = parsedInternalTeamWorker;
   const isTeamWorker = !!parsedTeamWorker;
 
   const resolvedWorkerStateDir = (isTeamWorker && parsedTeamWorker)
     ? await resolveTeamStateDirForWorker(cwd, parsedTeamWorker)
     : null;
   const workerStateRootResolved = !isTeamWorker || !!resolvedWorkerStateDir;
+  if (isTeamWorker && !workerStateRootResolved) return;
   const stateDir = resolvedWorkerStateDir || getBaseStateDir(cwd);
   const logsDir = join(cwd, '.omx', 'logs');
   const omxDir = join(cwd, '.omx');
@@ -763,31 +774,6 @@ async function main() {
     return;
   }
 
-  if (isTeamWorker && !workerStateRootResolved) {
-    await logNotifyHookEvent(logsDir, {
-      timestamp: new Date().toISOString(),
-      level: 'warn',
-      type: 'team_worker_state_root_unresolved',
-      team_worker: teamWorkerEnv || null,
-      reason: 'skip_team_worker_state_mutations',
-    }).catch(() => {});
-
-    // Keep the fail-closed worker state-root behavior for normal team-worker
-    // mutations, but allow the narrow auto-nudge path to use an explicitly
-    // supplied, already-existing worker state root. Auto-nudge only needs the
-    // worker-scoped state files/pane anchor and should not fall back to creating
-    // local `.omx/state` when identity resolution failed.
-    const explicitWorkerStateRoot = safeString(process.env.OMX_TEAM_STATE_ROOT || '').trim();
-    const autoNudgeStateDir = explicitWorkerStateRoot ? resolve(cwd, explicitWorkerStateRoot) : '';
-    if (autoNudgeStateDir && existsSync(autoNudgeStateDir)) {
-      try {
-        await maybeAutoNudge({ cwd, stateDir: autoNudgeStateDir, logsDir, payload });
-      } catch {
-        // Non-critical
-      }
-    }
-    return;
-  }
 
   // Reconcile Ralph ownership for same-Codex-session continuation before
   // lifecycle counters or injection read the active scope.

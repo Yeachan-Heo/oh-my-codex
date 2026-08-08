@@ -2262,15 +2262,6 @@ function resolveLaunchPath(cwd: string, raw: string): string {
   return isCrossPlatformAbsolutePath(raw) ? raw : join(cwd, raw);
 }
 
-function resolveHudRuntimeRootSource(
-  omxRootOverride: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): HudRuntimeRootSource {
-  if (env.OMX_TEAM_STATE_ROOT?.trim()) return 'team-env';
-  if (env.OMX_ROOT?.trim() || omxRootOverride) return 'omx-root-env';
-  if (env.OMX_STATE_ROOT?.trim()) return 'omx-state-root-env';
-  return 'cwd-default';
-}
 
 export function resolveHudRuntimeRootForLaunch(
   cwd: string,
@@ -3890,6 +3881,28 @@ export async function launchWithHud(args: string[]): Promise<void> {
   const codexHomeOverride = preparedCodexHome.codexHomeOverride;
   const sqliteHomeOverride = preparedCodexHome.sqliteHomeOverride;
   const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
+  let insideTmuxControlPlane: DetachedLaunchControlPlane | undefined;
+  if (launchPolicy === "inside-tmux") {
+    let verifiedTeamContext: VerifiedDetachedTeamContext | undefined;
+    try {
+      verifiedTeamContext = await resolveVerifiedDetachedTeamContext(cwd, process.env);
+    } catch {
+      verifiedTeamContext = undefined;
+    }
+    insideTmuxControlPlane = buildDetachedLaunchControlPlane({
+      cwd,
+      sessionId,
+      env: process.env,
+      omxRootOverride: resolveOmxRootForLaunch(cwd, process.env),
+      runtimeContext: madmaxWorktreeRuntimeContext,
+      verifiedMadmaxContext: verifiedMadmaxLaunchContext,
+      leaderPaneId: process.env.TMUX_PANE,
+      verifiedTeamContext,
+    });
+  }
+  const restoreInsideTmuxControlPlane = insideTmuxControlPlane
+    ? applyLaunchOwnedControlPlane(insideTmuxControlPlane)
+    : undefined;
   let launch: PreLaunchResult | undefined;
   if (launchPolicy !== "detached-tmux") {
     try {
@@ -3904,6 +3917,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
           cwd === launchCwd && !parsedWorktree.mode.enabled && !isResumeCodexLaunch(normalizedArgs),
         );
       }
+      restoreInsideTmuxControlPlane?.();
       await cleanupRuntimeCodexHome(
         preparedCodexHome.runtimeCodexHomeForCleanup,
         projectLocalCodexHomeForCleanup,
@@ -3940,6 +3954,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       preparedCodexHome.runtimeCodexHomeForCleanup,
       madmaxWorktreeRuntimeContext,
       verifiedMadmaxLaunchContext,
+      insideTmuxControlPlane,
     );
     postLaunchHandledExternally = launchResult.postLaunchHandledExternally;
   } catch (error) {
@@ -3947,8 +3962,14 @@ export async function launchWithHud(args: string[]): Promise<void> {
     throw error;
   } finally {
     if (!postLaunchHandledExternally && launch) {
-      await postLaunch(cwd, sessionId, launch.binding, codexHomeOverride, enableNotifyFallbackAuthority, projectLocalCodexHomeForCleanup);
+      try {
+        await postLaunch(cwd, sessionId, launch.binding, codexHomeOverride, enableNotifyFallbackAuthority, projectLocalCodexHomeForCleanup);
+      } finally {
+        restoreInsideTmuxControlPlane?.();
+      }
       await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup).catch(logCliOperationFailure);
+    } else {
+      restoreInsideTmuxControlPlane?.();
     }
   }
 }
@@ -5110,6 +5131,23 @@ function detachedLaunchControlPlaneEnv(controlPlane: DetachedLaunchControlPlane)
   );
 }
 
+function applyLaunchOwnedControlPlane(controlPlane: DetachedLaunchControlPlane): () => void {
+  const previous = new Map<DetachedLaunchControlPlaneKey, string | undefined>();
+  for (const key of DETACHED_LAUNCH_CONTROL_PLANE_KEYS) {
+    previous.set(key, process.env[key]);
+    const value = controlPlane.values[key];
+    if (value === "") delete process.env[key];
+    else process.env[key] = value;
+  }
+  return () => {
+    for (const key of DETACHED_LAUNCH_CONTROL_PLANE_KEYS) {
+      const value = previous.get(key);
+      if (typeof value === "string") process.env[key] = value;
+      else delete process.env[key];
+    }
+  };
+}
+
 const SHELL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DETACHED_SESSION_PANE_ENV_KEYS = new Set([
   "TERM",
@@ -6055,6 +6093,7 @@ async function runCodex(
   runtimeCodexHomeForCleanup?: string,
   runtimeContext?: MadmaxWorktreeRuntimeContext,
   verifiedMadmaxContext?: VerifiedMadmaxDetachedContext,
+  launchControlPlane?: DetachedLaunchControlPlane,
 ): Promise<{ postLaunchHandledExternally: boolean }> {
   void preLaunchOptions;
   const launchArgs = injectModelInstructionsBypassArgs(
@@ -6098,20 +6137,23 @@ async function runCodex(
         verifiedTeamContext,
       })
     : undefined;
+  const launchOwnedControlPlane = detachedControlPlane ?? launchControlPlane;
+  const launchOwnedControlPlaneEnv = launchOwnedControlPlane
+    ? detachedLaunchControlPlaneEnv(launchOwnedControlPlane)
+    : {};
   const detachedSelectedStateEnv = detachedControlPlane
     ? { ...process.env, ...detachedLaunchControlPlaneEnv(detachedControlPlane) }
     : undefined;
   const omxRootOverride = runtimeContext?.omxRoot ?? resolveOmxRootForLaunch(cwd, process.env);
+  const selectedOmxRootOverride = launchOwnedControlPlane
+    ? launchOwnedControlPlane.values.OMX_ROOT || undefined
+    : omxRootOverride;
   const currentPaneId = process.env.TMUX_PANE;
   const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext
     ? { omxRoot: runtimeContext.omxRoot, rootSource: 'omx-root-env' }
     : resolveHudRuntimeRootForLaunch(cwd, process.env);
-  const hudRuntimeEnv = detachedControlPlane
-    ? Object.fromEntries(
-        DETACHED_LAUNCH_CONTROL_PLANE_KEYS
-          .map((key) => [key, detachedControlPlane.values[key]])
-          .filter(([, value]) => value !== ""),
-      )
+  const hudRuntimeEnv = launchOwnedControlPlane
+    ? Object.fromEntries(Object.entries(launchOwnedControlPlaneEnv))
     : {
         ...buildHudRuntimeEnv({
           sessionId,
@@ -6141,8 +6183,9 @@ async function runCodex(
       ...stripHermesMcpBridgeEnv(process.env),
       ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
       ...(sqliteHomeOverride ? { [CODEX_SQLITE_HOME_ENV]: sqliteHomeOverride } : {}),
-      ...(omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
+      ...(!launchOwnedControlPlane && omxRootOverride ? { OMX_ROOT: omxRootOverride } : {}),
       ...runtimeEnvOverlay,
+      ...launchOwnedControlPlaneEnv,
     },
     omxBin,
   );
@@ -6152,6 +6195,7 @@ async function runCodex(
     ...codexBaseEnv,
     OMX_CODEX_LAUNCH_ID: pluginHookRoutingLaunchId,
     ...buildHudRuntimeEnv({ sessionId }).env,
+    ...launchOwnedControlPlaneEnv,
   };
   const codexEnv = workerLaunchArgs
     ? {
@@ -6163,7 +6207,9 @@ async function runCodex(
   const codexEnvWithNotify = notifyTempContractRaw
     ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
     : codexEnv;
-  const runtimeHookEnv = { ...process.env, ...runtimeEnvOverlay };
+  const runtimeHookEnv = launchOwnedControlPlane
+    ? { ...process.env, ...runtimeEnvOverlay, ...launchOwnedControlPlaneEnv }
+    : { ...process.env, ...runtimeEnvOverlay };
 
 
   if (isCodexVersionRequest(launchArgs)) {
@@ -6204,7 +6250,7 @@ async function runCodex(
           currentPaneId,
           cwd,
           sessionId,
-          omxRootOverride,
+          omxRootOverride: selectedOmxRootOverride,
           baseEnv: runtimeHookEnv,
         });
       } catch (err) {
@@ -6232,7 +6278,7 @@ async function runCodex(
           currentPaneId,
           cwd,
           sessionId,
-          omxRootOverride,
+          omxRootOverride: selectedOmxRootOverride,
           baseEnv: runtimeHookEnv,
         });
       } catch (err) {

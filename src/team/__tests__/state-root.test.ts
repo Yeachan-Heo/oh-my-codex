@@ -59,7 +59,7 @@ describe('state-root', () => {
     stateRoot: string,
     teamName: string,
     filename: 'config.json' | 'manifest.v2.json',
-    workers: Array<{ name: string; worktree_path?: string }>,
+    workers: Array<{ name: string; worktree_path?: string; team_state_root?: string }>,
     extra: Record<string, unknown> = {},
   ) {
     const teamDir = join(stateRoot, 'team', teamName);
@@ -192,6 +192,44 @@ describe('state-root', () => {
     assert.equal(manifestResolved.source, 'manifest_metadata');
   });
 
+  it('rejects identity-absent worker-directory notify roots with conflicting metadata roots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-state-root-notify-marker-conflict-'));
+    const stateRoot = join(root, 'state');
+    const foreignRoot = join(root, 'foreign-state');
+    const worktree = join(root, 'worktree');
+    try {
+      await mkdir(join(foreignRoot, 'team', 'team-a', 'workers', 'worker-1'), { recursive: true });
+      await mkdir(worktree, { recursive: true });
+      await writeTeamMetadata(foreignRoot, 'team-a', 'manifest.v2.json', [{ name: 'worker-1' }], {
+        team_state_root: stateRoot,
+      });
+      assert.equal(
+        await resolveWorkerNotifyTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        null,
+      );
+
+      await writeTeamMetadata(foreignRoot, 'team-a', 'manifest.v2.json', [{ name: 'worker-1', team_state_root: stateRoot }]);
+      assert.equal(
+        await resolveWorkerNotifyTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        null,
+      );
+
+      await writeTeamMetadata(foreignRoot, 'team-a', 'manifest.v2.json', [{ name: 'worker-1', team_state_root: foreignRoot }]);
+      assert.equal(
+        await resolveWorkerNotifyTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        foreignRoot,
+        'matching metadata roots preserve identity-absent marker compatibility',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('rejects non-git worker notify roots without a matching canonical marker', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-state-root-notify-reject-markers-'));
     const stateRoot = join(root, 'state');
@@ -285,6 +323,54 @@ describe('state-root', () => {
     assert.equal(mismatch.reason, 'identity_worktree_mismatch');
   });
 
+  it('rejects a selected root when identity or paired metadata binds to another root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-state-root-binding-mismatch-'));
+    const stateRoot = join(root, 'state');
+    const foreignRoot = join(root, 'foreign-state');
+    const worktree = join(root, 'worktree');
+    try {
+      await mkdir(worktree, { recursive: true });
+      await writeIdentity(foreignRoot, 'team-a', 'worker-1', worktree, stateRoot);
+      assert.equal(
+        await resolveWorkerTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        null,
+      );
+      assert.equal(
+        await resolveWorkerNotifyTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        null,
+      );
+
+      await writeIdentity(foreignRoot, 'team-a', 'worker-1', worktree, foreignRoot);
+      await writeTeamMetadata(foreignRoot, 'team-a', 'manifest.v2.json', [{ name: 'worker-1', worktree_path: worktree }], {
+        team_state_root: stateRoot,
+      });
+      assert.equal(
+        await resolveWorkerTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        null,
+      );
+
+      await writeTeamMetadata(foreignRoot, 'team-a', 'manifest.v2.json', [{ name: 'worker-1', worktree_path: worktree }], {
+        team_state_root: foreignRoot,
+      });
+      await writeTeamMetadata(foreignRoot, 'team-a', 'config.json', [{ name: 'worker-1', worktree_path: worktree }], {
+        team_state_root: stateRoot,
+      });
+      assert.equal(
+        await resolveWorkerTeamStateRootPath(worktree, { teamName: 'team-a', workerName: 'worker-1' }, {
+          OMX_TEAM_STATE_ROOT: foreignRoot,
+        }),
+        null,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('returns only a coherent verified detached team tuple', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-verified-team-context-'));
     const leader = join(root, 'leader');

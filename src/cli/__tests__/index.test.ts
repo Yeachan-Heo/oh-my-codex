@@ -4700,9 +4700,11 @@ exit 0
     assert.match(source, /const hudRuntimeRoot: HudRuntimeRootForLaunch = runtimeContext\s*\? \{ omxRoot: runtimeContext\.omxRoot, rootSource: 'omx-root-env' \}\s*: resolveHudRuntimeRootForLaunch\(cwd, process\.env\);/);
     assert.match(
       source,
-      /const hudRuntimeEnv = detachedControlPlane\s*\? Object\.fromEntries\([\s\S]*?\)\s*:\s*\{\s*\.\.\.buildHudRuntimeEnv\(/,
+      /const hudRuntimeEnv = launchOwnedControlPlane\s*\? Object\.fromEntries\([\s\S]*?\)\s*:\s*\{\s*\.\.\.buildHudRuntimeEnv\(/,
     );
-    assert.match(source, /if \(env\.OMX_TEAM_STATE_ROOT\?\.trim\(\)\) return 'team-env';\s*if \(env\.OMX_ROOT\?\.trim\(\) \|\| omxRootOverride\) return 'omx-root-env';\s*if \(env\.OMX_STATE_ROOT\?\.trim\(\)\) return 'omx-state-root-env';/);
+    assert.match(source, /const restoreInsideTmuxControlPlane = insideTmuxControlPlane\s*\? applyLaunchOwnedControlPlane\(insideTmuxControlPlane\)/);
+    assert.match(source, /const restoreInsideTmuxControlPlane[\s\S]*?launch = await preLaunch/);
+    assert.match(source, /\.\.\.runtimeEnvOverlay,\s*\.\.\.launchOwnedControlPlaneEnv/);
     assert.match(
       source,
       /buildTmuxPaneCommand\("env",\s*\[\.\.\.hudEnvArgs,\s*"node",\s*omxBin,\s*"hud",\s*"--watch"\]\)/,
@@ -4713,7 +4715,7 @@ exit 0
     const source = await readFile(join(repoRoot, 'src', 'cli', 'index.ts'), 'utf-8');
     assert.match(
       source,
-      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride,\s*baseEnv: runtimeHookEnv,\s*\}\)/,
+      /registerInsideTmuxHudResizeHook\(\{\s*hudPaneId,\s*currentPaneId,\s*cwd,\s*sessionId,\s*omxRootOverride: selectedOmxRootOverride,\s*baseEnv: runtimeHookEnv,\s*\}\)/,
     );
     assert.match(
       source,
@@ -6306,6 +6308,14 @@ describe("isExistingTmuxWindowTooCrampedForLaunchHud (#2754)", () => {
 });
 
 describe("detached control-plane binding", () => {
+  it("bounds inside-tmux lifecycle propagation to the finite launch-owned control plane", async () => {
+    const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
+    assert.match(source, /if \(launchPolicy === "inside-tmux"\) \{[\s\S]*?buildDetachedLaunchControlPlane\(/);
+    assert.match(source, /const restoreInsideTmuxControlPlane = insideTmuxControlPlane\s*\? applyLaunchOwnedControlPlane\(insideTmuxControlPlane\)/);
+    assert.match(source, /const codexBaseEnv = prependOmxRuntimeCommandShimToEnv\([\s\S]*?\.\.\.launchOwnedControlPlaneEnv/);
+    assert.match(source, /const runtimeHookEnv = launchOwnedControlPlane\s*\?[\s\S]*?\.\.\.launchOwnedControlPlaneEnv/);
+  });
+
   it("emits one stable assignment for every managed key and clears poisoned identity", () => {
     const env: NodeJS.ProcessEnv = {
       OMX_ROOT: "",

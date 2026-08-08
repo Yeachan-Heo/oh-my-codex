@@ -132,6 +132,7 @@ function runNotifyHookAsWorker(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
+      OMX_TEAM_INTERNAL_WORKER: workerEnv,
       OMX_TEAM_WORKER_IDLE_COOLDOWN_MS: '500',
       OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '600000', // suppress all-idle to isolate per-worker
       TMUX: '',

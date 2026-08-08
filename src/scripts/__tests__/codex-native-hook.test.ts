@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import {
 	chmod,
 	appendFile,
@@ -158,6 +158,29 @@ function buildExactByteHookPayload(eventName: "PreToolUse" | "PostToolUse", byte
 async function writeJson(path: string, value: unknown): Promise<void> {
 	await mkdir(dirname(path), { recursive: true }).catch(() => {});
 	await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+function readLinuxStartTicks(pid: number): number | null {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+		const commandEnd = stat.lastIndexOf(")");
+		if (commandEnd === -1) return null;
+		const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+		if (fields.length <= 19) return null;
+		const startTicks = Number(fields[19]);
+		return Number.isInteger(startTicks) && startTicks >= 0 ? startTicks : null;
+	} catch {
+		return null;
+	}
+}
+
+function readLinuxCmdline(pid: number): string | null {
+	try {
+		const text = readFileSync(`/proc/${pid}/cmdline`, "utf-8").replace(/\0+/g, " ").trim();
+		return text.length > 0 ? text : null;
+	} catch {
+		return null;
+	}
 }
 
 const AMBIENT_UNSAFE_NODE_RUNTIME_ENV_NAMES = [
@@ -5777,6 +5800,46 @@ PY`,
     }
   });
 
+  it("suppresses malformed or public-only Team identity across SessionStart and PreToolUse", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-identity-gate-"));
+    try {
+      await configureAuthoritativeTeamWorker(cwd, "identity-gate-team");
+      const pointerPath = join(cwd, ".omx", "state", "session.json");
+      assert.equal(existsSync(pointerPath), false);
+      const declarations = [
+        { internal: "", external: "identity-gate-team/worker-1" },
+        { internal: "malformed-internal", external: "identity-gate-team/worker-1" },
+        { internal: "identity-gate-team/worker-1", external: "other-team/worker-2" },
+      ] as const;
+      for (const [index, declaration] of declarations.entries()) {
+        process.env.OMX_TEAM_INTERNAL_WORKER = declaration.internal;
+        process.env.OMX_TEAM_WORKER = declaration.external;
+        const sessionId = `untrusted-worker-session-${index}`;
+        const sessionStart = await dispatchCodexNativeHook({
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: sessionId,
+        }, { cwd, sessionOwnerPid: process.pid });
+        assert.equal(sessionStart.outputJson, null);
+        assert.equal(existsSync(pointerPath), false);
+        assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", sessionId)), false);
+
+        const preToolUse = await dispatchCodexNativeHook({
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: sessionId,
+          tool_name: "Write",
+          tool_use_id: `untrusted-worker-write-${index}`,
+          tool_input: { file_path: "src/untrusted-worker.ts", content: "export {}\\n" },
+        }, { cwd });
+        assert.equal(preToolUse.outputJson, null);
+        assert.equal(existsSync(pointerPath), false);
+        assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", sessionId)), false);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
   it("fails closed for invalid Team worker lifecycle identity across pointer states", async () => {
     for (const pointerKind of ["absent", "live", "stale", "malformed"] as const) {
       const cwd = await mkdtemp(join(tmpdir(), `omx-native-hook-team-worker-invalid-${pointerKind}-`));
@@ -11908,17 +11971,7 @@ export async function onHookEvent(event) {
 		);
 		try {
 			const teamName = "hud-worker-skip";
-			await initTeamState(
-				teamName,
-				"skip worker HUD reconcile",
-				"executor",
-				1,
-				cwd,
-			);
-			await setTeamPaneIds(cwd, teamName, {
-				leaderPaneId: "%42",
-				workerPaneIds: { "worker-1": "%10" },
-			});
+			await configureAuthoritativeTeamWorker(cwd, teamName);
 			process.env.TMUX = "1";
 			process.env.TMUX_PANE = "%10";
 			process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
@@ -12013,17 +12066,7 @@ export async function onHookEvent(event) {
 		);
 		try {
 			const teamName = "hud-worker-ambiguous";
-			await initTeamState(
-				teamName,
-				"fail closed for ambiguous worker HUD reconcile",
-				"executor",
-				1,
-				cwd,
-			);
-			await setTeamPaneIds(cwd, teamName, {
-				leaderPaneId: "%42",
-				workerPaneIds: { "worker-1": "%10" },
-			});
+			await configureAuthoritativeTeamWorker(cwd, teamName);
 			process.env.TMUX = "1";
 			process.env.TMUX_PANE = "%99";
 			process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
@@ -14319,6 +14362,12 @@ exit 0
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: "sess-di-artifact",
 				cwd,
+				state_root: stateDir,
+				started_at: "2026-01-01T00:00:00.000Z",
+				pid: process.pid,
+				pid_start_ticks: readLinuxStartTicks(process.pid),
+				pid_cmdline: readLinuxCmdline(process.pid),
+				platform: process.platform,
 				leader_thread_id: "thread-di-artifact",
 				native_session_id: "native-di-artifact",
 				owner_omx_session_id: "owner-omx-di-artifact",
@@ -14352,12 +14401,14 @@ exit 0
 						thread_id: threadId,
 					},
 				],
+				workingDirectory: cwd,
 			});
 			await writeJson(join(sessionDir, "deep-interview-state.json"), {
 				active: true,
 				mode: "deep-interview",
 				current_phase: "intent-first",
 				session_id: "sess-di-artifact",
+				workingDirectory: cwd,
 				thread_id: threadId,
 				rounds: [
 					{
@@ -26429,6 +26480,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stop-team/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-stop-team/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = join(cwd, ".omx", "state");
       process.env.OMX_TEAM_LEADER_CWD = cwd;
 
@@ -26455,6 +26507,123 @@ PY`,
       else delete process.env.OMX_TEAM_STATE_ROOT;
       if (typeof prevLeaderCwd === "string") process.env.OMX_TEAM_LEADER_CWD = prevLeaderCwd;
       else delete process.env.OMX_TEAM_LEADER_CWD;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects foreign explicit worker roots for completed Stop/PostToolUse and ignores malformed internal identity", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-foreign-root-"));
+    const workerCwd = join(cwd, "worker");
+    const canonicalRoot = join(cwd, "canonical-state");
+    const foreignRoot = join(cwd, "foreign-state");
+    const teamName = "foreign-root-team";
+    const workerName = "worker-1";
+    const paneId = "%10";
+    const writeWorkerRoot = async (stateRoot: string, boundRoot: string, taskStatus: string) => {
+      const teamRoot = join(stateRoot, "team", teamName);
+      const workerRoot = join(teamRoot, "workers", workerName);
+      await mkdir(workerRoot, { recursive: true });
+      await writeJson(join(workerRoot, "identity.json"), {
+        name: workerName,
+        assigned_tasks: ["1"],
+        pane_id: paneId,
+        worktree_path: workerCwd,
+        team_state_root: boundRoot,
+      });
+      await writeJson(join(workerRoot, "status.json"), {
+        state: taskStatus === "completed" ? "done" : "working",
+        current_task_id: "1",
+      });
+      await writeJson(join(teamRoot, "tasks", "task-1.json"), {
+        id: "1",
+        owner: workerName,
+        status: taskStatus,
+      });
+      const metadata = {
+        name: teamName,
+        leader_cwd: cwd,
+        team_state_root: boundRoot,
+        leader_pane_id: "%42",
+        workers: [{ name: workerName, pane_id: paneId, worktree_path: workerCwd, team_state_root: boundRoot }],
+      };
+      await writeJson(join(teamRoot, "manifest.v2.json"), metadata);
+      await writeJson(join(teamRoot, "config.json"), metadata);
+    };
+    try {
+      await mkdir(workerCwd, { recursive: true });
+      await writeWorkerRoot(canonicalRoot, canonicalRoot, "in_progress");
+      await writeWorkerRoot(foreignRoot, canonicalRoot, "completed");
+
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = paneId;
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/${workerName}`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/${workerName}`;
+      process.env.OMX_TEAM_STATE_ROOT = foreignRoot;
+      process.env.OMX_TEAM_LEADER_CWD = cwd;
+
+      const foreignStop = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: workerCwd,
+        session_id: "foreign-root-stop",
+      }, { cwd: workerCwd });
+      assert.equal(foreignStop.outputJson?.decision, "block");
+      assert.equal(foreignStop.outputJson?.stopReason, "team_worker_worker-1_missing_state_dir");
+      assert.equal(existsSync(join(foreignRoot, "team", teamName, "workers", workerName, "worker-stop-nudge.json")), false);
+
+      const foreignPostToolUse = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd: workerCwd,
+        session_id: "foreign-root-posttooluse",
+        tool_name: "Bash",
+        tool_input: { command: "printf ok" },
+        tool_response: { exit_code: 0 },
+      }, { cwd: workerCwd });
+      assert.equal(foreignPostToolUse.outputJson, null);
+      assert.equal(existsSync(join(foreignRoot, "team", teamName, "workers", workerName, "heartbeat.json")), false);
+
+      const markerForeignRoot = join(cwd, "marker-foreign-state");
+      const markerTeamRoot = join(markerForeignRoot, "team", teamName);
+      await mkdir(join(markerTeamRoot, "workers", workerName), { recursive: true });
+      const markerMetadata = {
+        name: teamName,
+        team_state_root: canonicalRoot,
+        workers: [{ name: workerName, team_state_root: canonicalRoot, worktree_path: workerCwd }],
+      };
+      await writeJson(join(markerTeamRoot, "manifest.v2.json"), markerMetadata);
+      await writeJson(join(markerTeamRoot, "config.json"), markerMetadata);
+      process.env.OMX_TEAM_STATE_ROOT = markerForeignRoot;
+      const markerForeignPostToolUse = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd: workerCwd,
+        session_id: "marker-foreign-root-posttooluse",
+        tool_name: "Bash",
+        tool_input: { command: "printf ok" },
+        tool_response: { exit_code: 0 },
+      }, { cwd: workerCwd });
+      assert.equal(markerForeignPostToolUse.outputJson, null);
+      assert.equal(existsSync(join(markerForeignRoot, "team", teamName, "workers", workerName, "heartbeat.json")), false);
+
+      process.env.OMX_TEAM_STATE_ROOT = canonicalRoot;
+      process.env.OMX_TEAM_INTERNAL_WORKER = "malformed-internal";
+      process.env.OMX_TEAM_WORKER = `display-team/${workerName}`;
+      const malformedInternalStop = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd: workerCwd,
+        session_id: "malformed-internal-stop",
+      }, { cwd: workerCwd });
+      assert.equal(malformedInternalStop.outputJson, null);
+      const malformedInternalPostToolUse = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse",
+        cwd: workerCwd,
+        session_id: "malformed-internal-posttooluse",
+        tool_name: "Bash",
+        tool_input: { command: "printf ok" },
+        tool_response: { exit_code: 0 },
+      }, { cwd: workerCwd });
+      assert.equal(malformedInternalPostToolUse.outputJson, null);
+      assert.equal(existsSync(join(canonicalRoot, "team", teamName, "workers", workerName, "heartbeat.json")), false);
+      assert.equal(existsSync(join(canonicalRoot, "team", teamName, "workers", workerName, "worker-stop-nudge.json")), false);
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -26501,6 +26670,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stale-team/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-stale-team/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.OMX_TEAM_LEADER_CWD = cwd;
 
@@ -26577,6 +26747,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-repeat-team/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-repeat-team/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.OMX_TEAM_LEADER_CWD = cwd;
 
@@ -26699,6 +26870,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stop-team-terminal/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-stop-team-terminal/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = join(cwd, ".omx", "state");
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
@@ -26800,6 +26972,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stop-team-busy-leader/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-stop-team-busy-leader/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
@@ -27230,6 +27403,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stop-helper-fail/worker-1";
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-stop-helper-fail/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
@@ -27300,7 +27474,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-stop-failed-task/worker-1";
-      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-stop-failed-task/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
@@ -27354,7 +27528,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-missing-assignment/worker-1";
-      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-missing-assignment/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
 
       const result = await dispatchCodexNativeHook(
@@ -27397,7 +27571,7 @@ PY`,
       await chmod(join(fakeBinDir, "tmux"), 0o755);
 
       process.env.OMX_TEAM_WORKER = "worker-missing-state/worker-1";
-      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-missing-state/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 
@@ -27414,7 +27588,7 @@ PY`,
       );
 
       assert.equal(result.outputJson?.decision, "block");
-      assert.equal(result.outputJson?.stopReason, "team_worker_worker-1_missing_worker_state");
+      assert.equal(result.outputJson?.stopReason, "team_worker_worker-1_missing_state_dir");
       assert.doesNotMatch(JSON.stringify(result.outputJson), /auto_nudge/);
       const tmuxLog = existsSync(tmuxLogPath) ? await readFile(tmuxLogPath, "utf-8") : "";
       assert.doesNotMatch(tmuxLog, /native Stop allowed/);
@@ -27546,7 +27720,7 @@ PY`,
       });
 
       process.env.OMX_TEAM_WORKER = "worker-owned-task/worker-1";
-      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      process.env.OMX_TEAM_INTERNAL_WORKER = "worker-owned-task/worker-1";
       process.env.OMX_TEAM_STATE_ROOT = stateDir;
       process.env.PATH = `${fakeBinDir}:${prevPath || ""}`;
 

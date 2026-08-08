@@ -188,18 +188,23 @@ describe('regression-205: detectStallPattern excludes "if you want" after #1416'
 // ---------------------------------------------------------------------------
 describe('regression-205: notify-hook ignores "if you want" for default auto-nudge', () => {
   let originalTeamWorker: string | undefined;
+  let originalInternalTeamWorker: string | undefined;
   let originalTeamStateRoot: string | undefined;
 
   before(() => {
     originalTeamWorker = process.env.OMX_TEAM_WORKER;
+    originalInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
     originalTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
     delete process.env.OMX_TEAM_WORKER;
+    delete process.env.OMX_TEAM_INTERNAL_WORKER;
     delete process.env.OMX_TEAM_STATE_ROOT;
   });
 
   after(() => {
     if (originalTeamWorker === undefined) delete process.env.OMX_TEAM_WORKER;
     else process.env.OMX_TEAM_WORKER = originalTeamWorker;
+    if (originalInternalTeamWorker === undefined) delete process.env.OMX_TEAM_INTERNAL_WORKER;
+    else process.env.OMX_TEAM_INTERNAL_WORKER = originalInternalTeamWorker;
     if (originalTeamStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
     else process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
   });

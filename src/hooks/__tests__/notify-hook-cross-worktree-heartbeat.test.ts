@@ -34,6 +34,7 @@ function runWorkerNotify(
   const inheritedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     OMX_TEAM_WORKER: teamWorker,
+    OMX_TEAM_INTERNAL_WORKER: teamWorker,
     TMUX: '',
     TMUX_PANE: '',
   };
@@ -149,6 +150,33 @@ describe('notify-hook cross-worktree heartbeat resolution', () => {
 
       const wrongHeartbeatPath = join(workerCwd, '.omx', 'state', 'team', teamName, 'workers', workerName, 'heartbeat.json');
       assert.equal(existsSync(wrongHeartbeatPath), false, 'team worktree cwd should not become the authoritative team state root');
+    });
+  });
+  it('rejects a foreign explicit marker root before notify writes when metadata binds elsewhere', async () => {
+    await withTempDir(async (root) => {
+      const workerCwd = join(root, 'worker-worktree');
+      const foreignRoot = join(root, 'foreign-state');
+      const canonicalRoot = join(root, 'canonical-state');
+      const teamName = 'foreign-marker';
+      const workerName = 'worker-1';
+      const teamRoot = join(foreignRoot, 'team', teamName);
+      await mkdir(join(teamRoot, 'workers', workerName), { recursive: true });
+      await mkdir(workerCwd, { recursive: true });
+      const metadata = {
+        name: teamName,
+        team_state_root: canonicalRoot,
+        workers: [{ name: workerName, team_state_root: canonicalRoot, worktree_path: workerCwd }],
+      };
+      await writeFile(join(teamRoot, 'manifest.v2.json'), JSON.stringify(metadata, null, 2));
+      await writeFile(join(teamRoot, 'config.json'), JSON.stringify(metadata, null, 2));
+
+      const result = runWorkerNotify(workerCwd, `${teamName}/${workerName}`, {
+        OMX_TEAM_STATE_ROOT: foreignRoot,
+      });
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+      assert.equal(existsSync(join(foreignRoot, 'team', teamName, 'workers', workerName, 'heartbeat.json')), false);
+      assert.equal(existsSync(join(workerCwd, '.omx', 'logs')), false, 'rejected notify root must not create local logs');
+      assert.equal(existsSync(join(foreignRoot, 'notify-hook-state.json')), false);
     });
   });
 

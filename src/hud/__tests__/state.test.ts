@@ -542,7 +542,7 @@ describe('readRalphState scope precedence', () => {
       const sessionId = 'sess-hud';
       const sessionStateDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionStateDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'ralph-state.json'), JSON.stringify({ active: true, iteration: 9, max_iterations: 10 }));
       await writeFile(join(sessionStateDir, 'ralph-state.json'), JSON.stringify({ active: true, iteration: 2, max_iterations: 10 }));
 
@@ -557,7 +557,7 @@ describe('readRalphState scope precedence', () => {
       const rootStateDir = join(cwd, '.omx', 'state');
       const sessionId = 'sess-fallback';
       await mkdir(join(rootStateDir, 'sessions', sessionId), { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'ralph-state.json'), JSON.stringify({ active: true, iteration: 4, max_iterations: 10 }));
 
       const state = await readRalphState(cwd);
@@ -588,7 +588,7 @@ describe('readRalphState scope precedence', () => {
       const sessionId = 'sess-authority';
       const sessionStateDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionStateDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'ralph-state.json'), JSON.stringify({ active: true, iteration: 8, max_iterations: 10 }));
       await writeFile(join(sessionStateDir, 'ralph-state.json'), JSON.stringify({ active: false, current_phase: 'cancelled' }));
 
@@ -604,7 +604,7 @@ describe('readRalphState scope precedence', () => {
       const otherSessionId = 'sess-other';
       await mkdir(join(rootStateDir, 'sessions', currentSessionId), { recursive: true });
       await mkdir(join(rootStateDir, 'sessions', otherSessionId), { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: currentSessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: currentSessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'sessions', otherSessionId, 'ralph-state.json'), JSON.stringify({
         active: true,
         iteration: 7,
@@ -639,7 +639,7 @@ describe('additional HUD mode state readers', () => {
       const sessionId = 'sess-ralplan-authority';
       const sessionStateDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionStateDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'ralplan-state.json'), JSON.stringify({ active: true, current_phase: 'draft', iteration: 9 }));
       await writeFile(join(sessionStateDir, 'ralplan-state.json'), JSON.stringify({ active: true, current_phase: 'critic-review', iteration: 2, planning_complete: false }));
 
@@ -676,7 +676,7 @@ describe('additional HUD mode state readers', () => {
       const sessionId = 'sess-hud-notify';
       const sessionStateDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionStateDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'hud-state.json'), JSON.stringify({ last_turn_at: 'root', turn_count: 99 }));
       await writeFile(join(sessionStateDir, 'hud-state.json'), JSON.stringify({ last_turn_at: 'session', turn_count: 2 }));
 
@@ -697,6 +697,8 @@ describe('additional HUD mode state readers', () => {
       await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({
         session_id: canonicalSessionId,
         native_session_id: nativeSessionId,
+        cwd,
+        state_root: rootStateDir,
       }));
       await writeFile(join(canonicalDir, 'hud-state.json'), JSON.stringify({ last_turn_at: 'canonical', turn_count: 3 }));
       await writeFile(join(nativeDir, 'hud-state.json'), JSON.stringify({ last_turn_at: 'native', turn_count: 99 }));
@@ -743,7 +745,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-canonical-off';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: false,
         skill: 'ralph',
@@ -768,7 +770,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-current';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         iteration: 9,
@@ -801,7 +803,7 @@ describe('readAllState canonical skill precedence', () => {
       const teamDir = join(rootStateDir, 'team', 'alpha');
       await mkdir(sessionDir, { recursive: true });
       await mkdir(teamDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'team',
@@ -833,7 +835,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-ralplan-advanced';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -860,7 +862,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-missing-phase';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'ralplan',
@@ -885,7 +887,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-code-review';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'code-review',
@@ -904,7 +906,7 @@ describe('readAllState canonical skill precedence', () => {
       const rootStateDir = join(cwd, '.omx', 'state');
       const sessionId = 'sess-ultragoal-keyword';
       await mkdir(join(rootStateDir, 'sessions', sessionId), { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
 
       await recordSkillActivation({
         stateDir: rootStateDir,
@@ -936,7 +938,7 @@ describe('readAllState canonical skill precedence', () => {
       const rootStateDir = join(cwd, '.omx', 'state');
       const sessionId = 'sess-code-review-keyword';
       await mkdir(join(rootStateDir, 'sessions', sessionId), { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
 
       await recordSkillActivation({
         stateDir: rootStateDir,
@@ -959,7 +961,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-autopilot-late';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -994,7 +996,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-late-gate-stale';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'code-review-state.json'), JSON.stringify({ active: true, current_phase: 'stale-root' }));
       await writeFile(join(rootStateDir, 'ultraqa-state.json'), JSON.stringify({ active: true, current_phase: 'stale-root' }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
@@ -1023,7 +1025,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-inactive-autopilot-review';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: false,
         skill: 'autopilot',
@@ -1067,7 +1069,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-active-autopilot-review';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -1114,7 +1116,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-inactive-autopilot-completed-review';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: false,
         skill: 'autopilot',
@@ -1152,7 +1154,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-combined';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'team',
@@ -1192,7 +1194,7 @@ describe('readAllState canonical skill precedence', () => {
       const ultragoalDir = join(cwd, '.omx', 'ultragoal');
       await mkdir(sessionDir, { recursive: true });
       await mkdir(ultragoalDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'ultragoal',
@@ -1237,7 +1239,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-autopilot-root-mirror';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -1293,7 +1295,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-autopilot-root-terminal';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -1321,7 +1323,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-current-autopilot-stale';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'current-autopilot.json'), JSON.stringify({
         active: true,
         current_phase: 'complete',
@@ -1349,7 +1351,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-current-autopilot-authoritative';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -1386,7 +1388,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-current-hud';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -1419,7 +1421,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-autopilot-terminal';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: true,
         skill: 'autopilot',
@@ -1445,7 +1447,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-autoresearch-off';
       const sessionDir = join(rootStateDir, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(rootStateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: rootStateDir }));
       await writeFile(join(rootStateDir, 'autoresearch-state.json'), JSON.stringify({
         active: true,
         current_phase: 'running',
@@ -1522,7 +1524,7 @@ describe('readAllState canonical skill precedence', () => {
       const sessionId = 'sess-team-root-canonical';
       const sessionDir = join(teamStateRoot, 'sessions', sessionId);
       await mkdir(sessionDir, { recursive: true });
-      await writeFile(join(teamStateRoot, 'session.json'), JSON.stringify({ session_id: sessionId, cwd }));
+      await writeFile(join(teamStateRoot, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: teamStateRoot }));
       await writeFile(join(sessionDir, 'skill-active-state.json'), JSON.stringify({
         active: false,
         skill: 'ralplan',

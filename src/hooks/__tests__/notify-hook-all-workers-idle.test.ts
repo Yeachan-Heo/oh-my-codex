@@ -129,6 +129,7 @@ function runNotifyHookAsWorker(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
+      OMX_TEAM_INTERNAL_WORKER: workerEnv,
       OMX_TEAM_STATE_ROOT: stateRoot,
       OMX_TEAM_LEADER_CWD: '',
       OMX_MODEL_INSTRUCTIONS_FILE: '',

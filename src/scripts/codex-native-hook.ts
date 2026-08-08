@@ -35,7 +35,6 @@ import { readRoleRoutingMarker, writeRoleRoutingMarker } from "../subagents/role
 import { evaluateCodex01445PreToolUse } from "../ralplan/documented-leader-preflight.js";
 import {
   resolveCanonicalTeamStateRoot,
-  resolveWorkerNotifyTeamStateRootPath,
   resolveWorkerTeamStateRootPath,
 } from "../team/state-root.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
@@ -68,7 +67,6 @@ import {
 import {
   appendTeamEvent,
   readTeamLeaderAttention,
-  readTeamConfig,
   readTeamManifestV2,
   readTeamPhase,
   writeTeamLeaderAttention,
@@ -2928,10 +2926,27 @@ function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: s
 function readTeamWorkerEnvironment(): { teamName: string; workerName: string } | null {
   const internalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER));
   const externalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
-  if (internalWorker && externalWorker && internalWorker.workerName !== externalWorker.workerName) return null;
+  if (!internalWorker) return null;
+  if (externalWorker && internalWorker.workerName !== externalWorker.workerName) return null;
   // The public Team name is a display alias; only the session-scoped internal
   // identity is authoritative for state-root/config/manifest validation.
-  return internalWorker ?? externalWorker;
+  return internalWorker;
+}
+
+function readCanonicalInternalTeamWorkerEnvironment(): { teamName: string; workerName: string } | null {
+  const rawInternalWorker = safeString(process.env.OMX_TEAM_INTERNAL_WORKER).trim();
+  if (!rawInternalWorker) return null;
+  const internalWorker = parseTeamWorkerEnv(rawInternalWorker);
+  if (!internalWorker) return null;
+  const rawExternalWorker = safeString(process.env.OMX_TEAM_WORKER).trim();
+  if (!rawExternalWorker) return internalWorker;
+  const externalWorker = parseTeamWorkerEnv(rawExternalWorker);
+  if (!externalWorker || externalWorker.workerName !== internalWorker.workerName) return null;
+  return internalWorker;
+}
+
+function hasCanonicalInternalTeamWorkerDeclaration(): boolean {
+  return readCanonicalInternalTeamWorkerEnvironment() !== null;
 }
 
 function hasRawTeamWorkerDeclaration(): boolean {
@@ -2939,12 +2954,16 @@ function hasRawTeamWorkerDeclaration(): boolean {
     || safeString(process.env.OMX_TEAM_WORKER).trim() !== "";
 }
 
-async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> {
-  const workerContext = readTeamWorkerEnvironment();
+async function hasAuthoritativeTeamWorkerContext(
+  cwd: string,
+  options: { requireWorkerPane?: boolean } = {},
+): Promise<boolean> {
+  const workerContext = readCanonicalInternalTeamWorkerEnvironment();
   if (!workerContext) return false;
 
+  const requireWorkerPane = options.requireWorkerPane === true;
   const currentPaneId = safeString(process.env.TMUX_PANE).trim();
-  if (!currentPaneId) return false;
+  if (requireWorkerPane && !currentPaneId) return false;
   const stateRoot = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
   if (!stateRoot) return false;
 
@@ -2976,18 +2995,18 @@ async function hasAuthoritativeTeamWorkerContext(cwd: string): Promise<boolean> 
   const configWorker = matchingWorker(config);
   if (!manifestWorker || !configWorker) return false;
   if (safeString(identity.name).trim() !== workerContext.workerName) return false;
-  if (safeString(identity.pane_id).trim() !== currentPaneId) return false;
+  if (requireWorkerPane && safeString(identity.pane_id).trim() !== currentPaneId) return false;
   if (!pathMatches(identity.team_state_root, canonicalStateRoot)) return false;
   if (!pathMatches(identity.worktree_path ?? identity.working_dir, canonicalCwd)) return false;
   for (const state of [manifest, config]) {
     if (safeString(state.name).trim() !== workerContext.teamName) return false;
-    if (safeString(state.leader_pane_id).trim() === currentPaneId) return false;
+    if (requireWorkerPane && safeString(state.leader_pane_id).trim() === currentPaneId) return false;
     if (!pathMatches(state.team_state_root, canonicalStateRoot)) return false;
     if (!pathMatches(state.leader_cwd, canonicalLeaderCwd)) return false;
   }
   if (safeString(manifest.leader_pane_id).trim() !== safeString(config.leader_pane_id).trim()) return false;
   for (const worker of [manifestWorker, configWorker]) {
-    if (safeString(worker.pane_id).trim() !== currentPaneId) return false;
+    if (requireWorkerPane && safeString(worker.pane_id).trim() !== currentPaneId) return false;
     if (!pathMatches(worker.team_state_root, canonicalStateRoot)) return false;
     const workingDir = safeString(worker.working_dir).trim();
     const worktreePath = safeString(worker.worktree_path).trim();
@@ -3002,35 +3021,13 @@ async function resolveTeamStateDirForWorkerContext(
   cwd: string,
   workerContext: { teamName: string; workerName: string },
 ): Promise<string | null> {
-  const resolved = await resolveWorkerNotifyTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
+  const resolved = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
   if (resolved) return resolved;
-  const explicit = safeString(process.env.OMX_TEAM_STATE_ROOT).trim();
-  if (explicit) {
-    const candidate = resolve(cwd, explicit);
-    const workerRoot = join(candidate, "team", workerContext.teamName, "workers", workerContext.workerName);
-    if (existsSync(workerRoot)) return candidate;
-    return candidate;
-  }
   return null;
 }
 
 async function isConfirmedTeamWorkerPromptSubmitPane(cwd: string): Promise<boolean> {
-  const workerContext = readTeamWorkerEnvironment();
-  if (!workerContext) return false;
-
-  const currentPaneId = safeString(process.env.TMUX_PANE).trim();
-  if (!currentPaneId) return false;
-
-  const config = await readTeamConfig(workerContext.teamName, cwd).catch(() => null);
-  if (!config) return false;
-
-  const leaderPaneId = safeString(config.leader_pane_id).trim();
-  if (leaderPaneId && leaderPaneId === currentPaneId) return false;
-
-  const workerPaneId = safeString(
-    config.workers.find((worker) => worker.name === workerContext.workerName)?.pane_id,
-  ).trim();
-  return workerPaneId !== "" && workerPaneId === currentPaneId;
+  return hasAuthoritativeTeamWorkerContext(cwd, { requireWorkerPane: true });
 }
 
 
@@ -3055,10 +3052,8 @@ type TeamWorkerStopDecision =
 async function resolveTeamWorkerStopDecision(
   cwd: string,
 ): Promise<TeamWorkerStopDecision> {
-  const workerContext =
-    parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER))
-    || parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
-  if (!workerContext) return { kind: "unresolved", reason: "missing_worker_context" };
+  const workerContext = readCanonicalInternalTeamWorkerEnvironment();
+  if (!workerContext) return { kind: "unresolved", reason: "missing_canonical_internal_worker_context" };
 
   const blockWorkerStop = (
     reasonCode: string,
@@ -11123,7 +11118,7 @@ async function resolvePreToolUseWriteActor(
   if (payloadHasOwnerIdentityClaim(payload)) return "native-child";
   if (!payloadAgentId && isTypedAgentRolePayload(payload, cwd)) return "native-child";
   if (payloadAgentId || payloadThreadId) return "native-child";
-  return (await hasAuthoritativeTeamWorkerContext(cwd)) ? "team-worker" : "native-child";
+  return (await hasAuthoritativeTeamWorkerContext(cwd, { requireWorkerPane: true })) ? "team-worker" : "native-child";
 }
 
 function isActiveConductorModeState(state: Record<string, unknown> | null, mode: string, sessionId: string): boolean {
@@ -22359,7 +22354,9 @@ export async function dispatchCodexNativeHook(
       outputJson: null,
     };
   }
-  if (hookEventName === "Stop" && hasRawTeamWorkerDeclaration()) {
+  const canonicalInternalTeamWorkerDeclared = hasCanonicalInternalTeamWorkerDeclaration();
+
+  if (hookEventName === "Stop" && canonicalInternalTeamWorkerDeclared) {
     return {
       hookEventName,
       omxEventName: mapCodexHookEventToOmxEvent(hookEventName),
@@ -22445,13 +22442,18 @@ export async function dispatchCodexNativeHook(
   let resolvedNativeSessionId = nativeSessionId;
   let skipCanonicalSessionStartContext = false;
   let isSubagentSessionStart = false;
-  const authoritativeTeamWorker = declaredTeamWorker && await hasAuthoritativeTeamWorkerContext(cwd);
+  const authoritativeTeamWorker = declaredTeamWorker
+    && (hookEventName !== "Stop" || canonicalInternalTeamWorkerDeclared)
+    && await hasAuthoritativeTeamWorkerContext(cwd);
   const authoritativeWorkerPayloadSessionId = authoritativeTeamWorker
     && candidateWorkerPayloadSessionId
     && (!pointer.state || !payloadMatchesSessionPointer(candidateWorkerPayloadSessionId, pointer.state))
       ? candidateWorkerPayloadSessionId
       : "";
-  const declaredTeamWorkerStopOnly = hookEventName === "Stop" && declaredTeamWorker;
+  const declaredTeamWorkerStopOnly = hookEventName === "Stop" && canonicalInternalTeamWorkerDeclared;
+  if (declaredTeamWorker && !authoritativeTeamWorker) {
+    allowImplicitSessionSideEffects = false;
+  }
 
   if (hookEventName === "SessionStart" && declaredTeamWorker && !authoritativeWorkerPayloadSessionId) {
     canonicalSessionId = "";
@@ -23214,7 +23216,9 @@ export async function dispatchCodexNativeHook(
       if (detectMcpTransportFailure(payload)) {
         await markTeamTransportFailure(cwd, payload);
       }
-      await handleTeamWorkerPostToolUseSuccess(payload, cwd);
+      if (hasCanonicalInternalTeamWorkerDeclaration()) {
+        await handleTeamWorkerPostToolUseSuccess(payload, cwd);
+      }
     }
     outputJson = buildNativePostToolUseOutput(payload);
   } else if (hookEventName === "Stop") {

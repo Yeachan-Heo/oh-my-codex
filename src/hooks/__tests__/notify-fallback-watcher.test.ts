@@ -440,9 +440,10 @@ exit 0
 function buildCleanNotifyEnv(
   overrides: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     OMX_TEAM_WORKER: '',
+    OMX_TEAM_INTERNAL_WORKER: '',
     OMX_TEAM_STATE_ROOT: '',
     OMX_TEAM_LEADER_CWD: '',
     OMX_MODEL_INSTRUCTIONS_FILE: '',
@@ -454,6 +455,10 @@ function buildCleanNotifyEnv(
     TMUX_PANE: '',
     ...overrides,
   };
+  if (overrides.OMX_TEAM_WORKER && overrides.OMX_TEAM_INTERNAL_WORKER === undefined) {
+    env.OMX_TEAM_INTERNAL_WORKER = overrides.OMX_TEAM_WORKER;
+  }
+  return env;
 }
 
 describe('notify-fallback watcher', () => {
