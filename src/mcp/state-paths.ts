@@ -816,15 +816,24 @@ function normalizeSessionMetadata(state: SessionState | null, sourcePath?: strin
 export async function readSessionMetadataFromBaseStateDir(
   cwd: string,
   baseStateDir?: string,
+  options: { allowLegacyBoundHud?: boolean } = {},
 ): Promise<ResolvedSessionMetadata | undefined> {
-  const snapshot = await readCanonicalSessionBindingSnapshot(cwd);
-  const selectedBaseStateDir = baseStateDir ?? snapshot.baseStateDir;
+  const selectedBaseStateDir = baseStateDir ?? getBaseStateDir(cwd);
+  const snapshot = await readCanonicalSessionBindingSnapshot(cwd, options.allowLegacyBoundHud
+    ? { ...process.env, [OMX_TEAM_STATE_ROOT_ENV]: selectedBaseStateDir, [OMX_ROOT_ENV]: '', [OMX_STATE_ROOT_ENV]: '' }
+    : process.env);
   if (!selectedBaseStateDir) return undefined;
   const sessionPath = join(selectedBaseStateDir, 'session.json');
   const authoritative = await readAuthoritativeSessionSnapshotFromBaseStateDir(cwd, selectedBaseStateDir, snapshot);
   const session = authoritative && isSessionStateUsable(authoritative.state, authoritative.recordedCwd)
     ? authoritative.state
-    : null;
+    : options.allowLegacyBoundHud
+      && snapshot.status === 'identity-indeterminate'
+      && snapshot.state
+      && snapshot.baseStateDir
+      && canonicalizeExistingPath(snapshot.baseStateDir) === canonicalizeExistingPath(selectedBaseStateDir)
+      ? snapshot.state
+      : null;
   return normalizeSessionMetadata(session, sessionPath);
 }
 

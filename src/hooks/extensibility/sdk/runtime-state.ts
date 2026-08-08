@@ -43,7 +43,7 @@ async function readHudState(cwd: string, stateRoot?: string, requestedSessionId?
   if (stateRoot) {
     try {
       const canonicalStateRoot = realpathSync.native(stateRoot);
-      const metadata = await readSessionMetadataFromBaseStateDir(cwd, canonicalStateRoot);
+      const metadata = await readSessionMetadataFromBaseStateDir(cwd, canonicalStateRoot, { allowLegacyBoundHud: true });
       if (!metadata) return null;
       const requestedSessionText = typeof requestedSessionId === 'string' ? requestedSessionId.trim() : '';
       const normalizedRequestedSessionId = normalizeSessionId(requestedSessionText);
