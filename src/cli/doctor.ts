@@ -107,6 +107,11 @@ import {
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { getInstallableNativeAgentNames } from "../agents/policy.js";
 import { readCatalogManifest } from "../catalog/reader.js";
+import {
+	defaultProcessInspectionProvider,
+	isValidProcessIdentity,
+	type ProcessInspectionProvider,
+} from "../hooks/session.js";
 
 let doctorClaimJournalDurabilityOverride: NativeHookClaimJournalDurability | undefined;
 
@@ -169,6 +174,12 @@ interface NativeHookDistSmokeOptions {
 	packageRoot?: string;
 	nodePath?: string;
 	runner?: typeof spawnSync;
+}
+
+interface ProcessIdentityReadinessOptions {
+	platform?: NodeJS.Platform;
+	pid?: number;
+	provider?: Pick<ProcessInspectionProvider, "observeProcess">;
 }
 
 type DoctorSetupScope = "user" | "project";
@@ -602,6 +613,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 2: Node.js version
 	checks.push(checkNodeVersion());
+
+	const processIdentityCheck = checkProcessIdentityReadiness();
+	if (processIdentityCheck) checks.push(processIdentityCheck);
 
 	// Check 2.5: Explore harness readiness
 	const exploreRoutingState = await resolveExploreRoutingState(paths.configPath);
@@ -1141,6 +1155,53 @@ function checkNodeVersion(): Check {
 		status: "fail",
 		message: `v${process.versions.node} (need >= 20)`,
 	};
+}
+
+export function checkProcessIdentityReadiness(
+	options: ProcessIdentityReadinessOptions = {},
+): Check | null {
+	const platform = options.platform ?? process.platform;
+	if (platform !== "darwin" && platform !== "win32") return null;
+
+	const pid = options.pid ?? process.pid;
+	const provider = options.provider ?? defaultProcessInspectionProvider;
+	try {
+		const observation = provider.observeProcess(pid, platform);
+		if (
+			observation.kind === "identity"
+			&& isValidProcessIdentity(observation.identity)
+			&& observation.identity.platform === platform
+		) {
+			return {
+				name: "Process identity",
+				status: "pass",
+				message: "native process identity provider is ready",
+			};
+		}
+
+		const reason = observation.kind === "identity"
+			? isValidProcessIdentity(observation.identity)
+				? "platform mismatch"
+				: "provider response unverifiable"
+			: observation.kind === "gone"
+				? "current process not identified"
+				: observation.kind === "denied"
+					? "provider access denied"
+					: observation.kind === "unsupported"
+						? "provider unavailable"
+						: "provider response unverifiable";
+		return {
+			name: "Process identity",
+			status: "fail",
+			message: `native process identity is unavailable (${reason}); reinstall or update OMX and rerun doctor`,
+		};
+	} catch {
+		return {
+			name: "Process identity",
+			status: "fail",
+			message: "native process identity is unavailable (provider response unverifiable); reinstall or update OMX and rerun doctor",
+		};
+	}
 }
 
 export function checkExploreHarness(

@@ -674,7 +674,7 @@ function isValidBirth(value: unknown): value is string {
   return typeof value === 'string' && PROCESS_BIRTH_PATTERN.test(value);
 }
 
-function isValidProcessIdentity(value: unknown): value is ProcessIdentity {
+export function isValidProcessIdentity(value: unknown): value is ProcessIdentity {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const identity = value as Partial<ProcessIdentity>;
   if (Object.keys(identity).some((key) => key !== 'platform' && key !== 'birth' && key !== 'cmdline_hash')) return false;
