@@ -30327,7 +30327,7 @@ PY`,
     }
   });
 
-  it("bounds Stop replays when session.json is malformed", async () => {
+  it("never reinjects identical Stop authorization failures", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-malformed-session-pointer-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
@@ -30337,23 +30337,126 @@ PY`,
         hook_event_name: "Stop" as const,
         cwd,
         session_id: "sess-current",
+        last_assistant_message: "The provenance tools are denied, so the pointer cannot be repaired.",
       };
 
-      const first = await dispatchCodexNativeHook(payload, { cwd });
-      const replay = await dispatchCodexNativeHook(
-        {
-          ...payload,
-          stop_hook_active: true,
-        },
-        { cwd },
-      );
+      const attempts = [];
+      for (let index = 0; index < 26; index += 1) {
+        attempts.push(await dispatchCodexNativeHook(payload, { cwd }));
+      }
 
-      assert.equal(first.omxEventName, "stop");
-      assert.equal(first.outputJson?.decision, "block");
-      assert.equal(first.outputJson?.stopReason, "session_pointer_unusable");
-      assert.equal(replay.omxEventName, "stop");
-      assert.equal(replay.outputJson, null);
+      assert.deepEqual(attempts.map((attempt) => attempt.omxEventName), Array(26).fill("stop"));
+      assert.deepEqual(attempts.map((attempt) => attempt.outputJson), Array(26).fill(null));
       assert.equal(existsSync(join(stateDir, "native-stop-state.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Stop authorization failures terminal across session, cwd, and reason changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-auth-variants-"));
+    try {
+      const malformedCwd = join(root, "malformed");
+      const foreignCwd = join(root, "foreign");
+      const unmatchedCwd = join(root, "unmatched");
+      await mkdir(join(malformedCwd, ".omx", "state"), { recursive: true });
+      await mkdir(join(foreignCwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(malformedCwd, ".omx", "state", "session.json"), "{not-json");
+      await writeJson(join(foreignCwd, ".omx", "state", "session.json"), {
+        session_id: "foreign-owner",
+        native_session_id: "foreign-owner",
+        cwd: join(root, "other-worktree"),
+        pid: process.pid,
+      });
+      await writeSessionStart(unmatchedCwd, "selected-owner", {
+        nativeSessionId: "selected-owner",
+        pid: process.pid,
+      });
+
+      const cases = [
+        { cwd: malformedCwd, session_id: "malformed-session" },
+        { cwd: foreignCwd, session_id: "foreign-owner" },
+        { cwd: unmatchedCwd, session_id: "unmatched-session" },
+      ];
+      for (const payload of cases) {
+        const first = await dispatchCodexNativeHook({ hook_event_name: "Stop", ...payload }, { cwd: payload.cwd });
+        const changed = await dispatchCodexNativeHook({
+          hook_event_name: "Stop",
+          ...payload,
+          session_id: `${payload.session_id}-changed`,
+          stop_hook_active: true,
+        }, { cwd: payload.cwd });
+        assert.equal(first.outputJson, null);
+        assert.equal(changed.outputJson, null);
+        assert.equal(existsSync(join(payload.cwd, ".omx", "state", "native-stop-state.json")), false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inherit authority across sessions and restores ordinary Stop behavior after progress", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-auth-session-isolation-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const ownerSessionId = "selected-owner";
+      await writeSessionStart(cwd, ownerSessionId, {
+        nativeSessionId: ownerSessionId,
+        pid: process.pid,
+      });
+      await writeSessionSkillActiveState(stateDir, ownerSessionId, "ralph", "executing");
+      const ralphStatePath = join(stateDir, "sessions", ownerSessionId, "ralph-state.json");
+      await writeJson(ralphStatePath, {
+        active: true,
+        mode: "ralph",
+        current_phase: "executing",
+        session_id: ownerSessionId,
+        workingDirectory: cwd,
+      });
+      const pointerBefore = await readFile(join(stateDir, "session.json"), "utf-8");
+
+      const foreignStop = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "foreign-session",
+      }, { cwd });
+      assert.equal(foreignStop.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+
+      const authorizedBlocked = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: ownerSessionId,
+      }, { cwd });
+      assert.equal(authorizedBlocked.outputJson?.decision, "block");
+      assert.match(String(authorizedBlocked.outputJson?.stopReason), /^ralph_/);
+
+      await writeJson(ralphStatePath, {
+        active: false,
+        mode: "ralph",
+        current_phase: "complete",
+        session_id: ownerSessionId,
+        workingDirectory: cwd,
+        completion_audit: {
+          passed: true,
+          prompt_to_artifact_checklist: ["Stop authorization remained session-scoped."],
+          verification_evidence: ["The selected owner retained ordinary Stop enforcement."],
+        },
+      });
+      await writeJson(join(stateDir, "sessions", ownerSessionId, "skill-active-state.json"), {
+        active: false,
+        skill: "ralph",
+        phase: "complete",
+        session_id: ownerSessionId,
+        active_skills: [],
+      });
+
+      const authorizedAfterProgress = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: ownerSessionId,
+      }, { cwd });
+      assert.equal(authorizedAfterProgress.outputJson, null);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

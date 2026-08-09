@@ -23237,27 +23237,12 @@ export async function dispatchCodexNativeHook(
           : null
       );
     } else {
-      const failure = stopAuthorizationFailure ?? {
-        stopReason: "session_pointer_unusable",
-        reason: "OMX cannot authorize Stop without a writable session authority.",
-      };
-      const stopHookActive = payload.stop_hook_active === true || payload.stopHookActive === true;
-      const pointerCannotAuthorizeThisCwd = pointer.status === "foreign-cwd";
-      const unmatchedStopSession = failure.stopReason === "session_scope_unmatched";
-      // An unmatched payload, foreign-cwd pointer, or identity-indeterminate pointer
-      // cannot authorize continuation. Return no output so Codex cannot reinterpret an
-      // authorization diagnostic as a new action request. Other unusable pointers retain
-      // their bounded replay behavior.
-      if (pointerCannotAuthorizeThisCwd || pointer.status === "identity-indeterminate" || unmatchedStopSession || stopHookActive) {
-        outputJson = null;
-      } else {
-        outputJson = {
-          decision: "block",
-          stopReason: failure.stopReason,
-          reason: failure.reason,
-          systemMessage: failure.reason,
-        };
-      }
+      // Authorization failure never grants continuation authority. It also must not
+      // inject a repair request: the same provenance failure can deny every tool the
+      // model would need to repair it, turning a Stop denial into an unbounded loop.
+      // Returning no hook output permits termination while preserving the denial of
+      // all session-scoped and global side effects above.
+      outputJson = null;
     }
   }
 
