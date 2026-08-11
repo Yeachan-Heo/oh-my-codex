@@ -1308,6 +1308,19 @@ async function shouldPreflightResumeOmxPluginState(
   )).length > 0;
 }
 
+async function runtimePluginCacheNeedsIndependentRefresh(
+  selectedCodexHomeDir: string,
+  pluginCacheCodexHomeDir: string,
+): Promise<boolean> {
+  if (resolve(selectedCodexHomeDir) === resolve(pluginCacheCodexHomeDir)) return false;
+  try {
+    return !(await lstat(join(selectedCodexHomeDir, "plugins"))).isSymbolicLink();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
 export async function preflightResumeOmxPluginState(
   codexHomeDir: string | undefined,
   pkgRoot = getPackageRoot(),
@@ -1332,14 +1345,19 @@ export async function preflightResumeOmxPluginState(
       resolvePersistedSetupProjectRoot(options.projectRoot) ?? options.projectRoot,
     )
     : undefined;
+  const pluginCacheCodexHomeDir = options.pluginCacheCodexHomeDir ?? selectedCodexHomeDir;
+  const materializeOptions = { teamMode: persistedPreferences?.teamMode };
   const materialized = await materializePackagedOmxPluginCache(
-	options.pluginCacheCodexHomeDir ?? selectedCodexHomeDir,
-	packagedMarketplace,
-	{ teamMode: persistedPreferences?.teamMode },
+    pluginCacheCodexHomeDir,
+    packagedMarketplace,
+    materializeOptions,
   );
+  if (await runtimePluginCacheNeedsIndependentRefresh(selectedCodexHomeDir, pluginCacheCodexHomeDir)) {
+    await materializePackagedOmxPluginCache(selectedCodexHomeDir, packagedMarketplace, materializeOptions);
+  }
   const version = materialized.version ?? (await packagedOmxPluginVersion(packagedMarketplace)) ?? undefined;
   const currentCacheDir = materialized.cacheDir ?? (version ? join(
-    options.pluginCacheCodexHomeDir ?? selectedCodexHomeDir,
+    pluginCacheCodexHomeDir,
     "plugins",
     "cache",
     "oh-my-codex-local",

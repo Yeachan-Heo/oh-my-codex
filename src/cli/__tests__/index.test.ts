@@ -59,6 +59,7 @@ import {
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
+  preflightResumeOmxPluginState,
   captureMadmaxWorktreeRuntimeContext,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
@@ -2692,6 +2693,63 @@ describe("resolveSetupScopeArg", () => {
   });
 });
 describe("project launch scope helpers", () => {
+  it("refreshes a copied runtime plugin cache as well as the durable project cache", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-resume-copied-plugin-cache-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const runtimeCodexHome = join(wd, ".omx", "runtime", "codex-home", "session-copy-fallback");
+      const runtimePluginsDir = join(runtimeCodexHome, "plugins");
+      const manifest = JSON.parse(
+        await readFile(join(repoRoot, "plugins", "oh-my-codex", ".codex-plugin", "plugin.json"), "utf-8"),
+      ) as { version: string };
+      const runtimeCacheDir = join(
+        runtimePluginsDir,
+        "cache",
+        "oh-my-codex-local",
+        "oh-my-codex",
+        manifest.version,
+      );
+      const pluginConfig = [
+        '[plugins."oh-my-codex@oh-my-codex-local"]',
+        "enabled = true",
+        "",
+      ].join("\n");
+
+      await mkdir(projectCodexHome, { recursive: true });
+      await mkdir(runtimeCacheDir, { recursive: true });
+      await writeFile(join(runtimeCodexHome, "config.toml"), pluginConfig);
+      await writeFile(join(runtimeCacheDir, "stale-copy-sentinel"), "stale\n");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(join(wd, ".omx", "setup-scope.json"), JSON.stringify({
+        scope: "project",
+        installMode: "plugin",
+        teamMode: "disabled",
+      }));
+
+      const result = await preflightResumeOmxPluginState(runtimeCodexHome, repoRoot, {
+        projectRoot: wd,
+        pluginCacheCodexHomeDir: projectCodexHome,
+      });
+
+      const relativeHookPath = join(
+        "plugins",
+        "cache",
+        "oh-my-codex-local",
+        "oh-my-codex",
+        manifest.version,
+        "hooks",
+        "codex-native-hook.mjs",
+      );
+      assert.equal(result.status, "prepared");
+      assert.equal((await lstat(runtimePluginsDir)).isSymbolicLink(), false);
+      assert.equal(existsSync(join(projectCodexHome, relativeHookPath)), true);
+      assert.equal(existsSync(join(runtimeCodexHome, relativeHookPath)), true);
+      assert.equal(existsSync(join(runtimeCacheDir, "stale-copy-sentinel")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("reads persisted setup scope when valid", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
     try {
