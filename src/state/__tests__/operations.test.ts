@@ -3661,7 +3661,9 @@ describe('state operations directory initialization', () => {
 
         assert.equal(response.isError, true);
         const error = String((response.payload as { error?: string }).error || '');
-        assert.match(error, /documented_host_consensus_receipt_unavailable/);
+        // #3463: lifecycle consensus is structurally complete; the gate now
+        // reports awaiting_execution_handoff instead of the old hard-fail.
+        assert.match(error, /awaiting user-authorized execution handoff/i);
         assert.match(error, /official host consensus receipt verifier is unavailable/i);
       });
     } finally {
@@ -4486,7 +4488,9 @@ describe('state operations directory initialization', () => {
         });
 
         assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /documented_host_consensus_receipt_unavailable/);
+        // #3463: lifecycle consensus is structurally complete with tracker-backed
+        // native evidence; the gate now reports awaiting_execution_handoff.
+        assert.match(String((response.payload as { error?: string }).error || ''), /awaiting user-authorized execution handoff/i);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;

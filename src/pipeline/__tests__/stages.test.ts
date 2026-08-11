@@ -734,7 +734,7 @@ describe('RALPLAN Stage', () => {
     assert.equal(result.status, 'failed');
     assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
     assert.equal(artifacts.runtime, true);
-    assert.equal(artifacts.planningComplete, false);
+    assert.equal(artifacts.planningComplete, true);
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
     assert.deepEqual(gate.ralplan_architect_review, {
@@ -778,7 +778,7 @@ describe('RALPLAN Stage', () => {
 
     assert.equal(result.status, 'failed');
     assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(artifacts.planningComplete, false);
+    assert.equal(artifacts.planningComplete, true);
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
@@ -806,7 +806,7 @@ describe('RALPLAN Stage', () => {
 
     assert.equal(result.status, 'failed');
     assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(artifacts.planningComplete, false);
+    assert.equal(artifacts.planningComplete, true);
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
     assert.equal(gate.complete, false);
     assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');

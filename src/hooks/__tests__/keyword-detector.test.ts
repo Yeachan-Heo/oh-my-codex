@@ -2083,7 +2083,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('fails fresh native Autopilot before deep-interview when receipt verification is unavailable', async () => {
+  it('#3463: starts fresh native Autopilot even when receipt verification is unavailable (transition is reachable via user-authorized handoff)', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-preflight-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -2095,25 +2095,15 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-07-23T00:00:00.000Z',
       });
 
-      assert.equal(result?.active, false);
-      assert.equal(result?.phase, 'failed');
-      assert.equal(result?.error, 'documented_host_consensus_receipt_unavailable');
-      assert.deepEqual(result?.active_skills, []);
-      const modeState = JSON.parse(await readFile(
-        join(stateDir, 'sessions', 'sess-autopilot-preflight', 'autopilot-state.json'),
-        'utf-8',
-      )) as { active?: boolean; current_phase?: string; error?: string };
-      assert.equal(modeState.active, false);
-      assert.equal(modeState.current_phase, 'failed');
-      assert.equal(modeState.error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autopilot-preflight', 'deep-interview-state.json')), false);
-      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-autopilot-preflight', 'ultragoal-state.json')), false);
+      // The preflight no longer blocks; autopilot starts normally.
+      assert.equal(result?.active, true);
+      assert.equal(result?.skill, 'autopilot');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('byte-preserves an active native Autopilot session when receipt verification is unavailable', async () => {
+  it('#3463: continues an active native Autopilot session when receipt verification is unavailable', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-active-autopilot-preflight-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-active-autopilot-preflight';
@@ -2135,10 +2125,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-07-23T00:00:00.000Z',
       });
 
+      // #3463: without the preflight block, the existing autopilot is
+      // continued normally (no longer byte-preserved by the dead-end guard).
       assert.equal(result?.active, true);
       assert.equal(result?.phase, 'ralplan');
-      assert.equal(await readFile(statePath, 'utf-8'), rawState);
-      assert.equal(await readFile(modePath, 'utf-8'), rawMode);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3144,7 +3134,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('preserves an active Autopilot mode when canonical skill state is missing', async () => {
+  it('#3463: preserves an active Autopilot mode when canonical skill state is missing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-autopilot-mode-drift-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-autopilot-mode-drift';
@@ -3154,7 +3144,6 @@ describe('keyword detector skill-active-state lifecycle', () => {
       const rawMode = '{"active":true,"mode":"autopilot","current_phase":"ralplan","session_id":"sess-autopilot-mode-drift","marker":"preserve-active-mode","metadata":{"nested":{"keep":true}}}\n';
       await writeFile(modePath, rawMode);
 
-
       const result = await recordSkillActivation({
         stateDir,
         text: '$autopilot continue',
@@ -3162,16 +3151,16 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-07-23T00:00:00.000Z',
       });
 
+      // #3463: without the preflight block, the existing autopilot session
+      // at ralplan is detected as active and continued (cancelled/restarted
+      // path) rather than being hard-preserved.
       assert.equal(result?.skill, 'autopilot');
-      assert.equal(result?.phase, 'ralplan');
-      assert.equal(await readFile(modePath, 'utf-8'), rawMode);
-      assert.equal(existsSync(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE)), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('preserves active standalone Ralplan state bytes when fresh Autopilot preflight is unavailable', async () => {
+  it('#3463: no longer denies autopilot when fresh Autopilot preflight was previously unavailable', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ralplan-autopilot-preflight-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-ralplan-autopilot-preflight';
@@ -3181,17 +3170,17 @@ describe('keyword detector skill-active-state lifecycle', () => {
       await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
       await writeFile(statePath, rawState);
 
-      const denied = await recordSkillActivation({
+      const result = await recordSkillActivation({
         stateDir,
         text: '$autopilot do it too',
         sessionId,
         nowIso: '2026-07-23T00:00:00.000Z',
       });
 
-      assert.equal(denied?.skill, 'ralplan');
-      assert.equal(denied?.transition_error, 'documented_host_consensus_receipt_unavailable');
-      assert.equal(await readFile(statePath, 'utf-8'), rawState);
-      assert.equal(existsSync(join(stateDir, 'sessions', sessionId, 'autopilot-state.json')), false);
+      // #3463: The preflight no longer hard-denies the transition. The
+      // ralplan session is active, so autopilot may be blocked by workflow
+      // overlap rules instead, but NOT by documented_host_consensus_receipt.
+      assert.notEqual(result?.transition_error, 'documented_host_consensus_receipt_unavailable');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

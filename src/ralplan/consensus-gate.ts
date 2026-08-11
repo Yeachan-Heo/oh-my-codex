@@ -11,6 +11,34 @@ export const RALPLAN_CONSENSUS_BLOCKED_REASONS = {
   missingSequentialApproval: 'missing_sequential_architect_then_critic_approval',
 } as const;
 
+/**
+ * A user-authorized Ralplan → Ultragoal execution handoff.
+ *
+ * This is a distinct typed contract that explicitly does NOT claim
+ * host-consensus authority. It authorizes execution only when the local
+ * Architect→Critic lifecycle evidence is complete and the user has
+ * explicitly authorized the transition in-session. It is the reachable
+ * alternative to the (currently unreachable) host-receipt verifier path.
+ *
+ * Threat boundary:
+ * - Locally authored JSON/env/prompt/tracker/transcript/receipt-shaped
+ *   evidence remains non-authorizing for the host-consensus path.
+ * - This contract cannot be minted by forged lifecycle evidence; it
+ *   requires a pre-existing valid Architect→Critic review pair.
+ * - Session binding prevents cross-session substitution.
+ * - Review-cycle binding prevents stale/replay substitution.
+ */
+export const RALPLAN_EXECUTION_HANDOFF_AUTHORITY = 'user-authorized' as const;
+
+export interface RalplanExecutionHandoff {
+  authorized_by_user: true;
+  reason: string;
+  authorized_at: string;
+  session_id: string;
+  review_cycle: number;
+  source: string;
+}
+
 export type RalplanConsensusBlockedReason =
   typeof RALPLAN_CONSENSUS_BLOCKED_REASONS[keyof typeof RALPLAN_CONSENSUS_BLOCKED_REASONS];
 
@@ -24,10 +52,20 @@ export function getRalplanHostConsensusReceiptVerifierCapability(): RalplanHostC
   return 'unavailable';
 }
 
+/**
+ * Whether a fresh Autopilot pipeline should be preflight-blocked because no
+ * reachable ralplan → ultragoal transition exists.
+ *
+ * As of #3463, the transition is reachable via a user-authorized execution
+ * handoff (ralplan_execution_handoff), so this returns false: the pipeline is
+ * no longer a guaranteed dead end. The actual authorization boundary is
+ * enforced by canAdvanceAutopilotRalplanToUltragoal at phase-advance time.
+ * The host-consensus receipt path remains unavailable and separate.
+ */
 export function shouldBlockFreshAutopilotForRalplanReceipt(
-  capability: RalplanHostConsensusReceiptVerifierCapability = getRalplanHostConsensusReceiptVerifierCapability(),
+  _capability: RalplanHostConsensusReceiptVerifierCapability = getRalplanHostConsensusReceiptVerifierCapability(),
 ): boolean {
-  return capability === 'unavailable';
+  return false;
 }
 
 export interface RalplanNativeReviewDiagnostic {
@@ -87,6 +125,81 @@ type ConsensusResolution = {
   ralplan_critic_review: Record<string, unknown> | null;
   blockedDetails: string[];
 };
+
+/**
+ * Resolves a user-authorized execution handoff from a state record.
+ *
+ * Searches both direct and handoff_artifacts locations for
+ * `ralplan_execution_handoff`. Returns null when absent or structurally
+ * invalid. Structural validity does NOT authorize execution on its own;
+ * the caller must pair this with valid lifecycle evidence and enforce
+ * session + review-cycle binding.
+ */
+export function resolveRalplanExecutionHandoff(
+  state: Record<string, unknown> | null | undefined,
+): RalplanExecutionHandoff | null {
+  if (!state) return null;
+  const direct = asRecord(state.ralplan_execution_handoff ?? state.ralplanExecutionHandoff);
+  if (direct) return validateHandoffShape(direct);
+  const handoffs = asRecord(state.handoff_artifacts);
+  if (handoffs) {
+    const nested = asRecord(handoffs.ralplan_execution_handoff ?? handoffs.ralplanExecutionHandoff);
+    if (nested) return validateHandoffShape(nested);
+    const ralplan = asRecord(handoffs.ralplan);
+    if (ralplan) {
+      const deepNested = asRecord(ralplan.ralplan_execution_handoff ?? ralplan.ralplanExecutionHandoff);
+      if (deepNested) return validateHandoffShape(deepNested);
+    }
+  }
+  const innerState = asRecord(state.state);
+  if (innerState) {
+    const innerHandoffs = asRecord(innerState.handoff_artifacts);
+    if (innerHandoffs) {
+      const nested = asRecord(innerHandoffs.ralplan_execution_handoff ?? innerHandoffs.ralplanExecutionHandoff);
+      if (nested) return validateHandoffShape(nested);
+    }
+  }
+  return null;
+}
+
+function validateHandoffShape(record: Record<string, unknown>): RalplanExecutionHandoff | null {
+  if (record.authorized_by_user !== true) return null;
+  const reason = typeof record.reason === 'string' ? record.reason.trim() : '';
+  const authorizedAt = typeof record.authorized_at === 'string' ? record.authorized_at.trim() : '';
+  const source = typeof record.source === 'string' ? record.source.trim() : '';
+  const sessionId = typeof record.session_id === 'string' ? record.session_id.trim() : '';
+  const reviewCycle = typeof record.review_cycle === 'number' ? record.review_cycle : null;
+  if (!reason || !authorizedAt || !source || !sessionId || reviewCycle === null) return null;
+  return {
+    authorized_by_user: true,
+    reason,
+    authorized_at: authorizedAt,
+    session_id: sessionId,
+    review_cycle: reviewCycle,
+    source,
+  };
+}
+
+/**
+ * Validates that a user-authorized execution handoff is fresh and
+ * session-bound: the session_id must match the requesting session,
+ * and the review_cycle must match the lifecycle evidence's cycle.
+ *
+ * Returns an error string explaining the rejection, or null when valid.
+ */
+export function validateRalplanExecutionHandoffBinding(
+  handoff: RalplanExecutionHandoff,
+  expectedSessionId: string | undefined,
+  lifecycleReviewCycle: number | null,
+): string | null {
+  if (expectedSessionId && handoff.session_id !== expectedSessionId) {
+    return `ralplan_execution_handoff session_id mismatch: handoff=${handoff.session_id}, expected=${expectedSessionId}`;
+  }
+  if (lifecycleReviewCycle !== null && handoff.review_cycle !== lifecycleReviewCycle) {
+    return `ralplan_execution_handoff review_cycle mismatch: handoff=${handoff.review_cycle}, lifecycle=${lifecycleReviewCycle}`;
+  }
+  return null;
+}
 
 
 export function buildRalplanConsensusGateFromSources(

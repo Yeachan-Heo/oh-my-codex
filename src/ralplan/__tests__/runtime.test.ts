@@ -174,21 +174,21 @@ describe('ralplan runtime', () => {
         },
       }, { task: 'implement live ralplan runtime', cwd });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.phase, 'failed');
+      assert.equal(result.status, 'awaiting_execution_handoff');
+      assert.equal(result.phase, 'awaiting_execution_handoff');
       assert.equal(result.iteration, 1);
-      assert.equal(result.planningComplete, false);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.planningComplete, true);
+      assert.equal(result.error, undefined);
       assert.deepEqual(seenPhases, ['draft', 'architect-review', 'critic-review']);
       assert.equal(existsSync(join(cwd, '.omx', 'state', 'ralplan-state.json')), false);
       assert.equal(existsSync(sessionStatePath(cwd, sessionId)), true);
 
       const finalState = await readModeState('ralplan', cwd);
       assert.equal(finalState?.active, false);
-      assert.equal(finalState?.current_phase, 'failed');
+      assert.equal(finalState?.current_phase, 'awaiting_execution_handoff');
       assert.equal(finalState?.iteration, 1);
-      assert.equal(finalState?.planning_complete, false);
-      assert.match(String(finalState?.status_message || ''), /official host consensus receipt verifier/);
+      assert.equal(finalState?.planning_complete, true);
+      assert.match(String(finalState?.status_message || ''), /awaiting_execution_handoff/);
       assert.equal(finalState?.latest_architect_verdict, 'approve');
       assert.equal(finalState?.latest_critic_verdict, 'approve');
       assert.equal((finalState?.ralplan_consensus_gate as { blocked_reason?: string } | undefined)?.blocked_reason, 'documented_host_consensus_receipt_unavailable');
@@ -228,9 +228,9 @@ describe('ralplan runtime', () => {
         selectedExecutionLane: 'ultragoal',
       });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.phase, 'failed');
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'awaiting_execution_handoff');
+      assert.equal(result.phase, 'awaiting_execution_handoff');
+      assert.equal(result.error, undefined);
       assert.equal(result.ralplanConsensusGate.complete, false);
       assert.equal(result.ralplanConsensusGate.blocked_reason, 'documented_host_consensus_receipt_unavailable');
       assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.agent_role, 'architect');
@@ -263,8 +263,8 @@ describe('ralplan runtime', () => {
         },
       }, { task: 'approval starts ultragoal', cwd, maxIterations: 1, selectedExecutionLane: 'ultragoal' });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'awaiting_execution_handoff');
+      assert.equal(result.error, undefined);
       assert.equal(result.executionHandoffStarted, undefined);
       assert.equal(existsSync(getStatePath('ultragoal', cwd)), false);
       const finalState = await readModeState('ralplan', cwd);
@@ -301,7 +301,7 @@ describe('ralplan runtime', () => {
         },
       }, { task: 'reuse architect lane', cwd, maxIterations: 3 });
 
-      assert.equal(result.status, 'failed');
+      assert.equal(result.status, 'awaiting_execution_handoff');
       assert.deepEqual(architectThreads, [undefined, 'thread-architect']);
       assert.deepEqual(result.architectReviews.map((review) => review.thread_id), ['thread-architect', 'thread-architect']);
     } finally {
@@ -522,8 +522,8 @@ describe('ralplan runtime', () => {
         maxIterations: 1,
       });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'awaiting_execution_handoff');
+      assert.equal(result.error, undefined);
       const tracking = JSON.parse(await readFile(subagentTrackingPath(cwd), 'utf-8')) as {
         sessions?: Record<string, { threads?: Record<string, { completed_at?: string }> }>;
       };
@@ -648,7 +648,7 @@ describe('ralplan runtime', () => {
         requireNativeSubagents: true,
       });
 
-      assert.equal(result.status, 'failed');
+      assert.equal(result.status, 'awaiting_execution_handoff');
       assert.equal(result.ralplanConsensusGate.complete, false);
       assert.equal(result.ralplanConsensusGate.blocked_reason, 'documented_host_consensus_receipt_unavailable');
       assert.equal(result.ralplanConsensusGate.ralplan_architect_review?.thread_id, 'thread-architect');
@@ -856,14 +856,14 @@ describe('ralplan runtime', () => {
         },
       }, { task: 'loop until approval', cwd, maxIterations: 3 });
 
-      assert.equal(result.status, 'failed');
+      assert.equal(result.status, 'awaiting_execution_handoff');
       assert.equal(result.iteration, 2);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.error, undefined);
       assert.deepEqual(draftIterations, [1, 2]);
       assert.deepEqual(criticVerdicts, ['iterate', 'approve']);
 
       const finalState = await readModeState('ralplan', cwd);
-      assert.equal(finalState?.current_phase, 'failed');
+      assert.equal(finalState?.current_phase, 'awaiting_execution_handoff');
       assert.equal(finalState?.iteration, 2);
       assert.equal((finalState?.review_history as Array<unknown>).length, 2);
     } finally {
@@ -928,10 +928,10 @@ describe('ralplan runtime', () => {
         },
       }, { task: 'approve with mismatched artifacts', cwd, maxIterations: 1 });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.phase, 'failed');
-      assert.equal(result.planningComplete, false);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'awaiting_execution_handoff');
+      assert.equal(result.phase, 'awaiting_execution_handoff');
+      assert.equal(result.planningComplete, true);
+      assert.equal(result.error, undefined);
       assert.equal(result.ralplanConsensusGate.complete, false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -957,16 +957,16 @@ describe('ralplan runtime', () => {
         },
       }, { task: 'approve without artifacts', cwd, maxIterations: 1 });
 
-      assert.equal(result.status, 'failed');
-      assert.equal(result.phase, 'failed');
-      assert.equal(result.planningComplete, false);
-      assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(result.status, 'awaiting_execution_handoff');
+      assert.equal(result.phase, 'awaiting_execution_handoff');
+      assert.equal(result.planningComplete, true);
+      assert.equal(result.error, undefined);
       assert.equal(result.ralplanConsensusGate.complete, false);
 
       const finalState = await readModeState('ralplan', cwd);
-      assert.equal(finalState?.current_phase, 'failed');
-      assert.equal(finalState?.planning_complete, false);
-      assert.equal(finalState?.error, 'documented_host_consensus_receipt_unavailable');
+      assert.equal(finalState?.current_phase, 'awaiting_execution_handoff');
+      assert.equal(finalState?.planning_complete, true);
+      assert.equal(finalState?.error, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

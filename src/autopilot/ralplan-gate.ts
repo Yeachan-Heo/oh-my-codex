@@ -1,8 +1,11 @@
 import {
   buildRalplanConsensusGateFromSources,
   RALPLAN_CONSENSUS_BLOCKED_REASONS,
+  resolveRalplanExecutionHandoff,
+  validateRalplanExecutionHandoffBinding,
   withParentReturnToRalplanContext,
   type RalplanConsensusGateEvidence,
+  type RalplanExecutionHandoff,
 } from '../ralplan/consensus-gate.js';
 import {
   buildUnsupportedNativeSubagentGuidance,
@@ -124,12 +127,94 @@ export function canAdvanceAutopilotRalplanToUltragoal(
       unsupportedNativeSubagentGuidance: unsupportedGuidance,
     };
   }
+
+  // Option A (#3463): a user-authorized execution handoff is a distinct typed
+  // contract that does NOT claim host-consensus authority. It allows the
+  // ralplan → ultragoal transition only when valid Architect→Critic lifecycle
+  // evidence exists and the user explicitly authorized the transition in-session.
+  // This is the reachable alternative to the (currently unreachable) host-receipt
+  // verifier path. Forged local lifecycle evidence without a user-authorized
+  // handoff remains rejected.
+  const lifecycleCycle = consensusEvidenceReviewCycle(evidence);
+  const lifecycleEvidencePresent = hasValidLifecycleEvidence(evidence);
+  if (lifecycleEvidencePresent) {
+    const handoff = resolveExecutionHandoffFromInput(input);
+    if (handoff) {
+      const bindingError = validateRalplanExecutionHandoffBinding(handoff, input.sessionId, lifecycleCycle);
+      if (!bindingError) {
+        return {
+          allowed: true,
+          reason: 'user-authorized ralplan execution handoff (distinct from host-consensus authority)',
+          evidence,
+          unsupportedNativeSubagentGuidance: unsupportedGuidance,
+        };
+      }
+      return {
+        allowed: false,
+        reason: bindingError,
+        evidence,
+        unsupportedNativeSubagentGuidance: unsupportedGuidance,
+      };
+    }
+    return {
+      allowed: false,
+      reason: 'ralplan lifecycle consensus reached; awaiting user-authorized execution handoff (ralplan_execution_handoff)',
+      evidence,
+      unsupportedNativeSubagentGuidance: unsupportedGuidance,
+    };
+  }
+
   return {
     allowed: false,
     reason: ralplanConsensusBlockedReason(evidence),
     evidence,
     unsupportedNativeSubagentGuidance: unsupportedGuidance,
   };
+}
+
+function resolveExecutionHandoffFromInput(
+  input: AutopilotRalplanUltragoalGateInput,
+): RalplanExecutionHandoff | null {
+  return resolveRalplanExecutionHandoff(input.nextState)
+    ?? resolveRalplanExecutionHandoff(input.currentState);
+}
+
+function hasValidLifecycleEvidence(evidence: RalplanConsensusGateEvidence): boolean {
+  const architect = evidence.ralplan_architect_review;
+  const critic = evidence.ralplan_critic_review;
+  if (!architect || !critic) return false;
+  if (evidence.blockedReason !== RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable) {
+    return false;
+  }
+  // Both reviews must have approving verdicts.
+  const architectVerdict = architect.verdict;
+  const criticVerdict = critic.verdict;
+  if (!((architectVerdict === undefined || architectVerdict === 'approve')
+    && (criticVerdict === undefined || criticVerdict === 'approve'))) {
+    return false;
+  }
+  // Both reviews must have the correct agent roles.
+  if (architect.agent_role !== 'architect' || critic.agent_role !== 'critic') {
+    return false;
+  }
+  // Both reviews must be native_subagent provenance.
+  if (architect.provenance_kind !== 'native_subagent' || critic.provenance_kind !== 'native_subagent') {
+    return false;
+  }
+  // The reviews must use distinct native thread_ids.
+  const architectThreadId = typeof architect.thread_id === 'string' ? architect.thread_id.trim() : '';
+  const criticThreadId = typeof critic.thread_id === 'string' ? critic.thread_id.trim() : '';
+  return Boolean(architectThreadId) && Boolean(criticThreadId) && architectThreadId !== criticThreadId;
+}
+
+function consensusEvidenceReviewCycle(evidence: RalplanConsensusGateEvidence): number | null {
+  const architect = evidence.ralplan_architect_review;
+  const critic = evidence.ralplan_critic_review;
+  const architectCycle = typeof architect?.review_cycle === 'number' ? architect.review_cycle
+    : typeof architect?.iteration === 'number' ? architect.iteration : null;
+  const criticCycle = typeof critic?.review_cycle === 'number' ? critic.review_cycle
+    : typeof critic?.iteration === 'number' ? critic.iteration : null;
+  return architectCycle ?? criticCycle;
 }
 
 function ralplanConsensusBlockedReason(evidence: RalplanConsensusGateEvidence): string {
