@@ -623,6 +623,8 @@ jobs:
             dist/verification/__tests__/native-release-manifest.test.js \
             dist/verification/__tests__/explore-harness-release-workflow.test.js \
             dist/verification/__tests__/ci-rust-gates.test.js
+      - name: Verify plugin-cache continuity boundary
+        run: node --test dist/cli/__tests__/plugin-cache-continuity.test.js
 
   build:
     name: Build (Full Source Build)

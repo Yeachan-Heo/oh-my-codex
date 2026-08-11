@@ -65,6 +65,7 @@ import {
 	validateCodexHooksConfigStrict,
 } from "../config/codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
+import type { SetupTeamMode } from "../config/team-mode.js";
 import { getDefaultBridge, isBridgeEnabled } from "../runtime/bridge.js";
 import {
 	OMX_EXPLORE_CMD_ENV,
@@ -189,6 +190,7 @@ interface DoctorScopeResolution {
 	source: "persisted" | "config" | "default";
 	installMode?: SetupInstallMode;
 	mcpMode?: SetupMcpMode;
+	teamMode?: SetupTeamMode;
 }
 
 interface DoctorPaths {
@@ -210,6 +212,7 @@ async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
 			source: "persisted",
 			installMode: persisted.installMode ?? inferred?.installMode,
 			mcpMode: persisted.mcpMode ?? inferred?.mcpMode ?? "none",
+			teamMode: persisted.teamMode,
 		};
 	}
 
@@ -680,7 +683,11 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	);
 
 	// Check 6: Skills installed
-	checks.push(await checkSkills(paths, scopeResolution.installMode));
+	checks.push(await checkSkills(
+		paths,
+		scopeResolution.installMode,
+		scopeResolution.teamMode,
+	));
 	if (scopeResolution.installMode === "plugin") {
 		checks.push(await checkPluginVersionDiagnostics(paths.codexHomeDir));
 	}
@@ -3141,6 +3148,7 @@ function getParsedPluginMarketplaceConfig(content: string): {
 async function checkPluginMarketplaceRegistration(
 	configPath: string,
 	codexHomeDir: string,
+	teamMode?: SetupTeamMode,
 ): Promise<Check> {
 	const packagedMarketplace = await resolvePackagedOmxMarketplace(
 		getPackageRoot(),
@@ -3197,7 +3205,7 @@ async function checkPluginMarketplaceRegistration(
 		const [packagedManifestVersion, expectedSkillNames, cacheDirs] =
 			await Promise.all([
 				packagedOmxPluginVersion(packagedMarketplace),
-				expectedPackagedOmxSkillNames(packagedMarketplace),
+				expectedPackagedOmxSkillNames(packagedMarketplace, { teamMode }),
 				discoverOmxPluginCacheDirs(codexHomeDir),
 			]);
 		if (!packagedManifestVersion) {
@@ -3639,11 +3647,13 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 async function checkSkills(
 	paths: DoctorPaths,
 	installMode?: SetupInstallMode,
+	teamMode?: SetupTeamMode,
 ): Promise<Check> {
 	if (installMode === "plugin") {
 		return checkPluginMarketplaceRegistration(
 			paths.configPath,
 			paths.codexHomeDir,
+			teamMode,
 		);
 	}
 

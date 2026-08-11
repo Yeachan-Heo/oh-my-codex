@@ -60,6 +60,12 @@ export interface UpdateExecutionResult {
   latestVersion: string | null;
 }
 
+export function updateCommandExitCode(
+  result: Pick<UpdateExecutionResult, 'status'>,
+): number | undefined {
+  return result.status === 'failed' ? 1 : undefined;
+}
+
 export type UpdateChannel = 'stable' | 'dev';
 
 export interface UpdateChannelConfig {

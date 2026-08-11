@@ -9,6 +9,21 @@ import {
 export const readPersistedSetupPreferences = readPersistedSetupPreferencesSync;
 export const readPersistedSetupScope = readPersistedSetupScopeSync;
 
+export function resolvePersistedSetupProjectRoot(
+	cwd: string,
+): string | undefined {
+	return resolveNearestPersistedSetupScopeSync(cwd)?.projectRoot;
+}
+
+export function resolvePersistedProjectCodexHome(
+	cwd: string,
+): string | undefined {
+	const nearest = resolveNearestPersistedSetupScopeSync(cwd);
+	return nearest?.scope === "project"
+		? join(nearest.projectRoot, ".codex")
+		: undefined;
+}
+
 export function resolveProjectLocalCodexHomeForLaunch(
 	cwd: string,
 	env: NodeJS.ProcessEnv = process.env,
@@ -17,11 +32,7 @@ export function resolveProjectLocalCodexHomeForLaunch(
 	// Walk upward so a project-scoped setup is honored from any directory
 	// inside its tree — launching from a subdirectory must not fall through
 	// to the user config (issue #3447).
-	const nearest = resolveNearestPersistedSetupScopeSync(cwd);
-	if (nearest?.scope === "project") {
-		return join(nearest.projectRoot, ".codex");
-	}
-	return undefined;
+	return resolvePersistedProjectCodexHome(cwd);
 }
 
 export function resolveCodexHomeForLaunch(

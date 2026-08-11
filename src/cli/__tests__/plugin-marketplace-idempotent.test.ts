@@ -1,14 +1,57 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import TOML from "@iarna/toml";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../../config/omx-first-party-mcp.js";
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
 	OMX_LOCAL_PLUGIN_CONFIG_KEY,
+	discoverOmxPluginCacheDirs,
+	isOmxPluginCacheVersionEntryName,
 	upsertLocalOmxMarketplaceRegistration,
 	upsertLocalOmxPluginEnablement,
 	upsertLocalOmxPluginMcpServerEnablement,
 } from "../plugin-marketplace.js";
+
+describe("plugin cache discovery", () => {
+	it("recognizes supported cache version names without accepting work artifacts", () => {
+		for (const name of ["local", "0.20.5", "1.0.0-alpha.1", "1.0.0+build.7"]) {
+			assert.equal(isOmxPluginCacheVersionEntryName(name), true, name);
+		}
+		for (const name of [".materializing-0.20.5-123", "v0.20.5", "0.20", "latest"]) {
+			assert.equal(isOmxPluginCacheVersionEntryName(name), false, name);
+		}
+	});
+
+	it("finds corrupt version roots by namespace and ignores materialization workdirs", async () => {
+		const codexHomeDir = await mkdtemp(join(tmpdir(), "omx-plugin-discovery-"));
+		try {
+			const namespaceRoot = join(
+				codexHomeDir,
+				"plugins",
+				"cache",
+				"oh-my-codex-local",
+				"oh-my-codex",
+			);
+			const corruptVersionRoot = join(namespaceRoot, "0.20.3");
+			const workdir = join(namespaceRoot, ".materializing-0.20.5-123");
+			await mkdir(corruptVersionRoot, { recursive: true });
+			await mkdir(join(workdir, ".codex-plugin"), { recursive: true });
+			await writeFile(
+				join(workdir, ".codex-plugin", "plugin.json"),
+				JSON.stringify({ name: "oh-my-codex", version: "0.20.5" }),
+			);
+
+			assert.deepEqual(await discoverOmxPluginCacheDirs(codexHomeDir), [
+				corruptVersionRoot,
+			]);
+		} finally {
+			await rm(codexHomeDir, { recursive: true, force: true });
+		}
+	});
+});
 
 function countMatches(content: string, pattern: RegExp): number {
 	return [...content.matchAll(pattern)].length;

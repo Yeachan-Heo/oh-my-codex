@@ -342,6 +342,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-explicit-session.jsonl" ]; then
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-project-filter-'));
     try {
       const home = join(wd, 'home');
+      const unrelatedCodexHome = join(wd, 'unrelated-codex-home');
       const projectCodexHome = join(wd, '.codex');
       const runtimeCodexHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime');
       const fakeBin = join(wd, 'bin');
@@ -349,18 +350,29 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-explicit-session.jsonl" ]; then
       const fakePsPath = join(fakeBin, 'ps');
       const projectRolloutPath = join(projectCodexHome, 'sessions', '2026', '06', '17', 'rollout-project-session.jsonl');
       const runtimeRolloutPath = join(runtimeCodexHome, 'sessions', '2026', '06', '17', 'rollout-runtime-session.jsonl');
+      const testDir = dirname(fileURLToPath(import.meta.url));
+      const repoRoot = join(testDir, '..', '..', '..');
+      const manifest = JSON.parse(await readFile(join(repoRoot, 'plugins', 'oh-my-codex', '.codex-plugin', 'plugin.json'), 'utf-8')) as { version: string };
 
       await mkdir(home, { recursive: true });
       await mkdir(fakeBin, { recursive: true });
       await mkdir(dirname(projectRolloutPath), { recursive: true });
       await mkdir(dirname(runtimeRolloutPath), { recursive: true });
-      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await mkdir(join(projectCodexHome, 'plugins'), { recursive: true });
+      await mkdir(unrelatedCodexHome, { recursive: true });
+      await symlink(join(projectCodexHome, 'plugins'), join(runtimeCodexHome, 'plugins'), 'dir');
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({
+        scope: 'project',
+        installMode: 'plugin',
+        teamMode: 'disabled',
+      }));
       await writeFile(projectRolloutPath, '{"type":"session_meta","payload":{"id":"project-session"}}\n');
       await writeFile(runtimeRolloutPath, '{"type":"session_meta","payload":{"id":"runtime-session"}}\n');
       await writeFile(fakeCodexPath, `#!/bin/sh
 printf 'fake-codex:%s\n' "$*"
 if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-runtime-session.jsonl" ]; then echo runtime-rollout-present=yes; else echo runtime-rollout-present=no; fi
 if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-project-session.jsonl" ]; then echo project-rollout-present=yes; else echo project-rollout-present=no; fi
+if [ -f "$CODEX_HOME/plugins/cache/oh-my-codex-local/oh-my-codex/${manifest.version}/hooks/codex-native-hook.mjs" ]; then echo current-hook-present=yes; else echo current-hook-present=no; fi
 mkdir -p "$CODEX_HOME/sessions/2026/06/18"
 printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$CODEX_HOME/sessions/2026/06/18/rollout-new-project-resume.jsonl"
 `);
@@ -370,6 +382,7 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
 
       const result = runOmx(wd, ['resume', '--project'], {
         HOME: home,
+        CODEX_HOME: unrelatedCodexHome,
         PATH: `${fakeBin}:/usr/bin:/bin`,
         OMX_AUTO_UPDATE: '0',
         OMX_NOTIFY_FALLBACK: '0',
@@ -380,6 +393,7 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       assert.match(result.stdout, /fake-codex:resume\b/);
       assert.match(result.stdout, /runtime-rollout-present=yes/);
       assert.match(result.stdout, /project-rollout-present=no/);
+      assert.match(result.stdout, /current-hook-present=yes/);
       const runtimeDirs = await readdir(join(wd, '.omx', 'runtime', 'codex-home'));
       const persistedNewTranscript = await Promise.all(runtimeDirs.map(async (dir) => {
         const transcript = join(wd, '.omx', 'runtime', 'codex-home', dir, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl');
@@ -447,6 +461,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-unrelated-session.jsonl" ]; the
   it('preflights madmax resume to current plugin cache after old cache deletion', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-madmax-plugin-preflight-'));
     try {
+      const launchCwd = join(wd, 'nested');
       const home = join(wd, 'home');
       const runsRoot = join(wd, 'runs');
       const projectCodexHome = join(wd, '.codex');
@@ -461,6 +476,7 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-unrelated-session.jsonl" ]; the
       const oldCacheDir = join(projectCodexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex', oldVersion);
 
       await mkdir(home, { recursive: true });
+      await mkdir(launchCwd, { recursive: true });
       await mkdir(fakeBin, { recursive: true });
       await mkdir(runsRoot, { recursive: true });
       await mkdir(join(projectCodexHome, 'sessions', '2026', '06', '17'), { recursive: true });
@@ -484,14 +500,19 @@ if [ -f "$CODEX_HOME/sessions/2026/06/17/rollout-unrelated-session.jsonl" ]; the
         hooks: './hooks/hooks.json',
       }, null, 2));
       await writeFile(join(oldCacheDir, 'hooks', 'hooks.json'), '{}\n');
-      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
-      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: wd, run_dir: join(runsRoot, 'run-associated') })}\n`);
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({
+        scope: 'project',
+        installMode: 'plugin',
+        teamMode: 'disabled',
+      }));
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: launchCwd, run_dir: join(runsRoot, 'run-associated') })}\n`);
       await rm(oldCacheDir, { recursive: true, force: true });
 
       await writeFile(fakeCodexPath, `#!/bin/sh
 printf 'fake-codex:%s\n' "$*"
 printf 'codex-home:%s\n' "$CODEX_HOME"
 if [ -f "$CODEX_HOME/plugins/cache/oh-my-codex-local/oh-my-codex/${currentVersion}/hooks/codex-native-hook.mjs" ]; then echo current-hook-present=yes; else echo current-hook-present=no; fi
+if [ -d "$CODEX_HOME/plugins/cache/oh-my-codex-local/oh-my-codex/${currentVersion}/skills/team" ]; then echo team-skill-present=yes; else echo team-skill-present=no; fi
 if [ -e "$CODEX_HOME/plugins/cache/oh-my-codex-local/oh-my-codex/${oldVersion}" ]; then echo old-cache-present=yes; else echo old-cache-present=no; fi
 case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo marketplace-current=yes;; *) echo marketplace-current=no;; esac
 `);
@@ -499,7 +520,7 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
       await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
       await chmod(fakePsPath, 0o755);
 
-      const result = runOmx(wd, ['--madmax', 'resume', 'stale-session'], {
+      const result = runOmx(launchCwd, ['--madmax', 'resume', 'stale-session'], {
         HOME: home,
         OMX_RUNS_DIR: runsRoot,
         PATH: `${fakeBin}:/usr/bin:/bin`,
@@ -511,6 +532,7 @@ case "$(cat "$CODEX_HOME/config.toml")" in *'source = "${repoRoot}"'*) echo mark
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:.*resume stale-session\b/);
       assert.match(result.stdout, /current-hook-present=yes/);
+      assert.match(result.stdout, /team-skill-present=no/);
       assert.match(result.stdout, /old-cache-present=no/);
       assert.match(result.stdout, /marketplace-current=yes/);
     } finally {

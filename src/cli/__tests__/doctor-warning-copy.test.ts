@@ -585,6 +585,37 @@ command = "node"
 		}
 	});
 
+	it("accepts the reduced packaged skill set when plugin Team mode is disabled", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-no-team-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--disable-team", "--force"],
+				{ HOME: home, CODEX_HOME: codexDir },
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/Skills: plugin marketplace oh-my-codex-local registered; OMX skills are supplied by/,
+			);
+			assert.doesNotMatch(res.stdout, /installed Codex plugin cache is missing the packaged skills mirror/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("accepts plugin mode when required native reviewer roles are available from agent files and config", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-native-roles-ok-"));
 		try {

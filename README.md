@@ -365,6 +365,7 @@ omx team shutdown <team-name>
 
 These are operator/support surfaces:
 - Codex plugin marketplace install/discovery can cache the plugin under `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (local installs may use `local` as the version identifier); that packaged plugin includes plugin-scoped companion metadata for official Codex lifecycle hooks, optional MCP compatibility servers, and apps (MCP/apps disabled by default), so it is still paired with the installed `omx` CLI for runtime execution
+  - plugin setup/update refreshes each discovered cache in the managed `oh-my-codex-local` marketplace in place without removing its root directory, including retired versions, so already-running Codex sessions whose `PLUGIN_ROOT` was pinned at startup keep a resolvable hook path while hook assets and the pinned CLI launcher are refreshed
 - Scoped setup installs prompts, skills, AGENTS scaffolding, `.codex/config.toml`, and (for legacy installs or older Codex without `plugin_hooks`) OMX-managed native Codex hooks in `.codex/hooks.json`
   - setup refresh preserves non-OMX hook entries in `.codex/hooks.json` and only rewrites OMX-managed wrappers
   - plugin setup keeps `AGENTS.md` as persistent durable guidance even though bundled skills/hooks come from the plugin cache; `omx doctor` treats a missing persistent scope `AGENTS.md` in plugin mode as a failed check because the session-scoped AGENTS file would otherwise contain only runtime overlay guidance

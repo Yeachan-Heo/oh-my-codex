@@ -82,6 +82,8 @@ import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../r
 import { normalizeTerminalWorkflowState } from "../state/terminal-normalization.js";
 import {
   readPersistedSetupPreferences,
+  resolvePersistedProjectCodexHome,
+  resolvePersistedSetupProjectRoot,
   resolveCodexConfigPathForLaunch,
   resolveCodexHomeForLaunch,
   resolveProjectLocalCodexHomeForLaunch,
@@ -120,7 +122,7 @@ import {
   type SkillActiveStateLike,
 } from "../state/skill-active.js";
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
-import { maybeCheckAndPromptUpdate, runImmediateUpdate, type UpdateChannel } from "./update.js";
+import { maybeCheckAndPromptUpdate, runImmediateUpdate, updateCommandExitCode, type UpdateChannel } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
 import {
   generateOverlay,
@@ -1284,6 +1286,7 @@ export interface ResumePluginPreflightResult {
 
 export interface ResumePluginPreflightOptions {
   projectRoot?: string;
+  pluginCacheCodexHomeDir?: string;
 }
 
 async function shouldPreflightResumeOmxPluginState(
@@ -1294,11 +1297,15 @@ async function shouldPreflightResumeOmxPluginState(
   if (hasLocalOmxPluginEnablement(existingConfig)) return true;
   if (
     options.projectRoot &&
-    readPersistedSetupPreferences(options.projectRoot)?.installMode === "plugin"
+    readPersistedSetupPreferences(
+      resolvePersistedSetupProjectRoot(options.projectRoot) ?? options.projectRoot,
+    )?.installMode === "plugin"
   ) {
     return true;
   }
-  return (await discoverOmxPluginCacheDirs(selectedCodexHomeDir)).length > 0;
+  return (await discoverOmxPluginCacheDirs(
+    options.pluginCacheCodexHomeDir ?? selectedCodexHomeDir,
+  )).length > 0;
 }
 
 export async function preflightResumeOmxPluginState(
@@ -1320,9 +1327,25 @@ export async function preflightResumeOmxPluginState(
     return { status: "unavailable", prunedStaleDirs: [], configUpdated: false };
   }
 
-  const materialized = await materializePackagedOmxPluginCache(selectedCodexHomeDir, packagedMarketplace);
+  const persistedPreferences = options.projectRoot
+    ? readPersistedSetupPreferences(
+      resolvePersistedSetupProjectRoot(options.projectRoot) ?? options.projectRoot,
+    )
+    : undefined;
+  const materialized = await materializePackagedOmxPluginCache(
+	options.pluginCacheCodexHomeDir ?? selectedCodexHomeDir,
+	packagedMarketplace,
+	{ teamMode: persistedPreferences?.teamMode },
+  );
   const version = materialized.version ?? (await packagedOmxPluginVersion(packagedMarketplace)) ?? undefined;
-  const currentCacheDir = materialized.cacheDir ?? (version ? join(selectedCodexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version) : undefined);
+  const currentCacheDir = materialized.cacheDir ?? (version ? join(
+    options.pluginCacheCodexHomeDir ?? selectedCodexHomeDir,
+    "plugins",
+    "cache",
+    "oh-my-codex-local",
+    "oh-my-codex",
+    version,
+  ) : undefined);
   const prunedStaleDirs: string[] = [];
 
   const nextConfig = upsertLocalOmxMarketplaceRegistration(
@@ -1389,6 +1412,9 @@ async function prepareResumeCodexHomeForLaunch(
   }
 
   const projectHomes = await discoverProjectRuntimeCodexHomes(cwd);
+  const projectPluginCacheCodexHome = selection.projectOnly
+    ? resolvePersistedProjectCodexHome(cwd)
+    : resolveProjectLocalCodexHomeForLaunch(cwd, env);
   if (selection.projectOnly) {
     if (projectHomes.length === 0) {
       const emptyRuntimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
@@ -1407,7 +1433,10 @@ async function prepareResumeCodexHomeForLaunch(
       includeHistoryArtifacts: true,
       extraHistoryCodexHomes: projectHomes.slice(1).map((home) => home.path),
     });
-    await preflightResumeOmxPluginState(runtimeCodexHome, getPackageRoot(), { projectRoot: cwd });
+    await preflightResumeOmxPluginState(runtimeCodexHome, getPackageRoot(), {
+      projectRoot: cwd,
+      pluginCacheCodexHomeDir: projectPluginCacheCodexHome,
+    });
     return {
       args: selection.args,
       prepared: {
@@ -1420,7 +1449,10 @@ async function prepareResumeCodexHomeForLaunch(
     includeHistoryArtifacts: true,
     extraHistoryCodexHomes: projectHomes.map((home) => home.path),
   });
-  await preflightResumeOmxPluginState(prepared.codexHomeOverride, getPackageRoot(), { projectRoot: cwd });
+  await preflightResumeOmxPluginState(prepared.codexHomeOverride, getPackageRoot(), {
+    projectRoot: cwd,
+    pluginCacheCodexHomeDir: prepared.projectLocalCodexHomeForCleanup,
+  });
   return { args: selection.args, prepared };
 }
 
@@ -3438,7 +3470,14 @@ if (command !== "launch" && command !== "resume") {
         });
         break;
       case "update":
-        await runImmediateUpdate(process.cwd(), {}, { channel: resolveUpdateChannelArg(args.slice(1)) });
+        {
+          const exitCode = updateCommandExitCode(
+            await runImmediateUpdate(process.cwd(), {}, {
+              channel: resolveUpdateChannelArg(args.slice(1)),
+            }),
+          );
+          if (exitCode !== undefined) process.exitCode = exitCode;
+        }
         break;
       case "list":
         await listCommand(args.slice(1));

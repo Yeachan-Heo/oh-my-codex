@@ -21,6 +21,7 @@ import {
   runImmediateUpdate,
   shouldCheckForUpdates,
   spawnInstalledSetupRefresh,
+  updateCommandExitCode,
   writeUserInstallStamp,
 } from '../update.js';
 import {
@@ -40,6 +41,15 @@ const frozenNpmOwnership: PackageManagerOwnership = {
   packageRoot: '/configured/node_modules/oh-my-codex',
   environment: { OMX_UPDATE_TEST: '1' },
 };
+
+describe('updateCommandExitCode', () => {
+  it('returns a failing shell exit code only for failed explicit updates', () => {
+    assert.equal(updateCommandExitCode({ status: 'failed' }), 1);
+    for (const status of ['updated', 'scheduled', 'up-to-date', 'declined', 'unavailable'] as const) {
+      assert.equal(updateCommandExitCode({ status }), undefined);
+    }
+  });
+});
 
 describe('isNewerVersion', () => {
   it('returns true when latest has higher major', () => {
