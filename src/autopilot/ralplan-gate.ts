@@ -204,7 +204,16 @@ function hasValidLifecycleEvidence(evidence: RalplanConsensusGateEvidence): bool
   // The reviews must use distinct native thread_ids.
   const architectThreadId = typeof architect.thread_id === 'string' ? architect.thread_id.trim() : '';
   const criticThreadId = typeof critic.thread_id === 'string' ? critic.thread_id.trim() : '';
-  return Boolean(architectThreadId) && Boolean(criticThreadId) && architectThreadId !== criticThreadId;
+  if (!architectThreadId || !criticThreadId || architectThreadId === criticThreadId) return false;
+  // The Architect review must precede the Critic review (sequence_index or order).
+  const architectSequence = typeof architect.sequence_index === 'number' ? architect.sequence_index
+    : typeof architect.review_order === 'number' ? architect.review_order : null;
+  const criticSequence = typeof critic.sequence_index === 'number' ? critic.sequence_index
+    : typeof critic.review_order === 'number' ? critic.review_order : null;
+  if (architectSequence !== null && criticSequence !== null && architectSequence >= criticSequence) {
+    return false;
+  }
+  return true;
 }
 
 function consensusEvidenceReviewCycle(evidence: RalplanConsensusGateEvidence): number | null {

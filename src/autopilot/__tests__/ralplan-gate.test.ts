@@ -34,6 +34,7 @@ function lifecycleConsensus(reviewCycle: number, criticVerdict: 'approve' | 'ite
       agent_role: 'architect',
       verdict: 'approve',
       review_cycle: reviewCycle,
+      sequence_index: 1,
       completed_at: '2026-06-12T10:02:00.000Z',
       thread_id: `architect-lifecycle-${reviewCycle}`,
       provenance_kind: 'native_subagent',
@@ -42,6 +43,7 @@ function lifecycleConsensus(reviewCycle: number, criticVerdict: 'approve' | 'ite
       agent_role: 'critic',
       verdict: criticVerdict,
       review_cycle: reviewCycle,
+      sequence_index: 2,
       completed_at: '2026-06-12T10:03:00.000Z',
       thread_id: `critic-lifecycle-${reviewCycle}`,
       provenance_kind: 'native_subagent',
@@ -282,5 +284,49 @@ describe('autopilot ralplan gate', () => {
     assert.equal(decision.allowed, true);
     assert.equal(decision.reason, 'user-authorized ralplan execution handoff (distinct from host-consensus authority)');
     assert.equal(decision.evidence?.complete, false);
+  });
+
+  it('#3463: rejects a handoff when lifecycle evidence has reversed Architect/Critic order', () => {
+    const reversedConsensus = {
+      complete: true,
+      sequence: ['architect-review', 'critic-review'],
+      ralplan_architect_review: {
+        agent_role: 'architect',
+        verdict: 'approve',
+        review_cycle: 1,
+        sequence_index: 2,
+        completed_at: '2026-06-12T10:02:00.000Z',
+        thread_id: 'architect-reversed',
+        provenance_kind: 'native_subagent',
+      },
+      ralplan_critic_review: {
+        agent_role: 'critic',
+        verdict: 'approve',
+        review_cycle: 1,
+        sequence_index: 1,
+        completed_at: '2026-06-12T10:03:00.000Z',
+        thread_id: 'critic-reversed',
+        provenance_kind: 'native_subagent',
+      },
+    };
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: reversedConsensus,
+        ralplan_execution_handoff: {
+          authorized_by_user: true,
+          reason: 'user authorized',
+          authorized_at: '2026-08-11T10:00:00.000Z',
+          session_id: 'sess-handoff-1',
+          review_cycle: 1,
+          source: 'user',
+        },
+      },
+    });
+
+    assert.equal(decision.allowed, false);
+    assert.notEqual(decision.reason, 'user-authorized ralplan execution handoff (distinct from host-consensus authority)');
   });
 });
