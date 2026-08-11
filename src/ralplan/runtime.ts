@@ -235,15 +235,23 @@ async function hasCompletedNativeReviewEvidence(
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
-  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean } = {},
+  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean; iteration?: number } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
+  // P1-3: stamp the authoritative global Ralplan loop iteration as
+  // review_cycle on both role reviews. Never derive from per-role array
+  // lengths, which diverge on Architect revision/retry.
+  const authoritativeCycle = typeof options.iteration === 'number' ? options.iteration : 1;
+  // P1-2: stamp authoritative sequence_index (architect=1, critic=2) from
+  // the trusted runtime, so external executors that omit it still produce
+  // correctly ordered persisted artifacts. Forged/reordered persisted
+  // artifacts are caught by the gate validator.
   const ralplanArchitectReview = latestArchitect
-    ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
+    ? { ...latestArchitect, agent_role: 'architect' as const, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 1 }
     : null;
   const ralplanCriticReview = latestCritic
-    ? { ...latestCritic, agent_role: 'critic' as const, iteration: criticReviews.length }
+    ? { ...latestCritic, agent_role: 'critic' as const, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 2 }
     : null;
   return {
     required: true,
@@ -354,6 +362,7 @@ export async function runRalplanConsensus(
     cwd,
     sessionId: options.sessionId,
     requireNativeSubagents: options.requireNativeSubagents,
+    get iteration() { return iteration; },
   };
   const drafts: RalplanDraftResult[] = [];
   const architectReviews: RalplanReviewResult[] = [];

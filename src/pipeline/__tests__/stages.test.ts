@@ -741,12 +741,16 @@ describe('RALPLAN Stage', () => {
       verdict: 'approve',
       summary: 'architect ok',
       iteration: 1,
+      review_cycle: 1,
+      sequence_index: 1,
     });
     assert.deepEqual(gate.ralplan_critic_review, {
       agent_role: 'critic',
       verdict: 'approve',
       summary: 'critic ok',
       iteration: 1,
+      review_cycle: 1,
+      sequence_index: 2,
     });
     assert.equal(artifacts.iteration, 1);
     assert.equal(artifacts.runtimeDrafted, true);
@@ -850,12 +854,16 @@ describe('RALPLAN Stage', () => {
       verdict: 'approve',
       summary: 'architect ok',
       iteration: 1,
+      review_cycle: 1,
+      sequence_index: 1,
     });
     assert.deepEqual(gate.ralplan_critic_review, {
       agent_role: 'critic',
       verdict: 'iterate',
       summary: 'critic needs changes',
       iteration: 1,
+      review_cycle: 1,
+      sequence_index: 2,
     });
   });
 

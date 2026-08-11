@@ -17,6 +17,7 @@ import { createUltragoalStage } from './stages/ultragoal.js';
 import { createCodeReviewStage } from './stages/code-review.js';
 import { createUltraqaStage } from './stages/ultraqa.js';
 import { shouldBlockFreshAutopilotForRalplanReceipt } from '../ralplan/consensus-gate.js';
+import { canAdvanceAutopilotRalplanToUltragoal, buildAutopilotRalplanUltragoalGateError } from '../autopilot/ralplan-gate.js';
 
 import { isNonCleanReviewVerdict } from './review-verdict.js';
 import type {
@@ -49,6 +50,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
   const workerCount = config.workerCount ?? 2;
   const agentType = config.agentType ?? 'executor';
   const startTime = Date.now();
+  const artifacts: Record<string, unknown> = {};
+  const handoffArtifactsByStage: Record<string, unknown> = {};
+  let resumeFromStageIndex = 0;
   const existingAutopilot = config.sessionId
     ? await readModeStateForExplicitSession(MODE_NAME, config.sessionId, cwd)
     : await readModeState(MODE_NAME, cwd);
@@ -56,12 +60,58 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     updateAutopilotPipelineState(updates, cwd, config.sessionId)
   );
   if (config.name === MODE_NAME && existingAutopilot?.active === true) {
-    return {
-      status: 'cancelled',
-      stageResults: {},
-      duration_ms: Date.now() - startTime,
-      artifacts: { active_autopilot_session_preserved: true },
-    };
+    // P1-1: If the existing autopilot is paused at awaiting_execution_handoff,
+    // resume from after ralplan into ultragoal instead of cancelling.
+    // The gate at base.ts:assertAutopilotRalplanUltragoalGate enforces that
+    // a valid user-authorized ralplan_execution_handoff is present.
+    const phase = typeof existingAutopilot.current_phase === 'string' ? existingAutopilot.current_phase : '';
+    if (phase === 'ralplan:awaiting_execution_handoff') {
+      // Resume: advance to ultragoal stage. The gate check happens at
+      // updateAutopilotPipelineState -> base.ts when current_phase changes
+      // from ralplan to ultragoal.
+      const ultragoalIndex = findStageIndex(config.stages, 'ultragoal');
+      if (ultragoalIndex >= 0) {
+        // Verify the gate is satisfiable before attempting resume
+        const gateCheck = canAdvanceAutopilotRalplanToUltragoal({
+          cwd,
+          sessionId: config.sessionId,
+          currentState: existingAutopilot as Record<string, unknown>,
+          nextState: { ...existingAutopilot, current_phase: 'ultragoal' } as Record<string, unknown>,
+        });
+        if (!gateCheck.allowed) {
+          return {
+            status: 'failed',
+            stageResults: {},
+            duration_ms: Date.now() - startTime,
+            artifacts: { resume_blocked: true },
+            error: buildAutopilotRalplanUltragoalGateError(gateCheck),
+            failedStage: 'ralplan',
+          };
+        }
+        // Gate passed — resume from ultragoal by adjusting the stage loop
+        resumeFromStageIndex = ultragoalIndex;
+        // Carry over existing artifacts as resume context
+        const existingHandoffs = (existingAutopilot as Record<string, unknown>).handoff_artifacts;
+        if (existingHandoffs && typeof existingHandoffs === 'object') {
+          Object.assign(artifacts, existingHandoffs);
+          Object.assign(handoffArtifactsByStage, { ralplan: existingHandoffs });
+        }
+      } else {
+        return {
+          status: 'cancelled',
+          stageResults: {},
+          duration_ms: Date.now() - startTime,
+          artifacts: { active_autopilot_session_preserved: true },
+        };
+      }
+    } else {
+      return {
+        status: 'cancelled',
+        stageResults: {},
+        duration_ms: Date.now() - startTime,
+        artifacts: { active_autopilot_session_preserved: true },
+      };
+    }
   }
   if (
     config.name === MODE_NAME
@@ -145,13 +195,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
 
   // Execute stages sequentially
   const stageResults: Record<string, StageResult> = {};
-  const artifacts: Record<string, unknown> = {};
-  const handoffArtifactsByStage: Record<string, unknown> = {};
   let previousResult: StageResult | undefined;
   let lastStageName: string | undefined;
   let reviewCycle = 0;
 
-  for (let i = 0; i < config.stages.length; i++) {
+  for (let i = resumeFromStageIndex; i < config.stages.length; i++) {
     const stage = config.stages[i];
 
     // Build stage context
