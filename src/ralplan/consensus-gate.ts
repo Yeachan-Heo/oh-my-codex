@@ -169,7 +169,9 @@ function validateHandoffShape(record: Record<string, unknown>): RalplanExecution
   const source = typeof record.source === 'string' ? record.source.trim() : '';
   const sessionId = typeof record.session_id === 'string' ? record.session_id.trim() : '';
   const reviewCycle = typeof record.review_cycle === 'number' ? record.review_cycle : null;
-  if (!reason || !authorizedAt || !source || !sessionId || reviewCycle === null) return null;
+  if (!reason || !authorizedAt || !sessionId || reviewCycle === null) return null;
+  // P1-B: source must be exactly "user" — arbitrary non-empty strings are rejected.
+  if (source !== 'user') return null;
   return {
     authorized_by_user: true,
     reason,

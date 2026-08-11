@@ -73,7 +73,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
           );
           const consensusComplete = consensusGate.complete === true;
           return {
-            status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : 'failed',
+            status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : runtimeResult.status === 'awaiting_execution_handoff' ? 'awaiting_execution_handoff' : 'failed',
             artifacts: {
               ...runtimeResult.artifacts,
               plansDir: planningArtifacts.plansDir,
@@ -93,7 +93,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               ralplanConsensusGate: consensusGate,
             },
             duration_ms: Date.now() - startTime,
-            error: runtimeResult.error ?? (consensusComplete ? undefined : consensusGate.blockedReason ?? 'ralplan_consensus_evidence_missing'),
+            error: runtimeResult.status === 'awaiting_execution_handoff' ? undefined : (runtimeResult.error ?? (consensusComplete ? undefined : consensusGate.blockedReason ?? 'ralplan_consensus_evidence_missing')),
           };
         }
 

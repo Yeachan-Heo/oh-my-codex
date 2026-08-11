@@ -731,8 +731,7 @@ describe('RALPLAN Stage', () => {
       ralplan_critic_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
     };
 
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.status, 'awaiting_execution_handoff');
     assert.equal(artifacts.runtime, true);
     assert.equal(artifacts.planningComplete, true);
     assert.equal(gate.complete, false);
@@ -776,8 +775,7 @@ describe('RALPLAN Stage', () => {
     const result = await stage.run(makeCtx({ task: 'live ralplan mismatched artifacts' }));
     const artifacts = result.artifacts as Record<string, unknown>;
 
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.status, 'awaiting_execution_handoff');
     assert.equal(artifacts.planningComplete, true);
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
     assert.equal(gate.complete, false);
@@ -804,8 +802,7 @@ describe('RALPLAN Stage', () => {
     const result = await stage.run(makeCtx({ task: 'live ralplan no artifacts' }));
     const artifacts = result.artifacts as Record<string, unknown>;
 
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
+    assert.equal(result.status, 'awaiting_execution_handoff');
     assert.equal(artifacts.planningComplete, true);
     const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
     assert.equal(gate.complete, false);

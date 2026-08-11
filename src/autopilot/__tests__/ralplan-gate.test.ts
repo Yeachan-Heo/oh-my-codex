@@ -26,7 +26,7 @@ const approvingLocalConsensus = {
   },
 };
 
-function lifecycleConsensus(reviewCycle: number, criticVerdict: 'approve' | 'iterate' = 'approve') {
+function lifecycleConsensus(reviewCycle: number, criticVerdict: 'approve' | 'iterate' = 'approve', sessionId = 'sess-handoff-1') {
   return {
     complete: true,
     sequence: ['architect-review', 'critic-review'],
@@ -38,6 +38,7 @@ function lifecycleConsensus(reviewCycle: number, criticVerdict: 'approve' | 'ite
       completed_at: '2026-06-12T10:02:00.000Z',
       thread_id: `architect-lifecycle-${reviewCycle}`,
       provenance_kind: 'native_subagent',
+      session_id: sessionId,
     },
     ralplan_critic_review: {
       agent_role: 'critic',
@@ -47,6 +48,7 @@ function lifecycleConsensus(reviewCycle: number, criticVerdict: 'approve' | 'ite
       completed_at: '2026-06-12T10:03:00.000Z',
       thread_id: `critic-lifecycle-${reviewCycle}`,
       provenance_kind: 'native_subagent',
+      session_id: sessionId,
     },
   };
 }
@@ -68,7 +70,7 @@ describe('autopilot ralplan gate', () => {
     assert.deepEqual(evidence.blockedDetails, ['official host consensus receipt verifier is unavailable']);
   });
 
-  it('holds the ralplan to ultragoal transition on otherwise-valid local lifecycle evidence without a user-authorized handoff (#3463)', () => {
+  it('#3463/P1-2: rejects lifecycle evidence lacking session binding (untrusted foreign reviews)', () => {
     const decision = canAdvanceAutopilotRalplanToUltragoal({
       cwd: process.cwd(),
       sessionId: 'hostile-local-consensus',
@@ -78,8 +80,9 @@ describe('autopilot ralplan gate', () => {
       },
     });
 
+    // approvingLocalConsensus lacks session_id, so P1-2 fail-closed rejects it.
     assert.equal(decision.allowed, false);
-    assert.equal(decision.reason, 'ralplan lifecycle consensus reached; awaiting user-authorized execution handoff (ralplan_execution_handoff)');
+    assert.equal(decision.reason, 'documented_host_consensus_receipt_unavailable');
   });
 
   it('retains the fail-closed diagnostic for malformed local lifecycle evidence', () => {
@@ -99,18 +102,16 @@ describe('autopilot ralplan gate', () => {
     assert.equal(evidence.blockedReason, 'documented_host_consensus_receipt_unavailable');
   });
 
-  it('retains current-state lifecycle diagnostics when next state has no consensus source', () => {
+  it('#3463/P1-C: rejects lifecycle evidence when no authoritative session is resolved', () => {
     const decision = canAdvanceAutopilotRalplanToUltragoal({
       cwd: process.cwd(),
       currentState: { ralplan_consensus_gate: lifecycleConsensus(1) },
       nextState: { current_phase: 'ultragoal' },
     });
 
+    // P1-C: without an authoritative sessionId, lifecycle evidence is rejected.
     assert.equal(decision.allowed, false);
-    assert.equal(decision.reason, 'ralplan lifecycle consensus reached; awaiting user-authorized execution handoff (ralplan_execution_handoff)');
-    assert.equal(decision.evidence?.source, 'current-autopilot-state');
-    assert.equal(decision.evidence?.ralplan_architect_review?.review_cycle, 1);
-    assert.equal(decision.evidence?.ralplan_critic_review?.review_cycle, 1);
+    assert.equal(decision.reason, 'documented_host_consensus_receipt_unavailable');
   });
 
   it('keeps a newer invalid next-state lifecycle record ahead of older current-state reviews', () => {
@@ -328,5 +329,108 @@ describe('autopilot ralplan gate', () => {
 
     assert.equal(decision.allowed, false);
     assert.notEqual(decision.reason, 'user-authorized ralplan execution handoff (distinct from host-consensus authority)');
+  });
+
+  it('#3463/P1-1: rejects lifecycle evidence when sequence_index is missing from architect review', () => {
+    const noOrder = lifecycleConsensus(1);
+    delete (noOrder.ralplan_architect_review as Record<string, unknown>).sequence_index;
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: noOrder,
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'user' },
+      },
+    });
+    assert.equal(decision.allowed, false);
+  });
+
+  it('#3463/P1-1: rejects lifecycle evidence when order is reversed (critic before architect)', () => {
+    const reversed = lifecycleConsensus(1);
+    (reversed.ralplan_architect_review as Record<string, unknown>).sequence_index = 3;
+    (reversed.ralplan_critic_review as Record<string, unknown>).sequence_index = 1;
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: reversed,
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'user' },
+      },
+    });
+    assert.equal(decision.allowed, false);
+  });
+
+  it('#3463/P1-2: rejects lifecycle reviews with a foreign session_id (copied review pair)', () => {
+    const foreign = lifecycleConsensus(1, 'approve', 'sess-foreign');
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: foreign,
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'user' },
+      },
+    });
+    assert.equal(decision.allowed, false);
+  });
+
+  it('#3463/P1-2: rejects lifecycle reviews when only one carries a session_id', () => {
+    const partial = lifecycleConsensus(1);
+    delete (partial.ralplan_critic_review as Record<string, unknown>).session_id;
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: partial,
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'user' },
+      },
+    });
+    assert.equal(decision.allowed, false);
+  });
+
+  it('#3463/P1-3: rejects lifecycle evidence when review_cycle is missing from critic', () => {
+    const missingCycle = lifecycleConsensus(1);
+    delete (missingCycle.ralplan_critic_review as Record<string, unknown>).review_cycle;
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: missingCycle,
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'user' },
+      },
+    });
+    assert.equal(decision.allowed, false);
+  });
+
+  it('#3463/P1-3: rejects lifecycle evidence when review cycles disagree between reviews', () => {
+    const disagree = lifecycleConsensus(1);
+    (disagree.ralplan_critic_review as Record<string, unknown>).review_cycle = 2;
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: disagree,
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'user' },
+      },
+    });
+    assert.equal(decision.allowed, false);
+  });
+
+  it('#3463/P1-B: rejects a handoff with source !== "user"', () => {
+    const decision = canAdvanceAutopilotRalplanToUltragoal({
+      cwd: process.cwd(),
+      sessionId: 'sess-handoff-1',
+      currentState: {
+        current_phase: 'ralplan',
+        ralplan_consensus_gate: lifecycleConsensus(1),
+        ralplan_execution_handoff: { authorized_by_user: true, reason: 'ok', authorized_at: '2026-08-11T10:00:00.000Z', session_id: 'sess-handoff-1', review_cycle: 1, source: 'agent' },
+      },
+    });
+    assert.equal(decision.allowed, false);
   });
 });

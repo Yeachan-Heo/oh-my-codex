@@ -4939,7 +4939,7 @@ deepMaxRounds = 21
     }
   });
 
-  it('warns when fresh Autopilot preflight persistence fails', async () => {
+  it('#3463: warns when fresh Autopilot state persistence fails', async () => {
 
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-persist-fail-'));
     const warnings: unknown[][] = [];
@@ -4959,7 +4959,9 @@ deepMaxRounds = 21
 
       assert.ok(result);
       assert.equal(result.skill, 'autopilot');
-      assert.equal(result.phase, 'failed');
+      // #3463: without the preflight block, the phase is deep-interview
+      // (the activation starts normally even when persistence fails).
+      assert.equal(result.phase, 'deep-interview');
       assert.equal(warnings.length, 1);
       assert.match(String(warnings[0][0]), /failed to persist keyword activation state/);
     } finally {

@@ -62,9 +62,9 @@ The consensus workflow:
    d. Return to Critic evaluation
    e. Repeat this loop until Critic returns `APPROVE` or 5 iterations are reached
    f. If 5 iterations are reached without `APPROVE`, present the best version to the user
-6. On Critic approval *(--interactive only)*: present the plan for review, change requests, rejection, or selection of a **requested future execution lane**. A local Critic approval is lifecycle-only and must not offer or begin an execution handoff while the host receipt verifier is unavailable.
-7. *(--interactive only)* Record the user's planning disposition and any requested future execution lane; do not invoke `$ultragoal`, `$team`, `$ralph`, or another implementation lane without a verified official host receipt.
-8. On local Architect→Critic approval, preserve the plan and reviews with `ralplan_consensus_gate.complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`. Report the host blocker and stop rather than implementing directly.
+6. On Critic approval *(--interactive only)*: present the plan for review, change requests, rejection, or selection of a **requested future execution lane**. When the local Architect→Critic lifecycle consensus is complete and a user-authorized `ralplan_execution_handoff` is persisted, the transition to an execution lane is authorized. The user-authorized handoff is a distinct typed contract that does NOT claim host-consensus authority.
+7. *(--interactive only)* Record the user's planning disposition and requested future execution lane. To authorize execution, persist `ralplan_execution_handoff` with `{authorized_by_user: true, reason, authorized_at, session_id, review_cycle, source: "user"}` — the session_id must match the current session and review_cycle must match the lifecycle consensus cycle.
+8. On local Architect→Critic approval, preserve the plan and reviews with `ralplan_consensus_gate.complete:false` and `blocked_reason:"documented_host_consensus_receipt_unavailable"`. The ralplan runtime terminalizes as `awaiting_execution_handoff` (not `failed`). Report the reachable user-authorized handoff path and stop rather than implementing directly.
 
 > **Important:** Steps 3 and 4 MUST run sequentially as role-specific subagents. Do NOT issue both agent calls in the same parallel batch. Always await the subsequent `Architect` result before invoking the subsequent `Critic`; their completed approvals establish local lifecycle evidence only and cannot satisfy the durable execution gate.
 
@@ -75,7 +75,7 @@ The consensus workflow:
 The canonical flow is:
 
 ```
-$ralplan -> local Architect→Critic lifecycle evidence -> verified official host receipt -> explicit execution lane -> $ultragoal | $team | $ralph
+$ralplan -> local Architect→Critic lifecycle evidence -> user-authorized execution handoff (ralplan_execution_handoff) OR verified official host receipt -> explicit execution lane -> $ultragoal | $team | $ralph
 ```
 
 Before any execution lane begins, ralplan must emit terminal planning state (complete, paused, failed, or waiting for input) and the durable handoff record below. Do not continue from consensus planning into direct code edits in the same ralplan session.
@@ -89,15 +89,16 @@ Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handof
 - `planning_artifacts`: PRD/test-spec paths.
 - `ralplan_architect_review`: the completed Architect review with an approving verdict.
 - `ralplan_critic_review`: the completed Critic review with an approving verdict, recorded only after the Architect review.
-- `ralplan_consensus_gate.complete:true` only after an official host-issued receipt is verified through a documented non-user-mintable host surface. Architect/Critic reviews, trackers, artifacts, and local receipt-shaped fields remain lifecycle or trace evidence only; until the verifier exists, persist `complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
+- `ralplan_execution_handoff`: when the user explicitly authorizes the transition after lifecycle consensus, persist `{authorized_by_user: true, reason: "<user's rationale>", authorized_at: "<ISO timestamp>", session_id: "<current session>", review_cycle: <matching lifecycle cycle>, source: "user"}`. This is the reachable execution authorization. It does NOT claim host-consensus authority.
+- `ralplan_consensus_gate.complete:true` only after an official host-issued receipt is verified through a documented non-user-mintable host surface. Until the verifier exists, persist `complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`. Locally authored JSON/env/prompt/tracker/transcript/receipt-shaped evidence remains non-authorizing for this gate.
 
-If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. Even after both reviews approve, they complete only the local review lifecycle; do not start execution until an official host receipt verifier authorizes the transition. Existing plan/test-spec files and local review artifacts are never permission to skip ralplan or execute.
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. After both reviews approve, the runtime terminalizes as `awaiting_execution_handoff`; execution begins only when a user-authorized `ralplan_execution_handoff` (or a future verified official host receipt) authorizes the transition. Existing plan/test-spec files and local review artifacts are never permission to skip ralplan or execute.
 
 Follow the Plan skill's full documentation for consensus mode details.
 
 ## Goal-Mode Follow-up Suggestions
 
-When a verified official host receipt permits an execution handoff, include product-facing goal-mode suggestions alongside the existing Ralph and team options. Until then, record any requested lane as non-executing planning guidance and keep `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`.
+When a user-authorized `ralplan_execution_handoff` or a verified official host receipt permits an execution handoff, include product-facing goal-mode suggestions alongside the existing Ralph and team options. Record any requested lane and persist the `ralplan_execution_handoff` to authorize it.
 
 - `$ultragoal` — **default goal-mode follow-up** for implementation or general goal-oriented follow-up plans that should become durable Codex/OMX goals with sequential completion tracking.
 - `$autoresearch-goal` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable.
@@ -184,8 +185,8 @@ The gate auto-passes when it detects **any** concrete signal. You do not need al
    - **Planner** creates initial plan (which files, what auth method, what tests)
    - **Architect** reviews for soundness
    - **Critic** validates quality and testability
-5. Architect and Critic approval completes the local planning lifecycle only. Persist `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"` and report the host blocker.
-6. Execution does not begin until a verified official host receipt authorizes the selected handoff path.
+5. Architect and Critic approval completes the local planning lifecycle. Persist `ralplan_consensus_gate.complete:false` with `blocked_reason:"documented_host_consensus_receipt_unavailable"`. The runtime terminalizes as `awaiting_execution_handoff`.
+6. Execution begins when the user authorizes a `ralplan_execution_handoff` (session-bound, review-cycle-bound) or when a future verified official host receipt authorizes the transition.
 
 ### Troubleshooting
 

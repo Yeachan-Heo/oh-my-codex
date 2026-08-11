@@ -301,6 +301,23 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       pipeline_stage_results: { ...stageResults },
     } as Partial<PipelineModeStateExtension>);
 
+    // P1-A: awaiting_execution_handoff is a resumable terminal state. The
+    // pipeline stops here (not failed). The user authorizes via
+    // ralplan_execution_handoff and the pipeline resumes to ultragoal.
+    if (result.status === 'awaiting_execution_handoff') {
+      const duration_ms = Date.now() - startTime;
+      await updatePipelineState({
+        current_phase: 'ralplan:awaiting_execution_handoff',
+      } as Partial<PipelineModeStateExtension>);
+      return {
+        status: 'awaiting_execution_handoff',
+        stageResults,
+        duration_ms,
+        artifacts,
+        failedStage: undefined,
+      };
+    }
+
     // Bail on failure
     if (result.status === 'failed') {
       const duration_ms = Date.now() - startTime;
@@ -460,6 +477,11 @@ function isRalplanHostReceiptBlocked(stageName: string, artifacts: Record<string
 }
 function enforceRalplanHostReceiptBlocker(result: StageResult, stageName: string): StageResult {
   if (!isRalplanHostReceiptBlocked(stageName, result.artifacts)) return result;
+  // P1-A: awaiting_execution_handoff is a resumable terminal state — do NOT
+  // convert it to failed. The pipeline stops here and waits for the user to
+  // authorize a ralplan_execution_handoff. Only truly failed stages are
+  // converted to the host-receipt blocker.
+  if (result.status === 'awaiting_execution_handoff') return result;
   const previousError = result.error;
   const artifacts = previousError && previousError !== DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE
     ? {

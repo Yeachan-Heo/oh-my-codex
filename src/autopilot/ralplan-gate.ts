@@ -136,7 +136,7 @@ export function canAdvanceAutopilotRalplanToUltragoal(
   // verifier path. Forged local lifecycle evidence without a user-authorized
   // handoff remains rejected.
   const lifecycleCycle = consensusEvidenceReviewCycle(evidence);
-  const lifecycleEvidencePresent = hasValidLifecycleEvidence(evidence);
+  const lifecycleEvidencePresent = hasValidLifecycleEvidence(evidence, input.sessionId);
   if (lifecycleEvidencePresent) {
     const handoff = resolveExecutionHandoffFromInput(input);
     if (handoff) {
@@ -179,10 +179,24 @@ function resolveExecutionHandoffFromInput(
     ?? resolveRalplanExecutionHandoff(input.currentState);
 }
 
-function hasValidLifecycleEvidence(evidence: RalplanConsensusGateEvidence): boolean {
+function hasValidLifecycleEvidence(
+  evidence: RalplanConsensusGateEvidence,
+  expectedSessionId: string | undefined,
+): boolean {
   const architect = evidence.ralplan_architect_review;
   const critic = evidence.ralplan_critic_review;
   if (!architect || !critic) return false;
+  // P1-C (fail-closed): an authoritative current session must be resolved.
+  // If expectedSessionId is absent, there is no authoritative session to bind
+  // to, so the lifecycle evidence is rejected.
+  if (!expectedSessionId) return false;
+  // P1-E (fail-closed): both reviews must bind to the same authoritative
+  // current session as the handoff request. A foreign review pair copied
+  // from another session is rejected.
+  const architectSession = typeof architect.session_id === 'string' ? architect.session_id.trim() : '';
+  const criticSession = typeof critic.session_id === 'string' ? critic.session_id.trim() : '';
+  if (!architectSession || !criticSession) return false;
+  if (architectSession !== expectedSessionId || criticSession !== expectedSessionId) return false;
   if (evidence.blockedReason !== RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable) {
     return false;
   }
@@ -205,25 +219,48 @@ function hasValidLifecycleEvidence(evidence: RalplanConsensusGateEvidence): bool
   const architectThreadId = typeof architect.thread_id === 'string' ? architect.thread_id.trim() : '';
   const criticThreadId = typeof critic.thread_id === 'string' ? critic.thread_id.trim() : '';
   if (!architectThreadId || !criticThreadId || architectThreadId === criticThreadId) return false;
-  // The Architect review must precede the Critic review (sequence_index or order).
-  const architectSequence = typeof architect.sequence_index === 'number' ? architect.sequence_index
-    : typeof architect.review_order === 'number' ? architect.review_order : null;
-  const criticSequence = typeof critic.sequence_index === 'number' ? critic.sequence_index
-    : typeof critic.review_order === 'number' ? critic.review_order : null;
-  if (architectSequence !== null && criticSequence !== null && architectSequence >= criticSequence) {
-    return false;
-  }
+
+  // P1-1 (fail-closed): both reviews MUST expose an authoritative,
+  // comparable order value (sequence_index or review_order). Missing order
+  // on either side is rejected — no silent bypass.
+  const architectOrder = reviewOrderValue(architect);
+  const criticOrder = reviewOrderValue(critic);
+  if (architectOrder === null || criticOrder === null) return false;
+  if (architectOrder >= criticOrder) return false; // Architect must strictly precede Critic
+
+  // P1-3 (fail-closed): both reviews MUST carry the same finite review_cycle
+  // (or iteration as fallback). Missing or mismatched cycles are rejected.
+  const architectCycle = reviewCycleValue(architect);
+  const criticCycle = reviewCycleValue(critic);
+  if (architectCycle === null || criticCycle === null || architectCycle !== criticCycle) return false;
+
   return true;
 }
 
+/** Extracts a single authoritative review-cycle number from a review record. */
+function reviewCycleValue(review: Record<string, unknown> | null): number | null {
+  if (!review) return null;
+  if (typeof review.review_cycle === 'number') return review.review_cycle;
+  if (typeof review.iteration === 'number') return review.iteration;
+  return null;
+}
+
+/** Extracts a single authoritative order value from a review record. */
+function reviewOrderValue(review: Record<string, unknown> | null): number | null {
+  if (!review) return null;
+  if (typeof review.sequence_index === 'number') return review.sequence_index;
+  if (typeof review.review_order === 'number') return review.review_order;
+  return null;
+}
+
 function consensusEvidenceReviewCycle(evidence: RalplanConsensusGateEvidence): number | null {
-  const architect = evidence.ralplan_architect_review;
-  const critic = evidence.ralplan_critic_review;
-  const architectCycle = typeof architect?.review_cycle === 'number' ? architect.review_cycle
-    : typeof architect?.iteration === 'number' ? architect.iteration : null;
-  const criticCycle = typeof critic?.review_cycle === 'number' ? critic.review_cycle
-    : typeof critic?.iteration === 'number' ? critic.iteration : null;
-  return architectCycle ?? criticCycle;
+  // P1-3 (fail-closed): both reviews must carry the same finite cycle.
+  // Return null when either is missing or they disagree, so the handoff
+  // binding check rejects it.
+  const architectCycle = reviewCycleValue(evidence.ralplan_architect_review);
+  const criticCycle = reviewCycleValue(evidence.ralplan_critic_review);
+  if (architectCycle === null || criticCycle === null || architectCycle !== criticCycle) return null;
+  return architectCycle;
 }
 
 function ralplanConsensusBlockedReason(evidence: RalplanConsensusGateEvidence): string {
