@@ -5,8 +5,8 @@
     {
       "name": "autopilot",
       "category": "execution",
-      "status": "deprecated",
-      "core": false,
+      "status": "active",
+      "core": true,
       "internalRequired": false
     },
     {
@@ -82,8 +82,8 @@
     {
       "name": "ralplan",
       "category": "planning",
-      "status": "deprecated",
-      "core": false,
+      "status": "active",
+      "core": true,
       "internalRequired": false
     },
     {

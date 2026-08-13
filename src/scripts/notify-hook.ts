@@ -969,13 +969,6 @@ async function main() {
         }),
       });
     }
-    if (activationResult?.skill === 'autopilot'
-      && activationResult.active === false
-      && activationResult.error === 'documented_host_consensus_receipt_unavailable') {
-      await dispatchTurnCompleteHookEvents(payload, cwd, payloadSessionId, getEffectiveSessionId());
-      return;
-    }
-
     try {
       skillSyncResult = await syncSkillStateFromTurn(
         stateDir,

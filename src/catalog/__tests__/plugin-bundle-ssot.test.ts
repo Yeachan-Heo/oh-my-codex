@@ -63,7 +63,8 @@ describe("plugin bundle SSOT contract", () => {
 		assert.deepEqual(result.mirroredSkillNames, expectedSkillNames);
 		assert.equal(result.mirroredSkillNames.includes("ultragoal"), true);
 		assert.equal(result.mirroredSkillNames.includes("deep-interview"), true);
-		assert.equal(result.mirroredSkillNames.includes("autopilot"), false);
+		assert.equal(result.mirroredSkillNames.includes("autopilot"), true);
+		assert.equal(result.mirroredSkillNames.includes("ralplan"), true);
 		assert.equal(result.mirroredSkillNames.includes("ralph"), false);
 		assert.equal(result.mirroredSkillNames.includes("ultrawork"), false);
 		assert.equal(result.mirroredSkillNames.includes("pipeline"), false);

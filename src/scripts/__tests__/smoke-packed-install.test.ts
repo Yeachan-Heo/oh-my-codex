@@ -1190,30 +1190,24 @@ test('packed install smoke covers directive activation and terminal false-activa
   ]);
 });
 
-test('packed regression workflow expectations distinguish active activation from receipt-unavailable Autopilot termination', () => {
+test('packed regression workflow expectations require active Autopilot and Ralplan activation', () => {
   assert.doesNotThrow(() => assertPackedRegressionWorkflowState(
     { name: 'active-ralplan', expectedSkill: 'ralplan' },
     { active: true, skill: 'ralplan' },
   ));
   assert.doesNotThrow(() => assertPackedRegressionWorkflowState(
-    { name: 'failed-autopilot', expectedSkill: 'autopilot' },
-    {
-      active: false,
-      skill: 'autopilot',
-      phase: 'failed',
-      error: 'documented_host_consensus_receipt_unavailable',
-      active_skills: [],
-    },
+    { name: 'active-autopilot', expectedSkill: 'autopilot' },
+    { active: true, skill: 'autopilot', phase: 'deep-interview', active_skills: [{ skill: 'autopilot' }] },
   ));
   assert.throws(() => assertPackedRegressionWorkflowState(
-    { name: 'stale-active-autopilot', expectedSkill: 'autopilot' },
-    { active: true, skill: 'autopilot', phase: 'running', active_skills: [{ skill: 'autopilot' }] },
+    { name: 'failed-autopilot', expectedSkill: 'autopilot' },
+    { active: false, skill: 'autopilot', phase: 'failed', active_skills: [] },
   ), /persisted unexpected workflow state/);
 });
 
-test('packed regression Stop expectations release terminal receipt-unavailable Autopilot state', () => {
+test('packed regression Stop expectations keep active Autopilot continuation enabled', () => {
   assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'ralplan', expectedStopBlock: true }), true);
-  assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'autopilot', expectedStopBlock: true }), false);
+  assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'autopilot', expectedStopBlock: true }), true);
 });
 
 test('packed regression environment clears inherited Team routing state', () => {

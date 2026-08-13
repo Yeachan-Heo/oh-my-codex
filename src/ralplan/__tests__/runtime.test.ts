@@ -178,6 +178,47 @@ describe('ralplan runtime', () => {
     }
   });
 
+  it('keeps Ralplan in the explicit session and advances its Autopilot parent to Ultragoal', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-autopilot-'));
+    const sessionId = 'sess-ralplan-autopilot';
+    try {
+      await writeSessionPointer(cwd, sessionId);
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'plans', 'plan.md'), '# Plan\n');
+      await mkdir(join(cwd, '.omx', 'specs'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'specs', 'requirements.md'), '# Requirements\n');
+      await startMode('autopilot', 'supervised planning', 3, cwd, sessionId);
+      const { updateAutopilotPipelineState } = await import('../../modes/base.js');
+      await updateAutopilotPipelineState({
+        active: true,
+        current_phase: 'ralplan',
+        workingDirectory: cwd,
+        session_id: sessionId,
+        review_cycle: 1,
+        deep_interview_gate: { status: 'complete', rationale: 'Requirements complete.' },
+        handoff_artifacts: { deep_interview: { spec_path: '.omx/specs/requirements.md' } },
+      }, cwd, sessionId);
+
+      const result = await runRalplanConsensus({
+        async draft() { return { summary: 'draft', planPath: '.omx/plans/plan.md' }; },
+        async architectReview() { return { verdict: 'approve', agent_role: 'architect' }; },
+        async criticReview() { return { verdict: 'approve', agent_role: 'critic' }; },
+      }, { task: 'supervised planning', cwd, sessionId, selectedExecutionLane: 'ultragoal' });
+
+      assert.equal(result.status, 'completed', result.error ?? 'Ralplan should complete');
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'ralplan-state.json')), false);
+      const ralplan = await readScopedRalplanState(cwd, sessionId);
+      assert.equal(ralplan.current_phase, 'complete');
+      assert.equal((ralplan.ralplan_execution_handoff as Record<string, unknown>).session_id, sessionId);
+      const autopilot = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(autopilot.current_phase, 'ultragoal');
+      assert.equal((autopilot.ralplan_execution_handoff as Record<string, unknown>).session_id, sessionId);
+      assert.equal((autopilot.ralplan_consensus_gate as Record<string, unknown>).complete, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('marks cancelled state cleanly', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-runtime-cancel-'));
     const sessionId = 'sess-ralplan-cancel';
@@ -185,13 +226,14 @@ describe('ralplan runtime', () => {
       await mkdir(join(sessionStatePath(cwd, sessionId), '..'), { recursive: true });
       await writeSessionPointer(cwd, sessionId);
 
-      await startMode('ralplan', 'cancel me', 2, cwd);
-      await cancelRalplanConsensus(cwd);
+      await startMode('ralplan', 'cancel me', 2, cwd, sessionId);
+      await cancelRalplanConsensus(cwd, sessionId);
 
-      const finalState = await readModeState('ralplan', cwd);
+      const finalState = await readScopedRalplanState(cwd, sessionId);
       assert.equal(finalState?.active, false);
       assert.equal(finalState?.current_phase, 'cancelled');
       assert.ok(typeof finalState?.completed_at === 'string' && finalState.completed_at.length > 0);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'ralplan-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -1,22 +1,24 @@
 {
-  "generatedAt": "2026-08-13T00:59:22.813Z",
+  "generatedAt": "2026-08-13T01:39:48.948Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 33,
     "promptCount": 30,
-    "activeSkillCount": 21,
+    "activeSkillCount": 23,
     "activeAgentCount": 16
   },
   "coreSkills": [
+    "autopilot",
     "team",
-    "ultragoal"
+    "ultragoal",
+    "ralplan"
   ],
   "skills": [
     {
       "name": "autopilot",
       "category": "execution",
-      "status": "deprecated",
-      "core": false,
+      "status": "active",
+      "core": true,
       "internalRequired": false
     },
     {
@@ -92,8 +94,8 @@
     {
       "name": "ralplan",
       "category": "planning",
-      "status": "deprecated",
-      "core": false,
+      "status": "active",
+      "core": true,
       "internalRequired": false
     },
     {

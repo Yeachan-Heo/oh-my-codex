@@ -69,15 +69,18 @@ describe('plan skill is the single planning skill', () => {
   });
 });
 
-describe('ralplan sunset stub', () => {
-  it('is a sunset stub referencing $plan', () => {
-    assert.match(ralplanSkill, /was removed/i);
-    assert.match(ralplanSkill, /\$plan/i);
+describe('ralplan consensus stage', () => {
+  it('restores Planner -> Architect -> Critic consensus with Ultragoal handoff', () => {
+    assert.match(ralplanSkill, /canonical consensus-planning stage/i);
+    assert.match(ralplanSkill, /Planner.*Architect.*Critic/is);
+    assert.match(ralplanSkill, /ralplan_execution_handoff/);
+    assert.match(ralplanSkill, /\$ultragoal/i);
   });
 
-  it('does not contain consensus ceremony', () => {
-    assert.doesNotMatch(ralplanSkill, /RALPLAN-DR/i);
-    assert.doesNotMatch(ralplanSkill, /Architect.*Critic/i);
+  it('keeps sequential review and recovery semantics', () => {
+    assert.match(ralplanSkill, /RALPLAN-DR/i);
+    assert.match(ralplanSkill, /Do NOT issue both agent calls in the same parallel batch/i);
+    assert.match(ralplanSkill, /missing host provenance must not terminalize Ralplan/i);
   });
 });
 

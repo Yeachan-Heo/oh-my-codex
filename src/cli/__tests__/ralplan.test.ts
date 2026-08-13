@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 
 import { RALPLAN_HELP, ralplanCommand, type RalplanCommandDependencies } from '../ralplan.js';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 async function invoke(args: string[], deps: RalplanCommandDependencies = {}) {
   const stdout: string[] = [];
@@ -16,9 +19,51 @@ async function invoke(args: string[], deps: RalplanCommandDependencies = {}) {
   }
 }
 
-describe('#3194 ralplan CLI unsupported-only surface', () => {
-  it('documents only fail-closed adapted-authority diagnostics', () => {
-    assert.match(RALPLAN_HELP, /fail-closed adapted-authority diagnostics/);
+test('starts a session-scoped executable Ralplan runtime entry', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-cli-start-'));
+  const sessionId = 'sess-ralplan-cli-start';
+  try {
+    await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+    await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: join(cwd, '.omx', 'state') }));
+    const result = await invoke(['start', '--task', 'plan issue 3515', '--session', sessionId, '--json'], { cwd: () => cwd });
+    assert.equal(result.exitCode, undefined);
+    assert.match(result.stdout[0], /"mode":"ralplan"/);
+    assert.match(result.stdout[0], /Planner first.*Architect approval second.*Critic approval third/s);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('executes the injected consensus runtime from the production Ralplan command path', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'omx-ralplan-cli-runtime-'));
+  const sessionId = 'sess-ralplan-cli-runtime';
+  try {
+    await mkdir(join(cwd, '.omx', 'state'), { recursive: true });
+    await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+    await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: join(cwd, '.omx', 'state') }));
+    await writeFile(join(cwd, '.omx', 'plans', 'plan.md'), '# Plan\n');
+    const result = await invoke(['start', '--task', 'execute plan', '--session', sessionId, '--json'], {
+      cwd: () => cwd,
+      consensusExecutor: {
+        async draft() { return { summary: 'draft', planPath: '.omx/plans/plan.md' }; },
+        async architectReview() { return { verdict: 'approve', agent_role: 'architect' }; },
+        async criticReview() { return { verdict: 'approve', agent_role: 'critic' }; },
+      },
+    });
+    assert.equal(result.exitCode, undefined);
+    assert.match(result.stdout[0], /"status":"completed"/);
+    const state = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'sessions', sessionId, 'ralplan-state.json'), 'utf-8')) as Record<string, unknown>;
+    assert.equal((state.ralplan_execution_handoff as Record<string, unknown>).source, 'user');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+describe('#3194 ralplan CLI authority diagnostics and runtime surface', () => {
+  it('documents executable session runtime plus fail-closed adapted-authority diagnostics', () => {
+    assert.match(RALPLAN_HELP, /consensus planning runtime/);
+    assert.match(RALPLAN_HELP, /omx ralplan start --task/);
+    assert.match(RALPLAN_HELP, /Planner -> Architect -> Critic/);
     assert.match(RALPLAN_HELP, /Required only when native role routing is unavailable and adapted Ralplan authority is requested/);
     assert.match(RALPLAN_HELP, /State-preserving diagnostic only/);
     assert.match(RALPLAN_HELP, /Ordinary work remains under its own workflow gates/);

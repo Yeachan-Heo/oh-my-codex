@@ -1857,26 +1857,12 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 
         const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
         const skillStatePath = join(sessionDir, "skill-active-state.json");
-        const expectsAutopilotDenial = false; // #3463: preflight no longer denies autopilot
         if (testCase.expectedSkill === null) {
           assert.equal(existsSync(skillStatePath), false, testCase.name);
         } else {
           const skillState = JSON.parse(await readFile(skillStatePath, "utf-8")) as { active?: boolean; skill?: string; phase?: string; error?: string; deferred_skills?: string[]; active_skills?: Array<{ skill?: string }> };
-          if (expectsAutopilotDenial) {
-            assert.equal(skillState.active, false, testCase.name);
-            assert.equal(skillState.skill, "autopilot", testCase.name);
-            assert.equal(skillState.phase, "failed", testCase.name);
-            assert.equal(skillState.error, "documented_host_consensus_receipt_unavailable", testCase.name);
-            assert.deepEqual(skillState.active_skills, [], testCase.name);
-            const guidance = String((submit.outputJson as { hookSpecificOutput?: { additionalContext?: string } } | null)?.hookSpecificOutput?.additionalContext ?? "");
-            assert.match(guidance, /documented_host_consensus_receipt_unavailable/, testCase.name);
-            assert.doesNotMatch(guidance, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/, testCase.name);
-            assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false, testCase.name);
-            assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false, testCase.name);
-          } else {
-            assert.equal(skillState.active, true, testCase.name);
-            assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
-          }
+          assert.equal(skillState.active, true, testCase.name);
+          assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
           if ("expectedDeferredSkills" in testCase) {
             assert.deepEqual(skillState.deferred_skills ?? [], testCase.expectedDeferredSkills, testCase.name);
           }
@@ -1902,7 +1888,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           thread_id: `thread-${testCase.name}`,
           turn_id: `stop-${testCase.name}`,
         }, { cwd });
-        if (testCase.expectedSkill === null || expectsAutopilotDenial) {
+        if (testCase.expectedSkill === null) {
           assert.equal(stop.outputJson, null, testCase.name);
         } else if ("expectedStopBlock" in testCase && !testCase.expectedStopBlock) {
           assert.notEqual((stop.outputJson as { decision?: string } | null)?.decision, "block", testCase.name);
@@ -2350,7 +2336,6 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 
         const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
         const skillStatePath = join(sessionDir, "skill-active-state.json");
-        const expectsAutopilotDenial = false; // #3463: preflight no longer denies autopilot
         if (testCase.expectedSkill === null) {
           assert.equal(existsSync(skillStatePath), false, testCase.name);
           assert.equal(existsSync(join(sessionDir, "ralplan-state.json")), false, testCase.name);
@@ -2365,21 +2350,8 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
             deferred_skills?: string[];
             active_skills?: Array<{ skill?: string }>;
           };
-          if (expectsAutopilotDenial) {
-            assert.equal(skillState.active, false, testCase.name);
-            assert.equal(skillState.skill, "autopilot", testCase.name);
-            assert.equal(skillState.phase, "failed", testCase.name);
-            assert.equal(skillState.error, "documented_host_consensus_receipt_unavailable", testCase.name);
-            assert.deepEqual(skillState.active_skills, [], testCase.name);
-            const guidance = String((submit.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? "");
-            assert.match(guidance, /documented_host_consensus_receipt_unavailable/, testCase.name);
-            assert.doesNotMatch(guidance, /Autopilot protocol:|deep-interview -> ralplan -> ultragoal/, testCase.name);
-            assert.equal(existsSync(join(sessionDir, "deep-interview-state.json")), false, testCase.name);
-            assert.equal(existsSync(join(sessionDir, "ultragoal-state.json")), false, testCase.name);
-          } else {
-            assert.equal(skillState.active, true, testCase.name);
-            assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
-          }
+          assert.equal(skillState.active, true, testCase.name);
+          assert.equal(skillState.skill, testCase.expectedSkill, testCase.name);
           if ("expectedDeferredSkills" in testCase) {
             assert.deepEqual(skillState.deferred_skills ?? [], testCase.expectedDeferredSkills, testCase.name);
           }
@@ -2405,7 +2377,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           thread_id: `thread-${caseIndex}`,
           turn_id: `stop-${caseIndex}`,
         }, { cwd, env }));
-        if (testCase.expectedSkill === null || expectsAutopilotDenial) assert.deepEqual(stop, {}, testCase.name);
+        if (testCase.expectedSkill === null) assert.deepEqual(stop, {}, testCase.name);
         else if ("expectedStopBlock" in testCase && !testCase.expectedStopBlock) {
           assert.notEqual(stop.decision, "block", testCase.name);
         } else assert.equal(stop.decision, "block", testCase.name);

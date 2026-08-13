@@ -1417,7 +1417,7 @@
       ]
     },
     "skills": {
-      "digest": "b159fd7d5f5313419de1b0bf43b13d9de1d009ae6b906337da3a1e3ce2576186",
+      "digest": "331ea842d61c823d5534f6facc28b94455fcf0e94591b20e928bfdcf257b824c",
       "files": [
         {
           "digest": "227c02cb4304603fae65200878acb9708bc31523d0d851ea148861a8c6f72055",
@@ -1432,7 +1432,7 @@
           "path": "skills/ask/SKILL.md"
         },
         {
-          "digest": "6040712bb6afaf883e1b38b99e587c18797d20105133e1b8e1a88cc0322160b4",
+          "digest": "c26fc9f4742f6e9656df9f939d71d1cba20b2c26e3dc3057663403d41e47c583",
           "path": "skills/autopilot/SKILL.md"
         },
         {
@@ -1500,7 +1500,7 @@
           "path": "skills/ralph/SKILL.md"
         },
         {
-          "digest": "ec039864560ff05ce9cbd7297383bec38fb4bf9f6d52aaff6883f47330d9929f",
+          "digest": "531a1f6c99110be3d13c93754b6d2a8ca77007b28fb9367b1b61a30c222942c5",
           "path": "skills/ralplan/SKILL.md"
         },
         {

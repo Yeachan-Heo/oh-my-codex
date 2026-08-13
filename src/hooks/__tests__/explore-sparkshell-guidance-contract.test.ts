@@ -62,8 +62,9 @@ describe('explore + sparkshell guidance contract', () => {
     assert.match(deepInterview, /Socratic deep interview/i);
 
     const ralplan = loadSurface('skills/ralplan/SKILL.md');
-    assert.match(ralplan, /was removed/i);
-    assert.match(ralplan, /\$plan/i);
+    assert.match(ralplan, /omx explore.*deprecated/i);
+    assert.match(ralplan, /normal repository inspection/i);
+    assert.match(ralplan, /omx sparkshell/i);
   });
 
   it('keeps QA evidence raw while Team remains a slim runtime card', () => {

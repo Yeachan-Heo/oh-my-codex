@@ -127,7 +127,7 @@ function isObservedCodexVersionMismatch(error: Error): boolean {
   if (!error.message.startsWith('Unsupported installed Codex version')) return false;
   const observations = error.message.split('\n').slice(1).filter(Boolean);
   return observations.length > 0 && observations.every((line) =>
-    /: stdout="codex-cli \d+\.\d+\.\d+\\n" stderr=/.test(line)
+    /: stdout="(?:codex-cli )?\d+\.\d+\.\d+(?:-[^"\\n]+)?\\n" stderr=/.test(line)
   );
 }
 

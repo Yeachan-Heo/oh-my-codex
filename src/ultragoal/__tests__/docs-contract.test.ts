@@ -147,11 +147,13 @@ describe('ultragoal docs contract', () => {
     assert.match(nativeHooksDoc, /keyword routing still takes precedence/i);
   });
 
-  it('documents the restored canonical README workflow', () => {
+  it('documents Autopilot as the restored canonical README orchestrator', () => {
     const readme = loadDoc('README.md');
 
-    assert.match(readme, /canonical staged workflow is `\$deep-interview -> \$ralplan -> \$ultragoal`/);
-    assert.match(readme, /Each skill is also independently invocable when earlier stages are already satisfied/);
+    assert.match(readme, /`\$autopilot` is the first-class canonical orchestrator/);
+    assert.match(readme, /`\$deep-interview -> \$ralplan -> \$ultragoal`/);
+    assert.match(readme, /defining default/);
+    assert.match(readme, /each stage remains independently invocable when earlier input contracts are already satisfied/);
     assert.match(readme, /`\$deep-interview` — iterative Socratic ambiguity clearance/);
     assert.match(readme, /not an alias for `\$plan --interview`/);
     assert.match(readme, /`\$ultragoal` — durable multi-goal execution/);

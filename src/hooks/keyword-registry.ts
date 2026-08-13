@@ -11,10 +11,10 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'must complete', skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
   { keyword: 'keep going', skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
 
-  { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Sunset: $autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
-  { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Sunset: autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
-  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Sunset: autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
-  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Sunset: autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
+  { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
+  { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
+  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
+  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
 
   { keyword: '$ultrawork', skill: 'ultrawork', priority: 10, guidance: 'Sunset: $ultrawork was removed in OMX 0.21; use $team (stub)' },
   { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Sunset: ultrawork was removed in OMX 0.21; use $team (stub)' },
@@ -39,8 +39,8 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'plan the', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: "let's plan", skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
 
-  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Sunset: $ralplan was removed in OMX 0.21; use $plan (stub)' },
-  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Sunset: consensus plan was removed in OMX 0.21; use $plan (stub)' },
+  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate Planner -> Architect -> Critic consensus planning with durable handoff to $ultragoal' },
+  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate Planner -> Architect -> Critic consensus planning with durable handoff to $ultragoal' },
 
   { keyword: '$autoresearch', skill: 'autoresearch', priority: 10, guidance: 'Activate autoresearch validator-gated research loop' },
   { keyword: '$best-practice-research', skill: 'best-practice-research', priority: 8, guidance: 'Activate bounded best-practice research wrapper' },

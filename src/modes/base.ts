@@ -310,6 +310,28 @@ async function updateModeStateInternal(
   }
 
   const updatedBase = { ...current, ...updates };
+  if (mode === 'autopilot') {
+    const submittedSessionId = typeof updates.session_id === 'string' ? updates.session_id.trim() : '';
+    if (submittedSessionId && scope.sessionId && submittedSessionId !== scope.sessionId) {
+      throw new Error('autopilot.session_id must match the selected writable session scope');
+    }
+    const canonicalWorkspace = projectRoot ?? process.cwd();
+    const submittedWorkingDirectory = typeof updates.workingDirectory === 'string' ? updates.workingDirectory.trim() : '';
+    if (submittedWorkingDirectory && submittedWorkingDirectory !== canonicalWorkspace) {
+      throw new Error('autopilot.workingDirectory must match the selected writable workspace');
+    }
+    if (scope.sessionId) updatedBase.session_id = scope.sessionId;
+    updatedBase.workingDirectory = canonicalWorkspace;
+    const currentHandoffs = current.handoff_artifacts && typeof current.handoff_artifacts === 'object'
+      ? current.handoff_artifacts as Record<string, unknown>
+      : {};
+    const nextHandoffs = updates.handoff_artifacts && typeof updates.handoff_artifacts === 'object'
+      ? updates.handoff_artifacts as Record<string, unknown>
+      : {};
+    if (Object.keys(currentHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
+      updatedBase.handoff_artifacts = { ...currentHandoffs, ...nextHandoffs };
+    }
+  }
   delete updatedBase.trustedPipelineProgress;
   if (!Object.prototype.hasOwnProperty.call(updates, 'run_outcome')) {
     delete updatedBase.run_outcome;

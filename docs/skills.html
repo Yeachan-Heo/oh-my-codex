@@ -23,7 +23,7 @@
       <p class="muted">All skills with category grouping and <code>$name</code> usage syntax.</p>
 
       <h2>Canonical Workflow</h2>
-      <p>The ordinary workflow is <code>understand -&gt; execute -&gt; verify -&gt; report</code>. Each skill below is independently invocable; there is no fixed mandatory sequence.</p>
+      <p><code>$autopilot</code> is the first-class canonical orchestrator. Its defining default chain is <code>$deep-interview -&gt; $ralplan -&gt; $ultragoal</code>. Each stage is also independently invocable when its input contract is already satisfied.</p>
       <ol>
         <li><code>$deep-interview</code> - clarify intent, boundaries, and non-goals when the task is still fuzzy.</li>
         <li><code>$ralplan</code> - approve the plan and tradeoffs before execution; completion/skipping requires recorded Architect review evidence followed by Critic review evidence, not just PRD/test-spec files. Scholastic is available as a separate advisory ontology reviewer/persona for concept-heavy planning evidence.</li>
@@ -33,11 +33,12 @@
 
       <h2>Execution Modes</h2>
       <ul>
+        <li><code>$autopilot</code> - supervised end-to-end orchestration through <code>$deep-interview -&gt; $ralplan -&gt; $ultragoal</code></li>
         <li><code>$team</code> - coordinated multi-agent execution for the approved plan</li>
         <li><code>$ultragoal</code> - durable multi-goal planning and execution over <code>.omx/ultragoal</code> artifacts plus Codex goal handoff</li>
         <li><code>$visual-verdict</code> - structured visual QA loop for screenshot/reference matching</li>
         <li><code>$ultraqa</code> - test/verify/fix loop</li>
-        <li><em>Removed in OMX 0.21:</em> <code>$autopilot</code>, <code>$ralph</code>, <code>$ultrawork</code>, <code>$pipeline</code> (sunset stubs for one release; use <code>$plan</code>/<code>$ultragoal</code>/<code>$team</code> directly)</li>
+        <li><em>Removed in OMX 0.21:</em> <code>$ralph</code>, <code>$ultrawork</code>, <code>$pipeline</code> (sunset stubs for one release)</li>
       </ul>
 
       <h2>Planning & Clarification</h2>
@@ -47,6 +48,7 @@
         <li><code>$plan</code> - supporting strategic planning when you are not using the canonical path</li>
         <li><code>$best-practice-research</code> - bounded official/upstream best-practice evidence wrapper when current external guidance affects correctness</li>
         <li><code>$deep-interview</code> is the independent, resumable Socratic requirements stage before <code>$ralplan</code>; it is not an alias for <code>$plan --interview</code>.</li>
+        <li><em>Removed in OMX 0.21:</em> <code>$prometheus-strict</code> (sunset stub; use <code>$plan</code>).</li>
       </ul>
 
       <h2>Research and Planning Boundaries</h2>

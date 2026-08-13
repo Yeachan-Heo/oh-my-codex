@@ -28,9 +28,10 @@ const ralphSkill = readFileSync(
 );
 
 describe('pre-context gate guidance in planning/execution-heavy skills', () => {
-  it('ralplan is a sunset stub pointing to plan', () => {
-    assert.match(ralplanSkill, /was removed/i);
-    assert.match(ralplanSkill, /\$plan/i);
+  it('ralplan is the canonical consensus planning stage', () => {
+    assert.match(ralplanSkill, /canonical consensus-planning stage/i);
+    assert.match(ralplanSkill, /Planner.*Architect.*Critic/is);
+    assert.match(ralplanSkill, /Pre-context Intake/i);
   });
 
   it('plan skill exists as canonical planning surface', () => {
@@ -45,9 +46,10 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(teamSkill, /do not launch nested Team runs/i);
   });
 
-  it('autopilot is a sunset stub pointing to the default lightweight workflow', () => {
-    assert.match(autopilotSkill, /was removed/i);
-    assert.match(autopilotSkill, /understand -> execute -> verify -> report/i);
+  it('autopilot is the canonical supervised orchestration surface', () => {
+    assert.match(autopilotSkill, /first-class canonical orchestrator/i);
+    assert.match(autopilotSkill, /\$deep-interview -> \$ralplan -> \$ultragoal/i);
+    assert.match(autopilotSkill, /not a list of optional hints/i);
   });
 
   it('ralph is a sunset stub pointing to ultragoal', () => {

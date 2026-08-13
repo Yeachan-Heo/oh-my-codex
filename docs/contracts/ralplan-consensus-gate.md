@@ -1,7 +1,8 @@
 # Retired Ralplan Consensus Gate Contract
 
 This contract is retained as historical context. The hard `ralplan -> ultragoal`
-host-receipt gate was removed by #3492 together with the fixed Autopilot chain.
+host-receipt gate was removed by #3492. Restoring Autopilot's canonical chain does
+not restore this host-authority gate.
 Ordinary workflow progression no longer depends on a host-issued consensus
 receipt, and missing host provenance must not terminalize planning or block
 authority-decreasing cancel, clear, or recovery operations.
@@ -36,13 +37,13 @@ boundary around ordinary progression.
 
 Lifecycle diagnostics may still report tracker schema, session/thread existence,
 completion, distinctness, ordering, and remediation. They describe review
-quality only. They must not emit a missing-receipt blocker, terminalize the
-lightweight workflow, or prevent authority-decreasing recovery.
+quality only. They must not emit a missing-receipt blocker, terminalize
+Autopilot, or prevent authority-decreasing recovery.
 
 ## Current contract
 
 Keep typed routing and lifecycle records non-authoritative, while allowing the
-ordinary lightweight workflow to proceed. Security-sensitive capabilities may
+canonical Autopilot progression to proceed. Security-sensitive capabilities may
 define their own documented authority checks, but they must not reintroduce the
 retired project-wide Ralplan/Autopilot progression gate.
 

@@ -316,7 +316,7 @@ Most users should think of OMX as **better task routing + better workflow + bett
 
 ## Recommended workflow
 
-The canonical staged workflow is `$deep-interview -> $ralplan -> $ultragoal`. Each skill is also independently invocable when earlier stages are already satisfied.
+`$autopilot` is the first-class canonical orchestrator for the staged workflow `$deep-interview -> $ralplan -> $ultragoal`. The chain is its defining default, while each stage remains independently invocable when earlier input contracts are already satisfied.
 
 1. `$deep-interview` — iterative Socratic ambiguity clearance, resumable state, and execution-ready requirements artifacts.
 2. `$ralplan` — architecture, feasibility, and consensus planning over the deep-interview artifact.

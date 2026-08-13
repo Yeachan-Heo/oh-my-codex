@@ -4,10 +4,16 @@ import {
 } from './codex-feature-probe.js';
 
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
+import { readModeState, readModeStateForExplicitSession, startMode } from '../modes/base.js';
+import { runRalplanConsensus, type RalplanConsensusExecutor } from '../ralplan/runtime.js';
 
-export const RALPLAN_HELP = `omx ralplan - fail-closed adapted-authority diagnostics
+export const RALPLAN_HELP = `omx ralplan - consensus planning runtime and adapted-authority diagnostics
 
 Usage:
+  omx ralplan start --task <text> [--session <id>] [--json]
+  omx ralplan status [--session <id>] [--json]
+                Starts or inspects the session-scoped Planner -> Architect -> Critic runtime state.
+                The active model performs the three sequential lanes and persists their artifacts.
   omx ralplan preflight [--json]
                 Required only when native role routing is unavailable and adapted Ralplan authority is requested.
                 State-preserving diagnostic only. Ordinary work remains under its own workflow gates.
@@ -34,6 +40,7 @@ export interface RalplanCommandDependencies {
   stderr?: (line: string) => void;
   resolveInstalledRoleName?: typeof resolveInstalledRoleName;
   probeCodexVersionDetailed?: () => CodexVersionProbeResult | null | undefined;
+  consensusExecutor?: RalplanConsensusExecutor;
 }
 
 const REVIEWED_ROOT_IDENTITY_ABSENT_VERSIONS = new Set([
@@ -97,6 +104,51 @@ export async function ralplanCommand(args: string[], deps: RalplanCommandDepende
   const stderr = deps.stderr ?? ((line: string) => console.error(line));
   if (args.length === 0 || args.some((arg) => arg === '--help' || arg === '-h' || arg === 'help')) {
     stdout(RALPLAN_HELP);
+    return;
+  }
+  if (args[0] === 'start' || args[0] === 'status') {
+    const sessionFlag = args.find((arg) => arg.startsWith('--session='));
+    const sessionIndex = args.indexOf('--session');
+    const sessionId = sessionFlag?.slice('--session='.length)
+      ?? (sessionIndex >= 0 ? args[sessionIndex + 1] : undefined);
+    const json = args.includes('--json');
+    const cwd = (deps.cwd ?? process.cwd)();
+    if (args[0] === 'start') {
+      const taskFlag = args.find((arg) => arg.startsWith('--task='));
+      const taskIndex = args.indexOf('--task');
+      const task = taskFlag?.slice('--task='.length)
+        ?? (taskIndex >= 0 ? args[taskIndex + 1] : undefined);
+      if (!task?.trim()) throw new Error('Missing --task.');
+      if (deps.consensusExecutor) {
+        const parent = sessionId
+          ? await readModeStateForExplicitSession('autopilot', sessionId, cwd)
+          : null;
+        const supervised = parent?.active === true && parent.current_phase === 'ralplan';
+        const result = await runRalplanConsensus(deps.consensusExecutor, {
+          task: task.trim(),
+          cwd,
+          sessionId,
+          ...(supervised ? { selectedExecutionLane: 'ultragoal' as const } : {}),
+        });
+        if (json) stdout(JSON.stringify({ ok: result.status === 'completed', result }));
+        else stdout(result.status === 'completed'
+          ? 'Ralplan consensus complete; proceed to Ultragoal.'
+          : `Ralplan ${result.status}: ${result.error ?? result.phase}`);
+        return;
+      }
+      await startMode('ralplan', task.trim(), 5, cwd, sessionId);
+    }
+    const state = sessionId
+      ? await readModeStateForExplicitSession('ralplan', sessionId, cwd)
+      : await readModeState('ralplan', cwd);
+    if (!state) throw new Error('No Ralplan state found.');
+    const instruction = [
+      `Run the Ralplan consensus runtime for ${JSON.stringify(String(state.task_description ?? ''))}.`,
+      'Execute Planner first, await Architect approval second, then await Critic approval third.',
+      'Persist the execution-ready plan, sequential review evidence, and bound ralplan_execution_handoff in this exact session.',
+    ].join('\n');
+    if (json) stdout(JSON.stringify({ ok: true, state, instruction }));
+    else stdout(instruction);
     return;
   }
   if (args[0] === 'preflight') {

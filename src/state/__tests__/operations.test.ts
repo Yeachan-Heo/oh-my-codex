@@ -1367,6 +1367,7 @@ describe('state operations directory initialization', () => {
             active: true,
             mode: 'autopilot',
             current_phase: 'deep-interview',
+            workingDirectory: wd,
             session_id: sessionId,
           }, null, 2),
         );
@@ -1404,6 +1405,8 @@ describe('state operations directory initialization', () => {
       await withOmxRootEnv(wd, async () => {
         const sessionId = 'sess-autopilot-child-phase';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'autopilot-child.md'), '# Requirements\n');
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
           join(sessionDir, 'autopilot-state.json'),
@@ -1411,6 +1414,7 @@ describe('state operations directory initialization', () => {
             active: true,
             mode: 'autopilot',
             current_phase: 'deep-interview',
+            workingDirectory: wd,
             state: {
               deep_interview_gate: {
                 status: 'complete',
@@ -1418,7 +1422,7 @@ describe('state operations directory initialization', () => {
               },
               handoff_artifacts: {
                 deep_interview: {
-                  summary: 'Autopilot may proceed to ralplan.',
+                  spec_path: '.omx/specs/autopilot-child.md',
                 },
               },
             },
@@ -1460,6 +1464,7 @@ describe('state operations directory initialization', () => {
             active: true,
             mode: 'autopilot',
             current_phase: 'deep-interview',
+            workingDirectory: wd,
             state: {
               deep_interview_gate: { status: 'required' },
             },
@@ -1497,6 +1502,8 @@ describe('state operations directory initialization', () => {
       await withOmxRootEnv(wd, async () => {
         const sessionId = 'sess-autopilot-ignore-standalone-di';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'autopilot-owned.md'), '# Requirements\n');
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
           join(sessionDir, 'deep-interview-state.json'),
@@ -1525,7 +1532,7 @@ describe('state operations directory initialization', () => {
                 rationale: 'Autopilot-owned gate is complete.',
               },
               handoff_artifacts: {
-                deep_interview: { summary: 'Autopilot-owned handoff is ready.' },
+                deep_interview: { spec_path: '.omx/specs/autopilot-owned.md' },
               },
             },
           }, null, 2),
@@ -1557,6 +1564,8 @@ describe('state operations directory initialization', () => {
       await withOmxRootEnv(wd, async () => {
         const sessionId = 'sess-autopilot-next-question-satisfied';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'answered-question.md'), '# Requirements\n');
         const questionId = 'question-next-satisfied';
         await mkdir(join(sessionDir, 'questions'), { recursive: true });
         await writeFile(
@@ -1609,7 +1618,7 @@ describe('state operations directory initialization', () => {
               rationale: 'The answered question resolves the CLI output policy.',
             },
             handoff_artifacts: {
-              deep_interview: { summary: 'Ready for ralplan after answered question.' },
+              deep_interview: { spec_path: '.omx/specs/answered-question.md' },
             },
           },
         });
@@ -1632,6 +1641,8 @@ describe('state operations directory initialization', () => {
         await withOmxRootEnv(wd, async () => {
           const sessionId = `sess-autopilot-execution-contract-${stride}`;
           const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+          await writeFile(join(wd, '.omx', 'specs', `${stride}-stride.md`), '# Requirements\n');
           await mkdir(sessionDir, { recursive: true });
           await writeFile(
             join(sessionDir, 'autopilot-state.json'),
@@ -1655,7 +1666,7 @@ describe('state operations directory initialization', () => {
               },
               handoff_artifacts: {
                 deep_interview: {
-                  summary: `Ready for ralplan with ${stride} stride.`,
+                  spec_path: `.omx/specs/${stride}-stride.md`,
                   execution_contract_required: true,
                   execution_contract: validExecutionContract(stride),
                 },
@@ -1681,6 +1692,8 @@ describe('state operations directory initialization', () => {
       await withOmxRootEnv(wd, async () => {
         const sessionId = 'sess-autopilot-execution-contract-partial-write';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'persisted-milestone.md'), '# Requirements\n');
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
           join(sessionDir, 'autopilot-state.json'),
@@ -1695,7 +1708,7 @@ describe('state operations directory initialization', () => {
               },
               handoff_artifacts: {
                 deep_interview: {
-                  summary: 'Ready for ralplan with a persisted milestone execution contract.',
+                  spec_path: '.omx/specs/persisted-milestone.md',
                   execution_contract_required: true,
                   execution_contract: validExecutionContract('milestone'),
                 },
@@ -1720,7 +1733,7 @@ describe('state operations directory initialization', () => {
         assert.deepEqual(
           ((state.state as Record<string, unknown>).handoff_artifacts as Record<string, unknown>).deep_interview,
           {
-            summary: 'Ready for ralplan with a persisted milestone execution contract.',
+            spec_path: '.omx/specs/persisted-milestone.md',
             execution_contract_required: true,
             execution_contract: validExecutionContract('milestone'),
           },
@@ -1738,6 +1751,8 @@ describe('state operations directory initialization', () => {
       await withOmxRootEnv(wd, async () => {
         const sessionId = 'sess-autopilot-execution-contract-not-required';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'legacy-behavior.md'), '# Requirements\n');
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
           join(sessionDir, 'autopilot-state.json'),
@@ -1761,7 +1776,7 @@ describe('state operations directory initialization', () => {
             },
             handoff_artifacts: {
               deep_interview: {
-                summary: 'Ready for ralplan with legacy behavior.',
+                spec_path: '.omx/specs/legacy-behavior.md',
                 execution_contract_required: false,
                 execution_contract: {
                   version: 1,
@@ -1808,6 +1823,8 @@ describe('state operations directory initialization', () => {
         await withOmxRootEnv(wd, async () => {
           const sessionId = `sess-autopilot-execution-contract-marker-${caseName}`;
           const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+          await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+          await writeFile(join(wd, '.omx', 'specs', `${caseName}-required.md`), '# Requirements\n');
           await mkdir(sessionDir, { recursive: true });
           await writeFile(
             join(sessionDir, 'autopilot-state.json'),
@@ -1834,7 +1851,7 @@ describe('state operations directory initialization', () => {
               },
               handoff_artifacts: {
                 deep_interview: {
-                  summary: `Ready for ralplan with ${caseName} required marker.`,
+                  spec_path: `.omx/specs/${caseName}-required.md`,
                   execution_contract: aliasContract,
                   ...handoffPatch,
                 },
@@ -1863,6 +1880,8 @@ describe('state operations directory initialization', () => {
       await withOmxRootEnv(wd, async () => {
         const sessionId = 'sess-autopilot-child-phase-skip';
         const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'authorized-skip.md'), '# Skip authorization and retained requirements\n');
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
           join(sessionDir, 'autopilot-state.json'),
@@ -1879,6 +1898,7 @@ describe('state operations directory initialization', () => {
                 source: 'user',
                 session_id: sessionId,
               },
+              handoff_artifacts: { deep_interview: { spec_path: '.omx/specs/authorized-skip.md' } },
             },
           }, null, 2),
         );
@@ -1912,6 +1932,8 @@ describe('state operations directory initialization', () => {
       const teamStateRoot = join(root, 'team-state');
       const sessionId = 'sess-autopilot-team-question';
       const sessionDir = join(teamStateRoot, 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'team-question.md'), '# Requirements\n');
       const questionId = 'question-team-satisfied';
       await mkdir(join(sessionDir, 'questions'), { recursive: true });
       await writeFile(
@@ -1946,6 +1968,7 @@ describe('state operations directory initialization', () => {
               status: 'complete',
               rationale: 'The answered question resolves the execution boundary.',
             },
+            handoff_artifacts: { deep_interview: { spec_path: '.omx/specs/team-question.md' } },
           },
         }, null, 2),
       );
@@ -2020,6 +2043,214 @@ describe('state operations directory initialization', () => {
         ) as Record<string, unknown>;
         assert.equal(state.current_phase, 'ralplan');
         assert.equal(state.active, true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies Autopilot deep-interview to ralplan without a durable handoff artifact', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-di-missing-artifact-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-di-missing-artifact';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'deep-interview',
+          workingDirectory: wd,
+          state: { deep_interview_gate: { status: 'complete', rationale: 'Requirements are clear.' } },
+        }, null, 2));
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /durable completed interview gate and handoff artifact/i);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('advances the executable Autopilot chain through durable deep-interview and ralplan handoffs', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-executable-chain-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-executable-chain';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'specs'), { recursive: true });
+        await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'specs', 'autopilot-chain.md'), '# Requirements\n');
+        await writeFile(join(wd, '.omx', 'plans', 'prd-autopilot-chain.md'), '# Plan\n');
+        await writeFile(join(wd, '.omx', 'plans', 'test-spec-autopilot-chain.md'), '# Tests\n');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'deep-interview',
+          workingDirectory: wd,
+          session_id: sessionId,
+        }, null, 2));
+
+        const planning = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          state: {
+            deep_interview_gate: {
+              status: 'complete',
+              rationale: 'Scope, constraints, and acceptance criteria are resolved.',
+            },
+            handoff_artifacts: {
+              deep_interview: { spec_path: '.omx/specs/autopilot-chain.md' },
+            },
+          },
+        });
+        assert.equal(planning.isError, undefined);
+
+        const execution = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ultragoal',
+          review_cycle: 0,
+          state: {
+            handoff_artifacts: {
+              ralplan: {
+                plan_path: '.omx/plans/prd-autopilot-chain.md',
+                test_spec_path: '.omx/plans/test-spec-autopilot-chain.md',
+              },
+            },
+            ralplan_consensus_gate: {
+              complete: true,
+              ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', session_id: sessionId, review_cycle: 0, sequence_index: 1 },
+              ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', session_id: sessionId, review_cycle: 0, sequence_index: 2 },
+            },
+            ralplan_execution_handoff: {
+              authorized: true,
+              source: 'autopilot',
+              reason: 'The explicit Autopilot run proceeds through its defining execution stage.',
+              authorized_at: '2026-08-13T00:00:00.000Z',
+              session_id: sessionId,
+              review_cycle: 0,
+            },
+          },
+        });
+        assert.equal(execution.isError, undefined);
+
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as {
+          current_phase?: string;
+          handoff_artifacts?: Record<string, unknown>;
+        };
+        assert.equal(state.current_phase, 'ultragoal');
+        assert.ok(state.handoff_artifacts?.deep_interview);
+        assert.ok(state.handoff_artifacts?.ralplan);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('denies Autopilot ralplan to ultragoal when reviews or execution handoff are missing', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-missing-gates-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-missing-gates';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ralplan',
+          state: { handoff_artifacts: { ralplan: { plan_path: '.omx/plans/prd.md' } } },
+        }, null, 2));
+
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ultragoal',
+        });
+
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error || ''), /sequential Architect and Critic approvals.*bound execution handoff/i);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects forged string-typed Ralplan ordering and non-ISO authorization evidence', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-forged-types-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-ralplan-forged-types';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
+        await writeFile(join(wd, '.omx', 'plans', 'plan.md'), '# Plan\n');
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+          active: true,
+          mode: 'autopilot',
+          current_phase: 'ralplan',
+          session_id: sessionId,
+          workingDirectory: wd,
+          review_cycle: 1,
+        }, null, 2));
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ultragoal',
+          state: {
+            handoff_artifacts: { ralplan: { plan_path: '.omx/plans/plan.md' } },
+            ralplan_consensus_gate: {
+              complete: true,
+              ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', review_cycle: '1', sequence_index: '1' },
+              ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', review_cycle: '1', sequence_index: '2' },
+            },
+            ralplan_execution_handoff: { authorized: true, authorized_at: 'yesterday', session_id: sessionId, review_cycle: '1', source: 'autopilot' },
+          },
+        });
+        assert.equal(response.isError, true);
+        assert.match(String((response.payload as { error?: string }).error ?? ''), /durable planning artifacts/);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects nested foreign Autopilot identity with zero mutation', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-foreign-identity-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-autopilot-foreign-identity';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        const original = JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'deep-interview', session_id: sessionId, workingDirectory: wd }, null, 2);
+        await writeFile(join(sessionDir, 'autopilot-state.json'), original);
+        const response = await executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          active: true,
+          state: { session_id: 'foreign-session', workingDirectory: join(wd, 'other') },
+        });
+        assert.equal(response.isError, true);
+        assert.equal(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'), original);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });

@@ -39,10 +39,7 @@ function handoffCommand(payload: Record<string, unknown>): string {
 }
 
 function documentedHandoffCommand(cwd: string): string {
-  // Autopilot was removed in OMX 0.21 (C4/issue-3495); the documented handoff
-  // command is constructed from the same payload shape the hook expects.
-  // The hook function under test (evaluateDeepInterviewRalplanHandoffCommand)
-  // still exists in the runtime (C1/C6 territory); this test verifies its behavior.
+  // The canonical Autopilot skill documents the same payload shape the hook expects.
   return handoffCommand(handoffPayload(cwd));
 }
 
@@ -177,12 +174,16 @@ describe("issue #3293 Autopilot deep-interview handoff", () => {
   });
 
   it(
-    "autopilot is excluded from the plugin mirror (sunset stub)",
+    "autopilot is included in the plugin mirror as a canonical skill",
     { skip: existsSync(join(PROJECT_ROOT, "dist", "scripts", "sync-plugin-mirror.js")) ? false : "requires the built sync-plugin mirror runner" },
     () => {
       assert.ok(
-        !existsSync(join(PROJECT_ROOT, "plugins", "oh-my-codex", "skills", "autopilot", "SKILL.md")),
-        "autopilot must not be in the plugin mirror after sunset",
+        existsSync(join(PROJECT_ROOT, "plugins", "oh-my-codex", "skills", "autopilot", "SKILL.md")),
+        "autopilot must be present in the plugin mirror",
+      );
+      assert.equal(
+        readFileSync(join(PROJECT_ROOT, "plugins", "oh-my-codex", "skills", "autopilot", "SKILL.md"), "utf-8"),
+        readFileSync(join(PROJECT_ROOT, "skills", "autopilot", "SKILL.md"), "utf-8"),
       );
     },
   );

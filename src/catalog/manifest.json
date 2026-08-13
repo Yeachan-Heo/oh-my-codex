@@ -5,9 +5,9 @@
     {
       "name": "autopilot",
       "category": "execution",
-      "status": "deprecated",
-      "core": false,
-      "description": "Removed in OMX 0.21; default lightweight workflow documented in AGENTS.md. One-release sunset stub."
+      "status": "active",
+      "core": true,
+      "description": "Canonical autonomous orchestrator: deep-interview -> ralplan -> ultragoal."
     },
     {
       "name": "ralph",
@@ -73,8 +73,9 @@
     {
       "name": "ralplan",
       "category": "planning",
-      "status": "deprecated",
-      "description": "Removed in OMX 0.21; use plan. One-release sunset stub."
+      "status": "active",
+      "core": true,
+      "description": "Canonical Planner -> Architect -> Critic consensus stage for Autopilot and standalone planning."
     },
     {
       "name": "deep-interview",

@@ -58,6 +58,7 @@ Default posture: work directly.
 
 Choose the lane before acting:
 - Default posture: work directly. The ordinary workflow is `understand -> execute -> verify -> report`.
+- Use `$autopilot` for explicit hands-off orchestration. Its defining default chain is `$deep-interview -> $ralplan -> $ultragoal`; these supervised stages must not be hollowed into optional hints.
 - Use `$deep-interview` when requirements, intent, non-goals, or decision boundaries are materially ambiguous; it is the independent Ouroboros-style Socratic deep interview stage before planning.
 - Use `$plan` for lightweight planning when a deep interview is unnecessary.
 - Use `$team` when an approved plan needs coordinated parallel execution across multiple lanes.
@@ -66,7 +67,7 @@ Choose the lane before acting:
 - Outside active `team`/`swarm` mode, use `executor` for bounded implementation or review slices; do not invoke `worker` as a general-purpose role.
 - Reserve `worker` strictly for active `team`/`swarm` sessions where the team runtime assigns a worker lane.
 - `worker` is a team-runtime surface, not a general-purpose child role.
-- The canonical staged path is `$deep-interview -> $ralplan -> $ultragoal`; stages may be invoked independently when their input contract is already satisfied. `$deep-interview` is not `$plan --interview`.
+- Autopilot owns the canonical staged path `$deep-interview -> $ralplan -> $ultragoal`; stages may also be invoked independently when their input contract is already satisfied. `$deep-interview` is not `$plan --interview`.
 
 
 Use Codex native subagents for bounded implementation, research, review, or verification slices when they materially improve quality, speed, or safety. Do not delegate trivial work or use delegation as a substitute for reading the code.
@@ -115,7 +116,8 @@ Fallback behavior when hook context is unavailable:
 - Bare skill names do not activate skills by themselves; skill-name activation requires explicit `$skill` invocation. Natural-language routing phrases may still map to a workflow. Examples: `analyze` / `investigate` → `$analyze` for read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references.
 - Keep the detailed keyword list in `src/hooks/keyword-registry.ts`; do not duplicate it here.
 
-Runtime workflows such as `ultraqa`, `team`, and `ultragoal` require OMX CLI runtime support. In Codex App, outside-tmux, or plain Codex sessions without OMX tmux runtime, explain that those workflows are not directly available there and continue with the nearest App-safe surface unless the user explicitly wants to launch OMX CLI from shell first.
+Runtime workflows such as `autopilot`, `ultraqa`, `team`, and `ultragoal` require OMX CLI runtime support. In Codex App, outside-tmux, or plain Codex sessions without OMX tmux runtime, explain that those workflows are not directly available there and continue with the nearest App-safe surface unless the user explicitly wants to launch OMX CLI from shell first.
+- Route explicit `$autopilot` to its supervised `$deep-interview -> $ralplan -> $ultragoal` chain.
 - `$ralph`, `$ultrawork`, `$pipeline`, `ecomode`, and `swarm` remain removed or deprecated sunset stubs; do not route users there.
 - When deep-interview is active in attached-tmux OMX CLI/runtime, ask each interview round via `omx question`; after launching `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing; preserve the leader pane with `OMX_QUESTION_RETURN_PANE=$TMUX_PANE` when invoking it through Bash/tool paths. Outside tmux or native surfaces that cannot render `omx question` should use the native structured question path when available; otherwise ask exactly one concise plain-text question and wait for the answer.
 
@@ -154,7 +156,7 @@ Verification loop: define the claim and success criteria, run the smallest valid
 </verification>
 
 <execution_protocols>
-Mode selection: use `$deep-interview` for material requirements ambiguity, `$ralplan` for architecture/consensus planning, `$team` for approved multi-lane parallel work, and `$ultragoal` for durable multi-goal runs. Otherwise execute directly in solo mode. Switch modes only when evidence shows the current lane is mismatched or blocked.
+Mode selection: use `$autopilot` when explicitly requested for the supervised `$deep-interview -> $ralplan -> $ultragoal` chain; use `$deep-interview` for standalone material requirements ambiguity, `$ralplan` for standalone architecture/consensus planning, `$team` for approved multi-lane parallel work, and `$ultragoal` for standalone durable multi-goal runs. Otherwise execute directly in solo mode. Switch modes only when evidence shows the current lane is mismatched or blocked.
 
 Command routing: use normal Codex repository inspection tools/subagents as the default surface for simple read-only repository lookup tasks; use `omx sparkshell` only for explicit shell-native read-only evidence or bounded verification.
 When to use what:

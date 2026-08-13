@@ -680,6 +680,9 @@ export async function executeStateOperation(
           state: customState,
           ...fields
         } = rawArgs;
+        const customStateRecord = customState && typeof customState === 'object' && !Array.isArray(customState)
+          ? customState as Record<string, unknown>
+          : {};
         let validationError: string | null = null;
         let transitionMessage: string | undefined;
         let ensureRalphArtifacts = false;
@@ -767,6 +770,43 @@ export async function executeStateOperation(
           }
 
           if (mode === 'autopilot') {
+            const nestedSessionId = typeof customStateRecord.session_id === 'string' ? customStateRecord.session_id.trim() : '';
+            if (nestedSessionId && effectiveSessionId && nestedSessionId !== effectiveSessionId) {
+              validationError = 'autopilot.session_id must match the selected writable session scope';
+              return;
+            }
+            const nestedWorkingDirectory = typeof customStateRecord.workingDirectory === 'string'
+              ? customStateRecord.workingDirectory.trim()
+              : '';
+            if (nestedWorkingDirectory && nestedWorkingDirectory !== cwd) {
+              validationError = 'autopilot.workingDirectory must match the selected writable workspace';
+              return;
+            }
+            const submittedSessionId = typeof mergedRaw.session_id === 'string' ? mergedRaw.session_id.trim() : '';
+            if (submittedSessionId && effectiveSessionId && submittedSessionId !== effectiveSessionId) {
+              validationError = 'autopilot.session_id must match the selected writable session scope';
+              return;
+            }
+            const submittedWorkingDirectory = typeof mergedRaw.workingDirectory === 'string'
+              ? mergedRaw.workingDirectory.trim()
+              : '';
+            if (submittedWorkingDirectory && submittedWorkingDirectory !== cwd) {
+              validationError = 'autopilot.workingDirectory must match the selected writable workspace';
+              return;
+            }
+            if (effectiveSessionId) mergedRaw.session_id = effectiveSessionId;
+            if (typeof mergedRaw.workingDirectory !== 'string' || mergedRaw.workingDirectory.trim() === '') {
+              mergedRaw.workingDirectory = cwd;
+            }
+            const existingHandoffs = existing.handoff_artifacts && typeof existing.handoff_artifacts === 'object' && !Array.isArray(existing.handoff_artifacts)
+              ? existing.handoff_artifacts as Record<string, unknown>
+              : {};
+            const nextHandoffs = mergedRaw.handoff_artifacts && typeof mergedRaw.handoff_artifacts === 'object' && !Array.isArray(mergedRaw.handoff_artifacts)
+              ? mergedRaw.handoff_artifacts as Record<string, unknown>
+              : {};
+            if (Object.keys(existingHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
+              mergedRaw.handoff_artifacts = { ...existingHandoffs, ...nextHandoffs };
+            }
             normalizeCleanAutopilotCompletionEvidence(mergedRaw);
           }
 

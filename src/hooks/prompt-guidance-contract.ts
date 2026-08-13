@@ -277,7 +277,13 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'ralplan-consensus-sequence',
     path: 'skills/ralplan/SKILL.md',
-    requiredPatterns: [rx('was removed'), rx('\\$plan')],
+    requiredPatterns: [
+      rx('canonical consensus-planning stage'),
+      rx('Planner.*Architect.*Critic'),
+      rx('await.*Architect.*before.*Critic|Architect result before invoking.*Critic'),
+      rx('ralplan_execution_handoff'),
+      rx('missing host provenance must not terminalize Ralplan'),
+    ],
   },
   {
     id: 'deep-interview-question-gate',
@@ -311,9 +317,15 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
     ],
   },
   {
-    id: 'autopilot-sunset-stub',
+    id: 'autopilot-canonical-orchestrator',
     path: 'skills/autopilot/SKILL.md',
-    requiredPatterns: [rx('was removed'), rx('understand -> execute -> verify -> report')],
+    requiredPatterns: [
+      rx('first-class canonical orchestrator'),
+      rx('\\$deep-interview -> \\$ralplan -> \\$ultragoal'),
+      rx('not a list of optional hints'),
+      rx('authority-decreasing operations are always recoverable'),
+      rx('must not reintroduce the retired unrecoverable host-receipt lock|do not reintroduce the retired unrecoverable host-receipt lock'),
+    ],
   },
   {
     id: 'pipeline-sunset-stub',

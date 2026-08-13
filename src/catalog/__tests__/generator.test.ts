@@ -43,7 +43,7 @@ describe('catalog reader/contract', () => {
     assert.ok(!contract.aliases.some((a) => a.name === 'ask-gemini'));
     assert.ok(!contract.aliases.some((a) => a.name === 'analyze'));
     assert.ok(contract.internalHidden.includes('worker'));
-    assert.ok(!contract.coreSkills.includes('autopilot'), 'autopilot is no longer core (sunset stub)');
+    assert.ok(contract.coreSkills.includes('autopilot'), 'autopilot is a canonical core skill');
     assert.ok(!contract.coreSkills.includes('ralph'), 'ralph is no longer core (sunset stub)');
     assert.ok(!contract.coreSkills.includes('ultrawork'), 'ultrawork is no longer core (sunset stub)');
     assert.ok(contract.coreSkills.includes('ultragoal'));
@@ -61,7 +61,8 @@ describe('catalog reader/contract', () => {
     assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-momus'));
     assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-oracle'));
     assert.ok(contract.skills.some((s) => s.name === 'deep-interview' && s.status === 'active'));
-    assert.ok(contract.skills.some((s) => s.name === 'ralplan' && s.status === 'deprecated'));
+    assert.ok(contract.skills.some((s) => s.name === 'ralplan' && s.status === 'active'));
+    assert.ok(contract.coreSkills.includes('ralplan'));
   });
 
   it('template manifest can be synced from source manifest', async () => {

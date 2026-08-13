@@ -176,8 +176,8 @@ The hard Autopilot/Ralplan consensus-receipt gate was removed by #3492. Workflow
 transitions no longer require a host-issued receipt, and missing host provenance
 must not terminalize Autopilot or block authority-decreasing recovery. Architect,
 Critic, tracker, and artifact evidence may still inform planning and review, but
-ordinary progression follows the lightweight workflow without turning those
-local records into an authorization boundary.
+Autopilot's canonical `deep-interview -> ralplan -> ultragoal` progression does
+not turn those local records into an authorization boundary.
 
 ## Planning-like vs execution-like
 

@@ -28,6 +28,7 @@ import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { ralplanCommand } from "./ralplan.js";
+import { autopilotCommand } from "./autopilot.js";
 import { ultragoalCommand } from "./ultragoal.js";
 import { performanceGoalCommand } from "./performance-goal.js";
 import { askCommand } from "./ask.js";
@@ -3363,6 +3364,7 @@ export async function main(args: string[]): Promise<void> {
     "api",
     "sparkshell",
     "team",
+    "autopilot",
     "ralph",
     "ralplan",
     "ultragoal",
@@ -3532,6 +3534,9 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "team":
         await teamCommand(args.slice(1), options);
+        break;
+      case "autopilot":
+        await autopilotCommand(args.slice(1));
         break;
       case "url":
         await urlCommand(args.slice(1));
