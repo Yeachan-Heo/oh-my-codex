@@ -213,6 +213,7 @@ describe('ralplan runtime', () => {
       const autopilot = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
       assert.equal(autopilot.current_phase, 'ultragoal');
       assert.equal((autopilot.ralplan_execution_handoff as Record<string, unknown>).session_id, sessionId);
+      assert.equal((autopilot.ralplan_execution_handoff as Record<string, unknown>).source, 'autopilot');
       assert.equal((autopilot.ralplan_consensus_gate as Record<string, unknown>).complete, true);
     } finally {
       await rm(cwd, { recursive: true, force: true });

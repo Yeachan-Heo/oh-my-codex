@@ -10,6 +10,7 @@ import { runRalplanConsensus, type RalplanConsensusExecutor } from '../ralplan/r
 export const RALPLAN_HELP = `omx ralplan - consensus planning runtime and adapted-authority diagnostics
 
 Usage:
+  omx ralplan run --task <text> [--session <id>] [--json]
   omx ralplan start --task <text> [--session <id>] [--json]
   omx ralplan status [--session <id>] [--json]
                 Starts or inspects the session-scoped Planner -> Architect -> Critic runtime state.
@@ -106,14 +107,14 @@ export async function ralplanCommand(args: string[], deps: RalplanCommandDepende
     stdout(RALPLAN_HELP);
     return;
   }
-  if (args[0] === 'start' || args[0] === 'status') {
+  if (args[0] === 'run' || args[0] === 'start' || args[0] === 'status') {
     const sessionFlag = args.find((arg) => arg.startsWith('--session='));
     const sessionIndex = args.indexOf('--session');
     const sessionId = sessionFlag?.slice('--session='.length)
       ?? (sessionIndex >= 0 ? args[sessionIndex + 1] : undefined);
     const json = args.includes('--json');
     const cwd = (deps.cwd ?? process.cwd)();
-    if (args[0] === 'start') {
+    if (args[0] === 'run' || args[0] === 'start') {
       const taskFlag = args.find((arg) => arg.startsWith('--task='));
       const taskIndex = args.indexOf('--task');
       const task = taskFlag?.slice('--task='.length)

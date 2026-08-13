@@ -141,9 +141,9 @@ function hasRalplanHandoff(state: JsonObject): boolean {
     && nonEmptyString(architect.session_id) === stateSession
     && nonEmptyString(critic.session_id) === stateSession
     && validIsoTimestamp(execution.authorized_at)
-    && ['autopilot', 'user'].includes(nonEmptyString(execution.source).toLowerCase())
-    && (nonEmptyString(execution.source).toLowerCase() !== 'autopilot'
-      || (state.active === true && normalizeAutopilotPhase(state.current_phase) === 'ultragoal'));
+    && nonEmptyString(execution.source).toLowerCase() === 'autopilot'
+    && state.active === true
+    && normalizeAutopilotPhase(state.current_phase) === 'ultragoal';
 }
 
 export function isAutopilotSuccessfulTerminalState(state: JsonObject): boolean {

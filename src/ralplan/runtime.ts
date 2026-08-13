@@ -1,5 +1,4 @@
 import {
-  cancelMode,
   readModeState,
   readModeStateForExplicitSession,
   startMode,
@@ -539,13 +538,19 @@ export async function runRalplanConsensus(
         // Architect→Critic lifecycle consensus is complete; planning is done and
         // execution may proceed without any host consensus receipt.
         const completedAt = new Date().toISOString();
+        const autopilotParent = options.sessionId
+          ? await readModeStateForExplicitSession('autopilot', options.sessionId, cwd)
+          : null;
+        const supervisedAutopilot = options.selectedExecutionLane === 'ultragoal'
+          && autopilotParent?.active === true
+          && autopilotParent.current_phase === 'ralplan';
         const executionHandoff = {
           authorized: true,
           reason: 'Sequential Architect and Critic approval completed the execution-ready Ralplan stage.',
           authorized_at: completedAt,
           session_id: options.sessionId,
           review_cycle: iteration,
-          source: options.selectedExecutionLane === 'ultragoal' ? 'autopilot' : 'user',
+          source: supervisedAutopilot ? 'autopilot' : 'user',
         };
         await updateRalplanState(cwd, {
           active: false,
@@ -562,11 +567,9 @@ export async function runRalplanConsensus(
           status_message: 'Status: complete — Architect and Critic consensus is complete; proceed to execution.',
         }, options.sessionId);
 
-        if (options.selectedExecutionLane === 'ultragoal' && options.sessionId) {
-          const autopilot = await readModeStateForExplicitSession('autopilot', options.sessionId, cwd);
-          if (autopilot?.active === true && autopilot.current_phase === 'ralplan') {
-            const existingHandoffs = autopilot.handoff_artifacts && typeof autopilot.handoff_artifacts === 'object'
-              ? autopilot.handoff_artifacts as Record<string, unknown>
+        if (supervisedAutopilot && options.sessionId && autopilotParent) {
+            const existingHandoffs = autopilotParent.handoff_artifacts && typeof autopilotParent.handoff_artifacts === 'object'
+              ? autopilotParent.handoff_artifacts as Record<string, unknown>
               : {};
             await updateAutopilotPipelineState({
               active: true,
@@ -581,7 +584,6 @@ export async function runRalplanConsensus(
               ralplan_consensus_gate: consensusGate,
               ralplan_execution_handoff: executionHandoff,
             }, cwd, options.sessionId);
-          }
         }
         return {
           status: 'completed',

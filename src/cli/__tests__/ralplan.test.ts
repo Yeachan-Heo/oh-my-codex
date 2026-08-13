@@ -42,7 +42,7 @@ test('executes the injected consensus runtime from the production Ralplan comman
     await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
     await writeFile(join(cwd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: join(cwd, '.omx', 'state') }));
     await writeFile(join(cwd, '.omx', 'plans', 'plan.md'), '# Plan\n');
-    const result = await invoke(['start', '--task', 'execute plan', '--session', sessionId, '--json'], {
+    const result = await invoke(['run', '--task', 'execute plan', '--session', sessionId, '--json'], {
       cwd: () => cwd,
       consensusExecutor: {
         async draft() { return { summary: 'draft', planPath: '.omx/plans/plan.md' }; },

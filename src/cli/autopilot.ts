@@ -45,7 +45,7 @@ function positionalTask(args: readonly string[]): string {
   return words.join(' ').trim();
 }
 
-async function jsonInput(raw: string, cwd: string): Promise<Record<string, unknown>> {
+async function jsonInput(raw: string): Promise<Record<string, unknown>> {
   const text = raw.trim().startsWith('{') ? raw : await readFile(raw, 'utf-8');
   const parsed = JSON.parse(text) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('--handoff-json must resolve to a JSON object.');
@@ -126,7 +126,7 @@ export async function autopilotCommand(args: string[], deps: AutopilotCommandDep
     if (to !== 'ralplan' && to !== 'ultragoal') throw new Error('--to must be ralplan or ultragoal.');
     const rawHandoff = value(rest, '--handoff-json');
     if (!rawHandoff) throw new Error('Missing --handoff-json.');
-    const handoff = await jsonInput(rawHandoff, cwd);
+    const handoff = await jsonInput(rawHandoff);
     assertBoundHandoffIdentity(handoff, cwd, sessionId);
     const updated = await updateAutopilotPipelineState({
       ...handoff,

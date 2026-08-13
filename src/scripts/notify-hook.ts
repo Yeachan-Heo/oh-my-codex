@@ -947,9 +947,8 @@ async function main() {
 
   // 4.45. Skill activation tracking: update skill-active-state.json before any nudge logic.
   if (isTeamWorker || canWriteLeaderScopedState) {
-    let activationResult: SkillActiveState | null = null;
     if (latestUserInput) {
-      activationResult = await recordNotifySkillActivationNonFatal({
+      await recordNotifySkillActivationNonFatal({
         stateDir,
         sourceCwd: cwd,
         text: latestUserInput,
