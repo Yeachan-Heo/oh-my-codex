@@ -32,7 +32,7 @@ export interface NativeTargetMapping {
 export const NATIVE_RELEASE_PRODUCTS = ['omx-explore-harness', 'omx-sparkshell', 'omx-api', 'omx-runtime'] as const;
 
 /** Products exposed through the runtime hydration APIs. */
-export const NATIVE_HYDRATABLE_PRODUCTS = ['omx-explore-harness', 'omx-sparkshell', 'omx-api'] as const;
+export const NATIVE_HYDRATABLE_PRODUCTS = ['omx-explore-harness', 'omx-sparkshell', 'omx-api', 'omx-runtime'] as const;
 
 const NATIVE_RELEASE_PRODUCT_SET = new Set<string>(NATIVE_RELEASE_PRODUCTS);
 const NATIVE_ARCHIVE_SUFFIXES = ['.tar.xz', '.tar.gz', '.zip'] as const;

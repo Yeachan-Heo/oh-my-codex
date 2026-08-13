@@ -10,7 +10,7 @@ import { getPackageRoot } from '../utils/package.js';
 import { validateNativeReleaseManifest } from '../native-assets/policy.js';
 import { inspectNativeArchive, selectNativeArchiveBinary, writeSelectedNativeArchiveMember } from '../native-assets/archive.js';
 
-export type NativeProduct = 'omx-explore-harness' | 'omx-sparkshell' | 'omx-api';
+export type NativeProduct = 'omx-explore-harness' | 'omx-sparkshell' | 'omx-api' | 'omx-runtime';
 export type NativeLibc = 'musl' | 'glibc';
 
 export interface NativeReleaseAsset {

@@ -7,13 +7,31 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
+import { getPackageRoot } from '../utils/package.js';
 import { safeJsonParse } from '../utils/safe-json.js';
 
 const __bridge_dirname = dirname(fileURLToPath(import.meta.url));
+
+const SHA256_SIDECAR_SUFFIX = '.sha256';
+const SHA256_LINE = /^[0-9a-f]{64}\n$/;
+
+function isVerifiedCachedRuntimeBinarySync(candidatePath: string): boolean {
+  try {
+    const sidecarPath = `${candidatePath}${SHA256_SIDECAR_SUFFIX}`;
+    if (!existsSync(candidatePath) || !existsSync(sidecarPath)) return false;
+    const expected = readFileSync(sidecarPath, 'utf-8');
+    if (!SHA256_LINE.test(expected)) return false;
+    const digest = createHash('sha256').update(readFileSync(candidatePath)).digest('hex');
+    return digest === expected.slice(0, 64);
+  } catch {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types matching Rust JSON schema
@@ -145,6 +163,29 @@ export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions 
   const exists = options.exists ?? existsSync;
   const envOverride = process.env.OMX_RUNTIME_BINARY?.trim();
   if (envOverride) return envOverride;
+
+  // Prefer the managed verified-runtime cache for npm installs (macOS arm64
+  // `omx-runtime` is not shipped inside the npm tarball — it lives in the
+  // GitHub release manifest and is hydrated to the native cache). Check the
+  // verified cache BEFORE repo-local target fallbacks so a global install
+  // does not fall back to `omx-runtime` on PATH via the old resolution order.
+  // Only active when caller uses the default `exists` (production path) to
+  // preserve test determinism when a custom `exists` is injected.
+  if (!options.exists) {
+    try {
+      let version: string | undefined;
+      try {
+        const raw = readFileSync(join(getPackageRoot(), 'package.json'), 'utf-8');
+        version = (JSON.parse(raw) as { version?: string }).version?.trim();
+      } catch { /* no version — skip cache check */ }
+      if (version) {
+        // Lazy require to avoid static cycle: native-assets ↔ bridge.
+        const { resolveCachedNativeBinaryCandidatePaths } = require('../cli/native-assets.js') as typeof import('../cli/native-assets.js');
+        const cands = resolveCachedNativeBinaryCandidatePaths('omx-runtime' as never, version, process.platform as NodeJS.Platform, process.arch, process.env as unknown as Record<string, string>);
+        for (const p of cands) if (isVerifiedCachedRuntimeBinarySync(p)) return p;
+      }
+    } catch { /* best-effort */ }
+  }
 
   const workspaceDebug = options.debugPath ?? resolve(__bridge_dirname, '../../target/debug/omx-runtime');
   if (exists(workspaceDebug)) return workspaceDebug;
