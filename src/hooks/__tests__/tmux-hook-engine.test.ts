@@ -279,8 +279,8 @@ describe('buildSendKeysArgv', () => {
     }), {
       typeArgv: ['send-keys', '-t', '%3', '-l', 'continue'],
       submitArgv: [
-        ['send-keys', '-t', '%3', 'C-m'],
-        ['send-keys', '-t', '%3', 'C-m'],
+        ['send-keys', '-t', '%3', 'Enter'],
+        ['send-keys', '-t', '%3', 'Enter'],
       ],
     });
 
@@ -292,7 +292,7 @@ describe('buildSendKeysArgv', () => {
     }), {
       typeArgv: ['send-keys', '-t', '%7', '-l', 'continue'],
       submitArgv: [
-        ['send-keys', '-t', '%7', 'C-m'],
+        ['send-keys', '-t', '%7', 'Enter'],
       ],
     });
 
@@ -301,6 +301,22 @@ describe('buildSendKeysArgv', () => {
       prompt: 'continue',
       dryRun: true,
     }), null);
+  });
+
+  it('honors an explicit submit key override', () => {
+    assert.deepEqual(buildSendKeysArgv({
+      paneTarget: '%9',
+      prompt: 'continue',
+      dryRun: false,
+      submitKeyPresses: 2,
+      submitKey: 'C-m',
+    }), {
+      typeArgv: ['send-keys', '-t', '%9', '-l', 'continue'],
+      submitArgv: [
+        ['send-keys', '-t', '%9', 'C-m'],
+        ['send-keys', '-t', '%9', 'C-m'],
+      ],
+    });
   });
 });
 

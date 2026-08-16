@@ -1574,7 +1574,7 @@ exit 0
     }
   });
 
-  it('retries submit with isolated C-m and does not retype when trigger already present', async () => {
+  it('retries submit with isolated named Enter and does not retype when trigger already present', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     const fakeBinDir = join(cwd, 'fake-bin');
     const tmuxLogPath = join(cwd, 'tmux.log');
@@ -1612,9 +1612,9 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
       const typeMatches = tmuxLog.match(/send-keys -t %42 -l ping/g) || [];
       assert.equal(typeMatches.length, 1, 'fresh attempt should type once; retries with draft should be submit-only');
-      const cmMatches = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
-      assert.ok(cmMatches.length > 0, 'submit should use C-m');
-      assert.ok(!/send-keys[^\n]*-l[^\n]*C-m/.test(tmuxLog), 'must not mix -l payload with C-m submit');
+      const enterMatches = tmuxLog.match(/send-keys -t %42 Enter/g) || [];
+      assert.ok(enterMatches.length > 0, 'submit should use the named Enter key');
+      assert.ok(!/send-keys[^\n]*-l[^\n]*Enter/.test(tmuxLog), 'must not mix -l payload with Enter submit');
 
       const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
       assert.equal(request?.status, 'pending');
@@ -2134,7 +2134,7 @@ exit 0
       const exactGlobalPaneProof = /^list-panes -a -F #\{pane_id\}\t#\{pane_dead\}\t#\{pane_pid\}$/;
       assert.match(commands[0] || '', exactGlobalPaneProof);
       assert.match(tmuxLog, /send-keys -t %42 C-u/, 'the live proof should permit the clear effect');
-      assert.doesNotMatch(tmuxLog, /send-keys -t %42 C-m/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %42 (?:C-m|Enter)/);
       const ownerProof = 'show-option -qv -p -t %42 @omx_team_pane_owner_id';
       for (const [index, command] of commands.entries()) {
         if (!/^(send-keys|paste-buffer)\b/.test(command) || !command.includes('-t %42') || /^send-keys\b.*\s-l\s/.test(command)) continue;

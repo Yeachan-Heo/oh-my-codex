@@ -332,15 +332,15 @@ export function buildVisibleCapturePaneArgv(paneTarget: any): string[] {
   return ['capture-pane', '-t', paneTarget, '-p'];
 }
 
-export function buildSendKeysArgv({ paneTarget, prompt, dryRun, submitKeyPresses = 2 }: any): any {
+export function buildSendKeysArgv({ paneTarget, prompt, dryRun, submitKeyPresses = 2, submitKey = 'Enter' }: any): any {
   if (dryRun) return null;
   const pressCountRaw = Number.isFinite(submitKeyPresses) ? Math.floor(submitKeyPresses) : 2;
   const pressCount = Math.max(1, Math.min(4, pressCountRaw));
   const submitArgv = Array.from({ length: pressCount }, () => ([
-    'send-keys', '-t', paneTarget, 'C-m',
+    'send-keys', '-t', paneTarget, submitKey,
   ]));
   // Use a 2-step send for reliability:
-  // 1) literal prompt bytes, 2) explicit carriage return.
+  // 1) literal prompt bytes, 2) named Enter submit.
   return {
     typeArgv: ['send-keys', '-t', paneTarget, '-l', prompt],
     // Codex generally prefers two presses; Claude typically needs one.

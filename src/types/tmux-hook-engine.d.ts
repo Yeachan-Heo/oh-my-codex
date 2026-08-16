@@ -60,5 +60,6 @@ declare module '*tmux-hook-engine.js' {
     prompt: string;
     dryRun: boolean;
     submitKeyPresses?: number;
+    submitKey?: string;
   }): { typeArgv: string[]; submitArgv: string[][] } | null;
 }

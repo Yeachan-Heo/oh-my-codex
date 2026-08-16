@@ -16449,7 +16449,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, "utf-8");
       assert.match(tmuxLog, /send-keys -t %42 -l \[omx:team-notice-ledger:[a-f0-9]{24}\] Review current Team notices\./);
       assert.doesNotMatch(tmuxLog, /send-keys -t %42 -l .*worker-stop-team-busy-leader|send-keys -t %42 Tab/);
-      const submits = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
+      const submits = tmuxLog.match(/send-keys -t %42 Enter/g) || [];
       assert.equal(submits.length, 2, "busy worker-stop nudge should submit directly as steering, not queue via Tab");
       const nudgeState = JSON.parse(await readFile(join(workerDir, "worker-stop-nudge.json"), "utf-8"));
       assert.equal(nudgeState.delivery, "steered");

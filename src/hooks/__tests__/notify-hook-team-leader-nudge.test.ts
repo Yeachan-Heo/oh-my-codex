@@ -661,9 +661,9 @@ describe('notify-hook team leader nudge', () => {
       assert.match(tmuxLog, /\[OMX\] All 2 workers idle/, 'should emit all-workers-idle nudge');
       assert.doesNotMatch(tmuxLog, /\[OMX_INTENT:/, 'should keep orchestration intent out of injected display text');
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
-      const submitMatches = tmuxLog.match(/send-keys -t %99 C-m/g) || [];
-      assert.equal(submitMatches.length, 2, 'leader nudge should submit with isolated double C-m');
-      assert.ok(!/send-keys[^\n]*-l[^\n]*C-m/.test(tmuxLog), 'must not mix literal payload with submit keypresses');
+      const submitMatches = tmuxLog.match(/send-keys -t %99 Enter/g) || [];
+      assert.equal(submitMatches.length, 2, 'leader nudge should submit with isolated double Enter');
+      assert.ok(!/send-keys[^\n]*-l[^\n]*Enter/.test(tmuxLog), 'must not mix literal payload with submit keypresses');
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
       assert.ok(existsSync(eventsPath), 'events.ndjson should exist');
@@ -1628,10 +1628,10 @@ exit 0
       assert.match(tmuxLog, /capture-pane -t %93 -p -S -80/);
       assert.match(tmuxLog, /send-keys -t %93 -l \[omx:team-notice-ledger:[a-f0-9]{24}\] Review current Team notices\./);
       assert.match(tmuxLog, /send-keys -t %93 Tab/);
-      assert.match(tmuxLog, /send-keys -t %93 C-m/);
+      assert.match(tmuxLog, /send-keys -t %93 Enter/);
       assert.ok(
-        tmuxLog.indexOf('send-keys -t %93 Tab') < tmuxLog.indexOf('send-keys -t %93 C-m'),
-        'busy leader queue path should press Tab before C-m',
+        tmuxLog.indexOf('send-keys -t %93 Tab') < tmuxLog.indexOf('send-keys -t %93 Enter'),
+        'busy leader queue path should press Tab before Enter',
       );
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should keep the injection marker on busy-pane sends');
       assert.doesNotMatch(tmuxLog, /send-keys -t %93 -l .*busy-live-pane/, 'busy queued wake must not retain a Team reference in model-visible input');
@@ -2091,10 +2091,10 @@ exit 0
       assert.match(tmuxLog, /capture-pane/);
       assert.match(tmuxLog, /send-keys -t %73/, 'should inject into a busy leader pane so Codex can queue the message');
       assert.match(tmuxLog, /send-keys -t %73 Tab/);
-      assert.match(tmuxLog, /send-keys -t %73 C-m/);
+      assert.match(tmuxLog, /send-keys -t %73 Enter/);
       assert.ok(
-        tmuxLog.indexOf('send-keys -t %73 Tab') < tmuxLog.indexOf('send-keys -t %73 C-m'),
-        'busy leader queue path should press Tab before C-m',
+        tmuxLog.indexOf('send-keys -t %73 Tab') < tmuxLog.indexOf('send-keys -t %73 Enter'),
+        'busy leader queue path should press Tab before Enter',
       );
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');

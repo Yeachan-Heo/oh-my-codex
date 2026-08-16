@@ -954,6 +954,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
     expectedHudPaneId: dispatchTarget.expectedHudPaneId,
     prompt: request.trigger_message,
     submitKeyPresses,
+    submitKey: 'Enter',
     typePrompt: shouldTypePrompt,
     queueFirstSubmit: leaderTargeted,
   });
@@ -973,7 +974,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
 
   // Post-injection verification: confirm the trigger text was consumed.
   // Fixes #391: without this, dispatch marks 'notified' even when the worker
-  // pane is sitting on an unsent draft (C-m was not effectively applied).
+  // pane is sitting on an unsent draft (Enter was not effectively applied).
   const verifyNarrowArgv = buildJoinedCapturePaneArgv(resolution.paneTarget, 8);
   const verifyWideArgv = buildJoinedCapturePaneArgv(resolution.paneTarget);
   for (let round = 0; round < INJECT_VERIFY_ROUNDS; round++) {
@@ -990,7 +991,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       // full-scrollback false positives.
       narrowCap = await runProcess('tmux', verifyNarrowArgv, 2000);
     } catch {
-      // Capture failed; fall through to retry C-m.
+      // Capture failed; fall through to retry Enter.
     }
     if (narrowCap) {
       const wideProof = await verifyExplicitPane();
@@ -1000,7 +1001,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
         const triggerInNarrow = capturedPaneContainsTrigger(narrowCap.stdout, request.trigger_message);
         const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
         if (triggerInNarrow || triggerNearTail) {
-          // Draft is still visible, so C-m has not actually submitted it yet.
+          // Draft is still visible, so Enter has not actually submitted it yet.
           // Do not let transient spinner/active-task text mask an unsent draft.
           const retrySend = await sendPaneInput({
             paneTarget: resolution.paneTarget,
@@ -1010,6 +1011,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
             expectedHudPaneId: dispatchTarget.expectedHudPaneId,
             prompt: request.trigger_message,
             submitKeyPresses,
+            submitKey: 'Enter',
             typePrompt: false,
           });
           if (!retrySend.ok && retrySend.reason === EXACT_PANE_UNAVAILABLE_REASON) {
@@ -1055,10 +1057,10 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
           };
         }
       } catch {
-        // Capture failed; fall through to retry C-m.
+        // Capture failed; fall through to retry Enter.
       }
     }
-    // Draft still visible and no active task — retry C-m
+    // Draft still visible and no active task — retry Enter
     const retrySend = await sendPaneInput({
       paneTarget: resolution.paneTarget,
       exactPaneId,
@@ -1067,6 +1069,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       expectedHudPaneId: dispatchTarget.expectedHudPaneId,
       prompt: request.trigger_message,
       submitKeyPresses,
+      submitKey: 'Enter',
       typePrompt: false,
       queueFirstSubmit: leaderTargeted,
     });

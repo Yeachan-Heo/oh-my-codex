@@ -386,6 +386,7 @@ export async function sendPaneInput({
   expectedPanePid = undefined,
   expectedPaneOwnerId = undefined,
   expectedHudPaneId = undefined,
+  submitKey = 'Enter',
 }: any): Promise<any> {
   const target = safeString(paneTarget).trim();
   if (!target) {
@@ -447,6 +448,7 @@ export async function sendPaneInput({
       prompt: literalPrompt,
       dryRun: false,
       submitKeyPresses: normalizedSubmitKeyPresses,
+      submitKey: safeString(submitKey).trim() || 'Enter',
     })?.submitArgv;
   if (!submitArgv) {
     return { ok: false, sent: false, reason: 'send_failed', paneTarget: target, exactPaneProof };
@@ -601,7 +603,7 @@ export async function queuePaneInput({
   };
   const submitArgv = [
     ['send-keys', '-t', target, 'Tab'],
-    ['send-keys', '-t', target, 'C-m'],
+    ['send-keys', '-t', target, 'Enter'],
   ];
   const firstSubmitProof = await verifyExplicitPane();
   if (!firstSubmitProof.ok) {

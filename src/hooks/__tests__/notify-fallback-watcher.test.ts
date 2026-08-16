@@ -390,7 +390,7 @@ if [[ "$cmd" == "if-shell" ]]; then
     exit 0
   fi
   eval "set -- \$sendCommand"
-  if [[ "\$#" -lt 4 || "\$1" != "send-keys" || "\$2" != "-t" || "\$3" != "\$paneId" || ( "\$4" != "-l" && "\$4" != "C-m" ) || ( "\$4" == "-l" && "\$#" -ne 5 ) || ( "\$4" == "C-m" && "\$#" -ne 4 ) ]]; then
+  if [[ "\$#" -lt 4 || "\$1" != "send-keys" || "\$2" != "-t" || "\$3" != "\$paneId" || ( "\$4" != "-l" && "\$4" != "C-m" && "\$4" != "Enter" ) || ( "\$4" == "-l" && "\$#" -ne 5 ) || ( ( "\$4" == "C-m" || "\$4" == "Enter" ) && "\$#" -ne 4 ) ]]; then
     printf '__omx_ralph_input_denied__\n'
     exit 0
   fi
@@ -2209,9 +2209,9 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf8');
       const typeMatches = tmuxLog.match(/send-keys -t %42 -l ping/g) || [];
       assert.equal(typeMatches.length, 1, 'fresh attempt should type once; retries with draft should be submit-only');
-      const cmMatches = tmuxLog.match(/send-keys -t %42 C-m/g) || [];
-      assert.ok(cmMatches.length > 0, 'submit should use C-m');
-      assert.ok(!/send-keys[^\n]*-l[^\n]*C-m/.test(tmuxLog), 'must keep -l payload and C-m submits isolated');
+      const enterMatches = tmuxLog.match(/send-keys -t %42 Enter/g) || [];
+      assert.ok(enterMatches.length > 0, 'submit should use the named Enter key');
+      assert.ok(!/send-keys[^\n]*-l[^\n]*Enter/.test(tmuxLog), 'must keep -l payload and Enter submits isolated');
 
       const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
       assert.equal(request?.status, 'pending');

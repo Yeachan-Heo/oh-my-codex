@@ -555,7 +555,7 @@ async function notifyWorkerPaneOutcome(
     };
     if (!runScalePaneTransaction(
       pane,
-      `send-keys -t ${paneId} -l ${quoteTmuxCommand(message)} \\; send-keys -t ${paneId} C-m`,
+      `send-keys -t ${paneId} -l ${quoteTmuxCommand(message)} \\; send-keys -t ${paneId} Enter`,
     )) {
       throw new Error(`scale_up_final_send_authority_lost:${paneId}`);
     }

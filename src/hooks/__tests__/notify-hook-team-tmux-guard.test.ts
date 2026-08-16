@@ -148,14 +148,14 @@ describe('notify-hook team tmux guard bridge', () => {
       const lines = log.trim().split('\n').filter(Boolean);
       assert.equal(lines.length, 3);
       assert.match(lines[0], /\[display-message\]\[-p\]\[-t\]\[%42\]\[#\{pane_start_command\}\]/);
-      assert.match(lines[1], /\[send-keys\]\[-t\]\[%42\]\[C-m\]/);
-      assert.match(lines[2], /\[send-keys\]\[-t\]\[%42\]\[C-m\]/);
+      assert.match(lines[1], /\[send-keys\]\[-t\]\[%42\]\[Enter\]/);
+      assert.match(lines[2], /\[send-keys\]\[-t\]\[%42\]\[Enter\]/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('queue-first submits with Tab before C-m when requested', async () => {
+  it('queue-first submits with Tab before Enter when requested', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-tmux-guard-'));
     const fakeBinDir = join(cwd, 'fake-bin');
     const tmuxLogPath = join(cwd, 'tmux.log');
@@ -190,8 +190,8 @@ describe('notify-hook team tmux guard bridge', () => {
       assert.match(lines[3], /\[send-keys\]\[-t\]\[%42\]\[C-u\]/);
       assert.match(lines[4], /\[paste-buffer\]\[-t\]\[%42\]\[-b\]\[omx-pane-input-.*\]\[-p\]\[-d\]/);
       assert.match(lines[5], /\[send-keys\]\[-t\]\[%42\]\[Tab\]/);
-      assert.match(lines[6], /\[send-keys\]\[-t\]\[%42\]\[C-m\]/);
-      assert.match(lines[7], /\[send-keys\]\[-t\]\[%42\]\[C-m\]/);
+      assert.match(lines[6], /\[send-keys\]\[-t\]\[%42\]\[Enter\]/);
+      assert.match(lines[7], /\[send-keys\]\[-t\]\[%42\]\[Enter\]/);
       assert.match(lines[8], /\[delete-buffer\]\[-b\]\[omx-pane-input-/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -232,7 +232,7 @@ describe('notify-hook team tmux guard bridge', () => {
       const lines = log.trim().split('\n').filter(Boolean);
       assert.equal(lines.length, 7);
       assert.match(lines[0], /\[display-message\]\[-p\]\[-t\]\[%42\]\[#\{pane_start_command\}\]/);
-      assert.match(lines[5], /\[send-keys\]\[-t\]\[%42\]\[C-m\]/);
+      assert.match(lines[5], /\[send-keys\]\[-t\]\[%42\]\[Enter\]/);
       assert.match(lines[6], /\[delete-buffer\]\[-b\]\[omx-pane-input-/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -291,6 +291,7 @@ exit 0
       assert.doesNotMatch(log, /show-buffer/);
       assert.doesNotMatch(log, /paste-buffer/);
       assert.doesNotMatch(log, /\[send-keys\]\[-t\]\[%42\]\[C-m\]/);
+      assert.doesNotMatch(log, /\[send-keys\]\[-t\]\[%42\]\[Enter\]/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
