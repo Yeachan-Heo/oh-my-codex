@@ -219,7 +219,7 @@ Jeśli to widzisz:
 
 ## Historia gwiazdek
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Yeachan-Heo/oh-my-codex&type=date&legend=top-left)](https://www.star-history.com/#Yeachan-Heo/oh-my-codex&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Yeachan-Heo/oh-my-codex&type=date&legend=top-left)](https://star-history.dera.page/#Yeachan-Heo/oh-my-codex&type=date&legend=top-left)
 
 ## Licencja
 
