@@ -1417,7 +1417,7 @@
       ]
     },
     "skills": {
-      "digest": "a0ab5ecba464350ab7593a9d1c3cf711391ce9892418b930c432d56862b2643f",
+      "digest": "1cf03d84d93942785a619824cb6f34094e61a2bcc1896d7bf827d3f3624fe5f8",
       "files": [
         {
           "digest": "227c02cb4304603fae65200878acb9708bc31523d0d851ea148861a8c6f72055",
@@ -1468,7 +1468,7 @@
           "path": "skills/design/SKILL.md"
         },
         {
-          "digest": "84f4a1916054767c3c138695234e1815de0bd8ee1db5b94dac5e65b68c633b90",
+          "digest": "7c934251a6b56cdbcf0903f5cdc1420b53ee3515ebf9af046fc0350f27435dec",
           "path": "skills/doctor/SKILL.md"
         },
         {
@@ -1480,7 +1480,7 @@
           "path": "skills/hud/SKILL.md"
         },
         {
-          "digest": "e5ba47df26aa0a040f0111df216ea4068e8badb67c74a4f41901a2a30050984b",
+          "digest": "872383065b3a82a26e971881772a51c5add149f34e2d1d1a14a100e3497d2f83",
           "path": "skills/omx-setup/SKILL.md"
         },
         {

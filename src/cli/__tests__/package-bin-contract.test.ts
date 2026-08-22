@@ -268,4 +268,35 @@ describe('package bin contract', () => {
     assert.equal(rootNativeAgentEntry, undefined, 'did not expect generated root native agent TOMLs in package output');
     assert.equal(pluginScopedHooksEntry, undefined, 'did not expect setup-owned hook assets inside the installable plugin bundle');
   });
+
+  it('documents local-source guidance against the declared built CLI entrypoint, never the removed bin/omx.js (#3559)', async () => {
+    const packageJsonPath = join(process.cwd(), 'package.json');
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as PackageJson;
+    const declaredBin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.omx;
+    assert.ok(declaredBin, 'expected package.json to declare an omx bin entry');
+    assert.match(declaredBin, /^dist\/cli\/omx\.js$/, 'expected package bin to declare dist/cli/omx.js');
+
+    const localSourceSkillDocs = [
+      'skills/omx-setup/SKILL.md',
+      'skills/doctor/SKILL.md',
+      'plugins/oh-my-codex/skills/omx-setup/SKILL.md',
+      'plugins/oh-my-codex/skills/doctor/SKILL.md',
+    ];
+
+    for (const docPath of localSourceSkillDocs) {
+      const content = readFileSync(join(process.cwd(), ...docPath.split('/')), 'utf-8');
+      assert.equal(
+        content.includes('node bin/omx.js'),
+        false,
+        `${docPath} must not instruct local-source users to run the removed bin/omx.js launcher`,
+      );
+      const localSourceLine = content.split('\n').find((line) => line.includes('local source'));
+      assert.ok(localSourceLine, `${docPath} should keep its local-source checkout guidance`);
+      assert.match(
+        localSourceLine,
+        new RegExp(`node ${declaredBin.replace(/\//g, '\\/')}( setup| doctor)`),
+        `${docPath} local-source guidance must invoke the declared built CLI entrypoint`,
+      );
+    }
+  });
 });

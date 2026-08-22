@@ -48,7 +48,7 @@ omx doctor
 
 Expect doctor evidence for prompts and skills in the selected scope, project-root AGENTS.md, `.omx/state`, and CLI-first config in the scope target `config.toml`. First-party MCP and shared registry sync are omitted unless setup used `--mcp compat` (if supported by the installed CLI).
 
-If using local source, run `npm run build` before `node bin/omx.js setup --force --verbose` and `node bin/omx.js doctor`. If AGENTS was not overwritten or merged, stop the active OMX session and rerun with `--force` or `--merge-agents`; do not edit lifecycle state manually.
+If using local source, run `npm run build` before `node dist/cli/omx.js setup --force --verbose` and `node dist/cli/omx.js doctor`. If AGENTS was not overwritten or merged, stop the active OMX session and rerun with `--force` or `--merge-agents`; do not edit lifecycle state manually.
 
 ## Discovery troubleshooting
 

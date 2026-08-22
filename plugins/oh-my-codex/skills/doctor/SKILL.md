@@ -17,7 +17,7 @@ omx doctor --force            # repair eligible repo artifact ownership issues
 omx doctor --dry-run --force  # preview eligible ownership repairs
 ```
 
-For a local source checkout, build first and invoke `node bin/omx.js doctor`. Keep command output and exact paths for the report.
+For a local source checkout, build first and invoke `node dist/cli/omx.js doctor`. Keep command output and exact paths for the report.
 
 ### Plugin cache and version
 
