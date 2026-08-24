@@ -67,6 +67,7 @@ import {
   XHIGH_REASONING_FLAG,
   SPARK_FLAG,
   MADMAX_SPARK_FLAG,
+  PROVIDER_FLAG,
   CONFIG_FLAG,
   LONG_CONFIG_FLAG,
 } from "./constants.js";
@@ -103,6 +104,7 @@ import {
   isUnsupportedRootReasoningEffort,
   normalizeUnsupportedRootReasoningEffort,
 } from "../config/models.js";
+import { getKnownProvider, KNOWN_PROVIDERS } from "../config/providers.js";
 
 
 export {
@@ -312,6 +314,7 @@ Usage:
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
   omx reasoning Show or set model reasoning effort (low|medium|high|xhigh)
+  omx providers List known Codex model providers with an OMX launch shorthand
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
@@ -319,6 +322,10 @@ Options:
                 (shorthand for: -c model_reasoning_effort="high")
   --xhigh       Launch Codex with xhigh reasoning effort
                 (shorthand for: -c model_reasoning_effort="xhigh")
+  --provider <name>
+                Launch Codex with the named model provider selected
+                (shorthand for: -c model_provider="<name>"); known providers
+                include openai, openai-chatgpt, and orcarouter
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
   --spark       Use the Codex spark model (~1.3x faster) for team workers only
@@ -3578,6 +3585,7 @@ export async function main(args: string[]): Promise<void> {
     "session",
     "resume",
     "version",
+    "providers",
     "tmux-hook",
     "hooks",
     "hud",
@@ -3804,6 +3812,9 @@ if (command !== "launch" && command !== "resume") {
       case "reasoning":
         await reasoningCommand(args.slice(1));
         break;
+      case "providers":
+        providersCommand();
+        break;
       case "codex-native-hook": {
         const { runCodexNativeHookCli } = await import("../scripts/codex-native-hook.js");
         await runCodexNativeHookCli();
@@ -4001,6 +4012,25 @@ async function reasoningCommand(args: string[]): Promise<void> {
   const updated = upsertTopLevelTomlString(existing, REASONING_KEY, mode);
   await writeFile(configPath, updated);
   console.log(`Set ${REASONING_KEY}="${mode}" in ${configPath}`);
+}
+
+function providersCommand(): void {
+  const rows = KNOWN_PROVIDERS.map((provider) => {
+    const parts = [provider.name];
+    if (provider.envKey) parts.push(`env=${provider.envKey}`);
+    if (provider.baseUrl) parts.push(provider.baseUrl);
+    return `  ${parts.join("  ")}`;
+  }).join("\n");
+  console.log(
+    [
+      "Known Codex model providers with an OMX launch shorthand:",
+      "",
+      rows,
+      "",
+      'Use `omx --provider <name>` (for example `omx --provider orcarouter`) to launch Codex with that provider selected.',
+      "Provider names not listed here are passed through as opaque `model_provider` values owned by config.toml.",
+    ].join("\n"),
+  );
 }
 
 export async function launchWithAuthHotswap(args: string[]): Promise<void> {
@@ -4441,8 +4471,11 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
   let wantsBypass = false;
   let hasBypass = false;
   let reasoningMode: ReasoningMode | null = null;
+  let providerName: string | null = null;
 
-  for (const arg of launchPolicyParsed.remainingArgs) {
+  for (let i = 0; i < launchPolicyParsed.remainingArgs.length; i += 1) {
+    const arg = launchPolicyParsed.remainingArgs[i];
+
     if (arg === MADMAX_FLAG) {
       wantsBypass = true;
       continue;
@@ -4482,6 +4515,21 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
       continue;
     }
 
+    if (arg === PROVIDER_FLAG) {
+      const inlineValue = launchPolicyParsed.remainingArgs[i + 1];
+      if (typeof inlineValue === "string" && !inlineValue.startsWith("-")) {
+        providerName = inlineValue.trim();
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith(`${PROVIDER_FLAG}=`)) {
+      const inlineValue = arg.slice(`${PROVIDER_FLAG}=`.length).trim();
+      if (inlineValue) providerName = inlineValue;
+      continue;
+    }
+
     normalized.push(arg);
   }
 
@@ -4491,6 +4539,18 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
 
   if (reasoningMode) {
     normalized.push(CONFIG_FLAG, `${REASONING_KEY}="${reasoningMode}"`);
+  }
+
+  if (providerName) {
+    const known = getKnownProvider(providerName);
+    if (known) {
+      normalized.push(CONFIG_FLAG, `model_provider="${known.name}"`);
+    } else {
+      // Unknown provider names are opaque passthrough values, matching how
+      // OMX treats any non-alias model name. The launch still selects it so
+      // Codex's own config.toml `[model_providers.<name>]` table can own it.
+      normalized.push(CONFIG_FLAG, `model_provider="${providerName.replace(/"/g, '\\"')}"`);
+    }
   }
 
   return [...normalized, ...suffix];

@@ -914,6 +914,58 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
+  it("maps --provider orcarouter to a model_provider override", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--provider", "orcarouter"]), [
+      "-c",
+      'model_provider="orcarouter"',
+    ]);
+  });
+
+  it("maps --provider=orcarouter to a model_provider override", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--provider=orcarouter"]), [
+      "-c",
+      'model_provider="orcarouter"',
+    ]);
+  });
+
+  it("passes unknown provider names through as opaque model_provider values", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--provider", "acme-gateway"]), [
+      "-c",
+      'model_provider="acme-gateway"',
+    ]);
+  });
+
+  it("combines --provider with --xhigh and --model", () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs([
+        "--provider",
+        "orcarouter",
+        "--xhigh",
+        "--model",
+        "o4-mini",
+      ]),
+      [
+        "--model",
+        "o4-mini",
+        "-c",
+        'model_reasoning_effort="xhigh"',
+        "-c",
+        'model_provider="orcarouter"',
+      ],
+    );
+  });
+
+  it("preserves a literal provider selector after the end-of-options marker", () => {
+    assert.deepEqual(
+      normalizeCodexLaunchArgs(["--provider", "orcarouter", "--", "--provider", "literal"]),
+      ["-c", 'model_provider="orcarouter"', "--", "--provider", "literal"],
+    );
+  });
+
+  it("drops a --provider with a missing value", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--provider"]), []);
+  });
+
   it("rejects pre-marker max and ultra reasoning shorthands with approved guidance", () => {
     const errors = [
       [
