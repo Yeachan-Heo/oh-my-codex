@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
+## [0.21.2] - 2026-09-01
+
+Patch release for `v0.21.1..04533ebfc887643586e37180ec3270473948115a` (11 commits, 29 files, +1,245/−10).
+
+### Added
+
+- **Optional GitGuardex HUD finish progress** — live review/autofix progress with project-root configuration, bounded stream discovery, and animation that advances at the one-second HUD watch cadence (#3601).
+- **Bahasa Indonesia README** — Indonesian translation with synchronized localized language navigation (#3599).
+
+### Fixed
+
+- **macOS arm64 `omx-runtime` hydration** — global install/reinstall and immediate/deferred script-suppressed updates hydrate the verified versioned native cache, with bounded non-fatal network waits (#3602).
+
 ## [0.21.1] - 2026-08-31
 
 Patch release for `v0.21.0..abf2393af1e1f9355adfe43166432462a86d2e54` (125 commits, 116 changed files, +23,996/−1,141, 28 commit-subject references plus linked issues #3587/#3589).
