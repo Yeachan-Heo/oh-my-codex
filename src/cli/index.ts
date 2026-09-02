@@ -3193,14 +3193,40 @@ export function registerDetachedHudLayoutReconcileHook(options: {
   );
 }
 
-export const DETACHED_TMUX_HISTORY_LIMIT = 500;
+// #3611: this clamp bounds tmux scrollback memory for detached leader sessions,
+// but it also decides how much assistant output survives in the pane. At 500
+// lines a long session drops multi-line responses out of scrollback while the
+// session still holds them (`/copy` returns the whole response), which reads as
+// "the response was cut to one line". Keep the clamp, but at a size that holds a
+// realistic transcript, and let operators override it.
+export const DETACHED_TMUX_HISTORY_LIMIT = 5000;
+export const DETACHED_TMUX_HISTORY_LIMIT_MIN = 500;
+export const DETACHED_TMUX_HISTORY_LIMIT_MAX = 200_000;
+export const DETACHED_TMUX_HISTORY_LIMIT_ENV = "OMX_TMUX_HISTORY_LIMIT";
 const TMUX_HOOK_INDEX_MAX = 1_000_000;
+
+// Resolves the scrollback clamp applied to OMX-owned tmux leader sessions.
+// Invalid, non-integer, or out-of-range overrides fall back to the default so a
+// typo can never silently shrink a user's transcript to nothing.
+export function resolveDetachedTmuxHistoryLimit(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env[DETACHED_TMUX_HISTORY_LIMIT_ENV];
+  if (raw === undefined) return DETACHED_TMUX_HISTORY_LIMIT;
+  const trimmed = raw.trim();
+  if (!/^[0-9]+$/.test(trimmed)) return DETACHED_TMUX_HISTORY_LIMIT;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed)) return DETACHED_TMUX_HISTORY_LIMIT;
+  if (parsed < DETACHED_TMUX_HISTORY_LIMIT_MIN) return DETACHED_TMUX_HISTORY_LIMIT_MIN;
+  if (parsed > DETACHED_TMUX_HISTORY_LIMIT_MAX) return DETACHED_TMUX_HISTORY_LIMIT_MAX;
+  return parsed;
+}
 
 function setDetachedTmuxSessionHistoryLimit(
   sessionName: string,
   leaderPaneId?: string | null,
 ): void {
-  const boundedHistoryLimit = String(DETACHED_TMUX_HISTORY_LIMIT);
+  const boundedHistoryLimit = String(resolveDetachedTmuxHistoryLimit());
   try {
     execTmuxFileSync(
       ["set-option", "-q", "-t", sessionName, "history-limit", boundedHistoryLimit],
@@ -8109,8 +8135,8 @@ async function runCodex(
               // evaluation sees it. Retrying this idempotent first owner-guarded
               // mutation once gives the server a command boundary without relaxing
               // any part of the captured session, window, pane, PID, or owner fence.
-              runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)], true, true);
-              runDetachedLeaderMutation(authority, ["set-option", "-pq", "-t", authority.paneId, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
+              runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(resolveDetachedTmuxHistoryLimit())], true, true);
+              runDetachedLeaderMutation(authority, ["set-option", "-pq", "-t", authority.paneId, "history-limit", String(resolveDetachedTmuxHistoryLimit())]);
               // #3266: the owned leader pane must close with its process so a normal
               // child exit destroys the session naturally even when the user's tmux
               // config inherits remain-on-exit=on/failed.

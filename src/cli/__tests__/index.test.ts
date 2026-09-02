@@ -103,6 +103,9 @@ import {
   prependOmxRuntimeCommandShimToEnv,
   CODEX_SQLITE_HOME_ENV,
   DETACHED_TMUX_HISTORY_LIMIT,
+  DETACHED_TMUX_HISTORY_LIMIT_MAX,
+  DETACHED_TMUX_HISTORY_LIMIT_MIN,
+  resolveDetachedTmuxHistoryLimit,
   isExistingTmuxWindowTooCrampedForLaunchHud,
   guardDetachedHudDeferredMutation,
   DETACHED_LAUNCH_CONTROL_PLANE_KEYS,
@@ -6154,7 +6157,7 @@ exit 0
     assert.equal(attachIndex > scheduleIndex, true);
     assert.equal(names.includes("register-resize-hook"), true);
     assert.equal(names.includes("reconcile-hud-resize"), true);
-    assert.equal(DETACHED_TMUX_HISTORY_LIMIT, 500);
+    assert.equal(DETACHED_TMUX_HISTORY_LIMIT, 5000);
     const historyHook = steps.find((step) => step.name === "register-detached-history-prune-hook");
     assert.ok(historyHook);
     assert.deepEqual(historyHook.args.slice(0, 3), ["set-hook", "-t", "omx-demo"]);
@@ -7159,5 +7162,38 @@ describe("detached control-plane binding", () => {
     assert.equal(payload.parentEnv?.OMX_PROVIDER_URL, "https://provider.invalid");
     assert.equal(payload.parentEnv?.Path, "/system/path");
     assert.equal(payload.parentEnv?.Omx_Notify_Fallback, "1");
+  });
+});
+
+describe("resolveDetachedTmuxHistoryLimit (#3611)", () => {
+  it("defaults to a scrollback size that holds a real transcript", () => {
+    assert.equal(resolveDetachedTmuxHistoryLimit({}), DETACHED_TMUX_HISTORY_LIMIT);
+    assert.equal(DETACHED_TMUX_HISTORY_LIMIT >= 5000, true);
+  });
+
+  it("honors a valid operator override", () => {
+    assert.equal(resolveDetachedTmuxHistoryLimit({ OMX_TMUX_HISTORY_LIMIT: "12000" }), 12000);
+    assert.equal(resolveDetachedTmuxHistoryLimit({ OMX_TMUX_HISTORY_LIMIT: " 9000 " }), 9000);
+  });
+
+  it("clamps overrides into the supported range", () => {
+    assert.equal(
+      resolveDetachedTmuxHistoryLimit({ OMX_TMUX_HISTORY_LIMIT: "0" }),
+      DETACHED_TMUX_HISTORY_LIMIT_MIN,
+    );
+    assert.equal(
+      resolveDetachedTmuxHistoryLimit({ OMX_TMUX_HISTORY_LIMIT: "99999999" }),
+      DETACHED_TMUX_HISTORY_LIMIT_MAX,
+    );
+  });
+
+  it("falls back to the default for unusable overrides instead of shrinking scrollback", () => {
+    for (const raw of ["", "abc", "-1", "1e4", "1_000", "500.5"]) {
+      assert.equal(
+        resolveDetachedTmuxHistoryLimit({ OMX_TMUX_HISTORY_LIMIT: raw }),
+        DETACHED_TMUX_HISTORY_LIMIT,
+        `expected default for ${JSON.stringify(raw)}`,
+      );
+    }
   });
 });
