@@ -199,3 +199,39 @@ A checkout that you run directly, or link into a global root with `npm link`, is
 Update such a build with `git pull && npm run build`. The launch-time check makes the same determination silently and records the cadence, so a linked dev build never nags on startup and never overwrites your tree.
 
 This is distinct from `[omx] Unable to determine whether this global install is owned by npm or Bun`, which means the package root *is* inside a global `node_modules` but neither manager could be validated as its owner — reinstall globally with npm or Bun.
+
+## The prompt input line drifts into the middle of the pane
+
+Symptom: after a multi-agent/review workflow finishes, the Codex composer (`Ask Codex to do anything`) no longer sits directly above the bottom bars — it renders partway up the pane, with unused rows below it.
+
+The composer is drawn by the Codex CLI itself, not by OMX. OMX only mutates the *pane* around it (HUD split, pane teardown, geometry changes, `send-keys` nudges, and the detached-client `clear-history` prune hook). Every one of those mutations was exercised against a live Codex TUI on `codex-cli 0.152.1` / `tmux 3.2a`, both idle and mid-stream, and none of them desynced the composer anchor:
+
+| mutation | idle | mid-stream |
+|---|---|---|
+| HUD-style `split-window -v -f -l <n>` below the pane | anchored | anchored |
+| `kill-pane` on the HUD pane (pane grows back) | anchored | anchored |
+| window shrink 30 → 12 rows, then grow to 40 rows | re-anchors | re-anchors |
+| `clear-history` on the leader pane (detach prune hook) | anchored | anchored |
+| `detach-client` → `clear-history` → reattach | anchored | anchored |
+| nudge transport `C-u` → trigger text → `Tab` → `Enter` | anchored | anchored |
+| `alternate-screen off` + `aggressive-resize on` during the above | anchored | anchored |
+
+So a drift is environment-specific rather than an unconditional OMX layout bug.
+
+### Recovery
+
+Force the TUI to recompute its layout by changing the pane geometry once:
+
+```bash
+tmux resize-pane -D 1 && tmux resize-pane -U 1
+```
+
+If that restores the composer to the bottom, the pane content was fine and only the app's cached bottom anchor was stale (an anchor desync). If the drift survives a resize, it is a genuine layout bug and worth an issue.
+
+### What to attach when reporting it
+
+1. `codex --version` from the affected session (the inline-viewport anchor logic is Codex-side and version-sensitive).
+2. `tmux -V` and `tmux show -g | grep -iE 'aggressive-resize|alternate-screen|default-terminal|terminal-overrides'`.
+3. Whether the resize nudge above heals it.
+4. Whether the drift appeared while output was still streaming or only once everything was idle.
+5. Terminal emulator, `TERM`, and any wrapper in the pane (`ssh`, `script`, `asciinema`, nested multiplexer).
