@@ -977,7 +977,13 @@ printf '\xff\xfe\n'
         .output()
         .expect("run sparkshell");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "raw command failed: status={}, stdout={:?}, stderr={}",
+        output.status,
+        output.stdout,
+        String::from_utf8_lossy(&output.stderr),
+    );
     assert_eq!(output.stdout, vec![0xff, 0xfe, b'\n']);
     let _ = fs::remove_dir_all(temp);
 }
