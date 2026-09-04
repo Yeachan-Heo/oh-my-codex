@@ -3411,8 +3411,14 @@ function buildPluginModeHooksConfigPlan(
 		},
 	);
 
+	const configWithDefaultModel = Object.prototype.hasOwnProperty.call(
+		TOML.parse(configAfterLegacyCleanup),
+		"model",
+	)
+		? configAfterLegacyCleanup
+		: `model = ${JSON.stringify(DEFAULT_FRONTIER_MODEL)}\n${configAfterLegacyCleanup}`;
 	const configWithRuntimeFeatures = upsertPluginModeRuntimeFeatureFlags(
-		configAfterLegacyCleanup,
+		configWithDefaultModel,
 		options.codexHookFeatureFlag,
 		{
 			pluginScopedHooks: options.pluginScopedHooks,

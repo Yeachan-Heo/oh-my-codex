@@ -1014,7 +1014,7 @@ process.on('SIGTERM', () => process.exit(0));`,
       assert.deepEqual(workerArgs, [
         '--sandbox', 'workspace-write',
         '-c', 'model_reasoning_effort="medium"',
-        '--model', 'gpt-5.6-sol',
+        '--model', 'gpt-6-astra',
         '--', 'C:\\workspace\\nested\\', '', '--sandbox=read-only', '--madmax',
       ]);
       const startedRuntime = runtime as TeamRuntime | null;
@@ -1405,7 +1405,7 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
         { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
         'executor',
       );
-      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.6-sol']);
+      assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-6-astra']);
     });
   });
 
@@ -1418,11 +1418,11 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
         resolveAgentReasoningEffort('executor'),
         'codex',
       );
-      assert.deepEqual(args, ['--no-alt-screen', '-c', 'model_reasoning_effort="medium"', '--model', 'gpt-5.6-sol']);
+      assert.deepEqual(args, ['--no-alt-screen', '-c', 'model_reasoning_effort="medium"', '--model', 'gpt-6-astra']);
     });
   });
 
-  it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-5.6-sol medium when inherited leader is mini', () => {
+  it('resolveWorkerLaunchArgsFromEnv keeps planner on exact gpt-6-astra medium when inherited leader is mini', () => {
     withIsolatedDefaultModelEnv(() => {
       const args = resolveWorkerLaunchArgsFromEnv(
         {
@@ -1439,7 +1439,7 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
         '-c',
         'model_reasoning_effort="medium"',
         '--model',
-        'gpt-5.6-sol',
+        'gpt-6-astra',
       ]);
     });
   });
@@ -1482,7 +1482,7 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
         '-c',
         'model_reasoning_effort="medium"',
         '--model',
-        'gpt-5.6-sol',
+        'gpt-6-astra',
       ]);
     });
   });
@@ -1564,8 +1564,8 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
           'high',
           'codex',
         );
-        assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-5.6-sol']);
-        assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.6-sol']);
+        assert.deepEqual(lowArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'gpt-6-astra']);
+        assert.deepEqual(highArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-6-astra']);
       });
     } finally {
       console.log = originalLog;
@@ -1690,7 +1690,7 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
         'low',
         'gemini',
       );
-      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-5.6-sol']);
+      assert.deepEqual(codexArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="high"', '--model', 'gpt-6-astra']);
       assert.deepEqual(claudeArgs, ['--no-alt-screen', '-c', 'model_reasoning_effort="low"', '--model', 'claude-3-7-sonnet']);
       assert.deepEqual(geminiArgs, ['-c', 'model_reasoning_effort="low"', '--model', 'gemini-2.0-pro']);
     } finally {
@@ -5732,7 +5732,7 @@ process.on('SIGTERM', () => process.exit(0));
       assert.match(worker2Instructions, /You are operating as the \*\*writer\*\* role/);
       assert.match(worker2Instructions, /You are Writer\./);
       assert.doesNotMatch(worker2Instructions, /exact gpt-5\.6-terra model/);
-      assert.match(worker2Instructions, /resolved_model: gpt-5\.6-sol/);
+      assert.match(worker2Instructions, /resolved_model: gpt-6-astra/);
 
       let worker1Args: string[] | null = null;
       let worker2Args: string[] | null = null;
@@ -5753,10 +5753,10 @@ process.on('SIGTERM', () => process.exit(0));
       const worker2Joined = worker2Args!.join(' ');
       assert.match(worker1Joined, /model_reasoning_effort="medium"/);
       assert.match(worker1Joined, /model_instructions_file=.*worker-1\/AGENTS\.md/);
-      assert.match(worker1Joined, /--model gpt-5\.6-sol/);
+      assert.match(worker1Joined, /--model gpt-6-astra/);
       assert.match(worker2Joined, /model_reasoning_effort="xhigh"/);
       assert.match(worker2Joined, /model_instructions_file=.*worker-2\/AGENTS\.md/);
-      assert.match(worker2Joined, /--model gpt-5\.6-sol/);
+      assert.match(worker2Joined, /--model gpt-6-astra/);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -12414,7 +12414,7 @@ esac
 
       const task = await readTask(runtime.teamName, '1', cwd);
       assert.equal(task?.delegation?.mode, 'auto');
-      assert.equal(task?.delegation?.child_model, 'gpt-5.6-terra');
+      assert.equal(task?.delegation?.child_model, 'gpt-6-astra');
       assert.equal(task?.delegation?.required_parallel_probe, true);
       assert.equal(task?.coordination?.mode, 'coordinated');
       assert.ok(task?.coordination?.activation_reasons.includes('cross_boundary_or_handoff_language'));
@@ -13080,7 +13080,7 @@ esac
 
       const reread = await readTask('team-assign-delegation', task.id, cwd);
       assert.equal(reread?.delegation?.mode, 'auto');
-      assert.equal(reread?.delegation?.child_model, 'gpt-5.6-terra');
+      assert.equal(reread?.delegation?.child_model, 'gpt-6-astra');
       assert.equal(reread?.coordination?.mode, 'coordinated');
       assert.ok(reread?.coordination?.activation_reasons.includes('shared_file_scope'));
       assert.equal(reread?.coordination?.activation_reasons.includes('stale_snapshot_before_assignment'), false);

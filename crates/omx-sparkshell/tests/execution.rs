@@ -133,41 +133,48 @@ fn raw_mode_preserves_stdout_and_stderr() {
 }
 
 #[test]
-fn summary_mode_uses_local_api_and_model_override() {
-    let request_log = Arc::new(Mutex::new(String::new()));
-    let request_log_for_server = Arc::clone(&request_log);
-    let (base_url, server) = start_api_server(1, move |request| {
-        *request_log_for_server.lock().expect("request log") = request;
-        (
-            200,
-            response_json("- summary: command produced long output\n- warnings: stderr was empty"),
-        )
-    });
+fn summary_mode_defaults_to_astra_and_preserves_model_overrides() {
+    for (model_override, expected_model) in [("", "gpt-6-astra"), ("gpt-5.6-luna", "gpt-5.6-luna")]
+    {
+        let request_log = Arc::new(Mutex::new(String::new()));
+        let request_log_for_server = Arc::clone(&request_log);
+        let (base_url, server) = start_api_server(1, move |request| {
+            *request_log_for_server.lock().expect("request log") = request;
+            (
+                200,
+                response_json(
+                    "- summary: command produced long output\n- warnings: stderr was empty",
+                ),
+            )
+        });
 
-    let output = Command::new(sparkshell_bin())
-        .env("OMX_API_BASE_URL", base_url)
-        .env("OMX_SPARKSHELL_LINES", "1")
-        .env("OMX_SPARKSHELL_MODEL", "spark-test-model")
-        .arg("sh")
-        .arg("-c")
-        .arg("printf 'one\ntwo\n'")
-        .output()
-        .expect("run sparkshell");
-    server.join().expect("api server");
+        let output = Command::new(sparkshell_bin())
+            .env("OMX_API_BASE_URL", base_url)
+            .env("OMX_SPARKSHELL_LINES", "1")
+            .env("OMX_SPARKSHELL_MODEL", model_override)
+            .env_remove("OMX_DEFAULT_SPARK_MODEL")
+            .env_remove("OMX_SPARK_MODEL")
+            .arg("sh")
+            .arg("-c")
+            .arg("printf 'one\ntwo\n'")
+            .output()
+            .expect("run sparkshell");
+        server.join().expect("api server");
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("- summary: command produced long output"));
-    assert!(stdout.contains("- warnings: stderr was empty"));
-    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("- summary: command produced long output"));
+        assert!(stdout.contains("- warnings: stderr was empty"));
+        assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
-    let request = request_log.lock().expect("request log");
-    assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
-    assert!(request.contains("\"model\":\"spark-test-model\""));
-    assert!(request.contains("\"reasoning\":{\"effort\":\"low\"}"));
-    assert!(request.contains("Command family: generic-shell"));
-    assert!(request.contains("<<<STDOUT"));
-    assert!(request.contains("one\\ntwo"));
+        let request = request_log.lock().expect("request log");
+        assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
+        assert!(request.contains(&format!("\"model\":\"{expected_model}\"")));
+        assert!(request.contains("\"reasoning\":{\"effort\":\"low\"}"));
+        assert!(request.contains("Command family: generic-shell"));
+        assert!(request.contains("<<<STDOUT"));
+        assert!(request.contains("one\\ntwo"));
+    }
 }
 
 #[test]

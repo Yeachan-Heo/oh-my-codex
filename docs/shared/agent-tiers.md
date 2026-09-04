@@ -12,7 +12,7 @@ OMX now separates three concepts:
 - `exactModel`: optional role pin that bypasses tier defaults when a role needs a
   specific model contract.
 
-Use role to choose responsibility, tier to choose depth, and posture to choose operating style.
+Use role to choose responsibility, tier to choose depth, and posture to choose operating style. All model lanes default to `gpt-6-astra`, including fast agents; role reasoning defaults and explicit model overrides remain unchanged.
 
 ## Tiers
 
@@ -47,8 +47,8 @@ Use role to choose responsibility, tier to choose depth, and posture to choose o
   - Prioritizes intent classification, delegation, verification, and architectural judgment.
   - Typical roles: `planner`, `analyst`, `architect`, `critic`, `code-reviewer`.
   - Ralplan keeps `planner` and `architect` in this posture; `planner`
-    uses exact `gpt-5.6-sol` with medium reasoning, `architect` uses exact
-    `gpt-5.6-sol` with xhigh reasoning, and the `critic` consensus gate stays
+    uses exact `gpt-6-astra` with medium reasoning, `architect` uses exact
+    `gpt-6-astra` with xhigh reasoning, and the `critic` consensus gate stays
     on the frontier lane.
 
 - `deep-worker`:
@@ -57,6 +57,6 @@ Use role to choose responsibility, tier to choose depth, and posture to choose o
   - Typical roles: `executor`, `debugger`, `test-engineer`, `build-fixer`.
 
 - `fast-lane`:
-  - Best for cheap/fast models used for triage, search, and narrow synthesis.
+  - Best for triage, search, and narrow synthesis. It defaults to Astra like the other lanes; configure a spark model override for a cheaper model.
   - Prioritizes quick routing, concise search, and escalation over deep autonomous work.
   - Typical roles: `explore`, `writer`, and lightweight research/search specialists.
