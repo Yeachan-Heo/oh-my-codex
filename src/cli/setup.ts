@@ -6379,6 +6379,7 @@ async function planManagedConfig(
 		notifyCommand: notifyPlan.notifyCommand,
 		includeFirstPartyMcp: mcpMode === "compat",
 		preserveExistingFirstPartyMcp,
+		preserveReasoningEffort: true,
 	});
 	return {
 		finalConfig,
