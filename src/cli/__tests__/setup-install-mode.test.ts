@@ -3908,6 +3908,58 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("removes the Windows shim for the removed surface without orphaning or failing setup", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const removedProbe = () =>
+						[
+							"hooks                                   stable             true",
+							"plugin_hooks                            removed            false",
+							"",
+						].join("\n");
+
+					// Seed a legacy install so an OMX-owned shim and global
+					// wrappers exist, then transition to plugin mode on a
+					// removed-flag Codex.
+					await setup({
+						scope: "user",
+						installMode: "legacy",
+						skipNativeAgentRefresh: true,
+					});
+					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					assert.equal(existsSync(shimPath), true);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+						skipNativeAgentRefresh: true,
+						codexFeaturesProbe: removedProbe,
+					});
+
+					assert.equal(
+						existsSync(shimPath),
+						false,
+						"removed surface must delete the unreferenced OMX-owned shim",
+					);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
+					const config = await readFile(
+						join(codexHomeDir, "config.toml"),
+						"utf-8",
+					);
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
+					assert.doesNotMatch(config, /^plugin_hooks\s*=/m);
+				});
+			});
+		} finally {
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 	it("preserves same-key user hook trust state in plugin-scoped setup", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

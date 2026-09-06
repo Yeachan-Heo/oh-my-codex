@@ -4288,8 +4288,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	// The plugin manifest owns the hook surface both when Codex reports the
 	// dedicated plugin flag and when that flag is removed-but-listed on a
 	// current build (issue #3623).
-	const manifestOwnsHookSurface = pluginScopedHooksSupported
-		|| codexHookFeatureSupport.pluginHookSurface === "removed";
+	const manifestOwnsHookSurface = isPluginInstallMode && (
+		pluginScopedHooksSupported
+		|| codexHookFeatureSupport.pluginHookSurface === "removed"
+	);
 	const shouldSyncSharedMcpRegistry = resolvedMcpMode.mcpMode === "compat";
 	const registryCandidates = getUnifiedMcpRegistryCandidates();
 	const defaultRegistryCandidates = registryCandidates.slice(0, 1);
