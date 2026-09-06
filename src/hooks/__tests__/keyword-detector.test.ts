@@ -2219,8 +2219,8 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(modeState.state.return_to_ralplan_reason, null);
       assert.deepEqual(modeState.state.planning_routing, {
         owner: 'main',
-        mainModel: 'gpt-5.6-sol',
-        plannerModel: 'gpt-5.6-sol',
+        mainModel: 'gpt-6-astra',
+        plannerModel: 'gpt-6-astra',
         reason: 'main_not_cheap_or_mini',
         explicitPlannerOverride: false,
       });

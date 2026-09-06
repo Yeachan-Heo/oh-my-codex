@@ -57,24 +57,24 @@ The model-routing reader supports `env`, `models`, and the per-role override map
 ```json
 {
   "agentModels": {
-    "planner": "gpt-5.6-sol",
-    "architect": "gpt-5.6-sol",
-    "researcher": "gpt-5.6-terra",
-    "explore": "gpt-5.6-luna"
+    "planner": "gpt-6-astra",
+    "architect": "gpt-6-astra",
+    "researcher": "gpt-6-astra",
+    "explore": "gpt-6-astra"
   },
   "agentReasoning": {
     "architect": "xhigh",
     "critic": "xhigh"
   },
   "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
-    "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.6-terra",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-6-astra",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-6-astra",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-6-astra"
   },
   "models": {
-    "default": "gpt-5.6-sol",
-    "team": "gpt-5.6-sol",
-    "team_low_complexity": "gpt-5.6-luna"
+    "default": "gpt-6-astra",
+    "team": "gpt-6-astra",
+    "team_low_complexity": "gpt-6-astra"
   }
 }
 ```
@@ -89,7 +89,7 @@ Supported model-related keys:
 | --- | --- |
 | `OMX_DEFAULT_FRONTIER_MODEL` | Main/frontier default used by leaders and frontier-class roles when no stronger config wins. |
 | `OMX_DEFAULT_STANDARD_MODEL` | Optional standard-lane override. If omitted, standard agents inherit the main/frontier default. |
-| `OMX_DEFAULT_SPARK_MODEL` | Spark/fast-lane default for low-cost exploration and low-complexity workers. |
+| `OMX_DEFAULT_SPARK_MODEL` | Spark/fast-lane default for exploration and low-complexity workers. |
 | `OMX_SPARK_MODEL` | Legacy spark fallback; prefer `OMX_DEFAULT_SPARK_MODEL` for new config. |
 | `OMX_TEAM_CHILD_MODEL` | Default child model for specific team-child paths that read this setting directly. |
 
@@ -105,12 +105,15 @@ For `omx sparkshell`, the documented helper-specific environment keys are:
 | `OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE` | Override the packaged lightweight summary instructions file. |
 | `OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS` | Override the local API summary timeout in milliseconds. |
 
+Both Sparkshell summary model defaults are `gpt-6-astra`. To retry with a distinct model when the primary is unavailable, explicitly set `OMX_SPARKSHELL_FALLBACK_MODEL` to a different model.
+
 ### `models`
 
 `models` maps mode names to explicit model overrides. Values must be non-empty strings.
 
-The built-in defaults are `gpt-5.6-sol` (frontier), `gpt-5.6-terra` (standard), and `gpt-5.6-luna` (spark); the known-alias list contains exactly these three GPT-5.6 models. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
+The built-in frontier, standard, and spark defaults are all `gpt-6-astra`, including fast agents and low-complexity workers. Existing role reasoning defaults are unchanged. The known-alias list contains `gpt-6-astra` plus the configurable GPT-5.6 alternatives `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
 
+Setup seeds Astra when no root model exists; it preserves an existing user model unless an explicit model change is requested. Explicit launch arguments, environment values, and model configuration retain their documented precedence.
 
 Supported model-routing keys:
 
@@ -128,6 +131,8 @@ Do not invent per-role maps such as `models.executor`, `models.architect`, or `m
 
 `agentModels` is the supported per-agent model override map. Keys are normalized OMX agent names using the same normalization as `agentReasoning`: case-insensitive agent names containing letters, numbers, underscores, and hyphens. Values must be non-empty strings. Malformed agent names, empty values, and non-string values are ignored rather than fatal.
 
+For example, explicitly select GPT-5.6 alternatives instead of the Astra defaults:
+
 ```json
 {
   "agentModels": {
@@ -144,7 +149,7 @@ These overrides do not change built-in defaults in source. They are user/project
 For a named role, effective model precedence is:
 
 1. `.omx-config.json` `agentModels[role]`
-2. Built-in `exactModel` pins, such as planner/architect `gpt-5.6-sol` or researcher `gpt-5.6-terra`
+2. Built-in `exactModel` pins, such as planner/architect/researcher `gpt-6-astra`
 3. Special role logic, such as `executor` using the main/frontier lane
 4. `modelClass` routing: `fast` uses spark/low-complexity, `frontier` uses main/frontier, and `standard` uses the standard lane
 
@@ -178,7 +183,7 @@ The main default resolves in this order:
 1. Shell `OMX_DEFAULT_FRONTIER_MODEL`
 2. `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL`
 3. Active Codex `config.toml` root `model`
-4. Built-in default: `gpt-5.6-sol`
+4. Built-in default: `gpt-6-astra`
 
 ### Mode-specific model lookup
 
@@ -209,7 +214,7 @@ Spark/fast defaults resolve in this order:
 3. `.omx-config.json` `env.OMX_DEFAULT_SPARK_MODEL`
 4. `.omx-config.json` legacy `env.OMX_SPARK_MODEL`
 5. `.omx-config.json` `models.team_low_complexity`, `models.team-low-complexity`, or `models.teamLowComplexity`
-6. Built-in default: `gpt-5.6-luna`
+6. Built-in default: `gpt-6-astra`
 
 For team low-complexity helpers, the exact order depends on the call path: `getSparkDefaultModel()` checks spark env/config values before low-complexity aliases, while `getTeamLowComplexityModel()` checks low-complexity aliases before falling back to the spark default.
 
@@ -221,7 +226,7 @@ Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Exact planning/research pins | `planner`, `architect`, `researcher` | Uses the built-in `exactModel` pin before model-class routing unless `agentModels[role]` is set; planner uses exact `gpt-5.6-sol` with medium reasoning, architect uses exact `gpt-5.6-sol` with xhigh reasoning, and researcher stays on exact `gpt-5.6-terra`. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
+| Exact planning/research pins | `planner`, `architect`, `researcher` | Uses the built-in `exactModel` pin before model-class routing unless `agentModels[role]` is set; planner uses exact `gpt-6-astra` with medium reasoning, architect uses exact `gpt-6-astra` with xhigh reasoning, and researcher uses exact `gpt-6-astra` with high reasoning. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
 | Frontier orchestration | `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback. |
 | Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
@@ -258,7 +263,7 @@ JSON does not allow comments, so copy only the JSON blocks.
 
 ### Cost-saving starter
 
-This keeps orchestration on the frontier default, routes standard workers to a cheaper standard model, and uses the spark lane for exploration/low-complexity work.
+This opts into GPT-5.6 alternatives: Sol for orchestration, Terra for standard workers, and Luna for exploration/low-complexity work. Exact-pinned planner, architect, and researcher roles remain on Astra unless `agentModels` overrides them, as shown above.
 
 ```json
 {
@@ -275,38 +280,28 @@ This keeps orchestration on the frontier default, routes standard workers to a c
 }
 ```
 
-### Max-quality starter
+### Astra default starter
 
-This keeps standard agents inheriting the frontier model by omitting `OMX_DEFAULT_STANDARD_MODEL`, keeps a fast spark lane for default low-complexity routing, and explicitly promotes selected exact-pinned/generated roles to a max-quality model with matching reasoning overrides.
+This explicitly selects Astra across lanes and modes. Omitting `agentReasoning` preserves the existing role reasoning defaults, including low reasoning for `explore`, medium for `planner`, xhigh for `architect`, and high for `researcher`. Remove or update conflicting per-agent overrides if you want an existing installation to use these defaults.
 
 ```json
 {
-  "agentModels": {
-    "planner": "gpt-5.6-sol",
-    "architect": "gpt-5.6-sol",
-    "researcher": "gpt-5.6-terra",
-    "explore": "gpt-5.6-luna"
-  },
-  "agentReasoning": {
-    "planner": "medium",
-    "architect": "xhigh",
-    "researcher": "high",
-    "explore": "medium",
-    "critic": "xhigh"
-  },
   "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-6-astra",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-6-astra",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-6-astra"
   },
   "models": {
-    "default": "gpt-5.6-sol",
-    "team": "gpt-5.6-sol",
-    "autopilot": "gpt-5.6-sol",
-    "ralph": "gpt-5.6-sol",
-    "team_low_complexity": "gpt-5.6-luna"
+    "default": "gpt-6-astra",
+    "team": "gpt-6-astra",
+    "autopilot": "gpt-6-astra",
+    "ralph": "gpt-6-astra",
+    "team_low_complexity": "gpt-6-astra"
   }
 }
 ```
+
+For generated frontier agents and the executor special case, an existing root `config.toml` model still wins over lane defaults. Set that root model to `gpt-6-astra` too when intentionally migrating an existing configuration.
 
 ## Verifying the effective config
 

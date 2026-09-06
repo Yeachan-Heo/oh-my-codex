@@ -8,6 +8,7 @@ import {
   CANONICAL_REASONING_EFFORTS,
   DEFAULT_FRONTIER_MODEL,
   DEFAULT_SPARK_MODEL,
+  DEFAULT_STANDARD_MODEL,
   DEFAULT_TEAM_CHILD_MODEL,
   GPT_5_6_MODEL_ALIASES,
   KNOWN_CODEX_MODEL_ALIASES,
@@ -205,8 +206,8 @@ describe('getModelForMode', () => {
 
   it('defaults team child model to the standard lane independent of frontier defaults', () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-expensive';
-    assert.equal(DEFAULT_TEAM_CHILD_MODEL, 'gpt-5.6-terra');
-    assert.equal(getTeamChildModel(), 'gpt-5.6-terra');
+    assert.equal(DEFAULT_TEAM_CHILD_MODEL, 'gpt-6-astra');
+    assert.equal(getTeamChildModel(), 'gpt-6-astra');
   });
 
   it('uses OMX_TEAM_CHILD_MODEL shell override for team child model', () => {
@@ -390,6 +391,13 @@ describe('getModelForMode', () => {
     assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.6-sol');
     assert.equal(getAgentModelOverride('executor'), undefined);
     assert.equal(getAgentModelOverride('bad role'), undefined);
+  });
+
+  it('defaults every model tier to Astra', () => {
+    for (const model of [DEFAULT_FRONTIER_MODEL, DEFAULT_STANDARD_MODEL, DEFAULT_SPARK_MODEL, getMainDefaultModel(), getStandardDefaultModel(), getSparkDefaultModel(), getTeamChildModel(), getTeamLowComplexityModel()]) {
+      assert.equal(model, 'gpt-6-astra');
+    }
+    assert.equal(isKnownCodexModelAlias('gpt-6-astra'), true);
   });
 
   it('lists GPT-5.6 Terra/Luna/Sol as known Codex model aliases', () => {

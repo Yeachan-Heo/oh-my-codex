@@ -17,7 +17,7 @@ describe('config generator', () => {
       const notifyIdx = toml.indexOf('notify =');
       const reasoningIdx = toml.indexOf('model_reasoning_effort =');
       const devInstrIdx = toml.indexOf('developer_instructions =');
-      const modelIdx = toml.indexOf('model = "gpt-5.6-sol"');
+      const modelIdx = toml.indexOf('model = "gpt-6-astra"');
       const featuresIdx = toml.indexOf('[features]');
 
       assert.ok(notifyIdx >= 0, 'notify not found');
@@ -49,14 +49,15 @@ describe('config generator', () => {
     }
   });
 
-  it('does not seed context defaults for fresh configs', async () => {
+  it('defaults fresh configs to Astra with unchanged medium reasoning and no context overrides', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-config-gen-'));
     try {
       const configPath = join(wd, 'config.toml');
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-5\.6-sol"$/m);
+      assert.match(toml, /^model = "gpt-6-astra"$/m);
+      assert.match(toml, /^model_reasoning_effort = "medium"$/m);
       assert.doesNotMatch(toml, /seeded behavioral defaults/);
       assert.doesNotMatch(toml, /^model_context_window\s*=/m);
       assert.doesNotMatch(toml, /^model_auto_compact_token_limit\s*=/m);

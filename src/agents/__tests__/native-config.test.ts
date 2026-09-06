@@ -76,6 +76,64 @@ afterEach(() => {
 });
 
 describe("agents/native-config", () => {
+  it("defaults every role to Astra with its existing reasoning effort", () => {
+    delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+    const expectedEfforts = {
+      "executor": "medium",
+      "team-executor": "medium",
+      "explore": "low",
+      "analyst": "medium",
+      "planner": "medium",
+      "architect": "xhigh",
+      "debugger": "high",
+      "verifier": "high",
+      "style-reviewer": "low",
+      "quality-reviewer": "medium",
+      "api-reviewer": "medium",
+      "security-reviewer": "medium",
+      "performance-reviewer": "medium",
+      "code-reviewer": "high",
+      "dependency-expert": "high",
+      "test-engineer": "medium",
+      "quality-strategist": "medium",
+      "build-fixer": "high",
+      "designer": "high",
+      "writer": "high",
+      "qa-tester": "low",
+      "git-master": "high",
+      "code-simplifier": "high",
+      "researcher": "high",
+      "product-manager": "medium",
+      "ux-researcher": "medium",
+      "information-architect": "low",
+      "product-analyst": "low",
+      "critic": "high",
+      "vision": "low",
+    };
+    assert.deepEqual(Object.keys(AGENT_DEFINITIONS).sort(), Object.keys(expectedEfforts).sort());
+    for (const [role, effort] of Object.entries(expectedEfforts)) {
+      const toml = parseToml(generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`));
+      assert.equal(toml.model, "gpt-6-astra", role);
+      assert.equal(toml.model_reasoning_effort, effort, role);
+      assert.doesNotMatch(String(toml.developer_instructions), /exact gpt-5\.6-terra model/, role);
+    }
+  });
+
+  it("preserves older per-role model choices across every model class", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-legacy-models-"));
+    try {
+      const agentModels = { planner: "gpt-5.6-sol", researcher: "gpt-5.6-terra", explore: "gpt-5.6-luna" };
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({ agentModels }));
+      for (const [role, model] of Object.entries(agentModels)) {
+        const toml = parseToml(generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome }));
+        assert.equal(toml.model, model, role);
+        assert.equal(toml.model_reasoning_effort, AGENT_DEFINITIONS[role].reasoningEffort, role);
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it("generates TOML with stripped frontmatter and escaped triple quotes", () => {
     const agent: AgentDefinition = {
       name: "executor",
@@ -92,7 +150,7 @@ describe("agents/native-config", () => {
     const toml = generateAgentToml(agent, prompt);
 
     assert.match(toml, /# oh-my-codex agent: executor/);
-    assert.match(toml, /model = "gpt-5\.6-sol"/);
+    assert.match(toml, /model = "gpt-6-astra"/);
     assert.match(toml, /model_reasoning_effort = "medium"/);
     assert.ok(!toml.includes("title: demo"));
     assert.ok(toml.includes("Instruction line"));
@@ -190,7 +248,7 @@ describe("agents/native-config", () => {
     }
   });
 
-  it("applies Terra guidance when agentModels resolves exact-Sol roles to gpt-5.6-terra", async () => {
+  it("applies Terra guidance when agentModels resolves exact-Astra roles to gpt-5.6-terra", async () => {
     const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-terra-override-"));
     try {
       await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
@@ -222,16 +280,16 @@ describe("agents/native-config", () => {
   });
 
 
-  it("pins planner and architect to exact gpt-5.6-sol while keeping researcher on exact Terra", () => {
+  it("pins planner, architect, and researcher to Astra while retaining effort defaults", () => {
     process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-sol";
     process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-sol";
 
-    for (const role of ["planner", "architect"] as const) {
+    for (const role of ["planner", "architect", "researcher"] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
-      assert.match(toml, /model = "gpt-5\.6-sol"/, `${role} should use exact gpt-5.6-sol`);
-      assert.match(toml, /exact gpt-5\.6-sol model/, `${role} should receive exact-gpt-5.6-sol guidance`);
+      assert.match(toml, /model = "gpt-6-astra"/, `${role} should use exact gpt-6-astra`);
+      assert.match(toml, /exact gpt-6-astra model/, `${role} should receive exact-gpt-6-astra guidance`);
       assert.match(toml, /strict execution order: inspect -> plan -> act -> verify/, `${role} should receive the exact-model guardrail`);
-      assert.match(toml, /resolved_model: gpt-5\.6-sol/, `${role} should record exact gpt-5.6-sol metadata`);
+      assert.match(toml, /resolved_model: gpt-6-astra/, `${role} should record exact gpt-6-astra metadata`);
     }
 
     const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt");
@@ -241,9 +299,9 @@ describe("agents/native-config", () => {
     assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
 
     const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt");
-    assert.match(researcherToml, /model = "gpt-5\.6-terra"/, "researcher should keep exact Terra");
-    assert.match(researcherToml, /exact gpt-5\.6-terra model/, "researcher should receive exact-Terra guidance");
-    assert.match(researcherToml, /resolved_model: gpt-5.6-terra/, "researcher should record exact Terra metadata");
+    assert.match(researcherToml, /model = "gpt-6-astra"/, "researcher should keep exact Astra");
+    assert.match(researcherToml, /exact gpt-6-astra model/, "researcher should receive exact-Astra guidance");
+    assert.match(researcherToml, /resolved_model: gpt-6-astra/, "researcher should record exact Astra metadata");
     assert.match(researcherToml, /model_reasoning_effort = "high"/);
 
     for (const role of [
@@ -396,7 +454,7 @@ describe("agents/native-config", () => {
         join(outDir, "executor.toml"),
         "utf8",
       );
-      assert.match(executorToml, /model = "gpt-5\.6-sol"/);
+      assert.match(executorToml, /model = "gpt-6-astra"/);
       assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
