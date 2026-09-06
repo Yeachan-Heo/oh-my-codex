@@ -78,7 +78,7 @@ import {
 	extractFirstPartyOmxMcpSections,
 	stripFirstPartyOmxMcpSections,
 } from "../config/generator.js";
-import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
+import type { CodexHookFeatureFlag, CodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 import {
 	buildManagedCodexNativeHookWindowsShimContent,
 	buildManagedCodexNativeHookWindowsShimPath,
@@ -3369,6 +3369,7 @@ function buildPluginModeHooksConfigPlan(
 	options: {
 		codexHookFeatureFlag: CodexHookFeatureFlag;
 		pluginScopedHooks: boolean;
+		pluginHookFeatureFlag?: CodexPluginHookFeatureFlag;
 		preserveFirstPartyMcp?: boolean;
 		developerInstructionsDecision: PluginDeveloperInstructionsDecision;
 		platform: NodeJS.Platform;
@@ -3422,6 +3423,7 @@ function buildPluginModeHooksConfigPlan(
 		options.codexHookFeatureFlag,
 		{
 			pluginScopedHooks: options.pluginScopedHooks,
+			pluginHookFeatureFlag: options.pluginHookFeatureFlag,
 			preserveNativeHooks:
 				options.pluginScopedHooks && managedHooksPlan?.hasForeignHooks === true,
 		},
@@ -3536,6 +3538,7 @@ interface PlanNativeHookSetupTransactionOptions {
 	platform: NodeJS.Platform;
 	isPluginInstallMode: boolean;
 	pluginScopedHooks: boolean;
+	pluginHookFeatureFlag?: CodexPluginHookFeatureFlag;
 	codexHookFeatureFlag: CodexHookFeatureFlag;
 	preserveFirstPartyMcp: boolean;
 	removeFirstPartyMcp: boolean;
@@ -3784,6 +3787,7 @@ async function planNativeHookSetupTransaction(
 			{
 				codexHookFeatureFlag: options.codexHookFeatureFlag,
 				pluginScopedHooks: options.pluginScopedHooks,
+				pluginHookFeatureFlag: options.pluginHookFeatureFlag,
 				preserveFirstPartyMcp: options.preserveFirstPartyMcp,
 				developerInstructionsDecision:
 					options.pluginDeveloperInstructionsDecision,
@@ -4300,6 +4304,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 		isPluginInstallMode,
 		pluginScopedHooks: pluginScopedHooksSupported,
+		pluginHookFeatureFlag: codexHookFeatureSupport.pluginHookFeatureFlag ?? undefined,
 		codexHookFeatureFlag,
 		preserveFirstPartyMcp:
 			shouldOfferFirstPartyMcpRemoval && !removeFirstPartyMcpRegistrations,
@@ -4703,7 +4708,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		}
 		console.log(
 			pluginScopedHooksSupported
-				? "  Plugin-scoped Codex hooks and runtime feature flags refresh complete (plugin_hooks, goals).\n"
+				? `  Plugin-scoped Codex hooks and runtime feature flags refresh complete (${codexHookFeatureSupport.pluginHookFeatureFlag}, goals).\n`
 				: `  Native Codex hooks fallback and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
 		);
 		if (pluginDeveloperInstructionsDecision.action !== "preserve") {

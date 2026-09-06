@@ -23,6 +23,7 @@ import {
   formatCodexHookFeatureFlagLine,
   normalizeCodexHookFeatureFlag,
   type CodexHookFeatureFlag,
+  type CodexPluginHookFeatureFlag,
 } from "./codex-feature-flags.js";
 import {
   OMX_FIRST_PARTY_MCP_SERVER_NAMES,
@@ -874,12 +875,13 @@ function upsertPluginScopedHookFeatureFlagInSection(
   lines: string[],
   featuresStart: number,
   sectionEnd: number,
+  featureFlag: CodexPluginHookFeatureFlag,
 ): { sectionEnd: number; featureFlagIndex: number } {
   return upsertFeatureFlagLineInSection(
     lines,
     featuresStart,
     sectionEnd,
-    CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG,
+    featureFlag,
     isAnyPluginModeHookFeatureFlagLine,
   );
 }
@@ -2888,14 +2890,20 @@ export function upsertManagedCodexHookTrustState(
 export function upsertPluginModeRuntimeFeatureFlags(
   config: string,
   codexHookFeatureFlag: CodexHookFeatureFlag = DEFAULT_CODEX_HOOK_FEATURE_FLAG,
-  options: { pluginScopedHooks?: boolean; preserveNativeHooks?: boolean } = {},
+  options: {
+    pluginScopedHooks?: boolean;
+    pluginHookFeatureFlag?: CodexPluginHookFeatureFlag;
+    preserveNativeHooks?: boolean;
+  } = {},
 ): string {
   const lines = config.split(/\r?\n/);
   const featuresStart = lines.findIndex((line) =>
     /^\s*\[features\]\s*$/.test(line),
   );
+  const pluginHookFeatureFlag = options.pluginHookFeatureFlag ?? CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG;
+  const preserveNativeHooks = options.preserveNativeHooks && pluginHookFeatureFlag !== codexHookFeatureFlag;
   const hookFeatureFlagLine = options.pluginScopedHooks
-    ? `${CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG} = true`
+    ? `${pluginHookFeatureFlag} = true`
     : formatCodexHookFeatureFlagLine(codexHookFeatureFlag);
 
   if (featuresStart < 0) {
@@ -2903,7 +2911,7 @@ export function upsertPluginModeRuntimeFeatureFlags(
     const featureBlock = [
       "[features]",
       hookFeatureFlagLine,
-      ...(options.pluginScopedHooks && options.preserveNativeHooks
+      ...(options.pluginScopedHooks && preserveNativeHooks
         ? [formatCodexHookFeatureFlagLine(codexHookFeatureFlag)]
         : []),
       "goals = true",
@@ -2937,8 +2945,9 @@ export function upsertPluginModeRuntimeFeatureFlags(
       lines,
       featuresStart,
       sectionEnd,
+      pluginHookFeatureFlag,
     ));
-    if (options.preserveNativeHooks) {
+    if (preserveNativeHooks) {
       ({ sectionEnd } = upsertCodexHookFeatureFlagInSection(
         lines,
         featuresStart,

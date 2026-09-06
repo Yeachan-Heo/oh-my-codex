@@ -2,7 +2,8 @@ import { spawnSync } from "child_process";
 import {
   DEFAULT_CODEX_HOOK_FEATURE_FLAG,
   resolveCodexHookFeatureFlag,
-  supportsCodexPluginScopedHooks,
+  resolveCodexPluginHookFeatureFlag,
+  type CodexPluginHookFeatureFlag,
   type CodexHookFeatureFlag,
 } from "../config/codex-feature-flags.js";
 
@@ -112,6 +113,7 @@ export function probeInstalledCodexVersion(
 export interface CodexHookFeatureSupport {
   hookFeatureFlag: CodexHookFeatureFlag;
   pluginScopedHooks: boolean;
+  pluginHookFeatureFlag: CodexPluginHookFeatureFlag | null;
 }
 
 export function resolveCodexHookFeatureSupportForCli(
@@ -120,13 +122,15 @@ export function resolveCodexHookFeatureSupportForCli(
   const featuresListOutput =
     options.codexFeaturesProbe?.() ?? probeInstalledCodexFeatureList();
   const versionOutput = options.codexVersionProbe?.() ?? probeInstalledCodexVersion();
+  const pluginHookFeatureFlag = resolveCodexPluginHookFeatureFlag({ featuresListOutput });
   return {
     hookFeatureFlag: resolveCodexHookFeatureFlag({
       featuresListOutput,
       versionOutput,
       fallback: DEFAULT_CODEX_HOOK_FEATURE_FLAG,
     }),
-    pluginScopedHooks: supportsCodexPluginScopedHooks({ featuresListOutput }),
+    pluginScopedHooks: pluginHookFeatureFlag !== null,
+    pluginHookFeatureFlag,
   };
 }
 

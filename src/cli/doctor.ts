@@ -1,3 +1,5 @@
+import { probeInstalledCodexFeatureList } from "./codex-feature-probe.js";
+import { resolveCodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 /**
  * omx doctor - Validate oh-my-codex installation
  */
@@ -248,8 +250,6 @@ async function inferPluginInstallModeFromConfigForScope(
 
 	try {
 		const configContent = await readFile(configPath, "utf-8");
-		if (!configEnablesPluginScopedHooks(configContent)) return null;
-
 		const { marketplace, plugin } = getParsedPluginMarketplaceConfig(configContent);
 		if (!marketplace || marketplace.source_type !== "local") return null;
 		if (!(await isTrustedOmxPluginMarketplaceSource(marketplace.source))) return null;
@@ -556,6 +556,21 @@ export function checkStateRootSessionBinding(
   env: NodeJS.ProcessEnv = process.env,
 ): Check {
   const evaluation = selectorEvaluation(snapshot, env);
+  // Codex also supplies a session ID outside OMX-managed sessions. Its presence
+  // alone cannot establish a broken binding in an uninitialized workspace.
+  // Keep explicit runtime roots/selectors and existing pointers fail-closed.
+  if (
+    snapshot.status === "absent" && snapshot.rootSource === "cwd-default" &&
+    !bindingEnvironmentRootSelector(env) &&
+    evaluation.nonblank.length === 1 && evaluation.nonblank[0] === "CODEX_SESSION_ID" &&
+    normalizeSessionId(env.CODEX_SESSION_ID) !== undefined
+  ) {
+    return {
+      name: "State root/session binding",
+      status: "warn",
+      message: "src=cwd-default ptr=absent; runtime binding unavailable: inherited CODEX_SESSION_ID has no OMX session pointer; no runtime authority verified",
+    };
+  }
   let status: Check["status"] = "fail";
   if (snapshot.status === "absent" && evaluation.bad.length === 0) status = "pass";
   else if (snapshot.status === "stale-dead" && evaluation.bad.length === 0) status = "warn";
@@ -2112,6 +2127,7 @@ export async function checkExternalCodexProcessGuards(
 }
 
 export interface NativeHookCheckContext {
+	codexFeaturesListOutput?: string;
 	codexHomeDir: string;
 	installMode?: SetupInstallMode;
 	platform?: NodeJS.Platform;
@@ -2126,15 +2142,24 @@ function configHasOmxEntries(configContent: string): boolean {
 	return configContent.includes("omx_") || configContent.includes("oh-my-codex");
 }
 
-function configEnablesPluginScopedHooks(configContent: string): boolean {
+export function configEnablesPluginScopedHooks(
+	configContent: string,
+	featuresListOutput = probeInstalledCodexFeatureList(),
+): boolean {
+	const featureFlag = resolveCodexPluginHookFeatureFlag({ featuresListOutput });
+	if (!featureFlag) return false;
 	try {
 		const parsed = parseToml(configContent) as {
 			plugin_hooks?: unknown;
 			features?: Record<string, unknown>;
 		};
-		return isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks);
+		const { plugin } = getParsedPluginMarketplaceConfig(configContent);
+		const nativeHooks = parsed.features?.hooks ?? parsed.features?.codex_hooks;
+		return featureFlag === "plugin_hooks"
+			? isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks)
+			: plugin?.enabled === true && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
 	} catch {
-		return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		return false;
 	}
 }
 
@@ -2711,7 +2736,7 @@ export async function checkNativeHooks(
 	if (existsSync(configPath) && context.installMode === "plugin") {
 		try {
 			const configContent = await readFile(configPath, "utf-8");
-			if (configEnablesPluginScopedHooks(configContent)) {
+			if (configEnablesPluginScopedHooks(configContent, context.codexFeaturesListOutput)) {
 				const globalCheck = existsSync(hooksPath)
 					? await checkExistingNativeHooks(hooksPath, context)
 					: null;

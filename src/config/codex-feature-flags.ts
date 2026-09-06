@@ -55,12 +55,30 @@ export function isCodexCliVersionAtLeast(
   return true;
 }
 
+export type CodexPluginHookFeatureFlag = "hooks" | "plugin_hooks";
+
+export function resolveCodexPluginHookFeatureFlag(options: {
+  featuresListOutput?: string | null;
+} = {}): CodexPluginHookFeatureFlag | null {
+  const stages = new Map<string, string>();
+  for (const line of (options.featuresListOutput ?? "").split(/\r?\n/)) {
+    const match = line.trim().match(/^(\w+)\s+(.+?)\s+(?:true|false)$/);
+    if (match) stages.set(match[1], match[2]);
+  }
+  const pluginStage = stages.get(CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG);
+  // Removed flags remain in `features list`, but cannot enable a capability.
+  // Codex consolidated plugin hooks into the canonical hooks feature.
+  if (pluginStage === "removed") {
+    const hooksStage = stages.get("hooks");
+    return hooksStage && hooksStage !== "removed" ? "hooks" : null;
+  }
+  return pluginStage ? CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG : null;
+}
+
 export function supportsCodexPluginScopedHooks(options: {
   featuresListOutput?: string | null;
 } = {}): boolean {
-  return parseCodexFeatureNames(options.featuresListOutput).has(
-    CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG,
-  );
+  return resolveCodexPluginHookFeatureFlag(options) !== null;
 }
 
 export function resolveCodexHookFeatureFlag(options: {
