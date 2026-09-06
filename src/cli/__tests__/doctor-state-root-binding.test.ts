@@ -29,6 +29,54 @@ function syntheticSnapshot(
 }
 
 describe('doctor state-root/session binding diagnostics', () => {
+  it('reports unavailable runtime binding for only an ambient Codex session in an uninitialized workspace', () => {
+    const check = checkStateRootSessionBinding(
+      syntheticSnapshot('absent', { rootSource: 'cwd-default' }),
+      { CODEX_SESSION_ID: 'codex-session' },
+    );
+    assert.equal(check.status, 'warn');
+    assert.match(check.message, /runtime binding unavailable/);
+    assert.doesNotMatch(check.message, /bad_selectors|clear|relaunch/);
+  });
+
+  it('leaves a fresh workspace untouched when inspecting an ambient Codex session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-doctor-ambient-session-'));
+    try {
+      const env = { CODEX_SESSION_ID: 'codex-session' };
+      const snapshot = await readCanonicalSessionBindingSnapshot(cwd, env);
+      assert.equal(snapshot.status, 'absent');
+      assert.equal(snapshot.rootSource, 'cwd-default');
+      assert.equal(checkStateRootSessionBinding(snapshot, env).status, 'warn');
+      assert.deepEqual(await readdir(cwd), []);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit runtime selectors and unsafe pointers fail-closed', () => {
+    for (const env of [
+      { CODEX_SESSION_ID: 'codex-session', OMX_SESSION_ID: 'omx-session' },
+      { CODEX_SESSION_ID: 'codex-session', SESSION_ID: 'session' },
+      { CODEX_SESSION_ID: 'codex-session', OMX_ROOT: '/explicit' },
+      { CODEX_SESSION_ID: 'codex-session', OMX_STATE_ROOT: '/explicit' },
+      { CODEX_SESSION_ID: 'codex-session', OMX_TEAM_STATE_ROOT: '/explicit' },
+      { CODEX_SESSION_ID: 'invalid/session' },
+    ]) {
+      assert.equal(checkStateRootSessionBinding(
+        syntheticSnapshot('absent', { rootSource: 'cwd-default' }), env,
+      ).status, 'fail');
+    }
+    for (const status of ['foreign-cwd', 'malformed', 'identity-indeterminate', 'usable'] as const) {
+      assert.equal(checkStateRootSessionBinding(
+        syntheticSnapshot(status, { rootSource: 'cwd-default' }),
+        { CODEX_SESSION_ID: 'unverified-codex' },
+      ).status, 'fail');
+    }
+    assert.equal(checkStateRootSessionBinding(
+      syntheticSnapshot('absent'), { CODEX_SESSION_ID: 'codex-session' },
+    ).status, 'fail');
+  });
+
   it('prefers the winning env root over OMX_SESSION_ID during resolution failure', async () => {
     const env = {
       OMX_ROOT: '/winning-root',

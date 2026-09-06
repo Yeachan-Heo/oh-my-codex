@@ -12,8 +12,8 @@ import {
 	symlink,
 	writeFile,
 } from "node:fs/promises";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,7 @@ import {
 	checkNativeHookDistSmoke,
 	checkNativePostCompactHookRuntime,
 	checkNativeHooks,
+	configEnablesPluginScopedHooks,
 	classifyPostCompactHookStdout,
 	doctor,
 	setDoctorClaimJournalDurabilityForTest,
@@ -58,11 +59,24 @@ function runOmx(
 	cwd: string,
 	argv: string[],
 	envOverrides: Record<string, string> = {},
+	featuresListOutput = "hooks stable true\nplugin_hooks experimental true",
 ): { status: number | null; stdout: string; stderr: string; error?: string } {
 	const testDir = dirname(fileURLToPath(import.meta.url));
 	const repoRoot = join(testDir, "..", "..", "..");
 	const omxBin = join(repoRoot, "dist", "cli", "omx.js");
 	const mergedEnv = { ...process.env, ...envOverrides };
+	if (envOverrides.PATH === undefined) {
+		const fakeBin = join(cwd, "doctor-codex-fixture");
+		mkdirSync(fakeBin, { recursive: true });
+		const fixture = process.platform === "win32" ? "codex.cmd" : "codex";
+		const content = process.platform === "win32"
+			? `@echo off\n${featuresListOutput.split("\n").map((line) => `echo ${line}`).join("\n")}\n`
+			: `#!/bin/sh\nprintf '%s\\n' '${featuresListOutput}'\n`;
+		writeFileSync(join(fakeBin, fixture), content);
+		chmodSync(join(fakeBin, fixture), 0o755);
+		mergedEnv.PATH = `${fakeBin}${delimiter}${mergedEnv.PATH ?? ""}`;
+	}
+
 	if (
 		typeof envOverrides.HOME === "string" &&
 		typeof envOverrides.USERPROFILE !== "string"
@@ -1390,6 +1404,95 @@ OMX_LORE_COMMIT_GUARD = "truee"
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("uses only the effective hook flag for the installed Codex capability", () => {
+		const plugin = '\n[plugins."oh-my-codex@oh-my-codex-local"]\nenabled = true\n';
+		const modern = "hooks stable true\nplugin_hooks removed false";
+		const legacy = "hooks stable true\nplugin_hooks experimental false";
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true\nplugin_hooks = false' + plugin, legacy), false);
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = false\nplugin_hooks = true' + plugin, modern), false);
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true\nplugin_hooks = false' + plugin, modern), true);
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true\n', modern), false);
+		assert.equal(configEnablesPluginScopedHooks(plugin, modern), true);
+		assert.equal(configEnablesPluginScopedHooks('[features]\ncodex_hooks = false' + plugin, modern), false);
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true\ncodex_hooks = false' + plugin, modern), true);
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = false\ncodex_hooks = true' + plugin, modern), false);
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true' + plugin, null), false);
+		assert.equal(configEnablesPluginScopedHooks('not valid TOML plugin_hooks = true', legacy), false);
+	});
+
+	for (const hooksSetting of [true, false, undefined]) {
+		it(`infers plugin mode with canonical hooks ${String(hooksSetting)} and no removed flag`, async () => {
+			const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-config-compat-"));
+			try {
+				const home = join(wd, "home");
+				const codexDir = join(home, ".codex");
+				await mkdir(codexDir, { recursive: true });
+				await installPluginCacheFixture(codexDir);
+				await writeFile(
+					join(codexDir, "config.toml"),
+					[
+						"[features]",
+						...(hooksSetting === undefined ? [] : [`hooks = ${hooksSetting}`]),
+						"goals = true",
+						"",
+						"[marketplaces.oh-my-codex-local]",
+						'source_type = "local"',
+						`source = ${JSON.stringify(repoRoot())}`,
+						"",
+						'[plugins."oh-my-codex@oh-my-codex-local"]',
+						"enabled = true",
+						"",
+						'[plugins."oh-my-codex@oh-my-codex-local".mcp_servers.omx_state]',
+						"enabled = true",
+						'[plugins."oh-my-codex@oh-my-codex-local".mcp_servers.omx_memory]',
+						"enabled = true",
+						'[plugins."oh-my-codex@oh-my-codex-local".mcp_servers.omx_code_intel]',
+						"enabled = true",
+						'[plugins."oh-my-codex@oh-my-codex-local".mcp_servers.omx_trace]',
+						"enabled = true",
+						'[plugins."oh-my-codex@oh-my-codex-local".mcp_servers.omx_wiki]',
+						"enabled = true",
+						'[plugins."oh-my-codex@oh-my-codex-local".mcp_servers.omx_hermes]',
+						"enabled = true",
+						"",
+					].join("\n"),
+				);
+
+				assert.equal(existsSync(join(wd, ".omx", "setup-scope.json")), false);
+
+				const res = runOmx(wd, ["doctor"], {
+					HOME: home,
+					CODEX_HOME: codexDir,
+				}, "hooks stable true\nplugin_hooks removed false");
+				if (shouldSkipForSpawnPermissions(res.error)) return;
+				assert.equal(res.status, 0, res.stderr || res.stdout);
+				assert.match(
+					res.stdout,
+					/Resolved setup MCP mode: compat \(inferred from Codex plugin config\)/,
+				);
+				assert.match(
+					res.stdout,
+					/MCP Servers: plugin MCP compatibility enabled by setup MCP mode compat \(6\/6 first-party servers enabled\)/,
+				);
+				assert.doesNotMatch(
+					res.stdout,
+					/plugin MCP compatibility overrides are incomplete or mixed/,
+				);
+				if (hooksSetting !== false) {
+					assert.match(res.stdout, /\[OK\] Native hooks: plugin-scoped hooks are enabled/);
+					assert.doesNotMatch(res.stdout, /expected setup-owned hooks.json is missing/);
+				} else {
+					assert.doesNotMatch(res.stdout, /Native hooks: plugin-scoped hooks are enabled/);
+				}
+				assert.doesNotMatch(res.stdout, /Prompts: prompts directory not found|Skills:.*expected/);
+
+			} finally {
+				await rm(wd, { recursive: true, force: true });
+			}
+		});
+
+	}
 
 	it("does not infer plugin mode from a foreign local marketplace source", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-config-foreign-"));
@@ -2866,6 +2969,7 @@ command = "node"
 			const check = await checkNativeHooks(hooksPath, configPath, {
 				codexHomeDir: codexDir,
 				installMode: "plugin",
+				codexFeaturesListOutput: "plugin_hooks experimental true",
 			});
 
 			assert.equal(check.status, "fail");
@@ -2899,6 +3003,7 @@ command = "node"
 			const check = await checkNativeHooks(hooksPath, configPath, {
 				codexHomeDir: codexDir,
 				installMode: "plugin",
+				codexFeaturesListOutput: "plugin_hooks experimental true",
 				platform: "win32",
 			});
 

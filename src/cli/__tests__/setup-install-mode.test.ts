@@ -2071,6 +2071,48 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("uses unified hooks when Codex reports plugin_hooks removed", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "plugin", codexFeaturesProbe: () => "hooks stable true\nplugin_hooks removed false\n", codexVersionProbe: () => "codex-cli 0.140.0" });
+					await setup({ scope: "user", installMode: "plugin", codexFeaturesProbe: () => "hooks stable true\nplugin_hooks removed false\n", codexVersionProbe: () => "codex-cli 0.140.0" });
+
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
+					const config = await readFile(
+						join(codexHomeDir, "config.toml"),
+						"utf-8",
+					);
+					assert.doesNotMatch(config, /^plugin_hooks\s*=/m);
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
+					assert.doesNotMatch(config, /^codex_hooks = true$/m);
+					assert.match(config, /^goals = true$/m);
+					assert.doesNotMatch(config, /\[hooks\.state\./);
+					assert.doesNotMatch(
+						config,
+						/developer_instructions|notify-hook/g,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
+						false,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "agents", "planner.toml")),
+						true,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "prompts", "executor.md")),
+						false,
+					);
+					assert.equal(existsSync(join(codexHomeDir, "AGENTS.md")), true);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("can opt into plugin AGENTS.md and developer_instructions defaults", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
