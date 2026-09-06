@@ -1,5 +1,5 @@
 import { probeInstalledCodexFeatureList } from "./codex-feature-probe.js";
-import { resolveUserCredentialFilePath } from "./launch-credential-provenance.js";
+import { resolveUserCredentialSource } from "./launch-credential-provenance.js";
 import { resolveCodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 /**
  * omx doctor - Validate oh-my-codex installation
@@ -1518,14 +1518,23 @@ async function checkCredentialProvenance(scope: DoctorSetupScope, env: NodeJS.Pr
 		};
 	}
 	const explicit = typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim() !== "";
-	const authPath = await resolveUserCredentialFilePath(env);
-	if (authPath) {
+	const source = await resolveUserCredentialSource(env);
+	if (source.status === "found") {
 		return {
 			name: "Credential provenance",
 			status: "pass",
 			message: explicit
 				? "CODEX_HOME is explicit; its auth.json will be used as-is"
 				: "user auth.json will be seeded into the project launch home (no copy into the project)",
+		};
+	}
+	if (source.status === "unsafe") {
+		return {
+			name: "Credential provenance",
+			status: explicit ? "pass" : "fail",
+			message: explicit
+				? "CODEX_HOME is explicit but its auth.json is not a regular readable file; log in with `codex login` or `omx auth`"
+				: "auth.json in the default Codex home is not a regular readable file; project-scope launches will run unauthenticated — log in with `codex login` or `omx auth`",
 		};
 	}
 	return {

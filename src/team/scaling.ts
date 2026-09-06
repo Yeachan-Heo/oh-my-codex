@@ -625,7 +625,7 @@ export async function scaleUp(
     // workers re-resolve scope and credential provenance in their own
     // process instead of inheriting an unauthenticated CODEX_HOME.
     const codexHomeForResolution = resolveCodexHomeForLaunch(leaderCwd, env);
-    const codexHomeOverride = resolveCodexHomeForChildExport(leaderCwd, env);
+    const codexHomeOverride = resolveCodexHomeForChildExport(env);
     const launchEnv = codexHomeForResolution
       ? { ...env, CODEX_HOME: codexHomeForResolution }
       : env;

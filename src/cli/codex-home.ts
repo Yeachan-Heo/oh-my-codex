@@ -56,12 +56,11 @@ export function resolveCodexConfigPathForLaunch(
  *   like a leader launch.
  */
 export function resolveCodexHomeForChildExport(
-	cwd: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
 	if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return env.CODEX_HOME;
-	const explicit = resolveCodexHomeForLaunch(cwd, env);
-	if (!explicit) return undefined;
-	if (resolveProjectLocalCodexHomeForLaunch(cwd, env)) return undefined;
-	return explicit;
+	// Without an explicit env value the only resolution result is the
+	// project-derived home, which must never be exported to children (issue
+	// #3629). A single lookup avoids any marker race between two resolutions.
+	return undefined;
 }

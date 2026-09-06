@@ -1093,12 +1093,11 @@ function isCodexSqliteArtifact(entryName: string): boolean {
   return /^(?:state|logs)_\d+\.sqlite(?:-(?:shm|wal))?$/.test(entryName);
 }
 
-const PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES = new Set([
-  // Codex CLI writes browser/OTP login state here when CODEX_HOME points at
-  // the per-session mirror. Persist only the opaque file itself; never parse or
-  // log the contents.
-  "auth.json",
-]);
+// Issue #3629: no runtime entry is persisted back into the project .codex
+// directory. Runtime auth.json is either a seeded copy of the caller's
+// credential or in-session login state; both belong to the caller's own
+// home (or the ephemeral home), never to a repository-local directory.
+const PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES = new Set<string>([]);
 
 const PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES = new Set([
   "sessions",
@@ -2072,6 +2071,13 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
   for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
     if (!shouldMirrorProjectLaunchRuntimeEntry(entry.name, options.includeHistoryArtifacts === true)) continue;
     if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
+    // Issue #3629: never mirror project auth into the runtime home. The
+    // runtime home gets credential provenance from the caller's own auth
+    // (seedCredentialIntoRuntimeHome); mirroring the project's copy could
+    // turn the runtime entry into a symlink into the durable project file
+    // (or vice versa through later persistence), routing real credentials
+    // through repository-local state.
+    if (entry.name === "auth.json") continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
     if (PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entry.name)) {
@@ -2354,6 +2360,9 @@ async function prepareResumeCodexHomeForLaunch(
       await rm(emptyRuntimeCodexHome, { recursive: true, force: true });
       await mkdir(join(emptyRuntimeCodexHome, "sessions"), { recursive: true });
       await preflightResumeOmxPluginState(emptyRuntimeCodexHome, getPackageRoot(), { projectRoot: cwd });
+      // Issue #3629: the empty project-only runtime home still replaces
+      // CODEX_HOME, so it needs the same credential provenance.
+      await seedCredentialIntoRuntimeHome(emptyRuntimeCodexHome, env);
       return {
         args: selection.args,
         prepared: {

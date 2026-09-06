@@ -3557,7 +3557,8 @@ describe("project launch scope helpers", () => {
       );
       assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"session-2835"}\n');
       assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"session-2835"}\n');
-      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), '{"token":"opaque"}\n');
+      // Issue #3629: runtime auth.json is never persisted into the project.
+      assert.equal(existsSync(join(projectCodexHome, "auth.json")), false);
       assert.equal(existsSync(runtimeCodexHome), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -3762,7 +3763,7 @@ describe("project launch scope helpers", () => {
     }
   });
 
-  it("persists project-scope Codex auth written into the runtime CODEX_HOME mirror", async () => {
+  it("never persists runtime CODEX_HOME auth into the project (issue #3629)", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-auth-home-"));
     try {
       const projectCodexHome = join(wd, ".codex");
@@ -3785,7 +3786,9 @@ describe("project launch scope helpers", () => {
         prepared.projectLocalCodexHomeForCleanup,
       );
 
-      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), opaqueAuthState);
+      // Credentials never reach the durable project directory.
+      assert.equal(existsSync(join(projectCodexHome, "auth.json")), false);
+      // Non-secret config persistence is unchanged.
       assert.equal(await readFile(join(projectCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.6-sol"\n');
     } finally {
       await rm(wd, { recursive: true, force: true });
