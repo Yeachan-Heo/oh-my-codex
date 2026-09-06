@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-09-06
+
+Patch release for the frozen range `v0.21.3..b08eceeecc7a7379f041ceca51260f073d8a95bb` (3 commits, 35 changed files, +364/−195; PRs #3615/#3618/#3622).
+
+### Changed
+
+- **Astra defaults across OMX agent tiers** — leaders, specialists, standard and fast agents, low-complexity workers, Team children, exact planning/research roles, new-agent configuration, subscription defaults, and SparkShell summaries now default to `gpt-6-astra`. Explicit model configuration, profiles, per-agent overrides, CLI/environment selections, provider-specific names, and established reasoning-effort defaults remain authoritative (#3622).
+
+### Documentation
+
+- **Agent catalog and workflow alignment** — the generated catalog now exposes only active/internal roles as directly invocable, documents merged and deprecated role replacements, and aligns the primary workflow wording with `$deep-interview` → `$ralplan` → `$ultragoal`; `$team` remains conditional parallel execution (#3618).
+
+### Compatibility
+
+- Patch release with no intentional breaking CLI or package-layout changes. The Astra defaults apply only when no explicit model choice already exists.
+- **Known gap:** #3623 remains open, separately owned, unmerged, and outside this release. On Codex CLI 0.153.4, doctor/setup still use the removed `plugin_hooks` feature flag for plugin-hook inference and generated configuration, causing misleading diagnostics and obsolete config. Native `hooks/list` recognized the installed plugin hooks in the report, so a runtime hook outage has not been demonstrated.
+
+### Release train
+
+- #3615 advanced synchronized package/plugin/Cargo development metadata to 0.21.4 after v0.21.3. It is included in the compare inventory but is not a separate user-facing headline.
+
 ## [0.21.3] - 2026-09-03
 
 Patch release for `v0.21.2..3902573ef309e54534d7388579f2a7243ca7f465` (15 commits, 20 changed files, +1,285/−101, PRs #3604/#3605/#3606/#3608/#3610/#3612, linked issues #3609/#3611).
