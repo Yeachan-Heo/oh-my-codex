@@ -3199,6 +3199,7 @@ export function stripOmxFeatureFlags(
     "child_agents_md",
     "hooks",
     "codex_hooks",
+    "plugin_hooks",
     "goals",
     "goal",
     "collab",

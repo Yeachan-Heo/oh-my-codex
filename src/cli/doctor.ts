@@ -2145,21 +2145,65 @@ function configHasOmxEntries(configContent: string): boolean {
 export function configEnablesPluginScopedHooks(
 	configContent: string,
 	featuresListOutput = probeInstalledCodexFeatureList(),
+	featuresProbeUnavailable = featuresListOutput === null,
 ): boolean {
-	const featureFlag = resolveCodexPluginHookFeatureFlag({ featuresListOutput });
-	if (!featureFlag) return false;
-	try {
-		const parsed = parseToml(configContent) as {
+	const featureFlag = featuresProbeUnavailable
+		? null
+		: resolveCodexPluginHookFeatureFlag({ featuresListOutput });
+	// A completed probe is authoritative: when it selected a capability the
+	// capability-specific checks below decide; when the listing resolved no
+	// usable plugin hook capability (featureFlag null with a listing present),
+	// stale config must not override that negative evidence. Config-only
+	// inference is allowed only when the probe is genuinely unavailable
+	// (no binary, spawn failure, timeout); it never claims verified runtime
+	// capability on its own.
+	const parse = (content: string) => {
+		const parsed = parseToml(content) as {
 			plugin_hooks?: unknown;
 			features?: Record<string, unknown>;
 		};
-		const { plugin } = getParsedPluginMarketplaceConfig(configContent);
+		const { plugin } = getParsedPluginMarketplaceConfig(content);
+		return { parsed, pluginEnabled: plugin?.enabled === true };
+	};
+	const legacyPluginHooksEnabled = (content: string) => {
+		const { parsed } = parse(content);
+		return (
+			isEnabledTomlValue(parsed.plugin_hooks) ||
+			isEnabledTomlValue(parsed.features?.plugin_hooks)
+		);
+	};
+	try {
+		if (featureFlag === "plugin_hooks") {
+			return legacyPluginHooksEnabled(configContent);
+		}
+		const { parsed, pluginEnabled } = parse(configContent);
 		const nativeHooks = parsed.features?.hooks ?? parsed.features?.codex_hooks;
-		return featureFlag === "plugin_hooks"
-			? isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks)
-			: plugin?.enabled === true && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
+		if (featureFlag === "hooks") {
+			return pluginEnabled && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
+		}
+		if (!featuresProbeUnavailable) return false;
+		// Probe unavailable: config-only inference from a trusted setup-written
+		// configuration. Requires the enabled trusted plugin registration for
+		// canonical hooks enablement; the retired spelling is accepted as the
+		// legacy supported row.
+		return (
+			legacyPluginHooksEnabled(configContent) ||
+			(pluginEnabled &&
+				(nativeHooks === undefined || isEnabledTomlValue(nativeHooks)))
+		);
 	} catch {
-		return false;
+		// Config is not parseable TOML: capability-aware last-resort regex using
+		// the same spelling each known capability would accept, with the same
+		// enabled-plugin proof requirement for the canonical spelling when the
+		// probe is unavailable. Never a second trust-validation path.
+		if (featureFlag === "plugin_hooks") {
+			return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		}
+		if (featureFlag === "hooks") {
+			return /^\s*hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		}
+		if (!featuresProbeUnavailable) return false;
+		return /^\s*(?:plugin_hooks|hooks)\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
 	}
 }
 
@@ -2760,7 +2804,7 @@ export async function checkNativeHooks(
 						name: "Native hooks",
 						status: "warn",
 						message:
-							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or upgrade Codex to plugin_hooks support so setup can use plugin-scoped hooks`,
+							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or rerun setup on a Codex build with plugin-scoped hooks support`,
 					};
 				}
 
