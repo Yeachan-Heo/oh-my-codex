@@ -3801,6 +3801,11 @@ export async function startTeam(
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
         [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
         OMX_TEAM_DISPLAY_NAME: displayName,
+        // Issue #3629: prompt-mode workers are direct codex children and do
+        // read this CODEX_HOME. It is the child-export value: unset for
+        // project-scope leaders (codex then uses the caller's own home, the
+        // same credentials a plain `codex` run would use) and explicit
+        // CODEX_HOME passthrough otherwise.
         ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
         ...worktreeToolContextEnv(plan.toolContext),
       };

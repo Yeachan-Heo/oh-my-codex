@@ -75,7 +75,7 @@ import { buildTeamWorkerGoalInstruction } from './goal-workflow.js';
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
 import { codexPromptsDir } from '../utils/paths.js';
-import { resolveCodexHomeForChildExport } from '../cli/codex-home.js';
+import { resolveCodexHomeForChildExport, resolveCodexHomeForLaunch } from '../cli/codex-home.js';
 import {
   parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
@@ -619,9 +619,15 @@ export async function scaleUp(
     }
 
     const teamStateRoot = config.team_state_root ?? resolveCanonicalTeamStateRoot(leaderCwd);
+    // Issue #3629: keep the project-derived home for the leader-side
+    // resolution pass (model/reasoning overrides in <project>/.codex), but
+    // export only a child-safe value into the worker env. Project-scope
+    // workers re-resolve scope and credential provenance in their own
+    // process instead of inheriting an unauthenticated CODEX_HOME.
+    const codexHomeForResolution = resolveCodexHomeForLaunch(leaderCwd, env);
     const codexHomeOverride = resolveCodexHomeForChildExport(leaderCwd, env);
-    const launchEnv = codexHomeOverride
-      ? { ...env, CODEX_HOME: codexHomeOverride }
+    const launchEnv = codexHomeForResolution
+      ? { ...env, CODEX_HOME: codexHomeForResolution }
       : env;
     // Build and validate every launch plan before any task, directory, worktree,
     // pane, process, or config mutation. The plan is the sole source of launch
@@ -637,7 +643,7 @@ export async function scaleUp(
         existingTasks,
         incomingTasks: tasks,
         launchEnv,
-        codexHomeOverride,
+        codexHomeOverride: codexHomeForResolution,
       });
     } catch (error) {
       return {
