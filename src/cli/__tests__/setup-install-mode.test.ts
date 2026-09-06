@@ -550,8 +550,8 @@ approval_policy = "on-failure"
 async function assertProjectPluginModeArtifacts(wd: string): Promise<void> {
 	assert.equal(existsSync(join(wd, ".codex", "hooks.json")), false);
 	const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
-	assert.match(config, /^plugin_hooks = true$/m);
-	assert.doesNotMatch(config, /^hooks = true$/m);
+	assert.match(config, /^hooks = true$/m);
+	assert.doesNotMatch(config, /^plugin_hooks = true$/m);
 	assert.match(config, /^goals = true$/m);
 	assert.doesNotMatch(config, /developer_instructions|notify-hook/g);
 	assert.equal(
@@ -1804,8 +1804,8 @@ describe("omx setup install mode behavior", () => {
 						existsSync(join(cacheDir, "skills", "ask", "SKILL.md")),
 						true,
 					);
-					assert.match(config, /^plugin_hooks = true$/m);
-					assert.doesNotMatch(config, /^hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
+					assert.doesNotMatch(config, /^plugin_hooks = true$/m);
 					assert.doesNotMatch(config, /^codex_hooks = true$/m);
 					assert.doesNotMatch(config, /\[mcp_servers\./);
 					assert.equal(
@@ -2042,8 +2042,8 @@ describe("omx setup install mode behavior", () => {
 						join(codexHomeDir, "config.toml"),
 						"utf-8",
 					);
-					assert.match(config, /^plugin_hooks = true$/m);
-					assert.doesNotMatch(config, /^hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
+					assert.doesNotMatch(config, /^plugin_hooks = true$/m);
 					assert.doesNotMatch(config, /^codex_hooks = true$/m);
 					assert.match(config, /^goals = true$/m);
 					assert.doesNotMatch(config, /\[hooks\.state\./);
@@ -2126,7 +2126,7 @@ describe("omx setup install mode behavior", () => {
 					assert.doesNotMatch(config, /before Ralplan planning, state, HUD, runtime, or delegation work, run `omx ralplan preflight --json`/i);
 					assert.doesNotMatch(config, /Native subagents live in \.codex\/agents/);
 					assert.doesNotMatch(config, /Treat installed prompts as narrower execution surfaces/);
-					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
 					assert.doesNotMatch(config, /notify-hook/);
 					assert.doesNotMatch(config, /^\s*\[mcp_servers[.\]]/m);
 					assert.doesNotMatch(config, /mcp_servers\.omx_state/);
@@ -2219,7 +2219,7 @@ describe("omx setup install mode behavior", () => {
 					assert.equal(promptCount, 0);
 					const config = await readFile(configPath, "utf-8");
 					assert.match(config, /^developer_instructions = "custom"$/m);
-					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
 					assert.equal(
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,
@@ -2525,7 +2525,7 @@ describe("omx setup install mode behavior", () => {
 						(config.match(/^developer_instructions\s*=/gm) ?? []).length,
 						1,
 					);
-					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
 					assert.doesNotMatch(config, /\[hooks\.state\./);
 				});
 			});
@@ -2548,7 +2548,7 @@ describe("omx setup install mode behavior", () => {
 
 					const config = await readFile(configPath, "utf-8");
 					assert.doesNotMatch(config, /^developer_instructions\s*=/m);
-					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
 				});
 			});
 		} finally {
@@ -2574,7 +2574,7 @@ describe("omx setup install mode behavior", () => {
 						"utf-8",
 					);
 					assert.match(config, /^codex_hooks = true$/m);
-					assert.doesNotMatch(config, /^hooks = true$/m);
+					assert.doesNotMatch(config, /^plugin_hooks = true$/m);
 				});
 			});
 		} finally {
@@ -2613,8 +2613,8 @@ describe("omx setup install mode behavior", () => {
 						join(codexHomeDir, "config.toml"),
 						"utf-8",
 					);
-					assert.match(config, /^plugin_hooks = true$/m);
-					assert.doesNotMatch(config, /^hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
+					assert.doesNotMatch(config, /^plugin_hooks = true$/m);
 					assert.doesNotMatch(config, /\[hooks\.state\./);
 				});
 			});
@@ -3760,8 +3760,8 @@ describe("omx setup install mode behavior", () => {
 					const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
 					assert.match(finalHooksContent, /foreign-hook\.py/);
 					assert.doesNotMatch(finalHooksContent, /codex-native-hook\.js/);
-					assert.match(config, /^plugin_hooks = true$/m);
 					assert.match(config, /^hooks = true$/m);
+					assert.doesNotMatch(config, /^plugin_hooks = true$/m);
 				});
 			});
 		} finally {
@@ -3803,11 +3803,11 @@ describe("omx setup install mode behavior", () => {
 						join(codexHomeDir, "config.toml"),
 						"utf-8",
 					);
-					assert.match(config, /^plugin_hooks = true$/m);
-					assert.match(
+					assert.match(config, /^hooks = true$/m);
+					assert.doesNotMatch(
 						config,
-						/^hooks = true$/m,
-						"plugin-scoped setup must keep native hooks enabled for foreign hooks",
+						/^plugin_hooks = true$/m,
+						"plugin-scoped setup must not emit the removed plugin_hooks flag",
 					);
 				});
 			});
@@ -3899,7 +3899,7 @@ describe("omx setup install mode behavior", () => {
 					await setup({ scope: "user", installMode: "plugin" });
 
 					const config = await readFile(configPath, "utf-8");
-					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
 					assert.match(config, /^trusted_hash = "sha256:user"$/m);
 					assert.match(config, /^enabled = false$/m);
 					assert.equal(
@@ -4125,7 +4125,7 @@ describe("omx setup install mode behavior", () => {
 					assert.match(pluginOutput, /Using setup install mode: plugin/);
 					assert.match(
 						pluginOutput,
-						/Plugin-scoped Codex hooks and runtime feature flags refresh complete .*plugin_hooks, goals/,
+						/Plugin-scoped Codex hooks and runtime feature flags refresh complete .*hooks, goals/,
 					);
 					assert.doesNotMatch(pluginOutput, /user-scope skill delivery mode/);
 					assert.doesNotMatch(
@@ -4220,7 +4220,7 @@ describe("omx setup install mode behavior", () => {
 					assert.equal(existsSync(hooksPath), false);
 					assert.equal(existsSync(agentsMdPath), true);
 					const config = await readFile(configPath, "utf-8");
-					assert.match(config, /^plugin_hooks = true$/m);
+					assert.match(config, /^hooks = true$/m);
 					assert.doesNotMatch(
 						config,
 						/^\s*(?:notify)\s*=|^\s*\[mcp_servers[.\]]/m,
@@ -5671,7 +5671,7 @@ describe("omx setup install mode behavior", () => {
 					assert.deepEqual(await readFile(driftedStagedPath), foreignStagedCopy);
 					assert.equal(existsSync(shimPath), false);
 					assert.equal(existsSync(hooksPath), false);
-					assert.match(await readFile(configPath, "utf-8"), /^plugin_hooks = true$/m);
+					assert.match(await readFile(configPath, "utf-8"), /^hooks = true$/m);
 				});
 			});
 		} finally {

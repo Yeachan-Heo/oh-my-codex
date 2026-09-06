@@ -19,7 +19,6 @@ import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 import {
   DEFAULT_CODEX_HOOK_FEATURE_FLAG,
   CODEX_HOOK_FEATURE_FLAGS,
-  CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG,
   formatCodexHookFeatureFlagLine,
   normalizeCodexHookFeatureFlag,
   type CodexHookFeatureFlag,
@@ -808,10 +807,6 @@ function isAnyCodexHookFeatureFlagLine(line: string): boolean {
   return CODEX_HOOK_FEATURE_FLAGS.some((flag) => isFeatureFlagLine(line, flag));
 }
 
-function isAnyPluginModeHookFeatureFlagLine(line: string): boolean {
-  return isAnyCodexHookFeatureFlagLine(line)
-    || isFeatureFlagLine(line, CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG);
-}
 
 function upsertFeatureFlagLineInSection(
   lines: string[],
@@ -870,19 +865,6 @@ function upsertCodexHookFeatureFlagInSection(
   );
 }
 
-function upsertPluginScopedHookFeatureFlagInSection(
-  lines: string[],
-  featuresStart: number,
-  sectionEnd: number,
-): { sectionEnd: number; featureFlagIndex: number } {
-  return upsertFeatureFlagLineInSection(
-    lines,
-    featuresStart,
-    sectionEnd,
-    CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG,
-    isAnyPluginModeHookFeatureFlagLine,
-  );
-}
 
 function upsertFeatureFlags(
   config: string,
@@ -2888,24 +2870,21 @@ export function upsertManagedCodexHookTrustState(
 export function upsertPluginModeRuntimeFeatureFlags(
   config: string,
   codexHookFeatureFlag: CodexHookFeatureFlag = DEFAULT_CODEX_HOOK_FEATURE_FLAG,
-  options: { pluginScopedHooks?: boolean; preserveNativeHooks?: boolean } = {},
 ): string {
   const lines = config.split(/\r?\n/);
   const featuresStart = lines.findIndex((line) =>
     /^\s*\[features\]\s*$/.test(line),
   );
-  const hookFeatureFlagLine = options.pluginScopedHooks
-    ? `${CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG} = true`
-    : formatCodexHookFeatureFlagLine(codexHookFeatureFlag);
+  // Codex retired `plugin_hooks`; manifest-driven plugin hooks no longer
+  // depend on it, so setup always emits the installed-Codex canonical flag
+  // (see issue #3623) and never regenerates the obsolete name.
+  const hookFeatureFlagLine = formatCodexHookFeatureFlagLine(codexHookFeatureFlag);
 
   if (featuresStart < 0) {
     const base = config.trimEnd();
     const featureBlock = [
       "[features]",
       hookFeatureFlagLine,
-      ...(options.pluginScopedHooks && options.preserveNativeHooks
-        ? [formatCodexHookFeatureFlagLine(codexHookFeatureFlag)]
-        : []),
       "goals = true",
       "",
     ].join("\n");
@@ -2932,28 +2911,14 @@ export function upsertPluginModeRuntimeFeatureFlags(
     }
   }
 
-  if (options.pluginScopedHooks) {
-    ({ sectionEnd } = upsertPluginScopedHookFeatureFlagInSection(
-      lines,
-      featuresStart,
-      sectionEnd,
-    ));
-    if (options.preserveNativeHooks) {
-      ({ sectionEnd } = upsertCodexHookFeatureFlagInSection(
-        lines,
-        featuresStart,
-        sectionEnd,
-        codexHookFeatureFlag,
-      ));
-    }
-  } else {
-    ({ sectionEnd } = upsertCodexHookFeatureFlagInSection(
-      lines,
-      featuresStart,
-      sectionEnd,
-      codexHookFeatureFlag,
-    ));
-  }
+  // The canonical flag replaces both hook feature spellings, including a
+  // stale removed `plugin_hooks` row, in one upsert pass.
+  ({ sectionEnd } = upsertCodexHookFeatureFlagInSection(
+    lines,
+    featuresStart,
+    sectionEnd,
+    codexHookFeatureFlag,
+  ));
 
   let goalsIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {

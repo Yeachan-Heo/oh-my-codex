@@ -3420,11 +3420,6 @@ function buildPluginModeHooksConfigPlan(
 	const configWithRuntimeFeatures = upsertPluginModeRuntimeFeatureFlags(
 		configWithDefaultModel,
 		options.codexHookFeatureFlag,
-		{
-			pluginScopedHooks: options.pluginScopedHooks,
-			preserveNativeHooks:
-				options.pluginScopedHooks && managedHooksPlan?.hasForeignHooks === true,
-		},
 	);
 	return {
 		finalConfig: upsertManagedCodexHookTrustState(
@@ -4703,7 +4698,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		}
 		console.log(
 			pluginScopedHooksSupported
-				? "  Plugin-scoped Codex hooks and runtime feature flags refresh complete (plugin_hooks, goals).\n"
+				? "  Plugin-scoped Codex hooks and runtime feature flags refresh complete (hooks, goals).\n"
 				: `  Native Codex hooks fallback and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
 		);
 		if (pluginDeveloperInstructionsDecision.action !== "preserve") {
