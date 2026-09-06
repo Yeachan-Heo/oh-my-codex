@@ -21,13 +21,14 @@
     <main class="container">
       <h1>Agent Catalog</h1>
       <p class="muted">Specialist agent reference for advanced use inside the standard workflow.</p>
-      <p>Start with <code>$deep-interview</code>, then <code>$ralplan</code>, then execute with <code>$team</code> or <code>$ralph</code>. Use the catalog below when you already know you need a specialist lane.</p>
+      <p>Start with <code>$deep-interview</code>, then <code>$ralplan</code>, then execute with <code>$team</code> or <code>$ultragoal</code>. Use the catalog below when you already know you need a specialist lane.</p>
 
       <h2>Build & Analysis</h2>
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
           <tr><td>explore</td><td>low</td><td>Codebase discovery and symbol mapping.</td><td><code>explore "map auth flow"</code></td></tr>
+          <tr><td>explore-harness (internal)</td><td>internal</td><td>Shell-only repository exploration contract for <code>omx explore</code>.</td><td><code>omx explore "map auth flow"</code></td></tr>
           <tr><td>analyst</td><td>high</td><td>Clarifies requirements and acceptance criteria.</td><td><code>analyst "define scope"</code></td></tr>
           <tr><td>planner</td><td>high</td><td>Builds execution plans and sequencing.</td><td><code>planner "plan migration"</code></td></tr>
           <tr><td>architect</td><td>high</td><td>System boundaries and architecture design.</td><td><code>architect "review service boundaries"</code></td></tr>
@@ -83,6 +84,8 @@
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
           <tr><td>critic</td><td>high</td><td>Critical challenge for plans and designs.</td><td><code>critic "challenge this plan"</code></td></tr>
+          <tr><td>team-executor (internal)</td><td>medium</td><td>Team execution specialist for supervised, conservative team delivery.</td><td><code>$team</code> worker lane</td></tr>
+          <tr><td>team-orchestrator (internal)</td><td>internal</td><td>Team orchestration mode for supervised, conservative coordination.</td><td><code>$team</code> leader coordination</td></tr>
           <tr><td>vision</td><td>medium</td><td>Image/screenshot and diagram analysis.</td><td><code>vision "review this screenshot"</code></td></tr>
         </tbody>
       </table>
