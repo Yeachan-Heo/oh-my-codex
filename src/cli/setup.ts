@@ -4711,7 +4711,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			);
 		}
 		console.log(
-			pluginScopedHooksSupported
+			manifestOwnsHookSurface
 				? `  Plugin-scoped Codex hooks and runtime feature flags refresh complete (${codexHookFeatureSupport.pluginHookFeatureFlag}, goals).\n`
 				: `  Native Codex hooks fallback and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
 		);

@@ -2145,46 +2145,65 @@ function configHasOmxEntries(configContent: string): boolean {
 export function configEnablesPluginScopedHooks(
 	configContent: string,
 	featuresListOutput = probeInstalledCodexFeatureList(),
+	featuresProbeUnavailable = featuresListOutput === null,
 ): boolean {
-	const featureFlag = resolveCodexPluginHookFeatureFlag({ featuresListOutput });
-	// Probe unavailable (no Codex binary, spawn failure, or timeout): fall back
-	// to config-only inference so a configuration written by a trusted setup
-	// run still resolves. Runtime capability is never claimed from this path.
-	try {
-		const parsed = parseToml(configContent) as {
+	const featureFlag = featuresProbeUnavailable
+		? null
+		: resolveCodexPluginHookFeatureFlag({ featuresListOutput });
+	// A completed probe is authoritative: when it selected a capability the
+	// capability-specific checks below decide; when the listing resolved no
+	// usable plugin hook capability (featureFlag null with a listing present),
+	// stale config must not override that negative evidence. Config-only
+	// inference is allowed only when the probe is genuinely unavailable
+	// (no binary, spawn failure, timeout); it never claims verified runtime
+	// capability on its own.
+	const parse = (content: string) => {
+		const parsed = parseToml(content) as {
 			plugin_hooks?: unknown;
-			hooks?: unknown;
 			features?: Record<string, unknown>;
 		};
-		const { plugin } = getParsedPluginMarketplaceConfig(configContent);
-		const pluginEnabled = plugin?.enabled === true;
-		const nativeHooks = parsed.features?.hooks ?? parsed.features?.codex_hooks;
+		const { plugin } = getParsedPluginMarketplaceConfig(content);
+		return { parsed, pluginEnabled: plugin?.enabled === true };
+	};
+	const legacyPluginHooksEnabled = (content: string) => {
+		const { parsed } = parse(content);
+		return (
+			isEnabledTomlValue(parsed.plugin_hooks) ||
+			isEnabledTomlValue(parsed.features?.plugin_hooks)
+		);
+	};
+	try {
 		if (featureFlag === "plugin_hooks") {
-			return (
-				isEnabledTomlValue(parsed.plugin_hooks) ||
-				isEnabledTomlValue(parsed.features?.plugin_hooks)
-			);
+			return legacyPluginHooksEnabled(configContent);
 		}
+		const { parsed, pluginEnabled } = parse(configContent);
+		const nativeHooks = parsed.features?.hooks ?? parsed.features?.codex_hooks;
 		if (featureFlag === "hooks") {
 			return pluginEnabled && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
 		}
-		// featureFlag unknown: treat a retired plugin_hooks row as the legacy
-		// supported spelling, and canonical hooks enablement with an enabled
-		// trusted plugin as current manifest ownership (config-only inference).
+		if (!featuresProbeUnavailable) return false;
+		// Probe unavailable: config-only inference from a trusted setup-written
+		// configuration. Requires the enabled trusted plugin registration for
+		// canonical hooks enablement; the retired spelling is accepted as the
+		// legacy supported row.
 		return (
-			isEnabledTomlValue(parsed.plugin_hooks) ||
-			isEnabledTomlValue(parsed.features?.plugin_hooks) ||
+			legacyPluginHooksEnabled(configContent) ||
 			(pluginEnabled &&
-				(nativeHooks === undefined || isEnabledTomlValue(nativeHooks) ||
-					isEnabledTomlValue(parsed.hooks) ||
-					isEnabledTomlValue(parsed.features?.hooks)))
+				(nativeHooks === undefined || isEnabledTomlValue(nativeHooks)))
 		);
 	} catch {
-		// TOML parse failure on the config: last-resort regex inference, same
-		// acceptance as the probe-known path above.
-		return /^\s*(?:plugin_hooks|hooks)\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(
-			configContent,
-		);
+		// Config is not parseable TOML: capability-aware last-resort regex using
+		// the same spelling each known capability would accept, with the same
+		// enabled-plugin proof requirement for the canonical spelling when the
+		// probe is unavailable. Never a second trust-validation path.
+		if (featureFlag === "plugin_hooks") {
+			return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		}
+		if (featureFlag === "hooks") {
+			return /^\s*hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		}
+		if (!featuresProbeUnavailable) return false;
+		return /^\s*(?:plugin_hooks|hooks)\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
 	}
 }
 
