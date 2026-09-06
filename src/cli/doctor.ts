@@ -2147,19 +2147,44 @@ export function configEnablesPluginScopedHooks(
 	featuresListOutput = probeInstalledCodexFeatureList(),
 ): boolean {
 	const featureFlag = resolveCodexPluginHookFeatureFlag({ featuresListOutput });
-	if (!featureFlag) return false;
+	// Probe unavailable (no Codex binary, spawn failure, or timeout): fall back
+	// to config-only inference so a configuration written by a trusted setup
+	// run still resolves. Runtime capability is never claimed from this path.
 	try {
 		const parsed = parseToml(configContent) as {
 			plugin_hooks?: unknown;
+			hooks?: unknown;
 			features?: Record<string, unknown>;
 		};
 		const { plugin } = getParsedPluginMarketplaceConfig(configContent);
+		const pluginEnabled = plugin?.enabled === true;
 		const nativeHooks = parsed.features?.hooks ?? parsed.features?.codex_hooks;
-		return featureFlag === "plugin_hooks"
-			? isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks)
-			: plugin?.enabled === true && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
+		if (featureFlag === "plugin_hooks") {
+			return (
+				isEnabledTomlValue(parsed.plugin_hooks) ||
+				isEnabledTomlValue(parsed.features?.plugin_hooks)
+			);
+		}
+		if (featureFlag === "hooks") {
+			return pluginEnabled && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
+		}
+		// featureFlag unknown: treat a retired plugin_hooks row as the legacy
+		// supported spelling, and canonical hooks enablement with an enabled
+		// trusted plugin as current manifest ownership (config-only inference).
+		return (
+			isEnabledTomlValue(parsed.plugin_hooks) ||
+			isEnabledTomlValue(parsed.features?.plugin_hooks) ||
+			(pluginEnabled &&
+				(nativeHooks === undefined || isEnabledTomlValue(nativeHooks) ||
+					isEnabledTomlValue(parsed.hooks) ||
+					isEnabledTomlValue(parsed.features?.hooks)))
+		);
 	} catch {
-		return false;
+		// TOML parse failure on the config: last-resort regex inference, same
+		// acceptance as the probe-known path above.
+		return /^\s*(?:plugin_hooks|hooks)\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(
+			configContent,
+		);
 	}
 }
 
@@ -2760,7 +2785,7 @@ export async function checkNativeHooks(
 						name: "Native hooks",
 						status: "warn",
 						message:
-							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or upgrade Codex to plugin_hooks support so setup can use plugin-scoped hooks`,
+							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or rerun setup on a Codex build with plugin-scoped hooks support`,
 					};
 				}
 

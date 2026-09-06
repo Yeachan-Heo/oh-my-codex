@@ -1417,8 +1417,17 @@ OMX_LORE_COMMIT_GUARD = "truee"
 		assert.equal(configEnablesPluginScopedHooks('[features]\ncodex_hooks = false' + plugin, modern), false);
 		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true\ncodex_hooks = false' + plugin, modern), true);
 		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = false\ncodex_hooks = true' + plugin, modern), false);
-		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true' + plugin, null), false);
-		assert.equal(configEnablesPluginScopedHooks('not valid TOML plugin_hooks = true', legacy), false);
+		// Probe unavailable: config-only inference requires an enabled trusted
+		// plugin, so canonical hooks enablement alone stays negative.
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true\n', null), false);
+		// Probe unavailable but enabled trusted plugin present: config-only
+		// inference resolves manifest ownership without claiming runtime proof.
+		assert.equal(configEnablesPluginScopedHooks('[features]\nhooks = true' + plugin, null), true);
+		// Invalid TOML: last-resort regex recognizes a line-leading retired flag
+		// or canonical hooks row as hook enablement (parse-bypass safety).
+		assert.equal(configEnablesPluginScopedHooks('not valid TOML\nplugin_hooks = true' + plugin, legacy), true);
+		assert.equal(configEnablesPluginScopedHooks('not valid TOML\nhooks = true' + plugin, null), true);
+		assert.equal(configEnablesPluginScopedHooks('not valid TOML\nhooks = false' + plugin, null), false);
 	});
 
 	for (const hooksSetting of [true, false, undefined]) {

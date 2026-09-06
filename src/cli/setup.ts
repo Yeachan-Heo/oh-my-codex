@@ -4280,6 +4280,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	});
 	const codexHookFeatureFlag = codexHookFeatureSupport.hookFeatureFlag;
 	const pluginScopedHooksSupported = codexHookFeatureSupport.pluginScopedHooks;
+	// Verbose ownership claim must be scoped to plugin installs: legacy
+	// --verbose setup writes the global wrapper surface and cannot claim
+	// manifest ownership (issue #3623 follow-up).
+	const manifestOwnsHookSurface = isPluginInstallMode && pluginScopedHooksSupported;
 	const shouldSyncSharedMcpRegistry = resolvedMcpMode.mcpMode === "compat";
 	const registryCandidates = getUnifiedMcpRegistryCandidates();
 	const defaultRegistryCandidates = registryCandidates.slice(0, 1);
@@ -4595,7 +4599,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			`  Native Codex hook feature flag: [features].${codexHookFeatureFlag}`,
 		);
 		console.log(
-			`  Plugin-scoped Codex hooks: ${pluginScopedHooksSupported ? "supported" : "not reported; using legacy setup fallback"}`,
+			`  Plugin-scoped Codex hooks: ${manifestOwnsHookSurface ? "supported (plugin manifest owns hooks)" : "not reported; using legacy setup fallback"}`,
 		);
 	}
 	if (
