@@ -3700,6 +3700,53 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("deletes the unreferenced OMX shim when a removed-row probe owns the hook surface", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-shim-removed-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const removedProbe = () =>
+						[
+							"hooks                                   stable             true",
+							"plugin_hooks                            removed            false",
+							"",
+						].join("\n");
+
+					await setup({
+						scope: "user",
+						installMode: "legacy",
+						skipNativeAgentRefresh: true,
+					});
+					const hooksPath = join(codexHomeDir, "hooks.json");
+					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					assert.equal(existsSync(shimPath), true);
+					assert.equal(existsSync(hooksPath), true);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+						skipNativeAgentRefresh: true,
+						codexFeaturesProbe: removedProbe,
+					});
+
+					assert.equal(
+						existsSync(shimPath),
+						false,
+						"removed surface must delete the unreferenced OMX-owned shim",
+					);
+					assert.equal(existsSync(hooksPath), false);
+					const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
+					assert.doesNotMatch(config, /^plugin_hooks\s*=/m);
+				});
+			});
+		} finally {
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 	it("rolls back Windows plugin-transition artifacts in exact reverse order", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-hook-rollback-"));
 		const forwardOrder: string[] = [];
