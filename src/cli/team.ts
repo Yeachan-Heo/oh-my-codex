@@ -43,7 +43,7 @@ import {
   readPersistedTeamUltragoalContext,
   renderUltragoalCheckpointGuidanceText,
 } from '../team/ultragoal-context.js';
-import { resolveCodexHomeForLaunch } from './codex-home.js';
+import { resolveCodexHomeForChildExport, resolveCodexHomeForLaunch } from './codex-home.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -1400,7 +1400,12 @@ export function buildLeaderMonitoringHints(teamName: string): string[] {
 
 export async function teamCommand(args: string[], _options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
-  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
+  const codexHomeOverride = resolveCodexHomeForChildExport(process.env);
+  // Issue #3629: keep the project-derived home for model/reasoning planning
+  // (buildFollowupStaffingPlan), but export only a child-safe CODEX_HOME into
+  // startTeam, which copies it into worker environments. Project-scope
+  // workers resolve scope and credential provenance in their own process.
+  const codexHomeForPlanning = resolveCodexHomeForLaunch(cwd, process.env);
   const parsedWorktree = parseWorktreeMode(args);
   const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
   const teamArgs = parsedWorktree.remainingArgs;
@@ -1689,7 +1694,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
       workerCount: runtime.config.worker_count,
       fallbackRole: resolveImplicitTeamFallbackRole(runtime.config.agent_type, false),
-      codexHomeOverride,
+      codexHomeOverride: codexHomeForPlanning,
     });
     await renderStartSummary(runtime, staffingPlan);
     return;
@@ -1748,7 +1753,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
     workerCount: executionPlan.workerCount,
     fallbackRole: resolveImplicitTeamFallbackRole(parsed.agentType, parsed.explicitAgentType),
-    codexHomeOverride,
+    codexHomeOverride: codexHomeForPlanning,
   });
   const runtime = await startTeam(
     parsed.teamName,
@@ -1758,7 +1763,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     tasks,
     cwd,
     {
-      codexHomeOverride,
+      codexHomeOverride, // child-safe export value (undefined for project scope)
       worktreeMode,
       decompositionMetadata: executionPlan.metadata,
       approvedExecution: parsed.approvedExecution ?? null,

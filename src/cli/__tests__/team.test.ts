@@ -3437,7 +3437,11 @@ process.on('SIGTERM', () => process.exit(0));
       }
 
       assert.ok(captured, 'worker argv capture file should be written');
-      assert.equal(captured!.codexHome, join(process.cwd(), '.codex'));
+      // Issue #3629: prompt-mode workers no longer receive a project-derived
+      // CODEX_HOME export; the codex child resolves credentials and config
+      // from the caller's own home exactly like a plain `codex` run. The
+      // xhigh reasoning override still applies (asserted below).
+      assert.equal(captured!.codexHome, null);
       assert.match(captured!.argv.join(' '), /model_reasoning_effort="xhigh"/);
       assert.match(logs.join('\n'), /architect x1 .*xhigh reasoning/);
     } finally {

@@ -3557,7 +3557,8 @@ describe("project launch scope helpers", () => {
       );
       assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"session-2835"}\n');
       assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"session-2835"}\n');
-      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), '{"token":"opaque"}\n');
+      // Issue #3629: runtime auth.json is never persisted into the project.
+      assert.equal(existsSync(join(projectCodexHome, "auth.json")), false);
       assert.equal(existsSync(runtimeCodexHome), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -3762,7 +3763,7 @@ describe("project launch scope helpers", () => {
     }
   });
 
-  it("persists project-scope Codex auth written into the runtime CODEX_HOME mirror", async () => {
+  it("never persists runtime CODEX_HOME auth into the project (issue #3629)", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-auth-home-"));
     try {
       const projectCodexHome = join(wd, ".codex");
@@ -3785,8 +3786,73 @@ describe("project launch scope helpers", () => {
         prepared.projectLocalCodexHomeForCleanup,
       );
 
-      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), opaqueAuthState);
+      // Credentials never reach the durable project directory.
+      assert.equal(existsSync(join(projectCodexHome, "auth.json")), false);
+      // Non-secret config persistence is unchanged.
       assert.equal(await readFile(join(projectCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.6-sol"\n');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds the caller's auth.json into the ephemeral runtime home without touching the project (issue #3629)", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-issue-3629-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+      await writeFile(join(projectCodexHome, "hooks.json"), '{"hooks":{}}\n');
+
+      // Fake, non-secret marker credential in an isolated user home; point the
+      // process HOME at it so codexHome() resolves there, without touching host state.
+      const fakeUserHome = await mkdtemp(join(tmpdir(), "omx-issue-3629-home-"));
+      await mkdir(join(fakeUserHome, ".codex"), { recursive: true });
+      await writeFile(join(fakeUserHome, ".codex", "auth.json"), '{"FAKE_MARKER":true}\n', {
+        mode: 0o600,
+      });
+
+      const savedHome = process.env.HOME;
+      const savedCodeHome = process.env.CODEX_HOME;
+      delete process.env.CODEX_HOME;
+      process.env.HOME = fakeUserHome;
+      try {
+        const prepared = await prepareCodexHomeForLaunch(wd, "session-3629", {});
+        const runtimeCodexHome = runtimeCodexHomePath(wd, "session-3629");
+        assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+
+        const runtimeEntries = await fsReaddir(prepared.codexHomeOverride);
+        assert.equal(runtimeEntries.includes("auth.json"), true);
+        assert.equal(
+          await readFile(join(prepared.codexHomeOverride, "auth.json"), "utf-8"),
+          '{"FAKE_MARKER":true}\n',
+        );
+        assert.equal(((await lstat(join(prepared.codexHomeOverride, "auth.json"))).mode & 0o777), 0o600);
+        // No secret ever lands in the durable project home.
+        assert.equal((await fsReaddir(projectCodexHome)).includes("auth.json"), false);
+        // Project config still preserved; hooks still single-loaded.
+        assert.equal(
+          await readFile(join(prepared.codexHomeOverride, "config.toml"), "utf-8"),
+          'model = "gpt-5.6-sol"\n',
+        );
+        assert.equal(runtimeEntries.includes("hooks.json"), false);
+      } finally {
+        process.env.HOME = savedHome;
+        if (savedCodeHome !== undefined) process.env.CODEX_HOME = savedCodeHome;
+      }
+
+      // Explicit CODEX_HOME remains authoritative: project branch skipped, no seeding.
+      const explicitHome = await mkdtemp(join(tmpdir(), "omx-issue-3629-explicit-"));
+      await mkdir(join(explicitHome, "sessions"), { recursive: true });
+      const preparedExplicit = await prepareCodexHomeForLaunch(wd, "session-3629-explicit", {
+        CODEX_HOME: explicitHome,
+      });
+      assert.equal(preparedExplicit.codexHomeOverride, explicitHome);
+      assert.equal((await fsReaddir(explicitHome)).includes("auth.json"), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

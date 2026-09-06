@@ -1904,6 +1904,13 @@ export function scrubTeamWorkerHudOwnershipEnv<T extends Record<string, string |
   const scrubbed = { ...env };
   delete scrubbed[OMX_TMUX_HUD_OWNER_ENV];
   delete scrubbed[OMX_TMUX_HUD_LEADER_PANE_ENV];
+  // Issue #3629: the sentinel marks worker envs that must not carry a
+  // CODEX_HOME (project-derived homes are not exported to children);
+  // translate it into an explicit unset for the generated command.
+  if (scrubbed.CODEX_HOME_UNSET === '1') {
+    delete scrubbed.CODEX_HOME_UNSET;
+    delete scrubbed.CODEX_HOME;
+  }
   return scrubbed;
 }
 
@@ -2287,6 +2294,10 @@ function buildWorkerProcessLaunchSpecForMode(
       ? { [CODEX_SQLITE_HOME_ENV]: workerSqliteHomeOverride }
       : {}),
     ...codexProviderEnv,
+    // Issue #3629: when no child-safe CODEX_HOME is selected, mark the env for
+    // explicit clearing downstream so a stale ambient/tmux-server value cannot
+    // reach the worker; codex then falls back to the caller's own home.
+    ...(workerCli === 'codex' && !workerCodexHomeOverride ? { CODEX_HOME_UNSET: '1' } : {}),
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;

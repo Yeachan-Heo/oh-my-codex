@@ -1888,7 +1888,11 @@ printf '%s\\n' "$@" > '${capturePath}'
         'utf-8',
       );
       assert.match(tmuxLog, /worker-2-startup\.sh/);
-      assert.match(startupScript, /CODEX_HOME=.*\.codex/);
+      // Issue #3629: a project-derived CODEX_HOME is no longer exported into
+      // the worker env; the xhigh/project-standard-model values still come
+      // from the project .codex/.omx-config.json via the leader's resolution
+      // pass, which reads it before any worker is launched.
+      assert.doesNotMatch(startupScript, /CODEX_HOME=/);
       assert.match(startupScript, /model_reasoning_effort="xhigh"/);
       assert.match(startupScript, /--model/);
       assert.match(startupScript, /project-standard-model/);

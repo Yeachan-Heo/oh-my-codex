@@ -3409,6 +3409,11 @@ export async function startTeam(
     ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
   };
   const workerLaunchMode = resolveTeamWorkerLaunchMode(launchEnv);
+  // Issue #3629: codexHomeOverride may be undefined for project-scope
+  // leaders — teamCommand exports only child-exportable homes. Workers then
+  // resolve project scope (and credential provenance) in their own process.
+  // Model/reasoning lookups fall back to env.CODEX_HOME (explicit) or the
+  // default Codex home, matching what a standalone worker launch would read.
 
   await assertNestedTeamAllowed(leaderCwd);
   const effectiveWorktreeMode = resolveEffectiveTeamWorktreeMode(leaderCwd, options.worktreeMode);
@@ -3796,6 +3801,11 @@ export async function startTeam(
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
         [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
         OMX_TEAM_DISPLAY_NAME: displayName,
+        // Issue #3629: prompt-mode workers are direct codex children and do
+        // read this CODEX_HOME. It is the child-export value: unset for
+        // project-scope leaders (codex then uses the caller's own home, the
+        // same credentials a plain `codex` run would use) and explicit
+        // CODEX_HOME passthrough otherwise.
         ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
         ...worktreeToolContextEnv(plan.toolContext),
       };
