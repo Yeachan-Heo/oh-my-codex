@@ -4,6 +4,7 @@ import {
   parseCodexFeatureNames,
   resolveCodexHookFeatureFlag,
   supportsCodexPluginScopedHooks,
+  resolveCodexPluginHookSurface,
 } from "../codex-feature-flags.js";
 
 describe("Codex feature flag resolution", () => {
@@ -41,6 +42,17 @@ describe("Codex feature flag resolution", () => {
 
     assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: output }), true);
     assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: "hooks stable true" }), false);
+  });
+
+  it("classifies removed plugin_hooks rows with canonical hooks as manifest-owned", () => {
+    const modern = "hooks stable true\nplugin_hooks removed false";
+    const legacyOnly = "codex_hooks experimental true";
+    assert.equal(resolveCodexPluginHookSurface({ featuresListOutput: modern }), "removed");
+    assert.equal(resolveCodexPluginHookSurface({ featuresListOutput: legacyOnly }), "legacy");
+    assert.equal(resolveCodexPluginHookSurface({ featuresListOutput: null }), "legacy");
+    assert.equal(resolveCodexPluginHookSurface({ featuresListOutput: "plugin_hooks experimental true" }), "supported");
+    assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: modern }), false);
+    assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: "plugin_hooks experimental true" }), true);
   });
 
   it("does not treat a removed plugin_hooks row as plugin-scoped hook support", () => {

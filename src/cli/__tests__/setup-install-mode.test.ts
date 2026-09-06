@@ -3838,15 +3838,20 @@ describe("omx setup install mode behavior", () => {
 						"utf-8",
 					);
 					assert.match(config, /^\[features\]\s*$/m);
-					assert.match(config, /^hooks = true$/m);
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
 					assert.doesNotMatch(
 						config,
 						/^plugin_hooks\s*=/m,
 						"setup must not emit the removed plugin_hooks feature flag",
 					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "hooks.json")),
+						false,
+						"removed-flag Codex keeps manifest-owned hooks; no global wrapper fallback",
+					);
 					assert.match(
 						logs,
-						/Native Codex hooks fallback and runtime feature flags refresh complete \(.*hooks\.json; hooks, goals\)/,
+						/Plugin-scoped Codex hooks and runtime feature flags refresh complete \(hooks, goals\)/,
 					);
 				});
 			});

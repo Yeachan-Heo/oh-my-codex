@@ -78,7 +78,7 @@ import {
 	extractFirstPartyOmxMcpSections,
 	stripFirstPartyOmxMcpSections,
 } from "../config/generator.js";
-import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
+import type { CodexHookFeatureFlag, CodexPluginHookSurface } from "../config/codex-feature-flags.js";
 import {
 	buildManagedCodexNativeHookWindowsShimContent,
 	buildManagedCodexNativeHookWindowsShimPath,
@@ -3369,6 +3369,7 @@ function buildPluginModeHooksConfigPlan(
 	options: {
 		codexHookFeatureFlag: CodexHookFeatureFlag;
 		pluginScopedHooks: boolean;
+		pluginHookSurface?: CodexPluginHookSurface;
 		preserveFirstPartyMcp?: boolean;
 		developerInstructionsDecision: PluginDeveloperInstructionsDecision;
 		platform: NodeJS.Platform;
@@ -3378,7 +3379,13 @@ function buildPluginModeHooksConfigPlan(
 		platform: options.platform,
 		codexHomeDir,
 	} as const;
-	const managedHooksPlan = options.pluginScopedHooks
+	// Current Codex removed the `plugin_hooks` feature but still loads
+	// manifest-driven plugin hooks, so a removed row selects the plugin-scoped
+	// surface (global OMX wrappers are removed) rather than the legacy
+	// fallback that would double-register the same hooks (issue #3623).
+	const manifestOwnsHooks = options.pluginScopedHooks
+		|| options.pluginHookSurface === "removed";
+	const managedHooksPlan = manifestOwnsHooks
 		? existingHooksContent === null
 			? null
 			: planManagedCodexHooksRemoval(
@@ -3515,6 +3522,7 @@ interface NativeHookSetupTransactionPlan {
 	finalConfig: string;
 	hooksRemovedCount: number;
 	pluginScopedHooks: boolean;
+	pluginHookSurface?: CodexPluginHookSurface;
 	cleanedLegacyConfig: boolean;
 	pluginMarketplaceResult: "updated" | "unchanged" | "unavailable";
 	pluginDeveloperInstructionsResult: "updated" | "exists" | "skipped";
@@ -3531,6 +3539,7 @@ interface PlanNativeHookSetupTransactionOptions {
 	platform: NodeJS.Platform;
 	isPluginInstallMode: boolean;
 	pluginScopedHooks: boolean;
+	pluginHookSurface?: CodexPluginHookSurface;
 	codexHookFeatureFlag: CodexHookFeatureFlag;
 	preserveFirstPartyMcp: boolean;
 	removeFirstPartyMcp: boolean;
@@ -3780,6 +3789,7 @@ async function planNativeHookSetupTransaction(
 				codexHookFeatureFlag: options.codexHookFeatureFlag,
 				pluginScopedHooks: options.pluginScopedHooks,
 				preserveFirstPartyMcp: options.preserveFirstPartyMcp,
+				pluginHookSurface: options.pluginHookSurface,
 				developerInstructionsDecision:
 					options.pluginDeveloperInstructionsDecision,
 				platform: options.platform,
@@ -4010,6 +4020,7 @@ async function planNativeHookSetupTransaction(
 		finalConfig,
 		hooksRemovedCount,
 		pluginScopedHooks: options.pluginScopedHooks,
+		pluginHookSurface: options.pluginHookSurface,
 		cleanedLegacyConfig,
 		pluginMarketplaceResult,
 		pluginDeveloperInstructionsResult,
@@ -4271,6 +4282,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	});
 	const codexHookFeatureFlag = codexHookFeatureSupport.hookFeatureFlag;
 	const pluginScopedHooksSupported = codexHookFeatureSupport.pluginScopedHooks;
+	// The plugin manifest owns the hook surface both when Codex reports the
+	// dedicated plugin flag and when that flag is removed-but-listed on a
+	// current build (issue #3623).
+	const manifestOwnsHookSurface = pluginScopedHooksSupported
+		|| codexHookFeatureSupport.pluginHookSurface === "removed";
 	const shouldSyncSharedMcpRegistry = resolvedMcpMode.mcpMode === "compat";
 	const registryCandidates = getUnifiedMcpRegistryCandidates();
 	const defaultRegistryCandidates = registryCandidates.slice(0, 1);
@@ -4295,6 +4311,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 		isPluginInstallMode,
 		pluginScopedHooks: pluginScopedHooksSupported,
+		pluginHookSurface: codexHookFeatureSupport.pluginHookSurface,
 		codexHookFeatureFlag,
 		preserveFirstPartyMcp:
 			shouldOfferFirstPartyMcpRemoval && !removeFirstPartyMcpRegistrations,
@@ -4619,17 +4636,17 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const changedConfigArtifact = nativeHookSetupTransaction.artifacts.some(
 		(artifact) => artifact.kind === "config",
 	);
+	const transactionManifestOwnsHooks = isPluginInstallMode && (
+		nativeHookSetupTransaction.pluginScopedHooks
+			|| nativeHookSetupTransaction.pluginHookSurface === "removed"
+	);
 	if (changedHookArtifact) {
-		if (
-			isPluginInstallMode &&
-			nativeHookSetupTransaction.pluginScopedHooks &&
-			nativeHookSetupTransaction.hooksRemovedCount > 0
-		) {
+		if (transactionManifestOwnsHooks && nativeHookSetupTransaction.hooksRemovedCount > 0) {
 			summary.config.removed += nativeHookSetupTransaction.hooksRemovedCount;
 		} else {
 			summary.config.updated += 1;
 		}
-	} else if (!isPluginInstallMode || !nativeHookSetupTransaction.pluginScopedHooks) {
+	} else if (!transactionManifestOwnsHooks) {
 		summary.config.unchanged += 1;
 	}
 	if (changedShimArtifact) summary.config.updated += 1;
@@ -4697,7 +4714,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			);
 		}
 		console.log(
-			pluginScopedHooksSupported
+			manifestOwnsHookSurface
 				? "  Plugin-scoped Codex hooks and runtime feature flags refresh complete (hooks, goals).\n"
 				: `  Native Codex hooks fallback and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
 		);

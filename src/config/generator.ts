@@ -18,6 +18,7 @@ import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 import {
   DEFAULT_CODEX_HOOK_FEATURE_FLAG,
+  CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG,
   CODEX_HOOK_FEATURE_FLAGS,
   formatCodexHookFeatureFlagLine,
   normalizeCodexHookFeatureFlag,
@@ -804,7 +805,12 @@ function isFeatureFlagLine(line: string, featureFlag: string): boolean {
 }
 
 function isAnyCodexHookFeatureFlagLine(line: string): boolean {
-  return CODEX_HOOK_FEATURE_FLAGS.some((flag) => isFeatureFlagLine(line, flag));
+  // The retired `plugin_hooks` spelling is a migration-only alias: upserts
+  // may replace it, but it is never emitted (issue #3623).
+  return (
+    CODEX_HOOK_FEATURE_FLAGS.some((flag) => isFeatureFlagLine(line, flag))
+    || isFeatureFlagLine(line, CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG)
+  );
 }
 
 
@@ -3143,6 +3149,7 @@ export function stripOmxFeatureFlags(
     "child_agents_md",
     "hooks",
     "codex_hooks",
+    "plugin_hooks",
     "goals",
     "goal",
     "collab",

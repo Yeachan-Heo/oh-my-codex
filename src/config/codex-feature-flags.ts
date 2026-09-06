@@ -55,18 +55,36 @@ export function isCodexCliVersionAtLeast(
   return true;
 }
 
-export function supportsCodexPluginScopedHooks(options: {
+export type CodexPluginHookSurface = "supported" | "removed" | "legacy";
+
+export function resolveCodexPluginHookSurface(options: {
   featuresListOutput?: string | null;
-} = {}): boolean {
-  // `codex features list` keeps listing removed features by name. Treat the
-  // feature as supported only when its row reports a non-removed lifecycle;
-  // a removed name alone must not count as support.
-  const pluginScopedHookRow = (options.featuresListOutput ?? "")
+} = {}): CodexPluginHookSurface {
+  // `codex features list` keeps listing removed features by name. A removed
+  // lifecycle never counts as support; when the canonical `hooks` feature is
+  // also reported, that row proves a current Codex build whose plugin hooks
+  // are manifest-driven (see issue #3623).
+  const pluginHookRow = (options.featuresListOutput ?? "")
     .split(/\r?\n/)
     .map((rawLine) => rawLine.trim())
     .find((line) => /^plugin_hooks\s/.test(line));
-  if (!pluginScopedHookRow) return false;
-  return !/^plugin_hooks\s+removed\s+(?:true|false)$/.test(pluginScopedHookRow);
+  if (pluginHookRow) {
+    if (/^plugin_hooks\s+removed\s+(?:true|false)$/.test(pluginHookRow)) {
+      const hooksRow = (options.featuresListOutput ?? "")
+        .split(/\r?\n/)
+        .map((rawLine) => rawLine.trim())
+        .find((line) => /^hooks\s/.test(line));
+      return hooksRow ? "removed" : "legacy";
+    }
+    return "supported";
+  }
+  return "legacy";
+}
+
+export function supportsCodexPluginScopedHooks(options: {
+  featuresListOutput?: string | null;
+} = {}): boolean {
+  return resolveCodexPluginHookSurface(options) === "supported";
 }
 
 export function resolveCodexHookFeatureFlag(options: {
