@@ -213,7 +213,7 @@ function hasNativeHooksFeatureFlag(config: string): boolean {
 
   return lines
     .slice(featuresStart + 1, sectionEnd)
-    .some((line) => /^\s*(?:hooks|codex_hooks)\s*=\s*true/.test(line));
+    .some((line) => /^\s*(?:hooks|codex_hooks|plugin_hooks)\s*=\s*true/.test(line));
 }
 
 type FileIdentityScalar = number | bigint;

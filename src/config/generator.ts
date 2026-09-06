@@ -62,6 +62,12 @@ interface MergeOptions {
   notifyCommand?: string[] | false;
   includeFirstPartyMcp?: boolean;
   preserveExistingFirstPartyMcp?: boolean;
+  /**
+   * Preserve an existing root `model_reasoning_effort` instead of rewriting it
+   * to the managed default. Setup passes true so an explicit user choice
+   * (direct edit or `omx reasoning <mode>`) survives setup/update (issue #3630).
+   */
+  preserveReasoningEffort?: boolean;
 }
 
 function escapeTomlString(value: string): string {
@@ -573,15 +579,21 @@ function getOmxTopLevelLines(
   existingConfig = "",
   modelOverride?: string,
   notifyCommand: string[] | false = getDefaultNotifyCommand(pkgRoot),
+  preservedReasoningEffort?: string,
 ): string[] {
   const rootValues = parseRootKeyValues(existingConfig);
+
+  const reasoningEffortLine =
+    preservedReasoningEffort !== undefined
+      ? `model_reasoning_effort = ${preservedReasoningEffort}`
+      : 'model_reasoning_effort = "medium"';
 
   const lines = [
     "# oh-my-codex top-level settings (must be before any [table])",
     ...(notifyCommand === false
       ? []
       : [`notify = ${formatTomlStringArray(notifyCommand)}`]),
-    'model_reasoning_effort = "medium"',
+    reasoningEffortLine,
     `developer_instructions = "${escapeTomlString(OMX_DEVELOPER_INSTRUCTIONS)}"`,
   ];
 
@@ -3187,6 +3199,7 @@ export function stripOmxFeatureFlags(
     "child_agents_md",
     "hooks",
     "codex_hooks",
+    "plugin_hooks",
     "goals",
     "goal",
     "collab",
@@ -4159,9 +4172,16 @@ export function buildMergedConfig(
     !isOmxManagedNotifyCommand(getRootTomlArray(existing, "notify"), pkgRoot)
       ? getRootTomlArray(existing, "notify")
       : null;
+  const userReasoningEffortToPreserve =
+    options.preserveReasoningEffort === true
+      ? parseRootKeyValues(existing).get("model_reasoning_effort")
+      : undefined;
   existing = stripOmxTopLevelKeys(existing).trimStart();
   if (userNotifyToPreserve) {
     existing = `${`notify = ${formatTomlStringArray(userNotifyToPreserve)}`}\n${existing.trimStart()}`;
+  }
+  if (userReasoningEffortToPreserve !== undefined) {
+    existing = stripRootLevelKeys(existing, ["model_reasoning_effort"]);
   }
   existing = stripOrphanedManagedNotify(existing, pkgRoot).trimStart();
   const hookTrustStrip = stripManagedCodexHookTrustStateForRefresh(
@@ -4196,6 +4216,9 @@ export function buildMergedConfig(
     options.notifyCommand === undefined
       ? getDefaultNotifyCommand(pkgRoot)
       : options.notifyCommand,
+    options.preserveReasoningEffort === true
+      ? userReasoningEffortToPreserve
+      : undefined,
   );
   const tablesBlock = getOmxTablesBlock(
     pkgRoot,
