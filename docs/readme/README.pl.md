@@ -19,7 +19,7 @@ OMX to nakładka na [OpenAI Codex CLI](https://github.com/openai/codex).
 Codex zostaje silnikiem, który wykonuje pracę. OMX daje mu lepszy kontekst, gotowe role i cykle pracy — żebyś nie zaczynał od zera przy każdej sesji. Konkretnie:
 - lepsza sesja Codexa od pierwszego uruchomienia
 - wielokrotne użycie ról i zadań przez słowa kluczowe `$name`
-- gotowe cykle pracy: `$plan`, `$ralph`, `$team`
+- gotowe cykle pracy: `$plan`, `$ultragoal`, `$team`
 - plany, logi, pamięć i stan trzymane w `.omx/`
 
 ## Jak zacząć
@@ -56,7 +56,7 @@ To jest główna ścieżka. Uruchom OMX, wykonaj pracę w Codexie i pozwól agen
 
 Używaj OMX, jeśli lubisz Codexa i chcesz mieć wokół niego lepsze środowisko pracy:
 - wielokrotne role i zadania: `$architect`, `$executor`
-- gotowe cykle pracy: `$plan`, `$ralph`, `$team`, `$deep-interview`
+- gotowe cykle pracy: `$plan`, `$ultragoal`, `$team`, `$deep-interview`
 - wytyczne projektu przez `AGENTS.md`
 - trwały stan w `.omx/`
 
@@ -85,7 +85,7 @@ $architect "analyze the authentication flow"
 $plan "map the safest implementation path"
 ```
 
-Jeśli zadanie urośnie, agent może sam zdecydować o użyciu `$ralph` albo `$team`.
+Jeśli zadanie urośnie, agent może sam zdecydować o użyciu `$ultragoal` albo `$team`.
 
 ## Jak o tym myśleć
 
@@ -105,7 +105,7 @@ OMX to lepsze kierowanie zadaniami i gotowe cykle pracy — nie kolejna rzecz do
 2. Wystartuj z `omx --madmax --high`
 3. Poproś o analizę: `$architect "..."`
 4. Poproś o plan: `$plan "..."`
-5. Pozwól agentowi zdecydować, kiedy użyć `$ralph`, `$team` albo czegoś innego
+5. Pozwól agentowi zdecydować, kiedy użyć `$ultragoal`, `$team` albo czegoś innego
 
 ## Co możesz robić podczas sesji
 
@@ -115,10 +115,10 @@ OMX to lepsze kierowanie zadaniami i gotowe cykle pracy — nie kolejna rzecz do
 | `$executor "..."` | skupiona praca implementacyjna |
 | `/skills` | lista zainstalowanych skilli |
 | `$plan "..."` | planowanie przed implementacją |
-| `$ralph "..."` | długie zadania krok po kroku |
+| `$ultragoal "..."` | długie zadania z trwałym śledzeniem celu do ukończenia |
 | `$team "..."` | równoległa praca kilku agentów, gdy zadanie tego wymaga |
 
-`$deep-interview` przydaje się, gdy prośba jest niejasna — OMX będzie dopytywał o intencję, zakres i granice decyzji, zanim przekaże pracę dalej do `$plan`, `$ralph`, `$team` albo `$autopilot`.
+`$deep-interview` przydaje się, gdy prośba jest niejasna — OMX będzie dopytywał o intencję, zakres i granice decyzji, zanim przekaże pracę dalej do `$plan`, `$ultragoal`, `$team` albo `$autopilot`.
 
 Kiedy to ma sens:
 - masz pomysł na nowy projekt, ale jeszcze nie wiesz dokładnie, czego chcesz
@@ -145,6 +145,7 @@ omx team shutdown <team-name>
 - `omx setup` — instaluje prompty, skille, konfigurację i strukturę plików AGENTS
 - `omx doctor` — sprawdza instalację, gdy coś nie działa
 - `omx hud --watch` — podgląd stanu i postępu, nie główny cykl pracy
+- Wpisy serwerów MCP: `omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (serwer wiki repozytorium), `omx_hermes` (ograniczony most stanu i koordynacji sesji)
 
 ### Sparkshell
 

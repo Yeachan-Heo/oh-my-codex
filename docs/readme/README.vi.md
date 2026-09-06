@@ -19,7 +19,7 @@ OMX là lớp workflow mở rộng cho [OpenAI Codex CLI](https://github.com/ope
 Codex vẫn là engine chính, OMX giúp bạn:
 - cấu hình Codex tốt hơn ngay từ phiên đầu tiên
 - chạy workflow nhất quán từ làm rõ yêu cầu đến hoàn thành
-- gọi các skill chính bằng `$deep-interview`, `$ralplan`, `$team` và `$ralph`
+- gọi các skill chính bằng `$deep-interview`, `$ralplan`, `$team` và `$ultragoal`
 - lưu trữ hướng dẫn dự án, kế hoạch, log và trạng thái trong `.omx/`
 
 ## Workflow mặc định
@@ -48,17 +48,17 @@ Sau đó làm việc bình thường trong Codex:
 ```text
 $deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
 Đó là flow chính.
-Khởi động OMX, làm rõ yêu cầu khi cần, duyệt kế hoạch, rồi chọn `$team` để chạy song song hoặc `$ralph` để một agent lo đến khi xong.
+Khởi động OMX, làm rõ yêu cầu khi cần, duyệt kế hoạch, rồi chọn `$team` để chạy song song hoặc `$ultragoal` để theo dõi mục tiêu bền vững đến khi hoàn thành.
 
 ## OMX dùng để làm gì
 
 Dùng OMX nếu bạn đã quen Codex và muốn trải nghiệm tốt hơn:
-- workflow chuẩn xoay quanh `$deep-interview`, `$ralplan`, `$team` và `$ralph`
+- workflow chuẩn xoay quanh `$deep-interview`, `$ralplan`, `$team` và `$ultragoal`
 - các role chuyên biệt và skill hỗ trợ cho từng loại task
 - hướng dẫn dự án qua `AGENTS.md` theo scope
 - lưu trạng thái lâu dài trong `.omx/` — kế hoạch, log, memory và theo dõi mode
@@ -88,11 +88,11 @@ Rồi thử workflow chính:
 ```text
 $deep-interview "clarify the authentication change"
 $ralplan "approve the safest implementation path"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
-Dùng `$team` khi cần nhiều worker chạy song song, hoặc `$ralph` khi muốn một agent lo từ đầu đến cuối.
+Dùng `$team` khi cần nhiều worker chạy song song, hoặc `$ultragoal` để theo dõi mục tiêu bền vững đến khi hoàn thành.
 
 ## Mô hình đơn giản
 
@@ -112,13 +112,13 @@ Nói đơn giản: OMX giúp **phân task đúng chỗ + workflow rõ ràng + ru
 2. Khởi động với `omx --madmax --high`
 3. Dùng `$deep-interview "..."` khi yêu cầu còn mơ hồ
 4. Dùng `$ralplan "..."` để duyệt kế hoạch và cân nhắc trade-off
-5. Chọn `$team` để chạy song song hoặc `$ralph` để một agent lo đến khi xong
+5. Chọn `$team` để chạy song song hoặc `$ultragoal` để theo dõi mục tiêu bền vững đến khi hoàn thành
 
 ## Workflow khuyến nghị
 
 1. `$deep-interview` — làm rõ scope khi yêu cầu còn mơ hồ.
 2. `$ralplan` — chuyển scope đã rõ thành kế hoạch triển khai được duyệt.
-3. `$team` hoặc `$ralph` — dùng `$team` khi cần nhiều worker song song, hoặc `$ralph` khi muốn một agent chạy liên tục đến khi xong.
+3. `$team` hoặc `$ultragoal` — dùng `$team` khi cần nhiều worker song song, hoặc `$ultragoal` khi muốn theo dõi mục tiêu liên tục đến khi xong.
 
 ## Các lệnh thường dùng trong phiên
 
@@ -126,7 +126,7 @@ Nói đơn giản: OMX giúp **phân task đúng chỗ + workflow rõ ràng + ru
 | --- | --- |
 | `$deep-interview "..."` | Làm rõ ý định, scope và non-goal |
 | `$ralplan "..."` | Duyệt kế hoạch triển khai và trade-off |
-| `$ralph "..."` | Chạy liên tục đến khi hoàn thành và verify |
+| `$ultragoal "..."` | Theo dõi mục tiêu bền vững đến khi hoàn thành và verify |
 | `$team "..."` | Chạy song song khi task đủ lớn |
 | `/skills` | Xem danh sách skill và helper đã cài |
 
@@ -151,6 +151,7 @@ omx team shutdown <team-name>
 - `omx setup` cài prompt, skill, config và scaffold AGENTS
 - `omx doctor` kiểm tra cài đặt khi có vấn đề
 - `omx hud --watch` theo dõi trạng thái, không phải workflow chính
+- Các mục máy chủ MCP: `omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (máy chủ wiki của repository), `omx_hermes` (cầu nối giới hạn cho trạng thái/điều phối phiên)
 
 ### Sparkshell
 
