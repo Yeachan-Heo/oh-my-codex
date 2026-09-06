@@ -3409,6 +3409,11 @@ export async function startTeam(
     ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
   };
   const workerLaunchMode = resolveTeamWorkerLaunchMode(launchEnv);
+  // Issue #3629: codexHomeOverride may be undefined for project-scope
+  // leaders — teamCommand exports only child-exportable homes. Workers then
+  // resolve project scope (and credential provenance) in their own process.
+  // Model/reasoning lookups fall back to env.CODEX_HOME (explicit) or the
+  // default Codex home, matching what a standalone worker launch would read.
 
   await assertNestedTeamAllowed(leaderCwd);
   const effectiveWorktreeMode = resolveEffectiveTeamWorktreeMode(leaderCwd, options.worktreeMode);

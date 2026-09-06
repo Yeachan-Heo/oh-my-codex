@@ -1,4 +1,5 @@
 import { probeInstalledCodexFeatureList } from "./codex-feature-probe.js";
+import { resolveUserCredentialFilePath } from "./launch-credential-provenance.js";
 import { resolveCodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 /**
  * omx doctor - Validate oh-my-codex installation
@@ -862,6 +863,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   }
   checks.push(checkStateRootSessionBinding(bindingSnapshot, process.env));
 	checks.push(await checkRepoArtifactOwnership(cwd));
+	checks.push(await checkCredentialProvenance(scopeResolution.scope, process.env));
 
 	// Check 9: MCP servers configured
 	checks.push(
@@ -1499,6 +1501,40 @@ function checkDirectory(name: string, path: string): Check {
 		return { name, status: "pass", message: path };
 	}
 	return { name, status: "warn", message: `${path} (not created yet)` };
+}
+/**
+ * Issue #3629: under project scope the launch resolves CODEX_HOME to the
+ * per-session runtime mirror of <project>/.codex; Codex resolves credentials
+ * from that CODEX_HOME only. Report whether credential provenance is available
+ * (the caller's own auth.json, which launch seeds into the ephemeral mirror).
+ * Stat-only: the credential file is never read, parsed, or logged.
+ */
+async function checkCredentialProvenance(scope: DoctorSetupScope, env: NodeJS.ProcessEnv): Promise<Check> {
+	if (scope !== "project") {
+		return {
+			name: "Credential provenance",
+			status: "pass",
+			message: "user scope launches read credentials from the default Codex home",
+		};
+	}
+	const explicit = typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim() !== "";
+	const authPath = await resolveUserCredentialFilePath(env);
+	if (authPath) {
+		return {
+			name: "Credential provenance",
+			status: "pass",
+			message: explicit
+				? "CODEX_HOME is explicit; its auth.json will be used as-is"
+				: "user auth.json will be seeded into the project launch home (no copy into the project)",
+		};
+	}
+	return {
+		name: "Credential provenance",
+		status: explicit ? "pass" : "fail",
+		message: explicit
+			? "CODEX_HOME is explicit but has no auth.json; log in with `codex login` or `omx auth`"
+			: "no readable auth.json in the default Codex home; project-scope launches will run unauthenticated — log in with `codex login` or `omx auth`",
+	};
 }
 
 function currentProcessUid(): number | undefined {

@@ -43,7 +43,7 @@ import {
   readPersistedTeamUltragoalContext,
   renderUltragoalCheckpointGuidanceText,
 } from '../team/ultragoal-context.js';
-import { resolveCodexHomeForLaunch } from './codex-home.js';
+import { resolveCodexHomeForChildExport } from './codex-home.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -1400,7 +1400,7 @@ export function buildLeaderMonitoringHints(teamName: string): string[] {
 
 export async function teamCommand(args: string[], _options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
-  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
+  const codexHomeOverride = resolveCodexHomeForChildExport(cwd, process.env);
   const parsedWorktree = parseWorktreeMode(args);
   const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
   const teamArgs = parsedWorktree.remainingArgs;

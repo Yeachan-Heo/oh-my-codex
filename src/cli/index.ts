@@ -89,6 +89,7 @@ import {
   resolveProjectLocalCodexHomeForLaunch,
 } from "./codex-home.js";
 import { discoverProjectRuntimeCodexHomes } from "./project-runtime-codex-homes.js";
+import { seedCredentialIntoRuntimeHome } from "./launch-credential-provenance.js";
 import {
   discoverOmxPluginCacheDirs,
   hasLocalOmxPluginEnablement,
@@ -2167,6 +2168,13 @@ export async function prepareCodexHomeForLaunch(
       projectLocalCodexHomeForCleanup,
       { includeHistoryArtifacts: options.includeHistoryArtifacts, extraHistoryCodexHomes: options.extraHistoryCodexHomes },
     );
+    // Issue #3629: the runtime home replaces CODEX_HOME for this session, and
+    // Codex only resolves credentials from CODEX_HOME/auth.json. Copy the
+    // caller's credential into the ephemeral home (opaque copy, never into the
+    // durable project .codex) so the child is authenticated. Explicit
+    // CODEX_HOME authority is preserved: this project branch only runs when
+    // CODEX_HOME is unset.
+    await seedCredentialIntoRuntimeHome(runtimeCodexHome, env);
     return {
       codexHomeOverride: runtimeCodexHome,
       sqliteHomeOverride: resolveProjectSqliteHomeForLaunch(projectLocalCodexHomeForCleanup, env),
@@ -2359,6 +2367,9 @@ async function prepareResumeCodexHomeForLaunch(
       extraHistoryCodexHomes: projectHomes.slice(1).map((home) => home.path),
     });
     await preflightResumeOmxPluginState(runtimeCodexHome, getPackageRoot(), { projectRoot: cwd });
+    // Issue #3629: same credential provenance as prepareCodexHomeForLaunch —
+    // a project runtime home needs the caller's auth.json to avoid 401s.
+    await seedCredentialIntoRuntimeHome(runtimeCodexHome, env);
     return {
       args: selection.args,
       prepared: {

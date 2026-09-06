@@ -75,7 +75,7 @@ import { buildTeamWorkerGoalInstruction } from './goal-workflow.js';
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
 import { codexPromptsDir } from '../utils/paths.js';
-import { resolveCodexHomeForLaunch } from '../cli/codex-home.js';
+import { resolveCodexHomeForChildExport } from '../cli/codex-home.js';
 import {
   parseTeamWorkerLaunchArgs,
   resolveTeamWorkerLaunchArgs,
@@ -619,7 +619,7 @@ export async function scaleUp(
     }
 
     const teamStateRoot = config.team_state_root ?? resolveCanonicalTeamStateRoot(leaderCwd);
-    const codexHomeOverride = resolveCodexHomeForLaunch(leaderCwd, env);
+    const codexHomeOverride = resolveCodexHomeForChildExport(leaderCwd, env);
     const launchEnv = codexHomeOverride
       ? { ...env, CODEX_HOME: codexHomeOverride }
       : env;
