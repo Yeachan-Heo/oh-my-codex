@@ -3955,9 +3955,12 @@ async function planNativeHookSetupTransaction(
 			finalHooksContent,
 			shimPath,
 		);
+		const manifestOwnsHookSurface = options.isPluginInstallMode && (
+			options.pluginScopedHooks || options.pluginHookSurface === "removed"
+		);
 		const shouldDeleteShim =
 			shimReference === "not_referenced" &&
-			(options.disableHooks || (options.isPluginInstallMode && options.pluginScopedHooks));
+			(options.disableHooks || manifestOwnsHookSurface);
 		shimArtifact = nativeHookTransactionArtifact(
 			"shim",
 			shimPath,
@@ -4602,7 +4605,13 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			`  Native Codex hook feature flag: [features].${codexHookFeatureFlag}`,
 		);
 		console.log(
-			`  Plugin-scoped Codex hooks: ${pluginScopedHooksSupported ? "supported" : "not reported; using legacy setup fallback"}`,
+			`  Plugin-scoped Codex hooks: ${
+				manifestOwnsHookSurface
+					? pluginScopedHooksSupported
+						? "supported"
+						: "removed feature row; plugin manifest owns hooks"
+					: "not reported; using legacy setup fallback"
+			}`,
 		);
 	}
 	if (

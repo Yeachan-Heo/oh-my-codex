@@ -3859,6 +3859,54 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("leaves no global wrappers or stale flags when the removed-flag config pre-exists", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const hooksPath = join(codexHomeDir, "hooks.json");
+					const configPath = join(codexHomeDir, "config.toml");
+					await writeFile(
+						configPath,
+						"[features]\nplugin_hooks = true\nhooks = false\n",
+					);
+
+					const removedProbe = () =>
+						[
+							"hooks                                   stable             true",
+							"plugin_hooks                            removed            false",
+							"",
+						].join("\n");
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+						codexFeaturesProbe: removedProbe,
+					});
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+						codexFeaturesProbe: removedProbe,
+					});
+
+					assert.equal(
+						existsSync(hooksPath),
+						false,
+						"rerun must keep the plugin manifest as the single hook surface",
+					);
+					const config = await readFile(configPath, "utf-8");
+					assert.doesNotMatch(config, /^plugin_hooks\s*=/m);
+					assert.doesNotMatch(config, /^codex_hooks\s*=/m);
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
+					assert.doesNotMatch(config, /\[hooks\.state\./);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 
 	it("preserves same-key user hook trust state in plugin-scoped setup", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
