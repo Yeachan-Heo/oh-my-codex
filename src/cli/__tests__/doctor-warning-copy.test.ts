@@ -1886,6 +1886,109 @@ OMX_LORE_COMMIT_GUARD = "truee"
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("infers plugin mode from canonical [features].hooks enablement when plugin_hooks is removed", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-canonical-hooks-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(join(wd, ".omx"), { recursive: true });
+			await mkdir(codexDir, { recursive: true });
+			const cacheDir = await installPluginCacheFixture(codexDir);
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				`${JSON.stringify({ scope: "user", installMode: "plugin", mcpMode: "none" }, null, 2)}\n`,
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				[
+					"goals = true",
+					"",
+					"[features]",
+					"hooks = true",
+					"",
+					"[marketplaces.oh-my-codex-local]",
+					'source_type = "local"',
+					`source = ${JSON.stringify(repoRoot())}`,
+					"",
+					'[plugins."oh-my-codex@oh-my-codex-local"]',
+					"enabled = true",
+					"",
+				].join("\n"),
+			);
+
+			const setupOwnedHooksPath = join(codexDir, "hooks.json");
+			assert.equal(existsSync(setupOwnedHooksPath), false);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /Resolved setup install mode: plugin/);
+			assert.match(
+				res.stdout,
+				new RegExp(
+					`\\[OK\\] Native hooks: plugin-scoped hooks are enabled; setup-owned hooks\\.json is intentionally absent at .*\\.codex[\\/]+hooks\\.json, and plugin cache native hook coverage smoke passed via ${join(cacheDir, "hooks", "hooks.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+				),
+			);
+			assert.doesNotMatch(
+				res.stdout,
+				/plugin mode is using legacy native hook fallback/,
+			);
+			assert.doesNotMatch(
+				res.stdout,
+				/expected setup-owned hooks\.json is missing/,
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps disabled hook enablement out of plugin-mode hook inference", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-hooks-disabled-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(join(wd, ".omx"), { recursive: true });
+			await mkdir(codexDir, { recursive: true });
+			await writeFile(
+				join(wd, ".omx", "setup-scope.json"),
+				`${JSON.stringify({ scope: "user", installMode: "plugin", mcpMode: "none" }, null, 2)}\n`,
+			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				[
+					"goals = true",
+					"",
+					"[features]",
+					"hooks = false",
+					"",
+					'[plugins."oh-my-codex@oh-my-codex-local"]',
+					"enabled = true",
+					"",
+				].join("\n"),
+			);
+
+			const res = runOmx(wd, ["doctor"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.doesNotMatch(
+				res.stdout,
+				/Native hooks: plugin-scoped hooks are enabled/,
+			);
+			assert.match(
+				res.stdout,
+				/Native hooks: plugin mode is using legacy native hook fallback, but expected setup-owned hooks\.json is missing/,
+				"disabled hooks configuration must still surface the missing fallback hooks.json diagnostic",
+			);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 
 	it("warns when hooks.json is missing OMX-managed native hook coverage", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-coverage-"));

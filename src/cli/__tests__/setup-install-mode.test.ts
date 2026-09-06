@@ -3815,6 +3815,45 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("generates canonical hooks flag instead of removed plugin_hooks on current Codex", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const logs = await runSetupWithCapturedLogs(wd, {
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+						codexFeaturesProbe: () =>
+							[
+								"goals                                   stable             true",
+								"hooks                                   stable             true",
+								"plugin_hooks                            removed            false",
+								"",
+							].join("\n"),
+					});
+
+					const config = await readFile(
+						join(codexHomeDir, "config.toml"),
+						"utf-8",
+					);
+					assert.match(config, /^\[features\]\s*$/m);
+					assert.match(config, /^hooks = true$/m);
+					assert.doesNotMatch(
+						config,
+						/^plugin_hooks\s*=/m,
+						"setup must not emit the removed plugin_hooks feature flag",
+					);
+					assert.match(
+						logs,
+						/Native Codex hooks fallback and runtime feature flags refresh complete \(.*hooks\.json; hooks, goals\)/,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 
 	it("preserves same-key user hook trust state in plugin-scoped setup", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));

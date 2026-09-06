@@ -58,9 +58,15 @@ export function isCodexCliVersionAtLeast(
 export function supportsCodexPluginScopedHooks(options: {
   featuresListOutput?: string | null;
 } = {}): boolean {
-  return parseCodexFeatureNames(options.featuresListOutput).has(
-    CODEX_PLUGIN_SCOPED_HOOKS_FEATURE_FLAG,
-  );
+  // `codex features list` keeps listing removed features by name. Treat the
+  // feature as supported only when its row reports a non-removed lifecycle;
+  // a removed name alone must not count as support.
+  const pluginScopedHookRow = (options.featuresListOutput ?? "")
+    .split(/\r?\n/)
+    .map((rawLine) => rawLine.trim())
+    .find((line) => /^plugin_hooks\s/.test(line));
+  if (!pluginScopedHookRow) return false;
+  return !/^plugin_hooks\s+removed\s+(?:true|false)$/.test(pluginScopedHookRow);
 }
 
 export function resolveCodexHookFeatureFlag(options: {

@@ -2130,11 +2130,21 @@ function configEnablesPluginScopedHooks(configContent: string): boolean {
 	try {
 		const parsed = parseToml(configContent) as {
 			plugin_hooks?: unknown;
+			hooks?: unknown;
 			features?: Record<string, unknown>;
 		};
-		return isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks);
+		return (
+			isEnabledTomlValue(parsed.plugin_hooks) ||
+			isEnabledTomlValue(parsed.features?.plugin_hooks) ||
+			// Canonical current hook enablement; `plugin_hooks` was removed from
+			// Codex, so `[features].hooks = true` also proves plugin hooks work.
+			isEnabledTomlValue(parsed.hooks) ||
+			isEnabledTomlValue(parsed.features?.hooks)
+		);
 	} catch {
-		return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		return /^\s*(?:plugin_hooks|hooks)\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(
+			configContent,
+		);
 	}
 }
 
@@ -2735,7 +2745,7 @@ export async function checkNativeHooks(
 						name: "Native hooks",
 						status: "warn",
 						message:
-							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or upgrade Codex to plugin_hooks support so setup can use plugin-scoped hooks`,
+							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or rerun setup on a Codex build with plugin-scoped hooks support`,
 					};
 				}
 
