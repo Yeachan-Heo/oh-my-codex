@@ -324,7 +324,7 @@ Options:
                 (shorthand for: -c model_reasoning_effort="xhigh")
   --madmax      DANGEROUS: bypass Codex approvals and sandbox
                 (alias for --dangerously-bypass-approvals-and-sandbox)
-  --spark       Use the Codex spark model (~1.3x faster) for team workers only
+  --spark       Use the configured spark-lane model for team workers only
                 Workers get the configured low-complexity team model; leader model unchanged
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
