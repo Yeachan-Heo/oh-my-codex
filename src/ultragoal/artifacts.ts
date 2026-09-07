@@ -2158,14 +2158,19 @@ export async function recordFinalReviewBlockers(cwd: string, options: RecordFina
   });
 }
 
-function codexGoalConductorGuidance(options: CodexGoalInstructionOptions): string {
+export function codexGoalConductorGuidance(options: CodexGoalInstructionOptions): string {
   if (options.nativeSubagentSupport?.status === 'role_routing_unavailable') {
     return buildRoleRoutingUnavailableGuidance(options.nativeSubagentSupport);
   }
-  if (options.nativeSubagentSupport?.status !== 'unsupported') return LEADER_CONDUCTOR_BLOCK;
+  if (options.nativeSubagentSupport?.status === 'unsupported') {
+    return [
+      buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),
+      'Native independent review unavailable: do not treat final review as clean, do not call update_goal for clean completion, and use omx ultragoal record-review-blockers to create a non-clean blocker for the missing native independent review.',
+    ].join('\n');
+  }
   return [
-    buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),
-    'Native independent review unavailable: do not treat final review as clean, do not call update_goal for clean completion, and use omx ultragoal record-review-blockers to create a non-clean blocker for the missing native independent review.',
+    LEADER_CONDUCTOR_BLOCK,
+    'Native capability: under ordinary native support with inherited permissions, delegated performer lanes may implement, mutate, and report bounded work directly through the native result surface; ordinary native reporting is completion, not a separate authority grant.',
   ].join('\n');
 }
 
