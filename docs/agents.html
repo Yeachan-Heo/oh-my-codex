@@ -21,7 +21,8 @@
     <main class="container">
       <h1>Agent Catalog</h1>
       <p class="muted">Specialist agent reference for advanced use inside the standard workflow.</p>
-      <p>Start with <code>$deep-interview</code>, then <code>$ralplan</code>, then execute with <code>$team</code> or <code>$ultragoal</code>. Use the catalog below when you already know you need a specialist lane.</p>
+      <p>Start with <code>$deep-interview</code>, then <code>$ralplan</code>, then execute with <code>$ultragoal</code>. Add <code>$team</code> only when the work genuinely warrants parallel execution. Use the catalog below when you already know you need a specialist lane.</p>
+      <p class="muted">The packaged catalog (<code>omx list --json</code>) is the authority for which roles are installable. Merged and deprecated roles are listed at the bottom for migration context only.</p>
 
       <h2>Build & Analysis</h2>
       <table>
@@ -42,12 +43,7 @@
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>style-reviewer</td><td>low</td><td>Formatting and naming conventions.</td><td><code>style-reviewer "check style"</code></td></tr>
-          <tr><td>quality-reviewer</td><td>medium</td><td>Logic and maintainability defects.</td><td><code>quality-reviewer "review PR"</code></td></tr>
-          <tr><td>api-reviewer</td><td>medium</td><td>API contracts and compatibility.</td><td><code>api-reviewer "audit API changes"</code></td></tr>
-          <tr><td>security-reviewer</td><td>medium</td><td>Security boundaries and vulnerabilities.</td><td><code>security-reviewer "security audit"</code></td></tr>
-          <tr><td>performance-reviewer</td><td>medium</td><td>Performance and complexity bottlenecks.</td><td><code>performance-reviewer "profile hotspots"</code></td></tr>
-          <tr><td>code-reviewer</td><td>high</td><td>Comprehensive multi-axis code review.</td><td><code>code-reviewer "comprehensive review"</code></td></tr>
+          <tr><td>code-reviewer</td><td>high</td><td>Comprehensive multi-axis code review (style, quality, API, performance).</td><td><code>code-reviewer "comprehensive review"</code></td></tr>
         </tbody>
       </table>
 
@@ -57,25 +53,11 @@
         <tbody>
           <tr><td>dependency-expert</td><td>medium</td><td>External SDK/API/package evaluation.</td><td><code>dependency-expert "compare SDK options"</code></td></tr>
           <tr><td>test-engineer</td><td>medium</td><td>Test strategy and coverage improvements.</td><td><code>test-engineer "write test plan"</code></td></tr>
-          <tr><td>quality-strategist</td><td>medium</td><td>Release quality and risk strategy.</td><td><code>quality-strategist "assess release risk"</code></td></tr>
-          <tr><td>build-fixer</td><td>medium</td><td>Build/toolchain/type issue resolution.</td><td><code>build-fixer "fix CI failures"</code></td></tr>
           <tr><td>designer</td><td>medium</td><td>UI/UX architecture and interaction design.</td><td><code>designer "improve onboarding UX"</code></td></tr>
           <tr><td>writer</td><td>low</td><td>Documentation and user guidance.</td><td><code>writer "draft migration guide"</code></td></tr>
-          <tr><td>qa-tester</td><td>medium</td><td>Interactive runtime QA validation.</td><td><code>qa-tester "run manual QA pass"</code></td></tr>
           <tr><td>git-master</td><td>medium</td><td>Commit strategy and history hygiene.</td><td><code>git-master "prepare clean commit plan"</code></td></tr>
           <tr><td>code-simplifier (internal)</td><td>high</td><td>Post-stop code simplification and cleanup automation.</td><td><code>code-simplifier "simplify touched files"</code></td></tr>
           <tr><td>researcher</td><td>medium</td><td>Reference and external documentation research.</td><td><code>researcher "collect official API docs"</code></td></tr>
-        </tbody>
-      </table>
-
-      <h2>Product</h2>
-      <table>
-        <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
-        <tbody>
-          <tr><td>product-manager</td><td>medium</td><td>Problem framing and PRD definition.</td><td><code>product-manager "define user outcomes"</code></td></tr>
-          <tr><td>ux-researcher</td><td>medium</td><td>Usability and accessibility audits.</td><td><code>ux-researcher "run heuristic audit"</code></td></tr>
-          <tr><td>information-architect</td><td>medium</td><td>Navigation, taxonomy, and structure.</td><td><code>information-architect "improve docs IA"</code></td></tr>
-          <tr><td>product-analyst</td><td>medium</td><td>Metrics, funnels, and experiments.</td><td><code>product-analyst "analyze onboarding funnel"</code></td></tr>
         </tbody>
       </table>
 
@@ -87,6 +69,26 @@
           <tr><td>team-executor (internal)</td><td>medium</td><td>Team execution specialist for supervised, conservative team delivery.</td><td><code>$team</code> worker lane</td></tr>
           <tr><td>team-orchestrator (internal)</td><td>internal</td><td>Team orchestration mode for supervised, conservative coordination.</td><td><code>$team</code> leader coordination</td></tr>
           <tr><td>vision</td><td>medium</td><td>Image/screenshot and diagram analysis.</td><td><code>vision "review this screenshot"</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2>Merged &amp; Deprecated Roles</h2>
+      <p class="muted">These roles are not installable and should not be invoked directly. Use the canonical replacement instead.</p>
+      <table>
+        <thead><tr><th>Legacy role</th><th>Status</th><th>Use instead</th></tr></thead>
+        <tbody>
+          <tr><td>style-reviewer</td><td>merged</td><td><code>code-reviewer</code></td></tr>
+          <tr><td>quality-reviewer</td><td>merged</td><td><code>code-reviewer</code></td></tr>
+          <tr><td>api-reviewer</td><td>merged</td><td><code>code-reviewer</code></td></tr>
+          <tr><td>performance-reviewer</td><td>merged</td><td><code>code-reviewer</code></td></tr>
+          <tr><td>quality-strategist</td><td>merged</td><td><code>verifier</code></td></tr>
+          <tr><td>qa-tester</td><td>merged</td><td><code>test-engineer</code></td></tr>
+          <tr><td>product-manager</td><td>merged</td><td><code>analyst</code></td></tr>
+          <tr><td>product-analyst</td><td>merged</td><td><code>analyst</code></td></tr>
+          <tr><td>ux-researcher</td><td>merged</td><td><code>designer</code></td></tr>
+          <tr><td>information-architect</td><td>merged</td><td><code>designer</code></td></tr>
+          <tr><td>security-reviewer</td><td>deprecated</td><td>unavailable (fold security review into <code>code-reviewer</code>)</td></tr>
+          <tr><td>build-fixer</td><td>deprecated</td><td>unavailable (use <code>debugger</code> / <code>executor</code>)</td></tr>
         </tbody>
       </table>
     </main>

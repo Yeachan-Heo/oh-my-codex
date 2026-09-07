@@ -2,6 +2,7 @@ import { dirname, join } from "path";
 import { homedir } from "os";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { spawnPlatformCommandSync, classifySpawnError } from "../utils/platform-command.js";
+import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
 import { readAuthConfig } from "../auth/config.js";
 import { resolveLiveAuthPath } from "../auth/paths.js";
 import { redactAuthSecrets } from "../auth/redact.js";
@@ -23,7 +24,7 @@ Auth slots are stored under ~/.omx/auth/<slot>.json with owner-only permissions.
 function wantsJson(args: string[]): boolean {
   return args.includes("--json");
 }
-const DEFAULT_SUBSCRIPTION_MODEL = "gpt-5-codex";
+const DEFAULT_SUBSCRIPTION_MODEL = DEFAULT_FRONTIER_MODEL;
 const DEFAULT_SUBSCRIPTION_MODEL_PROVIDER = "openai-chatgpt";
 
 

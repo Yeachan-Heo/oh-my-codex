@@ -253,9 +253,9 @@ describe('team model contract', () => {
   it('maps worker roles to configured default model lanes', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
-      assert.equal(resolveAgentDefaultModel('writer'), 'gpt-5.6-sol');
-      assert.equal(resolveAgentDefaultModel('executor'), 'gpt-5.6-sol');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.6-sol');
+      assert.equal(resolveAgentDefaultModel('writer'), 'gpt-6-astra');
+      assert.equal(resolveAgentDefaultModel('executor'), 'gpt-6-astra');
+      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6-astra');
       assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
     });
   });
@@ -263,9 +263,9 @@ describe('team model contract', () => {
     withIsolatedDefaultModelEnv(() => {
       process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.2-frontier';
 
-      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-5.6-sol');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-5.6-sol');
-      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-5.6-terra');
+      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-6-astra');
+      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6-astra');
+      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-6-astra');
       assert.equal(resolveAgentDefaultModel('critic'), 'gpt-5.2-frontier');
     });
   });
@@ -310,7 +310,7 @@ describe('team model contract', () => {
           '-c',
           'model_reasoning_effort="high"',
           '--model',
-          'gpt-5.6-sol',
+          'gpt-6-astra',
         ],
       );
     });
@@ -378,14 +378,14 @@ describe('team model contract', () => {
         }),
         {
           requestedAgentType: 'architect',
-          requestedDefaultModel: 'gpt-5.6-sol',
+          requestedDefaultModel: 'gpt-6-astra',
           requestedDefaultReasoning: 'xhigh',
-          actualModel: 'gpt-5.6-sol',
+          actualModel: 'gpt-6-astra',
           actualReasoning: 'xhigh',
           modelSource: 'fallback',
           reasoningSource: 'role-default',
           inheritedParentModel: false,
-          actualLaunchArgs: ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-5.6-sol'],
+          actualLaunchArgs: ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-6-astra'],
         },
       );
     });

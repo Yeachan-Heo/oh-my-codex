@@ -124,7 +124,7 @@ exit 2
       await writeFakeCodex(bin, `#!/bin/sh\nif [ "$1" = "login" ]; then mkdir -p "$CODEX_HOME"; printf '{"access_token":"sentinel-secret"}\\n' > "$CODEX_HOME/auth.json"; exit 0; fi\necho unexpected "$@" >&2\nexit 2\n`);
       const add = runOmx(wd, ["auth", "add", "work"], { HOME: home, CODEX_HOME: codexHome, PATH: `${bin}:/usr/bin:/bin` });
       assert.equal(add.status, 0, add.stderr);
-      assert.match(await readFile(join(codexHome, "config.toml"), "utf-8"), /^model = "gpt-5-codex"\n+model_provider = "openai-chatgpt"\n$/);
+      assert.match(await readFile(join(codexHome, "config.toml"), "utf-8"), /^model = "gpt-6-astra"\n+model_provider = "openai-chatgpt"\n$/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -5,10 +5,11 @@ import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { basename, join } from 'node:path';
 import TOML from '@iarna/toml';
+import { DEFAULT_FRONTIER_MODEL } from '../config/models.js';
 import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
 
 export const RESERVED_NATIVE_AGENT_NAMES = new Set(['default', 'worker', 'explorer']);
-const DEFAULT_AGENT_MODEL = 'gpt-5.6-sol';
+const DEFAULT_AGENT_MODEL = DEFAULT_FRONTIER_MODEL;
 const AGENTS_USAGE = [
   'Usage:',
   '  omx agents list [--scope user|project]',

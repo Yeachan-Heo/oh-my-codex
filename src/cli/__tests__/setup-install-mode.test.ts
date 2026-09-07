@@ -967,6 +967,73 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	for (const fixture of [
+		{ name: "fresh config", config: "", model: "gpt-6-astra" },
+		{
+			name: "multiline developer instructions with bracket headings",
+			config: [
+				'developer_instructions = """',
+				"Preserve these custom instructions.",
+				"",
+				"[review]",
+				"Inspect the diff before editing.",
+				"",
+				"[verification]",
+				"Run focused checks.",
+				'"""',
+				"",
+			].join("\n"),
+			model: "gpt-6-astra",
+		},
+		{
+			name: "explicit root and profile settings",
+			config: [
+				'"model" = "gpt-5.6-sol"',
+				'model_provider = "custom"',
+				'model_reasoning_effort = "high"',
+				'profile = "research"',
+				'[profiles.research]',
+				'model = "gpt-5.6-terra"',
+				'model_provider = "profile-custom"',
+				'model_reasoning_effort = "xhigh"',
+				"",
+			].join("\n"),
+			model: "gpt-5.6-sol",
+		},
+		{
+			name: "profile settings without a root model",
+			config: [
+				'model_provider = "custom"',
+				'model_reasoning_effort = "high"',
+				'profile = "research"',
+				'[profiles.research]',
+				'model = "gpt-5.6-luna"',
+				'model_reasoning_effort = "low"',
+				"",
+			].join("\n"),
+			model: "gpt-6-astra",
+		},
+	]) {
+		it(`seeds only a missing plugin root model for ${fixture.name}`, async () => {
+			const wd = await mkdtemp(join(tmpdir(), "omx-plugin-root-model-"));
+			try {
+				await withIsolatedUserHome(wd, async (codexHomeDir) => {
+					const configPath = join(codexHomeDir, "config.toml");
+					if (fixture.config) await writeFile(configPath, fixture.config);
+					const original = parseToml(fixture.config);
+					await runSetupWithCapturedLogs(wd, { scope: "user", installMode: "plugin" });
+					const config = parseToml(await readFile(configPath, "utf-8"));
+					assert.equal(config.model, fixture.model);
+					for (const key of ["model_provider", "model_reasoning_effort", "profile", "profiles", "developer_instructions"]) {
+						assert.deepEqual(config[key], original[key], key);
+					}
+				});
+			} finally {
+				await rm(wd, { recursive: true, force: true });
+			}
+		});
+	}
+
 	it("installs native agent TOML files in plugin mode so agent_type roles are available", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

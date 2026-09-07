@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 
 import { checkSparkRouting } from '../doctor.js';
 
-const SPARK_DEFAULT = 'gpt-5.6-luna';
+const SPARK_DEFAULT = 'gpt-6-astra';
 
 const SPARK_ENV_KEYS = [
   'OMX_DEFAULT_SPARK_MODEL',

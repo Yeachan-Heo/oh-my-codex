@@ -86,7 +86,7 @@ describe('omx agents', () => {
       assert.match(content, /^name = "my-helper"$/m);
       assert.match(content, /^description = "TODO: describe this agent's purpose"$/m);
       assert.match(content, /^developer_instructions = """$/m);
-      assert.match(content, /^# model = "gpt-5\.6-sol"$/m);
+      assert.match(content, /^# model = "gpt-6-astra"$/m);
       assert.match(content, /^# model_reasoning_effort = "medium"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });

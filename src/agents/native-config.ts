@@ -24,7 +24,7 @@ import { getRootModelName } from "../config/generator.js";
 import { codexAgentsDir } from "../utils/paths.js";
 
 export const EXACT_GPT_5_6_TERRA_MODEL = "gpt-5.6-terra";
-export const EXACT_RESEARCHER_MODEL = EXACT_GPT_5_6_TERRA_MODEL;
+export const EXACT_RESEARCHER_MODEL = "gpt-6-astra";
 
 const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
   "frontier-orchestrator": [

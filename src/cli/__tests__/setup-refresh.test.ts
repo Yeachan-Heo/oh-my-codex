@@ -16,6 +16,7 @@ import { setup } from "../setup.js";
 import TOML from "@iarna/toml";
 
 const TEST_CODEX_PROBES = {
+  installMode: "legacy",
   codexFeaturesProbe: () => null,
   codexVersionProbe: () => null,
 } satisfies Parameters<typeof setup>[0];
@@ -408,7 +409,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("offers an upgrade from gpt-5.3-codex to gpt-5.6-sol when accepted", async () => {
+  it("offers an upgrade from gpt-5.3-codex to gpt-6-astra when accepted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
@@ -431,14 +432,14 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         modelUpgradePrompt: async (currentModel, targetModel) => {
           promptCalls += 1;
           assert.equal(currentModel, "gpt-5.3-codex");
-          assert.equal(targetModel, "gpt-5.6-sol");
+          assert.equal(targetModel, "gpt-6-astra");
           return true;
         },
       });
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
       assert.equal(promptCalls, 1);
-      assert.match(config, /^model = "gpt-5\.6-sol"$/m);
+      assert.match(config, /^model = "gpt-6-astra"$/m);
       assert.doesNotMatch(config, /^model = "gpt-5\.3-codex"$/m);
       assert.doesNotMatch(config, /^model_context_window = 250000$/m);
       assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
@@ -448,7 +449,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     }
   });
 
-  it("offers an upgrade from gpt-5.5 to gpt-5.6-sol when accepted", async () => {
+  it("offers an upgrade from gpt-5.5 to gpt-6-astra when accepted", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
     try {
       await mkdir(join(wd, ".omx", "state"), { recursive: true });
@@ -459,13 +460,13 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         scope: "project",
         modelUpgradePrompt: async (currentModel, targetModel) => {
           assert.equal(currentModel, "gpt-5.5");
-          assert.equal(targetModel, "gpt-5.6-sol");
+          assert.equal(targetModel, "gpt-6-astra");
           return true;
         },
       });
 
       const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
-      assert.match(config, /^model = "gpt-5\.6-sol"$/m);
+      assert.match(config, /^model = "gpt-6-astra"$/m);
       assert.doesNotMatch(config, /^model = "gpt-5\.5"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });

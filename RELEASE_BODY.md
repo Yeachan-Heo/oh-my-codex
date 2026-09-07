@@ -1,31 +1,31 @@
-# oh-my-codex 0.21.3
+# oh-my-codex 0.21.4
 
-`0.21.3` is a patch release for `v0.21.2..3902573ef309e54534d7388579f2a7243ca7f465` (15 commits, 20 changed files, PRs #3604/#3605/#3606/#3608/#3610/#3612, linked issues #3609/#3611).
+`0.21.4` is a patch release for the frozen range `v0.21.3..b08eceeecc7a7379f041ceca51260f073d8a95bb` (3 commits, 35 changed files, +364/−195; PRs #3615/#3618/#3622).
 
 ## Highlights
 
-- **No duplicate Team wakes** — already-terminal projections are retired instead of re-waking Team coordination (#3608).
-- **Long sessions keep their transcripts** — the detached tmux scrollback clamp is raised 500 → 5000 lines with an `OMX_TMUX_HISTORY_LIMIT` override, so multi-line responses are no longer discarded from the pane in long sessions (#3612, fixes #3611).
-- **Composer drift triage documented** — `docs/troubleshooting.md` records the prompt-drift symptom, the measured repro matrix, the `tmux resize-pane -D 1 && tmux resize-pane -U 1` recovery, and the fact that `history-limit` is fixed at pane creation (#3610, documents #3609).
+- **Astra is the default across OMX agent tiers** — leaders, specialists, standard and fast agents, low-complexity workers, Team children, exact planning/research roles, new-agent configuration, subscription defaults, and SparkShell summaries now default to `gpt-6-astra` (#3622).
+- **Explicit choices remain authoritative** — existing model configuration, profiles, per-agent overrides, CLI/environment choices, provider-specific names, custom instructions, and reasoning-effort defaults are preserved (#3622).
+- **The agent catalog matches the packaged product** — only active/internal roles are presented as directly invocable, merged/deprecated replacements are documented, and workflow guidance is aligned with `$deep-interview` → `$ralplan` → `$ultragoal`; `$team` remains conditional parallel execution (#3618).
 
 ## Compatibility
 
-Patch release, no breaking changes. The scrollback change only raises the ceiling for OMX-owned detached leader sessions and adds an opt-in override; panes that already exist keep the scrollback size they were created with.
+Patch release with no intentional breaking CLI or package-layout changes. Astra defaults apply only where no explicit model choice exists.
 
-## Dependencies
+## Known gap
 
-`@types/node` 26.2.0 → 26.4.0 (#3606), `zod` 4.4.3 → 4.5.2 (#3605), `@biomejs/biome` 2.5.10 → 2.5.11 (#3604).
+[#3623](https://github.com/Yeachan-Heo/oh-my-codex/issues/3623) remains open, separately owned, unmerged, and outside this release. OMX doctor/setup still use Codex CLI 0.153.4's removed `plugin_hooks` feature flag for plugin-hook inference and generated configuration, which can produce misleading diagnostics and obsolete config. Native `hooks/list` recognized the installed plugin hooks in the report, so a runtime hook outage has not been demonstrated.
 
 ## Contributors
 
-Thanks to Bellman (@Yeachan-Heo), @Oreochococukie, dependabot, and the gaebal-gajae (clawdbot) triage/repair lanes.
+Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo) and [@ev78394](https://github.com/ev78394) for contributing to this release.
 
 ## Frozen-range acknowledgements
 
-Merge this release PR with a two-parent merge commit so frozen `dev@3902573e` remains reachable. Immediately before merge, force-fetch and record the exact `origin/release/0.21.3` head; verify both it and frozen dev are ancestors of the tagged main commit.
+The product candidate is frozen at `dev@b08eceeecc7a7379f041ceca51260f073d8a95bb`. #3615 is release-train metadata rather than a product headline. Issue #3623 is explicitly excluded because it is unmerged and separately owned.
 
 ## Inventory
 
-The reproducible range is recorded in `artifacts/release-0.21.3/inventory.md`.
+The reproducible range is recorded in `artifacts/release-0.21.4/inventory.md`.
 
-**Full Changelog**: [`v0.21.2...v0.21.3`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.2...v0.21.3)
+**Full Changelog**: [`v0.21.3...v0.21.4`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.3...v0.21.4)

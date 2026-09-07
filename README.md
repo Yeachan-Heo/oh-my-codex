@@ -375,7 +375,7 @@ These are operator/support surfaces:
   - `omx uninstall` removes OMX-managed wrappers from `.codex/hooks.json` but keeps the file when user hooks remain
 - `omx update` checks npm immediately, installs the newest global OMX build, then reruns the same interactive setup refresh path
 - launch-time update checks are throttled and prompt by default; use `OMX_AUTO_UPDATE=0` to disable them or `OMX_AUTO_UPDATE=defer` to schedule deferred updates without a prompt
-- fresh OMX-managed `gpt-5.6-sol` config seeding now recommends `model_context_window = 250000` and `model_auto_compact_token_limit = 200000`, but only when those keys are missing
+- fresh OMX setup defaults to `gpt-6-astra` across frontier, standard, and spark/fast agents, with the same role reasoning defaults; existing user model configuration and explicit overrides are preserved
 - `.omx-config.json` model/env routing is documented in [the model/env routing reference](./docs/reference/omx-config-schema-routing.md); only edit keys supported by your installed OMX version
 - `omx doctor` verifies the install when something seems wrong; it does not prove that the active Codex profile can make an authenticated model call
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
@@ -413,6 +413,7 @@ If `Shift+Enter` still submits instead of inserting a newline inside an OMX-mana
 
 - `omx sparkshell <command>` is for shell-native inspection and bounded verification
 - for read-only repository lookups, use normal Codex repository inspection tools/subagents (the deprecated `omx explore` command has been removed)
+- primary and fallback Sparkshell summary models both default to `gpt-6-astra`; set `OMX_SPARKSHELL_FALLBACK_MODEL` to a different model to enable a distinct fallback
 - sparkshell env overrides are intentionally narrow: `OMX_SPARKSHELL_BIN` selects a native sidecar path, `OMX_SPARKSHELL_MODEL` selects the primary summary model, `OMX_SPARKSHELL_FALLBACK_MODEL` selects the retry model, `OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE` selects summary instructions, and `OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS` controls the local API summary timeout
 
 Examples:
