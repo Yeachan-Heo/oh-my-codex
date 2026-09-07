@@ -131,7 +131,7 @@ Mulai OMX dengan konfigurasi yang kuat, lakukan klarifikasi lebih dulu bila dipe
 
 Gunakan OMX jika Anda sudah menyukai Codex dan menginginkan runtime harian yang lebih baik di sekitarnya:
 - workflow standar yang dibangun di sekitar `$deep-interview` -> `$ralplan` -> `$ultragoal`
-- batasan research: gunakan `$best-practice-research` untuk evidence resmi/upstream biasa sebelum planning, `$autoresearch` untuk artifact research yang dibatasi dan melewati validator gate, `$autoresearch` dengan mode goal untuk mission research, lalu masukkan temuan research ke `$ralplan` untuk sintesis arsitektur
+- batasan research: gunakan `$best-practice-research` untuk evidence resmi/upstream biasa sebelum planning, `$autoresearch` untuk artifact research yang dibatasi dan melewati validator gate (`$deep-interview --autoresearch` untuk intake, lalu `$autoresearch` dengan mode validasi yang dipilih) untuk mission research, lalu masukkan temuan research ke `$ralplan` untuk sintesis arsitektur
 - handoff multi-goal persisten dengan `$ultragoal` dan artifact `.omx/ultragoal` sebagai jalur penyelesaian default setelah planning
 - role spesialis dan skill pendukung saat tugas membutuhkannya
 - panduan proyek melalui `AGENTS.md` dengan scope
