@@ -1059,20 +1059,50 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     }
   });
 
-  it('reports unavailable atomic no-replace support without moving the pointer', async () => {
+  it('recovers via the portable no-clobber fallback when the native atomic rename is unavailable', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-unsupported-'));
     try {
       const pointer = await writePointer(cwd);
+      const context = resolveSessionPointerContext(cwd);
       await withPointerDependencies({
         probePid: () => 'dead',
         token: () => SUCCESSOR_TOKEN,
         atomicRenameNoReplace: async () => 'unsupported',
       }, async () => {
         const result = await recoverDeadSessionPointer(cwd);
-        assert.equal(result.status, 'unsupported');
+        assert.equal(result.status, 'recovered', result.reason);
+        assert.equal(result.recovered, true);
+        assert.equal(result.action, 'quarantined');
+        assert.ok(result.quarantinePath);
+        assert.equal(existsSync(pointer.path), false);
+        assert.equal(await readFile(result.quarantinePath, 'utf-8'), pointer.body);
+      });
+      assert.equal(existsSync(context.sessionPath), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('never overwrites an existing quarantine destination when the native atomic rename is unavailable', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-portable-collision-'));
+    try {
+      const pointer = await writePointer(cwd);
+      const context = resolveSessionPointerContext(cwd);
+      const quarantinePath = `${context.sessionPath}.quarantine.dead-owner.${SUCCESSOR_TOKEN}`;
+      await mkdir(context.baseStateDir, { recursive: true });
+      await writeFile(quarantinePath, 'foreign quarantine bytes', 'utf-8');
+      await withPointerDependencies({
+        probePid: () => 'dead',
+        token: () => SUCCESSOR_TOKEN,
+        atomicRenameNoReplace: async () => 'unsupported',
+      }, async () => {
+        const result = await recoverDeadSessionPointer(cwd);
+        assert.equal(result.status, 'collision', result.reason);
         assert.equal(result.recovered, false);
+        assert.equal(result.action, 'none');
       });
       assert.equal(await readFile(pointer.path, 'utf-8'), pointer.body);
+      assert.equal(await readFile(quarantinePath, 'utf-8'), 'foreign quarantine bytes');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2620,7 +2650,10 @@ describe('session pointer transaction', () => {
       const context = resolveSessionPointerContext(cwd);
       await writeLockOwner(cwd, validLockOwner());
       const parked = `${context.lockPath}.parked-lock-${SUCCESSOR_TOKEN}`;
-      await withPointerDependencies({ token: () => SUCCESSOR_TOKEN, probePid: () => 'dead', atomicRenameNoReplace: async (_from, to) => {
+      const probeFrom = join(context.lockPath, '.omx-recovery-probe-from');
+      const probeTo = join(context.lockPath, '.omx-recovery-probe-to');
+      await withPointerDependencies({ token: () => SUCCESSOR_TOKEN, probePid: () => 'dead', atomicRenameNoReplace: async (from, to) => {
+        if (from === probeFrom && to === probeTo) return await defaultTestAtomicRenameNoReplace(from, to);
         await mkdir(to); await writeFile(join(to, 'foreign'), 'foreign'); return 'not-moved';
       } }, async () => assert.equal((await recoverSessionPointerLock(cwd)).recovered, false));
       assert.equal(await readFile(join(parked, 'foreign'), 'utf8'), 'foreign');
@@ -2740,7 +2773,7 @@ describe('session pointer transaction', () => {
     }
   });
 
-  it('preserves recovery evidence when atomic directory quarantine is unsupported', async () => {
+  it('fails closed for lock directory quarantine when the native atomic rename is unavailable', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-recovery-unsupported-'));
     try {
       const context = resolveSessionPointerContext(cwd);
@@ -2752,9 +2785,10 @@ describe('session pointer transaction', () => {
       }, async () => {
         const recovered = await recoverSessionPointerLock(cwd);
         assert.equal(recovered.recovered, false);
-        assert.match(recovered.reason, /unsupported/i);
+        assert.match(recovered.reason, /portable recovery applies to regular files only/i);
       });
-      // Capability is probed before checkpoint/quarantine mutations.
+      // Directory incarnations cannot use the portable file fallback, so the
+      // canonical lock and owner evidence stay untouched.
       assert.equal(existsSync(context.lockPath), true);
       assert.equal(await readFile(join(context.lockPath, 'owner.json'), 'utf8'), JSON.stringify(validLockOwner()));
       assert.equal(existsSync(`${context.lockPath}.quarantine.${TEST_TOKEN}.${SUCCESSOR_TOKEN}`), false);
