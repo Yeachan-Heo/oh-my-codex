@@ -125,7 +125,7 @@ $ultragoal "turn the approved plan into durable Codex goals"
 
 Itulah jalur utamanya.
 Sebelum menganggap runtime siap, jalankan smoke test quick-start di bawah: `omx doctor` memverifikasi bentuk instalasi, sementara `omx exec` membuktikan bahwa runtime Codex aktif benar-benar dapat melakukan autentikasi dan menyelesaikan model call dari environment saat ini.
-Mulai OMX dengan konfigurasi yang kuat, lakukan klarifikasi lebih dulu bila diperlukan, setujui rencana, lalu gunakan `$ultragoal` sebagai wrapper penyelesaian persisten default. Gunakan `$team` di dalam jalur eksekusi tersebut hanya ketika story Ultragoal tertentu membutuhkan pekerjaan paralel yang terkoordinasi; gunakan `$ralph` ketika Anda memang menginginkan loop penyelesaian dengan satu pemilik alih-alih run multi-goal yang persisten.
+Mulai OMX dengan konfigurasi yang kuat, lakukan klarifikasi lebih dulu bila diperlukan, setujui rencana, lalu gunakan `$ultragoal` sebagai wrapper penyelesaian persisten default. Gunakan `$team` di dalam jalur eksekusi tersebut hanya ketika story Ultragoal tertentu membutuhkan pekerjaan paralel yang terkoordinasi; lanjutkan dengan `$ultragoal` untuk menjaga objective dan checkpoint tetap berjalan sampai selesai.
 
 ## Untuk apa OMX digunakan
 
@@ -430,6 +430,7 @@ Contoh:
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```
+- Entri server MCP: `omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (server wiki repository), `omx_hermes` (jembatan terbatas untuk status dan koordinasi sesi)
 
 ### Wiki
 

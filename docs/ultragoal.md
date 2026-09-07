@@ -142,7 +142,7 @@ The final ultragoal story is not complete until the active agent has run the fin
 2. Run `ai-slop-cleaner` on changed files only; if there are no relevant edits, the cleaner still runs and records a passed/no-op report.
 3. Rerun verification after the cleaner pass.
 4. Run the architecture-invariant audit: derive non-negotiable architecture/domain invariants from the brief/spec/interview/accepted steering/goal artifacts, list the source artifacts, and prove each required invariant with implementation, test, and independent review evidence.
-5. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence, and `architectureInvariantGate.status: "passed"` proves every required invariant. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, same-lane/self-review, and unproved architecture invariants are non-clean. If the approved plan already used Scholastic for ontology-heavy review, carry that advisory evidence into the quality gate; non-clean Scholastic findings should be treated as blocker evidence rather than a completion claim.
+5. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence, and `architectureInvariantGate.status: "passed"` proves every required invariant. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, same-lane/self-review, and unproved architecture invariants are non-clean.
 6. If review or invariant proof is non-clean, do **not** call `update_goal`. Record durable blocker work instead:
 
 
@@ -193,13 +193,6 @@ The final ultragoal story is not complete until the active agent has run the fin
 }
 ```
 
-When Scholastic advisory evidence exists for ontology-heavy goals, add it alongside the required fields:
-
-```json
-{
-  "scholasticReview": { "recommendation": "APPROVE", "ontologyStatus": "SOUND", "evidence": "terms normalized; no category mistake; modal claims separated" }
-}
-```
 
 ## Integration constraints
 

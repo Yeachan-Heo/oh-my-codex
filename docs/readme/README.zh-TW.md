@@ -15,7 +15,7 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex) 的多智能體編排層。
 
-## v0.9.0 新功能 — Spark Initiative
+## v0.9.0 歷史版本說明 — Spark Initiative
 
 Spark Initiative 是一個強化 OMX 原生探索與檢查路徑的版本發布。
 
@@ -49,7 +49,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — 當範圍或邊界仍不清楚時，先用它釐清需求。
 2. `$ralplan` — 把釐清後的範圍整理成可核准的架構與實作計畫。
-3. `$ultragoal` 或 `$team` — 需要持久目標追蹤時用 `$ultragoal`，需要協調平行執行時用 `$team`。（OMX 0.21 降級了 `$ralph`，使其成為 sunset stub，僅在明確選擇單一負責人持續推進時作為後備。）
+3. `$ultragoal` 或 `$team` — 需要持久目標追蹤時用 `$ultragoal`，需要協調平行執行時用 `$team`。
 
 ## 核心模型
 
@@ -181,7 +181,7 @@ omx team shutdown <team-name>
 ### Ralph 後續流程
 
 若協調式 Team 執行之後仍需要單一負責人的持續修正 / 驗證迴圈，
-請在 Team 工作完成後另外執行 `omx ralph ...`。舊的 linked-Ralph 團隊路徑已不再是建議或支援的標準路徑。
+若協調式 Team 執行之後仍需要單一負責人的持續修正 / 驗證迴圈，請在 Team 工作完成後另外使用 `$ultragoal`，持續追蹤目標直到完成。舊的 linked-Ralph 團隊路徑已不再是建議或支援的標準路徑。
 
 團隊工作進程的 Worker CLI 選擇：
 
@@ -213,7 +213,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 選用：停用自適應 queue->resend 回退
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - MCP 伺服器項目（`omx_state`、`omx_memory`、`omx_code_intel`、`omx_trace`）
+  - MCP 伺服器項目（`omx_state`、`omx_memory`、`omx_code_intel`、`omx_trace`、`omx_wiki`（儲存庫 Wiki 伺服器）、`omx_hermes`（受限的工作階段狀態／協調橋接））
   - `[tui] status_line`
 - 範圍專屬 `AGENTS.md`
 - `.omx/` 執行期目錄與 HUD 設定
@@ -225,7 +225,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 選用：停用自適應 queue->resend 回退
 
 範例：
 - 代理：`architect`、`planner`、`executor`、`debugger`、`verifier`、`security-reviewer`
-- 技能：`deep-interview`、`ralplan`、`team`、`ralph`、`plan`、`cancel`
+- 技能：`deep-interview`、`ralplan`、`team`、`ultragoal`、`plan`、`cancel`
 
 ### 視覺品質驗證迴圈（`$visual-ralph`）
 
