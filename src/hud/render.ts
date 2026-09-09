@@ -519,7 +519,3 @@ export function renderHud(
 
   return wrapHudParts(label, parts, renderOptions);
 }
-
-export function countRenderedHudLines(text: string): number {
-  return text.replace(/\r/g, '').split('\n').length;
-}
