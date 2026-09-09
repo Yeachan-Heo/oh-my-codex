@@ -2,7 +2,9 @@
 
 The default task path is understand → execute → verify → report. The keyword
 registry no longer interprets `build me` or `I want a` as Autopilot requests, and a
-bare `autopilot` name or a question about Autopilot or Ultragoal mode is not activation.
+bare `autopilot` name or informational questions such as `what is autopilot mode?`
+and `what is ultragoal mode?` are not activation. Questions containing command-style
+directives can still match; this is not a general question classifier.
 
 Use an explicit `$autopilot` / `$ultragoal` invocation or a supported command-style
 request such as `run autopilot`, `start autopilot`, or `use autopilot`. Explicit
