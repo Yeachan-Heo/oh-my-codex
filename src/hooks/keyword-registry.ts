@@ -9,8 +9,6 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
 
   { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
   { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
-  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
-  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
 
   { keyword: '$ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: 'ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },

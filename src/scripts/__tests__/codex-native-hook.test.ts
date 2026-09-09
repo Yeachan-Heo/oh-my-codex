@@ -9420,7 +9420,7 @@ ${JSON.stringify({
 		}
 	});
 
-	it("adds execution handoff context for non-keyword prompts that authorize implementation", async () => {
+	it("does not inject generic execution handoff coaching for non-keyword prompts", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-execution-handoff-"),
 		);
@@ -9453,15 +9453,15 @@ ${JSON.stringify({
 						}
 					)?.hookSpecificOutput?.additionalContext || "",
 				);
-				assert.match(message, /execution handoff/i, prompt);
-				assert.match(message, /Do not restate the prior plan/i, prompt);
+				assert.doesNotMatch(message, /Newest user input is an execution handoff/i, prompt);
+				assert.doesNotMatch(message, /Do not restate the prior plan/i, prompt);
 			}
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("adds latest-followup priority context for short same-thread follow-up prompts", async () => {
+	it("does not inject redundant priority coaching for short follow-up prompts", async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-followup-priority-"),
 		);
@@ -9486,8 +9486,8 @@ ${JSON.stringify({
 					}
 				)?.hookSpecificOutput?.additionalContext || "",
 			);
-			assert.match(message, /same-thread follow-up/i);
-			assert.match(message, /prefer it over older unresolved prompts/i);
+			assert.doesNotMatch(message, /Newest user input is a same-thread follow-up/i);
+			assert.doesNotMatch(message, /prefer it over older unresolved prompts/i);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
