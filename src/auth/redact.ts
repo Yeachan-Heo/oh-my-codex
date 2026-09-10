@@ -37,20 +37,19 @@ export function createAuthStderrRedactor(emit: (text: string) => void): {
   // Keep pretty-printed token fields together when the value starts on the next line.
   const incompleteSecret = /(?:["']?(?:access_token|refresh_token|id_token|(?:session|auth|api)[_-]?token)["']?\s*[:=]?|\bbearer)\s*$/i;
   const accept = (text: string) => {
+    if (dropping) return;
     for (const part of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
-      if (!dropping) {
-        pending += part;
-        // Never release a partial oversized record: it could end inside a token.
-        if (pending.length > 64 * 1024) {
-          emit("[omx auth] oversized stderr record suppressed\n");
-          pending = "";
-          dropping = true;
-        }
+      pending += part;
+      // A newline after overflow might still precede a pretty-printed secret value.
+      // Without its buffered prefix, no later boundary is provably safe to emit.
+      if (pending.length > 64 * 1024) {
+        emit("[omx auth] oversized stderr record; remaining stderr suppressed\n");
+        pending = "";
+        dropping = true;
+        return;
       }
       if (!part.endsWith("\n")) continue;
-      if (dropping) {
-        dropping = false;
-      } else if (!incompleteSecret.test(pending)) {
+      if (!incompleteSecret.test(pending)) {
         emit(redactAuthSecrets(pending));
         pending = "";
       }

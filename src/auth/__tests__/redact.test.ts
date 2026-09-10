@@ -3,6 +3,19 @@ import assert from "node:assert/strict";
 import { createAuthStderrRedactor, redactAuthSecrets } from "../redact.js";
 
 describe("auth secret redaction", () => {
+  it("does not release a multiline token value after overflowing its field prefix", () => {
+    const prefix = '{"access_token":\n' + " ".repeat(65 * 1024);
+    const record = prefix + '\n"synthetic-secret"}\n';
+    for (const split of [0, 16, 64 * 1024, prefix.length, record.length]) {
+      let output = "";
+      const redactor = createAuthStderrRedactor((text) => { output += text; });
+      redactor.write(Buffer.from(record.slice(0, split)));
+      redactor.write(Buffer.from(record.slice(split)));
+      redactor.end();
+      assert.doesNotMatch(output, /synthetic-secret/);
+    }
+  });
+
   it("redacts every byte split of token records, including multiline fields and UTF-8", () => {
     for (const record of [
       '{"access_token":"synthetic-secret"}\n',
@@ -24,7 +37,7 @@ describe("auth secret redaction", () => {
     }
   });
 
-  it("streams completed safe lines and suppresses oversized records until newline", () => {
+  it("streams completed safe lines but suppresses the remaining stream after overflow", () => {
     let output = "";
     const redactor = createAuthStderrRedactor((text) => { output += text; });
     redactor.write(Buffer.from("safe line\n"));
@@ -33,7 +46,8 @@ describe("auth secret redaction", () => {
     redactor.write(Buffer.from('synthetic-secret"}\nquota exceeded\n'));
     redactor.end();
     assert.doesNotMatch(output, /synthetic-secret|xxx/);
-    assert.match(output, /suppressed\nquota exceeded\n$/);
+    assert.match(output, /remaining stderr suppressed\n$/);
+    assert.doesNotMatch(output, /quota exceeded/);
   });
 
   it("redacts JSON quoted OAuth token fields while preserving key names", () => {
