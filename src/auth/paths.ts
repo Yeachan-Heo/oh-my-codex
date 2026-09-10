@@ -1,4 +1,5 @@
 import { homedir } from "os";
+import { statSync } from "fs";
 import { basename, join, resolve } from "path";
 import { lstat, mkdir, stat } from "fs/promises";
 import { resolveCodexHomeForLaunch } from "../cli/codex-home.js";
@@ -24,7 +25,7 @@ export function validateSlotName(slot: string): string {
   if (trimmed === "." || trimmed === ".." || basename(trimmed) !== trimmed) {
     throw new Error("invalid auth slot name: path traversal is not allowed");
   }
-  if (trimmed.toLowerCase() === "slots") {
+  if (trimmed === "slots") {
     throw new Error("invalid auth slot name: 'slots' is reserved for auth metadata");
   }
   return trimmed;
@@ -37,6 +38,22 @@ export function resolveSlotPath(slot: string, home = homedir()): string {
   const expected = join(resolve(authDir), `${safeSlot}.json`);
   if (candidate !== expected) {
     throw new Error("invalid auth slot path");
+  }
+  if (safeSlot.toLowerCase() === "slots") {
+    // Preserve legacy case-variant accounts only when their file is demonstrably
+    // distinct from metadata. New names and case-insensitive aliases stay reserved.
+    let distinctLegacyFile = false;
+    try {
+      const credential = statSync(candidate);
+      const metadata = statSync(resolveAuthMetadataPath(home));
+      distinctLegacyFile = credential.isFile() && metadata.isFile()
+        && (credential.dev !== metadata.dev || credential.ino !== metadata.ino);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!distinctLegacyFile) {
+      throw new Error("invalid auth slot name: 'slots' is reserved for auth metadata");
+    }
   }
   return candidate;
 }

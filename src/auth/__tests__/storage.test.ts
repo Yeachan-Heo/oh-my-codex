@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -50,6 +50,56 @@ describe("auth slot storage", () => {
       assert.ok((await readAuthMetadata(home)).slots.every(record => record.exhaustedAt));
       await Promise.all(names.map(name => clearSlotExhaustion(name, home)));
       assert.ok((await readAuthMetadata(home)).slots.every(record => !record.exhaustedAt));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves access to an existing distinct Slots account and unrelated accounts", async (t) => {
+    const home = await tempHome();
+    try {
+      const authDir = resolveOmxAuthDir(home);
+      await mkdir(authDir, { recursive: true });
+      const legacyPath = join(authDir, "Slots.json");
+      const metadataPath = resolveAuthMetadataPath(home);
+      await writeFile(legacyPath, '{"access_token":"legacy-test-only"}\n');
+      await writeFile(join(authDir, "work.json"), '{"access_token":"work-test-only"}\n');
+      await writeFile(metadataPath, JSON.stringify({
+        version: 1,
+        slots: ["Slots", "work"].map(slot => ({ slot, createdAt: "2026-09-01", updatedAt: "2026-09-01" })),
+      }));
+      const [legacy, metadata] = await Promise.all([stat(legacyPath), stat(metadataPath)]);
+      if (legacy.dev === metadata.dev && legacy.ino === metadata.ino) {
+        t.skip("filesystem does not support distinct Slots.json and slots.json");
+        return;
+      }
+      assert.deepEqual((await listSlots(home)).map(slot => slot.slot), ["Slots", "work"]);
+      const live = join(home, "auth.json");
+      await useSlot("work", live, home);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"work-test-only"}\n');
+      await useSlot("Slots", live, home);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"legacy-test-only"}\n');
+      await addSlotFromAuthFile("Slots", live, home);
+      assert.deepEqual((await readAuthMetadata(home)).slots.map(slot => slot.slot), ["Slots", "work"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a case-variant credential path that aliases the metadata file", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, "auth.json");
+      await writeFile(live, '{"access_token":"test-only"}\n');
+      await addSlotFromAuthFile("work", live, home);
+      const metadataPath = resolveAuthMetadataPath(home);
+      const aliasPath = join(resolveOmxAuthDir(home), "Slots.json");
+      if (!existsSync(aliasPath)) await link(metadataPath, aliasPath);
+      const before = await readFile(metadataPath, "utf-8");
+      await assert.rejects(addSlotFromAuthFile("Slots", live, home), /reserved/i);
+      await assert.rejects(useSlot("Slots", live, home), /reserved/i);
+      assert.equal(await readFile(metadataPath, "utf-8"), before);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"test-only"}\n');
     } finally {
       await rm(home, { recursive: true, force: true });
     }
