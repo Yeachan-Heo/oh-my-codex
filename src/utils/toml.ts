@@ -1,4 +1,5 @@
-const TABLE_HEADER = /^(?:\[[^[\]]+\]|\[\[[^[\]]+\]\])\s*(#.*)?$/;
+// Quoted table keys may themselves contain brackets (for example project paths).
+const TABLE_HEADER = /^\[.+\]\s*(#.*)?$/;
 
 export function readTopLevelTomlString(
   content: string,

@@ -1,8 +1,10 @@
 import { randomBytes } from "crypto";
-import { dirname } from "path";
-import { readFile, rename, rm, writeFile, chmod } from "fs/promises";
+import { dirname, join } from "path";
+import { readFile, rename, rm, writeFile, chmod, mkdir, rmdir } from "fs/promises";
 import { existsSync } from "fs";
+import { setTimeout as delay } from "node:timers/promises";
 import {
+  AUTH_DIR_MODE,
   AUTH_FILE_MODE,
   assertNoSymlink,
   assertReadableFile,
@@ -73,12 +75,41 @@ export async function readAuthMetadata(home?: string): Promise<AuthMetadata> {
   };
 }
 
-export async function writeAuthMetadata(metadata: AuthMetadata, home?: string): Promise<void> {
+async function withAuthStorageLock<T>(home: string | undefined, work: () => Promise<T>): Promise<T> {
+  const authDir = resolveOmxAuthDir(home);
+  await ensurePrivateDir(authDir);
+  const lockDir = join(authDir, ".metadata-lock");
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      await mkdir(lockDir, { mode: AUTH_DIR_MODE });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Never steal a lock on age alone: its owner may still be writing auth.json.
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for auth storage lock: ${lockDir}. Remove a stale lock only after confirming no auth operation is running.`);
+      }
+      await delay(25);
+    }
+  }
+  try {
+    return await work();
+  } finally {
+    await rmdir(lockDir);
+  }
+}
+
+async function writeAuthMetadataUnlocked(metadata: AuthMetadata, home?: string): Promise<void> {
   const authDir = resolveOmxAuthDir(home);
   await ensurePrivateDir(authDir);
   await atomicWriteFile(resolveAuthMetadataPath(home), `${JSON.stringify(metadata, null, 2)}\n`, {
     mode: AUTH_FILE_MODE,
   });
+}
+
+export async function writeAuthMetadata(metadata: AuthMetadata, home?: string): Promise<void> {
+  await withAuthStorageLock(home, () => writeAuthMetadataUnlocked(metadata, home));
 }
 
 function upsertSlotRecord(metadata: AuthMetadata, slot: string, nowIso: string): AuthSlotRecord {
@@ -105,11 +136,13 @@ export async function addSlotFromAuthFile(
   await ensurePrivateDir(resolveOmxAuthDir(home));
   const data = await readFile(liveAuthPath);
   const target = resolveSlotPath(safeSlot, home);
-  await atomicWriteFile(target, data, { mode: AUTH_FILE_MODE });
-  const metadata = await readAuthMetadata(home);
-  const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
-  await writeAuthMetadata(metadata, home);
-  return record;
+  return withAuthStorageLock(home, async () => {
+    const metadata = await readAuthMetadata(home);
+    await atomicWriteFile(target, data, { mode: AUTH_FILE_MODE });
+    const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
+    await writeAuthMetadataUnlocked(metadata, home);
+    return record;
+  });
 }
 
 export async function listSlots(home?: string): Promise<AuthSlotRecord[]> {
@@ -126,17 +159,19 @@ export async function useSlot(
   const safeSlot = validateSlotName(slot);
   const slotPath = resolveSlotPath(safeSlot, home);
   await assertReadableFile(slotPath, `auth slot ${safeSlot}`);
-  const metadata = await readAuthMetadata(home);
-  await ensurePrivateDir(dirname(liveAuthPath));
-  await assertNoSymlink(liveAuthPath, "live Codex auth.json");
-  const data = await readFile(slotPath);
-  await atomicWriteFile(liveAuthPath, data, { mode: AUTH_FILE_MODE });
-  const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
-  record.lastUsedAt = now.toISOString();
-  delete record.exhaustedAt;
-  metadata.currentSlot = safeSlot;
-  await writeAuthMetadata(metadata, home);
-  return record;
+  return withAuthStorageLock(home, async () => {
+    const metadata = await readAuthMetadata(home);
+    await ensurePrivateDir(dirname(liveAuthPath));
+    await assertNoSymlink(liveAuthPath, "live Codex auth.json");
+    const data = await readFile(slotPath);
+    await atomicWriteFile(liveAuthPath, data, { mode: AUTH_FILE_MODE });
+    const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
+    record.lastUsedAt = now.toISOString();
+    delete record.exhaustedAt;
+    metadata.currentSlot = safeSlot;
+    await writeAuthMetadataUnlocked(metadata, home);
+    return record;
+  });
 }
 
 export async function markSlotQuota(
@@ -145,19 +180,24 @@ export async function markSlotQuota(
   now = new Date(),
 ): Promise<AuthMetadata> {
   const safeSlot = validateSlotName(slot);
-  const metadata = await readAuthMetadata(home);
-  const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
-  record.lastQuotaAt = now.toISOString();
-  record.exhaustedAt = now.toISOString();
-  await writeAuthMetadata(metadata, home);
-  return metadata;
+  return withAuthStorageLock(home, async () => {
+    const metadata = await readAuthMetadata(home);
+    const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
+    record.lastQuotaAt = now.toISOString();
+    record.exhaustedAt = now.toISOString();
+    await writeAuthMetadataUnlocked(metadata, home);
+    return metadata;
+  });
 }
 
 export async function clearSlotExhaustion(slot: string, home?: string): Promise<void> {
-  const metadata = await readAuthMetadata(home);
-  const record = metadata.slots.find((entry) => entry.slot === validateSlotName(slot));
-  if (record) {
-    delete record.exhaustedAt;
-    await writeAuthMetadata(metadata, home);
-  }
+  const safeSlot = validateSlotName(slot);
+  await withAuthStorageLock(home, async () => {
+    const metadata = await readAuthMetadata(home);
+    const record = metadata.slots.find((entry) => entry.slot === safeSlot);
+    if (record) {
+      delete record.exhaustedAt;
+      await writeAuthMetadataUnlocked(metadata, home);
+    }
+  });
 }

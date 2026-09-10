@@ -24,6 +24,9 @@ export function validateSlotName(slot: string): string {
   if (trimmed === "." || trimmed === ".." || basename(trimmed) !== trimmed) {
     throw new Error("invalid auth slot name: path traversal is not allowed");
   }
+  if (trimmed.toLowerCase() === "slots") {
+    throw new Error("invalid auth slot name: 'slots' is reserved for auth metadata");
+  }
   return trimmed;
 }
 
