@@ -135,8 +135,8 @@ export async function addSlotFromAuthFile(
   await assertReadableFile(liveAuthPath, "live Codex auth.json");
   await ensurePrivateDir(resolveOmxAuthDir(home));
   const data = await readFile(liveAuthPath);
-  const target = resolveSlotPath(safeSlot, home);
   return withAuthStorageLock(home, async () => {
+    const target = resolveSlotPath(safeSlot, home);
     const metadata = await readAuthMetadata(home);
     await atomicWriteFile(target, data, { mode: AUTH_FILE_MODE });
     const record = upsertSlotRecord(metadata, safeSlot, now.toISOString());
@@ -157,9 +157,9 @@ export async function useSlot(
   now = new Date(),
 ): Promise<AuthSlotRecord> {
   const safeSlot = validateSlotName(slot);
-  const slotPath = resolveSlotPath(safeSlot, home);
-  await assertReadableFile(slotPath, `auth slot ${safeSlot}`);
   return withAuthStorageLock(home, async () => {
+    const slotPath = resolveSlotPath(safeSlot, home);
+    await assertReadableFile(slotPath, `auth slot ${safeSlot}`);
     const metadata = await readAuthMetadata(home);
     await ensurePrivateDir(dirname(liveAuthPath));
     await assertNoSymlink(liveAuthPath, "live Codex auth.json");

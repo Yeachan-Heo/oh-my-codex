@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { atomicWriteFile, addSlotFromAuthFile, listSlots, readAuthMetadata, useSlot, markSlotQuota, clearSlotExhaustion } from "../storage.js";
 import {
   resolveAuthMetadataPath,
@@ -20,6 +21,40 @@ async function tempHome(): Promise<string> {
 }
 
 describe("auth slot storage", () => {
+  for (const operation of [addSlotFromAuthFile, useSlot]) {
+    it(`rechecks legacy file identity after acquiring the lock in ${operation.name}`, async (t) => {
+      const home = await tempHome();
+      try {
+        const live = join(home, "auth.json");
+        await writeFile(live, '{"access_token":"test-only"}\n');
+        await addSlotFromAuthFile("work", live, home);
+        const metadataPath = resolveAuthMetadataPath(home);
+        const legacyPath = join(resolveOmxAuthDir(home), "Slots.json");
+        if (existsSync(legacyPath)) {
+          t.skip("requires case-distinct filenames");
+          return;
+        }
+        await writeFile(legacyPath, '{"access_token":"legacy"}\n');
+        const before = await readFile(metadataPath, "utf-8");
+        const lockPath = join(resolveOmxAuthDir(home), ".metadata-lock");
+        await mkdir(lockPath);
+        const result = operation("Slots", live, home).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        await delay(100);
+        await rm(legacyPath);
+        await link(metadataPath, legacyPath);
+        await rm(lockPath, { recursive: true });
+        assert.match(String(await result), /reserved/i);
+        assert.equal(await readFile(metadataPath, "utf-8"), before);
+        assert.equal(await readFile(live, "utf-8"), '{"access_token":"test-only"}\n');
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("rejects the reserved metadata basename before changing any auth files", async () => {
     const home = await tempHome();
     try {
