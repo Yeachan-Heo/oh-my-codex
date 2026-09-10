@@ -1,5 +1,6 @@
-import { existsSync } from "fs";
-import { readdir, stat, readFile } from "fs/promises";
+import { createReadStream, existsSync } from "fs";
+import { readdir, stat } from "fs/promises";
+import { createInterface } from "readline";
 import { basename, join } from "path";
 import { resolveDefaultCodexHome } from "./paths.js";
 
@@ -23,16 +24,31 @@ async function collectRollouts(dir: string, out: string[]): Promise<void> {
 }
 
 export async function extractRolloutSessionId(path: string): Promise<string> {
-  const fileMatch = basename(path).match(/^rollout-(.+)\.jsonl$/);
-  if (fileMatch?.[1]) return fileMatch[1];
-  const firstLine = (await readFile(path, "utf-8")).split(/\r?\n/, 1)[0] ?? "";
+  const stream = createReadStream(path, "utf-8");
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
   try {
-    const parsed = JSON.parse(firstLine) as Record<string, unknown>;
-    const id = parsed.id ?? parsed.session_id ?? parsed.sessionId;
-    if (typeof id === "string" && id.trim()) return id.trim();
+    for await (const line of reader) {
+      const parsed = JSON.parse(line) as {
+        type?: unknown;
+        payload?: { id?: unknown } | null;
+        id?: unknown;
+        session_id?: unknown;
+        sessionId?: unknown;
+      } | null;
+      const id = parsed?.type === "session_meta"
+        ? parsed.payload?.id
+        : parsed?.id ?? parsed?.session_id ?? parsed?.sessionId;
+      if (typeof id === "string" && id.trim()) return id.trim();
+      break;
+    }
   } catch {
     // fall through to basename fallback
+  } finally {
+    reader.close();
+    stream.destroy();
   }
+  const uuid = basename(path).match(/-([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i);
+  if (uuid) return uuid[1]!;
   return basename(path, ".jsonl").replace(/^rollout-/, "");
 }
 

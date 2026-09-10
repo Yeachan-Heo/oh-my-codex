@@ -53,6 +53,32 @@ async function writeAuthSlot(home: string, slot = "first"): Promise<string> {
 }
 
 describe("auth hotswap pointer abort lifecycle", () => {
+  it("redacts OAuth fields split across child stderr chunks", { skip: process.platform === "win32" }, async (t) => {
+    const home = await mkdtemp(join(tmpdir(), "omx-hotswap-stderr-"));
+    let output = "";
+    const capture = t.mock.method(process.stderr, "write", (chunk: string | Uint8Array) => {
+      output += String(chunk);
+      return true;
+    });
+    try {
+      await writeAuthSlot(home);
+      const bin = join(home, "bin");
+      await mkdir(bin);
+      const executable = join(bin, "codex");
+      await writeFile(executable, `#!${process.execPath}\nprocess.stderr.write('{"access_'); setTimeout(() => { process.stderr.write('token":"synthetic-secret"}\\n'); process.exitCode = 1; }, 100);\n`);
+      await chmod(executable, 0o755);
+      const status = await runAuthHotswap({
+        cwd: home, home, env: { PATH: bin }, argv: [], lifecycle: lifecycle(),
+      });
+      assert.equal(status, 1);
+      assert.match(output, /REDACTED/);
+      assert.doesNotMatch(output, /synthetic-secret/);
+    } finally {
+      capture.mock.restore();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("skips the initial slot mutation and postLaunch for a typed pointer abort", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-hotswap-pointer-abort-"));
     const home = join(cwd, "home");
