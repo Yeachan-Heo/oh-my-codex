@@ -8,15 +8,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const skill = readFileSync(join(__dirname, '../../../skills/visual-ralph/SKILL.md'), 'utf-8');
 
 describe('visual-ralph skill contract', () => {
-  it('defines the approved-reference handoff to Ralph', () => {
+  it('defines the approved-reference handoff to Ultragoal', () => {
     assert.match(skill, /^---\nname: visual-ralph/m);
     assert.match(skill, /description:\s*"Visual Ralph orchestration/i);
     assert.match(skill, /generated references, static references, or live URL targets/i);
     assert.match(skill, /\$imagegen/);
     assert.match(skill, /## 3\. Approval gate/i);
     assert.match(skill, /obtain approval of one reference image\/state/i);
-    assert.match(skill, /Before approval, do not implement or invoke `\$ralph`/i);
-    assert.match(skill, /\$ralph/);
+    assert.match(skill, /Before approval, do not implement or invoke `\$ultragoal`/i);
+    assert.match(skill, /\$ultragoal/);
     assert.match(skill, /built-in visual verdict|Visual Ralph verdict/i);
   });
 

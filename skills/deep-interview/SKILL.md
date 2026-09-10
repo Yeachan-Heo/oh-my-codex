@@ -12,7 +12,7 @@ Deep Interview is an intent-first Socratic clarification loop before planning or
 - The request is broad, ambiguous, or missing concrete acceptance criteria
 - The user says "deep interview", "interview me", "ask me everything", "don't assume", or "ouroboros"
 - The user wants to avoid misaligned implementation from underspecified requirements
-- You need a requirements artifact before handing off to `ralplan`, `autopilot`, `ralph`, or `team`
+- You need a requirements artifact before handing off to `ralplan`, `autopilot`, `ultragoal`, or `team`
 </Use_When>
 
 <Do_Not_Use_When>
@@ -149,7 +149,7 @@ If no flag is provided, use **Standard**.
 Repeat until ambiguity `<= threshold`, the pressure pass is complete, the readiness gates are explicit, the user exits with warning, or max rounds are reached. This is a stop condition: below threshold, do not open a new ordinary interview branch.
 
 ### 2a) Generate next question
-If the initial context is oversized and no prompt-safe summary has been recorded yet, the next question must be only a summary request. Do not score ambiguity, do not run readiness gates, and do not hand off to `$ultragoal`, `$ralplan`, `$autopilot`, `$ralph`, or `$team` until that summary answer is captured.
+If the initial context is oversized and no prompt-safe summary has been recorded yet, the next question must be only a summary request. Do not score ambiguity, do not run readiness gates, and do not hand off to `$ultragoal`, `$ralplan`, `$autopilot`, or `$team` until that summary answer is captured.
 
 Use:
 - Original idea
@@ -429,13 +429,13 @@ Only set `execution_contract_required:true` when the selected downstream workflo
 
 ### Goal-mode follow-ups
 
-Include these product-facing suggestions when they fit the clarified spec, without removing the existing `$ultragoal`, `$ralplan`, `$autopilot`, `$ralph`, and `$team` handoff options:
+Include these product-facing suggestions when they fit the clarified spec, without removing the existing `$ultragoal`, `$ralplan`, `$autopilot`, and `$team` handoff options:
 
 - **`$ultragoal`** — default goal-mode follow-up for implementation or general goal-oriented follow-up specs that should be converted into durable Codex/OMX goals with sequential completion tracking.
-- **`$autoresearch-goal`** — use when the clarified context is a research project: a research question, reference/literature gathering, evaluator-backed analysis, or professor/critic-style deliverable.
+- **`$autoresearch`** — use when the clarified context is a research project: a research question, reference/literature gathering, evaluator-backed analysis, or professor/critic-style deliverable.
 - **`$performance-goal`** — use when the clarified context is an optimization or performance project with measurable speed, latency, throughput, memory, benchmark, or evaluator criteria.
 
-Recommend `$ultragoal` as the default durable goal-mode follow-up because it supersedes Ralph for goal tracking. Preserve `$team` for coordinated parallel implementation and keep `$ralph` only as an explicit fallback for persistent single-owner execution/verification when the user specifically selects it.
+Recommend `$ultragoal` as the default durable goal-mode follow-up because it supersedes Ralph for goal tracking. Preserve `$team` for coordinated parallel implementation.
 
 ### 1. **`$ultragoal` (Default durable execution follow-up)**
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
@@ -444,7 +444,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Skipped / Already-Satisfied Stages:** Requirement interview, ambiguity clarification, doc/context preflight, and early intent-boundary elicitation
 - **Expected Output:** `.omx/ultragoal/brief.md`, `.omx/ultragoal/goals.json`, `.omx/ultragoal/ledger.jsonl`, implementation evidence, verification evidence, and final cleanup/review-gate evidence
 - **Best When:** The clarified spec is execution-ready or the user explicitly wants durable goal tracking as the next step
-- **Next Recommended Step:** Run the Ultragoal completion loop; launch `$team` only inside an active Ultragoal story when parallel lanes are warranted, and use `$ralph` only as an explicit fallback when the user asks for that legacy persistence mode
+- **Next Recommended Step:** Run the Ultragoal completion loop; launch `$team` only inside an active Ultragoal story when parallel lanes are warranted
 
 ### 2. **`$ralplan` (Recommended when architecture/test-shape review is still needed)**
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
@@ -453,7 +453,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Skipped / Already-Satisfied Stages:** Requirements discovery, ambiguity clarification, and early intent-boundary elicitation
 - **Expected Output:** Canonical planning artifacts under `.omx/plans/`, especially `prd-*.md` and `test-spec-*.md`
 - **Best When:** Requirements are clear enough to stop interviewing, but architectural validation / consensus planning is still desirable
-- **Next Recommended Step:** Use the approved planning artifacts with `$ultragoal` as the default durable goal-mode follow-up (optionally with `$team` for parallel lanes); choose `$autoresearch-goal` for research validation or `$performance-goal` for measurable optimization, and use `$ralph` only as an explicit fallback when a narrow single-owner persistence loop is requested
+- **Next Recommended Step:** Use the approved planning artifacts with `$ultragoal` as the default durable goal-mode follow-up (optionally with `$team` for parallel lanes); choose `$autoresearch` for research validation or `$performance-goal` for measurable optimization
 
 ### 3. **`$autopilot`**
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
@@ -462,27 +462,18 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Skipped / Already-Satisfied Stages:** Initial requirement discovery and ambiguity reduction
 - **Expected Output:** Planning/execution progress, QA evidence, and validation artifacts produced by autopilot
 - **Best When:** The clarified spec is already strong enough for direct planning + execution without an additional consensus gate
-- **Next Recommended Step:** Continue through autopilot's execution/QA/validation flow; if coordination-heavy execution emerges, prefer `$team` under a leader-owned `$ultragoal` ledger, using `$ralph` only as an explicit fallback when a narrow single-owner persistence loop is requested
+- **Next Recommended Step:** Continue through autopilot's execution/QA/validation flow; if coordination-heavy execution emerges, prefer `$team` under a leader-owned `$ultragoal` ledger
 
-### 4. **`$ralph` (Explicit fallback only)**
-- **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
-- **Invocation:** `$ralph <spec-path>`
-- **Consumer Behavior:** Use the spec's acceptance criteria and boundary constraints as the persistence target. Do not reopen requirements discovery unless the user explicitly asks to refine further.
-- **Skipped / Already-Satisfied Stages:** Requirement interview, ambiguity clarification, and initial scope-definition work
-- **Expected Output:** Iterative execution progress and verification evidence tracked against the clarified criteria
-- **Best When:** The user explicitly asks for Ralph's persistent sequential completion pressure; otherwise use `$ultragoal` for durable goal tracking and completion checkpoints
-- **Next Recommended Step:** If this explicit fallback is selected, continue Ralph's persistence loop; if work expands into coordination-heavy lanes, hand off to `$team` under `$ultragoal` checkpointing rather than promoting Ralph as the next default
-
-### 5. **`$team`**
+### 4. **`$team`**
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$team <spec-path>`
 - **Consumer Behavior:** Treat the spec as shared execution context for coordinated parallel work. Preserve the clarified intent, non-goals, decision boundaries, and acceptance criteria as common lane constraints.
 - **Skipped / Already-Satisfied Stages:** Requirement clarification and early ambiguity reduction
-- **Expected Output:** Coordinated multi-agent execution against the shared spec, with evidence that can later feed Ultragoal checkpoints by default, or an explicit Ralph verification pass only when requested
+- **Expected Output:** Coordinated multi-agent execution against the shared spec, with final verification evidence and checkpoints in an already-active Ultragoal ledger when applicable
 - **Best When:** The task is large, multi-lane, or blocker-sensitive enough to justify coordinated parallel execution instead of a single persistent loop
-- **Next Recommended Step:** Follow the team verification path when the coordinated execution phase finishes; checkpoint completion through `$ultragoal` by default, escalating to a separate Ralph loop only when the user explicitly asks for that persistent verification/fix owner
+- **Next Recommended Step:** Follow the team verification path when the coordinated execution phase finishes; checkpoint an already-active `$ultragoal` ledger when applicable. Do not start another execution loop solely to verify.
 
-### 6. **Refine further**
+### 5. **Refine further**
 - **Input Artifact:** Existing transcript, context snapshot, and current spec draft
 - **Invocation:** Continue the interview loop
 - **Consumer Behavior:** Re-enter questioning to resolve the highest-leverage remaining uncertainty
@@ -534,7 +525,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - [ ] Fuzzy or conflicting terminology was challenged against repo language/current code behavior when applicable
 - [ ] Scenario-based edge-case grilling was used when boundary ambiguity would materially affect implementation
 - [ ] Durable docs/ADR/memory updates, if any, were explicitly opted into and public-safe
-- [ ] Handoff options provided (`$ultragoal`, `$ralplan`, `$autopilot`, `$ralph`, `$team`) plus context-sensitive goal-mode suggestions (`$autoresearch-goal`, `$performance-goal`) when applicable
+- [ ] Handoff options provided (`$ultragoal`, `$ralplan`, `$autopilot`, `$team`) plus context-sensitive goal-mode suggestions (`$autoresearch`, `$performance-goal`) when applicable
 - [ ] No direct implementation performed in this mode
 </Final_Checklist>
 

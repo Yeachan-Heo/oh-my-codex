@@ -26,7 +26,7 @@ This skill is terminal and read-only by default. It gathers evidence and produce
 
 - The answer is fully repo-local; use `explore` for codebase facts.
 - The main question is whether to adopt, replace, upgrade, or compare dependencies; use `dependency-expert`.
-- The user only needs implementation against already-grounded requirements; use `executor`, `$ralph`, or `$team` as appropriate.
+- The user only needs implementation against already-grounded requirements; execute directly, or use `$team` when coordinated parallel work is warranted.
 - The task can be answered from stable local project conventions without current external lookup.
 
 ## Specialist Routing

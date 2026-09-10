@@ -24,13 +24,13 @@ function assertCanonicalPluginParity(path: string): void {
 }
 
 describe('anti-slop workflow surfaces', () => {
-  it('keeps the cleaner a bounded helper with file-list and Ralph scope rules', () => {
+  it('keeps the cleaner a bounded helper with file-list and calling-task scope rules', () => {
     const skill = read('skills/ai-slop-cleaner/SKILL.md');
     assertCanonicalPluginParity('skills/ai-slop-cleaner/SKILL.md');
     assert.ok(skill.trimEnd().split(/\r?\n/).length <= 120, 'task card must stay within the prompt size limit');
     assert.match(skill, /bounded helper.*not as a competing top-level\s+workflow/is);
     assert.match(skill, /A file list scope is valid; keep the pass bounded\s+to it/i);
-    assert.match(skill, /Ralph workflow.*changed files only, standard mode/i);
+    assert.match(skill, /Limit the pass to the calling task's changed files unless broader cleanup was requested/i);
     assert.match(skill, /requested\s+feature\/files and behavior to preserve/i);
   });
 

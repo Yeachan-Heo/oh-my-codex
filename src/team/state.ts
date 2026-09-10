@@ -1647,10 +1647,12 @@ export async function updateWorkerHeartbeat(
   await writeAtomic(p, JSON.stringify(heartbeat, null, 2));
 }
 
-// Read worker status (returns {state:'unknown'} on missing/malformed)
-export async function readWorkerStatus(teamName: string, workerName: string, cwd: string): Promise<WorkerStatus> {
+// Read worker status (returns {state:'unknown'} on missing/malformed).
+// Read-only consumers may reuse an already-selected runtime state root.
+export async function readWorkerStatus(teamName: string, workerName: string, cwd: string, stateRoot?: string): Promise<WorkerStatus> {
   const unknownStatus: WorkerStatus = { state: 'unknown', updated_at: '1970-01-01T00:00:00.000Z' };
-  const p = join(workerDir(teamName, workerName, cwd), 'status.json');
+  assertSafeTeamName(teamName);
+  const p = join(stateRoot ?? resolveTeamStateRoot(cwd), 'team', teamName, 'workers', workerName, 'status.json');
   try {
     const raw = await readFile(p, 'utf8');
     const parsed = JSON.parse(raw) as unknown;

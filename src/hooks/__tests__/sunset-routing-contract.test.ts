@@ -238,3 +238,30 @@ describe('sunset routing contract', () => {
     );
   });
 });
+
+
+describe('active workflow handoff hygiene', () => {
+  const retiredExecutionTokens = /\$(?:ralph|ultrawork|pipeline|autoresearch-goal)\b/;
+  const retiredProseHandoff = /\b(?:run|use|start|launch|invoke|hand off to|explicit|separate)\s+(?:a\s+|an\s+|the\s+)?(?:Ralph|Ultrawork|Pipeline|Autoresearch-goal)\b/i;
+  const migrationOnly = /(?:was|has been) (?:removed|retired)|(?:legacy|historical) (?:artifact|state)|compatibility (?:input|cleanup)/i;
+  function staleHandoffs(text: string): string[] {
+    return text.split('\n').filter((line) => (retiredExecutionTokens.test(line) || retiredProseHandoff.test(line)) && !migrationOnly.test(line));
+  }
+
+  it('distinguishes a labeled migration from an executable legacy fallback', () => {
+    assert.deepEqual(staleHandoffs('`$ralph` was removed; use `$ultragoal`.'), []);
+    assert.deepEqual(staleHandoffs('Read historical artifacts from `$autoresearch-goal`.'), []);
+    assert.equal(staleHandoffs('Use `$ralph` as a legacy fallback.').length, 1);
+    assert.equal(staleHandoffs('### Hand off to `$ralph`').length, 1);
+    assert.equal(staleHandoffs('Run a separate Ralph loop.').length, 1);
+    assert.equal(staleHandoffs('Use an explicit Ralph verification pass.').length, 1);
+  });
+
+  it('active and internal skill cards do not hand off to retired execution tokens', () => {
+    const failures = catalogSkills()
+      .filter((skill) => ['active', 'internal'].includes(skill.status))
+      .flatMap((skill) => staleHandoffs(readFileSync(join(repoRoot, 'skills', skill.name, 'SKILL.md'), 'utf-8'))
+        .map((line) => `${skill.name}: ${line}`));
+    assert.deepEqual(failures, []);
+  });
+});

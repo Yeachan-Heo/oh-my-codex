@@ -1,13 +1,13 @@
 ---
 name: visual-ralph
-description: "Visual Ralph orchestration for frontend UI from generated references, static references, or live URL targets, using $ralph with built-in visual verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system."
+description: "Visual Ralph orchestration for frontend UI from generated references, static references, or live URL targets, using $ultragoal with built-in visual verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system."
 ---
 
 # Visual Ralph Skill
 
 Use `$visual-ralph` for measured frontend implementation from an approved generated reference, static image, or live-URL baseline. The loop is:
 
-`description / URL -> approved reference -> $ralph implementation -> Visual Ralph verdict + pixel diff -> reusable design system`.
+`description / URL -> approved reference -> $ultragoal implementation -> Visual Ralph verdict + pixel diff -> reusable design system`.
 
 For URL cloning, this skill owns the migrated `$web-clone` use case; preserve URL, viewport, fidelity, and interaction notes here. Do not invoke standalone `$web-clone`.
 
@@ -19,7 +19,7 @@ Shared operating, delegation, state, hook, team, cancellation, and verification 
 - A live URL or generated raster mockup needs measured implementation and pixel-level iteration.
 - The result must leave reusable repo-native tokens/components, not only a matching screenshot.
 
-Do not use it for a durable `DESIGN.md` brief (`$design`), non-visual backend work, comparison-only fixes that can go directly to `$ralph`, or deterministic SVG/code-native assets.
+Do not use it for a durable `DESIGN.md` brief (`$design`), non-visual backend work, comparison-only fixes that can be executed directly, or deterministic SVG/code-native assets.
 
 ## Workflow
 
@@ -41,11 +41,11 @@ Copy the approved reference into `.omx/artifacts/visual-ralph/<slug>/reference.p
 
 ### 3. Approval gate
 
-Stop after generation or URL capture and obtain approval of one reference image/state (or a targeted regeneration/capture adjustment). Before approval, do not implement or invoke `$ralph`. After approval, the image/baseline is the visual source of truth; major pivots require an explicit user request.
+Stop after generation or URL capture and obtain approval of one reference image/state (or a targeted regeneration/capture adjustment). Before approval, do not implement or invoke `$ultragoal`. After approval, the image/baseline is the visual source of truth; major pivots require an explicit user request.
 
-### 4. Hand off to `$ralph`
+### 4. Hand off to `$ultragoal`
 
-Pass the approved reference/baseline, URL and permission note when applicable, viewport/content state, interaction parity and exclusions, user description, detected frontend context, screenshot command/viewport, and the completion checklist. Ralph edits, runs, captures, and iterates after approval until matched or blocked.
+Pass the approved reference/baseline, URL and permission note when applicable, viewport/content state, interaction parity and exclusions, user description, detected frontend context, screenshot command/viewport, and the completion checklist. The active Ultragoal execution lane edits, runs, captures, and iterates after approval until matched or blocked.
 
 ### 5. Verdict before every edit
 
@@ -66,7 +66,7 @@ Do not declare done until the approved reference/baseline and reproduction comma
 ## Handoff template
 
 ```text
-$ralph "Implement the approved frontend reference.
+$ultragoal "Implement the approved frontend reference.
 Reference: <workspace reference or URL-derived artifact>
 Source URL and permission/scope: <when applicable>
 Viewport/content state: <viewport, route/state, seed/login assumptions>

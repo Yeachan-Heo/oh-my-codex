@@ -92,7 +92,7 @@ Before any execution lane begins, ralplan must emit terminal planning state (com
 
 Ralplan is not complete, skippable, or ready for execution merely because `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist. Those files are planning artifacts, not consensus evidence.
 
-Before any Autopilot, Pipeline, Ultragoal, Team, Ralph, or implementation handoff, persist a durable handoff record that distinguishes:
+Before any Autopilot, Ultragoal, Team, or implementation handoff, persist a durable handoff record that distinguishes:
 
 - `planning_artifacts`: PRD/test-spec paths.
 - `ralplan_architect_review`: the completed Architect review with an approving verdict.
@@ -106,13 +106,13 @@ Follow the Plan skill's full documentation for consensus mode details.
 
 ## Goal-Mode Follow-up Suggestions
 
-When a bound `ralplan_execution_handoff` permits execution, include product-facing goal-mode suggestions alongside the existing Ralph and team options. Record the requested lane and persist the handoff without claiming host-issued authority.
+When a bound `ralplan_execution_handoff` permits execution, include product-facing goal-mode suggestions alongside coordinated Team execution. Record the requested lane and persist the handoff without claiming host-issued authority.
 
 - `$ultragoal` — **default goal-mode follow-up** for implementation or general goal-oriented follow-up plans that should become durable Codex/OMX goals with sequential completion tracking.
 - `$autoresearch` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable. (`$autoresearch-goal` was retired to a sunset stub in OMX 0.21.)
 - `$performance-goal` — optimization/performance follow-up when the plan centers on speed, latency, throughput, memory, benchmark, or other measurable performance work.
 
-Keep `$team` as a first-class execution option and keep `$ralph` available only as an explicit fallback where appropriate: use Ultragoal as the default durable goal-mode follow-up, Team for coordinated parallel implementation, and Ralph only for intentionally selected persistent single-owner completion/verification pressure. For parallelizable durable-goal delivery, recommend `$ultragoal` + `$team` together: Ultragoal remains the leader-owned `.omx/ultragoal` ledger/Codex-goal wrapper while Team runs parallel lanes and returns checkpoint-ready evidence. Do not present Ralph as the recommended follow-up when durable goal tracking is needed; present Ultragoal as the superseding default, with Team for parallel delivery and Ralph only as an explicit fallback when its narrow persistence loop is specifically desired.
+Use `$ultragoal` for durable goal tracking and `$team` for coordinated parallel implementation. When combined, Ultragoal owns the ledger and Team returns checkpoint-ready execution evidence.
 Use the available-agent-types roster to produce explicit role/staffing allocation, reasoning-by-lane guidance, concrete launch hints (including `omx team` when parallel delivery is justified), and team verification responsibilities for any future receipt-authorized execution path.
 
 ## Pre-context Intake
@@ -130,80 +130,15 @@ Before consensus planning or execution handoff, ensure a grounded context snapsh
    - likely codebase touchpoints
 4. If ambiguity remains high, gather brownfield facts first. `omx explore` is deprecated; use normal repository inspection tools/subagents for simple read-only repository lookups and `omx sparkshell` only for explicit shell-native read-only evidence. Then run `$deep-interview --quick <task>` before continuing.
 5. If the plan depends on official docs, version-aware framework guidance, best practices, or external dependency behavior, use `$best-practice-research` as the bounded evidence wrapper and auto-delegate `researcher` for the official/upstream lookup before finalizing the planning handoff so execution does not start from repo-local recall alone.
-6. If a prior `$autoresearch` or `$autoresearch-goal` run exists, treat its approved artifact as evidence for the plan. Do not include Autoresearch as a final architecture or runtime component unless the user explicitly requested ongoing research automation; otherwise synthesize the evidence into the `$ralplan` ADR, risks, and verification steps.
+6. If a prior `$autoresearch` run exists, treat its approved artifact as evidence for the plan. Read historical artifacts from `$autoresearch-goal` only as compatibility input. Do not include Autoresearch as a final architecture or runtime component unless the user explicitly requested ongoing research automation; otherwise synthesize the evidence into the `$ralplan` ADR, risks, and verification steps.
 
 Do not hand off to execution modes until this intake is complete; if urgency forces progress, explicitly document the risk tradeoffs.
 
-## Pre-Execution Gate
+## Routing boundary
 
-### Why the Gate Exists
-
-Execution modes (ralph, autopilot, team, ultrawork) spin up heavy multi-agent orchestration. When launched on a vague request like "ralph improve the app", agents have no clear target — they waste cycles on scope discovery that should happen during planning, often delivering partial or misaligned work that requires rework.
-
-The ralplan-first gate intercepts underspecified execution requests and redirects them through the ralplan consensus planning workflow. This ensures:
-- **Explicit scope**: A PRD defines exactly what will be built
-- **Test specification**: Acceptance criteria are testable before code is written
-- **Consensus**: Planner, Architect, and Critic agree on the approach
-- **No wasted execution**: Agents start with a clear, bounded task
-
-### Good vs Bad Prompts
-
-**Passes the gate** (specific enough for direct execution):
-- `ralph fix the null check in src/hooks/bridge.ts:326`
-- `autopilot implement issue #42`
-- `team add validation to function processKeywordDetector`
-- `ralph do:\n1. Add input validation\n2. Write tests\n3. Update README`
-- `ultrawork add the user model in src/models/user.ts`
-
-**Gated — redirected to ralplan** (needs scoping first):
-- `ralph fix this`
-- `autopilot build the app`
-- `team improve performance`
-- `ralph add authentication`
-- `ultrawork make it better`
-
-**Bypass the gate** (when you know what you want):
-- `force: ralph refactor the auth module`
-- `! autopilot optimize everything`
-
-### When the Gate Does NOT Trigger
-
-The gate auto-passes when it detects **any** concrete signal. You do not need all of them — one is enough:
-
-| Signal Type | Example prompt | Why it passes |
-|---|---|---|
-| File path | `ralph fix src/hooks/bridge.ts` | References a specific file |
-| Issue/PR number | `ralph implement #42` | Has a concrete work item |
-| camelCase symbol | `ralph fix processKeywordDetector` | Names a specific function |
-| PascalCase symbol | `ralph update UserModel` | Names a specific class |
-| snake_case symbol | `team fix user_model` | Names a specific identifier |
-| Test runner | `ralph npm test && fix failures` | Has an explicit test target |
-| Numbered steps | `ralph do:\n1. Add X\n2. Test Y` | Structured deliverables |
-| Acceptance criteria | `ralph add login - acceptance criteria: ...` | Explicit success definition |
-| Error reference | `ralph fix TypeError in auth` | Specific error to address |
-| Code block | `ralph add: \`\`\`ts ... \`\`\`` | Concrete code provided |
-| Escape prefix | `force: ralph do it` or `! ralph do it` | Explicit user override |
-
-### End-to-End Flow Example
-
-1. User types: `ralph add user authentication`
-2. Gate detects: execution keyword (`ralph`) + underspecified prompt (no files, functions, or test spec)
-3. Gate redirects to **ralplan** with message explaining the redirect
-4. Ralplan consensus runs:
-   - **Planner** creates initial plan (which files, what auth method, what tests)
-   - **Architect** reviews for soundness
-   - **Critic** validates quality and testability
-5. Architect and Critic approval completes the planning lifecycle and persists `ralplan_consensus_gate.complete:true` as lifecycle evidence.
-6. Execution begins when the session-bound, review-cycle-bound `ralplan_execution_handoff` authorizes the selected lane. An active supervised Autopilot run authorizes its defining Ultragoal next stage; standalone Ralplan records the user's selected lane.
-
-### Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Gate fires on a well-specified prompt | Add a file reference, function name, or issue number to anchor the request |
-| Want to bypass the gate | Prefix with `force:` or `!` (e.g., `force: ralph fix it`) |
-| Gate does not fire on a vague prompt | The gate only catches prompts with <=15 effective words and no concrete anchors; add more detail or use `$ralplan` explicitly |
-| Redirected to ralplan but want to stop planning | Cancel or abandon through the workflow's administrative path. Advisory is cooperative and does not enforce host permissions; a real security gate would require an explicit host-issued, host-verified receipt. |
+Ordinary scoped tasks stay in the direct execution lane described by `templates/AGENTS.md`.
+Explicit workflow requests follow the keyword registry (`src/hooks/keyword-registry.ts`) and their owning skill contracts; this card does not define a second activation table.
+Once Ralplan is active, preserve the planning/execution and consensus handoff requirements above. A conversational “just do it” is not a substitute for the required review evidence.
 
 ## Scenario Examples
 

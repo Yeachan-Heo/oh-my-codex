@@ -7,6 +7,7 @@ import { getHudRenderMaxLines } from './render.js';
 import { HUD_TMUX_HEIGHT_LINES, isTmuxWindowTooCrampedForHudSplit } from './constants.js';
 import {
   buildHudWatchCommand,
+  boundHudHeight,
   createHudWatchPane,
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
@@ -213,7 +214,7 @@ function hasCompleteGeometry(pane: TmuxPaneSnapshot): boolean {
   );
 }
 
-function needsHudTopologyRecreate(pane: TmuxPaneSnapshot, leaderPane?: TmuxPaneSnapshot): boolean {
+export function needsHudTopologyRecreate(pane: TmuxPaneSnapshot, leaderPane?: TmuxPaneSnapshot): boolean {
   if (!hasCompleteGeometry(pane)) return false;
   const expectedLeft = typeof leaderPane?.paneLeft === 'number' ? leaderPane.paneLeft : 0;
   const expectedWidth = typeof leaderPane?.paneWidth === 'number' ? leaderPane.paneWidth : pane.windowWidth;
@@ -529,7 +530,8 @@ export async function reconcileHudForPromptSubmit(
   const hudConfig = await readHudConfigFn(cwd).catch(() => null);
   const readAllStateFn = deps.readAllState ?? readAllState;
   const hudState = hudConfig ? await readAllStateFn(cwd, hudConfig).catch(() => null) : null;
-  const desiredHeight = hudState ? getHudRenderMaxLines(hudState) : HUD_TMUX_HEIGHT_LINES;
+  const requestedHeight = hudState ? getHudRenderMaxLines(hudState) : HUD_TMUX_HEIGHT_LINES;
+  let desiredHeight = boundHudHeight(requestedHeight, panes, currentPaneId);
   const preset = hudConfig?.preset;
   const hudCmd = buildHudWatchCommand(omxBin, preset, resolvedSessionId, env.OMX_ROOT, currentPaneId, {
     omxStateRoot: env.OMX_STATE_ROOT,
@@ -544,6 +546,7 @@ export async function reconcileHudForPromptSubmit(
     ? panes.find((pane) => pane.paneId === hudPaneIds[0])
     : undefined;
   if (singleHudPane && !needsHudTopologyRecreate(singleHudPane, leaderPane)) {
+    desiredHeight = boundHudHeight(requestedHeight, panes, currentPaneId, singleHudPane.paneId);
     const shouldResize = needsHudHeightResize(singleHudPane, desiredHeight);
     const resized = shouldResize ? resizePane(singleHudPane.paneId, desiredHeight) : true;
     if (resized) ensureHudResizeHook(singleHudPane.paneId, currentPaneId, desiredHeight, cwd, deps);
@@ -565,6 +568,7 @@ export async function reconcileHudForPromptSubmit(
       for (const paneId of hudPaneIds.filter((paneId) => paneId !== keeperPane.paneId)) {
         killPane(paneId);
       }
+      desiredHeight = boundHudHeight(requestedHeight, listPanes(currentPaneId), currentPaneId, keeperPane.paneId);
       const resized = resizePane(keeperPane.paneId, desiredHeight);
       if (resized) ensureHudResizeHook(keeperPane.paneId, currentPaneId, desiredHeight, cwd, deps);
       return {
@@ -616,6 +620,8 @@ export async function reconcileHudForPromptSubmit(
     if (killPane(paneId)) removedHudPaneIds.add(paneId);
   }
 
+  // Removing malformed HUDs changes the layout; a fresh split only owns leader space.
+  if (removedHudPaneIds.size > 0) desiredHeight = boundHudHeight(requestedHeight, listPanes(currentPaneId), currentPaneId);
   const createOptions: { heightLines: number; fullWidth?: boolean; targetPaneId?: string } = {
     heightLines: desiredHeight,
     targetPaneId: currentPaneId,

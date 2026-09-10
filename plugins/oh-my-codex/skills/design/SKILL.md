@@ -12,7 +12,7 @@ Shared operating, delegation, state, hook, team, cancellation, and verification 
 ## Use when
 
 - Product, UX, frontend, or design-system decisions need a repo-local source of truth.
-- A feature needs a design brief before `$ralph`, a designer lane, or implementation.
+- A feature needs a design brief before a designer lane or implementation.
 - Existing UI, assets, screenshots, or constraints need an actionable design summary.
 
 Do not use it for visual-reference implementation matching (use `$visual-ralph`), screenshot comparison alone, or backend/infrastructure work without user-facing design impact.
