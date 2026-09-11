@@ -66,6 +66,8 @@ export function weightedPassRates(
   frequencies: TaskFrequencies | null,
 ): WeightedResult[] | null {
   if (!frequencies) return null;
+  const known = new Set(suite.fixtures.map((fixture) => fixture.id));
+  if (Object.keys(frequencies).some((id) => !known.has(id))) return null;
   const evaluated = [...new Set(records.map((record) => record.fixtureId))];
   if (evaluated.some((id) => typeof frequencies[id] !== 'number')) return null;
   const totalWeight = evaluated.reduce((sum, id) => sum + frequencies[id], 0);
