@@ -1,3 +1,4 @@
+import { fsyncSync } from "fs";
 import type { FileHandle } from "fs/promises";
 
 export type RegularFileSyncOutcome = "synced" | "unsupported-windows-eperm";
@@ -17,9 +18,9 @@ export interface RegularFileDurabilityTracker {
 	directoryDegraded?: boolean;
 }
 
-function isUnsupportedWindowsSync(
+export function isUnsupportedWindowsSync(
 	error: unknown,
-	platform: NodeJS.Platform,
+	platform: NodeJS.Platform = process.platform,
 ): boolean {
 	return platform === "win32"
 		&& typeof error === "object"
@@ -59,6 +60,26 @@ export async function syncDirectory(
 ): Promise<DirectorySyncOutcome> {
 	try {
 		await handle.sync();
+		return "synced";
+	} catch (error) {
+		if (!isUnsupportedWindowsSync(error, platform)) throw error;
+		return "unsupported-windows-eperm";
+	}
+}
+
+/**
+ * Synchronous counterpart for call sites that must stay synchronous, such as
+ * Team startup state that is persisted before any worker pane exists. The
+ * capability boundary is identical to the async helpers: only Windows EPERM is
+ * a durability limitation, every other failure stays fatal.
+ */
+export function syncFileDescriptorSync(
+	descriptor: number,
+	platform: NodeJS.Platform = process.platform,
+	syncImpl: (fd: number) => void = fsyncSync,
+): RegularFileSyncOutcome {
+	try {
+		syncImpl(descriptor);
 		return "synced";
 	} catch (error) {
 		if (!isUnsupportedWindowsSync(error, platform)) throw error;
