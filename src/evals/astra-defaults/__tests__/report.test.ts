@@ -102,6 +102,11 @@ describe('weightedPassRates', () => {
     assert.equal(weightedPassRates(suite, records, { a: 3 }), null);
   });
 
+  it('refuses frequencies that reference a fixture outside the suite', () => {
+    const records = [record(), record({ fixtureId: 'b' })];
+    assert.equal(weightedPassRates(suite, records, { a: 3, b: 1, ghost: 5 }), null);
+  });
+
   it('weights pass rate by documented frequency', () => {
     const records = [record(), record({ fixtureId: 'b', outcome: 'fail' })];
     const weighted = weightedPassRates(suite, records, { a: 3, b: 1 });
