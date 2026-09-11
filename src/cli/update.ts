@@ -858,7 +858,13 @@ async function executeUpdate(
         return { status: 'up-to-date', currentVersion: current, latestVersion: latest };
       }
     }
-
+    // Same version, nothing to install — but the version-keyed native cache
+    // may still be empty (issue #3636: `omx update` on macOS arm64 reinstalled
+    // 0.21.3 yet never hydrated omx-runtime, so doctor kept failing). Repair
+    // the cache before reporting up-to-date so the check is not a no-op for
+    // this failure mode. Immediate and passive runs share the repair; the
+    // setup-refresh branch above returns before reaching it.
+    await dependencies.hydrateRuntime(ownership ?? undefined);
     if (immediate) {
       console.log(`[omx] oh-my-codex is already up to date (v${updateCheckBaseline}).`);
     }

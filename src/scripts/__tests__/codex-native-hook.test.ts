@@ -25180,11 +25180,15 @@ describe("issue #3550: fresh --madmax detached-pointer root identity", () => {
     const pointerPath = join(stateDir, "session.json");
     const established = await establishLaunchSessionBinding(cwd, "omx-3550-launch");
     assert.equal(established.kind, "committed-released");
-    const metadata = await updateDetachedSessionMetadata(established.binding, {
-      tmuxSessionName: "omx-3550-detached",
-      tmuxPaneId: "%3550",
-    });
-    assert.equal(metadata.kind, "committed-released");
+    try {
+      const metadata = await updateDetachedSessionMetadata(established.binding, {
+        tmuxSessionName: "omx-3550-detached",
+        tmuxPaneId: "%3550",
+      });
+      assert.equal(metadata.kind, "committed-released");
+    } finally {
+      assert.equal((await closeLaunchSessionBindingOnce(established.binding)).status, "closed");
+    }
     const ownedPointer = JSON.parse(await readFile(pointerPath, "utf-8")) as Record<string, unknown>;
     await writeFile(pointerPath, JSON.stringify({
       ...ownedPointer,

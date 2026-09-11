@@ -206,7 +206,7 @@ describe("deep-interview Ouroboros contract", () => {
 		);
 		assert.match(
 			deepInterviewSkill,
-			/Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$ralph`, or `\$team` until that summary answer is captured/i,
+			/Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ultragoal`, `\$ralplan`, `\$autopilot`, or `\$team` until that summary answer is captured/i,
 		);
 		assert.match(
 			deepInterviewSkill,
@@ -238,7 +238,6 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /\$ultragoal/i);
 		assert.match(deepInterviewSkill, /\$ralplan/i);
 		assert.match(deepInterviewSkill, /\$autopilot/i);
-		assert.match(deepInterviewSkill, /\$ralph/i);
 		assert.match(deepInterviewSkill, /\$team/i);
 		assert.match(deepInterviewSkill, /Input Artifact/i);
 		assert.match(deepInterviewSkill, /Invocation/i);
@@ -376,13 +375,13 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /team verification path/i);
 	});
 
-	it("suggests Ultragoal as the default durable follow-up with team and explicit Ralph fallback lanes", () => {
+	it("suggests Ultragoal as the default durable follow-up with supported Team and research lanes", () => {
 		assert.match(deepInterviewSkill, /Goal-mode follow-ups/i);
 		assert.match(deepInterviewSkill, /\$ultragoal[\s\S]*general goal-oriented follow-up/i);
-		assert.match(deepInterviewSkill, /\$autoresearch-goal[\s\S]*research project/i);
+		assert.match(deepInterviewSkill, /\$autoresearch[\s\S]*research project/i);
 		assert.match(deepInterviewSkill, /\$performance-goal[\s\S]*(optimization|performance) project/i);
 		assert.match(deepInterviewSkill, /Recommend `\$ultragoal`[\s\S]*default durable goal-mode follow-up/i);
-		assert.match(deepInterviewSkill, /keep `\$ralph` only as an explicit fallback/i);
+		assert.doesNotMatch(deepInterviewSkill, /\$ralph\b/i);
 		assert.match(deepInterviewSkill, /supersedes Ralph for goal tracking/i);
 		assert.match(deepInterviewSkill, /`\$ultragoal` \(Default durable execution follow-up\)/i);
 		assert.match(
@@ -399,7 +398,7 @@ describe("deep-interview Ouroboros contract", () => {
 		);
 		assert.match(
 			deepInterviewSkill,
-			/Handoff options provided \(`\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$ralph`, `\$team`\)/i,
+			/Handoff options provided \(`\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$team`\)/i,
 		);
 	});
 
@@ -414,7 +413,7 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /do not paste or forward the raw payload/i);
 		assert.match(deepInterviewSkill, /wait for the concise summary before ambiguity scoring, crystallizing artifacts, or any downstream execution handoff/i);
 		assert.match(deepInterviewSkill, /The oversized initial-context summary gate is blocking/i);
-		assert.match(deepInterviewSkill, /Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ultragoal`, `\$ralplan`, `\$autopilot`, `\$ralph`, or `\$team` until that summary answer is captured/i);
+		assert.match(deepInterviewSkill, /Do not score ambiguity, do not run readiness gates, and do not hand off to `\$ultragoal`, `\$ralplan`, `\$autopilot`, or `\$team` until that summary answer is captured/i);
 		assert.match(deepInterviewSkill, /goals, constraints, success criteria, non-goals, decision boundaries/i);
 	});
 

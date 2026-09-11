@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildHudLayoutHookSlot,
+  boundHudHeight,
   buildHudResizeHookName,
   buildHudResizeHookSlot,
   buildHudSplitHookSlot,
@@ -27,6 +28,31 @@ import {
   unregisterHudResizeHook,
 } from '../tmux.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS } from '../constants.js';
+
+describe('roster height budget', () => {
+  it('bounds 15 and 20 workers by the live window and local leader split', () => {
+    for (const desired of [17, 22]) {
+      const panes = [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', windowHeight: 24, paneHeight: 14 },
+        { paneId: '%2', currentCommand: 'node', startCommand: 'hud', paneHeight: 9 },
+      ];
+      assert.equal(boundHudHeight(desired, panes, '%1', '%2'), 11);
+      panes[0].windowHeight = 80;
+      assert.equal(boundHudHeight(desired, panes, '%1', '%2'), 11);
+      panes[0].paneHeight = 60;
+      assert.equal(boundHudHeight(desired, panes, '%1', '%2'), desired);
+      assert.equal(boundHudHeight(desired, panes, '%1'), desired);
+      panes[0].paneHeight = 12;
+      assert.equal(boundHudHeight(desired, panes, '%1'), 5);
+    }
+  });
+
+  it('falls back to a compact HUD on missing/invalid geometry', () => {
+    assert.equal(boundHudHeight(22, []), 3);
+    assert.equal(boundHudHeight(2, []), 2);
+    assert.equal(boundHudHeight(22, [{ paneId: '%1', currentCommand: '', startCommand: '', windowHeight: NaN, paneHeight: Infinity }], '%1'), 3);
+  });
+});
 
 describe('HUD resize hook helpers', () => {
   const hookAuthority = (args: string[], windowId = '@3'): string | undefined => {

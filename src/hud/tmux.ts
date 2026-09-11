@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
-import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from './constants.js';
+import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MAX_HEIGHT_LINES } from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
@@ -19,6 +19,28 @@ export interface TmuxPaneSnapshot {
   paneBottom?: number;
   windowWidth?: number;
   windowHeight?: number;
+}
+
+/** Leave at least half the leader/HUD space for the leader, excluding the border. */
+export function boundHudHeight(
+  desiredHeight: number,
+  panes: TmuxPaneSnapshot[],
+  leaderPaneId?: string,
+  hudPaneId?: string,
+): number {
+  const leader = panes.find(pane => pane.paneId === leaderPaneId);
+  const hud = panes.find(pane => pane.paneId === hudPaneId);
+  const windowHeight = leader?.windowHeight ?? hud?.windowHeight;
+  const leaderHeight = leader?.paneHeight;
+  const budgets: number[] = [];
+  if (typeof windowHeight === 'number' && Number.isFinite(windowHeight) && windowHeight > 0) budgets.push(windowHeight - 1);
+  if (typeof leaderHeight === 'number' && Number.isFinite(leaderHeight) && leaderHeight > 0) {
+    const hudHeight = hud?.paneHeight;
+    budgets.push(leaderHeight + (typeof hudHeight === 'number' && Number.isFinite(hudHeight) && hudHeight > 0 ? hudHeight : -1));
+  }
+  // Unknown geometry must not permit an unbounded roster expansion.
+  const limit = budgets.length ? Math.max(1, Math.floor(Math.min(...budgets) / 2)) : HUD_TMUX_MAX_HEIGHT_LINES;
+  return Math.min(desiredHeight, limit);
 }
 
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
@@ -801,6 +823,7 @@ function buildGuardedHudHookUnregisterArgs(context: HudResizeHookContext, hookSl
 export interface HudResizeHookContext {
   sessionId: string;
   windowId: string;
+  ownerId?: string;
   leaderPaneId: string;
   leaderPanePid: string;
   hudPaneId: string;
@@ -934,7 +957,10 @@ function buildAtomicHudHookCommand(
   ].join(' ');
   const args = [
     'if-shell', '-F', '-t', context.leaderPaneId,
-    buildHudHookIncarnationCondition(context.leaderPaneId, context.leaderPanePid),
+    [
+      buildHudHookIncarnationCondition(context.leaderPaneId, context.leaderPanePid),
+      ...(context.ownerId ? [`#{==:#{@omx_instance_id},${context.ownerId}}`] : []),
+    ].reduce((combined, condition) => `#{&&:${combined},${condition}}`),
     hudConditional,
     unregister,
   ];
@@ -957,7 +983,11 @@ function buildAtomicHudResizeCommand(
   context: HudResizeHookContext,
   tmuxEnv?: string,
 ): string {
-  return buildAtomicHudHookCommand(tmuxBin, context, `resize-pane -t ${hudPaneId} -y ${height}`, tmuxEnv);
+  // On client resize, never regrow a roster using a stale pre-resize height.
+  // The watch/reconcile paths remeasure the leader before allowing expansion.
+  const safeHeight = Number(height) > HUD_TMUX_MAX_HEIGHT_LINES
+    ? `"#{?#{<:#{pane_height},${height}},#{pane_height},${height}}"` : height;
+  return buildAtomicHudHookCommand(tmuxBin, context, `resize-pane -t ${hudPaneId} -y ${safeHeight}`, tmuxEnv);
 }
 
 function buildHudResizeHookCommand(
@@ -1756,26 +1786,40 @@ export function registerHudResizeHook(
   if (!canonicalHudPaneId || !canonicalLeaderPaneId) return false;
   const context = readHudResizeHookContext(canonicalHudPaneId, canonicalLeaderPaneId, execTmuxSync);
   if (!context) return false;
+  const expectedOwnerId = (options.env?.OMX_SESSION_ID ?? process.env.OMX_SESSION_ID)?.trim();
+  let ownerId = expectedOwnerId;
+  try {
+    const observedOwner = parseExactTmuxAuthorityScalar(execTmuxSync([
+      'display-message', '-p', '-t', canonicalLeaderPaneId, '#{@omx_instance_id}',
+    ]));
+    if (observedOwner && /^\S+$/.test(observedOwner)) {
+      ownerId = observedOwner;
+    }
+  } catch {
+    // Owner fencing remains available from the launch environment when tmux
+    // does not expose the session option through this probe.
+  }
+  const ownedContext = ownerId ? { ...context, ownerId } : context;
   const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
   const height = String(Math.max(1, Math.floor(heightLines)));
-  const resizeCmd = shellEscapeSingle(buildHudResizeHookCommand(tmuxBin, canonicalHudPaneId, height, context, options.env?.TMUX));
+  const resizeCmd = shellEscapeSingle(buildHudResizeHookCommand(tmuxBin, canonicalHudPaneId, height, ownedContext, options.env?.TMUX));
   const omxBin = resolveOmxCliEntryPath({ cwd: options.cwd, env: options.env });
   try {
-    execTmuxSync(['set-hook', '-t', context.sessionId, context.hookSlot, `run-shell -b ${resizeCmd}`, ...buildHudHookRegistrationSuffix(context, context.hookSlot)]);
-    unregisterLegacyHudResizeHook(context, execTmuxSync);
+    execTmuxSync(['set-hook', '-t', ownedContext.sessionId, ownedContext.hookSlot, `run-shell -b ${resizeCmd}`, ...buildHudHookRegistrationSuffix(ownedContext, ownedContext.hookSlot)]);
+    unregisterLegacyHudResizeHook(ownedContext, execTmuxSync);
   } catch {
     return false;
   }
   if (omxBin) {
     try {
-      for (const hookSlot of [context.splitHookSlot, context.layoutHookSlot]) {
+      for (const hookSlot of [ownedContext.splitHookSlot, ownedContext.layoutHookSlot]) {
         const reconcileCmd = shellEscapeSingle(
-          buildHudLayoutReconcileHookCommand(tmuxBin, omxBin, canonicalLeaderPaneId, context, hookSlot, options),
+          buildHudLayoutReconcileHookCommand(tmuxBin, omxBin, canonicalLeaderPaneId, ownedContext, hookSlot, options),
         );
-        const targetArgs = hookSlot === context.layoutHookSlot
-          ? ['-w', '-t', context.windowId]
-          : ['-t', context.sessionId];
-        execTmuxSync(['set-hook', ...targetArgs, hookSlot, `run-shell -b ${reconcileCmd}`, ...buildHudHookRegistrationSuffix(context, hookSlot)]);
+        const targetArgs = hookSlot === ownedContext.layoutHookSlot
+          ? ['-w', '-t', ownedContext.windowId]
+          : ['-t', ownedContext.sessionId];
+        execTmuxSync(['set-hook', ...targetArgs, hookSlot, `run-shell -b ${reconcileCmd}`, ...buildHudHookRegistrationSuffix(ownedContext, hookSlot)]);
       }
     } catch {
       // Keep the resize hook installed so older tmux builds still recover on
@@ -1784,6 +1828,24 @@ export function registerHudResizeHook(
     }
   }
   return true;
+}
+
+export function isHudOwnerCurrent(
+  leaderPaneId: string,
+  expectedOwnerId: string,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  const paneId = parseCanonicalTmuxPaneId(leaderPaneId);
+  const ownerId = expectedOwnerId.trim();
+  if (!paneId || !ownerId) return false;
+  try {
+    const observedOwner = parseExactTmuxAuthorityScalar(execTmuxSync([
+      'display-message', '-p', '-t', paneId, '#{@omx_instance_id}',
+    ]));
+    return !observedOwner || observedOwner === ownerId;
+  } catch {
+    return false;
+  }
 }
 
 export function unregisterHudResizeHook(

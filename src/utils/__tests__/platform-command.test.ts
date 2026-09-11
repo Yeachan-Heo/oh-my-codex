@@ -313,6 +313,32 @@ describe('resolveCommandPathForPlatform', () => {
       null,
     );
   });
+
+  it('falls back to /usr/bin:/bin on POSIX when PATH is absent', () => {
+    assert.equal(
+      resolveCommandPathForPlatform('node', 'linux', {}, (candidate) => candidate === '/usr/bin/node'),
+      '/usr/bin/node',
+    );
+    // An explicitly empty PATH probes only the current directory.
+    assert.equal(
+      resolveCommandPathForPlatform('node', 'linux', { PATH: '' }, (candidate) => candidate === '/usr/bin/node'),
+      null,
+    );
+  });
+
+  it('preserves whitespace PATH components verbatim on POSIX', () => {
+    // A whitespace-only component is a literal relative pathname under execvp
+    // semantics; it must not be trimmed into an empty (cwd) component.
+    assert.equal(
+      resolveCommandPathForPlatform(
+        'node',
+        'linux',
+        { PATH: '   :/usr/bin' },
+        (candidate) => candidate === '/usr/bin/node',
+      ),
+      '/usr/bin/node',
+    );
+  });
 });
 
 describe('classifySpawnError', () => {

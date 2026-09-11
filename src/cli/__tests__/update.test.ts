@@ -498,6 +498,54 @@ describe('maybeCheckAndPromptUpdate', () => {
     }
   });
 
+  it('repairs the native runtime cache on the passive up-to-date path (issue #3636)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-update-hydrate-'));
+    const originalLog = console.log;
+    const originalMode = process.env.OMX_AUTO_UPDATE;
+    const logs: string[] = [];
+    let hydrateCalls = 0;
+    let deferredCalls = 0;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+    process.env.OMX_AUTO_UPDATE = 'defer';
+
+    try {
+      await withInteractiveTty(async () => {
+        await maybeCheckAndPromptUpdate(cwd, {
+          getCurrentVersion: async () => '0.21.3',
+          fetchLatestVersion: async () => '0.21.3',
+          runGlobalUpdate: () => {
+            throw new Error('no install should run when already up to date');
+          },
+          runDeferredGlobalUpdate: () => {
+            deferredCalls += 1;
+            return { ok: true, stderr: '', logPath: join(cwd, 'update.log') };
+          },
+          runSetupRefresh: async () => {
+            throw new Error('no setup refresh should run when already up to date');
+          },
+          hydrateRuntime: async () => {
+            hydrateCalls += 1;
+            return undefined;
+          },
+        });
+      });
+
+      assert.equal(hydrateCalls, 1);
+      assert.equal(deferredCalls, 0);
+    } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      } else {
+        delete process.env.OMX_AUTO_UPDATE;
+      }
+      console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+    void logs;
+  });
+
   it('treats a current dev install dev_base_version as the launch update baseline', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-dev-baseline-'));
     let promptCalls = 0;

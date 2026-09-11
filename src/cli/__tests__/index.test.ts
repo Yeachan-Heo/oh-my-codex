@@ -3557,7 +3557,8 @@ describe("project launch scope helpers", () => {
       );
       assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"session-2835"}\n');
       assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"session-2835"}\n');
-      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), '{"token":"opaque"}\n');
+      // Issue #3629: runtime auth.json is never persisted into the project.
+      assert.equal(existsSync(join(projectCodexHome, "auth.json")), false);
       assert.equal(existsSync(runtimeCodexHome), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -3684,7 +3685,6 @@ describe("project launch scope helpers", () => {
   });
 
   it("reaps a stale lock only when process-start identity proves PID reuse", async () => {
-    if (process.platform === "win32") return;
     const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-lock-pid-"));
     try {
       const lockPath = join(wd, ".omx-history.lock");
@@ -3692,8 +3692,16 @@ describe("project launch scope helpers", () => {
       await mkdir(lockPath, { mode: 0o700 });
       await writeFile(ownerPath, JSON.stringify({ token: "old", pid: process.pid, startIdentity: "reused" }));
       utimesSync(ownerPath, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
-      const lease = await acquireHistoryPersistenceLock(wd, { staleMs: 30 });
-      await releaseHistoryPersistenceLock(lease);
+      if (process.platform === "linux") {
+        const lease = await acquireHistoryPersistenceLock(wd, { staleMs: 30 });
+        await releaseHistoryPersistenceLock(lease);
+      } else {
+        await assert.rejects(
+          acquireHistoryPersistenceLock(wd, { staleMs: 30, timeoutMs: 100 }),
+          /timed out waiting for history persistence lock/,
+        );
+        assert.equal(JSON.parse(await readFile(ownerPath, "utf-8")).token, "old");
+      }
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -3762,7 +3770,7 @@ describe("project launch scope helpers", () => {
     }
   });
 
-  it("persists project-scope Codex auth written into the runtime CODEX_HOME mirror", async () => {
+  it("never persists runtime CODEX_HOME auth into the project (issue #3629)", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-auth-home-"));
     try {
       const projectCodexHome = join(wd, ".codex");
@@ -3785,8 +3793,73 @@ describe("project launch scope helpers", () => {
         prepared.projectLocalCodexHomeForCleanup,
       );
 
-      assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), opaqueAuthState);
+      // Credentials never reach the durable project directory.
+      assert.equal(existsSync(join(projectCodexHome, "auth.json")), false);
+      // Non-secret config persistence is unchanged.
       assert.equal(await readFile(join(projectCodexHome, "config.toml"), "utf-8"), 'model = "gpt-5.6-sol"\n');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds the caller's auth.json into the ephemeral runtime home without touching the project (issue #3629)", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-issue-3629-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(projectCodexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+      await writeFile(join(projectCodexHome, "hooks.json"), '{"hooks":{}}\n');
+
+      // Fake, non-secret marker credential in an isolated user home; point the
+      // process HOME at it so codexHome() resolves there, without touching host state.
+      const fakeUserHome = await mkdtemp(join(tmpdir(), "omx-issue-3629-home-"));
+      await mkdir(join(fakeUserHome, ".codex"), { recursive: true });
+      await writeFile(join(fakeUserHome, ".codex", "auth.json"), '{"FAKE_MARKER":true}\n', {
+        mode: 0o600,
+      });
+
+      const savedHome = process.env.HOME;
+      const savedCodeHome = process.env.CODEX_HOME;
+      delete process.env.CODEX_HOME;
+      process.env.HOME = fakeUserHome;
+      try {
+        const prepared = await prepareCodexHomeForLaunch(wd, "session-3629", {});
+        const runtimeCodexHome = runtimeCodexHomePath(wd, "session-3629");
+        assert.equal(prepared.codexHomeOverride, runtimeCodexHome);
+
+        const runtimeEntries = await fsReaddir(prepared.codexHomeOverride);
+        assert.equal(runtimeEntries.includes("auth.json"), true);
+        assert.equal(
+          await readFile(join(prepared.codexHomeOverride, "auth.json"), "utf-8"),
+          '{"FAKE_MARKER":true}\n',
+        );
+        assert.equal(((await lstat(join(prepared.codexHomeOverride, "auth.json"))).mode & 0o777), 0o600);
+        // No secret ever lands in the durable project home.
+        assert.equal((await fsReaddir(projectCodexHome)).includes("auth.json"), false);
+        // Project config still preserved; hooks still single-loaded.
+        assert.equal(
+          await readFile(join(prepared.codexHomeOverride, "config.toml"), "utf-8"),
+          'model = "gpt-5.6-sol"\n',
+        );
+        assert.equal(runtimeEntries.includes("hooks.json"), false);
+      } finally {
+        process.env.HOME = savedHome;
+        if (savedCodeHome !== undefined) process.env.CODEX_HOME = savedCodeHome;
+      }
+
+      // Explicit CODEX_HOME remains authoritative: project branch skipped, no seeding.
+      const explicitHome = await mkdtemp(join(tmpdir(), "omx-issue-3629-explicit-"));
+      await mkdir(join(explicitHome, "sessions"), { recursive: true });
+      const preparedExplicit = await prepareCodexHomeForLaunch(wd, "session-3629-explicit", {
+        CODEX_HOME: explicitHome,
+      });
+      assert.equal(preparedExplicit.codexHomeOverride, explicitHome);
+      assert.equal((await fsReaddir(explicitHome)).includes("auth.json"), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -6841,6 +6914,14 @@ describe("readTopLevelTomlString", () => {
     );
     assert.equal(value, null);
   });
+
+  it("ignores array-of-tables values", () => {
+    const value = readTopLevelTomlString(
+      '[[entries]] # array of tables\nmodel_reasoning_effort = "low"\n',
+      "model_reasoning_effort",
+    );
+    assert.equal(value, null);
+  });
 });
 
 describe("injectModelInstructionsBypassArgs", () => {
@@ -6953,6 +7034,25 @@ describe("upsertTopLevelTomlString", () => {
       updated,
       'model_reasoning_effort = "xhigh"\n[tui]\nstatus_line = []\n',
     );
+  });
+
+  it("preserves array-of-tables values when inserting a top-level key", () => {
+    const content = '[[entries]] # array of tables\nmodel_reasoning_effort = "low"\n';
+    const updated = upsertTopLevelTomlString(content, "model_reasoning_effort", "high");
+    assert.equal(updated, `model_reasoning_effort = "high"\n${content}`);
+  });
+
+  it("inserts before an array of tables that precedes an ordinary table", () => {
+    const content = [
+      "[[skills.config]]",
+      'path = "/tmp/skill/SKILL.md"',
+      "enabled = false",
+      "[tui]",
+      "status_line = []",
+      "",
+    ].join("\r\n");
+    const updated = upsertTopLevelTomlString(content, "model_reasoning_effort", "high");
+    assert.equal(updated, `model_reasoning_effort = "high"\r\n${content}`);
   });
 });
 

@@ -17,7 +17,7 @@ import type { ApprovedTeamExecutionBinding } from './approved-execution.js';
 import type { TeamDecompositionMetadata } from './repo-aware-decomposition.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
-import { resolveCodexHomeForLaunch } from '../cli/codex-home.js';
+import { resolveCodexHomeForChildExport } from '../cli/codex-home.js';
 
 async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
   process.stderr.write(
@@ -406,7 +406,9 @@ async function main(): Promise<void> {
         tasks,
         cwd,
         {
-          codexHomeOverride: resolveCodexHomeForLaunch(cwd, process.env),
+          // Issue #3629: workers must not inherit a project-derived
+          // CODEX_HOME; they resolve scope and credentials themselves.
+          codexHomeOverride: resolveCodexHomeForChildExport(process.env),
           confirmStaleCleanup: promptStaleCleanup,
           ...(Object.prototype.hasOwnProperty.call(input, 'approvedExecution')
             ? { approvedExecution: input.approvedExecution ?? null }

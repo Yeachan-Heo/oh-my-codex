@@ -8,7 +8,6 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
 import {
   appendFile,
-  mkdtemp as nodeMkdtemp,
   link as nodeLink,
   lstat as nodeLstat,
   mkdir as nodeMkdir,
@@ -24,7 +23,6 @@ import {
 } from 'fs/promises';
 import { appendFileSync, closeSync, constants as fsConstants, fstatSync, openSync, readFileSync, realpathSync } from 'fs';
 import type { FileHandle } from 'fs/promises';
-import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { omxRoot, omxLogsDir, sameFilePath } from '../utils/paths.js';
@@ -511,7 +509,6 @@ export type SessionPointerRecoveryStatus =
   | 'lock-unavailable'
   | 'race'
   | 'collision'
-  | 'unsupported'
   | 'recovery-required'
   | 'io-error';
 
@@ -1544,24 +1541,48 @@ function sameRecoveryIdentity(stat: Awaited<ReturnType<SessionPointerFsDependenc
 async function lstatRecoveryPath(path: string): Promise<Awaited<ReturnType<SessionPointerFsDependencies['lstat']>> | undefined> {
   try { return await transactionDependencies.fs.lstat(path); } catch (error) { if (isNotFound(error)) return undefined; throw error; }
 }
-async function probeRecoveryRenameCapability(): Promise<RecoveryRenameNoReplaceResult> {
-  let probeDir: string | undefined;
+
+/**
+ * Portable no-clobber move for recovery quarantine: hard-link the captured
+ * object to its token-bound destination, then unlink the source. `link()`
+ * fails with EEXIST when the destination exists, giving the same no-clobber
+ * guarantee as renameat2(RENAME_NOREPLACE)/renamex_np(RENAME_EXCL) without
+ * needing the native runtime. Identity checks before and after bound the
+ * non-atomic window; callers verify the captured object landed intact.
+ */
+async function moveRecoveryPathPortableNoReplace(
+  from: string,
+  to: string,
+  identity: RecoveryIdentity,
+  kind: 'file' | 'directory',
+): Promise<{ moved: boolean; reason?: string }> {
+  if (kind !== 'file') {
+    return { moved: false, reason: 'Portable no-clobber recovery move supports regular files only.' };
+  }
   try {
-    probeDir = await nodeMkdtemp(join(tmpdir(), 'omx-session-recovery-probe-'));
-    const from = join(probeDir, 'from');
-    const to = join(probeDir, 'to');
-    await nodeWriteFile(from, 'omx-recovery-capability-probe', { flag: 'wx' });
-    const outcome = await transactionDependencies.atomicRenameNoReplace(from, to);
-    return outcome === 'moved' || outcome === 'not-moved' || outcome === 'unsupported'
-      ? outcome
-      : 'unsupported';
-  } catch {
-    return 'unsupported';
-  } finally {
-    if (probeDir) {
-      try { await rm(probeDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    await transactionDependencies.fs.link(from, to);
+  } catch (error) {
+    if (isAlreadyExists(error)) return { moved: false, reason: 'The selected pointer quarantine destination already exists.' };
+    return { moved: false, reason: `Portable no-clobber recovery move failed (${errorCode(error) ?? 'unknown'}).` };
+  }
+  const destination = await lstatRecoveryPath(to);
+  if (!destination || !sameRecoveryIdentity(destination, identity, kind)) {
+    try { await transactionDependencies.fs.unlink(to); } catch { /* durable residue is safer than cleanup */ }
+    return { moved: false, reason: 'Portable no-clobber recovery move did not leave the captured object at its token-bound destination.' };
+  }
+  try {
+    await transactionDependencies.fs.unlink(from);
+  } catch (error) {
+    if (!isNotFound(error)) {
+      // The captured bytes are safely linked at quarantine; the stale source
+      // pathname remains and needs explicit recovery, same as an ambiguous move.
+      return { moved: false, reason: `Portable no-clobber recovery move linked quarantine but could not release the source pathname (${errorCode(error) ?? 'unknown'}).` };
     }
   }
+  const source = await lstatRecoveryPath(from);
+  const finalDestination = await lstatRecoveryPath(to);
+  if (finalDestination && sameRecoveryIdentity(finalDestination, identity, kind) && !source) return { moved: true };
+  return { moved: false, reason: 'Portable no-clobber recovery move did not leave the captured object at its token-bound destination.' };
 }
 
 async function moveRecoveryPathNoReplace(
@@ -1570,10 +1591,17 @@ async function moveRecoveryPathNoReplace(
   identity: RecoveryIdentity,
   kind: 'file' | 'directory',
   onAtomicMove?: () => void,
-): Promise<{ moved: boolean; unsupported?: boolean; reason?: string }> {
+): Promise<{ moved: boolean; reason?: string }> {
   try {
     const outcome = await transactionDependencies.atomicRenameNoReplace(from, to);
-    if (outcome === 'unsupported') return { moved: false, unsupported: true, reason: 'Atomic no-replace recovery rename is unsupported on this platform.' };
+    if (outcome === 'unsupported') {
+      // Native no-replace rename unavailable (e.g. unhydrated omx-runtime on
+      // macOS arm64, issue #3636): fall back to link()+unlink(), which gives the
+      // same no-clobber guarantee for regular files without the native runtime.
+      const portable = await moveRecoveryPathPortableNoReplace(from, to, identity, kind);
+      if (portable.moved) onAtomicMove?.();
+      return portable;
+    }
     if (outcome === 'not-moved') return { moved: false, reason: 'Atomic recovery move left its source pathname in place.' };
     onAtomicMove?.();
   } catch (error) {
@@ -1714,17 +1742,36 @@ export async function recoverSessionPointerLock(cwd: string): Promise<SessionPoi
       return { ...inspection, action: 'none', recovered: false, reason: 'Session pointer lock evidence changed before recovery claim.' };
     }
 
-    // Fresh recovery probes before checkpoint creation; an unsupported host leaves the
-    // canonical lock and owner evidence untouched. Existing checkpoints are resumed
-    // independently and may remain as durable recovery residue.
-
-    const capability = await probeRecoveryRenameCapability();
-    if (capability === 'unsupported') {
+    // Existing checkpoints are resumed independently and may remain as durable
+    // recovery residue. The no-replace move helper falls back to a portable
+    // link()+unlink() quarantine for regular files when the native atomic
+    // rename is unavailable — but a lock directory incarnation cannot use that
+    // file fallback. Probe the native capability with temp files inside the
+    // lock directory before writing any checkpoint so an unsupported host
+    // leaves no residue at all. Probe paths sort outside the allowed recovery
+    // entries, so resume treats a crashed probe as foreign evidence fail-closed.
+    const probeFrom = join(context.lockPath, '.omx-recovery-probe-from');
+    const probeTo = join(context.lockPath, '.omx-recovery-probe-to');
+    let directoryCapability: RecoveryRenameNoReplaceResult;
+    try {
+      try {
+        await transactionDependencies.fs.writeFile(probeFrom, 'omx-recovery-capability-probe', { flag: 'wx' });
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+      }
+      directoryCapability = await transactionDependencies.atomicRenameNoReplace(probeFrom, probeTo);
+    } catch {
+      directoryCapability = 'unsupported';
+    } finally {
+      try { await transactionDependencies.fs.unlink(probeFrom); } catch { /* best effort */ }
+      try { await transactionDependencies.fs.unlink(probeTo); } catch { /* best effort */ }
+    }
+    if (directoryCapability === 'unsupported') {
       return {
         ...inspection,
         action: 'none',
         recovered: false,
-        reason: 'Atomic no-replace recovery rename is unsupported on this platform.',
+        reason: 'Atomic no-replace lock directory quarantine is unsupported on this platform; portable recovery applies to regular files only.',
       };
     }
 
@@ -2052,7 +2099,7 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
           && !capturedDestination;
         result = pointerRecoveryRefusal(
           context,
-          moved.unsupported ? 'unsupported' : foreignDestination && !sourceExists ? 'race' : destinationExists ? 'collision' : 'race',
+          foreignDestination && !sourceExists ? 'race' : destinationExists ? 'collision' : 'race',
           moved.reason ?? 'The selected session pointer could not be quarantined atomically.',
           sessionId,
         );

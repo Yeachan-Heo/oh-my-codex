@@ -752,22 +752,24 @@ describe('omx setup AGENTS refresh behavior', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-  it('refreshes a stale semver-pinned capability sentence through the owner path and stays idempotent', async () => {
+  it('refreshes stale Conductor denial prose through the owner path and stays idempotent (#3635)', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
     const restoreTty = setMockTty(false);
     const home = join(wd, 'home');
     const restoreHome = setMockHome(home);
     const template = readFileSync(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
-    const pinnedCapabilityClaim = /Codex \d+\.\d+\.\d+ does not expose/;
-    const capabilityWording =
-      /When the active native surface does not expose that proof, collaboration reporting and source\/product mutations remain denied/;
+    const staleDenial = /native children are verification\/advice-only/i;
+    const reachableWording =
+      /may implement, mutate, and report bounded delegated work directly/i;
+    const staleProofRequirement =
+      /separate host-authenticated caller, parent, and target proof/i;
     try {
       await mkdir(join(wd, '.omx', 'state'), { recursive: true });
 
-      // Published v0.20.5 generated output carried the version-pinned sentence (issue #3545).
+      // Pre-#3635 generated output denied ordinary native implementation/reporting (issue #3635).
       const staleGenerated = addGeneratedAgentsMarker(template).replace(
-        'When the active native surface does not expose that proof',
-        'Codex 0.145.0 does not expose that proof',
+        'Under ordinary native support with inherited permissions, native children may implement, mutate, and report bounded delegated work directly',
+        'While a Conductor workflow is active, native children are verification/advice-only',
       );
       const existing = [
         '# Team Instructions',
@@ -780,8 +782,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         '',
       ].join('\n');
       await writeFile(join(wd, 'AGENTS.md'), existing);
-      assert.match(existing, pinnedCapabilityClaim);
-
+      assert.match(existing, staleDenial);
       const output = await runSetupWithCapturedLogs(wd, {
         scope: 'project',
         mergeAgents: true,
@@ -789,8 +790,9 @@ describe('omx setup AGENTS refresh behavior', () => {
       const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
 
       assert.match(output, /Merged OMX-managed AGENTS\.md sections into project root\./);
-      assert.match(agentsContent, capabilityWording);
-      assert.doesNotMatch(agentsContent, pinnedCapabilityClaim);
+      assert.match(agentsContent, reachableWording);
+      assert.doesNotMatch(agentsContent, staleDenial);
+      assert.doesNotMatch(agentsContent, staleProofRequirement);
       assert.match(agentsContent, /Keep this custom guidance\./);
       assert.equal(countOccurrences(agentsContent, OMX_MANAGED_AGENTS_START_MARKER), 1);
 
@@ -802,7 +804,7 @@ describe('omx setup AGENTS refresh behavior', () => {
 
       assert.equal(secondContent, agentsContent);
       assert.match(secondOutput, /AGENTS\.md already up to date in project root\./);
-      assert.doesNotMatch(secondContent, pinnedCapabilityClaim);
+      assert.doesNotMatch(secondContent, staleDenial);
     } finally {
       restoreHome();
       restoreTty();

@@ -1,6 +1,6 @@
 import { describe, it, mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderHud } from '../render.js';
+import { getHudRenderMaxLines, renderHud } from '../render.js';
 import type { HudRenderContext } from '../types.js';
 import { setColorEnabled } from '../colors.js';
 
@@ -340,6 +340,169 @@ describe('renderHud – ultraqa', () => {
 // ── Team ──────────────────────────────────────────────────────────────────────
 
 describe('renderHud – team', () => {
+  it('colors reported working agents green', () => {
+    const ctx = { ...emptyCtx(), team: { active: true, workers: [{ name: 'worker-1', state: 'working' as const }] } };
+    assert.ok(renderHud(ctx, 'focused').includes(`${GREEN}worker-1 working${RESET}`));
+  });
+
+  it('aligns worker columns despite different names, states, roles, and missing task IDs', () => {
+    const ctx = { ...emptyCtx(), team: { active: true, workers: [
+      { name: 'worker-1', state: 'working' as const, taskId: '2', role: 'executor', paneId: '%9' },
+      { name: 'worker-15', state: 'blocked' as const, role: 'verifier', paneId: '%100' },
+      { name: 'reviewer', state: 'idle' as const, taskId: '123', role: 'reviewer', paneId: '%11' },
+    ] } };
+    const rows = stripSgr(renderHud(ctx, 'focused', { maxWidth: 100 })).split('\n').slice(1);
+    assert.equal(rows.length, 3);
+    const separators = rows.map(row => [...row.matchAll(/\|/g)].map(match => match.index));
+    assert.deepEqual(separators[0], separators[1]);
+    assert.deepEqual(separators[1], separators[2]);
+    assert.equal(rows[0].indexOf('working'), rows[1].indexOf('blocked'));
+    assert.equal(rows[1].indexOf('blocked'), rows[2].indexOf('idle'));
+  });
+
+  it('shows every worker on its own live-status row, including a fifteen-worker team', () => {
+    const workers = Array.from({ length: 15 }, (_, i) => ({
+      name: `worker-${i + 1}`,
+      role: 'executor',
+      state: 'working' as const,
+      taskId: String(i + 1),
+      paneId: `%${i + 10}`,
+    }));
+    const ctx = { ...emptyCtx(), team: { active: true, team_name: 'checkout', agent_count: 15, workers } };
+    for (const preset of ['minimal', 'focused', 'full'] as const) {
+      const lines = stripSgr(renderHud(ctx, preset, { maxWidth: 80 })).split('\n');
+      assert.equal(getHudRenderMaxLines(ctx), 17);
+      for (const worker of workers) {
+        assert.equal(lines.filter(line => new RegExp(`${worker.name}\\s+working`).test(line)).length, 1);
+        assert.ok(lines.some(line => line.includes(`task:${worker.taskId} `) && line.includes(worker.paneId)));
+      }
+      assert.ok(lines.every(line => line.length <= 80));
+    }
+  });
+
+  it('refreshes worker states and drops the roster after the team stops', () => {
+    const team = { active: true, team_name: 'checkout', workers: [{ name: 'worker-1', state: 'working' as const }] };
+    assert.ok(stripSgr(renderHud({ ...emptyCtx(), team }, 'focused')).includes('worker-1 working'));
+    const updated = { ...team, workers: [{ name: 'worker-1', state: 'done' as const }] };
+    const result = stripSgr(renderHud({ ...emptyCtx(), team: updated }, 'focused'));
+    assert.ok(result.includes('worker-1 done'));
+    assert.ok(!result.includes('worker-1 working'));
+    assert.ok(!renderHud({ ...emptyCtx(), team: { ...updated, active: false } }, 'focused').includes('worker-1'));
+    assert.equal(getHudRenderMaxLines({ team: null, ultragoal: null }), 2);
+  });
+
+  it('bounds roster rows and reports overflow when a caller explicitly limits height', () => {
+    const ctx = {
+      ...emptyCtx(),
+      team: {
+        active: true,
+        workers: Array.from({ length: 15 }, (_, i) => ({ name: `worker-${i + 1}`, state: 'unknown' as const })),
+      },
+    };
+    const lines = stripSgr(renderHud(ctx, 'focused', { maxWidth: 48, maxLines: 4 })).split('\n');
+    assert.equal(lines.length, 4);
+    assert.ok(lines[3].includes('+13 workers'));
+    assert.ok(lines.every(line => line.length <= 48));
+  });
+
+  it('keeps status and task visible before optional metadata on narrow panes', () => {
+    const ctx = { ...emptyCtx(), team: { active: true, workers: [{
+      name: 'worker-15', state: 'blocked' as const, taskId: '42',
+      role: 'very-long-specialist-role', paneId: '%123',
+    }] } };
+    const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 48 }));
+    assert.ok(result.includes('worker-15 blocked | task:42'));
+    assert.ok(result.split('\n').every(line => line.length <= 48));
+  });
+
+  it('budgets identity, full status, and task before optional columns at 16 and 24 columns', () => {
+    const workers = [
+      { name: 'worker-20', state: 'blocked' as const, taskId: '42', role: 'executor', paneId: '%123' },
+      { name: 'very-long-worker-name', state: 'draining' as const, taskId: '17', role: 'long-specialist-role' },
+      { name: 'worker-1', state: 'idle' as const },
+    ];
+    for (const maxWidth of [16, 24]) {
+      const rows = stripSgr(renderHud({ ...emptyCtx(), team: { active: true, workers } }, 'focused', { maxWidth })).split('\n').slice(1);
+      assert.equal(rows.length, 3);
+      assert.match(rows[0], /blocked.*(?:task:|#)42/);
+      assert.match(rows[1], /draining.*(?:task:|#)17/);
+      assert.match(rows[2], /idle/);
+      assert.ok(rows.every(row => row.length <= maxWidth));
+      assert.ok(rows.every(row => !row.includes('executor') && !row.includes('pane:')));
+      assert.equal(rows[0].indexOf('blocked'), rows[1].indexOf('draining'));
+    }
+  });
+
+  it('keeps the team name alongside the worker count in every preset', () => {
+    const ctx = {
+      ...emptyCtx(),
+      version: '0.21.3',
+      gitBranch: 'open-seo/main',
+      team: { active: true, team_name: 'recodee-one-fifteen', agent_count: 15 },
+    };
+    for (const preset of ['minimal', 'focused', 'full'] as const) {
+      const result = stripSgr(renderHud(ctx, preset));
+      assert.ok(result.startsWith('[OMX#0.21.3] team:recodee-one-fifteen (15 workers) | open-seo/main'));
+    }
+  });
+
+  it('keeps team identity ahead of long repository labels in narrow panes', () => {
+    const ctx = {
+      ...emptyCtx(),
+      gitBranch: 'repository/feature/' + 'long-branch-'.repeat(20),
+      team: { active: true, team_name: 'checkout', agent_count: 3 },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 48, maxLines: 1 }));
+    assert.ok(result.startsWith('[OMX] team:checkout (3 workers)'));
+    assert.ok(result.length <= 48);
+  });
+
+  it('sanitizes team names and omits invalid worker counts', () => {
+    for (const count of [0, -1, 1.5, NaN, Infinity]) {
+      const ctx = {
+        ...emptyCtx(),
+        team: { active: true, team_name: '  my\nteam\t  ', agent_count: count },
+      };
+      const result = stripSgr(renderHud(ctx, 'focused'));
+      assert.equal(result, '[OMX] team:myteam');
+    }
+  });
+
+  it('does not show inactive teams', () => {
+    const ctx = { ...emptyCtx(), team: { active: false, team_name: 'finished', agent_count: 3 } };
+    assert.ok(!renderHud(ctx, 'focused').includes('team:'));
+  });
+
+  it('includes the team name once in the combined ultragoal summary', () => {
+    const ctx = {
+      ...emptyCtx(),
+      team: { active: true, team_name: 'checkout', agent_count: 3 },
+      ultragoal: {
+        active: true,
+        total: 2,
+        complete: 1,
+        pending: 0,
+        inProgress: 1,
+        failed: 0,
+        reviewBlocked: 0,
+        needsUserDecision: 0,
+        progressTotal: 2,
+      },
+    };
+    const result = stripSgr(renderHud(ctx, 'focused'));
+    assert.ok(result.includes('ultragoal 1/2 + team:checkout (3 workers)'));
+    const crowded = { ...ctx, gitBranch: 'long-repository/'.repeat(12),
+      ralph: { active: true, iteration: 2, max_iterations: 10 },
+      ultrawork: { active: true }, autopilot: { active: true, current_phase: 'implementing' },
+      ralplan: { active: true, current_phase: 'consensus' },
+    };
+    for (const preset of ['minimal', 'focused', 'full'] as const) {
+      const narrow = stripSgr(renderHud(crowded, preset, { maxWidth: 55, maxLines: 3 }));
+      assert.ok(narrow.startsWith('[OMX] ultragoal 1/2 + team:checkout (3 workers)'), narrow);
+    }
+    assert.equal(result.split('team:checkout').length - 1, 1);
+  });
+
   it('renders agent count when count > 0', () => {
     const ctx = { ...emptyCtx(), team: { active: true, agent_count: 3 } };
     const result = renderHud(ctx, 'focused');
@@ -559,10 +722,10 @@ describe('renderHud – ultragoal', () => {
 
     const result = stripSgr(renderHud(ctx, 'focused', { maxWidth: 220, maxLines: 3 }));
 
-    assert.equal((result.match(/team:4 workers/g) ?? []).length, 1);
+    assert.equal((result.match(/team:hud-fix \(4 workers\)/g) ?? []).length, 1);
     assert.equal((result.match(/ultragoal 1\/4/g) ?? []).length, 1);
-    assert.ok(result.includes('ultragoal 1/4 + team:4 workers ▶ G002-team-hud: Fix combined HUD rendering'));
-    assert.ok(!result.includes(' | team:4 workers | ultragoal'));
+    assert.ok(result.includes('ultragoal 1/4 + team:hud-fix (4 workers) ▶ G002-team-hud: Fix combined HUD rendering'));
+    assert.ok(!result.includes(' | team:hud-fix (4 workers) | ultragoal'));
     assert.ok(result.split('\n').length <= 3);
   });
 

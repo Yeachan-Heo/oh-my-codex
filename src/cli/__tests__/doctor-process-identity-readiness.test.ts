@@ -60,7 +60,6 @@ describe('doctor native process identity readiness', () => {
     assert.equal(check, null);
     assert.equal(called, false);
   });
-
   it('fails safely when the native runtime is missing or unsupported', () => {
     const check = checkProcessIdentityReadiness({
       platform: 'win32',
@@ -70,7 +69,7 @@ describe('doctor native process identity readiness', () => {
     assert.equal(check?.status, 'fail');
     assert.equal(
       check?.message,
-      'native process identity is unavailable (provider unavailable); reinstall or update OMX and rerun doctor',
+      'native process identity is unavailable (provider unavailable); run `omx update` (repairs the native runtime cache) or `omx setup`, then rerun doctor; session pointer recovery works without the native runtime',
     );
   });
 
@@ -85,7 +84,6 @@ describe('doctor native process identity readiness', () => {
       assert.match(check?.message ?? '', /reinstall or update OMX and rerun doctor$/);
     }
   });
-
   it('rejects foreign-platform identity evidence without trusting or repairing it', () => {
     const check = checkProcessIdentityReadiness({
       platform: 'darwin',

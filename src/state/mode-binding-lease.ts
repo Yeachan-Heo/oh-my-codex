@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { getBaseStateDir } from '../mcp/state-paths.js';
 import { JsonChildClient } from './pinned-atomic-file-darwin-client.js';
 import { pinAtomicFile } from './pinned-atomic-file.js';
+import { resolveRuntimeBinaryPath } from '../runtime/bridge.js';
 
 interface PinnedLockNamespace {
   path: string;
@@ -129,25 +130,33 @@ export async function withCanonicalModeBindingLease<T>(
   assertSupportedPlatform();
   const namespace = await pinCanonicalStateLockNamespace(binding.namespacePath);
   const key = basename(binding.leasePath).slice(0, -'.lock'.length);
-  const nonce = `${Date.now()}-${randomBytes(12).toString('hex')}`;
-  const child = spawn(
-    process.execPath,
-    [fileURLToPath(new URL('./mode-binding-lease-helper.js', import.meta.url)), key, nonce,
-      String(namespace.identity.dev), String(namespace.identity.ino)],
-    { cwd: namespace.path, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
-  );
-  canonicalModeBindingLeaseTestHooks.onHelperSpawn?.(child);
-  const client = new JsonChildClient(child, 'canonical mode binding lease helper');
+  let mutex: JsonChildClient | undefined;
+  let client: JsonChildClient | undefined;
   let primaryError: unknown;
   try {
+    mutex = new JsonChildClient(spawn(resolveRuntimeBinaryPath(), [
+      'lease-mutex', namespace.path, String(namespace.identity.dev), String(namespace.identity.ino), `${key}.mutex`,
+    ], { cwd: namespace.path, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }), 'canonical mode binding native mutex');
+    await mutex.initialize({ timeoutMs: 35_000 });
+    await assertPinnedLockNamespace(namespace);
+    await mutex.request({ op: 'assert' });
+    const nonce = `${Date.now()}-${randomBytes(12).toString('hex')}`;
+    const child = spawn(process.execPath,
+      [fileURLToPath(new URL('./mode-binding-lease-helper.js', import.meta.url)), key, nonce,
+        String(namespace.identity.dev), String(namespace.identity.ino)],
+      { cwd: namespace.path, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    canonicalModeBindingLeaseTestHooks.onHelperSpawn?.(child);
+    client = new JsonChildClient(child, 'canonical mode binding lease helper');
     await client.initialize({ timeoutMs: 35_000 });
     await assertPinnedLockNamespace(namespace);
     await client.request({ op: 'assert' });
     await canonicalModeBindingLeaseTestHooks.afterAcquire?.(namespace.path);
     await assertPinnedLockNamespace(namespace);
+    await mutex.request({ op: 'assert' });
     await client.request({ op: 'assert' });
     const result = await operation();
     await assertPinnedLockNamespace(namespace);
+    await mutex.request({ op: 'assert' });
     await client.request({ op: 'assert' });
     await assertPinnedStateRoot(binding);
     return result;
@@ -155,12 +164,11 @@ export async function withCanonicalModeBindingLease<T>(
     primaryError = error;
     throw error;
   } finally {
-    try {
-      await client.close();
-    } catch (closeError) {
-      if (primaryError === undefined) throw closeError;
-    }
-    finally { await namespace.handle.close(); }
+    let cleanupError: unknown;
+    try { await client?.close(); } catch (error) { cleanupError = error; }
+    try { await mutex?.close(); } catch (error) { cleanupError ??= error; }
+    try { await namespace.handle.close(); } catch (error) { cleanupError ??= error; }
+    if (primaryError === undefined && cleanupError !== undefined) throw cleanupError;
   }
 }
 

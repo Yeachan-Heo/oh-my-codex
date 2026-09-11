@@ -2,11 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildTmuxSessionName } from '../../cli/index.js';
 import { handleTmuxInjection, resolvePaneTarget } from '../../scripts/notify-hook/tmux-injection.js';
+import { defaultProcessInspectionProvider } from '../session.js';
 
 const NOTIFY_HOOK_SCRIPT = new URL('../../../dist/scripts/notify-hook.js', import.meta.url);
 
@@ -77,40 +77,23 @@ function withPatchedEnv<T>(patch: Record<string, string>, run: () => Promise<T>)
 }
 
 
-function readLinuxStartTicks(pid: number): number | null {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-    const commandEnd = stat.lastIndexOf(')');
-    if (commandEnd === -1) return null;
-    const remainder = stat.slice(commandEnd + 1).trim();
-    const fields = remainder.split(/\s+/);
-    if (fields.length <= 19) return null;
-    const startTicks = Number(fields[19]);
-    return Number.isFinite(startTicks) ? startTicks : null;
-  } catch {
-    return null;
-  }
-}
-
-function readLinuxCmdline(pid: number): string | null {
-  try {
-    const raw = readFileSync(`/proc/${pid}/cmdline`);
-    const text = raw.toString('utf-8').replace(/\0+/g, ' ').trim();
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
-  }
+function fixtureProcessIdentity(pid: number) {
+  const observation = defaultProcessInspectionProvider.observeProcess(pid, process.platform);
+  assert.equal(observation.kind, 'identity', `expected process identity observation for pid ${pid}`);
+  assert.equal(observation.identity.platform, process.platform, `expected ${process.platform} process identity for pid ${pid}`);
+  return observation.identity;
 }
 
 async function writeManagedSessionState(stateDir: string, cwd: string, sessionId: string): Promise<void> {
+  const processIdentity = fixtureProcessIdentity(process.pid);
   await writeJson(join(stateDir, 'session.json'), {
     session_id: sessionId,
     started_at: new Date().toISOString(),
     cwd,
     pid: process.pid,
     platform: process.platform,
-    pid_start_ticks: readLinuxStartTicks(process.pid),
-    pid_cmdline: readLinuxCmdline(process.pid),
+    identity_schema_version: 2,
+    process_identity: processIdentity,
   });
 }
 

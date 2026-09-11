@@ -15,8 +15,7 @@ Use when working code is bloated, noisy, repetitive, over-abstracted, or AI-gene
 the user requests cleanup/refactor/deslop; or a follow-up left duplicate/dead code,
 weak boundaries, missing tests, fallback-like paths, or wrappers. Inputs are the requested
 feature/files and behavior to preserve. A file list scope is valid; keep the pass bounded
-to it. In the Ralph workflow, run this skill on Ralph's changed files only, standard mode
-unless explicitly requested otherwise.
+to it. Limit the pass to the calling task's changed files unless broader cleanup was requested.
 
 ## Before editing
 
@@ -24,7 +23,7 @@ unless explicitly requested otherwise.
 2. **Create a cleanup plan before code**: list scope and smells, include fallback findings/classifications/escalation, and order safest/highest-signal fixes first.
 3. **Inventory fallback-like code** in scope: quick hacks, temporary workaround, temporary fallback, just bypass, just skip, fallback if it fails, swallowed errors, silent defaults, broad compatibility shims, and duplicate alternate execution paths.
 4. Classify each fallback: **Masking fallback slop** hides evidence, bypasses the contract, suppresses validation, swallows failures, silently defaults, or adds untested paths; **Grounded compatibility/fail-safe fallback** is narrow at an external/version/fail-safe boundary, documents rationale, preserves failure evidence, and tests primary plus fallback.
-5. Prefer root-cause repair, deletion, boundary repair, or explicit failure behavior. For broad/ambiguous/cross-layer/architectural findings, invoke `$ralplan` for consensus resolution; when already inside ralplan, ralph, team, or another OMX workflow, do not spawn a nested `$ralplan`—attach the finding to the active handoff.
+5. Prefer root-cause repair, deletion, boundary repair, or explicit failure behavior. For broad/ambiguous/cross-layer/architectural findings, invoke `$ralplan` for consensus resolution; when already inside ralplan, ultragoal, team, or another OMX workflow, do not spawn a nested `$ralplan`—attach the finding to the active handoff.
 
 ## Smell taxonomy and passes
 

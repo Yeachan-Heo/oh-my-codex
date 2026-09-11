@@ -28,6 +28,33 @@ async function readLockOwner(lockPath: string): Promise<Record<string, unknown>>
 }
 
 describe('reconcileHudForPromptSubmit', () => {
+  it('caps an existing 20-worker HUD in a 24-row window without recreating it', async () => {
+    const resized: number[] = [];
+    const hooks: number[] = [];
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', windowHeight: 24, paneHeight: 6 },
+        { paneId: '%2', currentCommand: 'node', paneHeight: 17,
+          startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch` },
+      ],
+      readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' }, statusLine: { preset: 'focused' } }),
+      readAllState: async () => ({
+        version: null, gitBranch: null, ralph: null, ultragoal: null, ultrawork: null,
+        autopilot: null, ralplan: null, deepInterview: null, autoresearch: null, ultraqa: null,
+        team: { active: true, workers: Array.from({ length: 20 }, (_, i) => ({ name: `worker-${i + 1}`, state: 'working' as const })) },
+        metrics: null, hudNotify: null, session: null,
+      }),
+      resizeTmuxPane: (_pane, height) => { resized.push(height); return true; },
+      registerHudResizeHook: (_pane, _leader, height) => { hooks.push(height); return true; },
+      createHudWatchPane: () => { assert.fail('must reuse the existing HUD'); },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+    assert.equal(result.desiredHeight, 11);
+    assert.deepEqual(resized, [11]);
+    assert.deepEqual(hooks, [11]);
+  });
+
   it('skips reconciliation outside tmux', async () => {
     const result = await reconcileHudForPromptSubmit('/tmp', {
       env: {},
@@ -35,6 +62,56 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.status, 'skipped_not_tmux');
     assert.equal(result.paneId, null);
   });
+
+  for (const scenario of ['keeper', 'single-invalid', 'duplicates-invalid']) {
+    it(`bounds a large roster against fresh target geometry after removing HUDs: ${scenario}`, async () => {
+      const killed: string[] = [];
+      const resized: Array<{ paneId: string; height: number }> = [];
+      const created: number[] = [];
+      const hooks: number[] = [];
+      const command = `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`;
+      const result = await reconcileHudForPromptSubmit('/repo', {
+        env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+        listCurrentWindowPanes: () => [
+          { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', paneLeft: 0, paneTop: 0,
+            paneWidth: 80, paneHeight: killed.length ? 8 : 12, paneBottom: 11, windowWidth: 160, windowHeight: 50 },
+          { paneId: '%2', currentCommand: 'node', startCommand: command, paneLeft: 81, paneTop: 0,
+            paneWidth: 79, paneHeight: 50, paneBottom: 49, windowWidth: 160, windowHeight: 50 },
+          ...(scenario === 'single-invalid' ? [] : [
+            { paneId: '%3', currentCommand: 'node', startCommand: command, paneLeft: 0,
+              paneTop: scenario === 'keeper' ? 13 : 0, paneWidth: 80, paneHeight: 3,
+              paneBottom: 15, windowWidth: 160, windowHeight: 50 },
+          ]),
+        ].filter(pane => !killed.includes(pane.paneId)),
+        readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' }, statusLine: { preset: 'focused' } }),
+        readAllState: async () => ({
+          version: null, gitBranch: null, ralph: null, ultragoal: null, ultrawork: null,
+          autopilot: null, ralplan: null, deepInterview: null, autoresearch: null, ultraqa: null,
+          team: { active: true, workers: Array.from({ length: 20 }, (_, i) => ({ name: `worker-${i + 1}`, state: 'working' as const })) },
+          metrics: null, hudNotify: null, session: null,
+        }),
+        killTmuxPane: paneId => { killed.push(paneId); return true; },
+        resizeTmuxPane: (paneId, height) => { resized.push({ paneId, height }); return true; },
+        createHudWatchPane: (_cwd, _cmd, options) => { created.push(options?.heightLines ?? 0); return '%4'; },
+        registerHudResizeHook: (_pane, _leader, height) => { hooks.push(height); return true; },
+        unregisterHudResizeHook: noOpUnregisterHudResizeHook,
+        resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+      });
+      const expectedHeight = scenario === 'keeper' ? 5 : 3;
+      assert.equal(result.desiredHeight, expectedHeight);
+      assert.deepEqual(hooks, [expectedHeight]);
+      if (scenario === 'keeper') {
+        assert.equal(result.paneId, '%3');
+        assert.deepEqual(killed, ['%2']);
+        assert.deepEqual(resized, [{ paneId: '%3', height: expectedHeight }]);
+        assert.deepEqual(created, []);
+      } else {
+        assert.equal(result.paneId, '%4');
+        assert.deepEqual(created, [expectedHeight]);
+        assert.deepEqual(killed, scenario === 'single-invalid' ? ['%2'] : ['%2', '%3']);
+      }
+    });
+  }
 
   it('skips reconciliation in non-OMX-owned tmux even when an entry exists', async () => {
     let listed = false;

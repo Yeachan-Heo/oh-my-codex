@@ -30,6 +30,7 @@ import {
 } from '../team/api-interop.js';
 import { teamReadConfig as readTeamConfig, teamReadPhase as readTeamPhase } from '../team/team-ops.js';
 import { resolveTeamNameForCurrentContext } from '../team/team-identity.js';
+import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
 import { recordLeaderRuntimeActivity } from '../team/leader-activity.js';
 import { readTeamPaneStatus } from '../team/pane-status.js';
 import {
@@ -43,7 +44,7 @@ import {
   readPersistedTeamUltragoalContext,
   renderUltragoalCheckpointGuidanceText,
 } from '../team/ultragoal-context.js';
-import { resolveCodexHomeForLaunch } from './codex-home.js';
+import { resolveCodexHomeForChildExport, resolveCodexHomeForLaunch } from './codex-home.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -1400,7 +1401,12 @@ export function buildLeaderMonitoringHints(teamName: string): string[] {
 
 export async function teamCommand(args: string[], _options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
-  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, process.env);
+  const codexHomeOverride = resolveCodexHomeForChildExport(process.env);
+  // Issue #3629: keep the project-derived home for model/reasoning planning
+  // (buildFollowupStaffingPlan), but export only a child-safe CODEX_HOME into
+  // startTeam, which copies it into worker environments. Project-scope
+  // workers resolve scope and credential provenance in their own process.
+  const codexHomeForPlanning = resolveCodexHomeForLaunch(cwd, process.env);
   const parsedWorktree = parseWorktreeMode(args);
   const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
   const teamArgs = parsedWorktree.remainingArgs;
@@ -1481,16 +1487,20 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     await recordLeaderRuntimeActivity(cwd, 'team_status', resolvedName);
     const snapshot = await monitorTeam(resolvedName, cwd);
     if (!snapshot) {
+      const stateRoot = resolveCanonicalTeamStateRoot(cwd);
+      const statePath = join(stateRoot, 'team', resolvedName);
       if (wantsJson) {
         console.log(JSON.stringify({
           ...buildJsonBase(),
           command: 'omx team status',
           team_name: name,
           status: 'missing',
+          state_root: stateRoot,
+          state_path: statePath,
         }));
         return;
       }
-      console.log(`No team state found for ${name}`);
+      console.log(`No team state found for ${name} (searched: ${statePath})`);
       return;
     }
     const tailLines = parseStatusTailLines(teamArgs.slice(2));
@@ -1689,7 +1699,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
       workerCount: runtime.config.worker_count,
       fallbackRole: resolveImplicitTeamFallbackRole(runtime.config.agent_type, false),
-      codexHomeOverride,
+      codexHomeOverride: codexHomeForPlanning,
     });
     await renderStartSummary(runtime, staffingPlan);
     return;
@@ -1719,7 +1729,12 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    console.log(`Team shutdown complete: ${name}`);
+    if (summary.configExisted) {
+      console.log(`Team shutdown complete: ${name}`);
+    } else {
+      const statePath = join(resolveCanonicalTeamStateRoot(cwd), 'team', resolvedName);
+      console.log(`No team state found for ${name} (searched: ${statePath}); cleanup of selected scope completed.`);
+    }
     if (summary.commitHygieneArtifacts) {
       console.log(`commit_hygiene_context_json: ${summary.commitHygieneArtifacts.jsonPath}`);
       console.log(`commit_hygiene_context_md: ${summary.commitHygieneArtifacts.markdownPath}`);
@@ -1748,7 +1763,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   const staffingPlan = buildFollowupStaffingPlan('team', parsed.task, availableAgentTypes, {
     workerCount: executionPlan.workerCount,
     fallbackRole: resolveImplicitTeamFallbackRole(parsed.agentType, parsed.explicitAgentType),
-    codexHomeOverride,
+    codexHomeOverride: codexHomeForPlanning,
   });
   const runtime = await startTeam(
     parsed.teamName,
@@ -1758,7 +1773,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     tasks,
     cwd,
     {
-      codexHomeOverride,
+      codexHomeOverride, // child-safe export value (undefined for project scope)
       worktreeMode,
       decompositionMetadata: executionPlan.metadata,
       approvedExecution: parsed.approvedExecution ?? null,

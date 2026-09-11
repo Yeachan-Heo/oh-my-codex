@@ -78,7 +78,7 @@ import {
 	extractFirstPartyOmxMcpSections,
 	stripFirstPartyOmxMcpSections,
 } from "../config/generator.js";
-import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
+import type { CodexHookFeatureFlag, CodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 import {
 	buildManagedCodexNativeHookWindowsShimContent,
 	buildManagedCodexNativeHookWindowsShimPath,
@@ -3369,6 +3369,7 @@ function buildPluginModeHooksConfigPlan(
 	options: {
 		codexHookFeatureFlag: CodexHookFeatureFlag;
 		pluginScopedHooks: boolean;
+		pluginHookFeatureFlag?: CodexPluginHookFeatureFlag;
 		preserveFirstPartyMcp?: boolean;
 		developerInstructionsDecision: PluginDeveloperInstructionsDecision;
 		platform: NodeJS.Platform;
@@ -3422,6 +3423,7 @@ function buildPluginModeHooksConfigPlan(
 		options.codexHookFeatureFlag,
 		{
 			pluginScopedHooks: options.pluginScopedHooks,
+			pluginHookFeatureFlag: options.pluginHookFeatureFlag,
 			preserveNativeHooks:
 				options.pluginScopedHooks && managedHooksPlan?.hasForeignHooks === true,
 		},
@@ -3536,6 +3538,7 @@ interface PlanNativeHookSetupTransactionOptions {
 	platform: NodeJS.Platform;
 	isPluginInstallMode: boolean;
 	pluginScopedHooks: boolean;
+	pluginHookFeatureFlag?: CodexPluginHookFeatureFlag;
 	codexHookFeatureFlag: CodexHookFeatureFlag;
 	preserveFirstPartyMcp: boolean;
 	removeFirstPartyMcp: boolean;
@@ -3784,6 +3787,7 @@ async function planNativeHookSetupTransaction(
 			{
 				codexHookFeatureFlag: options.codexHookFeatureFlag,
 				pluginScopedHooks: options.pluginScopedHooks,
+				pluginHookFeatureFlag: options.pluginHookFeatureFlag,
 				preserveFirstPartyMcp: options.preserveFirstPartyMcp,
 				developerInstructionsDecision:
 					options.pluginDeveloperInstructionsDecision,
@@ -4276,6 +4280,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	});
 	const codexHookFeatureFlag = codexHookFeatureSupport.hookFeatureFlag;
 	const pluginScopedHooksSupported = codexHookFeatureSupport.pluginScopedHooks;
+	// Verbose ownership claim must be scoped to plugin installs: legacy
+	// --verbose setup writes the global wrapper surface and cannot claim
+	// manifest ownership (issue #3623 follow-up).
+	const manifestOwnsHookSurface = isPluginInstallMode && pluginScopedHooksSupported;
 	const shouldSyncSharedMcpRegistry = resolvedMcpMode.mcpMode === "compat";
 	const registryCandidates = getUnifiedMcpRegistryCandidates();
 	const defaultRegistryCandidates = registryCandidates.slice(0, 1);
@@ -4300,6 +4308,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 		isPluginInstallMode,
 		pluginScopedHooks: pluginScopedHooksSupported,
+		pluginHookFeatureFlag: codexHookFeatureSupport.pluginHookFeatureFlag ?? undefined,
 		codexHookFeatureFlag,
 		preserveFirstPartyMcp:
 			shouldOfferFirstPartyMcpRemoval && !removeFirstPartyMcpRegistrations,
@@ -4590,7 +4599,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			`  Native Codex hook feature flag: [features].${codexHookFeatureFlag}`,
 		);
 		console.log(
-			`  Plugin-scoped Codex hooks: ${pluginScopedHooksSupported ? "supported" : "not reported; using legacy setup fallback"}`,
+			`  Plugin-scoped Codex hooks: ${manifestOwnsHookSurface ? "supported (plugin manifest owns hooks)" : "not reported; using legacy setup fallback"}`,
 		);
 	}
 	if (
@@ -4702,8 +4711,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			);
 		}
 		console.log(
-			pluginScopedHooksSupported
-				? "  Plugin-scoped Codex hooks and runtime feature flags refresh complete (plugin_hooks, goals).\n"
+			manifestOwnsHookSurface
+				? `  Plugin-scoped Codex hooks and runtime feature flags refresh complete (${codexHookFeatureSupport.pluginHookFeatureFlag}, goals).\n`
 				: `  Native Codex hooks fallback and runtime feature flags refresh complete (${scopeDirs.codexHooksFile}; hooks, goals).\n`,
 		);
 		if (pluginDeveloperInstructionsDecision.action !== "preserve") {
@@ -6374,6 +6383,7 @@ async function planManagedConfig(
 		notifyCommand: notifyPlan.notifyCommand,
 		includeFirstPartyMcp: mcpMode === "compat",
 		preserveExistingFirstPartyMcp,
+		preserveReasoningEffort: true,
 	});
 	return {
 		finalConfig,

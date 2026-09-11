@@ -447,6 +447,16 @@ describe('config generator', () => {
     }
   });
 
+  it('migrates removed plugin_hooks to unified hooks without duplicate native flags', () => {
+    for (const config of ['', '[features]\nplugin_hooks = true\nhooks = false\ncodex_hooks = true\n']) {
+      const options = { pluginScopedHooks: true, pluginHookFeatureFlag: 'hooks' as const, preserveNativeHooks: true };
+      const result = upsertPluginModeRuntimeFeatureFlags(config, 'hooks', options);
+      assert.equal((result.match(/^hooks = true$/gm) ?? []).length, 1);
+      assert.doesNotMatch(result, /^(?:plugin_hooks|codex_hooks)\s*=/m);
+      assert.equal(upsertPluginModeRuntimeFeatureFlags(result, 'hooks', options), result);
+    }
+  });
+
   it('normalizes plugin-mode runtime flags to the current hooks flag by default', () => {
     const original = [
       '[features]',

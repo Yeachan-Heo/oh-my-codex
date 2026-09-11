@@ -2899,6 +2899,67 @@ describe('team worker CLI helpers', () => {
     );
   });
 
+  it('assertTeamWorkerCliBinaryAvailable does not execute a CLI wrapper during discovery', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-cli-probe-'));
+    const marker = join(dir, 'executed');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(join(dir, 'codex'), `#!/bin/sh\nprintf invoked > '${marker}'\n`);
+      await chmod(join(dir, 'codex'), 0o755);
+      process.env.PATH = dir;
+      assertTeamWorkerCliBinaryAvailable('codex');
+      assert.equal(fs.existsSync(marker), false, 'availability checks must not launch CLI wrappers');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('assertTeamWorkerCliBinaryAvailable detects a missing CLI without an injected probe', () => {
+    withEmptyPath(() => assert.throws(
+      () => assertTeamWorkerCliBinaryAvailable('codex'),
+      /not available on PATH/,
+    ));
+  });
+
+  it('assertTeamWorkerCliBinaryAvailable treats empty PATH components as the current directory without executing', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-cli-cwd-probe-'));
+    const marker = join(dir, 'executed');
+    const previousPath = process.env.PATH;
+    const previousCwd = process.cwd();
+    try {
+      await writeFile(join(dir, 'codex'), `#!/bin/sh\nprintf invoked > '${marker}'\n`);
+      await chmod(join(dir, 'codex'), 0o755);
+      process.chdir(dir);
+      for (const pathValue of ['', ':', `:${join(dir, 'no-such-segment')}`, `${join(dir, 'no-such-segment')}:`]) {
+        process.env.PATH = pathValue;
+        assertTeamWorkerCliBinaryAvailable('codex');
+        assert.equal(fs.existsSync(marker), false, 'discovery must not execute cwd-resolved wrappers');
+      }
+    } finally {
+      process.chdir(previousCwd);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('CreateTeamSessionPartialError exposes the original startup failure and cleanup debt', () => {
+    const original = new Error('tmux_test_startup_failure');
+    const partial = {
+      name: 'isolated:1', workerCount: 1, cwd: '/tmp', workerPaneIds: ['%2'],
+      leaderPaneId: '%1', hudPaneId: null, resizeHookName: null, resizeHookTarget: null,
+      teamPaneOwnerId: 'team:test',
+    };
+    const error = new CreateTeamSessionPartialError(partial, [], original, ['worker_cleanup_failed:%2']);
+    assert.match(error.message, /^create_team_session_cleanup_incomplete/);
+    assert.match(error.message, /tmux_test_startup_failure/);
+    assert.match(error.message, /worker_cleanup_failed:%2/);
+    assert.equal(error.cause, original);
+    assert.equal(error.partialSession, partial);
+  });
+
   it('resolveTeamWorkerCliPlan supports mixed per-worker CLI map', () => {
     const plan = resolveTeamWorkerCliPlan(
       4,

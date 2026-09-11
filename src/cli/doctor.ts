@@ -1,3 +1,6 @@
+import { probeInstalledCodexFeatureList } from "./codex-feature-probe.js";
+import { resolveUserCredentialSource } from "./launch-credential-provenance.js";
+import { resolveCodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 /**
  * omx doctor - Validate oh-my-codex installation
  */
@@ -248,8 +251,6 @@ async function inferPluginInstallModeFromConfigForScope(
 
 	try {
 		const configContent = await readFile(configPath, "utf-8");
-		if (!configEnablesPluginScopedHooks(configContent)) return null;
-
 		const { marketplace, plugin } = getParsedPluginMarketplaceConfig(configContent);
 		if (!marketplace || marketplace.source_type !== "local") return null;
 		if (!(await isTrustedOmxPluginMarketplaceSource(marketplace.source))) return null;
@@ -556,6 +557,21 @@ export function checkStateRootSessionBinding(
   env: NodeJS.ProcessEnv = process.env,
 ): Check {
   const evaluation = selectorEvaluation(snapshot, env);
+  // Codex also supplies a session ID outside OMX-managed sessions. Its presence
+  // alone cannot establish a broken binding in an uninitialized workspace.
+  // Keep explicit runtime roots/selectors and existing pointers fail-closed.
+  if (
+    snapshot.status === "absent" && snapshot.rootSource === "cwd-default" &&
+    !bindingEnvironmentRootSelector(env) &&
+    evaluation.nonblank.length === 1 && evaluation.nonblank[0] === "CODEX_SESSION_ID" &&
+    normalizeSessionId(env.CODEX_SESSION_ID) !== undefined
+  ) {
+    return {
+      name: "State root/session binding",
+      status: "warn",
+      message: "src=cwd-default ptr=absent; runtime binding unavailable: inherited CODEX_SESSION_ID has no OMX session pointer; no runtime authority verified",
+    };
+  }
   let status: Check["status"] = "fail";
   if (snapshot.status === "absent" && evaluation.bad.length === 0) status = "pass";
   else if (snapshot.status === "stale-dead" && evaluation.bad.length === 0) status = "warn";
@@ -847,6 +863,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   }
   checks.push(checkStateRootSessionBinding(bindingSnapshot, process.env));
 	checks.push(await checkRepoArtifactOwnership(cwd));
+	checks.push(await checkCredentialProvenance(scopeResolution.scope, process.env));
 
 	// Check 9: MCP servers configured
 	checks.push(
@@ -1365,10 +1382,18 @@ export function checkProcessIdentityReadiness(
 					: observation.kind === "unsupported"
 						? "provider unavailable"
 						: "provider response unverifiable";
+		// The native runtime is hydrated to the version-keyed cache, not shipped
+		// in the npm tarball. When hydration never ran (offline install) or the
+		// cache was cleared, reinstall/update repairs it — but when the provider
+		// is unavailable for any other reason, say what actually restores it
+		// instead of prescribing a no-op reinstall (issue #3636).
+		const remedy = observation.kind === "unsupported"
+			? "run `omx update` (repairs the native runtime cache) or `omx setup`, then rerun doctor; session pointer recovery works without the native runtime"
+			: "reinstall or update OMX and rerun doctor";
 		return {
 			name: "Process identity",
 			status: "fail",
-			message: `native process identity is unavailable (${reason}); reinstall or update OMX and rerun doctor`,
+			message: `native process identity is unavailable (${reason}); ${remedy}`,
 		};
 	} catch {
 		return {
@@ -1484,6 +1509,49 @@ function checkDirectory(name: string, path: string): Check {
 		return { name, status: "pass", message: path };
 	}
 	return { name, status: "warn", message: `${path} (not created yet)` };
+}
+/**
+ * Issue #3629: under project scope the launch resolves CODEX_HOME to the
+ * per-session runtime mirror of <project>/.codex; Codex resolves credentials
+ * from that CODEX_HOME only. Report whether credential provenance is available
+ * (the caller's own auth.json, which launch seeds into the ephemeral mirror).
+ * Stat-only: the credential file is never read, parsed, or logged.
+ */
+async function checkCredentialProvenance(scope: DoctorSetupScope, env: NodeJS.ProcessEnv): Promise<Check> {
+	if (scope !== "project") {
+		return {
+			name: "Credential provenance",
+			status: "pass",
+			message: "user scope launches read credentials from the default Codex home",
+		};
+	}
+	const explicit = typeof env.CODEX_HOME === "string" && env.CODEX_HOME.trim() !== "";
+	const source = await resolveUserCredentialSource(env);
+	if (source.status === "found") {
+		return {
+			name: "Credential provenance",
+			status: "pass",
+			message: explicit
+				? "CODEX_HOME is explicit; its auth.json will be used as-is"
+				: "user auth.json will be seeded into the project launch home (no copy into the project)",
+		};
+	}
+	if (source.status === "unsafe") {
+		return {
+			name: "Credential provenance",
+			status: explicit ? "pass" : "fail",
+			message: explicit
+				? "CODEX_HOME is explicit but its auth.json is not a regular readable file; log in with `codex login` or `omx auth`"
+				: "auth.json in the default Codex home is not a regular readable file; project-scope launches will run unauthenticated — log in with `codex login` or `omx auth`",
+		};
+	}
+	return {
+		name: "Credential provenance",
+		status: explicit ? "pass" : "fail",
+		message: explicit
+			? "CODEX_HOME is explicit but has no auth.json; log in with `codex login` or `omx auth`"
+			: "no readable auth.json in the default Codex home; project-scope launches will run unauthenticated — log in with `codex login` or `omx auth`",
+	};
 }
 
 function currentProcessUid(): number | undefined {
@@ -2112,6 +2180,7 @@ export async function checkExternalCodexProcessGuards(
 }
 
 export interface NativeHookCheckContext {
+	codexFeaturesListOutput?: string;
 	codexHomeDir: string;
 	installMode?: SetupInstallMode;
 	platform?: NodeJS.Platform;
@@ -2126,15 +2195,68 @@ function configHasOmxEntries(configContent: string): boolean {
 	return configContent.includes("omx_") || configContent.includes("oh-my-codex");
 }
 
-function configEnablesPluginScopedHooks(configContent: string): boolean {
-	try {
-		const parsed = parseToml(configContent) as {
+export function configEnablesPluginScopedHooks(
+	configContent: string,
+	featuresListOutput = probeInstalledCodexFeatureList(),
+	featuresProbeUnavailable = featuresListOutput === null,
+): boolean {
+	const featureFlag = featuresProbeUnavailable
+		? null
+		: resolveCodexPluginHookFeatureFlag({ featuresListOutput });
+	// A completed probe is authoritative: when it selected a capability the
+	// capability-specific checks below decide; when the listing resolved no
+	// usable plugin hook capability (featureFlag null with a listing present),
+	// stale config must not override that negative evidence. Config-only
+	// inference is allowed only when the probe is genuinely unavailable
+	// (no binary, spawn failure, timeout); it never claims verified runtime
+	// capability on its own.
+	const parse = (content: string) => {
+		const parsed = parseToml(content) as {
 			plugin_hooks?: unknown;
 			features?: Record<string, unknown>;
 		};
-		return isEnabledTomlValue(parsed.plugin_hooks) || isEnabledTomlValue(parsed.features?.plugin_hooks);
+		const { plugin } = getParsedPluginMarketplaceConfig(content);
+		return { parsed, pluginEnabled: plugin?.enabled === true };
+	};
+	const legacyPluginHooksEnabled = (content: string) => {
+		const { parsed } = parse(content);
+		return (
+			isEnabledTomlValue(parsed.plugin_hooks) ||
+			isEnabledTomlValue(parsed.features?.plugin_hooks)
+		);
+	};
+	try {
+		if (featureFlag === "plugin_hooks") {
+			return legacyPluginHooksEnabled(configContent);
+		}
+		const { parsed, pluginEnabled } = parse(configContent);
+		const nativeHooks = parsed.features?.hooks ?? parsed.features?.codex_hooks;
+		if (featureFlag === "hooks") {
+			return pluginEnabled && (nativeHooks === undefined || isEnabledTomlValue(nativeHooks));
+		}
+		if (!featuresProbeUnavailable) return false;
+		// Probe unavailable: config-only inference from a trusted setup-written
+		// configuration. Requires the enabled trusted plugin registration for
+		// canonical hooks enablement; the retired spelling is accepted as the
+		// legacy supported row.
+		return (
+			legacyPluginHooksEnabled(configContent) ||
+			(pluginEnabled &&
+				(nativeHooks === undefined || isEnabledTomlValue(nativeHooks)))
+		);
 	} catch {
-		return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		// Config is not parseable TOML: capability-aware last-resort regex using
+		// the same spelling each known capability would accept, with the same
+		// enabled-plugin proof requirement for the canonical spelling when the
+		// probe is unavailable. Never a second trust-validation path.
+		if (featureFlag === "plugin_hooks") {
+			return /^\s*plugin_hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		}
+		if (featureFlag === "hooks") {
+			return /^\s*hooks\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
+		}
+		if (!featuresProbeUnavailable) return false;
+		return /^\s*(?:plugin_hooks|hooks)\s*=\s*(?:true|1|"true"|"1"|"yes"|"on")\s*$/m.test(configContent);
 	}
 }
 
@@ -2711,7 +2833,7 @@ export async function checkNativeHooks(
 	if (existsSync(configPath) && context.installMode === "plugin") {
 		try {
 			const configContent = await readFile(configPath, "utf-8");
-			if (configEnablesPluginScopedHooks(configContent)) {
+			if (configEnablesPluginScopedHooks(configContent, context.codexFeaturesListOutput)) {
 				const globalCheck = existsSync(hooksPath)
 					? await checkExistingNativeHooks(hooksPath, context)
 					: null;
@@ -2735,7 +2857,7 @@ export async function checkNativeHooks(
 						name: "Native hooks",
 						status: "warn",
 						message:
-							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or upgrade Codex to plugin_hooks support so setup can use plugin-scoped hooks`,
+							`plugin mode is using legacy native hook fallback, but expected setup-owned hooks.json is missing at ${hooksPath}; run "omx setup --plugin" to restore the fallback hook file, or rerun setup on a Codex build with plugin-scoped hooks support`,
 					};
 				}
 

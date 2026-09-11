@@ -12,7 +12,8 @@ import { resolveOmxDisplayVersionSync } from '../utils/version.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getBaseStateDir, getStateFilePath, readCurrentSessionId, resolveRuntimeStateScope } from '../mcp/state-paths.js';
-import { teamReadPhase as readTeamPhase } from '../team/team-ops.js';
+import { ABSOLUTE_MAX_WORKERS, teamReadPhase as readTeamPhase, teamReadWorkerStatus } from '../team/team-ops.js';
+import { TEAM_NAME_SAFE_PATTERN, WORKER_NAME_SAFE_PATTERN } from '../team/contracts.js';
 
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../state/skill-active.js';
 import {
@@ -435,7 +436,38 @@ export async function readUltraqaState(cwd: string): Promise<UltraqaStateForHud 
 
 export async function readTeamState(cwd: string): Promise<TeamStateForHud | null> {
   const state = await readAuthoritativeModeState<TeamStateForHud>(cwd, 'team');
-  return state?.active ? state : null;
+  return state?.active ? readTeamWorkers(cwd, state) : null;
+}
+
+async function readTeamWorkers(cwd: string, team: TeamStateForHud | null, stateRoot = getBaseStateDir(cwd)): Promise<TeamStateForHud | null> {
+  const name = sanitizeOptionalString(team?.team_name);
+  if (!team?.active || !name || !TEAM_NAME_SAFE_PATTERN.test(name)) return team;
+  const teamDir = join(stateRoot, 'team', name);
+  // Lifecycle config readers can migrate/recover state. A HUD tick must only read.
+  const manifest = await readJsonFile<{ name?: unknown; workers?: unknown }>(join(teamDir, 'manifest.v2.json'));
+  const config = manifest ?? await readJsonFile<{ name?: unknown; workers?: unknown }>(join(teamDir, 'config.json'));
+  if (config?.name !== name || !Array.isArray(config.workers)) return team;
+  const seen = new Set<string>();
+  const members = config.workers.slice(0, ABSOLUTE_MAX_WORKERS).filter((value): value is Record<string, unknown> & { name: string } => {
+    if (!value || typeof value !== 'object' || typeof value.name !== 'string') return false;
+    if (!WORKER_NAME_SAFE_PATTERN.test(value.name) || seen.has(value.name)) return false;
+    seen.add(value.name);
+    return true;
+  });
+  const workers = await Promise.all(members.map(async member => {
+    const workerName = member.name;
+    const status = await teamReadWorkerStatus(name, workerName, cwd, stateRoot);
+    return {
+      name: workerName,
+      role: sanitizeOptionalString(member.role),
+      paneId: typeof member.pane_id === 'string' && /^%\d+$/.test(member.pane_id) ? member.pane_id : undefined,
+      state: status.state,
+      taskId: sanitizeOptionalString(status.current_task_id),
+      updatedAt: Number.isFinite(Date.parse(status.updated_at)) && status.updated_at !== '1970-01-01T00:00:00.000Z'
+        ? status.updated_at : undefined,
+    };
+  }));
+  return { ...team, workers };
 }
 
 export async function readMetrics(cwd: string): Promise<HudMetrics | null> {
@@ -878,7 +910,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     autoresearch,
     codeReview,
     ultraqa,
-    team,
+    team: await readTeamWorkers(cwd, team, stateDir),
     guardexFinish,
     metrics,
     hudNotify,

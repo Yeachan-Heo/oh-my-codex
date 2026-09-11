@@ -1,8 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { resolveCachedNativeBinaryPath } from '../../cli/native-assets.js';
+import { getPackageRoot } from '../../utils/package.js';
 import { RuntimeBridge, RuntimeBridgeError, resolveRuntimeBinaryPath } from '../bridge.js';
 
 describe('resolveRuntimeBinaryPath', () => {
@@ -24,33 +27,95 @@ describe('resolveRuntimeBinaryPath', () => {
   });
 
   it('prefers debug build over release and PATH fallback', () => {
-    const actual = resolveRuntimeBinaryPath({
-      debugPath: '/debug/runtime',
-      releasePath: '/release/runtime',
-      fallbackBinary: 'omx-runtime',
-      exists: (candidate) => candidate === '/debug/runtime' || candidate === '/release/runtime',
-    });
-    assert.equal(actual, '/debug/runtime');
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: (candidate) => candidate === '/debug/runtime' || candidate === '/release/runtime',
+      });
+      assert.equal(actual, '/debug/runtime');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
   });
 
   it('falls back to release build when debug is unavailable', () => {
-    const actual = resolveRuntimeBinaryPath({
-      debugPath: '/debug/runtime',
-      releasePath: '/release/runtime',
-      fallbackBinary: 'omx-runtime',
-      exists: (candidate) => candidate === '/release/runtime',
-    });
-    assert.equal(actual, '/release/runtime');
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: (candidate) => candidate === '/release/runtime',
+      });
+      assert.equal(actual, '/release/runtime');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
   });
 
   it('falls back to PATH binary when local builds are unavailable', () => {
-    const actual = resolveRuntimeBinaryPath({
-      debugPath: '/debug/runtime',
-      releasePath: '/release/runtime',
-      fallbackBinary: 'omx-runtime',
-      exists: () => false,
-    });
-    assert.equal(actual, 'omx-runtime');
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: () => false,
+      });
+      assert.equal(actual, 'omx-runtime');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
+  });
+
+  it('prefers the verified native cache on the production path', () => {
+    const previousCacheDir = process.env.OMX_NATIVE_CACHE_DIR;
+    const previousOverride = process.env.OMX_RUNTIME_BINARY;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'omx-runtime-cache-'));
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const manifest = JSON.parse(
+        readFileSync(join(getPackageRoot(), 'package.json'), 'utf-8'),
+      ) as { version?: string };
+      const version = manifest.version;
+      assert.ok(version, 'expected a package version for cache resolution');
+
+      const env = { ...process.env, OMX_NATIVE_CACHE_DIR: tempRoot };
+      const cached = resolveCachedNativeBinaryPath(
+        'omx-runtime' as never,
+        version,
+        process.platform as NodeJS.Platform,
+        process.arch,
+        env,
+      );
+      const contents = 'runtime-binary-bytes';
+      mkdirSync(dirname(cached), { recursive: true });
+      writeFileSync(cached, contents);
+      writeFileSync(`${cached}.sha256`, `${createHash('sha256').update(contents).digest('hex')}\n`);
+
+      process.env.OMX_NATIVE_CACHE_DIR = tempRoot;
+      // Called without an injected `exists` so the production cache branch runs.
+      // A bare require() there is a ReferenceError under ESM; the surrounding
+      // catch used to swallow it, so the verified cache was never consulted and
+      // resolution silently fell through to the PATH-only fallback.
+      const actual = resolveRuntimeBinaryPath();
+      assert.equal(actual, cached);
+    } finally {
+      if (typeof previousCacheDir === 'string') process.env.OMX_NATIVE_CACHE_DIR = previousCacheDir;
+      else delete process.env.OMX_NATIVE_CACHE_DIR;
+      if (typeof previousOverride === 'string') process.env.OMX_RUNTIME_BINARY = previousOverride;
+      else delete process.env.OMX_RUNTIME_BINARY;
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 });
 

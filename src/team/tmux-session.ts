@@ -34,7 +34,6 @@ import {
 import { sleep, sleepSync } from '../utils/sleep.js';
 import {
   buildPlatformCommandSpec,
-  classifySpawnError,
   resolveCommandPathForPlatform,
   spawnPlatformCommandSync,
 } from '../utils/platform-command.js';
@@ -110,7 +109,11 @@ export class CreateTeamSessionPartialError extends Error {
     /** Cleanup commands that failed after resources were created and must be retried. */
     readonly cleanupErrors: string[] = [],
   ) {
-    super('create_team_session_cleanup_incomplete');
+    super(
+      `create_team_session_cleanup_incomplete: ${originalError instanceof Error ? originalError.message : String(originalError)}`
+        + (cleanupErrors.length > 0 ? `; cleanup: ${cleanupErrors.join('; ')}` : ''),
+      { cause: originalError },
+    );
     this.name = 'CreateTeamSessionPartialError';
   }
 }
@@ -367,7 +370,7 @@ function bindSplitReceiptToPaneCommand(command: string, receipt: string): string
 export function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: string, receipt: string = sourceTransactionReceipt()): string {
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    `${effect} ; display-message -p ${shellQuoteSingle(receipt)}`,
+    `${effect} ; display-message -p ${shellQuoteSingle(receipt.replaceAll('#', '##'))}`,
     "display-message -p ''",
   ]);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);
@@ -1825,11 +1828,8 @@ export function translateWorkerLaunchArgsForCli(
 }
 
 function commandExists(binary: string): boolean {
-  const { result } = spawnPlatformCommandSync(binary, ['--version'], { encoding: 'utf-8' });
-  if (result.error) {
-    return classifySpawnError(result.error as NodeJS.ErrnoException) !== 'missing';
-  }
-  return true;
+  // Launch wrappers may bootstrap profiles even for --version. Discovery must not execute them.
+  return resolveCommandPathForPlatform(binary) !== null;
 }
 
 export function trustWorkerMiseConfigIfAvailable(workerCwd: string): boolean {
@@ -1904,6 +1904,13 @@ export function scrubTeamWorkerHudOwnershipEnv<T extends Record<string, string |
   const scrubbed = { ...env };
   delete scrubbed[OMX_TMUX_HUD_OWNER_ENV];
   delete scrubbed[OMX_TMUX_HUD_LEADER_PANE_ENV];
+  // Issue #3629: the sentinel marks worker envs that must not carry a
+  // CODEX_HOME (project-derived homes are not exported to children);
+  // translate it into an explicit unset for the generated command.
+  if (scrubbed.CODEX_HOME_UNSET === '1') {
+    delete scrubbed.CODEX_HOME_UNSET;
+    delete scrubbed.CODEX_HOME;
+  }
   return scrubbed;
 }
 
@@ -2287,6 +2294,10 @@ function buildWorkerProcessLaunchSpecForMode(
       ? { [CODEX_SQLITE_HOME_ENV]: workerSqliteHomeOverride }
       : {}),
     ...codexProviderEnv,
+    // Issue #3629: when no child-safe CODEX_HOME is selected, mark the env for
+    // explicit clearing downstream so a stale ambient/tmux-server value cannot
+    // reach the worker; codex then falls back to the caller's own home.
+    ...(workerCli === 'codex' && !workerCodexHomeOverride ? { CODEX_HOME_UNSET: '1' } : {}),
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;

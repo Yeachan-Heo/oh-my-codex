@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   parseCodexFeatureNames,
   resolveCodexHookFeatureFlag,
+  resolveCodexPluginHookFeatureFlag,
   supportsCodexPluginScopedHooks,
 } from "../codex-feature-flags.js";
 
@@ -41,6 +42,16 @@ describe("Codex feature flag resolution", () => {
 
     assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: output }), true);
     assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: "hooks stable true" }), false);
+  });
+
+  it("selects canonical hooks when the separate plugin flag is removed", () => {
+    const output = "hooks stable true\nplugin_hooks removed false\n";
+    assert.equal(resolveCodexPluginHookFeatureFlag({ featuresListOutput: output }), "hooks");
+    assert.equal(supportsCodexPluginScopedHooks({ featuresListOutput: output }), true);
+    assert.equal(resolveCodexPluginHookFeatureFlag({ featuresListOutput: "plugin_hooks removed true" }), null);
+    assert.equal(resolveCodexPluginHookFeatureFlag({ featuresListOutput: "hooks removed false\nplugin_hooks removed true" }), null);
+    assert.equal(resolveCodexPluginHookFeatureFlag({ featuresListOutput: "plugin_hooks experimental false" }), "plugin_hooks");
+    assert.equal(resolveCodexPluginHookFeatureFlag(), null);
   });
 
   it("uses version fallback for current Codex releases when feature listing is unavailable", () => {

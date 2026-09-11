@@ -1,3 +1,5 @@
+const TABLE_HEADER = /^(?:\[[^[\]]+\]|\[\[[^[\]]+\]\])\s*(#.*)?$/;
+
 export function readTopLevelTomlString(
   content: string,
   key: string,
@@ -7,7 +9,7 @@ export function readTopLevelTomlString(
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    if (/^\[[^[\]]+\]\s*(#.*)?$/.test(trimmed)) {
+    if (TABLE_HEADER.test(trimmed)) {
       inTopLevel = false;
       continue;
     }
@@ -39,7 +41,7 @@ export function upsertTopLevelTomlString(
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    if (/^\[[^[\]]+\]\s*(#.*)?$/.test(trimmed)) {
+    if (TABLE_HEADER.test(trimmed)) {
       inTopLevel = false;
       continue;
     }
@@ -54,7 +56,7 @@ export function upsertTopLevelTomlString(
 
   if (!replaced) {
     const firstTableIndex = lines.findIndex((line) =>
-      /^\s*\[[^[\]]+\]\s*(#.*)?$/.test(line.trim()),
+      TABLE_HEADER.test(line.trim()),
     );
     if (firstTableIndex >= 0) {
       lines.splice(firstTableIndex, 0, assignment);

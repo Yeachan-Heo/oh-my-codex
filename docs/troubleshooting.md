@@ -99,7 +99,7 @@ To remove a verified-dead selected pointer and preserve its exact forensic bytes
 omx session pointer recover --cwd /path/to/project
 ```
 
-The command serializes with the canonical pointer lock and moves only an authoritative, positively dead `session.json` to an adjacent no-clobber quarantine path. It refuses live or usable owners, uncertain or reused identities, malformed or foreign pointers, root/lineage mismatches, concurrent changes, I/O failures, and existing quarantine destinations. A successful recovery leaves the canonical pointer absent so an ordinary relaunch can publish a fresh pointer.
+The command serializes with the canonical pointer lock and moves only an authoritative, positively dead `session.json` to an adjacent no-clobber quarantine path. It refuses live or usable owners, uncertain or reused identities, malformed or foreign pointers, root/lineage mismatches, concurrent changes, I/O failures, and existing quarantine destinations. A successful recovery leaves the canonical pointer absent so an ordinary relaunch can publish a fresh pointer. No native runtime is required: when the atomic no-replace rename provider is unavailable (for example an unhydrated `omx-runtime` on macOS arm64), recovery falls back to a portable `link()` + `unlink()` quarantine with the same no-clobber guarantee, so the documented command works on every platform the docs address.
 
 When the pointer's recorded PID is definitively dead, bind the exact current session explicitly and retry the same command — no manual file surgery:
 

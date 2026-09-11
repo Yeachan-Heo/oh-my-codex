@@ -9,6 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
@@ -180,7 +181,12 @@ export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions 
       } catch { /* no version — skip cache check */ }
       if (version) {
         // Lazy require to avoid static cycle: native-assets ↔ bridge.
-        const { resolveCachedNativeBinaryCandidatePaths } = require('../cli/native-assets.js') as typeof import('../cli/native-assets.js');
+        // Must go through createRequire(): this module compiles to ESM
+        // ("type": "module"), where a bare `require()` throws a ReferenceError
+        // that the catch below would otherwise swallow, silently skipping the
+        // verified cache lookup and falling back to a PATH-only resolution.
+        const nodeRequire = createRequire(import.meta.url);
+        const { resolveCachedNativeBinaryCandidatePaths } = nodeRequire('../cli/native-assets.js') as typeof import('../cli/native-assets.js');
         const cands = resolveCachedNativeBinaryCandidatePaths('omx-runtime' as never, version, process.platform as NodeJS.Platform, process.arch, process.env as unknown as Record<string, string>);
         for (const p of cands) if (isVerifiedCachedRuntimeBinarySync(p)) return p;
       }

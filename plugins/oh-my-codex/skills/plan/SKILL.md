@@ -14,7 +14,7 @@ Plan creates concise, actionable work plans. Auto-detects interview vs direct, s
 </Use_When>
 
 <Do_Not_Use_When>
-- Want direct execution — use `ultragoal`/`team`/`ralph`
+- Want direct execution — execute the scoped task directly; use `ultragoal` only for durable goals or `team` for coordinated parallel work
 - Simple focused fix with obvious scope — skip planning
 </Do_Not_Use_When>
 

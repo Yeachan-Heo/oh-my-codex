@@ -3263,6 +3263,67 @@ exit 1
     }
   });
 
+  for (const command of ['status-json', 'status-text', 'shutdown'] as const) {
+    it(`reports the selected state path for ${command} and ignores aliases from unselected roots`, async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-team-selected-root-'));
+      const previousCwd = process.cwd();
+      const envKeys = ['OMX_ROOT', 'OMX_STATE_ROOT', 'OMX_TEAM_STATE_ROOT', 'OMX_SESSION_ID'] as const;
+      const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+      const originalLog = console.log;
+      const logs: string[] = [];
+      const teamName = 'selected-root-team';
+      const intendedRoot = join(wd, '.omx', 'state');
+      const selectedRoot = join(wd, 'inherited-root', '.omx', 'state');
+      const selectedPath = join(selectedRoot, 'team', teamName);
+      try {
+        process.chdir(wd);
+        delete process.env.OMX_ROOT;
+        delete process.env.OMX_STATE_ROOT;
+        delete process.env.OMX_SESSION_ID;
+        process.env.OMX_TEAM_STATE_ROOT = intendedRoot;
+        await initTeamState(teamName, 'selected root diagnostics', 'executor', 1, wd);
+        const configPath = join(intendedRoot, 'team', teamName, 'config.json');
+        const originalConfig = await readFile(configPath, 'utf8');
+        delete process.env.OMX_TEAM_STATE_ROOT;
+        process.env.OMX_STATE_ROOT = join(wd, 'inherited-root');
+        // An alias team in the unselected cwd root must not rename or mask the
+        // team addressed through the selected canonical state root.
+        const decoyDir = join(wd, '.omx', 'state', 'team', 'alias-team');
+        await mkdir(decoyDir, { recursive: true });
+        await writeFile(join(decoyDir, 'manifest.v2.json'), JSON.stringify({
+          leader: {},
+          requested_name: 'selected-root-team',
+          display_name: 'selected-root-team',
+        }));
+        console.log = (message?: unknown) => { logs.push(String(message ?? '')); };
+
+        await teamCommand(command === 'shutdown'
+          ? ['shutdown', teamName, '--force']
+          : ['status', teamName, ...(command === 'status-json' ? ['--json'] : [])]);
+
+        assert.equal(await readFile(configPath, 'utf8'), originalConfig);
+        if (command === 'status-json') {
+          const payload = JSON.parse(logs[0]) as Record<string, unknown>;
+          assert.equal(payload.status, 'missing');
+          assert.equal(payload.state_root, selectedRoot);
+          assert.equal(payload.state_path, selectedPath);
+        } else {
+          assert.ok(logs.some((line) => line.includes(selectedPath)), logs.join('\n'));
+          assert.ok(logs.some((line) => line.includes('No team state found')), logs.join('\n'));
+          assert.ok(!logs.some((line) => line.includes('Team shutdown complete')));
+        }
+      } finally {
+        console.log = originalLog;
+        process.chdir(previousCwd);
+        for (const key of envKeys) {
+          if (previousEnv[key] === undefined) delete process.env[key];
+          else process.env[key] = previousEnv[key];
+        }
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+  }
+
   it('records leader runtime activity when team status is read', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-activity-'));
     const previousCwd = process.cwd();
@@ -3437,7 +3498,11 @@ process.on('SIGTERM', () => process.exit(0));
       }
 
       assert.ok(captured, 'worker argv capture file should be written');
-      assert.equal(captured!.codexHome, join(process.cwd(), '.codex'));
+      // Issue #3629: prompt-mode workers no longer receive a project-derived
+      // CODEX_HOME export; the codex child resolves credentials and config
+      // from the caller's own home exactly like a plain `codex` run. The
+      // xhigh reasoning override still applies (asserted below).
+      assert.equal(captured!.codexHome, null);
       assert.match(captured!.argv.join(' '), /model_reasoning_effort="xhigh"/);
       assert.match(logs.join('\n'), /architect x1 .*xhigh reasoning/);
     } finally {

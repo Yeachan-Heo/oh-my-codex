@@ -3373,3 +3373,52 @@ describe('ultragoal artifacts', () => {
       );
     });
   });
+  it('keeps template, Conductor handoff, and advisory-hook policy consistent for Codex App native support (#3635)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join: joinPath, dirname: dirnamePath } = await import('node:path');
+    const { fileURLToPath: fileURLToPathFn } = await import('node:url');
+    const repoRoot = joinPath(dirnamePath(fileURLToPathFn(import.meta.url)), '../../../');
+    const template = readFileSync(joinPath(repoRoot, 'templates/AGENTS.md'), 'utf-8');
+
+    // Codex App shape: typed native agents available, no separate authenticated receipt surface.
+    const codexAppSupport = {
+      status: 'supported' as const,
+      source: 'hook_payload_available_tools' as const,
+      evidenceSummary: 'collaboration.spawn_agent',
+    };
+
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [{ title: 'App repair', objective: 'Complete bounded local repair.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const instruction = buildCodexGoalInstruction(started.goal!, started.plan, { nativeSubagentSupport: codexAppSupport });
+
+      // Supported-mode handoff keeps the Main-root Conductor block AND states the reachable native path.
+      assert.match(instruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+      assert.match(instruction, /delegated performer lanes may implement, mutate, and report bounded work directly/i);
+      assert.match(instruction, /ordinary native reporting is completion, not a separate authority grant/i);
+
+      // The generated template must agree: no verification/advice-only denial, no separate-proof requirement.
+      assert.match(template, /may implement, mutate, and report bounded delegated work directly/i);
+      assert.match(template, /reporting back through the native result surface is ordinary completion/i);
+      assert.doesNotMatch(template, /native children are verification\/advice-only/i);
+      assert.doesNotMatch(template, /separate host-authenticated caller, parent, and target proof/i);
+
+      // Advisory-hook policy: handoff must not demand a host-authenticated receipt for ordinary reporting.
+      assert.doesNotMatch(instruction, /host-authenticated/i);
+
+      // Unsupported mode still degrades accurately with a supported recovery path.
+      const unsupported = {
+        status: 'unsupported' as const,
+        reason: 'native_subagents_unsupported' as const,
+        source: 'persisted_support_blocker' as const,
+        evidenceSummary: 'native subagents are disabled in this runtime',
+      };
+      const unsupportedInstruction = buildCodexGoalInstruction(started.goal!, started.plan, { nativeSubagentSupport: unsupported });
+      assert.doesNotMatch(unsupportedInstruction, new RegExp(escapeRegExp(LEADER_CONDUCTOR_BLOCK)));
+      assert.match(unsupportedInstruction, new RegExp(escapeRegExp(buildUnsupportedNativeSubagentGuidance(unsupported))));
+      assert.match(unsupportedInstruction, /record-review-blockers/);
+    });
+  });

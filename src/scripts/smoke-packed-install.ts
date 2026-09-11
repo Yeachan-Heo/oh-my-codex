@@ -251,6 +251,7 @@ export function shouldPackedRegressionStopBlock(
 export function buildPackedRegressionEnvironment(
   testCase: { readonly name: string; readonly insideTmux?: boolean },
   baseEnv: NodeJS.ProcessEnv = process.env,
+  runtimeBinary?: string,
 ): NodeJS.ProcessEnv {
   const insideTmux = testCase.insideTmux === true;
   return {
@@ -270,6 +271,7 @@ export function buildPackedRegressionEnvironment(
     OMX_TMUX_HUD_OWNER: '',
     TMUX: insideTmux ? '/tmp/tmux-pr3140-regression' : '',
     TMUX_PANE: insideTmux ? '%3140' : '',
+    ...(runtimeBinary ? { OMX_RUNTIME_BINARY: runtimeBinary } : {}),
   };
 }
 
@@ -291,6 +293,12 @@ const CODEX_TRUST_STATUSES = new Set([
   'modified',
 ]);
 
+const CODEX_HOOK_SOURCES = new Set([
+  'system', 'user', 'project', 'mdm', 'sessionFlags', 'plugin',
+  'cloudRequirements', 'cloudManagedConfig', 'legacyManagedConfigFile',
+  'legacyManagedConfigMdm', 'unknown',
+]);
+
 const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {
   preToolUse: 'PreToolUse',
   permissionRequest: 'PermissionRequest',
@@ -298,13 +306,16 @@ const CODEX_EVENT_LABELS: Readonly<Record<string, string>> = {
   preCompact: 'PreCompact',
   postCompact: 'PostCompact',
   sessionStart: 'SessionStart',
+  sessionEnd: 'SessionEnd',
   userPromptSubmit: 'UserPromptSubmit',
   subagentStart: 'SubagentStart',
   subagentStop: 'SubagentStop',
   stop: 'Stop',
+  interrupt: 'Interrupt',
 };
 
-const PINNED_CODEX_VERSION = '0.142.5';
+const PINNED_CODEX_VERSION = '0.153.4';
+
 const PINNED_CODEX_VERSION_OUTPUT = `codex-cli ${PINNED_CODEX_VERSION}`;
 
 /** Sanitized Codex 0.144.5 PreToolUse shape: documented fields only, with no pointer or tracker state. */
@@ -967,11 +978,28 @@ export function parseCodexHooksListResult(
   const hooks = entry.hooks.map((value, index) => {
     const hook = requireRecord(value, `hooks/list hook ${index}`);
     const rawEvent = requireString(hook.eventName, `hooks[${index}].eventName`);
-    const event = CODEX_EVENT_LABELS[rawEvent] ?? rawEvent;
+    if (!Object.hasOwn(CODEX_EVENT_LABELS, rawEvent)) {
+      throw new Error(`Codex hooks/list response has unsupported eventName ${rawEvent}`);
+    }
+    const event = CODEX_EVENT_LABELS[rawEvent];
+    const handlerType = requireString(hook.handlerType, `hooks[${index}].handlerType`);
+    if (handlerType !== 'command') {
+      throw new Error(`Codex hooks/list hook ${index} is not a command handler`);
+    }
     const command = requireString(hook.command, `hooks[${index}].command`);
-    const enabled = hook.enabled === undefined ? true : hook.enabled;
-    if (enabled !== true) {
+    const enabled = hook.enabled;
+    if (typeof enabled !== 'boolean' || enabled !== true) {
       throw new Error(`Codex hooks/list hook ${index} is not an enabled command handler`);
+    }
+    if (typeof hook.isManaged !== 'boolean') {
+      throw new Error(`Codex hooks/list response has invalid hooks[${index}].isManaged`);
+    }
+    const source = requireString(hook.source, `hooks[${index}].source`);
+    if (!CODEX_HOOK_SOURCES.has(source)) {
+      throw new Error(`Codex hooks/list response has unsupported source ${source}`);
+    }
+    if (typeof hook.timeoutSec !== 'number' || !Number.isSafeInteger(hook.timeoutSec) || hook.timeoutSec < 0) {
+      throw new Error(`Codex hooks/list response has invalid hooks[${index}].timeoutSec`);
     }
     const sourcePath = requireString(hook.sourcePath, `hooks[${index}].sourcePath`);
     const key = requireString(hook.key, `hooks[${index}].key`);
@@ -984,7 +1012,6 @@ export function parseCodexHooksListResult(
     if (!CODEX_TRUST_STATUSES.has(trustStatus)) {
       throw new Error(`Codex hooks/list response has unsupported trustStatus ${trustStatus}`);
     }
-
 
     if (sourcePath !== hooksPath) {
       throw new Error(`Codex hooks/list sourcePath mismatch: expected ${hooksPath}, got ${sourcePath}`);
@@ -2437,7 +2464,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
   ] as const) {
     writeFileSync(path, JSON.stringify({ active: false, mode: 'autopilot', current_phase: 'complete', session_id: g1bSession, thread_id: g1bThread, turn_id: g1bPriorTurn, marker }));
   }
-  const g1bEnv = { ...buildPackedRegressionEnvironment({ name: 'g1bu' }), OMX_TEAM_MODE: 'disabled' };
+  const g1bEnv = { ...buildPackedRegressionEnvironment({ name: 'g1bu' }, process.env, runtimeBinary), OMX_TEAM_MODE: 'disabled' };
   const g1bPrompt = '$team $autopilot restart — café';
   const g1bPayload = { hook_event_name: 'UserPromptSubmit', cwd: g1bCwd, session_id: g1bSession, thread_id: g1bThread, turn_id: g1bTurn, prompt: g1bPrompt };
   validateHookStdout('UserPromptSubmit', String(invoke(g1bCwd, g1bEnv, g1bPayload).stdout || ''));
@@ -2457,7 +2484,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
   const g2aFiles = [join(g2aStateDir, 'skill-active-state.json'), join(g2aStateDir, 'ralplan-state.json'), join(g2aSessionDir, 'skill-active-state.json'), join(g2aSessionDir, 'ralplan-state.json'), join(g2aStateDir, 'session.json')];
   mkdirSync(g2aCwd, { recursive: true });
   if (g2aFiles.some((file) => existsSync(file))) throw new Error('packed G2a fixture unexpectedly contains state');
-  const g2aEnv = buildPackedRegressionEnvironment({ name: 'g2a' });
+  const g2aEnv = buildPackedRegressionEnvironment({ name: 'g2a' }, process.env, runtimeBinary);
   const g2aPayload = { hook_event_name: 'UserPromptSubmit', cwd: g2aCwd, session_id: g2aSession, thread_id: 'g2a-thread', turn_id: 'g2a-turn', prompt: 'use $ralplan is the consensus-planning command' };
   validateHookStdout('UserPromptSubmit', String(invoke(g2aCwd, g2aEnv, g2aPayload).stdout || ''));
   if (g2aFiles.some((file) => existsSync(file))) throw new Error('packed G2a stale predecessor created skill/detail state');
@@ -2476,7 +2503,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
   writeFileSync(g2bFiles[3]!, JSON.stringify({ mode: 'autopilot', active: false, current_phase: 'complete', completed_at: '2026-06-01T00:00:04.004Z', session_id: g2bSession, thread_id: 'g2b-session-thread', turn_id: 'g2b-session-detail-turn', marker: 'g2b-session-detail' }));
   writeFileSync(g2bFiles[4]!, JSON.stringify({ session_id: g2bSession, cwd: g2bCwd, created_at: '2026-06-01T00:00:05.005Z', updated_at: '2026-06-01T00:00:06.006Z', last_turn_id: 'g2b-session-json-turn', marker: 'g2b-session-json' }));
   const g2bBefore: Buffer[] = g2bFiles.map((file) => readFileSync(file));
-  const g2bEnv = buildPackedRegressionEnvironment({ name: 'g2b' });
+  const g2bEnv = buildPackedRegressionEnvironment({ name: 'g2b' }, process.env, runtimeBinary);
   const g2bPayload = { hook_event_name: 'UserPromptSubmit', cwd: g2bCwd, session_id: g2bSession, thread_id: 'g2b-prompt-thread', turn_id: 'g2b-prompt-turn', prompt: 'do not start $autopilot — café' };
   validateHookStdout('UserPromptSubmit', String(invoke(g2bCwd, g2bEnv, g2bPayload).stdout || ''));
   for (const [index, file] of g2bFiles.entries()) if (Buffer.compare(readFileSync(file), g2bBefore[index]!) !== 0) throw new Error(`packed G2b negated prompt mutated terminal state ${file}`);
@@ -2486,7 +2513,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
   const g2cCwd = join(smokeCwd, 'g2c-01445');
   mkdirSync(g2cCwd, { recursive: true });
   const g2cPayload = { ...PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, cwd: g2cCwd };
-  const g2cResult = invoke(g2cCwd, buildPackedRegressionEnvironment({ name: 'g2c-01445' }), g2cPayload);
+  const g2cResult = invoke(g2cCwd, buildPackedRegressionEnvironment({ name: 'g2c-01445' }, process.env, runtimeBinary), g2cPayload);
   const g2cStdout = String(g2cResult.stdout || '');
   // #3497: this historical adapted-Ralplan PreToolUse deny is now advisory;
   // the CLI preflight still fails closed when the role intent is executed.
@@ -4679,7 +4706,7 @@ PY`],
     mkdirSync(roleIntentHome, { recursive: true });
     mkdirSync(roleIntentCodexHome, { recursive: true });
     const roleIntentEnvironment = {
-      ...buildPackedRegressionEnvironment({ name: 'issue-3194-role-intent' }),
+      ...buildPackedRegressionEnvironment({ name: 'issue-3194-role-intent' }, process.env, runtimeBinary),
       HOME: roleIntentHome,
       CODEX_HOME: roleIntentCodexHome,
     };
@@ -4727,7 +4754,7 @@ PY`],
       const caseCwd = join(smokeCwd, testCase.name);
       const sessionId = `packed-regression-${caseIndex}`;
       mkdirSync(caseCwd, { recursive: true });
-      const environment = buildPackedRegressionEnvironment(testCase);
+      const environment = buildPackedRegressionEnvironment(testCase, process.env, runtimeBinary);
       const promptPayload = {
         hook_event_name: 'UserPromptSubmit',
         cwd: caseCwd,
@@ -4988,7 +5015,7 @@ export interface PackedHookTrustLifecycleResult {
 export async function smokePackedHookTrustLifecycle(
   omxPath: string,
 ): Promise<PackedHookTrustLifecycleResult> {
-  const lifecycleRoot = mkdtempSync(join(tmpdir(), 'omx-packed-hook-trust-'));
+  const lifecycleRoot = realpathSync(mkdtempSync(join(tmpdir(), 'omx-packed-hook-trust-')));
   const projectDir = resolve(lifecycleRoot, 'project');
   const home = join(lifecycleRoot, 'home');
   const codexHome = join(lifecycleRoot, 'codex-home');
@@ -5409,10 +5436,16 @@ function smokeInstalledPluginHookLauncher(packageRoot: string, omxPath: string):
       if (String(result.stdout ?? '') !== expectedStdout) {
         throw new Error(`installed plugin hook ${name} stdout changed: expected ${JSON.stringify(expectedStdout)}, received ${JSON.stringify(String(result.stdout ?? ''))}`);
       }
-      assert.deepStrictEqual(readPackedPluginHookDelegateCalls(capturePath), [{
+      const calls = readPackedPluginHookDelegateCalls(capturePath);
+      assert.equal(calls.length, 1, `installed plugin hook ${name} must invoke exactly one delegate`);
+      assertPackedLaunchCwdPreserved(
+        hookCwd,
+        calls[0].cwd,
+        `installed plugin hook ${name} must preserve delegate cwd`,
+      );
+      assert.deepStrictEqual(calls.map(({ argv, stdin }) => ({ argv, stdin })), [{
         argv: ['codex-native-hook'],
         stdin,
-        cwd: hookCwd,
       }], `installed plugin hook ${name} must forward exact delegate argv and stdin`);
     };
 
@@ -5493,10 +5526,16 @@ function smokeInstalledPluginHookLauncher(packageRoot: string, omxPath: string):
       /codex-native-hook exited with code 23/,
       'installed plugin hook Stop delegate failure',
     );
-    assert.deepStrictEqual(readPackedPluginHookDelegateCalls(capturePath), [{
+    const failedStopCalls = readPackedPluginHookDelegateCalls(capturePath);
+    assert.equal(failedStopCalls.length, 1, 'installed plugin hook Stop failure must invoke exactly one delegate');
+    assertPackedLaunchCwdPreserved(
+      hookCwd,
+      failedStopCalls[0].cwd,
+      'installed plugin hook Stop failure must preserve delegate cwd',
+    );
+    assert.deepStrictEqual(failedStopCalls.map(({ argv, stdin }) => ({ argv, stdin })), [{
       argv: ['codex-native-hook'],
       stdin: failedStopInput,
-      cwd: hookCwd,
     }], 'installed plugin hook Stop failure must still delegate exact argv and stdin');
   } finally {
     if (originalPinnedLauncher === undefined) {
@@ -5740,7 +5779,7 @@ async function main(): Promise<void> {
     const lifecycle = await smokePackedHookTrustLifecycle(omxPath);
     console.log(
       lifecycle.codexVersion !== null
-        ? `packed install smoke: installed Codex 0.142.5 lifecycle passed (${lifecycle.codexVersion})`
+        ? `packed install smoke: installed Codex 0.153.4 lifecycle passed (${lifecycle.codexVersion})`
         : 'packed install smoke: Codex executable absent; installed-Codex trust leg skipped after deterministic lifecycle',
     );
 

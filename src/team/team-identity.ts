@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { join } from 'path';
 import { TEAM_NAME_SAFE_PATTERN } from './contracts.js';
+import { resolveCanonicalTeamStateRoot } from './state-root.js';
 
 export interface TeamIdentityScope {
   sessionId: string;
@@ -123,18 +124,12 @@ function candidateFromDir(root: string, teamName: string): TeamLookupCandidate |
 }
 
 function teamLookupRoots(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const roots: string[] = [];
-  const addStateRoot = (stateRoot: string): void => {
-    const trimmed = stateRoot.trim();
-    if (!trimmed) return;
-    const root = join(resolve(cwd, trimmed), 'team');
-    if (!roots.includes(root)) roots.push(root);
-  };
-
-  const explicit = typeof env.OMX_TEAM_STATE_ROOT === 'string' ? env.OMX_TEAM_STATE_ROOT : '';
-  addStateRoot(explicit);
-  addStateRoot(join(resolve(cwd), '.omx', 'state'));
-  return roots;
+  // Identity lookup follows the canonical state root only. Enumerating
+  // cwd/.omx/state alongside an explicitly selected root lets an alias in the
+  // unselected root rename or mask teams addressed through the selected root
+  // and makes the reported state path unreliable.
+  const canonical = resolveCanonicalTeamStateRoot(cwd, env);
+  return [join(canonical, 'team')];
 }
 
 export function listTeamLookupCandidates(cwd: string, env: NodeJS.ProcessEnv = process.env): TeamLookupCandidate[] {

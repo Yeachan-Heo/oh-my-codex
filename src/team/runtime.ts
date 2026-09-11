@@ -490,6 +490,8 @@ interface ShutdownOptions {
 
 export interface TeamShutdownSummary {
   commitHygieneArtifacts: TeamCommitHygieneArtifactPaths | null;
+  /** Whether shutdown acted on a canonical team config that existed when the operation began. */
+  configExisted: boolean;
 }
 let terminalEpochStartedHookForTest: ((teamName: string, cwd: string, phase: TeamPhaseState) => Promise<void>) | null = null;
 
@@ -915,6 +917,19 @@ function assertPaneTeardownProofsAvailable(
     .map((proof) => `${proof.paneId}:${proof.reason}${proof.detail ? `:${proof.detail}` : ''}`)
     .join(',');
   throw new Error(`${operation}_pane_proof_unavailable:${detail}`);
+}
+
+export function rethrowStartupRollbackProofDebt(
+  operation: string,
+  error: Error,
+  unavailableProofs: readonly UnavailablePaneProof[],
+): void {
+  try {
+    assertPaneTeardownProofsAvailable(operation, unavailableProofs);
+  } catch (proofError) {
+    const proofMessage = proofError instanceof Error ? proofError.message : String(proofError);
+    throw new Error(`${proofMessage} (during ${operation} of: ${error.message})`, { cause: error });
+  }
 }
 
 export async function cleanupTeamWorkerLaunchOrphanedMcpProcesses(
@@ -3409,6 +3424,11 @@ export async function startTeam(
     ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
   };
   const workerLaunchMode = resolveTeamWorkerLaunchMode(launchEnv);
+  // Issue #3629: codexHomeOverride may be undefined for project-scope
+  // leaders — teamCommand exports only child-exportable homes. Workers then
+  // resolve project scope (and credential provenance) in their own process.
+  // Model/reasoning lookups fall back to env.CODEX_HOME (explicit) or the
+  // default Codex home, matching what a standalone worker launch would read.
 
   await assertNestedTeamAllowed(leaderCwd);
   const effectiveWorktreeMode = resolveEffectiveTeamWorktreeMode(leaderCwd, options.worktreeMode);
@@ -3796,6 +3816,11 @@ export async function startTeam(
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
         [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
         OMX_TEAM_DISPLAY_NAME: displayName,
+        // Issue #3629: prompt-mode workers are direct codex children and do
+        // read this CODEX_HOME. It is the child-export value: unset for
+        // project-scope leaders (codex then uses the caller's own home, the
+        // same credentials a plain `codex` run would use) and explicit
+        // CODEX_HOME passthrough otherwise.
         ...(codexHomeOverride ? { CODEX_HOME: codexHomeOverride } : {}),
         ...worktreeToolContextEnv(plan.toolContext),
       };
@@ -4225,7 +4250,9 @@ export async function startTeam(
       // proven-gone state. Preserve its config, hook registration, state and
       // worktrees exactly as saved above for a later retry; generic rollback
       // would otherwise destroy the retry evidence.
-      assertPaneTeardownProofsAvailable('startup_rollback', error.proofUnavailable);
+      // Surface the proof debt without hiding the actionable original startup
+      // failure carried by CreateTeamSessionPartialError.
+      rethrowStartupRollbackProofDebt('startup_rollback', error, error.proofUnavailable);
       throw error;
     }
     if (config && error instanceof Error && error.message.startsWith('startup_worker_pane_identity_changed:')) {
@@ -4866,7 +4893,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     await cleanupTeamState(sanitized, cwd);
     await syncTeamModeStateOnShutdown(sanitized, cwd);
     restoreTeamModelInstructionsFile(sanitized);
-    return { commitHygieneArtifacts: null };
+    return { commitHygieneArtifacts: null, configExisted: false };
   }
   // Reconcile accepted detached-session destruction before any other shutdown
   // effect. A receipt is the only durable authority across the kill/query crash
@@ -5643,7 +5670,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     throw new Error(cleanupErrors.join(' | '));
   }
 
-  return { commitHygieneArtifacts }
+  return { commitHygieneArtifacts, configExisted: true };
 }
 
 /**

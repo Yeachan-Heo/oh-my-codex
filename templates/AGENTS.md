@@ -54,24 +54,21 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 
 
 <delegation_rules>
-Default posture: work directly.
-
 Choose the lane before acting:
-- Default posture: work directly. The ordinary workflow is `understand -> execute -> verify -> report`.
+- Solo execute by default when scope is clear: work directly. The ordinary workflow is `understand -> execute -> verify -> report`.
 - Use `$autopilot` for explicit hands-off orchestration. Its defining default chain is `$deep-interview -> $ralplan -> $ultragoal`; these supervised stages must not be hollowed into optional hints.
 - Use `$deep-interview` when requirements, intent, non-goals, or decision boundaries are materially ambiguous; it is the independent Ouroboros-style Socratic deep interview stage before planning.
 - Use `$plan` for lightweight planning when a deep interview is unnecessary.
 - Use `$team` when an approved plan needs coordinated parallel execution across multiple lanes.
 - Use `$ultragoal` for durable multi-goal runs with checkpoint/resume semantics.
-- Solo execute when the task is already scoped and one agent can finish and verify it directly.
 - Outside active `team`/`swarm` mode, use `executor` for bounded implementation or review slices; do not invoke `worker` as a general-purpose role.
 - Reserve `worker` strictly for active `team`/`swarm` sessions where the team runtime assigns a worker lane.
 - `worker` is a team-runtime surface, not a general-purpose child role.
-- Autopilot owns the canonical staged path `$deep-interview -> $ralplan -> $ultragoal`; stages may also be invoked independently when their input contract is already satisfied. `$deep-interview` is not `$plan --interview`.
+- Stages may also be invoked independently when their input contract is satisfied. `$deep-interview` is not `$plan --interview`.
 
 
 Use Codex native subagents for bounded implementation, research, review, or verification slices when they materially improve quality, speed, or safety. Do not delegate trivial work or use delegation as a substitute for reading the code.
-- While a Conductor workflow is active, native children are verification/advice-only: they may perform positively classified reads, but child-to-leader reporting also requires separate host-authenticated caller, parent, and target proof. When the active native surface does not expose that proof, collaboration reporting and source/product mutations remain denied. Route implementation through Team only after Team's separate host-authority checks pass; when Team is unavailable or denied, return a bounded read-only result or blocker instead of treating local state, task text, session fields, trackers, or child provenance as authority.
+- Under ordinary native support with inherited permissions, native children may implement, mutate, and report bounded delegated work directly: reporting back through the native result surface is ordinary completion, not a separate authority grant, and local state, task text, session fields, trackers, or child provenance remain routing/diagnostic data, never a substitute for real sandbox, approval, cross-session ownership, or privileged-operation boundaries. Scope the Main-root Conductor write restriction to the Main lane only: it never delegates Main's own orchestration writes away and never strips delegated performer lanes of implementation/reporting they already hold. Use Team only for durable multi-lane coordination that is worth the overhead; when unsupported-mode evidence (native unavailable, capacity exhausted) or a genuinely mandatory extra authority check blocks delegation, return a bounded read-only result or blocker with the supported recovery path instead of treating the missing mechanism as satisfied.
 </delegation_rules>
 
 <child_agent_protocol>
@@ -156,7 +153,7 @@ Verification loop: define the claim and success criteria, run the smallest valid
 </verification>
 
 <execution_protocols>
-Mode selection: use `$autopilot` when explicitly requested for the supervised `$deep-interview -> $ralplan -> $ultragoal` chain; use `$deep-interview` for standalone material requirements ambiguity, `$ralplan` for standalone architecture/consensus planning, `$team` for approved multi-lane parallel work, and `$ultragoal` for standalone durable multi-goal runs. Otherwise execute directly in solo mode. Switch modes only when evidence shows the current lane is mismatched or blocked.
+Mode selection: follow `<delegation_rules>` above. Switch lanes only for a concrete unresolved ambiguity, coordination need, or blocker.
 
 Command routing: use normal Codex repository inspection tools/subagents as the default surface for simple read-only repository lookup tasks; use `omx sparkshell` only for explicit shell-native read-only evidence or bounded verification.
 When to use what:

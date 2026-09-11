@@ -31,11 +31,15 @@ import {
 } from '../contract.js';
 
 describe('leader conductor contract', () => {
-  it('exports the exact canonical Golden Rule string', () => {
-    assert.equal(
-      LEADER_CONDUCTOR_GOLDEN_RULE,
-      'When the Main agent is acting in Conductor mode, NEVER make plan or code changes directly. ALWAYS delegate implementation to specialized agents. Your role is to guide, review, and orchestrate.',
-    );
+  it('keeps the Main-root Conductor contract reachable for delegated performer lanes (#3635)', () => {
+    assert.match(LEADER_CONDUCTOR_GOLDEN_RULE, /Main never writes plan, spec, source, package, git/i);
+    assert.match(LEADER_CONDUCTOR_GOLDEN_RULE, /delegated performer lanes.*perform the bounded implementation and report back/i);
+    assert.match(LEADER_CONDUCTOR_GOLDEN_RULE, /Ordinary native reporting is completion, not a separate authority grant/i);
+    assert.match(LEADER_CONDUCTOR_GOLDEN_RULE, /orchestration metadata, transport, and ledger writes stay with Main/i);
+    assert.doesNotMatch(LEADER_CONDUCTOR_GOLDEN_RULE, /NEVER make plan or code changes directly\. ALWAYS delegate implementation to specialized agents/);
+    assert.match(LEADER_CONDUCTOR_DELEGATION_NOTE, /under ordinary native support with inherited permissions/i);
+    assert.match(LEADER_CONDUCTOR_DELEGATION_NOTE, /let them implement, mutate, and report directly/i);
+    assert.match(LEADER_CONDUCTOR_DELEGATION_NOTE, /Never loosen real sandbox, approval, cross-session ownership, or privileged-operation boundaries/i);
   });
 
   it('exports the exact canonical conductor block without ledger/reuse guidance', () => {

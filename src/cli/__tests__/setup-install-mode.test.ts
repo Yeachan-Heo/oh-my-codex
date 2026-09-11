@@ -2071,6 +2071,48 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("uses unified hooks when Codex reports plugin_hooks removed", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "plugin", codexFeaturesProbe: () => "hooks stable true\nplugin_hooks removed false\n", codexVersionProbe: () => "codex-cli 0.140.0" });
+					await setup({ scope: "user", installMode: "plugin", codexFeaturesProbe: () => "hooks stable true\nplugin_hooks removed false\n", codexVersionProbe: () => "codex-cli 0.140.0" });
+
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
+					const config = await readFile(
+						join(codexHomeDir, "config.toml"),
+						"utf-8",
+					);
+					assert.doesNotMatch(config, /^plugin_hooks\s*=/m);
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
+					assert.doesNotMatch(config, /^codex_hooks = true$/m);
+					assert.match(config, /^goals = true$/m);
+					assert.doesNotMatch(config, /\[hooks\.state\./);
+					assert.doesNotMatch(
+						config,
+						/developer_instructions|notify-hook/g,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "skills", "ask", "SKILL.md")),
+						false,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "agents", "planner.toml")),
+						true,
+					);
+					assert.equal(
+						existsSync(join(codexHomeDir, "prompts", "executor.md")),
+						false,
+					);
+					assert.equal(existsSync(join(codexHomeDir, "AGENTS.md")), true);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("can opt into plugin AGENTS.md and developer_instructions defaults", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
@@ -3654,6 +3696,53 @@ describe("omx setup install mode behavior", () => {
 			});
 		} finally {
 			resetFailureInjector?.();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+	it("deletes the unreferenced OMX shim when a removed-row probe owns the hook surface", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-shim-removed-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const removedProbe = () =>
+						[
+							"hooks                                   stable             true",
+							"plugin_hooks                            removed            false",
+							"",
+						].join("\n");
+
+					await setup({
+						scope: "user",
+						installMode: "legacy",
+						skipNativeAgentRefresh: true,
+					});
+					const hooksPath = join(codexHomeDir, "hooks.json");
+					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					assert.equal(existsSync(shimPath), true);
+					assert.equal(existsSync(hooksPath), true);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						pluginAgentsMdPrompt: async () => false,
+						skipNativeAgentRefresh: true,
+						codexFeaturesProbe: removedProbe,
+					});
+
+					assert.equal(
+						existsSync(shimPath),
+						false,
+						"removed surface must delete the unreferenced OMX-owned shim",
+					);
+					assert.equal(existsSync(hooksPath), false);
+					const config = await readFile(join(codexHomeDir, "config.toml"), "utf-8");
+					assert.equal((config.match(/^hooks = true$/gm) ?? []).length, 1);
+					assert.doesNotMatch(config, /^plugin_hooks\s*=/m);
+				});
+			});
+		} finally {
 			resetPlatform();
 			await rm(wd, { recursive: true, force: true });
 		}
