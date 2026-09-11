@@ -1,0 +1,15 @@
+{
+  "id": "terra-override",
+  "label": "Supported override: gpt-5.6-terra for every evaluated role, effort unchanged",
+  "isBaseline": false,
+  "omxRevision": "57d596de2a3c404577ae9861f419102c5c3a804d",
+  "roles": {
+    "explore": { "model": "gpt-5.6-terra", "reasoningEffort": "medium" },
+    "executor": { "model": "gpt-5.6-terra", "reasoningEffort": "medium" },
+    "code-reviewer": { "model": "gpt-5.6-terra", "reasoningEffort": "medium" },
+    "team-worker": { "model": "gpt-5.6-terra", "reasoningEffort": "medium" },
+    "sparkshell": { "model": "gpt-5.6-terra", "reasoningEffort": "medium" }
+  },
+  "serviceTier": "unknown",
+  "cacheConditions": "unknown (Codex-owned; record observed conditions per run)"
+}

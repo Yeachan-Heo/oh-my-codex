@@ -10,6 +10,7 @@ Current pilots / examples:
 - `cli-discoverability-pilot/`
 - `security-path-traversal-pilot/`
 - `in-action-cat-shellout-demo/` — a small self-hosted OMX optimization demo that removes the autoresearch loop's manifest `cat` shell-out and proves the fix with a focused evaluator
+- `astra-default-evaluation/` — reusable cost/quality fixtures for OMX's default-model policy (issue #3655). Task fixtures and quality checks live in `fixtures/`; pinned model configurations live in `configs/`, so the fixtures survive future default changes.
 
 You can run the evaluators directly today:
 
@@ -17,6 +18,7 @@ You can run the evaluators directly today:
 node scripts/eval-cli-discoverability.js
 node scripts/eval-security-path-traversal.js
 node scripts/eval-in-action-cat-shellout-demo.js
+node dist/scripts/eval/eval-astra-defaults.js
 ```
 
 To see a real end-to-end run, launch:

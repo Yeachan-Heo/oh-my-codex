@@ -1,0 +1,21 @@
+{
+  "id": "code-reviewer-known-defect",
+  "surface": "code-reviewer",
+  "title": "Review a diff containing one planted defect plus a clean control hunk",
+  "prompt": "Review the diff below. Report blocking defects with file and reason. Report nothing that the diff does not support.",
+  "inputs": {
+    "diff": "--- a/src/redact.ts\n+++ b/src/redact.ts\n@@\n export function createRedactor(limit: number) {\n   let dropping = false;\n   return (chunk: string): string => {\n-    if (chunk.length > limit) return '[redacted]';\n+    if (chunk.length > limit) dropping = true;\n+    if (dropping) return '';\n     return chunk;\n   };\n }\n--- a/src/format.ts\n+++ b/src/format.ts\n@@\n-export function formatDuration(ms: number): string {\n-  return `${Math.round(ms / 1000)}s`;\n-}\n+export function formatDuration(ms: number): string {\n+  if (ms < 1000) return '<1s';\n+  return `${Math.round(ms / 1000)}s`;\n+}\n"
+  },
+  "checks": [
+    {
+      "kind": "must-include",
+      "name": "finds-permanent-suppression",
+      "values": ["redact", "dropping"]
+    },
+    {
+      "kind": "must-not-include",
+      "name": "no-false-positive-on-control",
+      "values": ["formatDuration is incorrect", "format.ts is a blocking"]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "astra-defaults",
+  "label": "OMX shipped defaults after #3622 (Astra)",
+  "isBaseline": true,
+  "omxRevision": "57d596de2a3c404577ae9861f419102c5c3a804d",
+  "roles": {
+    "explore": { "model": "gpt-6-astra", "reasoningEffort": "medium" },
+    "executor": { "model": "gpt-6-astra", "reasoningEffort": "medium" },
+    "code-reviewer": { "model": "gpt-6-astra", "reasoningEffort": "medium" },
+    "team-worker": { "model": "gpt-6-astra", "reasoningEffort": "medium" },
+    "sparkshell": { "model": "gpt-6-astra", "reasoningEffort": "medium" }
+  },
+  "serviceTier": "unknown",
+  "cacheConditions": "unknown (Codex-owned; record observed conditions per run)"
+}

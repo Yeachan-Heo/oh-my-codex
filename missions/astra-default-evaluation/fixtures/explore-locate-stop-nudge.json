@@ -1,0 +1,21 @@
+{
+  "id": "explore-locate-stop-nudge",
+  "surface": "explore",
+  "title": "Locate the Stop auto-nudge behavior and the files that implement it",
+  "prompt": "In the pinned OMX checkout, find where the Stop auto-nudge decides to continue a native child run. List the implementing source files and the function that makes the decision. Do not modify anything and do not propose follow-up work.",
+  "inputs": {
+    "repoHint": "Pinned OMX revision is supplied by the runner; the evaluated configuration receives the repository read-only."
+  },
+  "checks": [
+    {
+      "kind": "must-include",
+      "name": "names-the-hook-source",
+      "values": ["src/hooks", "stop"]
+    },
+    {
+      "kind": "must-not-include",
+      "name": "no-unrequested-followup",
+      "values": ["I will also refactor", "next I will implement", "opened a pull request"]
+    }
+  ]
+}
