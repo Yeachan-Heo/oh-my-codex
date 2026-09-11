@@ -1,0 +1,22 @@
+{
+  "id": "executor-bounded-change",
+  "surface": "executor",
+  "title": "Implement a bounded change in a fixed fixture repository and run its required checks",
+  "prompt": "In the provided fixture repository, make `formatDuration` render durations below one second as `\"<1s\"` instead of `\"0s\"`. Change only the implementation and its existing test file, then run the repository's required checks. Do not add dependencies, options, or new files.",
+  "inputs": {
+    "requiredChecks": "npm run build && npm test",
+    "scopeBudget": "2 files"
+  },
+  "checks": [
+    {
+      "kind": "must-include",
+      "name": "reports-required-checks",
+      "values": ["npm test"]
+    },
+    {
+      "kind": "must-not-include",
+      "name": "no-scope-inflation",
+      "values": ["added dependency", "new configuration option", "refactored the module"]
+    }
+  ]
+}

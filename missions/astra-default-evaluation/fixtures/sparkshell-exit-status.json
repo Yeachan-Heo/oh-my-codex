@@ -1,0 +1,20 @@
+{
+  "id": "sparkshell-exit-status",
+  "surface": "sparkshell",
+  "title": "Extract the exit status from fixed command output",
+  "prompt": "Report only the numeric exit status of the command output below.",
+  "inputs": {
+    "commandOutput": "running 12 checks\nbuild completed with warnings\n2 checks failed\nexit code: 2\n"
+  },
+  "deterministicBaseline": {
+    "extractor": "exit-status",
+    "source": "commandOutput"
+  },
+  "checks": [
+    {
+      "kind": "exact-set",
+      "name": "exact-exit-status",
+      "values": ["2"]
+    }
+  ]
+}

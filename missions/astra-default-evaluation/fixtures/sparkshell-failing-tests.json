@@ -1,0 +1,23 @@
+{
+  "id": "sparkshell-failing-tests",
+  "surface": "sparkshell",
+  "title": "Extract the failing test names from fixed command output",
+  "prompt": "List the names of the failing tests in the command output below, one per line, and nothing else.",
+  "inputs": {
+    "commandOutput": "ok 1 - resolves the config path\nnot ok 2 - redactor resumes after an oversized record\nok 3 - formats short durations\nnot ok 4 - leader repairs a stale pane\nok 5 - writes the handoff file\nexit code: 1\n"
+  },
+  "deterministicBaseline": {
+    "extractor": "failing-test-names",
+    "source": "commandOutput"
+  },
+  "checks": [
+    {
+      "kind": "exact-set",
+      "name": "exact-failing-test-names",
+      "values": [
+        "redactor resumes after an oversized record",
+        "leader repairs a stale pane"
+      ]
+    }
+  ]
+}
