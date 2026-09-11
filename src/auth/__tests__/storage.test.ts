@@ -1,10 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { atomicWriteFile, addSlotFromAuthFile, listSlots, readAuthMetadata, useSlot } from "../storage.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
+import { atomicWriteFile, addSlotFromAuthFile, listSlots, readAuthMetadata, useSlot, markSlotQuota, clearSlotExhaustion } from "../storage.js";
 import {
   resolveAuthMetadataPath,
   resolveLiveAuthPath,
@@ -18,6 +21,167 @@ async function tempHome(): Promise<string> {
 }
 
 describe("auth slot storage", () => {
+  for (const operation of [addSlotFromAuthFile, useSlot]) {
+    it(`rechecks legacy file identity after acquiring the lock in ${operation.name}`, async (t) => {
+      const home = await tempHome();
+      try {
+        const live = join(home, "auth.json");
+        await writeFile(live, '{"access_token":"test-only"}\n');
+        await addSlotFromAuthFile("work", live, home);
+        const metadataPath = resolveAuthMetadataPath(home);
+        const legacyPath = join(resolveOmxAuthDir(home), "Slots.json");
+        if (existsSync(legacyPath)) {
+          t.skip("requires case-distinct filenames");
+          return;
+        }
+        await writeFile(legacyPath, '{"access_token":"legacy"}\n');
+        const before = await readFile(metadataPath, "utf-8");
+        const lockPath = join(resolveOmxAuthDir(home), ".metadata-lock");
+        await mkdir(lockPath);
+        const result = operation("Slots", live, home).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        await delay(100);
+        await rm(legacyPath);
+        await link(metadataPath, legacyPath);
+        await rm(lockPath, { recursive: true });
+        assert.match(String(await result), /reserved/i);
+        assert.equal(await readFile(metadataPath, "utf-8"), before);
+        assert.equal(await readFile(live, "utf-8"), '{"access_token":"test-only"}\n');
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("rejects the reserved metadata basename before changing any auth files", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, "auth.json");
+      await writeFile(live, '{"access_token":"test-only"}\n');
+      await addSlotFromAuthFile("work", live, home);
+      const before = await readFile(resolveAuthMetadataPath(home), "utf-8");
+      for (const reserved of ["slots", "Slots", "SLOTS"]) {
+        await assert.rejects(addSlotFromAuthFile(reserved, live, home), /reserved/i);
+        await assert.rejects(useSlot(reserved, live, home), /reserved/i);
+      }
+      assert.equal(await readFile(resolveAuthMetadataPath(home), "utf-8"), before);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"test-only"}\n');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves concurrent account additions and quota updates", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, "auth.json");
+      await writeFile(live, '{"access_token":"test-only"}\n');
+      const names = Array.from({ length: 8 }, (_, i) => `account-${i}`);
+      await Promise.all(names.map(name => addSlotFromAuthFile(name, live, home)));
+      assert.deepEqual((await listSlots(home)).map(record => record.slot), names);
+      await Promise.all(names.map(name => markSlotQuota(name, home)));
+      assert.ok((await readAuthMetadata(home)).slots.every(record => record.exhaustedAt));
+      await Promise.all(names.map(name => clearSlotExhaustion(name, home)));
+      assert.ok((await readAuthMetadata(home)).slots.every(record => !record.exhaustedAt));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves access to an existing distinct Slots account and unrelated accounts", async (t) => {
+    const home = await tempHome();
+    try {
+      const authDir = resolveOmxAuthDir(home);
+      await mkdir(authDir, { recursive: true });
+      const legacyPath = join(authDir, "Slots.json");
+      const metadataPath = resolveAuthMetadataPath(home);
+      await writeFile(legacyPath, '{"access_token":"legacy-test-only"}\n');
+      await writeFile(join(authDir, "work.json"), '{"access_token":"work-test-only"}\n');
+      await writeFile(metadataPath, JSON.stringify({
+        version: 1,
+        slots: ["Slots", "work"].map(slot => ({ slot, createdAt: "2026-09-01", updatedAt: "2026-09-01" })),
+      }));
+      const [legacy, metadata] = await Promise.all([stat(legacyPath), stat(metadataPath)]);
+      if (legacy.dev === metadata.dev && legacy.ino === metadata.ino) {
+        t.skip("filesystem does not support distinct Slots.json and slots.json");
+        return;
+      }
+      assert.deepEqual((await listSlots(home)).map(slot => slot.slot), ["Slots", "work"]);
+      const live = join(home, "auth.json");
+      await useSlot("work", live, home);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"work-test-only"}\n');
+      await useSlot("Slots", live, home);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"legacy-test-only"}\n');
+      await addSlotFromAuthFile("Slots", live, home);
+      assert.deepEqual((await readAuthMetadata(home)).slots.map(slot => slot.slot), ["Slots", "work"]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a case-variant credential path that aliases the metadata file", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, "auth.json");
+      await writeFile(live, '{"access_token":"test-only"}\n');
+      await addSlotFromAuthFile("work", live, home);
+      const metadataPath = resolveAuthMetadataPath(home);
+      const aliasPath = join(resolveOmxAuthDir(home), "Slots.json");
+      if (!existsSync(aliasPath)) await link(metadataPath, aliasPath);
+      const before = await readFile(metadataPath, "utf-8");
+      await assert.rejects(addSlotFromAuthFile("Slots", live, home), /reserved/i);
+      await assert.rejects(useSlot("Slots", live, home), /reserved/i);
+      assert.equal(await readFile(metadataPath, "utf-8"), before);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"test-only"}\n');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes account additions from separate CLI processes", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, "auth.json");
+      await writeFile(live, '{"access_token":"test-only"}\n');
+      const moduleUrl = new URL("../storage.js", import.meta.url).href;
+      const run = promisify(execFile);
+      await Promise.all(Array.from({ length: 4 }, (_, worker) => run(process.execPath, [
+        "--input-type=module", "-e",
+        `import { addSlotFromAuthFile } from ${JSON.stringify(moduleUrl)};
+         const [home, live, worker] = process.argv.slice(1);
+         await Promise.all(Array.from({ length: 3 }, (_, i) =>
+           addSlotFromAuthFile('worker-' + worker + '-' + i, live, home)));`,
+        home, live, String(worker),
+      ], { timeout: 15_000 })));
+      const slots = await listSlots(home);
+      assert.equal(slots.length, 12);
+      assert.equal(new Set(slots.map(slot => slot.slot)).size, 12);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the live credentials and current slot consistent after concurrent switches", async () => {
+    const home = await tempHome();
+    try {
+      const live = join(home, "auth.json");
+      const names = Array.from({ length: 4 }, (_, i) => `account-${i}`);
+      for (const name of names) {
+        await writeFile(live, JSON.stringify({ access_token: `test-only-${name}` }));
+        await addSlotFromAuthFile(name, live, home);
+      }
+      await Promise.all(names.map(name => useSlot(name, live, home)));
+      const metadata = await readAuthMetadata(home);
+      assert.ok(metadata.currentSlot);
+      assert.equal(await readFile(live, "utf-8"), await readFile(resolveSlotPath(metadata.currentSlot, home), "utf-8"));
+      assert.ok(metadata.slots.every(slot => slot.lastUsedAt));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("adds, lists, and uses auth slots without exposing blob contents", async () => {
     const home = await tempHome();
     try {
@@ -114,6 +278,10 @@ describe("auth slot storage", () => {
       await assert.rejects(useSlot("work", live, home));
 
       assert.equal(await readFile(live, "utf-8"), '{"access_token":"original"}\n');
+      assert.equal(existsSync(join(resolveOmxAuthDir(home), ".metadata-lock")), false);
+      await writeFile(resolveAuthMetadataPath(home), '{"version":1,"slots":[]}\n');
+      await useSlot("work", live, home);
+      assert.equal(await readFile(live, "utf-8"), '{"access_token":"replacement"}\n');
     } finally {
       await rm(home, { recursive: true, force: true });
     }

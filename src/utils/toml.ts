@@ -1,12 +1,16 @@
-const TABLE_HEADER = /^(?:\[[^[\]]+\]|\[\[[^[\]]+\]\])\s*(#.*)?$/;
+import { analyzeTomlSource } from "./toml-source.js";
+
+// Quoted table keys may themselves contain brackets (for example project paths).
+const TABLE_HEADER = /^\[.+\]\s*(#.*)?$/;
 
 export function readTopLevelTomlString(
   content: string,
   key: string,
 ): string | null {
   let inTopLevel = true;
-  const lines = content.split(/\r?\n/);
-  for (const line of lines) {
+  const { lines, lineStartsOutsideMultiline } = analyzeTomlSource(content);
+  for (const [index, line] of lines.entries()) {
+    if (!lineStartsOutsideMultiline[index]) continue;
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     if (TABLE_HEADER.test(trimmed)) {
@@ -33,11 +37,13 @@ export function upsertTopLevelTomlString(
     return assignment + eol;
   }
 
-  const lines = content.split(/\r?\n/);
+  const { lines, lineStartsOutsideMultiline, isUnambiguous } = analyzeTomlSource(content);
+  if (!isUnambiguous) throw new Error("Cannot update TOML with unterminated strings");
   let replaced = false;
   let inTopLevel = true;
 
   for (let i = 0; i < lines.length; i++) {
+    if (!lineStartsOutsideMultiline[i]) continue;
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -55,8 +61,8 @@ export function upsertTopLevelTomlString(
   }
 
   if (!replaced) {
-    const firstTableIndex = lines.findIndex((line) =>
-      TABLE_HEADER.test(line.trim()),
+    const firstTableIndex = lines.findIndex((line, index) =>
+      lineStartsOutsideMultiline[index] && TABLE_HEADER.test(line.trim()),
     );
     if (firstTableIndex >= 0) {
       lines.splice(firstTableIndex, 0, assignment);
