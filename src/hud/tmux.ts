@@ -1433,8 +1433,6 @@ function readHudPaneIncarnation(paneId: string, execTmuxSync: TmuxExecSync): { p
     return null;
   }
 }
-
-
 function isPaneLiveInStrictGlobalProbe(paneId: string, expectedPid: string | undefined, execTmuxSync: TmuxExecSync): boolean {
   const incarnation = readHudPaneIncarnation(paneId, execTmuxSync);
   return Boolean(incarnation && !incarnation.paneDead && (!expectedPid || incarnation.panePid === expectedPid));
