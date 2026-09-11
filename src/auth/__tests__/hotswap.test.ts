@@ -79,6 +79,69 @@ describe("auth hotswap pointer abort lifecycle", () => {
     }
   });
 
+  it("still detects a quota line that follows an oversized stderr record", { skip: process.platform === "win32" }, async (t) => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-hotswap-oversized-quota-"));
+    const home = join(cwd, "home");
+    const runtimeHome = join(cwd, "runtime-codex-home");
+    const binDir = join(cwd, "bin");
+    const codexLog = join(cwd, "codex.log");
+    try {
+      await writeAuthSlot(home);
+      await writeFile(join(home, ".omx", "auth", "second.json"), '{"access_token":"second-secret"}\n');
+      await writeFile(
+        join(home, ".omx", "auth", "slots.json"),
+        JSON.stringify({
+          version: 1,
+          currentSlot: "first",
+          slots: [
+            { slot: "first", createdAt: "now", updatedAt: "now" },
+            { slot: "second", createdAt: "now", updatedAt: "now" },
+          ],
+        }),
+      );
+      await mkdir(binDir, { recursive: true });
+      // A verbose upstream payload overflows the redaction buffer before the
+      // quota marker. Suppressing the rest of stderr would hide the rotation
+      // signal and turn a recoverable quota exit into a plain failure.
+      await writeFile(
+        join(binDir, "codex"),
+        `#!/bin/sh\nprintf 'spawned\\n' >> ${JSON.stringify(codexLog)}\nawk 'BEGIN { while (i++ < 70000) printf "x" ; printf "\\n" }'  >&2\necho 'error: 429 quota exceeded' >&2\nexit 1\n`,
+      );
+      await chmod(join(binDir, "codex"), 0o755);
+      let captured = "";
+      const capture = t.mock.method(process.stderr, "write", (chunk: string | Uint8Array) => {
+        captured += String(chunk);
+        return true;
+      });
+
+      try {
+        await runAuthHotswap({
+          cwd,
+          home,
+          env: { CODEX_HOME: runtimeHome, PATH: `${binDir}:/usr/bin:/bin` },
+          argv: [],
+          lifecycle: lifecycle({
+            prepareCodexHomeForLaunch: async () => ({ codexHomeOverride: runtimeHome }),
+          }),
+        });
+      } finally {
+        capture.mock.restore();
+      }
+
+      assert.equal(await readFile(codexLog, "utf-8"), "spawned\n");
+      // Suppressing the rest of stderr would classify this as a plain failure,
+      // leaving the slot unmarked and skipping rotation entirely.
+      assert.match(captured, /quota detected/);
+      const metadata = JSON.parse(await readFile(join(home, ".omx", "auth", "slots.json"), "utf-8")) as {
+        slots: Array<{ slot: string; exhaustedAt?: string }>;
+      };
+      assert.ok(metadata.slots.find((slot) => slot.slot === "first")?.exhaustedAt);
+      assert.doesNotMatch(captured, /xxx/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("skips the initial slot mutation and postLaunch for a typed pointer abort", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-hotswap-pointer-abort-"));
     const home = join(cwd, "home");

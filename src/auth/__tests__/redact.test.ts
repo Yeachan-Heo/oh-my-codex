@@ -37,7 +37,7 @@ describe("auth secret redaction", () => {
     }
   });
 
-  it("streams completed safe lines but suppresses the remaining stream after overflow", () => {
+  it("suppresses an oversized record but resumes at the next safe boundary", () => {
     let output = "";
     const redactor = createAuthStderrRedactor((text) => { output += text; });
     redactor.write(Buffer.from("safe line\n"));
@@ -46,8 +46,28 @@ describe("auth secret redaction", () => {
     redactor.write(Buffer.from('synthetic-secret"}\nquota exceeded\n'));
     redactor.end();
     assert.doesNotMatch(output, /synthetic-secret|xxx/);
-    assert.match(output, /remaining stderr suppressed\n$/);
-    assert.doesNotMatch(output, /quota exceeded/);
+    assert.match(output, /oversized stderr record suppressed\nquota exceeded\n$/);
+  });
+
+  it("redacts multiline token fields that arrive after suppression resumes", () => {
+    let output = "";
+    const redactor = createAuthStderrRedactor((text) => { output += text; });
+    redactor.write(Buffer.from("x".repeat(65 * 1024)));
+    redactor.write(Buffer.from('padding\n{"refresh_token":\n'));
+    redactor.write(Buffer.from('"synthetic-secret"}\nquota exceeded\n'));
+    redactor.end();
+    assert.doesNotMatch(output, /synthetic-secret|xxx/);
+    assert.match(output, /"refresh_token":\n"\[REDACTED\]"\}\nquota exceeded\n$/);
+  });
+
+  it("never resumes on a blank tail long enough to evict the token field prefix", () => {
+    let output = "";
+    const redactor = createAuthStderrRedactor((text) => { output += text; });
+    redactor.write(Buffer.from('{"access_token":' + " ".repeat(65 * 1024)));
+    // A blank run far longer than the boundary window must not look safe.
+    redactor.write(Buffer.from(`${" ".repeat(8 * 1024)}\n"synthetic-secret"}\n`));
+    redactor.end();
+    assert.doesNotMatch(output, /synthetic-secret/);
   });
 
   it("redacts JSON quoted OAuth token fields while preserving key names", () => {
