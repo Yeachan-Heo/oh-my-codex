@@ -255,8 +255,9 @@ describe('keyword detector team compatibility', () => {
     assert.notEqual(pathOnly?.skill, 'ultragoal');
   });
 
-  it('maps bare and command-style autopilot invocations to autopilot', () => {
-    for (const prompt of ['autopilot', 'run autopilot', 'autopilot this', 'autopilot mode']) {
+  it('maps command-style autopilot requests without bare-name activation', () => {
+    assert.equal(detectPrimaryKeyword('autopilot'), null);
+    for (const prompt of ['run autopilot', 'start autopilot', 'use autopilot', 'autopilot this', 'autopilot mode']) {
       const match = detectPrimaryKeyword(prompt);
       assert.ok(match, `expected autopilot match for ${prompt}`);
       assert.equal(match.skill, 'autopilot');
@@ -1362,7 +1363,8 @@ describe('keyword input classification direct grammar', () => {
       { text: 'See [docs](https://example.com/(v1)/$ralplan) and use $autopilot build it', skills: ['autopilot'] },
       { text: 'See [$ralplan](https://example.com/(v1)) and use $autopilot build it', skills: ['autopilot'] },
       { text: 'See [docs](./docs.md "$ralplan (reference") and use $autopilot build it', skills: ['autopilot'] },
-      { text: 'See [autopilot mode] for details.\n\n>     [autopilot mode]: ./docs', skills: ['autopilot'] },
+      // A malformed reference definition still is not a request to run Autopilot.
+      { text: 'See [autopilot mode] for details.\n\n>     [autopilot mode]: ./docs', skills: [] },
       { text: '-\t $ralplan', skills: ['ralplan'] },
       { text: '$ralplan is prohibited but use $autopilot build it', skills: ['autopilot'] },
       { text: '$ralplan is prohibited and use $autopilot build it', skills: ['autopilot'] },
@@ -5171,7 +5173,7 @@ deepMaxRounds = 21
 
       const result = await recordSkillActivation({
         stateDir,
-        text: 'I want a starter API',
+        text: '$autopilot build a starter API',
         nowIso: '2026-02-26T00:00:00.000Z',
       });
 
