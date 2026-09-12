@@ -10885,11 +10885,20 @@ case "$1" in
     if [[ "$*" == *'#{pane_id} #{pane_dead} #{pane_pid}'* ]]; then
       printf '%%1 0 200\n'
       [[ "$panes" == *'%9'* ]] && printf '%%9 0 201\n'
+    elif [[ "$*" == *'pane_current_command'* ]]; then
+      printf '%%1\t/bin/codex\t0\t0\t80\t58\t57\t80\t61\t/bin/codex\t/tmp\t0\t200\n'
+      if [[ "$*" != *'-t %1'* && "$panes" == *'%9'* ]]; then
+        printf '%%9\tnode\t0\t59\t80\t2\t60\t80\t61\tenv OMX_SESSION_ID=sess-hud-1 OMX_TMUX_HUD_LEADER_PANE=%%1 node omx hud --watch\t/tmp\t0\t201\n'
+      fi
     elif [[ "$*" == *'pane_start_command'* ]]; then
       printf '%%1\t/bin/codex\n'
       [[ "$panes" == *'%9'* ]] && printf '%%9\tOMX_TMUX_SPLIT_OPERATION_MARKER='"'"'"$marker'"'"'; export OMX_TMUX_SPLIT_OPERATION_MARKER; node dist/cli/omx.js hud --watch\n'
     elif [[ "$panes" == *'%9'* ]]; then
-      printf '%%1\n%%9\n'
+      if [[ "$*" == *'-t %1'* ]]; then
+        printf '%%1\n'
+      else
+        printf '%%1\n%%9\n'
+      fi
     else
       printf '%%1\n'
     fi
@@ -11077,14 +11086,28 @@ case "$1" in
     if [[ "$*" == *'#{pane_id} #{pane_dead} #{pane_pid}'* ]]; then
       printf '%%1 0 200\n%%2 0 201\n'
       [[ "$panes" == *'%9'* ]] && printf '%%9 0 202\n'
+    elif [[ "$*" == *'pane_current_command'* ]]; then
+      printf '%%1\t/bin/codex\t0\t0\t80\t58\t57\t80\t61\t/bin/codex\t/tmp\t0\t200\n'
+      if [[ "$*" != *'-t %1'* ]]; then
+        printf '%%2\tnode\t0\t59\t80\t2\t60\t80\t61\tenv OMX_SESSION_ID=omx-canonical-hud-reuse OMX_TMUX_HUD_LEADER_PANE=%%1 node omx hud --watch\t/tmp\t0\t201\n'
+        [[ "$panes" == *'%9'* ]] && printf '%%9\tnode\t0\t59\t80\t2\t60\t80\t61\tenv OMX_SESSION_ID=omx-canonical-hud-reuse OMX_TMUX_HUD_LEADER_PANE=%%1 node omx hud --watch\t/tmp\t0\t202\n'
+      fi
     elif [[ "$*" == *'pane_start_command'* ]]; then
       printf '%%1\t/bin/codex\n'
       printf '%%2\texec env OMX_TMUX_HUD_OWNER='"'"'"1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'"%%1'"'"' /node /omx.js hud --watch\n'
       [[ "$panes" == *'%9'* ]] && printf '%%9\tOMX_TMUX_SPLIT_OPERATION_MARKER='"'"'"$marker'"'"'; export OMX_TMUX_SPLIT_OPERATION_MARKER; node dist/cli/omx.js hud --watch\n'
     elif [[ "$panes" == *'%9'* ]]; then
-      printf '%%1\n%%2\n%%9\n'
+      if [[ "$*" == *'-t %1'* ]]; then
+        printf '%%1\n'
+      else
+        printf '%%1\n%%2\n%%9\n'
+      fi
     else
-      printf '%%1\n%%2\n'
+      if [[ "$*" == *'-t %1'* ]]; then
+        printf '%%1\n'
+      else
+        printf '%%1\n%%2\n'
+      fi
     fi
     ;;
   display-message)

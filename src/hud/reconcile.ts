@@ -121,6 +121,7 @@ export interface ReconcileHudForPromptSubmitResult {
     | 'skipped_not_omx_owned_tmux'
     | 'skipped_no_session_id'
     | 'skipped_window_too_cramped'
+    | 'skipped_stale_leader_pane'
     | 'unchanged'
     | 'resized'
     | 'recreated'
@@ -412,6 +413,7 @@ async function releaseHudReconcileLock(lock: HudReconcileLock): Promise<void> {
 }
 
 
+// reconcileHudForPromptSubmit skips layout mutations when the tmux snapshot is untrusted or the leader pane is stale.
 export async function reconcileHudForPromptSubmit(
   cwd: string,
   deps: ReconcileHudForPromptSubmitDeps = {},
@@ -490,6 +492,25 @@ export async function reconcileHudForPromptSubmit(
 
   try {
   let panes = listPanes(currentPaneId);
+
+  // Layout hooks can outlive a Team leader pane while tmux is rebuilding the
+  // window. An empty snapshot is also untrusted because a live tmux window always
+  // contains at least one pane. Never mutate the layout unless this scoped
+  // snapshot proves that the captured leader is live; the next live leader hook
+  // will reconcile the current topology.
+  if (currentPaneId) {
+    const leaderPane = panes.find((pane) => pane.paneId === currentPaneId);
+    const leaderPaneIsMissing = leaderPane === undefined;
+    const leaderPaneIsDead = leaderPane?.paneDead === true;
+    if (panes.length === 0 || leaderPaneIsMissing || leaderPaneIsDead) {
+      return {
+        status: 'skipped_stale_leader_pane',
+        paneId: null,
+        desiredHeight: null,
+        duplicateCount: 0,
+      };
+    }
+  }
 
   // Reclaim orphaned HUD panes left behind by a destroyed leader before deciding
   // whether a HUD already exists; otherwise dead-leader HUDs accumulate one per

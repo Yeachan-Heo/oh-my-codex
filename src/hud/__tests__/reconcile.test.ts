@@ -63,6 +63,155 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(result.paneId, null);
   });
 
+  it('skips stale leader pane hooks without mutating tmux layout', async () => {
+    let created = false;
+    let resized = false;
+    let killed = false;
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: {
+        TMUX: '1',
+        TMUX_PANE: '%271',
+        OMX_SESSION_ID: 'sess-a',
+        [OMX_TMUX_HUD_OWNER_ENV]: '1',
+      },
+      // The hook captured %271, but Team has already replaced that leader pane.
+      listCurrentWindowPanes: () => [
+        { paneId: '%273', currentCommand: 'codex', startCommand: 'codex' },
+      ],
+      // The scoped snapshot has no live pane matching the stale hook target.
+      createHudWatchPane: () => {
+        created = true;
+        return '%hud';
+      },
+      resizeTmuxPane: () => {
+        resized = true;
+        return true;
+      },
+      killTmuxPane: () => {
+        killed = true;
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'skipped_stale_leader_pane');
+    assert.equal(result.paneId, null);
+    assert.equal(created, false);
+    assert.equal(resized, false);
+    assert.equal(killed, false);
+  });
+
+  it('skips an unusable empty pane snapshot without mutating tmux layout', async () => {
+    let created = false;
+    let resized = false;
+    let killed = false;
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: {
+        TMUX: '1',
+        TMUX_PANE: '%271',
+        OMX_SESSION_ID: 'sess-a',
+        [OMX_TMUX_HUD_OWNER_ENV]: '1',
+      },
+      listCurrentWindowPanes: () => [],
+      createHudWatchPane: () => {
+        created = true;
+        return '%hud';
+      },
+      resizeTmuxPane: () => {
+        resized = true;
+        return true;
+      },
+      killTmuxPane: () => {
+        killed = true;
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'skipped_stale_leader_pane');
+    assert.equal(result.paneId, null);
+    assert.equal(created, false);
+    assert.equal(resized, false);
+    assert.equal(killed, false);
+  });
+
+  it('skips a dead leader pane without mutating tmux layout', async () => {
+    let created = false;
+    let resized = false;
+    let killed = false;
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: {
+        TMUX: '1',
+        TMUX_PANE: '%271',
+        OMX_SESSION_ID: 'sess-a',
+        [OMX_TMUX_HUD_OWNER_ENV]: '1',
+      },
+      listCurrentWindowPanes: () => [
+        { paneId: '%271', currentCommand: 'zsh', startCommand: 'zsh', paneDead: true },
+      ],
+      createHudWatchPane: () => {
+        created = true;
+        return '%hud';
+      },
+      resizeTmuxPane: () => {
+        resized = true;
+        return true;
+      },
+      killTmuxPane: () => {
+        killed = true;
+        return true;
+      },
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'skipped_stale_leader_pane');
+    assert.equal(result.paneId, null);
+    assert.equal(created, false);
+    assert.equal(resized, false);
+    assert.equal(killed, false);
+  });
+
+  it('continues normal reconciliation when the scoped leader is live', async () => {
+    const resized: number[] = [];
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%271', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%271', currentCommand: 'codex', startCommand: 'codex', paneDead: false, paneHeight: 20, windowHeight: 24 },
+        {
+          paneId: '%272',
+          currentCommand: 'node',
+          paneHeight: 2,
+          paneTop: 21,
+          paneBottom: 23,
+          paneLeft: 0,
+          paneWidth: 80,
+          windowWidth: 80,
+          windowHeight: 24,
+          startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%271' node omx hud --watch`,
+        },
+      ],
+      readHudConfig: async () => ({ preset: 'focused', git: { display: 'branch' }, statusLine: { preset: 'focused' } }),
+      readAllState: async () => ({
+        version: null, gitBranch: null, ralph: null, ultragoal: null, ultrawork: null,
+        autopilot: null, ralplan: null, deepInterview: null, autoresearch: null, ultraqa: null,
+        team: null, metrics: null, hudNotify: null, session: null,
+      }),
+      resizeTmuxPane: (_pane, height) => {
+        resized.push(height);
+        return true;
+      },
+      registerHudResizeHook: () => true,
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'unchanged');
+    assert.equal(result.paneId, '%272');
+    assert.deepEqual(resized, []);
+  });
+
   for (const scenario of ['keeper', 'single-invalid', 'duplicates-invalid']) {
     it(`bounds a large roster against fresh target geometry after removing HUDs: ${scenario}`, async () => {
       const killed: string[] = [];
