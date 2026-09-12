@@ -1,3 +1,5 @@
+mod lease_mutex;
+
 use fs2::FileExt;
 use omx_mux::{canonical_contract_summary, MuxAdapter, MuxOperation, MuxTarget, TmuxAdapter};
 use omx_runtime_core::{runtime_contract_summary, RuntimeCommand, RuntimeEngine};
@@ -123,6 +125,7 @@ fn run() -> Result<(), String> {
             );
             Ok(())
         }
+        Some("lease-mutex") => lease_mutex::run(&args[1..]),
         Some("fs-rename-no-replace") => run_fs_rename_no_replace(&args[1..]),
         Some("process-identity") => run_process_identity(&args[1..]),
         Some("init") => {
@@ -533,6 +536,7 @@ fn print_usage() {
         "  snapshot [--json] [--state-dir=DIR]  print a runtime snapshot\n",
         "  mux-contract                        print the mux boundary summary\n",
         "  exec <json> [--state-dir=DIR]       process a runtime command from JSON\n",
+        "  lease-mutex <absolute-canonical-dir> <expected-dev> <expected-ino> <safe-leaf>  hold native lease mutex over stdin JSON protocol\n",
         "  init <state-dir>                    initialize a fresh state directory\n",
     ));
 }

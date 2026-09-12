@@ -87,7 +87,7 @@ Combine the `code-reviewer` recommendation and architect status. Approval requir
 
 Approval criteria: **APPROVE** only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence. **REQUEST CHANGES** for a blocker, unresolved high/critical finding, or unavailable lane. **COMMENT** may record non-blocking findings.
 
-Do not self-review as a fallback. If the `code-reviewer` or `architect` path is missing, unavailable, skipped, or fails, block approval until independent lane evidence exists. On the explicit Ralph path, findings may trigger automatic fix follow-up without another permission prompt; plain `code-review` itself remains read-only and does **not** promise auto-fix.
+Do not self-review as a fallback. If the `code-reviewer` or `architect` path is missing, unavailable, skipped, or fails, block approval until independent lane evidence exists. On the supported `omx ralph` CLI compatibility path, findings may trigger automatic fix follow-up without another permission prompt; plain `code-review` itself remains read-only and does **not** promise auto-fix.
 
 ## Evidence/output contract
 

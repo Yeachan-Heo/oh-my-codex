@@ -210,7 +210,7 @@ test('packed install smoke retains narrow boot commands and adds the isolated li
   );
 });
 
-test('packed 0.144.5 fixture is sanitized, pointer-free, and kept separate from the 0.142.5 lifecycle pin', () => {
+test('packed 0.144.5 fixture is sanitized, pointer-free, and kept separate from the 0.153.4 lifecycle pin', () => {
   assert.deepEqual(PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, {
     hook_event_name: 'PreToolUse',
     session_id: 'packed-01445-session',
@@ -415,11 +415,16 @@ test('packed lifecycle parses the pinned hooks/list eventName schema', () => {
       cwd: project,
       hooks: [{
         eventName: 'preToolUse',
+        handlerType: 'command',
         command: 'node hook.js',
         sourcePath: hooksPath,
         key: `${hooksPath}:pre_tool_use:0:0`,
         currentHash: 'sha256:current',
         displayOrder: 0,
+        enabled: true,
+        isManaged: false,
+        source: 'project',
+        timeoutSec: 0,
         trustStatus: 'trusted',
       }],
       warnings: [],
@@ -431,7 +436,7 @@ test('packed lifecycle parses the pinned hooks/list eventName schema', () => {
   assert.equal(parsed.hooks[0]?.trustStatus, 'trusted');
 });
 
-test('packed lifecycle normalizes omitted enabled handlers and rejects disabled or non-integer hook metadata', () => {
+test('packed lifecycle requires enabled command handlers and integer hook metadata', () => {
   const project = '/tmp/project';
   const hooksPath = '/tmp/project/.codex/hooks.json';
   const response = {
@@ -439,11 +444,16 @@ test('packed lifecycle normalizes omitted enabled handlers and rejects disabled 
       cwd: project,
       hooks: [{
         eventName: 'preToolUse',
+        handlerType: 'command',
         command: 'node hook.js',
         sourcePath: hooksPath,
         key: `${hooksPath}:pre_tool_use:0:0`,
         currentHash: 'sha256:current',
         displayOrder: 0,
+        enabled: true,
+        isManaged: false,
+        source: 'project',
+        timeoutSec: 0,
         trustStatus: 'trusted',
       }],
       warnings: [],
@@ -454,16 +464,57 @@ test('packed lifecycle normalizes omitted enabled handlers and rejects disabled 
 
   for (const update of [
     { enabled: false },
+    { enabled: undefined },
     { enabled: 'true' },
     { enabled: true, displayOrder: 0.5 },
     { enabled: true, displayOrder: -1 },
+    { handlerType: 'mcpTool' },
+    { handlerType: undefined },
+    { isManaged: 'false' },
+    { source: 'invalid' },
+    { timeoutSec: -1 },
+    { timeoutSec: 0.5 },
+    { timeoutSec: '10' },
+    { timeoutSec: Number.MAX_SAFE_INTEGER + 1 },
+    { eventName: 'toString' },
+    { eventName: 'unknownEvent' },
   ]) {
     const invalid = structuredClone(response);
     Object.assign(invalid.data[0]!.hooks[0]!, update);
     assert.throws(
       () => parseCodexHooksListResult(invalid, project, hooksPath),
-      /enabled command handler|invalid hooks\[0\]\.displayOrder/,
+      /enabled command handler|handlerType|not a command handler|invalid hooks\[0\]|unsupported/,
     );
+  }
+  for (const field of Object.keys(response.data[0]!.hooks[0]!)) {
+    const invalid = structuredClone(response);
+    delete (invalid.data[0]!.hooks[0]! as Record<string, unknown>)[field];
+    assert.throws(() => parseCodexHooksListResult(invalid, project, hooksPath), `missing ${field} must fail closed`);
+  }
+  for (const field of ['hooks', 'warnings', 'errors']) {
+    const invalid = structuredClone(response);
+    delete (invalid.data[0]! as Record<string, unknown>)[field];
+    assert.throws(() => parseCodexHooksListResult(invalid, project, hooksPath), `missing ${field} must fail closed`);
+  }
+  for (const eventName of ['sessionEnd', 'interrupt']) {
+    const valid = structuredClone(response);
+    valid.data[0]!.hooks[0]!.eventName = eventName;
+    assert.doesNotThrow(() => parseCodexHooksListResult(valid, project, hooksPath));
+  }
+  for (const isManaged of [true, false]) {
+    const valid = structuredClone(response);
+    valid.data[0]!.hooks[0]!.isManaged = isManaged;
+    valid.data[0]!.hooks[0]!.timeoutSec = Number.MAX_SAFE_INTEGER;
+    assert.doesNotThrow(() => parseCodexHooksListResult(valid, project, hooksPath));
+  }
+  for (const source of [
+    'system', 'user', 'project', 'mdm', 'sessionFlags', 'plugin',
+    'cloudRequirements', 'cloudManagedConfig', 'legacyManagedConfigFile',
+    'legacyManagedConfigMdm', 'unknown',
+  ]) {
+    const valid = structuredClone(response);
+    valid.data[0]!.hooks[0]!.source = source;
+    assert.doesNotThrow(() => parseCodexHooksListResult(valid, project, hooksPath), `${source} is a valid hook source`);
   }
 });
 
@@ -599,7 +650,7 @@ test('packed lifecycle resolves Windows npm shims through safe command specs for
         platform: 'win32' as const,
         spawnSyncImpl: ((command: string, args: string[], options: Record<string, unknown>) => {
           versionSpawns.push({ command, args, options });
-          return { status: 0, stdout: 'codex-cli 0.142.5\n', stderr: '', error: undefined };
+          return { status: 0, stdout: 'codex-cli 0.153.4\n', stderr: '', error: undefined };
         }) as never,
         spawnImpl: ((command: string, args: string[], options: Record<string, unknown>) => {
           appSpawns.push({ command, args, options });
@@ -608,7 +659,7 @@ test('packed lifecycle resolves Windows npm shims through safe command specs for
       };
       const env = { PATH: bin, PATHEXT: extension.toUpperCase() };
 
-      assert.equal(probeCodexVersion(root, env, seam), 'codex-cli 0.142.5');
+      assert.equal(probeCodexVersion(root, env, seam), 'codex-cli 0.153.4');
       const server = await CodexAppServer.start({ cwd: root, env, commandSeam: seam });
       await server.close();
 
@@ -701,13 +752,13 @@ test('packed lifecycle bypasses an unrelated codex binary shadowing the pinned C
     const pinned = join(pinnedDir, 'codex');
     await Promise.all([
       writeFile(shadow, '#!/bin/sh\necho "codex 0.2.3"\n'),
-      writeFile(pinned, '#!/bin/sh\necho "codex-cli 0.142.5"\n'),
+      writeFile(pinned, '#!/bin/sh\necho "codex-cli 0.153.4"\n'),
     ]);
     await Promise.all([chmod(shadow, 0o755), chmod(pinned, 0o755)]);
 
     assert.equal(
       probeCodexVersion(root, { PATH: `${shadowDir}${delimiter}${pinnedDir}` }),
-      'codex-cli 0.142.5',
+      'codex-cli 0.153.4',
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -726,7 +777,7 @@ test('packed lifecycle deduplicates repeated PATH entries before enforcing the c
     ]);
     await Promise.all([
       writeFile(join(shadowDir, 'codex'), '#!/bin/sh\necho "codex 0.2.3"\n'),
-      writeFile(join(pinnedDir, 'codex'), '#!/bin/sh\necho "codex-cli 0.142.5"\n'),
+      writeFile(join(pinnedDir, 'codex'), '#!/bin/sh\necho "codex-cli 0.153.4"\n'),
     ]);
     await Promise.all([
       chmod(join(shadowDir, 'codex'), 0o755),
@@ -737,7 +788,7 @@ test('packed lifecycle deduplicates repeated PATH entries before enforcing the c
       probeCodexVersion(root, {
         PATH: [...Array.from({ length: 40 }, () => shadowDir), pinnedDir].join(delimiter),
       }),
-      'codex-cli 0.142.5',
+      'codex-cli 0.153.4',
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -750,15 +801,16 @@ test('packed lifecycle accepts only the exact stable pinned Codex version output
   const candidateDir = join(root, 'candidate');
   const executable = join(candidateDir, 'codex');
   const candidates = [
-    { output: 'codex-cli 0.142.5', stderr: '', accepted: true },
-    { output: 'codex-cli 0.142.5', stderr: 'warning: harmless test diagnostic', accepted: true },
-    { output: 'codex-cli 0.142.5\nextra output', stderr: '', accepted: false },
-    { output: 'codex-cli 0.142.5-beta', stderr: '', accepted: false },
-    { output: 'codex-cli 0.142.5+meta', stderr: '', accepted: false },
-    { output: 'codex-cli 0.142.5.1', stderr: '', accepted: false },
-    { output: 'codex-cli v0.142.5', stderr: '', accepted: false },
+    { output: 'codex-cli 0.153.4', stderr: '', accepted: true },
+    { output: 'codex-cli 0.153.4', stderr: 'warning: harmless test diagnostic', accepted: true },
+    { output: 'codex-cli 0.153.4\nextra output', stderr: '', accepted: false },
+    { output: 'codex-cli 0.153.4-beta', stderr: '', accepted: false },
+    { output: 'codex-cli 0.153.4+meta', stderr: '', accepted: false },
+    { output: 'codex-cli 0.153.4.1', stderr: '', accepted: false },
+    { output: 'codex-cli v0.153.4', stderr: '', accepted: false },
+    { output: 'codex-cli 0.142.5', stderr: '', accepted: false },
     { output: 'codex-cli 0-142-5', stderr: '', accepted: false },
-    { output: 'codex-cli 0.142.5', stderr: 'unexpected version probe error', accepted: false },
+    { output: 'codex-cli 0.153.4', stderr: 'unexpected version probe error', accepted: false },
   ];
   try {
     await mkdir(candidateDir, { recursive: true });
@@ -769,11 +821,11 @@ test('packed lifecycle accepts only the exact stable pinned Codex version output
       );
       await chmod(executable, 0o755);
       if (candidate.accepted) {
-        assert.equal(probeCodexVersion(root, { PATH: candidateDir }), 'codex-cli 0.142.5');
+        assert.equal(probeCodexVersion(root, { PATH: candidateDir }), 'codex-cli 0.153.4');
       } else {
         assert.throws(
           () => probeCodexVersion(root, { PATH: candidateDir }),
-          /Unsupported installed Codex version for the 0\.142\.5 boundary/,
+          /Unsupported installed Codex version for the 0\.153\.4 boundary/,
         );
       }
     }
@@ -903,12 +955,12 @@ test('packed lifecycle continues after a timed-out version probe candidate', asy
     await Promise.all([mkdir(slowDir, { recursive: true }), mkdir(pinnedDir, { recursive: true })]);
     await Promise.all([
       writeFile(join(slowDir, 'codex'), '#!/bin/sh\nexec /bin/sleep 30\n'),
-      writeFile(join(pinnedDir, 'codex'), '#!/bin/sh\nprintf \'%s\\n\' \'codex-cli 0.142.5\'\n'),
+      writeFile(join(pinnedDir, 'codex'), '#!/bin/sh\nprintf \'%s\\n\' \'codex-cli 0.153.4\'\n'),
     ]);
     await Promise.all([chmod(join(slowDir, 'codex'), 0o755), chmod(join(pinnedDir, 'codex'), 0o755)]);
 
     const startedAt = Date.now();
-    assert.equal(probeCodexVersion(root, { PATH: `${slowDir}${delimiter}${pinnedDir}` }), 'codex-cli 0.142.5');
+    assert.equal(probeCodexVersion(root, { PATH: `${slowDir}${delimiter}${pinnedDir}` }), 'codex-cli 0.153.4');
     assert.ok(Date.now() - startedAt < 5_000, 'a timed-out candidate must not block later PATH candidates');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -927,14 +979,14 @@ test('packed lifecycle fails instead of skipping when Codex disappears after sta
       'state="${0}.version-count"',
       'if [ "$1" = "--version" ]; then',
       '  if [ -f "$state" ]; then /bin/rm -f "$0"; else : > "$state"; fi',
-      '  printf \'%s\\n\' \'codex-cli 0.142.5\'',
+      '  printf \'%s\\n\' \'codex-cli 0.153.4\'',
       '  exit 0',
       'fi',
       'exit 1',
       '',
     ].join('\n'));
     await chmod(executable, 0o755);
-    assert.equal(probeCodexVersion(root, { PATH: candidateDir }), 'codex-cli 0.142.5');
+    assert.equal(probeCodexVersion(root, { PATH: candidateDir }), 'codex-cli 0.153.4');
 
     await assert.rejects(
       CodexAppServer.start({ cwd: root, env: { PATH: candidateDir } }),

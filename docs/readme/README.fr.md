@@ -14,7 +14,7 @@
 
 Couche d'orchestration multi-agents pour [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Nouveautés de la v0.9.0 — Spark Initiative
+## Notes de version historiques de la v0.9.0 — Spark Initiative
 
 Spark Initiative est la version qui renforce la voie native d’exploration et d’inspection dans OMX.
 
@@ -32,7 +32,7 @@ Dans Codex :
 ```text
 $deep-interview "clarify the auth change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — quand le périmètre ou les limites restent flous.
 2. `$ralplan` — pour transformer ce périmètre clarifié en plan validé d’architecture et d’implémentation.
-3. `$team` ou `$ralph` — utilisez `$team` pour une exécution parallèle coordonnée, ou `$ralph` pour une boucle persistante de finalisation/vérification avec un seul responsable.
+3. `$team` ou `$ultragoal` — utilisez `$team` pour une exécution parallèle coordonnée, ou `$ultragoal` pour suivre durablement les objectifs jusqu’à l’achèvement.
 
 ## Modèle de base
 
@@ -193,7 +193,7 @@ Notes :
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - Entrées de serveurs MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki`)
+  - Entrées de serveurs MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (serveur wiki du dépôt), `omx_hermes` (pont borné d’état et de coordination des sessions))
   - `[tui] status_line`
 - `AGENTS.md` spécifique au scope
 - Répertoires d'exécution `.omx/` et configuration HUD
@@ -205,7 +205,7 @@ Notes :
 
 Exemples :
 - Agents : `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skills : `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
+- Skills : `autopilot`, `plan`, `team`, `ultragoal`, `cancel`
 
 ## Structure du projet
 

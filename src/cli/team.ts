@@ -30,6 +30,7 @@ import {
 } from '../team/api-interop.js';
 import { teamReadConfig as readTeamConfig, teamReadPhase as readTeamPhase } from '../team/team-ops.js';
 import { resolveTeamNameForCurrentContext } from '../team/team-identity.js';
+import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
 import { recordLeaderRuntimeActivity } from '../team/leader-activity.js';
 import { readTeamPaneStatus } from '../team/pane-status.js';
 import {
@@ -1486,16 +1487,20 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     await recordLeaderRuntimeActivity(cwd, 'team_status', resolvedName);
     const snapshot = await monitorTeam(resolvedName, cwd);
     if (!snapshot) {
+      const stateRoot = resolveCanonicalTeamStateRoot(cwd);
+      const statePath = join(stateRoot, 'team', resolvedName);
       if (wantsJson) {
         console.log(JSON.stringify({
           ...buildJsonBase(),
           command: 'omx team status',
           team_name: name,
           status: 'missing',
+          state_root: stateRoot,
+          state_path: statePath,
         }));
         return;
       }
-      console.log(`No team state found for ${name}`);
+      console.log(`No team state found for ${name} (searched: ${statePath})`);
       return;
     }
     const tailLines = parseStatusTailLines(teamArgs.slice(2));
@@ -1724,7 +1729,12 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    console.log(`Team shutdown complete: ${name}`);
+    if (summary.configExisted) {
+      console.log(`Team shutdown complete: ${name}`);
+    } else {
+      const statePath = join(resolveCanonicalTeamStateRoot(cwd), 'team', resolvedName);
+      console.log(`No team state found for ${name} (searched: ${statePath}); cleanup of selected scope completed.`);
+    }
     if (summary.commitHygieneArtifacts) {
       console.log(`commit_hygiene_context_json: ${summary.commitHygieneArtifacts.jsonPath}`);
       console.log(`commit_hygiene_context_md: ${summary.commitHygieneArtifacts.markdownPath}`);

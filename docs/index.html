@@ -28,35 +28,36 @@
         <p>Real global version bumps now print an explicit reminder instead of auto-launching <code>omx setup</code>. When you're ready, run <code>omx setup</code> manually or use <code>omx update</code> to check npm and then run the same setup refresh path. Launch-time update checks are throttled and prompt by default; set <code>OMX_AUTO_UPDATE=0</code> to disable them or <code>OMX_AUTO_UPDATE=defer</code> to schedule deferred updates without prompting. Fresh setup leaves <code>model_context_window</code> and <code>model_auto_compact_token_limit</code> unset so Codex uses the active model defaults. Rerunning setup removes only unchanged legacy values proven to have been seeded by OMX and preserves explicit, unmarked, and edited values.</p>
       </section>
 
-      <section aria-labelledby="whats-new-060">
-        <h2 id="whats-new-060">What's New in 0.6.0</h2>
+      <section aria-labelledby="whats-new-0213">
+        <h2 id="whats-new-0213">What's New in 0.21.3</h2>
+        <p class="muted">Released 2026-09-03.</p>
         <div class="grid">
           <article class="card">
-            <h3>Mixed Codex + Claude teammates</h3>
+            <h3>Team wake de-duplication</h3>
             <p>
-              Route workers per pane with <code>OMX_TEAM_WORKER_CLI_MAP</code> (for example:
-              <code>codex,codex,claude,claude</code>) so one <code>$team</code> run can use both CLIs.
+              Duplicate Team wakes are prevented and terminal projections are retired instead of lingering, so completed workers no longer re-trigger coordination work.
             </p>
           </article>
           <article class="card">
-            <h3>Claude-team leader nudges</h3>
+            <h3>Long-session transcript readability</h3>
             <p>
-              Added a leader-side all-workers-idle fallback so notifications still fire even when worker-side Codex hooks are unavailable.
+              Detached leader tmux scrollback now clamps at 5000 lines (up from 500), so long assistant responses are not discarded from scrollback.
             </p>
           </article>
           <article class="card">
-            <h3>Safer trigger retries</h3>
+            <h3>Composer prompt-drift triage</h3>
             <p>
-              Team trigger fallback now gates adaptive resend behind a ready prompt and no-active-task check, with safer clear-line resend behavior.
+              Troubleshooting docs now cover prompt input drift symptoms, measured repro cases, and tmux resize recovery.
             </p>
           </article>
           <article class="card">
-            <h3>Reliability fixes</h3>
+            <h3>Dependency updates</h3>
             <p>
-              Improved task-claim bootstrap, stricter CLI map validation, predictable <code>auto</code> resolution, and better leader pane targeting for mixed/Claude teams.
+              Updated <code>@types/node</code> to 26.4.0, <code>zod</code> to 4.5.2, and <code>@biomejs/biome</code> to 2.5.11.
             </p>
           </article>
         </div>
+        <p><a href="./release-notes-0.21.3.md">Read the full 0.21.3 release notes.</a></p>
       </section>
 
       <h2>Core Features</h2>

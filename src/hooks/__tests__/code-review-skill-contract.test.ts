@@ -60,10 +60,10 @@ describe('code-review skill contract', () => {
     assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* for a blocker, unresolved high\/critical finding, or unavailable lane/i);
   });
 
-  it('bounds auto-fix wording to the explicit ralph path only', () => {
-    assert.match(codeReviewSkill, /On the explicit Ralph path/i);
+  it('bounds auto-fix wording to the supported omx ralph compatibility path only', () => {
+    assert.match(codeReviewSkill, /On the supported `omx ralph` CLI compatibility path/i);
     assert.match(codeReviewSkill, /automatic fix follow-up without another permission prompt/i);
-    assert.match(codeReviewSkill, /Plain `code-review` itself remains read-only and does \*\*not\*\* promise auto-fix/i);
+    assert.match(codeReviewSkill, /plain `code-review` itself remains read-only and does \*\*not\*\* promise auto-fix/i);
   });
 
   it('keeps the sample output consistent with a WATCH and COMMENT outcome', () => {

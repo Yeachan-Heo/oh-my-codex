@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 export interface PromptSurfaceInventory {
@@ -37,7 +37,20 @@ export interface PromptInvariantCheckReport {
   ok: boolean;
 }
 
+export interface SizeTotals {
+  files: number;
+  physicalLines: number;
+  bytes: number;
+}
+
+export interface RepositorySizeInventory {
+  schemaVersion: 1;
+  groups: Record<'nonTestSource' | 'testSource' | 'rustSourceIncludingTests' | 'skillCards' | 'agentPrompts' | 'agentTemplate', SizeTotals>;
+  largestNonTestFiles: Array<{ path: string; physicalLines: number; bytes: number }>;
+}
+
 export interface PromptInventoryReport {
+  repositorySize: RepositorySizeInventory;
   generatedAt: string;
   root: string;
   totals: {
@@ -115,21 +128,58 @@ export const INVARIANT_PHRASE_RULES: readonly PromptInvariantPhraseRule[] = [
   },
 ];
 
-function walkFiles(root: string, dir: string, out: string[]): void {
+const EXCLUDED_INVENTORY_DIRS = new Set(['node_modules', 'dist', 'target', 'generated']);
+
+function walkFiles(root: string, dir: string, out: string[], extensions = /\.(md|ts)$/): void {
   const absoluteDir = join(root, dir);
-  if (!existsSync(absoluteDir)) return;
-  for (const entry of readdirSync(absoluteDir)) {
-    const rel = join(dir, entry);
-    const absolute = join(root, rel);
-    const stats = statSync(absolute);
-    if (stats.isDirectory()) {
-      walkFiles(root, rel, out);
-      continue;
-    }
-    if (stats.isFile() && /\.(md|ts)$/.test(entry)) {
+  if (!existsSync(absoluteDir) || !lstatSync(absoluteDir).isDirectory()) return;
+  for (const entry of readdirSync(absoluteDir, { withFileTypes: true })) {
+    const rel = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!entry.name.startsWith('.') && !EXCLUDED_INVENTORY_DIRS.has(entry.name)) {
+        walkFiles(root, rel, out, extensions);
+      }
+    } else if (entry.isFile() && extensions.test(entry.name)) {
+      // Do not follow symlinks into external installations or back into this tree.
       out.push(rel);
     }
   }
+}
+
+/** Filesystem snapshot: use a clean worktree when comparing Git revisions. */
+export function buildRepositorySizeInventory(root = process.cwd()): RepositorySizeInventory {
+  const empty = (): SizeTotals => ({ files: 0, physicalLines: 0, bytes: 0 });
+  const groups: RepositorySizeInventory['groups'] = {
+    nonTestSource: empty(), testSource: empty(), rustSourceIncludingTests: empty(),
+    skillCards: empty(), agentPrompts: empty(), agentTemplate: empty(),
+  };
+  const paths: string[] = [];
+  walkFiles(root, 'src', paths, /\.(ts|js|mjs|sh)$/);
+  walkFiles(root, 'crates', paths, /\.rs$/);
+  walkFiles(root, 'skills', paths, /^SKILL\.md$/);
+  walkFiles(root, 'prompts', paths, /\.md$/);
+  if (existsSync(join(root, 'templates/AGENTS.md')) && lstatSync(join(root, 'templates/AGENTS.md')).isFile()) paths.push('templates/AGENTS.md');
+  const largestNonTestFiles: RepositorySizeInventory['largestNonTestFiles'] = [];
+  for (const path of paths.map((entry) => entry.replaceAll('\\', '/')).sort()) {
+    let group: keyof typeof groups;
+    if (path.startsWith('src/')) {
+      group = /(?:\/__tests__\/|\.(?:test|spec)\.)/.test(path) ? 'testSource' : 'nonTestSource';
+    } else if (path.startsWith('crates/')) group = 'rustSourceIncludingTests';
+    else if (/^skills\/[^/]+\/SKILL\.md$/.test(path)) group = 'skillCards';
+    else if (/^prompts\/[^/]+\.md$/.test(path)) group = 'agentPrompts';
+    else if (path === 'templates/AGENTS.md') group = 'agentTemplate';
+    else continue;
+    const content = readFileSync(join(root, path));
+    const text = content.toString('utf-8');
+    const physicalLines = text.length === 0 ? 0 : text.split(/\r\n|\r|\n/).length - (/[\r\n]$/.test(text) ? 1 : 0);
+    const bytes = content.byteLength;
+    groups[group].files += 1;
+    groups[group].physicalLines += physicalLines;
+    groups[group].bytes += bytes;
+    if (group === 'nonTestSource') largestNonTestFiles.push({ path, physicalLines, bytes });
+  }
+  largestNonTestFiles.sort((a, b) => b.physicalLines - a.physicalLines || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { schemaVersion: 1, groups, largestNonTestFiles: largestNonTestFiles.slice(0, 10) };
 }
 
 export function listPromptSurfacePaths(root = process.cwd()): string[] {
@@ -271,6 +321,7 @@ export function buildPromptInventory(root = process.cwd(), generatedAt = new Dat
   return {
     generatedAt,
     root: resolvedRoot,
+    repositorySize: buildRepositorySizeInventory(resolvedRoot),
     totals: {
       files: surfaces.length,
       lines: surfaces.reduce((sum, surface) => sum + surface.lines, 0),
@@ -309,6 +360,14 @@ export function renderPromptInventoryMarkdown(report: PromptInventoryReport): st
     `- Lines: ${report.totals.lines}`,
     `- Approximate tokens: ${report.totals.approximateTokens}`,
     `- Absolute directive lines: ${report.totals.absoluteDirectiveCount}`,
+    '',
+    '## Repository size (physical lines; not a quality score)',
+    '',
+    '| Category | Files | Physical lines | Bytes |',
+    '| --- | ---: | ---: | ---: |',
+    ...Object.entries(report.repositorySize.groups).map(([name, group]) => `| ${name} | ${group.files} | ${group.physicalLines} | ${group.bytes} |`),
+    '',
+    'Token counts are lexical estimates, not actual model tokens or injected context. See docs/debloat-metrics.md for category definitions.',
     '',
     '## Surfaces',
     '',

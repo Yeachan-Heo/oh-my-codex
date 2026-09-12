@@ -409,12 +409,18 @@ jobs:
     timeout-minutes: 30
     needs: [changes]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    env:
+      OMX_RUNTIME_BINARY: ${{ github.workspace }}/target/debug/omx-runtime
     strategy:
       fail-fast: false
       matrix:
         node-version: [20, 26.5.1]
     steps:
       - uses: actions/checkout@v7
+      - name: Setup Rust for state-mutating Node tests
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
@@ -422,6 +428,8 @@ jobs:
       - name: Install tmux
         run: brew install tmux
       - run: npm ci
+      - name: Build current omx-runtime for state-mutating Node tests
+        run: npm run build:runtime
       - run: npm run build
       - name: Verify Darwin descriptor-relative neutralization
         run: |
@@ -446,6 +454,8 @@ jobs:
     timeout-minutes: 60
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    env:
+      OMX_RUNTIME_BINARY: ${{ github.workspace }}/target/debug/omx-runtime
     strategy:
       fail-fast: false
       matrix:
@@ -505,6 +515,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      - name: Build current omx-runtime for state-mutating Node tests
+        run: npm run build:runtime
       - name: Download prebuilt dist artifact
         uses: actions/download-artifact@v8
         with:
@@ -570,6 +582,8 @@ jobs:
     timeout-minutes: 45
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    env:
+      OMX_RUNTIME_BINARY: ${{ github.workspace }}/target/debug/omx-runtime
     steps:
       - uses: actions/checkout@v7
       - name: Install test prerequisites
@@ -579,6 +593,12 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Setup Rust for state-mutating Node tests
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Build current omx-runtime for state-mutating Node tests
+        run: npm run build:runtime
       - name: Download prebuilt dist artifact
         uses: actions/download-artifact@v8
         with:
@@ -616,6 +636,8 @@ jobs:
     timeout-minutes: 30
     needs: [changes, build-dist]
     if: ${{ needs.changes.outputs.full_suite == 'true' || needs.changes.outputs.ts_changed == 'true' || needs.changes.outputs.shared_config_changed == 'true' }}
+    env:
+      OMX_RUNTIME_BINARY: ${{ github.workspace }}/target/debug/omx-runtime
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -623,6 +645,12 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Setup Rust for state-mutating Node tests
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Build current omx-runtime for state-mutating Node tests
+        run: npm run build:runtime
       - name: Download prebuilt dist artifact
         uses: actions/download-artifact@v8
         with:

@@ -95,4 +95,4 @@ If the TUI statusline is not showing:
 
 If `omx hud` shows "No active modes":
 - This is expected when no workflows are running
-- Start a workflow (ralph, autopilot, etc.) and check again
+- Start an explicitly requested supported workflow (`$autopilot` or `$ultragoal`) and check again

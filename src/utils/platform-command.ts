@@ -1,4 +1,4 @@
-import { statSync } from 'fs';
+import { accessSync, constants, statSync } from 'fs';
 import {
   spawn,
   spawnSync,
@@ -46,6 +46,16 @@ const WINDOWS_NODE_HOSTED_COMMANDS: Record<string, string[]> = {
 function existsFileSync(path: string): boolean {
   try {
     return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isExecutableFileSync(path: string): boolean {
+  if (!existsFileSync(path)) return false;
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -161,10 +171,16 @@ function resolvePosixCommandPath(
     return existsImpl(candidate) ? candidate : null;
   }
 
-  const pathEntries = String(env.PATH ?? env.Path ?? '')
-    .split(delimiter)
-    .map((value) => value.trim())
-    .filter(Boolean);
+  // Empty PATH components resolve to the current directory under execvp
+  // semantics, so discovery must consider them to stay consistent with how a
+  // later bare-binary spawn actually resolves the command. Components are
+  // used verbatim: POSIX PATH components are colon-delimited pathnames, so
+  // whitespace is data and must not be trimmed into an empty component. An
+  // absent PATH falls back to Node's Unix default /usr/bin:/bin, while an
+  // explicitly empty PATH probes only the current directory.
+  const rawPath = env.PATH ?? env.Path;
+  const pathValue = rawPath === undefined ? '/usr/bin:/bin' : String(rawPath);
+  const pathEntries = pathValue.split(delimiter).map((entry) => (entry === '' ? '.' : entry));
 
   for (const entry of pathEntries) {
     const candidate = resolve(entry, trimmed);
@@ -210,7 +226,7 @@ export function resolveCommandPathForPlatform(
   command: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsFileSync,
+  existsImpl: ExistsSyncLike = platform === 'win32' ? existsFileSync : isExecutableFileSync,
 ): string | null {
   if (platform === 'win32') {
     return resolveWindowsCommandPath(command, env, existsImpl);
@@ -221,7 +237,7 @@ export function resolveCommandPathForPlatform(
 export function resolveTmuxBinaryForPlatform(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsFileSync,
+  existsImpl?: ExistsSyncLike,
 ): string | null {
   return resolveCommandPathForPlatform('tmux', platform, env, existsImpl);
 }

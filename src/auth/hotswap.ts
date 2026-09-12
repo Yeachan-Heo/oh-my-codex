@@ -4,7 +4,7 @@ import { homedir } from "os";
 import { buildPlatformCommandSpec, classifySpawnError } from "../utils/platform-command.js";
 import { readAuthConfig } from "./config.js";
 import { isQuotaError } from "./quota-detector.js";
-import { redactAuthSecrets } from "./redact.js";
+import { createAuthStderrRedactor, redactAuthSecrets } from "./redact.js";
 import { buildRotationPlan, nextSlotAfter } from "./rotation.js";
 import { findLatestRolloutSession } from "./sessions.js";
 import { listSlots, markSlotQuota, readAuthMetadata, useSlot } from "./storage.js";
@@ -104,11 +104,11 @@ async function runCodexDirect(
       ...(process.platform === "win32" ? { windowsHide: true } : {}),
     });
     let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      const text = redactAuthSecrets(chunk.toString("utf-8"));
+    const redactor = createAuthStderrRedactor((text) => {
       stderr += text;
       process.stderr.write(text);
     });
+    child.stderr?.on("data", (chunk: Buffer) => redactor.write(chunk));
     child.on("error", (error: NodeJS.ErrnoException) => {
       const kind = classifySpawnError(error);
       if (kind === "missing") {
@@ -120,6 +120,7 @@ async function runCodexDirect(
       }
     });
     child.on("close", (status, signal) => {
+      redactor.end();
       resolve({ status: typeof status === "number" ? status : 1, signal, stderr });
     });
   });

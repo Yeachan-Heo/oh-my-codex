@@ -2899,6 +2899,67 @@ describe('team worker CLI helpers', () => {
     );
   });
 
+  it('assertTeamWorkerCliBinaryAvailable does not execute a CLI wrapper during discovery', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-cli-probe-'));
+    const marker = join(dir, 'executed');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(join(dir, 'codex'), `#!/bin/sh\nprintf invoked > '${marker}'\n`);
+      await chmod(join(dir, 'codex'), 0o755);
+      process.env.PATH = dir;
+      assertTeamWorkerCliBinaryAvailable('codex');
+      assert.equal(fs.existsSync(marker), false, 'availability checks must not launch CLI wrappers');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('assertTeamWorkerCliBinaryAvailable detects a missing CLI without an injected probe', () => {
+    withEmptyPath(() => assert.throws(
+      () => assertTeamWorkerCliBinaryAvailable('codex'),
+      /not available on PATH/,
+    ));
+  });
+
+  it('assertTeamWorkerCliBinaryAvailable treats empty PATH components as the current directory without executing', { skip: process.platform === 'win32' }, async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omx-cli-cwd-probe-'));
+    const marker = join(dir, 'executed');
+    const previousPath = process.env.PATH;
+    const previousCwd = process.cwd();
+    try {
+      await writeFile(join(dir, 'codex'), `#!/bin/sh\nprintf invoked > '${marker}'\n`);
+      await chmod(join(dir, 'codex'), 0o755);
+      process.chdir(dir);
+      for (const pathValue of ['', ':', `:${join(dir, 'no-such-segment')}`, `${join(dir, 'no-such-segment')}:`]) {
+        process.env.PATH = pathValue;
+        assertTeamWorkerCliBinaryAvailable('codex');
+        assert.equal(fs.existsSync(marker), false, 'discovery must not execute cwd-resolved wrappers');
+      }
+    } finally {
+      process.chdir(previousCwd);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('CreateTeamSessionPartialError exposes the original startup failure and cleanup debt', () => {
+    const original = new Error('tmux_test_startup_failure');
+    const partial = {
+      name: 'isolated:1', workerCount: 1, cwd: '/tmp', workerPaneIds: ['%2'],
+      leaderPaneId: '%1', hudPaneId: null, resizeHookName: null, resizeHookTarget: null,
+      teamPaneOwnerId: 'team:test',
+    };
+    const error = new CreateTeamSessionPartialError(partial, [], original, ['worker_cleanup_failed:%2']);
+    assert.match(error.message, /^create_team_session_cleanup_incomplete/);
+    assert.match(error.message, /tmux_test_startup_failure/);
+    assert.match(error.message, /worker_cleanup_failed:%2/);
+    assert.equal(error.cause, original);
+    assert.equal(error.partialSession, partial);
+  });
+
   it('resolveTeamWorkerCliPlan supports mixed per-worker CLI map', () => {
     const plan = resolveTeamWorkerCliPlan(
       4,
@@ -7709,6 +7770,69 @@ esac
         },
       );
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps restored HUD debt durable on Windows when fsync reports EPERM (issue #3656)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-restored-hud-debt-win-eperm-'));
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const previousMsystem = process.env.MSYSTEM;
+    const previousWsl = process.env.WSL_DISTRO_NAME;
+    const previousWslInterop = process.env.WSL_INTEROP;
+    try {
+      // MSYS keeps isNativeWindows() false so this exercises the same startup
+      // persistence path as the reported `omx team` abort.
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.MSYSTEM = 'MINGW64';
+      delete process.env.WSL_DISTRO_NAME;
+      delete process.env.WSL_INTEROP;
+      await withMockTmuxFixture(
+        'omx-restored-hud-debt-win-eperm-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  list-panes)
+    if [ "$2" = "-a" ]; then
+      printf '%%11\\t0\\t2000000011\\n%%44\\t0\\t2000000044\\n'
+    else
+      printf '%%11\\tzsh\\tzsh\\n'
+    fi
+    ;;
+  split-window) printf '%%44\\n' ;;
+  *) exit 0 ;;
+esac
+`,
+        async () => {
+          let fsyncCalls = 0;
+          const paneId = withMockedFsyncSync(() => {
+            fsyncCalls += 1;
+            const error = new Error('EPERM: operation not permitted, fsync') as NodeJS.ErrnoException;
+            error.code = 'EPERM';
+            throw error;
+          }, () => restoreStandaloneHudPane('%11', cwd));
+          assert.equal(paneId, '%44');
+          assert.ok(fsyncCalls > 0, 'the durable write must still attempt fsync');
+          const debtPath = join(cwd, '.omx', 'state', '.restored-hud-cleanup-debt.json');
+          assert.deepEqual(JSON.parse(await readFile(debtPath, 'utf-8')), {
+            schema_version: 1,
+            operation: 'restored_hud_cleanup',
+            pane_id: '%44',
+            pane_pid: 2000000044,
+            leader_pane_id: '%11',
+            leader_pane_pid: 2000000011,
+            leader_pane_owner_id: null,
+            hud_owner_leader_pane_id: '%11',
+          });
+        },
+      );
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof previousMsystem === 'string') process.env.MSYSTEM = previousMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof previousWsl === 'string') process.env.WSL_DISTRO_NAME = previousWsl;
+      if (typeof previousWslInterop === 'string') process.env.WSL_INTEROP = previousWslInterop;
       await rm(cwd, { recursive: true, force: true });
     }
   });

@@ -14,7 +14,7 @@
 
 Слой мультиагентной оркестрации для [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Что нового в v0.9.0 — Spark Initiative
+## Исторические примечания к выпуску v0.9.0 — Spark Initiative
 
 Spark Initiative — это релиз, усиливающий нативный путь исследования и инспекции в OMX.
 
@@ -32,7 +32,7 @@ Spark Initiative — это релиз, усиливающий нативный 
 ```text
 $deep-interview "clarify the auth change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — когда объём задачи или границы ещё не прояснены.
 2. `$ralplan` — чтобы превратить уточнённый объём в согласованный план архитектуры и реализации.
-3. `$team` или `$ralph` — используйте `$team` для координированного параллельного выполнения, а `$ralph` — для настойчивого цикла доведения до конца и проверки с одним ответственным.
+3. `$team` или `$ultragoal` — используйте `$team` для координированного параллельного выполнения, а `$ultragoal` — чтобы вести долговечный журнал целей до завершения работы.
 
 ## Базовая модель
 
@@ -193,7 +193,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # опционально: отключить а
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - Записи MCP-серверов (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki`)
+  - Записи MCP-серверов (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (сервер вики репозитория), `omx_hermes` (ограниченный мост статуса и координации сессий))
   - `[tui] status_line`
 - `AGENTS.md` для выбранной области
 - Директории `.omx/` и конфигурация HUD
@@ -205,7 +205,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # опционально: отключить а
 
 Примеры:
 - Агенты: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Навыки: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
+- Навыки: `deep-interview`, `ralplan`, `team`, `ultragoal`, `plan`, `cancel`
 
 ## Структура проекта
 

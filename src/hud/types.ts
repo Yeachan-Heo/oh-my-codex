@@ -96,11 +96,21 @@ export interface UltraqaStateForHud {
 }
 
 /** Team state for HUD display */
+export interface TeamWorkerForHud {
+  name: string;
+  role?: string;
+  state: import('../team/state.js').WorkerStatus['state'];
+  taskId?: string;
+  paneId?: string;
+  updatedAt?: string;
+}
+
 export interface TeamStateForHud {
   active: boolean;
   current_phase?: string;
   agent_count?: number;
   team_name?: string;
+  workers?: TeamWorkerForHud[];
 }
 
 /** Active GitGuardex branch-finish progress for HUD display. */

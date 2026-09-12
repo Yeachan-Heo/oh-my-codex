@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -290,6 +290,7 @@ describe('resolveCommandPathForPlatform', () => {
     try {
       const nodePath = join(fakeBin, 'node');
       await writeFile(nodePath, '');
+      await chmod(nodePath, 0o755);
       assert.equal(
         resolveCommandPathForPlatform(
           'node',
@@ -312,6 +313,59 @@ describe('resolveCommandPathForPlatform', () => {
       ),
       null,
     );
+  });
+
+  it('falls back to /usr/bin:/bin on POSIX when PATH is absent', () => {
+    assert.equal(
+      resolveCommandPathForPlatform('node', 'linux', {}, (candidate) => candidate === '/usr/bin/node'),
+      '/usr/bin/node',
+    );
+    // An explicitly empty PATH probes only the current directory.
+    assert.equal(
+      resolveCommandPathForPlatform('node', 'linux', { PATH: '' }, (candidate) => candidate === '/usr/bin/node'),
+      null,
+    );
+  });
+
+  it('preserves whitespace PATH components verbatim on POSIX', () => {
+    // A whitespace-only component is a literal relative pathname under execvp
+    // semantics; it must not be trimmed into an empty (cwd) component.
+    assert.equal(
+      resolveCommandPathForPlatform(
+        'node',
+        'linux',
+        { PATH: '   :/usr/bin' },
+        (candidate) => candidate === '/usr/bin/node',
+      ),
+      '/usr/bin/node',
+    );
+  });
+
+  it('skips non-executable POSIX candidates and rejects a blocked absolute path', { skip: process.platform === 'win32' }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-platform-executable-'));
+    try {
+      const first = join(root, 'first');
+      const second = join(root, 'second');
+      await mkdir(first);
+      await mkdir(second);
+      for (const binary of ['codex', 'tmux']) {
+        const blocked = join(first, binary);
+        const executable = join(second, binary);
+        await writeFile(blocked, '#!/bin/sh\n');
+        await chmod(blocked, 0o644);
+        await writeFile(executable, '#!/bin/sh\n');
+        await chmod(executable, 0o755);
+        const env = { PATH: [first, second].join(delimiter) };
+        assert.equal(resolveCommandPathForPlatform(binary, process.platform, env), executable);
+        assert.equal(resolveCommandPathForPlatform(blocked, process.platform, env), null);
+        assert.equal(resolveCommandPathForPlatform(binary, process.platform, { PATH: first }), null);
+        if (binary === 'tmux') {
+          assert.equal(resolveTmuxBinaryForPlatform(process.platform, env), executable);
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

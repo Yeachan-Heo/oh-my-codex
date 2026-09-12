@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAuthConfig } from "../config.js";
-import { findLatestRolloutSession } from "../sessions.js";
+import { extractRolloutSessionId, findLatestRolloutSession } from "../sessions.js";
 
 describe("auth config", () => {
   it("merges project keys over user keys per absent key fallback", async () => {
@@ -27,6 +27,20 @@ describe("auth config", () => {
 });
 
 describe("Codex rollout session heuristic", () => {
+  it("uses session_meta payload identity instead of the timestamped filename", async () => {
+    const home = await mkdtemp(join(tmpdir(), "omx-auth-session-id-"));
+    try {
+      const id = "019c6e27-e55b-73d1-87d8-4e01f1f75043";
+      const file = join(home, `rollout-2026-09-10T10-00-00-${id}.jsonl`);
+      await writeFile(file, JSON.stringify({ type: "session_meta", payload: { id } }) + "\n");
+      assert.equal(await extractRolloutSessionId(file), id);
+      await writeFile(file, "invalid metadata\n");
+      assert.equal(await extractRolloutSessionId(file), id);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("returns newest rollout id by mtime", async () => {
     const home = await mkdtemp(join(tmpdir(), "omx-auth-sessions-"));
     try {

@@ -39,6 +39,7 @@ import {
   sendWorkerMessage,
   applyCreatedInteractiveSessionToConfig,
   reconcileStartupCleanupPanes,
+  rethrowStartupRollbackProofDebt,
   resolveWorkerLaunchArgsFromEnv,
   resolveTeamWorkerCliForResolvedLaunchArgs,
   shouldPrekillInteractiveShutdownProcessTrees,
@@ -13687,5 +13688,25 @@ exit 0
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('rethrowStartupRollbackProofDebt keeps the original startup failure as cause', () => {
+    const original = new Error('tmux_test_startup_failure');
+    assert.throws(
+      () => rethrowStartupRollbackProofDebt('startup_rollback', original, [
+        { paneId: '%2', reason: 'pane_proof_lost_during_process_teardown' },
+      ]),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(
+          error.message,
+          /^startup_rollback_pane_proof_unavailable:%2:pane_proof_lost_during_process_teardown \(during startup_rollback of: tmux_test_startup_failure\)$/,
+        );
+        assert.equal(error.cause, original);
+        return true;
+      },
+    );
+    // Without proof debt the helper must not throw at all.
+    assert.doesNotThrow(() => rethrowStartupRollbackProofDebt('startup_rollback', original, []));
   });
 });

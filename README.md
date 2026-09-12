@@ -379,7 +379,11 @@ These are operator/support surfaces:
 - `.omx-config.json` model/env routing is documented in [the model/env routing reference](./docs/reference/omx-config-schema-routing.md); only edit keys supported by your installed OMX version
 - `omx doctor` verifies the install when something seems wrong; it does not prove that the active Codex profile can make an authenticated model call
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
+- Active session teams show their name and worker count beside the OMX version (for example, `[OMX#0.21.4] team:checkout (3 workers) | repo/branch`) in every HUD preset, before long repository labels. When ultragoal is active, the combined ultragoal/team summary also takes priority over repository labels and other modes. Team discovery remains session-scoped; this does not show teams from other sessions or change when team startup publishes active state.
+- Below the summary, each team agent gets a live-refreshing row with its name, last reported state (`working`, `idle`, `blocked`, `done`, `failed`, `draining`, or `unknown`), current task ID, role, tmux pane ID, and update age when available. Columns stay aligned across different name lengths and missing fields; `working` and `done` are green, while `blocked` and `failed` are yellow. The HUD grows to fit the roster and shrinks after the team stops. Missing or malformed status files display `unknown`; a reported `working` state is not a process-liveness check. Membership and status are read without modifying team files.
 - GitGuardex finish progress is opt-in. Add `"guardex": { "enabled": true }` to the project-local `.omx/hud-config.json` to show `gx:<step>/<total> <phase>`; running review/autofix phases animate in the HUD. OMX does not read Guardex state when this flag is absent or false.
+
+Tmux roster height is bounded by live window and leader/HUD geometry, reserving at least half of their shared rows for the leader. Workers that do not fit are represented by a `+N workers` overflow row. The watch loop remeasures after resizing; unknown geometry keeps the HUD compact rather than expanding it unchecked.
 
 For non-team sessions, native Codex hooks are now the canonical lifecycle surface:
 - `plugins/oh-my-codex/hooks/hooks.json` = official plugin-scoped hook registrations for plugin installs

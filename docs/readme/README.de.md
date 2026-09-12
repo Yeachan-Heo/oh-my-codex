@@ -14,7 +14,7 @@
 
 Multi-Agenten-Orchestrierungsschicht für [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Neu in v0.9.0 — Spark Initiative
+## Historische Release Notes zu v0.9.0 — Spark Initiative
 
 Spark Initiative ist das Release, das den nativen Pfad für Exploration und Inspektion in OMX stärkt.
 
@@ -32,7 +32,7 @@ Innerhalb von Codex:
 ```text
 $deep-interview "clarify the auth change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — wenn Scope oder Grenzen noch unklar sind.
 2. `$ralplan` — um daraus einen abgestimmten Architektur- und Umsetzungsplan zu machen.
-3. `$team` oder `$ralph` — nutzen Sie `$team` für koordinierte parallele Ausführung oder `$ralph` für einen hartnäckigen Abschluss-/Verifikations-Loop mit einer verantwortlichen Instanz.
+3. `$team` oder `$ultragoal` — nutzen Sie `$team` für koordinierte parallele Ausführung oder `$ultragoal` für eine dauerhafte Zielverfolgung bis zum Abschluss.
 
 ## Kernmodell
 
@@ -193,7 +193,7 @@ Hinweise:
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - MCP-Server-Einträge (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki`)
+  - MCP-Server-Einträge (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (Repository-Wiki-Server), `omx_hermes` (begrenzte Sitzungsstatus-/Koordinationsbrücke))
   - `[tui] status_line`
 - Bereichsspezifische `AGENTS.md`
 - `.omx/`-Laufzeitverzeichnisse und HUD-Konfiguration
@@ -205,7 +205,7 @@ Hinweise:
 
 Beispiele:
 - Agenten: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skills: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
+- Skills: `deep-interview`, `ralplan`, `team`, `ultragoal`, `plan`, `cancel`
 
 ## Projektstruktur
 

@@ -1,3 +1,154 @@
+#[cfg(unix)]
+mod lease_mutex_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::MetadataExt;
+    use std::process::{Child, ChildStdout, Stdio};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    const MUTEX_LEAF: &str =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mutex";
+
+    fn temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "omx-lease-mutex-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn spawn_lease(dir: &std::path::Path) -> (Child, BufReader<ChildStdout>) {
+        let metadata = std::fs::metadata(dir).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+            .args([
+                "lease-mutex",
+                dir.to_str().unwrap(),
+                &metadata.dev().to_string(),
+                &metadata.ino().to_string(),
+                MUTEX_LEAF,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        (child, stdout)
+    }
+
+    fn read_line(reader: &mut BufReader<ChildStdout>) -> serde_json::Value {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[test]
+    fn lease_mutex_serializes_contenders() {
+        let dir = temp_dir();
+        let (mut first, mut first_out) = spawn_lease(&dir);
+        assert_eq!(read_line(&mut first_out)["ready"], true);
+        let (mut second, second_out) = spawn_lease(&dir);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = second_out;
+            let mut line = String::new();
+            let result = reader.read_line(&mut line).map(|_| line);
+            let _ = tx.send(result);
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        first
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"{\"id\":1,\"op\":\"close\"}\n")
+            .unwrap();
+        assert!(first.wait().unwrap().success());
+        let line = rx.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&line).unwrap()["ready"],
+            true
+        );
+        let _ = second.kill();
+        let _ = second.wait();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lease_mutex_releases_on_process_death() {
+        let dir = temp_dir();
+        let (mut first, mut first_out) = spawn_lease(&dir);
+        assert_eq!(read_line(&mut first_out)["ready"], true);
+        first.kill().unwrap();
+        first.wait().unwrap();
+        let (mut second, mut second_out) = spawn_lease(&dir);
+        assert_eq!(read_line(&mut second_out)["ready"], true);
+        second.kill().unwrap();
+        second.wait().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lease_mutex_rejects_symlink_and_directory_identity_mismatch() {
+        use std::os::unix::fs::symlink;
+        let dir = temp_dir();
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        symlink(&target, dir.join("link")).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+            .args([
+                "lease-mutex",
+                dir.join("link").to_str().unwrap(),
+                "0",
+                "0",
+                MUTEX_LEAF,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let metadata = std::fs::metadata(&dir).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+            .args([
+                "lease-mutex",
+                target.to_str().unwrap(),
+                &metadata.dev().to_string(),
+                &metadata.ino().to_string(),
+                MUTEX_LEAF,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lease_mutex_assert_fails_after_directory_path_replacement() {
+        let dir = temp_dir();
+        let replacement = dir.with_extension("replacement");
+        let (mut child, mut output) = spawn_lease(&dir);
+        assert_eq!(read_line(&mut output)["ready"], true);
+        std::fs::rename(&dir, &replacement).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"{\"id\":7,\"op\":\"assert\"}\n")
+            .unwrap();
+        let response = read_line(&mut output);
+        assert_eq!(response["ok"], false);
+        assert!(response["error"].as_str().unwrap().contains("identity"));
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(replacement);
+    }
+}
 use std::process::Command;
 
 #[test]
@@ -439,6 +590,7 @@ fn concurrent_exec_queue_accepts_exactly_one_request_id() {
 // ---------------------------------------------------------------------------
 
 /// Helper: run `fs-rename-no-replace <from> <to>` and return (exit_ok, stdout, stderr).
+#[cfg(target_os = "linux")]
 fn run_rename_no_replace(from: &str, to: &str) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
         .args(["fs-rename-no-replace", from, to])

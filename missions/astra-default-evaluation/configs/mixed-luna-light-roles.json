@@ -1,0 +1,15 @@
+{
+  "id": "mixed-luna-light-roles",
+  "label": "Supported override: gpt-5.6-luna for lightweight roles, Astra retained for executor and review",
+  "isBaseline": false,
+  "omxRevision": "57d596de2a3c404577ae9861f419102c5c3a804d",
+  "roles": {
+    "explore": { "model": "gpt-5.6-luna", "reasoningEffort": "medium" },
+    "executor": { "model": "gpt-6-astra", "reasoningEffort": "medium" },
+    "code-reviewer": { "model": "gpt-6-astra", "reasoningEffort": "medium" },
+    "team-worker": { "model": "gpt-5.6-luna", "reasoningEffort": "medium" },
+    "sparkshell": { "model": "gpt-5.6-luna", "reasoningEffort": "medium" }
+  },
+  "serviceTier": "unknown",
+  "cacheConditions": "unknown (Codex-owned; record observed conditions per run)"
+}
