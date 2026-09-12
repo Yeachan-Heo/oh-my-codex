@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { closeSync, chmodSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { closeSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 
@@ -38,6 +38,7 @@ import {
   spawnPlatformCommandSync,
 } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
+import { isUnsupportedWindowsSync, syncFileDescriptorSync } from '../utils/file-durability.js';
 import { readExactPaneProof, readExactPaneProofsSync, readExactPaneProofSync, type ExactPaneProof } from './exact-pane.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 
@@ -370,7 +371,7 @@ function bindSplitReceiptToPaneCommand(command: string, receipt: string): string
 export function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: string, receipt: string = sourceTransactionReceipt()): string {
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    `${effect} ; display-message -p ${shellQuoteSingle(receipt)}`,
+    `${effect} ; display-message -p ${shellQuoteSingle(receipt.replaceAll('#', '##'))}`,
     "display-message -p ''",
   ]);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);
@@ -460,11 +461,12 @@ function restoredHudCleanupDebtPath(cwd: string, stateRoot?: string | null): str
 function syncRestoredHudDebtParentSync(path: string): void {
   let descriptor: number | undefined;
   try {
+    // Windows can reject the directory open itself with EPERM, so the open and
+    // the fsync share one capability boundary.
     descriptor = openSync(dirname(path), 'r');
-    fsyncSync(descriptor);
+    syncFileDescriptorSync(descriptor);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (!(code === 'EPERM' && process.platform === 'win32')) throw error;
+    if (!isUnsupportedWindowsSync(error)) throw error;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
@@ -485,7 +487,9 @@ function persistRestoredHudCleanupDebtSync(
   writeFileSync(temporaryPath, `${JSON.stringify(debt)}\n`, { mode: 0o600 });
   const temporaryDescriptor = openSync(temporaryPath, 'r');
   try {
-    fsyncSync(temporaryDescriptor);
+    // Windows reports EPERM for fsync on an otherwise valid handle; Team
+    // startup must degrade durability there rather than abort.
+    syncFileDescriptorSync(temporaryDescriptor);
   } finally {
     closeSync(temporaryDescriptor);
   }

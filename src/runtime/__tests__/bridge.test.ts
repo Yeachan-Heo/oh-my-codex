@@ -27,33 +27,54 @@ describe('resolveRuntimeBinaryPath', () => {
   });
 
   it('prefers debug build over release and PATH fallback', () => {
-    const actual = resolveRuntimeBinaryPath({
-      debugPath: '/debug/runtime',
-      releasePath: '/release/runtime',
-      fallbackBinary: 'omx-runtime',
-      exists: (candidate) => candidate === '/debug/runtime' || candidate === '/release/runtime',
-    });
-    assert.equal(actual, '/debug/runtime');
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: (candidate) => candidate === '/debug/runtime' || candidate === '/release/runtime',
+      });
+      assert.equal(actual, '/debug/runtime');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
   });
 
   it('falls back to release build when debug is unavailable', () => {
-    const actual = resolveRuntimeBinaryPath({
-      debugPath: '/debug/runtime',
-      releasePath: '/release/runtime',
-      fallbackBinary: 'omx-runtime',
-      exists: (candidate) => candidate === '/release/runtime',
-    });
-    assert.equal(actual, '/release/runtime');
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: (candidate) => candidate === '/release/runtime',
+      });
+      assert.equal(actual, '/release/runtime');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
   });
 
   it('falls back to PATH binary when local builds are unavailable', () => {
-    const actual = resolveRuntimeBinaryPath({
-      debugPath: '/debug/runtime',
-      releasePath: '/release/runtime',
-      fallbackBinary: 'omx-runtime',
-      exists: () => false,
-    });
-    assert.equal(actual, 'omx-runtime');
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: () => false,
+      });
+      assert.equal(actual, 'omx-runtime');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
   });
 
   it('prefers the verified native cache on the production path', () => {

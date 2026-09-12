@@ -1,4 +1,4 @@
-import { statSync } from 'fs';
+import { accessSync, constants, statSync } from 'fs';
 import {
   spawn,
   spawnSync,
@@ -46,6 +46,16 @@ const WINDOWS_NODE_HOSTED_COMMANDS: Record<string, string[]> = {
 function existsFileSync(path: string): boolean {
   try {
     return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isExecutableFileSync(path: string): boolean {
+  if (!existsFileSync(path)) return false;
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -216,7 +226,7 @@ export function resolveCommandPathForPlatform(
   command: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsFileSync,
+  existsImpl: ExistsSyncLike = platform === 'win32' ? existsFileSync : isExecutableFileSync,
 ): string | null {
   if (platform === 'win32') {
     return resolveWindowsCommandPath(command, env, existsImpl);
@@ -227,7 +237,7 @@ export function resolveCommandPathForPlatform(
 export function resolveTmuxBinaryForPlatform(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsFileSync,
+  existsImpl?: ExistsSyncLike,
 ): string | null {
   return resolveCommandPathForPlatform('tmux', platform, env, existsImpl);
 }

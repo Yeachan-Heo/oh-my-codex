@@ -15,7 +15,7 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex) 的多智能体编排层。
 
-## v0.9.0 新特性 — Spark Initiative
+## v0.9.0 历史发布说明 — Spark Initiative
 
 Spark Initiative 是一次强化 OMX 原生探索与检查路径的版本发布。
 
@@ -33,7 +33,7 @@ Spark Initiative 是一次强化 OMX 原生探索与检查路径的版本发布�
 ```text
 $deep-interview "clarify the auth change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
@@ -49,7 +49,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — 当范围或边界还不清楚时，先用它澄清需求。
 2. `$ralplan` — 把澄清后的范围整理成可批准的架构与实施计划。
-3. `$team` 或 `$ralph` — 需要协调并行执行时用 `$team`，需要单一负责人持续推进到完成并验证时用 `$ralph`。
+3. `$team` 或 `$ultragoal` — 需要协调并行执行时用 `$team`，需要持久记录目标并推进到完成时用 `$ultragoal`。
 
 ## 核心模型
 
@@ -194,7 +194,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 可选：禁用自适应 queue->resend 回退
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - MCP 服务器条目（`omx_state`、`omx_memory`、`omx_code_intel`、`omx_trace`）
+  - MCP 服务器条目（`omx_state`、`omx_memory`、`omx_code_intel`、`omx_trace`、`omx_wiki`（仓库 Wiki 服务器）、`omx_hermes`（有界的会话状态/协调桥接））
   - `[tui] status_line`
 - 作用域专属 `AGENTS.md`
 - `.omx/` 运行时目录和 HUD 配置
@@ -206,7 +206,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 可选：禁用自适应 queue->resend 回退
 
 示例：
 - 代理：`architect`、`planner`、`executor`、`debugger`、`verifier`、`security-reviewer`
-- 技能：`deep-interview`、`ralplan`、`team`、`ralph`、`plan`、`cancel`
+- 技能：`deep-interview`、`ralplan`、`team`、`ultragoal`、`plan`、`cancel`
 
 ## 项目结构
 

@@ -14,7 +14,7 @@
 
 Livello di orchestrazione multi-agente per [OpenAI Codex CLI](https://github.com/openai/codex).
 
-## Novità nella v0.9.0 — Spark Initiative
+## Note di rilascio storiche della v0.9.0 — Spark Initiative
 
 Spark Initiative è la release che rafforza il percorso nativo di esplorazione e ispezione in OMX.
 
@@ -32,7 +32,7 @@ All'interno di Codex:
 ```text
 $deep-interview "clarify the auth change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — quando ambito o confini non sono ancora chiari.
 2. `$ralplan` — per trasformare l’ambito chiarito in un piano approvato di architettura e implementazione.
-3. `$team` o `$ralph` — usa `$team` per l’esecuzione parallela coordinata, oppure `$ralph` per un loop persistente di completamento/verifica con un solo responsabile.
+3. `$team` o `$ultragoal` — usa `$team` per l’esecuzione parallela coordinata, oppure `$ultragoal` per seguire in modo durevole gli obiettivi fino al completamento.
 
 ## Modello di base
 
@@ -193,7 +193,7 @@ Note:
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - Voci server MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki`)
+  - Voci server MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (server wiki del repository), `omx_hermes` (ponte limitato per stato e coordinamento delle sessioni))
   - `[tui] status_line`
 - `AGENTS.md` specifico dello scope
 - Directory di esecuzione `.omx/` e configurazione HUD
@@ -205,7 +205,7 @@ Note:
 
 Esempi:
 - Agenti: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skill: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
+- Skill: `deep-interview`, `ralplan`, `team`, `ultragoal`, `plan`, `cancel`
 
 ## Struttura del progetto
 

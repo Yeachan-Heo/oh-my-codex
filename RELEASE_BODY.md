@@ -1,31 +1,37 @@
-# oh-my-codex 0.21.4
+# oh-my-codex 0.21.5
 
-`0.21.4` is a patch release for the frozen range `v0.21.3..b08eceeecc7a7379f041ceca51260f073d8a95bb` (3 commits, 35 changed files, +364/−195; PRs #3615/#3618/#3622).
+`0.21.5` is a release for the frozen range `v0.21.4..dev` (62 commits): active-team tmux HUD, current Codex lifecycle alignment, ordinary native execution under inherited permissions, credential-provenance and Team startup fixes, portable session recovery, TOML/POSIX PATH fixes, dependency updates, and a dogfood/concurrency repair chain.
 
 ## Highlights
 
-- **Astra is the default across OMX agent tiers** — leaders, specialists, standard and fast agents, low-complexity workers, Team children, exact planning/research roles, new-agent configuration, subscription defaults, and SparkShell summaries now default to `gpt-6-astra` (#3622).
-- **Explicit choices remain authoritative** — existing model configuration, profiles, per-agent overrides, CLI/environment choices, provider-specific names, custom instructions, and reasoning-effort defaults are preserved (#3622).
-- **The agent catalog matches the packaged product** — only active/internal roles are presented as directly invocable, merged/deprecated replacements are documented, and workflow guidance is aligned with `$deep-interview` → `$ralplan` → `$ultragoal`; `$team` remains conditional parallel execution (#3618).
+- **Active Team progress in the tmux HUD:** show the active team identity and each worker's status/task, retain readable narrow layouts and leader space, use the selected runtime state root, and fence resize reconciliation by exact session ownership (#3644).
+- **Current Codex lifecycle:** align plugin-hook diagnostics/setup/uninstall with current Codex capabilities; preserve user-owned reasoning effort; dogfood the real hook trust lifecycle against exact Codex CLI 0.153.4 (#3627, #3631, #3632, #3650).
+- **Safe ordinary execution:** ordinary native implementation/reporting respects inherited permissions instead of obsolete workflow restrictions (#3637). Active guidance no longer hands users to retired workflows (#3647).
 
-## Compatibility
+## Fixes and compatibility
 
-Patch release with no intentional breaking CLI or package-layout changes. Astra defaults apply only where no explicit model choice exists.
+- Preserve credential provenance in ephemeral project-scope runtime homes and export child-safe CODEX_HOME for Team workers without persisting auth into the project (#3633).
+- Make Team startup checks side-effect free and report actionable failures (#3643).
+- Recover session pointers portably without requiring the native runtime (#3638); resolve hydrated runtime binaries through createRequire (#3639).
+- Respect TOML arrays-of-tables (#3645), and preserve POSIX PATH edge cases in command discovery (#3644).
+- Fix a real concurrency bug in canonical mode-binding lease acquisition: a removable bootstrap-owner sentinel had an ABA race that could produce an unrecoverable ambiguous multi-owner lock state under concurrent contention. Replaced with a descriptor-bound native OS advisory mutex (`omx-runtime lease-mutex`) that serializes the full observe/claim/publish/release lifecycle of every lease acquisition (#3650, #3652).
+- Repair macOS dogfood fixtures using real cross-platform process identities and platform-appropriate directory references; close retained fixture handles explicitly for Node 26 (#3650).
+- Refresh dependency lock entries (#3640, #3641, #3642), add the MIT license, and measure maintenance growth without new runtime machinery (#3646).
 
-## Known gap
+The packed-install live lifecycle is pinned to Codex 0.153.4. Unsupported installed versions fail explicitly; absence remains separately reported. This is not a claim that every other Codex version is unsupported by OMX itself.
 
-[#3623](https://github.com/Yeachan-Heo/oh-my-codex/issues/3623) remains open, separately owned, unmerged, and outside this release. OMX doctor/setup still use Codex CLI 0.153.4's removed `plugin_hooks` feature flag for plugin-hook inference and generated configuration, which can produce misleading diagnostics and obsolete config. Native `hooks/list` recognized the installed plugin hooks in the report, so a runtime hook outage has not been demonstrated.
+## Validation evidence
+
+Full compare-range candidate CI green on `dev` (final candidate `52bc1197`, CI run [34561205896](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/34561205896)). Local verification: real packed-install Codex 0.153.4 lifecycle, the complete 42-test canonical-lease suite (including repeated 20/32/64-process stress and the mutex-serialization regression), the full dependent state/modes/ralph/ralplan suite (26 files), the complete whole-product suite (439/439 test files, 0 failures), typecheck/lint/generated checks, and Rust formatting/clippy/workspace tests. The bootstrap-sentinel ABA race found via post-merge stress testing (#3652) was independently reviewed with a full-diff architecture pass (CLEAR/APPROVE, zero findings) and its own PR CI passed in full before merging to dev.
+
+Full readiness evidence: `docs/qa/release-readiness-0.21.5.md`.
 
 ## Contributors
 
-Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo) and [@ev78394](https://github.com/ev78394) for contributing to this release.
-
-## Frozen-range acknowledgements
-
-The product candidate is frozen at `dev@b08eceeecc7a7379f041ceca51260f073d8a95bb`. #3615 is release-train metadata rather than a product headline. Issue #3623 is explicitly excluded because it is unmerged and separately owned.
+Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@NagyVikt](https://github.com/NagyVikt), [@hiSandog](https://github.com/hiSandog), [@AmatsuZero](https://github.com/AmatsuZero), and [@ev78394](https://github.com/ev78394), with dependency updates from Dependabot.
 
 ## Inventory
 
-The reproducible range is recorded in `artifacts/release-0.21.4/inventory.md`.
+The reproducible range is recorded in `artifacts/release-0.21.5/inventory.md`.
 
-**Full Changelog**: [`v0.21.3...v0.21.4`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.3...v0.21.4)
+**Full Changelog**: [`v0.21.4...v0.21.5`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.4...v0.21.5)

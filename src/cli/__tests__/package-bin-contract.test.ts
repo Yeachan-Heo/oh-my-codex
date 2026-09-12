@@ -55,7 +55,7 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');
     assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node dist/scripts/run-test-files.js dist/team/__tests__/cross-rebase-smoke.test.js');
     assert.equal(pkg.scripts?.['test:node'], 'node dist/scripts/run-test-files.js dist');
-    assert.equal(pkg.scripts?.test, 'npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run verify:capabilities-lock && npm run verify:prompt-guidance && npm run test:node && node dist/scripts/generate-catalog-docs.js --check && node dist/scripts/prompt-inventory.js --check');
+    assert.equal(pkg.scripts?.test, 'npm run build && npm run build:runtime && npm run verify:native-agents && npm run verify:plugin-bundle && npm run verify:capabilities-lock && npm run verify:prompt-guidance && npm run test:node && node dist/scripts/generate-catalog-docs.js --check && node dist/scripts/prompt-inventory.js --check');
     assert.equal(pkg.scripts?.['verify:capabilities-lock'], 'node dist/scripts/verify-capabilities-lock.js');
     assert.equal(pkg.scripts?.['verify:prompt-guidance'], 'node dist/scripts/sync-prompt-guidance-fragments.js --check');
     assert.equal(pkg.scripts?.['verify:generated'], 'npm run verify:plugin-bundle && npm run verify:capabilities-lock && npm run verify:prompt-guidance && node dist/scripts/generate-catalog-docs.js --check');

@@ -1,0 +1,26 @@
+{
+  "id": "team-worker-delegated-task",
+  "surface": "team-worker",
+  "title": "Complete a bounded delegated task and hand the result back to the leader",
+  "prompt": "You are a Team worker. Add the missing `--json` flag documentation for `omx session list` to the fixture docs file, then hand back a summary stating exactly which file changed and whether the docs check passed.",
+  "inputs": {
+    "handoffContract": "Worker returns: changed files, check outcome, remaining risk. Leader repair time is recorded separately by the runner."
+  },
+  "checks": [
+    {
+      "kind": "must-include",
+      "name": "handoff-names-changed-file",
+      "values": ["docs/"]
+    },
+    {
+      "kind": "must-include",
+      "name": "handoff-states-check-outcome",
+      "values": ["check"]
+    },
+    {
+      "kind": "must-not-include",
+      "name": "no-continuation-after-completion",
+      "values": ["continuing with the next task", "starting additional work"]
+    }
+  ]
+}

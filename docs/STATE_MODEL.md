@@ -209,7 +209,7 @@ A single prompt can explicitly invoke multiple contiguous `$skill` tokens.
 Example:
 
 ```text
-$ralplan $team $ralph ship this fix
+$ralplan $team $ultragoal ship this fix
 ```
 
 Expected result:
@@ -223,7 +223,7 @@ Expected result:
 Recommended message shape:
 
 - detected keywords summary
-- deferred-skill summary, e.g. `planning preserved over simultaneous execution follow-up; deferred skills: team, ralph`
+- deferred-skill summary, e.g. `planning preserved over simultaneous execution follow-up; deferred skills: team, ultragoal`
 - final active skill / initialized state summary
 - team runtime hint only when `team` is actually among the final active skills
 

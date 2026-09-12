@@ -20,13 +20,20 @@ import {
 const roots: string[] = [];
 const operationsModuleUrl = new URL('../operations.js', import.meta.url).href;
 
-async function runTransactionProcess(path: string): Promise<void> {
+async function runTransactionProcess(path: string, options: { ready?: string; release?: string; entered?: string } = {}): Promise<void> {
   const source = [
+    `import { stat, writeFile } from 'node:fs/promises';`,
     `import { withStateFileWriteTransaction } from ${JSON.stringify(operationsModuleUrl)};`,
-    'await withStateFileWriteTransaction(process.argv[1], async () => undefined);',
+    'const ready = process.env.READY_FILE; const release = process.env.RELEASE_FILE; const entered = process.env.ENTERED_FILE;',
+    'await withStateFileWriteTransaction(process.argv[1], async () => {',
+    '  if (ready) await writeFile(ready, "ready");',
+    '  if (release) { for (;;) { try { await stat(release); break; } catch (error) { if (error.code !== "ENOENT") throw error; await new Promise(resolve => setTimeout(resolve, 5)); } } }',
+    '  if (entered) await writeFile(entered, "entered");',
+    '});',
   ].join('\n');
   const child = spawn(process.execPath, ['--input-type=module', '--eval', source, path], {
     stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+    env: { ...process.env, ...(options.ready ? { READY_FILE: options.ready } : {}), ...(options.release ? { RELEASE_FILE: options.release } : {}), ...(options.entered ? { ENTERED_FILE: options.entered } : {}) },
   });
   let stderr = '';
   child.stderr.setEncoding('utf8');
@@ -96,6 +103,28 @@ describe('canonical mode binding lease', () => {
     assert.equal(ran, true);
     assert.deepEqual(await readdir(lockPath), []);
   });
+
+  for (const kind of ['malformed', 'partial', 'symlink', 'foreign-entry'] as const) {
+    it(`rejects ${kind} extra-owner ambiguity beside its own valid owner`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-mode-extra-owner-${kind}-`));
+      roots.push(cwd);
+      const path = join(cwd, '.omx', 'state', 'sessions', 'session-a', 'ralplan-state.json');
+      const lockPath = (await resolveValidatedCanonicalModeBinding(path)).leasePath;
+      const extraToken = `${process.pid}-${Date.now()}-${'9'.repeat(24)}`;
+      const extraPath = join(lockPath, `owner-${extraToken}`);
+      const external = join(cwd, 'external-extra-owner');
+      await assert.rejects(withStateFileWriteTransaction(path, async () => {
+        if (kind === 'symlink') {
+          await writeFile(external, extraToken);
+          await symlink(external, extraPath);
+        } else {
+          await writeFile(extraPath, kind === 'malformed' ? 'tampered' : kind === 'partial' ? extraToken.slice(0, 8) : extraToken);
+        }
+        if (kind === 'foreign-entry') await writeFile(join(lockPath, 'foreign'), 'preserve');
+      }), /lock ownership lost|ambiguous|ELOOP/);
+      if (kind === 'symlink') assert.equal(await readFile(external, 'utf8'), extraToken);
+    });
+  }
 
   it('parses legacy owners and emits v3 owners bound to process start identity', async () => {
     const legacy = `${process.pid}-${Date.now()}-${'1'.repeat(24)}`;
@@ -391,6 +420,31 @@ describe('canonical mode binding lease', () => {
         assert.deepEqual(await readdir(lockPath), []);
       }
     }
+  });
+
+  it('serializes two parent transactions under the native mutex', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-mode-lease-mutex-race-'));
+    roots.push(cwd);
+    const path = join(cwd, '.omx', 'state', 'sessions', 'session-a', 'ralplan-state.json');
+    const ready = join(cwd, 'first-ready');
+    const release = join(cwd, 'first-release');
+    const entered = join(cwd, 'second-entered');
+    const first = runTransactionProcess(path, { ready, release });
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(ready)) {
+      if (Date.now() >= deadline) throw new Error('timed out waiting for first transaction readiness');
+      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 5));
+    }
+    const lockPath = (await resolveValidatedCanonicalModeBinding(path)).leasePath;
+    const second = runTransactionProcess(path, { entered });
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 150));
+    assert.equal(existsSync(entered), false);
+    const heldOwners = (await readdir(lockPath)).filter((entry) => entry.startsWith('owner-'));
+    assert.equal(heldOwners.length, 1);
+    await writeFile(release, 'release');
+    await Promise.all([first, second]);
+    assert.equal(existsSync(entered), true);
+    assert.deepEqual(await readdir(lockPath), []);
   });
 
   it('recovers quarantine plus an aged dead partial successor', async () => {

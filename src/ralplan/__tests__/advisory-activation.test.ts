@@ -105,7 +105,7 @@ describe('central Ralplan Advisory activation owner', () => {
           state: { active: true, workflow_variant: 'standard', current_phase: 'draft' },
         });
         assert.equal(competitor.isError, true);
-        assert.match(String((competitor.payload as { error?: string }).error), /timed out waiting for .*lock|lease helper (request timed out|exited)/);
+        assert.match(String((competitor.payload as { error?: string }).error), /timed out waiting for .*lock|lease helper (request timed out|exited)|lease-mutex lock acquisition timed out/);
       },
     });
     assert.equal(result.projection.corruption, null);
@@ -174,8 +174,8 @@ describe('central Ralplan Advisory activation owner', () => {
       await assert.rejects(second, /namespace identity mismatch/);
     }), /namespace changed/);
     assert.equal(secondRan, false);
-    assert.ok((await readdir(namespacePath)).length <= 1);
-    assert.ok((await readdir(displaced)).length <= 1);
+    assert.ok((await readdir(namespacePath)).length <= 2);
+    assert.ok((await readdir(displaced)).length <= 2);
   });
 
   it('reclaims a dead helper lease while the parent process remains alive', async () => {

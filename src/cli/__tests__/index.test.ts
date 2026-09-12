@@ -3685,7 +3685,6 @@ describe("project launch scope helpers", () => {
   });
 
   it("reaps a stale lock only when process-start identity proves PID reuse", async () => {
-    if (process.platform === "win32") return;
     const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-lock-pid-"));
     try {
       const lockPath = join(wd, ".omx-history.lock");
@@ -3693,8 +3692,16 @@ describe("project launch scope helpers", () => {
       await mkdir(lockPath, { mode: 0o700 });
       await writeFile(ownerPath, JSON.stringify({ token: "old", pid: process.pid, startIdentity: "reused" }));
       utimesSync(ownerPath, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
-      const lease = await acquireHistoryPersistenceLock(wd, { staleMs: 30 });
-      await releaseHistoryPersistenceLock(lease);
+      if (process.platform === "linux") {
+        const lease = await acquireHistoryPersistenceLock(wd, { staleMs: 30 });
+        await releaseHistoryPersistenceLock(lease);
+      } else {
+        await assert.rejects(
+          acquireHistoryPersistenceLock(wd, { staleMs: 30, timeoutMs: 100 }),
+          /timed out waiting for history persistence lock/,
+        );
+        assert.equal(JSON.parse(await readFile(ownerPath, "utf-8")).token, "old");
+      }
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

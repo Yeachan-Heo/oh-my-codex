@@ -14,7 +14,7 @@
 
 [OpenAI Codex CLI](https://github.com/openai/codex) için çok ajanlı orkestrasyon katmanı.
 
-## v0.9.0'daki Yenilikler — Spark Initiative
+## v0.9.0 için geçmiş sürüm notları — Spark Initiative
 
 Spark Initiative, OMX içindeki native keşif ve inceleme yolunu güçlendiren sürümdür.
 
@@ -32,7 +32,7 @@ Codex içinde:
 ```text
 $deep-interview "clarify the auth change"
 $ralplan "approve the auth plan and review tradeoffs"
-$ralph "carry the approved plan to completion"
+$ultragoal "carry the approved plan to completion"
 $team 3:executor "execute the approved plan in parallel"
 ```
 
@@ -48,7 +48,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — kapsam veya sınırlar hâlâ net değilse.
 2. `$ralplan` — netleşen kapsamı onaylanmış bir mimari ve uygulama planına dönüştürmek için.
-3. `$team` veya `$ralph` — koordineli paralel yürütme için `$team`, tek sahipli kalıcı tamamlama/doğrulama döngüsü için `$ralph` kullanın.
+3. `$team` veya `$ultragoal` — koordineli paralel yürütme için `$team`, işi tamamlanana kadar kalıcı hedef takibi için `$ultragoal` kullanın.
 
 ## Temel Model
 
@@ -193,7 +193,7 @@ Notlar:
   - `model_reasoning_effort = "medium"`
   - `developer_instructions = "..."`
   - `[features] multi_agent = true, child_agents_md = true`
-  - MCP sunucu girişleri (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki`)
+  - MCP sunucu girişleri (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (repository wiki sunucusu), `omx_hermes` (sınırlı oturum durumu/koordinasyon köprüsü))
   - `[tui] status_line`
 - Kapsama özel `AGENTS.md`
 - `.omx/` çalışma zamanı dizinleri ve HUD yapılandırması
@@ -205,7 +205,7 @@ Notlar:
 
 Örnekler:
 - Ajanlar: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skill'ler: `deep-interview`, `ralplan`, `team`, `ralph`, `plan`, `cancel`
+- Skill'ler: `deep-interview`, `ralplan`, `team`, `ultragoal`, `plan`, `cancel`
 
 ## Proje Yapısı
 

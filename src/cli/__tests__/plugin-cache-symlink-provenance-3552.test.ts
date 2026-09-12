@@ -16,7 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   PLUGIN_LAUNCHER_RECOVERY_HINT,
   hasExpectedOmxPluginCache,
@@ -33,6 +33,8 @@ import {
   resolvePackagedOmxMarketplace,
   setPluginCacheMutationHooksForTest,
 } from "../plugin-marketplace.js";
+
+import { sameFilePath } from "../../utils/paths.js";
 
 const packageRoot = process.cwd();
 
@@ -65,6 +67,10 @@ async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T>):
   } finally {
     Object.defineProperty(process, "platform", { configurable: true, value: original });
   }
+}
+
+function directoryOperationPathForTest(fd: { fd: number }, visiblePath: string): string {
+  return process.platform === "linux" ? `/proc/self/fd/${fd.fd}` : resolve(visiblePath);
 }
 
 async function packagedPluginVersion(): Promise<string> {
@@ -1282,7 +1288,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         const { open } = await import("fs/promises");
         const { constants } = await import("fs");
         const fd = await open(cacheBase, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-        const baseRef: unknown = { handle: fd, path: cacheBase, operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`, scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`, mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}` };
+        const baseRef: unknown = { handle: fd, path: cacheBase, operationPath: directoryOperationPathForTest(fd, cacheBase), scanOperationPath: directoryOperationPathForTest(fd, cacheBase), mutationPath: directoryOperationPathForTest(fd, cacheBase) };
         try {
           await removeChildIfIdentity(baseRef, victim, originalStats, { recursive: true, force: true });
         } catch (e) {
@@ -1332,9 +1338,9 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           const baseRef: unknown = {
             handle: fd,
             path: cacheBase,
-            operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
-            scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
-            mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            operationPath: directoryOperationPathForTest(fd, cacheBase),
+            scanOperationPath: directoryOperationPathForTest(fd, cacheBase),
+            mutationPath: directoryOperationPathForTest(fd, cacheBase),
           };
           try {
             await assert.rejects(
@@ -1373,12 +1379,12 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         let destinationName: string | undefined;
         const resetHooks = setPluginCacheMutationHooksForTest({
           beforeMkdirExclusive: async (parentPath, name) => {
-            if (destinationName || parentPath !== cacheDir || name === ".omx-incomplete") return;
+            if (destinationName || !sameFilePath(parentPath, cacheDir) || name === ".omx-incomplete") return;
             destinationName = name;
             await writeFile(join(parentPath, name), "staging successor\n");
           },
           beforeExclusiveCreate: async (parentPath, name) => {
-            if (destinationName || parentPath !== cacheDir || name === ".omx-incomplete") return;
+            if (destinationName || !sameFilePath(parentPath, cacheDir) || name === ".omx-incomplete") return;
             destinationName = name;
             await writeFile(join(parentPath, name), "staging successor\n");
           },
@@ -1484,9 +1490,9 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           const baseRef: unknown = {
             handle: fd,
             path: cacheBase,
-            operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
-            scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
-            mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            operationPath: directoryOperationPathForTest(fd, cacheBase),
+            scanOperationPath: directoryOperationPathForTest(fd, cacheBase),
+            mutationPath: directoryOperationPathForTest(fd, cacheBase),
           };
           try {
             await assert.rejects(
@@ -1547,9 +1553,9 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           const baseRef: unknown = {
             handle: fd,
             path: cacheBase,
-            operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
-            scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
-            mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            operationPath: directoryOperationPathForTest(fd, cacheBase),
+            scanOperationPath: directoryOperationPathForTest(fd, cacheBase),
+            mutationPath: directoryOperationPathForTest(fd, cacheBase),
           };
           try {
             await assert.rejects(

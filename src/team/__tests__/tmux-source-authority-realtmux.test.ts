@@ -78,7 +78,7 @@ function expectedIfShellArgv(source: SourcePaneAuthority, effect: string, receip
     '-t',
     source.paneId,
     sourceAuthorityPredicate(source),
-    `${effect} ; display-message -p ${quoteTmuxString(receipt)}`,
+    `${effect} ; display-message -p ${quoteTmuxString(receipt.replaceAll('#', '##'))}`,
     "display-message -p ''",
   ];
 }
@@ -145,7 +145,7 @@ describe('runSourceAuthorizedTmux real private-server argv boundary', () => {
           expectedTransactions.push(guardedSplitTransaction);
 
           const hostileValue = "literal; no-command 'still literal'";
-          const hostileReceipt = `omx_source_hostile'; kill-session -t ${source.sessionName}; #`;
+          const hostileReceipt = `omx_source_hostile'; kill-session -t ${source.sessionName}; # #{pane_id} ##`;
           const hostileEffect = `set-option -p -t ${source.paneId} @omx_hostile_3459 ${quoteTmuxString(hostileValue)}`;
           expectedTransactions.push(expectedIfShellArgv(source, hostileEffect, hostileReceipt));
           assert.equal(runSourceAuthorizedTmux(source, hostileEffect, hostileReceipt), hostileReceipt);

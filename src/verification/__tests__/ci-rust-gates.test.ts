@@ -270,6 +270,18 @@ describe('CI Rust gates', () => {
     assert.doesNotMatch(testJob, /^\s+npm run build$/m);
   });
 
+  it('provisions the current Rust runtime explicitly for Linux and Darwin state-mutating Node lanes', () => {
+    const workflow = readCiWorkflow();
+    for (const jobName of ['ralplan-preflight-macos', 'test', 'coverage-team-critical', 'ralph-persistence-gate']) {
+      const job = jobBlock(workflow, jobName);
+      assert.match(job, /OMX_RUNTIME_BINARY:\s*\$\{\{ github\.workspace \}\}\/target\/debug\/omx-runtime/);
+      assert.match(job, /uses:\s*dtolnay\/rust-toolchain@v1/);
+      assert.match(job, /toolchain:\s*stable/);
+      assert.match(job, /name:\s*Build current omx-runtime for state-mutating Node tests/);
+      assert.match(job, /run:\s*npm run build:runtime/);
+    }
+  });
+
   it('defines the native-cache-integrity matrix and aggregate-status contract exactly', () => {
     const workflow = readCiWorkflow();
     const nativeCacheJob = jobBlock(workflow, 'native-cache-integrity');

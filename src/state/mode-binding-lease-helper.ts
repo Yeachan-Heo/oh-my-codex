@@ -15,7 +15,6 @@ import {
 const INITIAL_RETRY_MS = 20;
 const MAX_RETRY_MS = 500;
 const PARTIAL_OWNER_STALE_MS = 5_000;
-const BOOTSTRAP_OWNER_TOKEN = `99999999-1-${'0'.repeat(24)}`;
 type Identity = { dev: number; ino: number };
 type OwnerIdentity = Identity & { size: number; mtimeMs: number; ctimeMs: number };
 type OwnerRecord = { name: string; token: string; identity: OwnerIdentity; claimantToken?: string };
@@ -77,9 +76,6 @@ async function readPinnedOwner(): Promise<OwnerState> {
   const ownerNames = entries.filter((entry) => entry.startsWith('owner-'));
   const displacedNames = entries.filter((entry) => entry.startsWith('.owner-reclaim-'));
   const candidateNames = entries.filter((entry) => entry.startsWith('.owner-publish-'));
-  const bootstrapName = `owner-${BOOTSTRAP_OWNER_TOKEN}`;
-  if (ownerNames.length === 2 && ownerNames.includes(bootstrapName)
-    && displacedNames.length === 0 && candidateNames.length === 0) return { kind: 'unstable' };
   if (ownerNames.length > 1 || displacedNames.length > 1 || candidateNames.length > 1
     || ownerNames.length + displacedNames.length + candidateNames.length !== entries.length) return { kind: 'ambiguous', reason: `entries:${entries.join(',')}` };
   const owner = ownerNames[0]
@@ -205,6 +201,7 @@ async function restoreDisplacedOwner(displaced: OwnerRecord): Promise<boolean> {
   }
 }
 
+
 async function maybeCrashReclaimPhase(phase: string): Promise<void> {
   if (process.env.OMX_TEST_MODE_BINDING_RECLAIM_CRASH_PHASE !== phase) return;
   const sentinel = process.env.OMX_TEST_MODE_BINDING_RECLAIM_CRASH_SENTINEL;
@@ -261,20 +258,6 @@ async function runPinnedClaimMode(args: string[]): Promise<void> {
   if (!current.isDirectory() || !parent.isDirectory()
     || !sameIdentity(current, lockIdentity) || !sameIdentity(parent, namespaceIdentity)) {
     respond({ claimed: false }); return;
-  }
-  const bootstrapName = `owner-${BOOTSTRAP_OWNER_TOKEN}`;
-  const initialEntries = await readdir('.');
-  if (initialEntries.includes(bootstrapName) && initialEntries.length > 1) {
-    const bootstrap = await readPinnedRecord(bootstrapName, BOOTSTRAP_OWNER_TOKEN);
-    if (bootstrap.kind === 'valid') {
-      const confirmedEntries = await readdir('.');
-      const confirmed = await readPinnedRecord(bootstrapName, BOOTSTRAP_OWNER_TOKEN);
-      if (confirmed.kind === 'valid' && sameOwner(bootstrap.owner, confirmed.owner)
-        && confirmedEntries.includes(bootstrapName) && confirmedEntries.length > 1) {
-        await unlink(bootstrapName);
-        respond({ claimed: false }); return;
-      }
-    }
   }
   const observed = await readPinnedOwner();
   if (observed.kind === 'unstable') { respond({ claimed: false }); return; }
@@ -345,19 +328,9 @@ async function runPinnedClaimMode(args: string[]): Promise<void> {
     if (!await replaceObservedOwner(observed.owner, replacementToken)) {
       respond({ claimed: false }); return;
     }
-  } else {
-    // Legacy empty persistent directories converge on one canonical owner
-    // pathname. This is an owner record, not a second election protocol.
+  } else if (observed.kind === 'ownerless') {
     try {
-      const bootstrapName = `owner-${BOOTSTRAP_OWNER_TOKEN}`;
-      await writeFile(bootstrapName, BOOTSTRAP_OWNER_TOKEN, { flag: 'wx', mode: 0o600 });
-      const bootstrap = await readPinnedRecord(bootstrapName, BOOTSTRAP_OWNER_TOKEN);
-      const visible = await readdir('.');
-      if (bootstrap.kind === 'valid' && (visible.length !== 1 || visible[0] !== bootstrapName)) {
-        const current = await readPinnedRecord(bootstrapName, BOOTSTRAP_OWNER_TOKEN);
-        if (current.kind === 'valid' && sameOwner(current.owner, bootstrap.owner)) await unlink(bootstrapName);
-        respond({ claimed: false }); return;
-      }
+      await writeFile(`owner-${replacementToken}`, replacementToken, { flag: 'wx', mode: 0o600 });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       respond({ claimed: false }); return;
@@ -423,10 +396,10 @@ async function assertPinnedLock(): Promise<void> {
   await assertPinnedNamespace();
   const pinned = await stat('.');
   let visible: Awaited<ReturnType<typeof lstat>>;
-  try { visible = await lstat(`../${lockName}`); } catch { throw new Error('canonical state lock ownership lost'); }
+  try { visible = await lstat(`../${lockName}`); } catch { throw new Error('canonical state lock ownership lost: pinned path missing'); }
   if (!pinned.isDirectory() || !visible.isDirectory() || visible.isSymbolicLink()
     || !sameIdentity(pinned, lockIdentity) || !sameIdentity(visible, lockIdentity)) {
-    throw new Error('canonical state lock ownership lost');
+    throw new Error('canonical state lock ownership lost: pinned identity changed');
   }
 }
 
@@ -486,7 +459,7 @@ async function acquire(): Promise<void> {
           }
           await enterPinnedLock(identity);
           const claimed = await readPinnedOwner();
-          if (claimed.kind !== 'valid' || claimed.owner.token !== token) throw new Error('canonical state lock ownership lost');
+          if (claimed.kind !== 'valid' || claimed.owner.token !== token) throw new Error(`canonical state lock ownership lost: post-claim observed ${claimed.kind}`);
           return;
         }
       } else if (visible) {
@@ -506,10 +479,10 @@ async function acquire(): Promise<void> {
 async function release(): Promise<void> {
   await assertPinnedLock();
   const observed = await readPinnedOwner();
-  if (observed.kind !== 'valid' || observed.owner.token !== token) throw new Error('canonical state lock ownership lost');
+  if (observed.kind !== 'valid' || observed.owner.token !== token) throw new Error(`canonical state lock ownership lost: release observed ${observed.kind}`);
   await unlink(`owner-${token}`);
-  // The persistent directory remains pinned; a successor converges through
-  // the fixed bootstrap owner without depending on this process's liveness.
+  // The persistent directory remains pinned; kernel mutex serialization protects
+  // the full helper lifecycle across successor acquisition and release.
 }
 
 let acquired = false;
@@ -531,7 +504,7 @@ for await (const line of acquired ? lines : []) {
     if (request.op === 'assert') {
       await assertPinnedLock();
       const observed = await readPinnedOwner();
-      if (observed.kind !== 'valid' || observed.owner.token !== token) throw new Error('canonical state lock ownership lost');
+      if (observed.kind !== 'valid' || observed.owner.token !== token) throw new Error(`canonical state lock ownership lost: assert observed ${observed.kind}`);
       respond({ id, ok: true });
     } else if (request.op === 'close') {
       await release(); respond({ id, ok: true }); break;
