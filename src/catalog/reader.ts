@@ -43,11 +43,6 @@ export function tryReadCatalogManifest(packageRoot: string = getPackageRoot()): 
   }
 }
 
-export function getCatalogCounts(packageRoot: string = getPackageRoot()): CatalogCounts {
-  const manifest = readCatalogManifest(packageRoot);
-  return summarizeCatalogCounts(manifest);
-}
-
 export interface PublicCatalogContract {
   generatedAt: string;
   version: string;
