@@ -7774,6 +7774,69 @@ esac
     }
   });
 
+  it('keeps restored HUD debt durable on Windows when fsync reports EPERM (issue #3656)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-restored-hud-debt-win-eperm-'));
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const previousMsystem = process.env.MSYSTEM;
+    const previousWsl = process.env.WSL_DISTRO_NAME;
+    const previousWslInterop = process.env.WSL_INTEROP;
+    try {
+      // MSYS keeps isNativeWindows() false so this exercises the same startup
+      // persistence path as the reported `omx team` abort.
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      process.env.MSYSTEM = 'MINGW64';
+      delete process.env.WSL_DISTRO_NAME;
+      delete process.env.WSL_INTEROP;
+      await withMockTmuxFixture(
+        'omx-restored-hud-debt-win-eperm-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  list-panes)
+    if [ "$2" = "-a" ]; then
+      printf '%%11\\t0\\t2000000011\\n%%44\\t0\\t2000000044\\n'
+    else
+      printf '%%11\\tzsh\\tzsh\\n'
+    fi
+    ;;
+  split-window) printf '%%44\\n' ;;
+  *) exit 0 ;;
+esac
+`,
+        async () => {
+          let fsyncCalls = 0;
+          const paneId = withMockedFsyncSync(() => {
+            fsyncCalls += 1;
+            const error = new Error('EPERM: operation not permitted, fsync') as NodeJS.ErrnoException;
+            error.code = 'EPERM';
+            throw error;
+          }, () => restoreStandaloneHudPane('%11', cwd));
+          assert.equal(paneId, '%44');
+          assert.ok(fsyncCalls > 0, 'the durable write must still attempt fsync');
+          const debtPath = join(cwd, '.omx', 'state', '.restored-hud-cleanup-debt.json');
+          assert.deepEqual(JSON.parse(await readFile(debtPath, 'utf-8')), {
+            schema_version: 1,
+            operation: 'restored_hud_cleanup',
+            pane_id: '%44',
+            pane_pid: 2000000044,
+            leader_pane_id: '%11',
+            leader_pane_pid: 2000000011,
+            leader_pane_owner_id: null,
+            hud_owner_leader_pane_id: '%11',
+          });
+        },
+      );
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+      if (typeof previousMsystem === 'string') process.env.MSYSTEM = previousMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof previousWsl === 'string') process.env.WSL_DISTRO_NAME = previousWsl;
+      if (typeof previousWslInterop === 'string') process.env.WSL_INTEROP = previousWslInterop;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('reuses an existing standalone HUD pane across repeated restore calls', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-reuse-hud-'));
 

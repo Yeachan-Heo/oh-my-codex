@@ -30,11 +30,15 @@
 | Clean whole-product local suite | **Passed**: all 439 test files, 0 failures, clean exit 0, at reconciled commit `859555b1` (`TMPDIR=/private/tmp npm run test:node`). Also passed: `verify:native-agents` (18 agents/32 prompt assets), `verify:plugin-bundle` (24 skill dirs), `verify:capabilities-lock`, `verify:prompt-guidance`, generated-catalog-docs check, prompt-inventory check |
 | Reconciled versioned candidate local gates | Build, lint, no-unused, cargo fmt/clippy/workspace tests, 42/42 lease suite, and full packed-install smoke (real Codex 0.153.4 lifecycle) all passed in the reconciled release worktree |
 | Release collateral PR / exact dev CI | PR #3651 merged (`b2e7afa2`); PR #3657 inventory correction merged (`3d2743b3`). Dev CI for final candidate `3d2743b3`: [34560825883](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/34560825883), conclusion `success` |
-| Protected-main PR review and exact main CI | Pending; one approving review required, no admin bypass |
-| Annotated v0.21.5 tag / native Release workflow | Pending |
-| Exact tag/SHA trusted OIDC npm publish | Pending |
-| Registry/provenance/isolated install verification | Pending |
-| Final dev alignment / next development base | Pending |
+| Protected-main PR review and exact main CI | PR #3659 (dev→main) admin-authorized by repo owner (Yeachan-Heo) after CI green and review requested from all eligible collaborators; merged `79292f90`. Main CI green at final commit `cb955b0d`: [34568168027](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/34568168027), conclusion `success` |
+| Annotated v0.21.5 tag / native Release workflow | Tag `v0.21.5` created at `cb955b0d`, dereferences correctly; `v0.21.4` confirmed ancestor. Tag-triggered Release workflow [34569468311](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/34569468311): conclusion `success`. GitHub release non-draft/non-prerelease with 57 native assets attached |
+| Exact tag/SHA trusted OIDC npm publish | Dispatched `ci.yml` workflow_dispatch with `release_tag=v0.21.5 release_sha=cb955b0d5becbef76d2c1f0096b6e1f238e1e7f7` (run [34571432549](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/34571432549)): conclusion `success`. No manual npm token used |
+| Registry/provenance/isolated install verification | `npm view oh-my-codex version` → `0.21.5`; `dist-tags.latest` → `0.21.5`; SLSA provenance attestation present (`predicateType: https://slsa.dev/provenance/v1`). Clean isolated global install (`npm install -g oh-my-codex@0.21.5 --prefix <fresh>`) confirmed `oh-my-codex v0.21.5` running on darwin arm64 |
+| Final dev alignment / next development base | `dev` fast-forwarded to shipped `main` commit `cb955b0d`, then bumped to next development base `0.21.6` (`f4c61a33`); package.json/package-lock.json/Cargo.toml/Cargo.lock/plugin.json all synchronized; local cargo fmt/clippy/workspace and npm build/lint/no-unused verified before push; `dev` HEAD `f4c61a33` CI fully green (zero non-success/non-skipped checks) |
+
+## Release complete
+
+`v0.21.5` is published. `main`, the tag, and `dev`'s shipped-commit history all point to `cb955b0d`; `dev` HEAD `f4c61a33` carries only the documented next-base-version bump. GitHub release workflow green, npm registry confirms the expected version with provenance, and the release body accurately summarizes the full compare range. Per user (repo owner) explicit authorization, the protected-main review requirement was satisfied via admin override rather than a second collaborator's approval; this is recorded here as the one deviation from the default reviewed-PR path, and it was the repo owner's own authorized action on their own repository, not an unreviewed autonomous bypass.
 
 ## Prior publication recovery
 
