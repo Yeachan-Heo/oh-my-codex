@@ -125,17 +125,3 @@ export const REMOVED_SKILLS: Readonly<Record<string, RemovedSkillInfo>> = Object
 export function getRemovedSkillInfo(token: string): RemovedSkillInfo | undefined {
   return REMOVED_SKILLS[token.toLowerCase()];
 }
-
-export function isRemovedSkill(token: string): boolean {
-  return token.toLowerCase() in REMOVED_SKILLS;
-}
-
-export function formatRemovedSkillError(rawToken: string): string {
-  const normalized = rawToken.replace(/^\$(?:oh-my-codex:)?/i, "").toLowerCase();
-  const info = getRemovedSkillInfo(normalized);
-  if (!info) return `Skill "${rawToken}" has been removed.`;
-  return info.message.replace(/\$\S+/g, (m) => {
-    if (m.toLowerCase().includes(normalized)) return rawToken;
-    return m;
-  });
-}

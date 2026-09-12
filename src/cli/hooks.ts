@@ -5,7 +5,6 @@ import { pathToFileURL } from 'url';
 import { buildHookEvent } from '../hooks/extensibility/events.js';
 import { dispatchHookEvent } from '../hooks/extensibility/dispatcher.js';
 import { discoverHookPlugins, isHookPluginsEnabled } from '../hooks/extensibility/loader.js';
-import type { HookPluginDescriptor } from '../hooks/extensibility/types.js';
 
 const HELP = `
 Usage:
@@ -223,8 +222,4 @@ async function testHooks(): Promise<void> {
       console.log(`log file: ${logPath}`);
     }
   }
-}
-
-export function formatHooksStatusLine(plugin: HookPluginDescriptor): string {
-  return plugin.fileName;
 }
