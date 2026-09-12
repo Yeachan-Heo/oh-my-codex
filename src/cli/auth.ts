@@ -5,7 +5,6 @@ import { spawnPlatformCommandSync, classifySpawnError } from "../utils/platform-
 import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
 import { readAuthConfig } from "../auth/config.js";
 import { resolveLiveAuthPath } from "../auth/paths.js";
-import { redactAuthSecrets } from "../auth/redact.js";
 import { addSlotFromAuthFile, listSlots, useSlot } from "../auth/storage.js";
 import { readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
 
@@ -155,8 +154,4 @@ export async function authCommand(args: string[], env: NodeJS.ProcessEnv = proce
   }
 
   throw new Error(`Unknown auth command: ${command}\n${AUTH_HELP.trim()}`);
-}
-
-export function formatAuthError(err: unknown): string {
-  return redactAuthSecrets(err);
 }

@@ -37,16 +37,6 @@ export function getInstallableNativeAgentNames(
   );
 }
 
-export function getNonInstallableNativeAgentNames(
-  manifest: Pick<CatalogManifest, "agents">,
-): Set<string> {
-  return new Set(
-    manifest.agents
-      .filter((agent) => !isNativeAgentInstallableStatus(agent.status))
-      .map((agent) => agent.name),
-  );
-}
-
 export function isSetupPromptAssetName(
   promptName: string,
   manifest: Pick<CatalogManifest, "agents">,
