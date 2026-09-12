@@ -251,18 +251,6 @@ const STABLE_FINAL_RECOMMENDATION_PATTERNS = [
 ] as const;
 const RELEASE_READINESS_FINALIZE_SYSTEM_MESSAGE =
   "OMX release-readiness detected a stable final recommendation with no active worker tasks; emit one concise final decision summary and finalize.";
-const EXECUTION_HANDOFF_PATTERNS = [
-  /^(?:好|好的|行|可以|那就|那现在)?[，,\s]*(?:开始|继续|直接)\s*(?:执行|优化|实现|修改|修复)(?=$|\s|[，,。.!！?？])/u,
-  /(?:按照|按|基于)(?:这个|上述|当前)?\s*(?:plan|计划|方案).{0,16}(?:开始|继续|直接)?\s*(?:执行|优化|实现|修改|修复)/u,
-  /(?:不用|别|不要).{0,6}讨论/u,
-  /\b(?:start|begin|go ahead(?: and)?|proceed(?: now)?)\s+(?:to\s+)?(?:implement|execute|apply|fix)\b/i,
-  /\b(?:according to|based on)\s+(?:the|this|that)\s+plan\b.{0,20}\b(?:start|begin|proceed(?: now)?|go ahead(?: and)?)\b/i,
-] as const;
-const SHORT_FOLLOWUP_PRIORITY_PATTERNS = [
-  /^(?:继续|接着|然后|那就|那现在|还有(?:一个)?问题|这些优化都做了么|这些都做了么|现在呢|本轮|当前轮|这一轮)/u,
-  /(?:按照|按|基于)(?:这个|上述|当前)?(?:plan|计划|方案)/u,
-  /\b(?:follow up|latest request|this turn|current turn|newest request)\b/i,
-] as const;
 const RALPH_CONTINUATION_INTENT_PATTERNS = [
   /\b(?:continue|resume|keep going|carry on|proceed|finish|complete)\b/i,
   /\b(?:same|current|active|that|this)\s+(?:ralph|task|work|job|workflow)\b/i,
@@ -708,34 +696,6 @@ function safePositiveInteger(value: unknown): number | null {
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number.parseInt(value.trim(), 10);
     if (Number.isInteger(parsed) && parsed > 0) return parsed;
-  }
-  return null;
-}
-
-function normalizePromptSignalText(text: string): string {
-  return text.trim().replace(/\s+/g, " ");
-}
-
-function looksLikeExecutionHandoffPrompt(prompt: string): boolean {
-  const normalized = normalizePromptSignalText(prompt);
-  if (!normalized) return false;
-  return EXECUTION_HANDOFF_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
-function looksLikeShortFollowupPrompt(prompt: string): boolean {
-  const normalized = normalizePromptSignalText(prompt);
-  if (!normalized) return false;
-  if (looksLikeExecutionHandoffPrompt(normalized)) return true;
-  if (normalized.length > 240) return false;
-  return SHORT_FOLLOWUP_PRIORITY_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
-function buildPromptPriorityMessage(prompt: string): string | null {
-  if (looksLikeExecutionHandoffPrompt(prompt)) {
-    return "Newest user input is an execution handoff for the current task. Treat it as authorization to act now against the latest approved plan/request. Do not restate the prior plan unless the user explicitly asks for a recap or status update.";
-  }
-  if (looksLikeShortFollowupPrompt(prompt)) {
-    return "Newest user input is a same-thread follow-up. Answer that latest follow-up directly and prefer it over older unresolved prompts when choosing what to do next.";
   }
   return null;
 }
@@ -2690,8 +2650,8 @@ function buildAutopilotPromptActivationNote(
 
 function formatExecutionHandoffList(cwd: string): string {
   return readTeamModeConfig(cwd).enabled
-    ? "`$ultragoal`, `$team`, or `$ralph`"
-    : "`$ultragoal` or `$ralph`";
+    ? "`$ultragoal` or `$team`"
+    : "`$ultragoal`";
 }
 
 function buildAdditionalContextMessage(
@@ -2702,14 +2662,13 @@ function buildAdditionalContextMessage(
 ): string | null {
   const prompt = classification.originalText;
   if (!prompt) return null;
-  const promptPriorityMessage = buildPromptPriorityMessage(prompt);
   if (payload && isTypedAgentRolePayload(payload, cwd)) {
-    return promptPriorityMessage;
+    return null;
   }
   // Sunset stub: removed skills produce a clean "removed, use X" additionalContext immediately
   if (classification.removedMatches && classification.removedMatches.length > 0) {
     const msg = classification.removedMatches.map((m) => m.message).join(" ");
-    return `OMX native UserPromptSubmit: ${msg} ${promptPriorityMessage}`.trim();
+    return `OMX native UserPromptSubmit: ${msg}`.trim();
   }
   const teamMode = readTeamModeConfig(cwd);
   const matches = classification.matches.filter((entry) => teamMode.enabled || entry.skill !== "team");
@@ -2724,7 +2683,7 @@ function buildAdditionalContextMessage(
       && !classification.hasExplicitLikeInvocation
       && skillState?.active === true
       && Boolean(continuedSkill);
-    if (!eligibleMarkedContinuation && !eligibleOrdinaryContinuation) return promptPriorityMessage;
+    if (!eligibleMarkedContinuation && !eligibleOrdinaryContinuation) return null;
     const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
       ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
       : null;
@@ -2734,7 +2693,6 @@ function buildAdditionalContextMessage(
       markedQuestionAnswer
         ? `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}"; workflow-like tokens inside the marked omx question answer are treated as answer text, not a new workflow activation.`
         : `OMX native UserPromptSubmit continued active workflow skill "${continuedSkill}".`,
-      promptPriorityMessage,
       skillState?.initialized_mode && skillState.initialized_state_path
         ? buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path)
         : null,
@@ -2754,16 +2712,10 @@ function buildAdditionalContextMessage(
     ? skillState.deferred_skills
     : [];
   const teamDetected = activeSkills.includes("team");
-  const ralphPromptActivationNote = skillState?.initialized_mode === "ralph"
-    ? "Prompt-side `$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`. Use `omx ralph --prd ...` only when you explicitly want the PRD-gated CLI startup path."
-    : null;
   const deepInterviewPromptActivationNote = skillState?.initialized_mode === "deep-interview"
     ? buildDeepInterviewQuestionBridgeInstruction(cwd, payload)
     : null;
   const deepInterviewConfigPromptActivationNote = buildDeepInterviewConfigInstruction(cwd, skillState);
-  const ultraworkPromptActivationNote = skillState?.initialized_mode === "ultrawork"
-    ? "Ultrawork protocol: ground the task before editing, define pass/fail acceptance criteria, keep shared-file work local, and use direct-tool plus background evidence lanes only for truly independent work. Direct ultrawork provides lightweight verification only; Ralph owns persistence and the full verified-completion promise."
-    : null;
   const ultragoalPromptActivationNote = match.skill === "ultragoal"
     ? "Ultragoal protocol: use `omx ultragoal create-goals` / `complete-goals` / `checkpoint` for `.omx/ultragoal` artifacts, then use Codex goal model tools only from the active agent handoff (`get_goal`, `create_goal`, `update_goal`) and never overwrite a different active Codex goal. Ultragoal does not call `/goal clear`; for multiple sequential ultragoal runs in one Codex session/thread, manually clear the completed Codex goal in the UI before creating the next aggregate goal."
     : null;
@@ -2780,7 +2732,6 @@ function buildAdditionalContextMessage(
     return [
       `OMX native UserPromptSubmit capability warning for workflow keyword "${match.keyword}" -> ${match.skill}.`,
       skillState.transition_error,
-      promptPriorityMessage,
       'Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.',
     ].join(' ');
   }
@@ -2793,7 +2744,6 @@ function buildAdditionalContextMessage(
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
-      promptPriorityMessage,
       ultragoalPromptActivationNote,
       autopilotPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
@@ -2818,11 +2768,9 @@ function buildAdditionalContextMessage(
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
-      promptPriorityMessage,
       initializedStateMessage,
       deepInterviewPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
-      ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,
       autopilotPromptActivationNote,
       buildTeamRuntimeInstruction(cwd, payload),
@@ -2838,19 +2786,16 @@ function buildAdditionalContextMessage(
       deferredSkills.length > 0
         ? `planning preserved over simultaneous execution follow-up; deferred skills: ${deferredSkills.join(", ")}.`
         : null,
-      promptPriorityMessage,
       buildSkillStateCliInstruction(skillState.initialized_mode, skillState.initialized_state_path),
       deepInterviewPromptActivationNote,
       deepInterviewConfigPromptActivationNote,
-      ultraworkPromptActivationNote,
       ultragoalPromptActivationNote,
       autopilotPromptActivationNote,
-      ralphPromptActivationNote,
       "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules.",
     ].join(" ");
   }
 
-  return [detectedKeywordMessage, promptPriorityMessage, ultragoalPromptActivationNote, autopilotPromptActivationNote, "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules."].filter(Boolean).join(" ");
+  return [detectedKeywordMessage, ultragoalPromptActivationNote, autopilotPromptActivationNote, "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules."].filter(Boolean).join(" ");
 }
 
 

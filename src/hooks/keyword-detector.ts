@@ -1027,14 +1027,14 @@ const KEYWORD_INTENT_PATTERNS: Record<IntentKeyword, RegExp[]> = {
     /(?:^|[^\w])\$(?:ultragoal)\b/i,
     /^\s*\/ultragoal\b/i,
     /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?ultragoal\b/i,
-    /\bultragoal\s+(?:mode|workflow|skill|loop|plan|goals?)\b/i,
+    /^\s*(?:please\s+)?ultragoal\s+(?:mode|workflow|skill|loop|plan|goals?)\s*[.!]?\s*$/i,
   ],
   autopilot: [
+    /^\s*autopilot\s+(?:mode|workflow|skill|loop)\s+(?:should|must|can)\s+be\s+(?:used|enabled|run)\s*[.!]?\s*$/i,
     /(?:^|[^\w])\$(?:autopilot)\b/i,
     /^\s*\/autopilot\b/i,
-    /^\s*(?:please\s+)?autopilot(?:\s+(?:this|mode|workflow|skill|loop|now))?\s*[.!]?\s*$/i,
-    /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?autopilot(?:\s+(?:mode|workflow|skill|loop|now))?\s*[.!]?\s*$/i,
-    /\bautopilot\s+(?:mode|workflow|skill|loop)\b/i,
+    /^\s*(?:please\s+)?autopilot\s+(?:this|mode|workflow|skill|loop|now)\s*[.!]?\s*$/i,
+    /\b(?:use|run|start|enable|launch|invoke|activate|resume|continue)\s+(?:the\s+)?autopilot(?:\s+(?:mode|workflow|skill|loop|now))?(?:\s+(?:for|on|to)\s+.+)?\s*[.!]?\s*$/i,
   ],
 };
 
