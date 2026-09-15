@@ -140,6 +140,17 @@ describe('parseTmuxTail', () => {
     assert.strictEqual(parseTmuxTail(raw), 'Hello world');
   });
 
+  for (const [name, raw] of [
+    ['private mode parameters', '\x1b[?25lHello world\x1b[?25h'],
+    ['colon-separated color parameters', '\x1b[38:2::255:0:0mHello world\x1b[0m'],
+    ['intermediate bytes', '\x1b[2 qHello world'],
+    ['non-alphabetic final bytes', '\x1b[200~Hello world\x1b[201~'],
+  ]) {
+    it(`strips ANSI CSI sequences with ${name}`, () => {
+      assert.strictEqual(parseTmuxTail(raw), 'Hello world');
+    });
+  }
+
   it('removes lines starting with spinner characters ●⎿✻·◼', () => {
     const raw = [
       '● Thinking...',

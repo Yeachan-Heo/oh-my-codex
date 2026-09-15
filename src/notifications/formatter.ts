@@ -9,7 +9,7 @@ import type { FullNotificationPayload } from "./types.js";
 import { basename } from "path";
 
 /** ANSI CSI escape sequences and two-character escapes */
-const ANSI_RE = /\x1b(?:[@-Z\\-_]|\[[0-9;]*[A-Za-z])/g;
+const ANSI_RE = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 /** OMX UI chrome: spinner/progress indicator characters */
 const SPINNER_LINE_RE = /^[●⎿✻·◼]/;

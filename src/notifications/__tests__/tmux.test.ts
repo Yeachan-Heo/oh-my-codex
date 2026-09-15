@@ -290,6 +290,18 @@ describe('captureTmuxPane', () => {
 });
 
 describe('sanitizeTmuxAlertText', () => {
+  it('drops metadata-only lines wrapped in ANSI CSI sequences', () => {
+    const raw = [
+      '\x1b[?25lturns:4\x1b[?25h',
+      '\x1b[38:2::255:0:0mturns:4\x1b[0m',
+      '\x1b[2 qturns:4',
+      '\x1b[200~turns:4\x1b[201~',
+      'stderr: Error: test suite failed',
+    ].join('\n');
+
+    assert.equal(sanitizeTmuxAlertText(raw), 'stderr: Error: test suite failed');
+  });
+
   it('drops metadata-only branch and HUD summary lines', () => {
     const raw = [
       'fix/issue-1525-post-stop-keyword-replay',
