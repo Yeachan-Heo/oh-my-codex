@@ -49,6 +49,41 @@ describe("auth secret redaction", () => {
     assert.match(output, /oversized stderr record suppressed\nquota exceeded\n$/);
   });
 
+  it("preserves a quota line when the oversized record and next line share one write", () => {
+    let output = "";
+    const redactor = createAuthStderrRedactor((text) => { output += text; });
+    redactor.write(Buffer.from(`${"x".repeat(70_000)}\nerror: 429 quota exceeded\n`));
+    redactor.end();
+    assert.equal(output, "[omx auth] oversized stderr record suppressed\nerror: 429 quota exceeded\n");
+  });
+
+  it("preserves a quota line when the oversized record terminator arrives separately", () => {
+    let output = "";
+    const redactor = createAuthStderrRedactor((text) => { output += text; });
+    redactor.write(Buffer.from("x".repeat(70_000)));
+    redactor.write(Buffer.from("\n"));
+    redactor.write(Buffer.from("error: 429 quota exceeded\n"));
+    redactor.end();
+    assert.equal(output, "[omx auth] oversized stderr record suppressed\nerror: 429 quota exceeded\n");
+  });
+
+  it("resumes when an overflowing chunk contains the record terminator and next record start", () => {
+    let output = "";
+    const redactor = createAuthStderrRedactor((text) => { output += text; });
+    redactor.write(Buffer.from(`${"x".repeat(70_000)}\nerror: 429`));
+    redactor.write(Buffer.from(" quota exceeded\n"));
+    redactor.end();
+    assert.equal(output, "[omx auth] oversized stderr record suppressed\nerror: 429 quota exceeded\n");
+  });
+
+  it("redacts credentials on a line after an oversized record", () => {
+    let output = "";
+    const redactor = createAuthStderrRedactor((text) => { output += text; });
+    redactor.write(Buffer.from(`${"x".repeat(70_000)}\n{"access_token":"next-secret"}\n`));
+    redactor.end();
+    assert.equal(output, '[omx auth] oversized stderr record suppressed\n{"access_token":"[REDACTED]"}\n');
+  });
+
   it("redacts multiline token fields that arrive after suppression resumes", () => {
     let output = "";
     const redactor = createAuthStderrRedactor((text) => { output += text; });

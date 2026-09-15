@@ -75,8 +75,18 @@ export function createAuthStderrRedactor(emit: (text: string) => void): {
       pending += part;
       if (pending.length > MAX_STDERR_RECORD_LENGTH) {
         emit("[omx auth] oversized stderr record suppressed\n");
-        suppressedBoundaryWindow = appendSecretBoundaryWindow("", pending);
+        const boundaryWindow = appendSecretBoundaryWindow("", pending);
         pending = "";
+        // A part ending in a newline already completed the oversized record, so
+        // suppression must stop here instead of consuming the next record.
+        // Keep suppressing only when the retained tail could precede a secret
+        // value, or when the record is still open.
+        if (part.endsWith("\n") && !INCOMPLETE_SECRET_PATTERN.test(boundaryWindow)) {
+          suppressedBoundaryWindow = "";
+          dropping = false;
+          continue;
+        }
+        suppressedBoundaryWindow = boundaryWindow;
         dropping = true;
         continue;
       }
