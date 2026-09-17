@@ -124,10 +124,10 @@ Wenn gesetzt, werden `workingDirectory`-Werte außerhalb dieser Wurzeln abgelehn
 Standardmäßig injiziert OMX:
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-Dies kombiniert `AGENTS.md` aus `CODEX_HOME` mit dem Projekt-`AGENTS.md` (falls vorhanden) und legt dann die Laufzeit-Überlagerung darüber.
+Diese generierte Datei enthält ausschließlich das OMX-Laufzeit-Overlay (`<!-- OMX:RUNTIME:START -->` bis `<!-- OMX:RUNTIME:END -->`). Dauerhafte Anweisungen aus `CODEX_HOME/AGENTS.md` und Projekt-`AGENTS.md` werden nicht hineinkopiert, sondern genau einmal über die native AGENTS-Erkennung von Codex geladen. Team-Worker bilden ihre Worker-Anweisungen weiterhin selbst.
 Es erweitert das Codex-Verhalten, ersetzt/umgeht aber nicht die Codex-Kernsystemrichtlinien.
 
 Steuerung:

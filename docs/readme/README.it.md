@@ -124,10 +124,10 @@ Quando impostato, i valori `workingDirectory` al di fuori di queste root vengono
 Per impostazione predefinita, OMX inietta:
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-Questo unisce l'`AGENTS.md` di `CODEX_HOME` con l'`AGENTS.md` del progetto (se presente) e poi aggiunge l'overlay di runtime.
+Quel file generato contiene solo l'overlay di runtime OMX (da `<!-- OMX:RUNTIME:START -->` a `<!-- OMX:RUNTIME:END -->`). Le indicazioni durevoli di `CODEX_HOME/AGENTS.md` e degli `AGENTS.md` di progetto non vengono copiate: Codex le carica una sola volta con la sua discovery nativa di AGENTS. I worker Team continuano a comporre le proprie istruzioni.
 Estende il comportamento di Codex, ma non sostituisce/aggira le policy di sistema core di Codex.
 
 Controlli:

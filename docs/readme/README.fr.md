@@ -124,10 +124,10 @@ Lorsque défini, les valeurs `workingDirectory` en dehors de ces racines sont re
 Par défaut, OMX injecte :
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-Cela fusionne le `AGENTS.md` de `CODEX_HOME` avec le `AGENTS.md` du projet (s'il existe), puis ajoute l'overlay d'exécution.
+Ce fichier généré ne contient que l'overlay d'exécution OMX (`<!-- OMX:RUNTIME:START -->` à `<!-- OMX:RUNTIME:END -->`). Les instructions durables de `CODEX_HOME/AGENTS.md` et des `AGENTS.md` de projet n'y sont pas copiées : Codex les charge une seule fois via sa découverte native AGENTS. Les workers Team composent toujours leurs propres instructions.
 Cela étend le comportement de Codex, mais ne remplace/contourne pas les politiques système de base de Codex.
 
 Contrôles :

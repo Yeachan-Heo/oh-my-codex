@@ -124,10 +124,10 @@ Cuando se establece, los valores de `workingDirectory` fuera de estas raíces so
 Por defecto, OMX inyecta:
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-Esto combina el `AGENTS.md` de `CODEX_HOME` con el `AGENTS.md` del proyecto (si existe) y luego añade la superposición de runtime.
+Ese archivo generado contiene únicamente la superposición de runtime de OMX (`<!-- OMX:RUNTIME:START -->` a `<!-- OMX:RUNTIME:END -->`). La guía duradera de `CODEX_HOME/AGENTS.md` y de los `AGENTS.md` del proyecto no se copia ahí: Codex la carga una sola vez mediante su descubrimiento nativo de AGENTS. Los workers de Team siguen componiendo sus propias instrucciones.
 Extiende el comportamiento de Codex, pero no reemplaza ni elude las políticas centrales del sistema Codex.
 
 Controles:

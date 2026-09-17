@@ -144,10 +144,10 @@ export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
 預設情況下，OMX 注入：
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-這會將 `CODEX_HOME` 中的 `AGENTS.md` 與專案的 `AGENTS.md`（若存在）合併，然後再附加執行期 overlay。
+這個產生的檔案只包含 OMX 執行期 overlay（`<!-- OMX:RUNTIME:START -->` 到 `<!-- OMX:RUNTIME:END -->`）。`CODEX_HOME/AGENTS.md` 與專案 `AGENTS.md` 不會被複製進去，Codex 會透過原生 AGENTS 探索只載入一次。Team worker 仍自行組合其 worker 指示。
 此舉擴充了 Codex 的行為，但不會取代或繞過 Codex 核心系統策略。
 
 控制方式：

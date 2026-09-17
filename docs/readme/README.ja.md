@@ -125,10 +125,10 @@ export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
 デフォルトでは、OMXは以下を注入します：
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-これは`CODEX_HOME`の`AGENTS.md`とプロジェクトの`AGENTS.md`（存在する場合）を結合し、その上にランタイムオーバーレイを追加します。
+この生成ファイルには OMX のランタイムオーバーレイ（`<!-- OMX:RUNTIME:START -->` から `<!-- OMX:RUNTIME:END -->`）のみが含まれます。`CODEX_HOME/AGENTS.md` とプロジェクトの `AGENTS.md` は複製されず、Codex のネイティブ AGENTS ディスカバリで一度だけ読み込まれます。Team ワーカーは従来どおり独自のワーカー指示を構成します。
 Codexの動作を拡張しますが、Codexのコアシステムポリシーを置き換えたりバイパスしたりしません。
 
 制御：

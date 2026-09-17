@@ -18,8 +18,6 @@ import { readFile, writeFile, mkdir, rm } from "fs/promises";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
 import {
-  codexHome,
-  listInstalledSkillDirectories,
   omxNotepadPath,
   omxProjectMemoryPath,
   omxStateDir,
@@ -41,18 +39,11 @@ import {
   listActiveSkills,
   readVisibleSkillActiveStateForStateDir,
 } from "../state/skill-active.js";
-import {
-  OMX_GENERATED_AGENTS_MARKER,
-  OMX_MANAGED_AGENTS_END_MARKER,
-  OMX_MANAGED_AGENTS_START_MARKER,
-} from "../utils/agents-md.js";
-
 const START_MARKER = "<!-- OMX:RUNTIME:START -->";
 const END_MARKER = "<!-- OMX:RUNTIME:END -->";
 const WORKER_START_MARKER = "<!-- OMX:TEAM:WORKER:START -->";
 const WORKER_END_MARKER = "<!-- OMX:TEAM:WORKER:END -->";
 const MAX_OVERLAY_SIZE = 3500;
-const SKILL_REFERENCE_PATTERN = /\/skills\/([^/\s`]+)\/SKILL\.md\b/g;
 
 // ── Lock helpers ─────────────────────────────────────────────────────────────
 
@@ -599,55 +590,17 @@ export function sessionModelInstructionsPath(
   return join(getStateDir(cwd, sessionId), "AGENTS.md");
 }
 
-function dropShadowedSkillReferenceLines(
-  content: string,
-  shadowedSkillNames: ReadonlySet<string>,
-): string {
-  if (shadowedSkillNames.size === 0) return content;
-
-  const lines = content.split("\n");
-  const keptLines = lines.filter((line) => {
-    SKILL_REFERENCE_PATTERN.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = SKILL_REFERENCE_PATTERN.exec(line)) !== null) {
-      if (shadowedSkillNames.has(match[1] || "")) {
-        return false;
-      }
-    }
-    return true;
-  });
-
-  return keptLines.join("\n");
-}
-
-function stripOmxManagedAgentsBlocks(content: string): string {
-  let next = content;
-
-  while (true) {
-    const startIndex = next.indexOf(OMX_MANAGED_AGENTS_START_MARKER);
-    if (startIndex < 0) return next;
-
-    const endIndex = next.indexOf(
-      OMX_MANAGED_AGENTS_END_MARKER,
-      startIndex + OMX_MANAGED_AGENTS_START_MARKER.length,
-    );
-    if (endIndex < 0) return next;
-
-    const replaceEnd = endIndex + OMX_MANAGED_AGENTS_END_MARKER.length;
-    next = `${next.slice(0, startIndex)}${next.slice(replaceEnd)}`;
-  }
-}
-
-function stripGeneratedOmxAgentsForSession(content: string): string {
-  const withoutManagedBlocks = stripOmxManagedAgentsBlocks(content).trim();
-  if (withoutManagedBlocks.includes(OMX_GENERATED_AGENTS_MARKER)) return "";
-  return withoutManagedBlocks;
-}
-
 /**
- * Build a session-scoped AGENTS.md that combines user-level CODEX_HOME
- * instructions, project instructions (if any), and the runtime overlay,
- * without mutating the source AGENTS.md files.
+ * Write the session-scoped model instructions file.
+ *
+ * The file carries only the OMX runtime overlay. Durable global
+ * (`${CODEX_HOME}/AGENTS.md`) and project `AGENTS.md` guidance is owned by
+ * Codex native AGENTS discovery and must not be copied into this second
+ * instruction channel, otherwise the same rules reach the model twice.
+ *
+ * Team workers compose their own instructions in `src/team/worker-bootstrap.ts`
+ * and are deliberately out of scope here: they support non-Codex providers that
+ * have no native AGENTS discovery.
  */
 export async function writeSessionModelInstructionsFile(
   cwd: string,
@@ -656,41 +609,7 @@ export async function writeSessionModelInstructionsFile(
 ): Promise<string> {
   const sessionPath = sessionModelInstructionsPath(cwd, sessionId);
   await mkdir(dirname(sessionPath), { recursive: true });
-
-  const baseParts: string[] = [];
-  const userAgentsPath = join(codexHome(), "AGENTS.md");
-  const sourcePaths = [userAgentsPath, join(cwd, "AGENTS.md")];
-  const seenPaths = new Set<string>();
-  const installedSkills = await listInstalledSkillDirectories(cwd);
-  const projectSkillNames = new Set(
-    installedSkills
-      .filter((skill) => skill.scope === "project")
-      .map((skill) => skill.name),
-  );
-
-  for (const sourcePath of sourcePaths) {
-    if (seenPaths.has(sourcePath) || !existsSync(sourcePath)) continue;
-    seenPaths.add(sourcePath);
-
-    let content = await readFile(sourcePath, "utf-8");
-    content = stripOverlayContent(content).trim();
-    if (sourcePath === userAgentsPath) {
-      content = dropShadowedSkillReferenceLines(
-        content,
-        projectSkillNames,
-      ).trim();
-    } else {
-      content = stripGeneratedOmxAgentsForSession(content);
-    }
-    if (!content) continue;
-    baseParts.push(content);
-  }
-
-  const base = baseParts.join("\n\n");
-  const composed =
-    base.trim().length > 0 ? `${base}\n\n${overlay}\n` : `${overlay}\n`;
-
-  await writeFile(sessionPath, composed);
+  await writeFile(sessionPath, `${overlay}\n`);
   return sessionPath;
 }
 

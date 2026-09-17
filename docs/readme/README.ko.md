@@ -125,10 +125,10 @@ export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
 기본적으로 OMX는 다음을 주입합니다:
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-이것은 `CODEX_HOME`의 `AGENTS.md`와 프로젝트 `AGENTS.md`(있는 경우)를 병합한 뒤 런타임 오버레이를 추가합니다.
+이 생성 파일에는 OMX 런타임 오버레이(`<!-- OMX:RUNTIME:START -->` ~ `<!-- OMX:RUNTIME:END -->`)만 들어갑니다. `CODEX_HOME/AGENTS.md`와 프로젝트 `AGENTS.md`는 복사되지 않고 Codex 네이티브 AGENTS 디스커버리를 통해 한 번만 로드됩니다. Team 워커는 계속 자체 워커 지시문을 구성합니다.
 Codex 동작을 확장하지만, Codex 핵심 시스템 정책을 대체/우회하지 않습니다.
 
 제어:

@@ -124,10 +124,10 @@ export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
 По умолчанию OMX внедряет:
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-Это объединяет `AGENTS.md` из `CODEX_HOME` с проектным `AGENTS.md` (если он есть), а затем добавляет runtime-overlay.
+Этот сгенерированный файл содержит только runtime-overlay OMX (от `<!-- OMX:RUNTIME:START -->` до `<!-- OMX:RUNTIME:END -->`). Постоянные инструкции из `CODEX_HOME/AGENTS.md` и проектных `AGENTS.md` в него не копируются: Codex загружает их один раз через нативный поиск AGENTS. Воркеры Team по-прежнему формируют свои инструкции сами.
 Расширяет поведение Codex, но не заменяет/обходит основные системные политики Codex.
 
 Управление:

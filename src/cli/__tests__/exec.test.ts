@@ -162,7 +162,7 @@ describe('omx exec', () => {
     }
   });
 
-  it('runs codex exec with session-scoped instructions that preserve AGENTS and overlay content', async () => {
+  it('runs codex exec with overlay-only session instructions so durable AGENTS load once via Codex discovery', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-exec-cli-'));
     try {
       const home = join(wd, 'home');
@@ -172,8 +172,8 @@ describe('omx exec', () => {
 
       await mkdir(join(home, '.codex'), { recursive: true });
       await mkdir(fakeBin, { recursive: true });
-      await writeFile(join(home, '.codex', 'AGENTS.md'), '# User Instructions\n\nGlobal guidance.\n');
-      await writeFile(join(wd, 'AGENTS.md'), '# Project Instructions\n\nProject guidance.\n');
+      await writeFile(join(home, '.codex', 'AGENTS.md'), '# User Instructions\n\nUSER_AGENTS_SENTINEL\n');
+      await writeFile(join(wd, 'AGENTS.md'), '# Project Instructions\n\nPROJECT_AGENTS_SENTINEL\n');
       await writeFile(
         fakeCodexPath,
         [
@@ -208,9 +208,14 @@ describe('omx exec', () => {
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:exec --model gpt-5 say hi /);
       assert.match(result.stdout, /instructions-path:.*\/\.omx\/state\/sessions\/omx-.*\/AGENTS\.md/);
-      assert.match(result.stdout, /# User Instructions/);
-      assert.match(result.stdout, /# Project Instructions/);
       assert.match(result.stdout, /<!-- OMX:RUNTIME:START -->/);
+      assert.match(result.stdout, /<!-- OMX:RUNTIME:END -->/);
+      // Codex natively discovers the durable user/project AGENTS files, so the
+      // explicit session instructions must not carry a second copy.
+      assert.doesNotMatch(result.stdout, /USER_AGENTS_SENTINEL/);
+      assert.doesNotMatch(result.stdout, /PROJECT_AGENTS_SENTINEL/);
+      assert.equal(await readFile(join(home, '.codex', 'AGENTS.md'), 'utf-8'), '# User Instructions\n\nUSER_AGENTS_SENTINEL\n');
+      assert.equal(await readFile(join(wd, 'AGENTS.md'), 'utf-8'), '# Project Instructions\n\nPROJECT_AGENTS_SENTINEL\n');
 
       const sessionRoot = join(wd, '.omx', 'state', 'sessions');
       const sessionEntries = await readdir(sessionRoot);

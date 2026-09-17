@@ -124,10 +124,10 @@ Ayarlandığında, bu kökler dışındaki `workingDirectory` değerleri reddedi
 Varsayılan olarak, OMX şunu enjekte eder:
 
 ```text
--c model_instructions_file="<cwd>/AGENTS.md"
+-c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
 ```
 
-Bu, `CODEX_HOME` içindeki `AGENTS.md` ile proje `AGENTS.md` dosyasını (varsa) birleştirir ve ardından çalışma zamanı kaplamasını ekler.
+Bu üretilen dosya yalnızca OMX çalışma zamanı kaplamasını içerir (`<!-- OMX:RUNTIME:START -->` ile `<!-- OMX:RUNTIME:END -->` arası). `CODEX_HOME/AGENTS.md` ve proje `AGENTS.md` dosyalarındaki kalıcı yönlendirme buraya kopyalanmaz; Codex bunları kendi doğal AGENTS keşfiyle bir kez yükler. Team workerları kendi talimatlarını oluşturmaya devam eder.
 Codex davranışını genişletir, ancak Codex çekirdek sistem politikalarını değiştirmez/atlamaz.
 
 Kontroller:

@@ -82,8 +82,9 @@ omx --madmax --xhigh
 # /skills: add 20 unrelated skills "just in case"</code></pre>
 
       <h2>Prompt Instruction Source</h2>
-      <p>OMX layers project instructions by default (extends Codex behavior, does not replace/bypass Codex core system policies):</p>
-      <pre><code>-c model_instructions_file="&lt;cwd&gt;/AGENTS.md"</code></pre>
+      <p>OMX adds a session-scoped runtime instructions file by default (extends Codex behavior, does not replace/bypass Codex core system policies):</p>
+      <pre><code>-c model_instructions_file="&lt;cwd&gt;/.omx/state/sessions/&lt;session-id&gt;/AGENTS.md"</code></pre>
+      <p>That generated file contains only the OMX runtime overlay delimited by <code>&lt;!-- OMX:RUNTIME:START --&gt;</code> and <code>&lt;!-- OMX:RUNTIME:END --&gt;</code>. Durable guidance is <strong>not</strong> copied into it: <code>${CODEX_HOME}/AGENTS.md</code> and project <code>AGENTS.md</code> files are loaded once by Codex native AGENTS discovery in root-to-current-directory precedence order, so the same rules never reach the model twice. Team workers compose their own worker instructions because they also support providers without native AGENTS discovery.</p>
       <p>Override behavior when needed:</p>
       <pre><code>OMX_BYPASS_DEFAULT_SYSTEM_PROMPT=0 omx
 OMX_MODEL_INSTRUCTIONS_FILE=/path/to/instructions.md omx</code></pre>
