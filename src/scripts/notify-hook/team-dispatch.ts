@@ -1139,6 +1139,21 @@ function buildDispatchAttemptEvidence(result, fallback = {}) {
   };
 }
 
+async function listTeamDirectories(teamRoot: string): Promise<string[]> {
+  const entries = await readdir(teamRoot, { withFileTypes: true }).catch(() => []);
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      names.push(entry.name);
+      continue;
+    }
+    if (!entry.isSymbolicLink()) continue;
+    const resolved = await stat(join(teamRoot, entry.name)).catch(() => null);
+    if (resolved?.isDirectory()) names.push(entry.name);
+  }
+  return names;
+}
+
 export async function drainPendingTeamDispatch({
   cwd,
   stateDir = resolveBridgeStateDir(cwd),
@@ -1158,7 +1173,10 @@ export async function drainPendingTeamDispatch({
   const teamRoot = join(stateDir, 'team');
   if (!existsSync(teamRoot)) return { processed: 0, skipped: 0, failed: 0 };
 
-  const teams = await readdir(teamRoot).catch(() => []);
+  // `.omx/state/team` also holds plain files (e.g. `notice-ledger.json`).
+  // Only real directories are Team roots; treating a file as one makes every
+  // dispatch-state write fail with ENOTDIR on `<file>/dispatch`.
+  const teams = await listTeamDirectories(teamRoot);
 
   let processed = 0;
   let skipped = 0;
