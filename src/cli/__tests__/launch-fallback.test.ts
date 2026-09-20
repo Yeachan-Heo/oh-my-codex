@@ -709,6 +709,51 @@ exec "$NODE_BINARY" -e 'const fs = require("node:fs"); const path = require("nod
       await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
+
+  it('preserves user-global AGENTS for project-only resume without prior runtime homes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-project-resume-agents-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCapturePath = join(wd, 'fake-codex.json');
+      await mkdir(join(home, '.codex'), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(home, '.codex', 'AGENTS.md'), 'project resume global guidance\n');
+      await writeExecutable(
+        join(fakeBin, 'codex'),
+        `#!/bin/sh
+exec "$NODE_BINARY" -e 'const fs = require("node:fs"); const path = require("node:path"); fs.writeFileSync(process.env.OMX_FAKE_CODEX_CAPTURE_PATH, JSON.stringify({ argv: process.argv.slice(1), globalAgents: fs.readFileSync(path.join(process.env.CODEX_HOME, "AGENTS.md"), "utf-8") }))' -- "$@"
+`,
+      );
+
+      const result = runOmx(
+        wd,
+        ['--direct', 'resume', '--project'],
+        {
+          HOME: home,
+          USERPROFILE: home,
+          PATH: `${fakeBin}:/usr/bin:/bin`,
+          NODE_BINARY: process.execPath,
+          OMX_AUTO_UPDATE: '0',
+          OMX_BYPASS_DEFAULT_SYSTEM_PROMPT: '0',
+          OMX_HOOK_DERIVED_SIGNALS: '0',
+          OMX_NOTIFY_FALLBACK: '0',
+          OMX_FAKE_CODEX_CAPTURE_PATH: fakeCapturePath,
+        },
+      );
+
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      const captured = JSON.parse(await readFile(fakeCapturePath, 'utf-8')) as {
+        argv: string[];
+        globalAgents: string;
+      };
+      assert.deepEqual(captured.argv, ['resume']);
+      assert.equal(captured.globalAgents, 'project resume global guidance\n');
+    } finally {
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    }
+  });
 });
 
 describe('ordinary launch root collision guidance', () => {

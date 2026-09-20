@@ -1109,7 +1109,16 @@ const PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES = new Set([
 // them as user-scope config alongside the canonical project-scope copies under
 // <cwd>/.codex, duplicating every native hook and asking the user to re-trust
 // hooks on every launch. See GH issue #2470.
-const PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES = new Set(["hooks.json"]);
+const USER_GLOBAL_AGENTS_FILE_NAMES = ["AGENTS.override.md", "AGENTS.md"] as const;
+
+// Project-local .codex entries are mirrored into CODEX_HOME and therefore
+// become user-scope configuration. Keep native project configuration in its
+// canonical location, and materialize the caller's real user-global AGENTS
+// source separately below.
+const PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES = new Set([
+  "hooks.json",
+  ...USER_GLOBAL_AGENTS_FILE_NAMES,
+]);
 
 function shouldMirrorProjectLaunchRuntimeEntry(entryName: string, includeHistoryArtifacts: boolean): boolean {
   if (PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entryName)) return true;
@@ -2046,11 +2055,62 @@ export async function persistProjectLaunchRuntimeAuthState(
 export interface PrepareRuntimeCodexHomeForProjectLaunchOptions {
   includeHistoryArtifacts?: boolean;
   extraHistoryCodexHomes?: string[];
+  userCodexHome?: string;
   createSymlink?: typeof symlink;
   beforeHistoryEntryCopy?: MaterializeProjectLaunchRuntimeHistoryOptions["beforeCopy"];
   afterHistoryEntryValidation?: MaterializeProjectLaunchRuntimeHistoryOptions["afterValidation"];
   afterHistoryEntryStage?: MaterializeProjectLaunchRuntimeHistoryOptions["afterStage"];
   afterHistorySourceOpen?: MaterializeProjectLaunchRuntimeHistoryOptions["afterSourceOpen"];
+}
+
+function resolveUserCodexHomeForLaunch(env: NodeJS.ProcessEnv): string {
+  const explicitCodexHome = env.CODEX_HOME?.trim();
+  if (explicitCodexHome) return explicitCodexHome;
+  const userHome = env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+  return join(userHome, ".codex");
+}
+
+async function materializeUserGlobalAgentsFile(
+  runtimeCodexHome: string,
+  userCodexHome: string | undefined,
+): Promise<void> {
+  if (!userCodexHome) return;
+  for (const entryName of USER_GLOBAL_AGENTS_FILE_NAMES) {
+    const source = join(userCodexHome, entryName);
+    let sourceHandle;
+    try {
+      sourceHandle = await open(source, "r");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.warn(`[omx] unable to read user-global ${entryName}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      continue;
+    }
+    try {
+      const sourceStat = await sourceHandle.stat();
+      const contents = sourceStat.isFile() ? await sourceHandle.readFile() : undefined;
+      // Match Codex's native global discovery contract: override first, then
+      // AGENTS.md, using only the first non-empty regular file. Opening the
+      // source first preserves normal symlink behavior while keeping selection
+      // and copied contents bound to the same open file.
+      if (!contents || contents.toString("utf-8").trim() === "") continue;
+      const destination = join(runtimeCodexHome, entryName);
+      const temporary = `${destination}.omx-agents-${randomUUID()}`;
+      const mode = sourceStat.mode & 0o777;
+      try {
+        await writeFile(temporary, contents, { mode });
+        await chmod(temporary, mode);
+        await rename(temporary, destination);
+        return;
+      } finally {
+        await rm(temporary, { force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      console.warn(`[omx] unable to materialize user-global ${entryName}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      await sourceHandle.close();
+    }
+  }
 }
 
 export async function prepareRuntimeCodexHomeForProjectLaunch(
@@ -2065,6 +2125,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
 
   if (!existsSync(projectCodexHome)) {
     await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome, new Set(), options.createSymlink);
+    await materializeUserGlobalAgentsFile(runtimeCodexHome, options.userCodexHome);
     return runtimeCodexHome;
   }
 
@@ -2141,6 +2202,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     skippedHistoryEntryNames,
     options.createSymlink,
   );
+  await materializeUserGlobalAgentsFile(runtimeCodexHome, options.userCodexHome);
 
 
   return runtimeCodexHome;
@@ -2172,7 +2234,11 @@ export async function prepareCodexHomeForLaunch(
       cwd,
       sessionId,
       projectLocalCodexHomeForCleanup,
-      { includeHistoryArtifacts: options.includeHistoryArtifacts, extraHistoryCodexHomes: options.extraHistoryCodexHomes },
+      {
+        includeHistoryArtifacts: options.includeHistoryArtifacts,
+        extraHistoryCodexHomes: options.extraHistoryCodexHomes,
+        userCodexHome: resolveUserCodexHomeForLaunch(env),
+      },
     );
     // Issue #3629: the runtime home replaces CODEX_HOME for this session, and
     // Codex only resolves credentials from CODEX_HOME/auth.json. Copy the
@@ -2359,6 +2425,10 @@ async function prepareResumeCodexHomeForLaunch(
       const emptyRuntimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
       await rm(emptyRuntimeCodexHome, { recursive: true, force: true });
       await mkdir(join(emptyRuntimeCodexHome, "sessions"), { recursive: true });
+      await materializeUserGlobalAgentsFile(
+        emptyRuntimeCodexHome,
+        resolveUserCodexHomeForLaunch(env),
+      );
       await preflightResumeOmxPluginState(emptyRuntimeCodexHome, getPackageRoot(), { projectRoot: cwd });
       // Issue #3629: the empty project-only runtime home still replaces
       // CODEX_HOME, so it needs the same credential provenance.
@@ -2374,6 +2444,7 @@ async function prepareResumeCodexHomeForLaunch(
     const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(cwd, sessionId, projectHomes[0].path, {
       includeHistoryArtifacts: true,
       extraHistoryCodexHomes: projectHomes.slice(1).map((home) => home.path),
+      userCodexHome: resolveUserCodexHomeForLaunch(env),
     });
     await preflightResumeOmxPluginState(runtimeCodexHome, getPackageRoot(), { projectRoot: cwd });
     // Issue #3629: same credential provenance as prepareCodexHomeForLaunch —

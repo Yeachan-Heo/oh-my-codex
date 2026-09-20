@@ -3770,6 +3770,67 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("preserves exactly one user-global AGENTS file in project-scope runtime homes", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-agents-"));
+    const fakeUserHome = await mkdtemp(join(tmpdir(), "omx-launch-user-agents-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const userCodexHome = join(fakeUserHome, ".codex");
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await mkdir(projectCodexHome, { recursive: true });
+      await mkdir(userCodexHome, { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      await writeFile(join(projectCodexHome, "AGENTS.md"), "project-local collision\n");
+      await writeFile(join(projectCodexHome, "AGENTS.override.md"), "project-local override collision\n");
+      await writeFile(join(userCodexHome, "AGENTS.md"), "user global fallback\n");
+      await writeFile(join(userCodexHome, "AGENTS.override.md"), "user global override\n", { mode: 0o600 });
+
+      const overridePrepared = await prepareCodexHomeForLaunch(wd, "session-agents-override", {
+        HOME: fakeUserHome,
+      });
+      assert.equal(
+        await readFile(join(overridePrepared.codexHomeOverride!, "AGENTS.override.md"), "utf-8"),
+        "user global override\n",
+      );
+      assert.equal(existsSync(join(overridePrepared.codexHomeOverride!, "AGENTS.md")), false);
+      if (process.platform !== "win32") {
+        assert.equal(
+          (await stat(join(overridePrepared.codexHomeOverride!, "AGENTS.override.md"))).mode & 0o777,
+          0o600,
+        );
+      }
+
+      await writeFile(join(userCodexHome, "AGENTS.override.md"), " \n\t\n");
+      const fallbackPrepared = await prepareCodexHomeForLaunch(wd, "session-agents-fallback", {
+        HOME: fakeUserHome,
+      });
+      assert.equal(
+        await readFile(join(fallbackPrepared.codexHomeOverride!, "AGENTS.md"), "utf-8"),
+        "user global fallback\n",
+      );
+      assert.equal(existsSync(join(fallbackPrepared.codexHomeOverride!, "AGENTS.override.md")), false);
+
+      await rm(join(userCodexHome, "AGENTS.override.md"));
+      await rm(join(userCodexHome, "AGENTS.md"));
+      const absentPrepared = await prepareCodexHomeForLaunch(wd, "session-agents-absent", {
+        HOME: fakeUserHome,
+      });
+      assert.equal(existsSync(join(absentPrepared.codexHomeOverride!, "AGENTS.md")), false);
+      assert.equal(existsSync(join(absentPrepared.codexHomeOverride!, "AGENTS.override.md")), false);
+      assert.equal(await readFile(join(projectCodexHome, "AGENTS.md"), "utf-8"), "project-local collision\n");
+      assert.equal(
+        await readFile(join(projectCodexHome, "AGENTS.override.md"), "utf-8"),
+        "project-local override collision\n",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(fakeUserHome, { recursive: true, force: true });
+    }
+  });
+
   it("never persists runtime CODEX_HOME auth into the project (issue #3629)", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-auth-home-"));
     try {
