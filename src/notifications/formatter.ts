@@ -8,8 +8,8 @@
 import type { FullNotificationPayload } from "./types.js";
 import { basename } from "path";
 
-/** ANSI CSI escape sequences and two-character escapes */
-const ANSI_RE = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+/** ANSI CSI/two-character escapes and OSC terminal-control sequences */
+const ANSI_RE = /(?:\x1b\]|\x9d)[\s\S]*?(?:\x07|\x1b\\|\x9c)|\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 /** OMX UI chrome: spinner/progress indicator characters */
 const SPINNER_LINE_RE = /^[●⎿✻·◼]/;
