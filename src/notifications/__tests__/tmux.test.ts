@@ -302,6 +302,17 @@ describe('sanitizeTmuxAlertText', () => {
     assert.equal(sanitizeTmuxAlertText(raw), 'stderr: Error: test suite failed');
   });
 
+  it('drops metadata-only lines wrapped in OSC sequences terminated by BEL or ST', () => {
+    const raw = [
+      '\x1b]133;A\x07turns:4\x1b]133;B\x07',
+      '\x1b]8;;https://example.test\x1b\\ralph:2/50\x1b]8;;\x1b\\',
+      '\x9d133;C\x9ctokens:3000',
+      'stderr: Error: test suite failed',
+    ].join('\n');
+
+    assert.equal(sanitizeTmuxAlertText(raw), 'stderr: Error: test suite failed');
+  });
+
   it('drops metadata-only branch and HUD summary lines', () => {
     const raw = [
       'fix/issue-1525-post-stop-keyword-replay',

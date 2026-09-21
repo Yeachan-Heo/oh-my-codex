@@ -247,6 +247,16 @@ describe('parseTmuxTail', () => {
     assert.ok(result.includes('Done'));
   });
 
+  it('strips OSC terminal-control sequences terminated by BEL or ST', () => {
+    const raw = [
+      'plain \x1b]133;A\x07text',
+      'keep \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\ visible',
+      'c1 \x9d133;C\x9ctext',
+    ].join('\n');
+    const result = parseTmuxTail(raw);
+    assert.equal(result, 'plain text\nkeep link visible\nc1 text');
+  });
+
   it('removes lines composed entirely of box-drawing characters', () => {
     const raw = [
       '─────────────────────',
