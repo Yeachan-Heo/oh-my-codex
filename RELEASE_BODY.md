@@ -1,37 +1,33 @@
-# oh-my-codex 0.21.5
+# oh-my-codex 0.21.6
 
-`0.21.5` is a release for the frozen range `v0.21.4..dev` (62 commits): active-team tmux HUD, current Codex lifecycle alignment, ordinary native execution under inherited permissions, credential-provenance and Team startup fixes, portable session recovery, TOML/POSIX PATH fixes, dependency updates, and a dogfood/concurrency repair chain.
+`0.21.6` is a maintenance and reliability release for the frozen range `v0.21.5..dev` (52 commits, 101 files, +4294/−707): tmux HUD lifecycle correctness, AGENTS scope fixes, auth/credential record hardening, Team dispatch and Windows startup robustness, a reusable default-model cost/quality evaluation suite, and dependency updates.
 
 ## Highlights
 
-- **Active Team progress in the tmux HUD:** show the active team identity and each worker's status/task, retain readable narrow layouts and leader space, use the selected runtime state root, and fence resize reconciliation by exact session ownership (#3644).
-- **Current Codex lifecycle:** align plugin-hook diagnostics/setup/uninstall with current Codex capabilities; preserve user-owned reasoning effort; dogfood the real hook trust lifecycle against exact Codex CLI 0.153.4 (#3627, #3631, #3632, #3650).
-- **Safe ordinary execution:** ordinary native implementation/reporting respects inherited permissions instead of obsolete workflow restrictions (#3637). Active guidance no longer hands users to retired workflows (#3647).
+- **Reusable default-model cost/quality evaluations:** a declarative suite for OMX's default model lineup with deterministic stage-transition records, supplied-record reporting, and explicitly documented declaration/validation limits (#3663, #3665, #3666, #3667), answering the evaluation request in issue #3655 without asserting unmeasured numbers.
+- **Self-terminating, leak-free tmux HUD:** stale Team leader panes are skipped during reconciliation, orphan watchers and noisy reconcile failures are gone, and the HUD closes when its tmux leader pane exits. Leader absence is decided from a validated server-wide pane snapshot, so a window move is never mistaken for an exit and a failed tmux query is never treated as evidence (#3660, #3683, #3685).
+- **AGENTS scope correctness:** durable AGENTS content is no longer duplicated into session instructions, and global AGENTS survive project-scoped launches (#3678, #3684).
 
 ## Fixes and compatibility
 
-- Preserve credential provenance in ephemeral project-scope runtime homes and export child-safe CODEX_HOME for Team workers without persisting auth into the project (#3633).
-- Make Team startup checks side-effect free and report actionable failures (#3643).
-- Recover session pointers portably without requiring the native runtime (#3638); resolve hydrated runtime binaries through createRequire (#3639).
-- Respect TOML arrays-of-tables (#3645), and preserve POSIX PATH edge cases in command discovery (#3644).
-- Fix a real concurrency bug in canonical mode-binding lease acquisition: a removable bootstrap-owner sentinel had an ABA race that could produce an unrecoverable ambiguous multi-owner lock state under concurrent contention. Replaced with a descriptor-bound native OS advisory mutex (`omx-runtime lease-mutex`) that serializes the full observe/claim/publish/release lifecycle of every lease acquisition (#3650, #3652).
-- Repair macOS dogfood fixtures using real cross-platform process identities and platform-appropriate directory references; close retained fixture handles explicitly for Node 26 (#3650).
-- Refresh dependency lock entries (#3640, #3641, #3642), add the MIT license, and measure maintenance growth without new runtime machinery (#3646).
-
-The packed-install live lifecycle is pinned to Codex 0.153.4. Unsupported installed versions fail explicitly; absence remains separately reported. This is not a claim that every other Codex version is unsupported by OMX itself.
+- Hardened auth storage, TOML boundaries, PATH resolution, and stderr redaction (#3662); oversized stderr suppression no longer swallows the next record (#3676).
+- Windows `EPERM` fsync during Team startup is survivable (#3661); non-directory entries no longer break Team dispatch draining (#3680).
+- Notifications strip complete ANSI CSI sequences instead of leaving partial escapes (#3668).
+- Ordinary requests stay out of optional workflow machinery (#3648); confirmed unused internal exports were removed rather than aliased (#3649); remaining 0.21 capability-parity documentation gaps are closed (#3634).
+- Dependency updates: `zod` 4.6.2, `@biomejs/biome` 2.5.13, `@types/node` 26.5.1 (#3673, #3674, #3675).
 
 ## Validation evidence
 
-Full compare-range candidate CI green on `dev` (final candidate `52bc1197`, CI run [34561205896](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/34561205896)). Local verification: real packed-install Codex 0.153.4 lifecycle, the complete 42-test canonical-lease suite (including repeated 20/32/64-process stress and the mutex-serialization regression), the full dependent state/modes/ralph/ralplan suite (26 files), the complete whole-product suite (439/439 test files, 0 failures), typecheck/lint/generated checks, and Rust formatting/clippy/workspace tests. The bootstrap-sentinel ABA race found via post-merge stress testing (#3652) was independently reviewed with a full-diff architecture pass (CLEAR/APPROVE, zero findings) and its own PR CI passed in full before merging to dev.
+Exact frozen candidate `750fdd08ef6b902c8ac9bb4f48d440ead87f6d12` is fully green on `dev` CI (17 successful checks, 8 platform-skipped, 0 failures). Every external contribution in this range (#3660, #3668, #3683, #3684, #3685) was independently reproduced on a clean `origin/dev` base before merge, with post-merge `dev` CI re-verified after each merge.
 
-Full readiness evidence: `docs/qa/release-readiness-0.21.5.md`.
+Full readiness evidence: `docs/qa/release-readiness-0.21.6.md`.
 
 ## Contributors
 
-Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@NagyVikt](https://github.com/NagyVikt), [@hiSandog](https://github.com/hiSandog), [@AmatsuZero](https://github.com/AmatsuZero), and [@ev78394](https://github.com/ev78394), with dependency updates from Dependabot.
+Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@ev78394](https://github.com/ev78394), [@NagyVikt](https://github.com/NagyVikt), [@hiSandog](https://github.com/hiSandog), [@wangxingzhen](https://github.com/wangxingzhen), and [@Xrondev](https://github.com/Xrondev), with dependency updates from Dependabot.
 
 ## Inventory
 
-The reproducible range is recorded in `artifacts/release-0.21.5/inventory.md`.
+The reproducible range is recorded in `artifacts/release-0.21.6/inventory.md`.
 
-**Full Changelog**: [`v0.21.4...v0.21.5`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.4...v0.21.5)
+**Full Changelog**: [`v0.21.5...v0.21.6`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.5...v0.21.6)
