@@ -13498,7 +13498,7 @@ esac
           assert.equal(latest?.last_reason, 'fallback_confirmed:leader_mailbox_notified');
           assert.match(
             latest?.trigger_message ?? '',
-            /Read \/tmp\/custom-team-state-root\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; new msg from worker-1\./,
+            /Read \/tmp\/custom-team-state-root\/team\/team-leader-inject\/mailbox\/leader-fixed\.json; msg from worker-1\. Team gone: ignore stale notice; don't ask user or restart\. Otherwise review; decide next step\./,
           );
 
           const deliveryLog = await readTeamDeliveryLog(cwd);

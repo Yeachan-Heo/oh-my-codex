@@ -1160,14 +1160,10 @@ export function buildLeaderMailboxTriggerDirective(
     "mailbox",
     "leader-fixed.json",
   );
-  if (teamStateRoot !== ".omx/state") {
-    return {
-      intent: "pending-mailbox-review",
-      text: `Read ${mailboxPath}; new msg from ${fromWorker}. Review it; decide next step.`,
-    };
-  }
+  // A queued nudge may be read after shutdown removes the team's mailbox.
+  // Keep terminal handling in the notice itself, not in the deleted state.
   return {
     intent: "pending-mailbox-review",
-    text: `Read ${mailboxPath}; ${fromWorker} sent a new message. Review it and decide the next concrete step.`,
+    text: `Read ${mailboxPath}; msg from ${fromWorker}. Team gone: ignore stale notice; don't ask user or restart. Otherwise review; decide next step.`,
   };
 }
