@@ -23,13 +23,23 @@
 | Backlog terminality at freeze | Open PRs 0; open issues 1 (#3655, owner-gated feature request answered in part by the #3663 evaluation suite) |
 | Release collateral | `CHANGELOG.md`, `docs/release-notes-0.21.6.md`, `RELEASE_BODY.md`, `artifacts/release-0.21.6/inventory.md`, this readiness record — all generated from the exact compare range, not from memory |
 
-## Publish sequence
+## Publication evidence
 
-1. Merge the verified candidate to `main` via PR.
-2. Wait for `main` CI green.
-3. Push the annotated `v0.21.6` tag at the shipped `main` commit.
-4. Wait for the tag-triggered Release workflow, then verify GitHub release assets and npm registry state.
-5. Fast-forward `dev` to the shipped commit and bump `dev` to the next development base `0.21.7`.
+| Step | Evidence |
+|---|---|
+| Release collateral PR | #3687 merged to `dev` as `e39a25cd`; PR CI fully green (0 failures) |
+| Protected-main promotion | PR #3689 (`dev`→`main`) all checks green, merged as `cdc24a71`. `main` requires a second reviewer; merged under the repo owner's explicit release authorization via admin merge. This is the single documented deviation from the default reviewed-PR path and it is the owner's own authorized action on their own repository |
+| Main CI | `cdc24a71` → 24 checks, 0 failures, 0 pending |
+| Annotated tag | `v0.21.6` → `8dd3b425` dereferencing to `cdc24a71`; `v0.21.5` confirmed ancestor |
+| Tag Release workflow | Run [35585264512](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/35585264512): conclusion `success`. All 8 native targets built, assets published, smoke-verified, packed global install smoke passed |
+| GitHub release | `v0.21.6` non-draft, non-prerelease, 57 assets attached. Body regenerated via `dist/scripts/generate-release-body.js` with the curated contributor sentence retained instead of the distorted shortlog author list |
+| Trusted OIDC npm publish | `ci.yml` `workflow_dispatch` with `release_tag=v0.21.6 release_sha=cdc24a71408ebd6bd0362f52170f0d7998f77007`, run [35587479707](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/35587479707). `npm publish` succeeded with signed provenance (sigstore log index 2905494473); the job's own 5-minute registry-propagation poll expired at 10:18:14Z and the run is marked `failure` for that wait only. No manual npm token was used and no republish was attempted |
+| Registry verification | Registry metadata confirms `0.21.6` published at 10:19:18Z with `dist-tags.latest = 0.21.6`; attestations expose `https://slsa.dev/provenance/v1` and the npm publish attestation |
+| Final `dev` alignment | `dev` fast-forwarded to the shipped commit `cdc24a71`, then bumped to the next development base `0.21.7` across `package.json`, both `package-lock.json` roots, `Cargo.toml`, the 6 workspace `Cargo.lock` entries, and the plugin manifest (`check-version-sync` → `package=0.21.7 workspace=0.21.7`) |
+
+## Known gaps
+
+- The publish run's terminal conclusion is `failure` solely because npm registry propagation exceeded the workflow's fixed 5-minute poll window. The artifact itself is published, provenance-signed, and `latest`. No tag was moved and no retry publish was issued.
 
 ## Publishing contract
 
