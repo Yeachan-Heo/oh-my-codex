@@ -19,7 +19,7 @@ import {
 import { constants, existsSync, readFileSync, type Stats } from "fs";
 import { access, chown, lstat, mkdir, mkdtemp, readdir, readFile, rename, rmdir, rm } from "fs/promises";
 import { spawnSync } from "child_process";
-import { basename, dirname, join, relative } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import { tmpdir } from "os";
 import {
 	codexHome,
@@ -771,7 +771,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	checks.push(checkDirectory("Codex home", paths.codexHomeDir));
 
 	// Check 4: Config file
-	const configCheck = await checkConfig(paths.configPath);
+	const configCheck = await checkConfig(paths.configPath, scopeResolution.scope);
 	checks.push(configCheck);
 	const multiAgentCompatibilityCheck = await checkLegacyMultiAgentCompatibility(
 		paths.configPath,
@@ -1775,9 +1775,21 @@ export async function checkLegacyMultiAgentCompatibility(
 	}
 }
 
-async function checkConfig(configPath: string): Promise<Check> {
+async function checkConfig(configPath: string, scope: DoctorSetupScope): Promise<Check> {
 	if (!existsSync(configPath)) {
-		return { name: "Config", status: "warn", message: "config.toml not found" };
+		const resolvedConfigPath = resolve(configPath);
+		const codexHomeHint = scope === "user" && process.env.CODEX_HOME
+			&& resolvedConfigPath === resolve(codexConfigPath())
+			? ` CODEX_HOME is set, so this is the active Codex config path.`
+			: "";
+		const setupTarget = scope === "project" ? "this project scope" : "this Codex home";
+		return {
+			name: "Config",
+			status: "warn",
+			message:
+				`config.toml not found at ${resolvedConfigPath}.${codexHomeHint} ` +
+				`This check did not create it; run "omx setup" for ${setupTarget} to repair.`,
+		};
 	}
 
 	try {
