@@ -22,6 +22,11 @@ omx setup
 omx doctor
 ```
 
+If `omx doctor` reports a missing Codex config after a fresh install, record the resolved Codex home
+and whether `config.toml` exists before changing code. Setup fixes should create or update files in
+that resolved home instead of writing to a hard-coded path, and the PR should include the nearest
+focused test or documentation evidence for the path rule.
+
 ### Team/state coverage gate (issue #454)
 
 CI enforces minimum coverage for critical team orchestration modules:
