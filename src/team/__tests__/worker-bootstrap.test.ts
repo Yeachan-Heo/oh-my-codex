@@ -1110,6 +1110,16 @@ describe("worker bootstrap", () => {
     assert.ok(message.length < 200);
   });
 
+  it("leader mailbox notices handle a team removed before the queued notice is read", () => {
+    for (const root of [".omx/state", "$OMX_TEAM_STATE_ROOT", "/tmp/omx-run/.omx/state"]) {
+      const directive = buildLeaderMailboxTriggerDirective("finished-team", "worker-3", root);
+      assert.equal(directive.intent, "pending-mailbox-review");
+      assert.match(directive.text, /Team gone: ignore stale notice; don't ask user or restart/);
+      assert.match(directive.text, /Otherwise review; decide next step/);
+      assert.ok(directive.text.includes(`${root}/team/finished-team/mailbox/leader-fixed.json`));
+    }
+  });
+
   it("generateLeaderMailboxTriggerMessage tells the leader to read the mailbox and decide the next step", () => {
     const message = generateLeaderMailboxTriggerMessage(
       "team-mail",
@@ -1119,15 +1129,15 @@ describe("worker bootstrap", () => {
       message,
       /Read .*\.omx\/state\/team\/team-mail\/mailbox\/leader-fixed\.json/,
     );
-    assert.match(message, /worker-2 sent a new message/);
-    assert.match(message, /Review it and decide the next concrete step/);
+    assert.match(message, /msg from worker-2/);
+    assert.match(message, /Otherwise review; decide next step/);
     assert.doesNotMatch(message, /\bReply\b/i);
   });
 
   it("buildLeaderMailboxTriggerDirective records leader mailbox-review intent separately", () => {
     const directive = buildLeaderMailboxTriggerDirective("team-mail", "worker-2");
     assert.equal(directive.intent, "pending-mailbox-review");
-    assert.match(directive.text, /worker-2 sent a new message/);
+    assert.match(directive.text, /msg from worker-2/);
     assert.doesNotMatch(directive.text, /OMX_INTENT/);
   });
 
@@ -1141,8 +1151,8 @@ describe("worker bootstrap", () => {
       message,
       /read .*\$OMX_TEAM_STATE_ROOT\/team\/team-mail\/mailbox\/leader-fixed\.json/i,
     );
-    assert.match(message, /new msg from worker-2/i);
-    assert.match(message, /review it; decide next step/i);
+    assert.match(message, /msg from worker-2/i);
+    assert.match(message, /Otherwise review; decide next step/i);
     assert.doesNotMatch(message, /\breply\b/i);
     assert.ok(message.length < 200);
   });
