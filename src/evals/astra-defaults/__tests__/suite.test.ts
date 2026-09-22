@@ -49,6 +49,35 @@ describe('astra-defaults suite loading', () => {
     }
   });
 
+  it('loads the opt-in GPT-6 comparison with fixed effort and a shared revision', () => {
+    const historical = loadSuite(SUITE_DIR);
+    const comparison = loadSuite(SUITE_DIR, join(SUITE_DIR, 'gpt6-fixed-medium', 'configs'));
+    assert.deepEqual(comparison.fixtures, historical.fixtures);
+    assert.equal(comparison.fixtures.length, 6);
+    assert.equal(comparison.fixtures.filter((entry) => entry.deterministicBaseline).length, 2);
+    assert.deepEqual(comparison.configs.map((entry) => entry.id), [
+      'gpt6-astra-medium', 'gpt6-luna-medium', 'gpt6-sol-medium',
+    ]);
+    assert.deepEqual(comparison.configs.filter((entry) => entry.isBaseline).map((entry) => entry.id),
+      ['gpt6-astra-medium']);
+    const surfaces = [...new Set(comparison.fixtures.map((entry) => entry.surface))].sort();
+    for (const entry of comparison.configs) {
+      assert.equal(entry.omxRevision, 'cc02c05952fdee620ffe4342f87c32d1cd463ab3');
+      assert.equal(entry.serviceTier, 'unknown');
+      assert.match(entry.cacheConditions, /^unknown/);
+      assert.equal(entry.stages, undefined);
+      assert.deepEqual(Object.keys(entry.roles).sort(), surfaces);
+      const family = entry.id.split('-')[1];
+      for (const role of Object.values(entry.roles)) {
+        assert.deepEqual(role, { model: `gpt-6-${family}`, reasoningEffort: 'medium' });
+      }
+    }
+    assert.deepEqual(historical.configs.map((entry) => entry.id), [
+      'astra-defaults', 'mixed-luna-light-roles', 'terra-override',
+    ]);
+    assert.deepEqual(loadSuite(SUITE_DIR), historical);
+  });
+
   it('rejects a fixture that pins model configuration', () => {
     const bad = {
       ...fixture(),
