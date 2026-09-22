@@ -339,42 +339,77 @@ function stripNamedXmlSection(content: string, sectionName: string): string {
 	);
 }
 
-function applyTeamModeToAgentsTemplate(content: string, teamMode: SetupTeamMode): string {
+/**
+ * #3699: clause-level rewrites for lines that mix Team wording with guidance that
+ * must survive Team opt-out (native subagent delegation, child-agent limits,
+ * cancellation and state-ownership invariants). Dropping such lines wholesale
+ * deleted non-Team rules and left malformed sentences behind.
+ */
+const TEAM_DISABLED_CLAUSE_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
+	[/ THIS IS COMPLEMENTARY TO OMX TEAM MODE\./g, ""],
+	[/Within one Codex session or team pane,/g, "Within one Codex session,"],
+	[/;\s*`worker` is a team-runtime surface, not a general-purpose child role/g, ""],
+	[/Use Team only for durable multi-lane coordination that is worth the overhead; when/g, "When"],
+	[/Outside active `team`\/`swarm` mode,/g, "Outside active `swarm` mode,"],
+	[/current, proven session or Team scope/g, "current, proven session scope"],
+	[/, legacy roots, Team artifacts, and tmux sessions untouched/g, ", legacy roots, and tmux sessions untouched"],
+	[/hook boundaries, cancellation, and Team coordination\./g, "hook boundaries, and cancellation."],
+];
+
+/**
+ * #3699: lines whose entire subject is the Team runtime. Each pattern must be
+ * anchored on the Team-only subject so that future mixed guidance is rewritten
+ * by {@link TEAM_DISABLED_CLAUSE_REWRITES} instead of silently disappearing.
+ */
+const TEAM_DISABLED_LINE_DROP_PATTERNS: readonly RegExp[] = [
+	/^- Use `\$team` when\b/i,
+	/^- Reserve `worker` strictly for active\b/i,
+	/^- `worker` is a team-runtime surface\b/i,
+	/^- `<!-- OMX:TEAM:WORKER:START -->/,
+	/^- Teams may \b/i,
+	/^- The Team state files\b/i,
+	/^- Team cancellation requires\b/i,
+	/^- Team runtime is explicit\b/i,
+	/^- Team shutdown waits\b/i,
+	/^- Workers ACK startup\b/i,
+	/^- Prefer durable state writes and `omx team api\b/i,
+	/team mode/i,
+	/team orchestration/i,
+	/team pipeline/i,
+	/omx team/i,
+];
+
+function stripMarkdownSection(content: string, heading: string): string {
+	return content.replace(
+		new RegExp(`\\n${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n[\\s\\S]*?(?=\\n#{2,3} )`, "g"),
+		"\n",
+	);
+}
+
+export function applyTeamModeToAgentsTemplate(content: string, teamMode: SetupTeamMode): string {
 	if (teamModeEnabled(teamMode)) return content;
 
 	let next = content;
 	for (const section of ["team_compositions", "team_pipeline", "team_model_resolution"]) {
 		next = stripNamedXmlSection(next, section);
 	}
+	next = stripMarkdownSection(next, "### Team protocol");
 
-	return next
+	for (const [pattern, replacement] of TEAM_DISABLED_CLAUSE_REWRITES) {
+		next = next.replace(pattern, replacement);
+	}
+	next = next
 		.replace(/\(\+ \$team if needed\)/g, "")
-		.replace(/- `\$team` when[^\n]*\n/g, "")
 		.replace(/,?\s*`team`,?/g, "")
 		.replace(/\s*\|\s*`\$team ".*?"`\s*\|.*\|\n/g, "\n")
+		.replace(/\/?\s*`team`\/`swarm`/g, "`swarm`");
+
+	return next
+		.split("\n")
+		.filter((line) => !TEAM_DISABLED_LINE_DROP_PATTERNS.some((pattern) => pattern.test(line)))
+		.join("\n")
 		.replace(/,?\s*`\$team`/g, "")
 		.replace(/`\$team`,?\s*/g, "")
-		.replace(/\/?\s*`team`\/`swarm`/g, "`swarm`")
-		.split("\n")
-		.filter((line) => {
-			const normalized = line.toLowerCase();
-			if (normalized.includes("team mode")) return false;
-			if (normalized.includes("team runtime")) return false;
-			if (normalized.includes("team orchestration")) return false;
-			if (normalized.includes("team/swarm")) return false;
-			if (normalized.includes("team pipeline")) return false;
-			if (normalized.includes("runtime/team")) return false;
-			if (normalized.includes("team overlays")) return false;
-			if (normalized.includes("team pane")) return false;
-			if (normalized.startsWith("- teams may ")) return false;
-			if (normalized.includes("outside active `team`")) return false;
-			if (normalized.includes("reserve `worker`")) return false;
-			if (normalized.includes("worker` is a team-runtime")) return false;
-			if (normalized.includes("team-plan")) return false;
-			if (normalized.includes("omx team")) return false;
-			return true;
-		})
-		.join("\n")
 		.replace(/\n{3,}/g, "\n\n");
 }
 

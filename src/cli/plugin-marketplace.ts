@@ -1280,6 +1280,36 @@ async function omxPluginCacheManifestProvenanceReason(
 	return null;
 }
 
+/**
+ * #3699: reports why an existing same-version cache cannot satisfy the requested
+ * Team mode. Returns `null` when the installed skill set already matches, so the
+ * caller only surfaces the immutability limitation for a real mode transition.
+ */
+async function omxPluginCacheTeamModeSkillMismatchReason(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+	teamMode: SetupTeamMode | undefined,
+): Promise<string | null> {
+	const expectedSkillNames = await expectedPackagedOmxSkillNames(packagedMarketplace, { teamMode });
+	if (!expectedSkillNames) return null;
+	const installedSkillNames = await listChildDirectoryNames(join(cacheDir, "skills"));
+	if (!installedSkillNames) return null;
+	const expected = new Set(expectedSkillNames);
+	const unexpected = installedSkillNames.filter((name) => !expected.has(name)).sort();
+	const missing = expectedSkillNames.filter((name) => !installedSkillNames.includes(name)).sort();
+	if (unexpected.length === 0 && missing.length === 0) return null;
+	// Only Team-mode skill drift explains itself as a mode transition; any other
+	// difference stays with the fail-closed provenance reporting path.
+	if (![...unexpected, ...missing].every((name) => TEAM_MODE_PLUGIN_SKILL_NAMES.has(name))) {
+		return null;
+	}
+	const details = [
+		unexpected.length > 0 ? `still exposes ${unexpected.join(", ")}` : null,
+		missing.length > 0 ? `is missing ${missing.join(", ")}` : null,
+	].filter((part): part is string => part !== null).join(" and ");
+	return `existing same-version OMX plugin cache at ${cacheDir} ${details} for teamMode=${teamMode ?? "enabled"}; a same-version snapshot is immutable and cannot be rewritten in place`;
+}
+
 async function omxPluginCacheSkillsProvenanceReason(
 	cacheDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
@@ -2135,6 +2165,25 @@ async function materializePackagedOmxPluginCacheImpl(
 				version,
 				reason: incompat.reason,
 				launcherTarget: incompat.target,
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
+			};
+		}
+		// #3699: an existing same-version snapshot is immutable, so a Team-mode change
+		// cannot be republished in place. Report that limitation by name — before the
+		// generic provenance reason, which would only say the skills directory differs —
+		// instead of implying the requested mode is already installed.
+		const teamModeSkillReason = await omxPluginCacheTeamModeSkillMismatchReason(
+			inspectedCacheDir,
+			packagedMarketplace,
+			options.teamMode,
+		);
+		if (teamModeSkillReason) {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `${teamModeSkillReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				launcherTarget: undefined,
 				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
 		}
