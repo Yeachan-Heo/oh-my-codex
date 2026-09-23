@@ -261,6 +261,25 @@ The launch parser has one narrow end-of-options rule: literal `--max` and `--ult
 
 JSON does not allow comments, so copy only the JSON blocks.
 
+### Cost-saving starter
+
+This opts into GPT-5.6 alternatives: Sol for orchestration, Terra for standard workers, and Luna for exploration/low-complexity work. Exact-pinned planner, architect, and researcher roles remain on Astra unless `agentModels` overrides them, as shown above.
+
+```json
+{
+  "env": {
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-5.6-sol",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-5.6-terra",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-5.6-luna"
+  },
+  "models": {
+    "default": "gpt-5.6-terra",
+    "team": "gpt-5.6-sol",
+    "team_low_complexity": "gpt-5.6-luna"
+  }
+}
+```
+
 ### GPT-6 opt-in starter
 
 This opts into GPT-6 Sol for orchestration and standard workers, and GPT-6 Luna for exploration/low-complexity work. It is a configuration example, not a measured quality or cost recommendation. Exact-pinned planner, architect, and researcher roles remain on Astra unless `agentModels` overrides them. Existing explicit per-role overrides also take precedence. Model availability and supported effort must be verified on the receiving Codex surface; adding a known alias does not establish access or change reasoning controls.
