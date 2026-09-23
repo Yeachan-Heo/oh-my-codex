@@ -111,7 +111,7 @@ Both Sparkshell summary model defaults are `gpt-6-astra`. To retry with a distin
 
 `models` maps mode names to explicit model overrides. Values must be non-empty strings.
 
-The built-in frontier, standard, and spark defaults are all `gpt-6-astra`, including fast agents and low-complexity workers. Existing role reasoning defaults are unchanged. The known-alias list contains `gpt-6-astra` plus the configurable GPT-5.6 alternatives `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
+The built-in frontier, standard, and spark defaults are all `gpt-6-astra`, including fast agents and low-complexity workers. Existing role reasoning defaults are unchanged. The known-alias list contains `gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna`, plus the configurable GPT-5.6 alternatives `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
 
 Setup seeds Astra when no root model exists; it preserves an existing user model unless an explicit model change is requested. Explicit launch arguments, environment values, and model configuration retain their documented precedence.
 
@@ -276,6 +276,25 @@ This opts into GPT-5.6 alternatives: Sol for orchestration, Terra for standard w
     "default": "gpt-5.6-terra",
     "team": "gpt-5.6-sol",
     "team_low_complexity": "gpt-5.6-luna"
+  }
+}
+```
+
+### GPT-6 opt-in starter
+
+This opts into GPT-6 Sol for orchestration and standard workers, and GPT-6 Luna for exploration/low-complexity work. It is a configuration example, not a measured quality or cost recommendation. Exact-pinned planner, architect, and researcher roles remain on Astra unless `agentModels` overrides them. Existing explicit per-role overrides also take precedence. Model availability and supported effort must be verified on the receiving Codex surface; adding a known alias does not establish access or change reasoning controls.
+
+```json
+{
+  "env": {
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-6-sol",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-6-sol",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-6-luna"
+  },
+  "models": {
+    "default": "gpt-6-sol",
+    "team": "gpt-6-sol",
+    "team_low_complexity": "gpt-6-luna"
   }
 }
 ```

@@ -119,6 +119,22 @@ describe("agents/native-config", () => {
     }
   });
 
+  it("generates GPT-6 Sol and Luna role overrides without changing role efforts", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-gpt6-"));
+    try {
+      const agentModels = { planner: "gpt-6-sol", executor: "gpt-6-sol", explore: "gpt-6-luna" };
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({ agentModels }));
+      for (const [role, model] of Object.entries(agentModels)) {
+        const toml = parseToml(generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome }));
+        assert.equal(toml.model, model, role);
+        assert.equal(toml.model_reasoning_effort, AGENT_DEFINITIONS[role].reasoningEffort, role);
+        assert.doesNotMatch(String(toml.developer_instructions), /exact gpt-6-astra model/, role);
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it("preserves older per-role model choices across every model class", async () => {
     const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-legacy-models-"));
     try {

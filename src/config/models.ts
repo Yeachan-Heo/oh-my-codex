@@ -11,14 +11,14 @@
  *     "OMX_DEFAULT_SPARK_MODEL": "your-spark-model"
  *   },
  *   "models": {
- *     "default": "o4-mini",
- *     "team": "gpt-4.1"
+ *     "default": "gpt-6-sol",
+ *     "team": "gpt-6-sol"
  *   },
  *   "agentReasoning": {
  *     "architect": "xhigh"
  *   },
  *   "agentModels": {
- *     "architect": "gpt-5.6-sol"
+ *     "architect": "gpt-6-astra"
  *   }
  * }
  *
@@ -114,7 +114,7 @@ export const DEFAULT_FRONTIER_MODEL = 'gpt-6-astra';
 export const DEFAULT_STANDARD_MODEL = 'gpt-6-astra';
 export const DEFAULT_SPARK_MODEL = 'gpt-6-astra';
 export const GPT_5_6_MODEL_ALIASES = ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol'] as const;
-export const KNOWN_CODEX_MODEL_ALIASES = ['gpt-6-astra', ...GPT_5_6_MODEL_ALIASES] as const;
+export const KNOWN_CODEX_MODEL_ALIASES = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', ...GPT_5_6_MODEL_ALIASES] as const;
 export type KnownCodexModelAlias = (typeof KNOWN_CODEX_MODEL_ALIASES)[number];
 
 export function isKnownCodexModelAlias(model: string): model is KnownCodexModelAlias {

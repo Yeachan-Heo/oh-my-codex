@@ -400,6 +400,24 @@ describe('getModelForMode', () => {
     assert.equal(isKnownCodexModelAlias('gpt-6-astra'), true);
   });
 
+  it('recognizes the GPT-6 family without inferring unannounced aliases', () => {
+    for (const model of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
+      assert.equal(isKnownCodexModelAlias(model), true, model);
+    }
+    assert.equal(isKnownCodexModelAlias('gpt-6-terra'), false);
+    assert.equal(isKnownCodexModelAlias('gpt-6-luna-custom'), false);
+  });
+
+  it('preserves GPT-6 mode and lightweight overrides ahead of defaults', async () => {
+    await writeConfig({
+      env: { OMX_DEFAULT_FRONTIER_MODEL: 'gpt-6-astra', OMX_DEFAULT_SPARK_MODEL: 'gpt-6-astra' },
+      models: { default: 'gpt-6-sol', team: 'gpt-6-luna', team_low_complexity: 'gpt-6-luna' },
+    });
+    assert.equal(getModelForMode('team'), 'gpt-6-luna');
+    assert.equal(getModelForMode('autopilot'), 'gpt-6-sol');
+    assert.equal(getTeamLowComplexityModel(), 'gpt-6-luna');
+  });
+
   it('lists GPT-5.6 Terra/Luna/Sol as known Codex model aliases', () => {
     assert.deepEqual([...GPT_5_6_MODEL_ALIASES], [
       'gpt-5.6-terra',
