@@ -54,7 +54,7 @@ import {
 	analyzeLegacyMultiAgentConfig,
 	hasExactOmxSeededBehavioralDefaultsPair,
 	hasLegacyOmxTeamRunTable,
-	migrateManagedCodexHookTrustStateCoordinates,
+	migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged,
 } from "../config/generator.js";
 import {
 	MANAGED_HOOK_EVENTS,
@@ -2803,9 +2803,13 @@ async function checkExistingNativeHooks(
 				}
 			}
 			try {
-				migrateManagedCodexHookTrustStateCoordinates(
+				migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
 					configContent,
 					removalPlan.coordinateMoves,
+					{
+						priorManagedHookTrustState: removalPlan.priorTrustState,
+						managedTrustState: removalPlan.finalTrustState,
+					},
 				);
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error);

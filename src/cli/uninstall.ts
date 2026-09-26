@@ -25,6 +25,7 @@ import {
   stripExistingOmxBlocks,
   stripManagedCodexHookTrustState,
   migrateManagedCodexHookTrustStateCoordinates,
+  migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged,
   stripOmxEnvSettings,
   stripOmxTopLevelKeys,
   stripOmxFeatureFlags,
@@ -690,14 +691,13 @@ async function planConfigCleanup(
 
   // Remove only trust tables whose hashes and coordinates match the planned
   // managed hooks before their removal. User-owned conflicts remain intact.
-  config = stripManagedCodexHookTrustState(config, {
-    priorManagedHookTrustState: options.priorHookTrustState,
-    managedTrustState: options.finalHookTrustState,
-  });
-
-  const trustMigration = migrateManagedCodexHookTrustStateCoordinates(
+  const trustMigration = migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
     config,
     options.coordinateMoves ?? [],
+    {
+      priorManagedHookTrustState: options.priorHookTrustState,
+      managedTrustState: options.finalHookTrustState,
+    },
   );
   config = trustMigration.config;
 
@@ -1877,9 +1877,13 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
     scopeDirs.codexHomeDir,
   );
   if (keepConfig && hooksRemoval.plan) {
-    const trustMigration = migrateManagedCodexHookTrustStateCoordinates(
+    const trustMigration = migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
       configSnapshot.content ?? "",
       hooksRemoval.plan.coordinateMoves,
+      {
+        priorManagedHookTrustState: hooksRemoval.plan.priorTrustState,
+        managedTrustState: hooksRemoval.plan.finalTrustState,
+      },
     );
     if (trustMigration.keyRewrites.length > 0) {
       const rewrites = trustMigration.keyRewrites

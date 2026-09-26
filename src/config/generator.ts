@@ -2572,6 +2572,26 @@ export function migrateManagedCodexHookTrustStateCoordinates(
   return { config: lines.join(eol), keyRewrites };
 }
 
+/**
+ * Removes only proof-owned managed trust entries before validating and applying
+ * foreign hook coordinate moves. This keeps setup, uninstall, and doctor on the
+ * same collision-checking path while preserving unknown destination trust.
+ */
+export function migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
+  config: string,
+  moves: readonly ManagedCodexHookCoordinateMove[],
+  options: {
+    managedTrustState?: Record<string, ManagedCodexHookTrustState>;
+    priorManagedHookTrustState?: Record<string, ManagedCodexHookTrustState>;
+  } = {},
+): ManagedCodexHookTrustStateCoordinateMigration {
+  const configWithoutManagedTrust = stripManagedCodexHookTrustState(config, options);
+  return migrateManagedCodexHookTrustStateCoordinates(
+    configWithoutManagedTrust,
+    moves,
+  );
+}
+
 function isExactlyManagedHookTrustStateValue(
   value: unknown,
   expectedHashes: ReadonlySet<string>,

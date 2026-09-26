@@ -73,6 +73,7 @@ import {
 	upsertManagedCodexHookTrustState,
 	stripManagedCodexHookTrustState,
 	migrateManagedCodexHookTrustStateCoordinates,
+	migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged,
 	OMX_DEVELOPER_INSTRUCTIONS,
 	OMX_PLUGIN_DEVELOPER_INSTRUCTIONS,
 	hasFirstPartyOmxMcpRegistrations,
@@ -3470,23 +3471,26 @@ function buildPluginModeHooksConfigPlan(
 				options.pluginScopedHooks && managedHooksPlan?.hasForeignHooks === true,
 		},
 	);
-	const configWithManagedTrustState = upsertManagedCodexHookTrustState(
+	const trustMigration = migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
 		configWithRuntimeFeatures,
+		managedHooksPlan?.coordinateMoves ?? [],
+		{
+			managedTrustState: managedHookTrustState,
+			priorManagedHookTrustState,
+		},
+	);
+	const configWithManagedTrustState = upsertManagedCodexHookTrustState(
+		trustMigration.config,
 		pkgRoot,
 		hooksPath,
 		{
 			...managedHookOptions,
 			managedTrustState: managedHookTrustState,
-			priorManagedHookTrustState,
 			legacyHookTrustState,
 		},
 	);
-	const trustMigration = migrateManagedCodexHookTrustStateCoordinates(
-		configWithManagedTrustState,
-		managedHooksPlan?.coordinateMoves ?? [],
-	);
 	return {
-		finalConfig: trustMigration.config,
+		finalConfig: configWithManagedTrustState,
 		hooksFinalContent: managedHooksPlan ? managedHooksPlan.finalContent : existingHooksContent,
 		hooksRemovedCount: managedHooksPlan?.removedCount ?? 0,
 		removedCoordinates: managedHooksPlan?.removedCoordinates ?? [],
@@ -3730,15 +3734,12 @@ async function planDisableHooksConfig(
 	notifyMetadataSnapshot?: NativeHookTransactionArtifactSnapshot,
 ): Promise<DisableHooksNotifyPlan> {
 	const priorManagedHookTrustState = managedHooksPlan?.priorTrustState ?? {};
-	let finalConfig = stripManagedCodexHookTrustState(existingConfig, {
-		priorManagedHookTrustState,
-		managedTrustState: {},
-	});
-	const trustMigration = migrateManagedCodexHookTrustStateCoordinates(
-		finalConfig,
+	const trustMigration = migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
+		existingConfig,
 		coordinateMoves,
+		{ priorManagedHookTrustState },
 	);
-	finalConfig = trustMigration.config;
+	let finalConfig = trustMigration.config;
 	finalConfig = stripHookFeatureFlagsForDisable(
 		finalConfig,
 		managedHooksPlan?.hasForeignHooks === true,
