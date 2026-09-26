@@ -5279,40 +5279,31 @@ export async function smokePackedHookTrustLifecycle(
       readFileSync(managedFirstHooksPath, 'utf-8'),
       managedFirstMarker,
     );
-    const managedFirstBeforeUninstallHooksBytes = readFileSync(managedFirstHooksPath);
-    const managedFirstBeforeUninstallConfigBytes = readFileSync(managedFirstConfigPath);
-
-    const expectedUnsafeManagedRemovalDiagnostic =
-      'Removing OMX hooks would shift a foreign coordinate or discard opaque metadata.';
-    const unsafeRemoval = planManagedCodexHooksRemoval(managedFirstBeforeRerunHooks, managedFirstHooksPath);
-    if (
-      unsafeRemoval.ok ||
-      unsafeRemoval.error.code !== 'unsafe_managed_removal' ||
-      unsafeRemoval.error.message !== expectedUnsafeManagedRemovalDiagnostic
-    ) {
-      throw new Error('packed managed-first fixture did not return the exact unsafe_managed_removal diagnostic');
+    const removalPlan = planManagedCodexHooksRemoval(managedFirstBeforeRerunHooks, managedFirstHooksPath);
+    if (!removalPlan.ok || removalPlan.coordinateMoves.length !== managedFirstForeignSnapshot.length) {
+      throw new Error('packed managed-first fixture did not plan every foreign coordinate move');
     }
-    const failedUninstall = spawnSync(omxPath, ['uninstall'], {
+    const uninstallResult = spawnSync(omxPath, ['uninstall'], {
       cwd: managedFirstProjectDir,
       env,
       encoding: 'utf-8',
       stdio: 'pipe',
     });
-    if (failedUninstall.error) throw failedUninstall.error;
-    if (failedUninstall.status !== 1) {
+    if (uninstallResult.error) throw uninstallResult.error;
+    if (uninstallResult.status !== 0) {
       throw new Error(
-        `packed unsafe uninstall exited ${String(failedUninstall.status)}, expected 1\nstdout:\n${failedUninstall.stdout || ''}\nstderr:\n${failedUninstall.stderr || ''}`,
+        `packed managed-first uninstall exited ${String(uninstallResult.status)}, expected 0\nstdout:\n${uninstallResult.stdout || ''}\nstderr:\n${uninstallResult.stderr || ''}`,
       );
     }
-    if (failedUninstall.stderr !== `Error: ${expectedUnsafeManagedRemovalDiagnostic}\n`) {
-      throw new Error(`packed unsafe uninstall returned an unexpected diagnostic: ${failedUninstall.stderr || ''}`);
-    }
-    if (!readFileSync(managedFirstHooksPath).equals(managedFirstBeforeUninstallHooksBytes)) {
-      throw new Error('unsafe packed uninstall changed raw hooks.json bytes');
-    }
-    if (!readFileSync(managedFirstConfigPath).equals(managedFirstBeforeUninstallConfigBytes)) {
-      throw new Error('unsafe packed uninstall changed raw config.toml bytes');
-    }
+    const expectedForeignAfterRemoval = managedFirstForeignSnapshot.map((entry) => {
+      const snapshot = entry as { groupIndex: number };
+      return { ...snapshot, groupIndex: snapshot.groupIndex - 1 };
+    });
+    assertForeignHookGroupsPreserved(
+      expectedForeignAfterRemoval,
+      readFileSync(managedFirstHooksPath, 'utf-8'),
+      managedFirstMarker,
+    );
     assertNoUninstallTransactionArtifacts(join(managedFirstProjectDir, '.codex'));
 
     return { codexVersion };

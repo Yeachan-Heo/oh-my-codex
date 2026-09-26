@@ -37,6 +37,7 @@ import {
   type CodexHooksJsonTrustStateEntry,
   type ManagedCodexHookTrustState,
   type ManagedCodexHookOptions,
+  type ManagedCodexHookCoordinateMove,
 } from "./codex-hooks.js";
 
 import type { HudPreset } from "../hud/types.js";
@@ -2416,6 +2417,155 @@ function collectManagedHookTrustStateSourceRepresentations(
     parsedStatementSpans,
     parsedAssignmentSpans,
   };
+}
+
+export interface ManagedCodexHookTrustStateKeyRewrite {
+  oldKey: string;
+  newKey: string;
+  trustedHash: string;
+}
+
+export interface ManagedCodexHookTrustStateCoordinateMigration {
+  config: string;
+  keyRewrites: ManagedCodexHookTrustStateKeyRewrite[];
+}
+
+function formatHookCoordinateMove(move: ManagedCodexHookCoordinateMove): string {
+  return `${move.eventName} [${move.oldGroupIndex},${move.oldHandlerIndex}] -> ` +
+    `[${move.newGroupIndex},${move.newHandlerIndex}] ` +
+    `([hooks.state."${escapeTomlBasicString(move.oldKey)}"] -> ` +
+    `[hooks.state."${escapeTomlBasicString(move.newKey)}"])`;
+}
+
+function unsafeHookTrustCoordinateMigration(
+  moves: readonly ManagedCodexHookCoordinateMove[],
+  reason: string,
+): ManagedCodexHooksPlanError {
+  const moveText = moves.map(formatHookCoordinateMove).join("; ");
+  return new ManagedCodexHooksPlanError(
+    "unsafe_managed_removal",
+    `Cannot safely migrate foreign Codex hook trust state: ${reason}. ` +
+      `Coordinate reorder and [hooks.state] keys to reconcile: ${moveText}. ` +
+      "Verify each hook definition and reconcile only its existing trusted_hash; do not copy trust to a new or changed hook.",
+    {
+      reason,
+      coordinateMoves: moves,
+      keys: moves.flatMap((move) => [move.oldKey, move.newKey]),
+    },
+  );
+}
+
+/**
+ * Rewrites only existing foreign trust tables whose stored hash still proves
+ * the current hook definition. Missing trust remains missing; ambiguous or
+ * opaque TOML and mismatched hashes fail closed.
+ */
+export function migrateManagedCodexHookTrustStateCoordinates(
+  config: string,
+  moves: readonly ManagedCodexHookCoordinateMove[],
+): ManagedCodexHookTrustStateCoordinateMigration {
+  if (moves.length === 0) return { config, keyRewrites: [] };
+
+  const parsed = safeParseToml(config);
+  if (!parsed) {
+    throw unsafeHookTrustCoordinateMigration(
+      moves,
+      "config.toml is not unambiguously parseable",
+    );
+  }
+  const entries = tomlHooksStateEntries(parsed);
+  if (!entries) {
+    if (tomlHooksStateValue(parsed) !== undefined) {
+      throw unsafeHookTrustCoordinateMigration(moves, "[hooks.state] is not a plain table");
+    }
+    return { config, keyRewrites: [] };
+  }
+
+  const inventory = collectManagedHookTrustStateSourceRepresentations(config);
+  if (!inventory.source.isUnambiguous) {
+    throw unsafeHookTrustCoordinateMigration(
+      moves,
+      "config.toml contains ambiguous or opaque TOML source metadata",
+    );
+  }
+  const movesByOldKey = new Map<string, ManagedCodexHookCoordinateMove>();
+  const targetKeys = new Set<string>();
+  for (const move of moves) {
+    if (movesByOldKey.has(move.oldKey) || targetKeys.has(move.newKey)) {
+      throw unsafeHookTrustCoordinateMigration(moves, "hook coordinates are not uniquely mapped");
+    }
+    movesByOldKey.set(move.oldKey, move);
+    targetKeys.add(move.newKey);
+  }
+
+  const lineReplacements = new Map<number, string>();
+  const keyRewrites: ManagedCodexHookTrustStateKeyRewrite[] = [];
+  for (const move of moves) {
+    if (!Object.hasOwn(entries, move.oldKey)) continue;
+    if (!move.expectedTrustedHash) {
+      throw unsafeHookTrustCoordinateMigration(
+        moves,
+        `the moved ${move.eventName} hook has opaque or unsupported definition metadata`,
+      );
+    }
+    if (Object.hasOwn(entries, move.newKey) && !movesByOldKey.has(move.newKey)) {
+      throw unsafeHookTrustCoordinateMigration(
+        moves,
+        `destination trust key ${JSON.stringify(move.newKey)} is already occupied`,
+      );
+    }
+
+    const representations = inventory.representations.get(move.oldKey) ?? [];
+    if (representations.length !== 1) {
+      throw unsafeHookTrustCoordinateMigration(
+        moves,
+        `existing trust key ${JSON.stringify(move.oldKey)} has duplicate or unlocated source metadata`,
+      );
+    }
+    const representation = representations[0]!;
+    const value = entries[move.oldKey];
+    if (
+      !representation.hasExactSemanticScope ||
+      representation.hasComment ||
+      representation.stateEntryCount !== 1 ||
+      !isPlainTomlRecord(value) ||
+      Object.keys(value).some((key) => key !== "trusted_hash" && key !== "enabled") ||
+      typeof value.trusted_hash !== "string" ||
+      value.trusted_hash !== move.expectedTrustedHash ||
+      (Object.hasOwn(value, "enabled") && typeof value.enabled !== "boolean")
+    ) {
+      throw unsafeHookTrustCoordinateMigration(
+        moves,
+        `trusted_hash or metadata for ${JSON.stringify(move.oldKey)} does not exactly match the current hook definition`,
+      );
+    }
+
+    const line = inventory.source.lines[representation.start];
+    const header = line === undefined ? undefined : parseTomlSourceTableHeader(line);
+    if (!header || !hasOnlyManagedHookTrustStateField(header.parsed, move.oldKey)) {
+      throw unsafeHookTrustCoordinateMigration(
+        moves,
+        `trust key ${JSON.stringify(move.oldKey)} is not represented by a standalone [hooks.state] table`,
+      );
+    }
+    lineReplacements.set(
+      representation.start,
+      `[hooks.state."${escapeTomlBasicString(move.newKey)}"]`,
+    );
+    keyRewrites.push({
+      oldKey: move.oldKey,
+      newKey: move.newKey,
+      trustedHash: value.trusted_hash,
+    });
+  }
+
+  if (lineReplacements.size === 0) return { config, keyRewrites };
+  const eol = config.includes("\r\n") ? "\r\n" : "\n";
+  const lines = [...inventory.source.lines];
+  for (const [lineIndex, replacement] of lineReplacements) {
+    lines[lineIndex] = replacement;
+  }
+  return { config: lines.join(eol), keyRewrites };
 }
 
 function isExactlyManagedHookTrustStateValue(

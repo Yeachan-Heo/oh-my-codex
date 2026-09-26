@@ -1,5 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import {
 	chmod,
@@ -4589,7 +4590,8 @@ describe("omx setup install mode behavior", () => {
 						null,
 						2,
 					) + "\n";
-					const configContent = 'model = "foreign-config"\n';
+					const oldKey = `${hooksPath}:session_start:1:0`;
+					const configContent = `model = "foreign-config"\n\n[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = "sha256:changed"\n`;
 					await writeFile(hooksPath, hooksContent);
 					await writeFile(configPath, configContent);
 
@@ -4615,6 +4617,70 @@ describe("omx setup install mode behavior", () => {
 					assert.equal(existsSync(join(wd, ".omx")), false);
 					assert.equal(existsSync(join(codexHomeDir, "prompts")), false);
 					assert.equal(existsSync(join(codexHomeDir, "agents")), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+	it("migrates matching foreign hook trust when plugin setup removes legacy groups", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-hook-coordinate-migration-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					const hooksPath = join(codexHomeDir, "hooks.json");
+					const configPath = join(codexHomeDir, "config.toml");
+					const oldKey = `${hooksPath}:session_start:1:0`;
+					const newKey = `${hooksPath}:session_start:0:0`;
+					const foreignHash = `sha256:${createHash("sha256").update(
+						'{"event_name":"session_start","hooks":[{"async":false,"command":"echo foreign","timeout":600,"type":"command"}]}',
+					).digest("hex")}`;
+					const hooksContent = JSON.stringify({
+						hooks: {
+							SessionStart: [
+								{
+									matcher: "startup|resume|clear",
+									hooks: [{ type: "command", command: 'node "/repo/dist/scripts/codex-native-hook.js"' }],
+								},
+								{ hooks: [{ type: "command", command: "echo foreign" }] },
+							],
+						},
+					}, null, 2) + "\n";
+					const configContent = `[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = ${JSON.stringify(foreignHash)}\n`;
+					await writeFile(hooksPath, hooksContent);
+					await writeFile(configPath, configContent);
+
+					const dryRunOutput = await captureConsoleOutput(async () => {
+						await setup({
+							scope: "user",
+							installMode: "plugin",
+							dryRun: true,
+							mergeAgents: true,
+							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\n",
+						});
+					});
+					assert.match(dryRunOutput, /Would remove OMX hook SessionStart \[0,0\]/);
+					assert.match(dryRunOutput, /Would move foreign hook SessionStart \[1,0\] -> \[0,0\]/);
+					assert.ok(dryRunOutput.includes(`Would rewrite [hooks.state."${oldKey}"] -> [hooks.state."${newKey}"]`));
+					assert.equal(await readFile(hooksPath, "utf-8"), hooksContent);
+					assert.equal(await readFile(configPath, "utf-8"), configContent);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						mergeAgents: true,
+						codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\n",
+					});
+					const finalHooks = JSON.parse(await readFile(hooksPath, "utf-8")) as {
+						hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+					};
+					assert.equal(finalHooks.hooks.SessionStart.length, 1);
+					assert.equal(finalHooks.hooks.SessionStart[0]!.hooks[0]!.command, "echo foreign");
+					const finalConfig = parseToml(await readFile(configPath, "utf-8")) as {
+						hooks?: { state?: Record<string, { trusted_hash?: string }> };
+					};
+					assert.equal(finalConfig.hooks?.state?.[oldKey], undefined);
+					assert.equal(finalConfig.hooks?.state?.[newKey]?.trusted_hash, foreignHash);
 				});
 			});
 		} finally {

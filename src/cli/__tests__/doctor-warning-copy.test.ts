@@ -2205,14 +2205,17 @@ command = "node"
 		}
 	});
 
-	it("reports unsafe managed removal without recommending destructive repair", async () => {
+	it("reports exact hook trust reconciliation when a shifted foreign hash no longer matches", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-unsafe-removal-"));
 		try {
 			const home = join(wd, "home");
 			const codexDir = join(home, ".codex");
 			await mkdir(codexDir, { recursive: true });
+			const hooksPath = join(codexDir, "hooks.json");
+			const oldKey = `${hooksPath}:session_start:0:1`;
+			const newKey = `${hooksPath}:session_start:0:0`;
 			await writeFile(
-				join(codexDir, "hooks.json"),
+				hooksPath,
 				JSON.stringify({
 					hooks: {
 						SessionStart: [{
@@ -2225,14 +2228,18 @@ command = "node"
 					},
 				}, null, 2) + "\n",
 			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				`[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = "sha256:changed"\n`,
+			);
 
 			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
-			assert.match(
-				res.stdout,
-				/\[!!\] Native hooks: hooks\.json has OMX entries that cannot be safely removed \(unsafe_managed_removal\): Removing OMX hooks would shift a foreign coordinate or discard opaque metadata; manual cleanup is required because doctor will not overwrite or remove it/,
-			);
+			assert.match(res.stdout, /\[!!\] Native hooks: Foreign hook trust migration is unsafe \(unsafe_managed_removal\): Cannot safely migrate foreign Codex hook trust state/);
+			assert.ok(res.stdout.includes(oldKey), "doctor should show the existing [hooks.state] key");
+			assert.ok(res.stdout.includes(newKey), "doctor should show the destination [hooks.state] key");
+			assert.match(res.stdout, /Remediation: restore the current hook definition and matching trusted_hash/);
 			assert.doesNotMatch(res.stdout, /Native hooks:.*--force/);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
@@ -2337,6 +2344,7 @@ command = "node"
 			try {
 				const codexDir = join(wd, ".codex");
 				const hooksPath = join(codexDir, "hooks.json");
+				const oldKey = `${hooksPath}:pre_tool_use:0:1`;
 				const shimPath = join(codexDir, "hooks", "omx-native-hook-windows-shim.ps1");
 				const parsed = JSON.parse(buildWindowsShimHooksJson(shimPath, codexDir)) as {
 					hooks: Record<string, Array<{ hooks: unknown[] }>>;
@@ -2346,6 +2354,10 @@ command = "node"
 					command: "echo foreign-handler",
 				});
 				await mkdir(codexDir, { recursive: true });
+				await writeFile(
+					join(codexDir, "config.toml"),
+					`[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = "sha256:changed"\n`,
+				);
 				await writeFile(hooksPath, `${JSON.stringify(parsed, null, 2)}\n`);
 				if (fixture.shimContent !== null) {
 					await mkdir(dirname(shimPath), { recursive: true });

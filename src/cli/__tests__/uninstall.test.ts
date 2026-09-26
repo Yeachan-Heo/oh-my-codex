@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path';
 import { tmpdir as osTmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
   buildManagedCodexHookTrustState,
   buildManagedCodexHooksConfig,
@@ -591,23 +592,28 @@ describe('omx uninstall', () => {
     }
   });
 
-  it('fails closed without cleaning config when managed removal would shift a foreign handler', async () => {
+  it('moves existing foreign trust to its new group coordinate during uninstall', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-unsafe-foreign-hooks-'));
     try {
       const home = join(wd, 'home');
       const codexDir = join(home, '.codex');
       const configPath = join(codexDir, 'config.toml');
       const hooksPath = join(codexDir, 'hooks.json');
-      const config = buildOmxConfig();
+      const foreignHash = `sha256:${createHash('sha256').update(
+        '{"event_name":"session_start","hooks":[{"async":false,"command":"echo keep-me","timeout":600,"type":"command"}]}',
+      ).digest('hex')}`;
+      const oldKey = `${hooksPath}:session_start:1:0`;
+      const newKey = `${hooksPath}:session_start:0:0`;
+      const config = `${buildOmxConfig()}\n[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = ${JSON.stringify(foreignHash)}\n`;
       const hooks = JSON.stringify({
         hooks: {
-          SessionStart: [{
-            matcher: 'startup|resume|clear',
-            hooks: [
-              { type: 'command', command: 'node "/repo/dist/scripts/codex-native-hook.js"' },
-              { type: 'command', command: 'echo keep-me' },
-            ],
-          }],
+          SessionStart: [
+            {
+              matcher: 'startup|resume|clear',
+              hooks: [{ type: 'command', command: 'node "/repo/dist/scripts/codex-native-hook.js"' }],
+            },
+            { hooks: [{ type: 'command', command: 'echo keep-me' }] },
+          ],
         },
       }, null, 2) + '\n';
       await mkdir(codexDir, { recursive: true });
@@ -616,14 +622,65 @@ describe('omx uninstall', () => {
 
       const res = runOmx(wd, ['uninstall'], { HOME: home });
       if (shouldSkipForSpawnPermissions(res.error)) return;
-      assert.equal(res.status, 1, res.stderr || res.stdout);
-      assert.match(res.stderr, /unsafe_managed_removal|shift a foreign coordinate/i);
-      assert.equal(await readFile(configPath, 'utf-8'), config);
-      assert.equal(await readFile(hooksPath, 'utf-8'), hooks);
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      const finalHooks = JSON.parse(await readFile(hooksPath, 'utf-8')) as {
+        hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+      };
+      assert.equal(finalHooks.hooks.SessionStart.length, 1);
+      assert.equal(finalHooks.hooks.SessionStart[0]!.hooks[0]!.command, 'echo keep-me');
+      const finalConfig = TOML.parse(await readFile(configPath, 'utf-8')) as {
+        hooks?: { state?: Record<string, { trusted_hash?: string }> };
+      };
+      assert.equal(finalConfig.hooks?.state?.[oldKey], undefined);
+      assert.equal(finalConfig.hooks?.state?.[newKey]?.trusted_hash, foreignHash);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('prints the complete foreign trust migration plan without writes during dry-run', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-uninstall-hook-coordinate-dry-run-'));
+    try {
+      const home = join(wd, 'home');
+      const codexDir = join(home, '.codex');
+      const configPath = join(codexDir, 'config.toml');
+      const hooksPath = join(codexDir, 'hooks.json');
+      const foreignHash = `sha256:${createHash('sha256').update(
+        '{"event_name":"session_start","hooks":[{"async":false,"command":"echo keep-me","timeout":600,"type":"command"}]}',
+      ).digest('hex')}`;
+      const oldKey = `${hooksPath}:session_start:1:0`;
+      const newKey = `${hooksPath}:session_start:0:0`;
+      const config = `${buildOmxConfig()}\n[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = ${JSON.stringify(foreignHash)}\n`;
+      const hooks = JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              matcher: 'startup|resume|clear',
+              hooks: [{ type: 'command', command: 'node "/repo/dist/scripts/codex-native-hook.js"' }],
+            },
+            { hooks: [{ type: 'command', command: 'echo keep-me' }] },
+          ],
+        },
+      }, null, 2) + '\n';
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(configPath, config);
+      await writeFile(hooksPath, hooks);
+      const originalConfig = await readFile(configPath);
+      const originalHooks = await readFile(hooksPath);
+
+      const res = runOmx(wd, ['uninstall', '--dry-run'], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.match(res.stdout, /Would remove OMX hook SessionStart \[0,0\]/);
+      assert.match(res.stdout, /Would move foreign hook SessionStart \[1,0\] -> \[0,0\]/);
+      assert.ok(res.stdout.includes(`Would rewrite [hooks.state."${oldKey}"] -> [hooks.state."${newKey}"]`));
+      assert.deepEqual(await readFile(configPath), originalConfig);
+      assert.deepEqual(await readFile(hooksPath), originalHooks);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('fails before uninstall writes when marker-wrapped trust state has foreign siblings', async () => {
     const representations = [
       {
