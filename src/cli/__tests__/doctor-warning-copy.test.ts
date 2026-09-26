@@ -41,7 +41,9 @@ import {
 import { syncRegularFile } from "../../utils/file-durability.js";
 import {
 	buildManagedCodexNativeHookCommand,
+	buildManagedCodexHooksConfig,
 	buildManagedCodexNativeHookWindowsShimContent,
+	planManagedCodexHooksRemoval,
 } from "../../config/codex-hooks.js";
 import { computeOmxPluginCacheClaimDigest } from "../plugin-marketplace.js";
 
@@ -113,6 +115,56 @@ function currentNativeHookCommand(codexHomeDir: string): string {
 	return buildManagedCodexNativeHookCommand(repoRoot(), {
 		codexHomeDir,
 	});
+}
+
+async function writeManagedFirstHookTrustFixture(
+	codexHomeDir: string,
+	destinationTrustedHash?: string,
+): Promise<{ hooksPath: string; configPath: string }> {
+	const hooksPath = join(codexHomeDir, "hooks.json");
+	const configPath = join(codexHomeDir, "config.toml");
+	const hooks = buildManagedCodexHooksConfig(repoRoot(), {
+		platform: process.platform,
+		codexHomeDir,
+	});
+	hooks.hooks.SessionStart[0]!.hooks.push({
+		type: "command",
+		command: "echo doctor-foreign",
+	});
+	const hooksContent = `${JSON.stringify(hooks, null, 2)}\n`;
+	if (process.platform === "win32") {
+		const shimPath = join(codexHomeDir, "hooks", "omx-native-hook-windows-shim.ps1");
+		await mkdir(dirname(shimPath), { recursive: true });
+		await writeFile(
+			shimPath,
+			buildManagedCodexNativeHookWindowsShimContent(repoRoot()),
+			"utf-8",
+		);
+	}
+	const removalPlan = planManagedCodexHooksRemoval(hooksContent, hooksPath, {
+		platform: process.platform,
+		codexHomeDir,
+	});
+	if (!removalPlan.ok) throw removalPlan.error;
+	const move = removalPlan.coordinateMoves.find(({ eventName }) => eventName === "SessionStart");
+	assert.ok(move, "managed-first SessionStart handler should shift the foreign handler");
+	assert.ok(move.expectedTrustedHash, "foreign handler should have a provable trust hash");
+	const managedTrust = removalPlan.priorTrustState[move.newKey];
+	assert.ok(managedTrust, "managed destination should have setup-owned trust proof");
+	await writeFile(hooksPath, hooksContent, "utf-8");
+	await writeFile(
+		configPath,
+		[
+			`[hooks.state.${JSON.stringify(move.newKey)}]`,
+			`trusted_hash = ${JSON.stringify(destinationTrustedHash ?? managedTrust.trusted_hash)}`,
+			"",
+			`[hooks.state.${JSON.stringify(move.oldKey)}]`,
+			`trusted_hash = ${JSON.stringify(move.expectedTrustedHash)}`,
+			"",
+		].join("\n"),
+		"utf-8",
+	);
+	return { hooksPath, configPath };
 }
 
 function buildWindowsShimCommand(shimPath: string): string {
@@ -2205,14 +2257,59 @@ command = "node"
 		}
 	});
 
-	it("reports unsafe managed removal without recommending destructive repair", async () => {
+	it("reports managed-first foreign hook trust migration as safe when setup owns the destination", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-managed-first-trust-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeManagedFirstHookTrustFixture(codexDir);
+
+			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/\[OK\] Native hooks: hooks\.json includes OMX-managed coverage for all native hook events; valid foreign hooks will be preserved/,
+			);
+			assert.doesNotMatch(res.stdout, /Foreign hook trust migration is unsafe/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("still rejects stale foreign trust at a managed-first migration destination", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-stale-destination-trust-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			await writeManagedFirstHookTrustFixture(codexDir, "sha256:stale-foreign-trust");
+
+			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(
+				res.stdout,
+				/\[!!\] Native hooks: Foreign hook trust migration is unsafe \((?:unsafe_managed_removal|managed_trust_key_conflict)\):/,
+			);
+			assert.match(res.stdout, /destination trust key|trust state/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("reports exact hook trust reconciliation when a shifted foreign hash no longer matches", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-unsafe-removal-"));
 		try {
 			const home = join(wd, "home");
 			const codexDir = join(home, ".codex");
 			await mkdir(codexDir, { recursive: true });
+			const hooksPath = join(codexDir, "hooks.json");
+			const oldKey = `${hooksPath}:session_start:0:1`;
+			const newKey = `${hooksPath}:session_start:0:0`;
 			await writeFile(
-				join(codexDir, "hooks.json"),
+				hooksPath,
 				JSON.stringify({
 					hooks: {
 						SessionStart: [{
@@ -2225,14 +2322,18 @@ command = "node"
 					},
 				}, null, 2) + "\n",
 			);
+			await writeFile(
+				join(codexDir, "config.toml"),
+				`[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = "sha256:changed"\n`,
+			);
 
 			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
-			assert.match(
-				res.stdout,
-				/\[!!\] Native hooks: hooks\.json has OMX entries that cannot be safely removed \(unsafe_managed_removal\): Removing OMX hooks would shift a foreign coordinate or discard opaque metadata; manual cleanup is required because doctor will not overwrite or remove it/,
-			);
+			assert.match(res.stdout, /\[!!\] Native hooks: Foreign hook trust migration is unsafe \(unsafe_managed_removal\): Cannot safely migrate foreign Codex hook trust state/);
+			assert.ok(res.stdout.includes(oldKey), "doctor should show the existing [hooks.state] key");
+			assert.ok(res.stdout.includes(newKey), "doctor should show the destination [hooks.state] key");
+			assert.match(res.stdout, /Remediation: restore the current hook definition and matching trusted_hash/);
 			assert.doesNotMatch(res.stdout, /Native hooks:.*--force/);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
@@ -2337,6 +2438,7 @@ command = "node"
 			try {
 				const codexDir = join(wd, ".codex");
 				const hooksPath = join(codexDir, "hooks.json");
+				const oldKey = `${hooksPath}:pre_tool_use:0:1`;
 				const shimPath = join(codexDir, "hooks", "omx-native-hook-windows-shim.ps1");
 				const parsed = JSON.parse(buildWindowsShimHooksJson(shimPath, codexDir)) as {
 					hooks: Record<string, Array<{ hooks: unknown[] }>>;
@@ -2346,6 +2448,10 @@ command = "node"
 					command: "echo foreign-handler",
 				});
 				await mkdir(codexDir, { recursive: true });
+				await writeFile(
+					join(codexDir, "config.toml"),
+					`[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = "sha256:changed"\n`,
+				);
 				await writeFile(hooksPath, `${JSON.stringify(parsed, null, 2)}\n`);
 				if (fixture.shimContent !== null) {
 					await mkdir(dirname(shimPath), { recursive: true });

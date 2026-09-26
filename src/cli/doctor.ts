@@ -54,6 +54,7 @@ import {
 	analyzeLegacyMultiAgentConfig,
 	hasExactOmxSeededBehavioralDefaultsPair,
 	hasLegacyOmxTeamRunTable,
+	migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged,
 } from "../config/generator.js";
 import {
 	MANAGED_HOOK_EVENTS,
@@ -2731,6 +2732,7 @@ function combineNativeHookIntegrityAndRemovalChecks(
 async function checkExistingNativeHooks(
 	hooksPath: string,
 	context: NativeHookCheckContext,
+	configPath?: string,
 ): Promise<Check> {
 	const platform = context.platform ?? process.platform;
 	try {
@@ -2779,10 +2781,48 @@ async function checkExistingNativeHooks(
 				name: "Native hooks",
 				status: removalIsCoordinateOnly ? "warn" : "fail",
 				message: removalIsCoordinateOnly
-					? `hooks.json has OMX entries that cannot be safely removed (${removalPlan.error.code}): ${trimNativeHookDetailTerminalPeriod(removalPlan.error.message)}; manual cleanup is required because doctor will not overwrite or remove it`
+					? `hooks.json has OMX entries that cannot be safely removed (${removalPlan.error.code}): ${trimNativeHookDetailTerminalPeriod(removalPlan.error.message)}. Remediation: reconcile the exact hook order and [hooks.state] keys shown above, then rerun "omx setup --plugin" or "omx uninstall"; doctor will not overwrite or remove the files`
 					: `hooks.json has ambiguous or untrusted OMX ownership (${removalPlan.error.code}): ${trimNativeHookDetailTerminalPeriod(removalPlan.error.message)}; inspect the file manually because doctor will not overwrite or remove it`,
 			};
 			return combineNativeHookIntegrityAndRemovalChecks(windowsShimCheck, removalCheck);
+		}
+		if (removalPlan.coordinateMoves.length > 0) {
+			let configContent = "";
+			if (configPath && existsSync(configPath)) {
+				try {
+					const decoded = decodeStrictUtf8(await readFile(configPath));
+					if (decoded === null) throw new Error("config.toml is not valid UTF-8");
+					configContent = decoded;
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					return combineNativeHookIntegrityAndRemovalChecks(windowsShimCheck, {
+						name: "Native hooks",
+						status: "warn",
+						message: `hooks.json removal shifts foreign hook coordinates, but doctor could not verify [hooks.state] in ${configPath}: ${detail}. Remediation: inspect config.toml and reconcile the exact keys before running "omx setup --plugin" or "omx uninstall"`,
+					});
+				}
+			}
+			try {
+				migrateManagedCodexHookTrustStateCoordinatesAfterRemovingManaged(
+					configContent,
+					removalPlan.coordinateMoves,
+					{
+						priorManagedHookTrustState: removalPlan.priorTrustState,
+						managedTrustState: removalPlan.finalTrustState,
+					},
+				);
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				const errorCode = typeof error === "object" && error !== null &&
+					"code" in error && typeof error.code === "string"
+					? ` (${error.code})`
+					: "";
+				return combineNativeHookIntegrityAndRemovalChecks(windowsShimCheck, {
+					name: "Native hooks",
+					status: "warn",
+					message: `Foreign hook trust migration is unsafe${errorCode}: ${detail} Remediation: restore the current hook definition and matching trusted_hash or manually reconcile the listed [hooks.state] keys, then rerun "omx setup --plugin" or "omx uninstall"`,
+				});
+			}
 		}
 		if (windowsShimCheck) return windowsShimCheck;
 		const legacyTrustStateEntries = Object.keys(removalPlan.legacyTrustState).length;
@@ -2847,7 +2887,7 @@ export async function checkNativeHooks(
 			const configContent = await readFile(configPath, "utf-8");
 			if (configEnablesPluginScopedHooks(configContent, context.codexFeaturesListOutput)) {
 				const globalCheck = existsSync(hooksPath)
-					? await checkExistingNativeHooks(hooksPath, context)
+					? await checkExistingNativeHooks(hooksPath, context, configPath)
 					: null;
 				return combinePluginAndGlobalNativeHookChecks(
 					await checkPluginScopedNativeHooks(context.codexHomeDir, hooksPath),
@@ -2894,7 +2934,7 @@ export async function checkNativeHooks(
 		};
 	}
 
-	return checkExistingNativeHooks(hooksPath, context);
+	return checkExistingNativeHooks(hooksPath, context, configPath);
 }
 
 export async function checkNativeHookDistSmoke(

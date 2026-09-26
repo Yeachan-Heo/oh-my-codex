@@ -6,7 +6,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import {
-  ManagedCodexHooksPlanError,
   planManagedCodexHooksRemoval,
 } from '../../config/codex-hooks.js';
 
@@ -301,7 +300,7 @@ test('Linux installed-Codex hooks/list preserves full foreign metadata through u
   }
 });
 
-test('Linux installed-Codex preserves managed-first foreign order and fails unsafe uninstall without writes', async (t) => {
+test('Linux installed-Codex removes managed-first hooks while preserving foreign coordinate order', async (t) => {
   if (process.platform !== 'linux') {
     t.skip('This regression records Linux-only Codex evidence and makes no macOS claim.');
     return;
@@ -373,32 +372,28 @@ test('Linux installed-Codex preserves managed-first foreign order and fails unsa
       beforeRerunMetadata,
       'rerun changed Codex key, hash, trust status, or display order',
     );
-    const beforeUninstallHooksBytes = await readFile(hooksPath);
-    const beforeUninstallConfigBytes = await readFile(configPath);
-
-    const expectedUnsafeManagedRemovalDiagnostic =
-      'Removing OMX hooks would shift a foreign coordinate or discard opaque metadata.';
-    const unsafeRemoval = planManagedCodexHooksRemoval(beforeRerunHooks, hooksPath);
-    assert.equal(unsafeRemoval.ok, false);
-    if (unsafeRemoval.ok) return;
-    assert.ok(unsafeRemoval.error instanceof ManagedCodexHooksPlanError);
-    assert.equal(unsafeRemoval.error.code, 'unsafe_managed_removal');
-    assert.equal(unsafeRemoval.error.message, expectedUnsafeManagedRemovalDiagnostic);
+    const removal = planManagedCodexHooksRemoval(beforeRerunHooks, hooksPath);
+    assert.equal(removal.ok, true);
+    if (!removal.ok) return;
+    assert.equal(removal.coordinateMoves.length, foreignRawSnapshot.length);
 
     const uninstall = runRepoOmxResult(projectDir, ['uninstall'], env);
     if (uninstall.error) throw uninstall.error;
     assert.equal(
       uninstall.status,
-      1,
-      `unsafe uninstall exited ${String(uninstall.status)}, expected 1\nstdout:\n${uninstall.stdout || ''}\nstderr:\n${uninstall.stderr || ''}`,
+      0,
+      `uninstall exited ${String(uninstall.status)}, expected 0\nstdout:\n${uninstall.stdout || ''}\nstderr:\n${uninstall.stderr || ''}`,
     );
-    assert.equal(
-      uninstall.stderr,
-      `Error: ${expectedUnsafeManagedRemovalDiagnostic}\n`,
-      'unsafe uninstall must report the exact unsafe_managed_removal diagnostic',
+    const afterUninstallHooksContent = await readFile(hooksPath, 'utf-8');
+    const expectedForeignAfterRemoval = foreignRawSnapshot.map((entry) => {
+      const snapshot = entry as { groupIndex: number };
+      return { ...snapshot, groupIndex: snapshot.groupIndex - 1 };
+    });
+    assertForeignHookGroupsPreserved(
+      expectedForeignAfterRemoval,
+      afterUninstallHooksContent,
+      foreignMarker,
     );
-    assert.deepEqual(await readFile(hooksPath), beforeUninstallHooksBytes, 'unsafe uninstall changed raw hooks.json bytes');
-    assert.deepEqual(await readFile(configPath), beforeUninstallConfigBytes, 'unsafe uninstall changed raw config.toml bytes');
     await assertNoUninstallTransactionArtifacts(join(projectDir, '.codex'));
   } finally {
     await rm(root, { recursive: true, force: true });
