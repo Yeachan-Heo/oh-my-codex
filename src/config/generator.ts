@@ -2501,17 +2501,21 @@ export function migrateManagedCodexHookTrustStateCoordinates(
   const lineReplacements = new Map<number, string>();
   const keyRewrites: ManagedCodexHookTrustStateKeyRewrite[] = [];
   for (const move of moves) {
+    if (Object.hasOwn(entries, move.newKey) && !movesByOldKey.has(move.newKey)) {
+      // Do not remove or overwrite an occupied destination automatically: its
+      // ownership is unknown, and leaving stale trust there could activate it
+      // for the moved hook. Fail closed and require explicit reconciliation,
+      // even when the old coordinate has no trust entry.
+      throw unsafeHookTrustCoordinateMigration(
+        moves,
+        `destination trust key ${JSON.stringify(move.newKey)} is already occupied`,
+      );
+    }
     if (!Object.hasOwn(entries, move.oldKey)) continue;
     if (!move.expectedTrustedHash) {
       throw unsafeHookTrustCoordinateMigration(
         moves,
         `the moved ${move.eventName} hook has opaque or unsupported definition metadata`,
-      );
-    }
-    if (Object.hasOwn(entries, move.newKey) && !movesByOldKey.has(move.newKey)) {
-      throw unsafeHookTrustCoordinateMigration(
-        moves,
-        `destination trust key ${JSON.stringify(move.newKey)} is already occupied`,
       );
     }
 

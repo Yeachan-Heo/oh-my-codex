@@ -43,15 +43,19 @@ event payload without receiving `EPIPE`.
 OMX only owns the wrapper entries that invoke `dist/scripts/codex-native-hook.js`. User-managed hook entries in the same `.codex/hooks.json` file are preserved across `omx setup` refreshes and `omx uninstall`.
 Setup-owned trust state is limited to those generated wrapper identities; user hooks and user-owned `hooks.state` entries are preserved and remain subject to Codex's normal review flow.
 
-When `omx setup --plugin`, `omx setup --disable-hooks`, or `omx uninstall`
+`omx setup --plugin`, `omx setup --disable-hooks`, or `omx uninstall`
 removes OMX groups ahead of foreign hooks, it migrates an existing foreign
 `[hooks.state]` key to the new coordinate only when `trusted_hash` still matches
 the current hook definition. It never creates trust for a hook that was not
-already trusted. A changed hash, unsupported hook metadata, or ambiguous TOML
-stops the operation and reports the exact old/new hook coordinates and trust
-keys to reconcile. `--dry-run` lists OMX removals, foreign coordinate moves,
-and every trust-key rewrite without modifying files; `omx doctor` reports the
-same reconciliation details and remediation when migration cannot be proven.
+already trusted. An occupied destination is unsafe even when the old key is
+absent: the entry may be stale trust from an earlier coordinate, and neither
+activating nor deleting it can be proven safe, so the operation stops for
+explicit reconciliation. A changed hash, unsupported hook metadata, or
+ambiguous TOML likewise stops the operation and reports the exact old/new hook
+coordinates and trust keys to reconcile. `--dry-run` lists OMX removals, foreign
+coordinate moves, and every trust-key rewrite without modifying files;
+`omx doctor` reports the same reconciliation details and remediation when
+migration cannot be proven.
 
 For authority-decreasing recovery without uninstalling OMX, run one of these
 copyable commands from an external shell:

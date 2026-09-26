@@ -2227,6 +2227,73 @@ describe("codex hooks helpers", () => {
     assert.ok(migration.config.includes(`trusted_hash = ${JSON.stringify(expectedHash)}`));
   });
 
+  it("fails closed when stale destination trust exists but source trust is missing", () => {
+    const hooksPath = "/fixture/.codex/hooks.json";
+    const managedCommand = buildManagedCodexHooksConfig("/repo", { platform: "linux" })
+      .hooks.SessionStart[0]!.hooks[0]!.command;
+    const hooksContent = JSON.stringify({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "startup|resume|clear",
+            hooks: [{ type: "command", command: managedCommand }],
+          },
+          { hooks: [{ type: "command", command: "echo foreign" }] },
+        ],
+      },
+    });
+    const plan = planManagedCodexHooksRemoval(hooksContent, hooksPath, { platform: "linux" });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    const { oldKey, newKey, expectedTrustedHash } = plan.coordinateMoves[0]!;
+    assert.ok(expectedTrustedHash);
+    const config = `[hooks.state.${JSON.stringify(newKey)}]\ntrusted_hash = ${JSON.stringify(expectedTrustedHash)}\n`;
+
+    assert.throws(
+      () => migrateManagedCodexHookTrustStateCoordinates(config, plan.coordinateMoves),
+      (error: unknown) => error instanceof ManagedCodexHooksPlanError &&
+        error.code === "unsafe_managed_removal" &&
+        error.message.includes(oldKey) &&
+        error.message.includes(newKey) &&
+        error.message.includes("destination trust key") &&
+        error.message.includes("reconcile"),
+    );
+  });
+
+  it("fails closed when both source and destination trust keys are occupied", () => {
+    const hooksPath = "/fixture/.codex/hooks.json";
+    const managedCommand = buildManagedCodexHooksConfig("/repo", { platform: "linux" })
+      .hooks.SessionStart[0]!.hooks[0]!.command;
+    const hooksContent = JSON.stringify({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "startup|resume|clear",
+            hooks: [{ type: "command", command: managedCommand }],
+          },
+          { hooks: [{ type: "command", command: "echo foreign" }] },
+        ],
+      },
+    });
+    const plan = planManagedCodexHooksRemoval(hooksContent, hooksPath, { platform: "linux" });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+    const { oldKey, newKey, expectedTrustedHash } = plan.coordinateMoves[0]!;
+    assert.ok(expectedTrustedHash);
+    const config =
+      `[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = ${JSON.stringify(expectedTrustedHash)}\n\n` +
+      `[hooks.state.${JSON.stringify(newKey)}]\ntrusted_hash = ${JSON.stringify(expectedTrustedHash)}\n`;
+
+    assert.throws(
+      () => migrateManagedCodexHookTrustStateCoordinates(config, plan.coordinateMoves),
+      (error: unknown) => error instanceof ManagedCodexHooksPlanError &&
+        error.code === "unsafe_managed_removal" &&
+        error.message.includes(oldKey) &&
+        error.message.includes(newKey) &&
+        error.message.includes("destination trust key"),
+    );
+  });
+
   it("fails closed with exact reconciliation keys when foreign trust hash or metadata changed", () => {
     const hooksPath = "/fixture/.codex/hooks.json";
     const managedCommand = buildManagedCodexHooksConfig("/repo", { platform: "linux" })
