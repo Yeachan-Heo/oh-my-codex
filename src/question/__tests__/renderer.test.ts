@@ -750,6 +750,104 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(calls, [['display-message', '-p', '-t', '%11', '#{session_attached}']]);
   });
 
+  it('fails when tmux socket is denied due to permissions (EPERM)', () => {
+    const calls: string[][] = [];
+    const epermError = new Error('permission denied');
+    (epermError as any).code = 'EPERM';
+    assert.throws(
+      () => launchQuestionRenderer(
+        {
+          cwd: '/repo',
+          recordPath: '/repo/.omx/state/sessions/s1/questions/question-socket-denied.json',
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-1000/default,12345,0', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) throw epermError;
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      ),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /tmux socket/i);
+        assert.match(error.message, /permission denied/i);
+        assert.match(error.message, /tmp\/tmux-1000\/default/i);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, [['display-message', '-p', '-t', '%11', '#{session_attached}']]);
+  });
+
+  it('fails when tmux socket is denied due to permissions (EACCES in stderr)', () => {
+    const calls: string[][] = [];
+    const eaccessError = new Error('tmux died');
+    (eaccessError as any).stderr = 'Permission denied';
+    assert.throws(
+      () => launchQuestionRenderer(
+        {
+          cwd: '/repo',
+          recordPath: '/repo/.omx/state/sessions/s1/questions/question-socket-denied-stderr.json',
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-1000/default,12345,0', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) throw eaccessError;
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      ),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /tmux socket/i);
+        assert.match(error.message, /permission denied/i);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, [['display-message', '-p', '-t', '%11', '#{session_attached}']]);
+  });
+
+  it('fails with a generic error when tmux probe fails for other reasons', () => {
+    const calls: string[][] = [];
+    const genericError = new Error('tmux: no server running');
+    assert.throws(
+      () => launchQuestionRenderer(
+        {
+          cwd: '/repo',
+          recordPath: '/repo/.omx/state/sessions/s1/questions/question-probe-error.json',
+          sessionId: 's1',
+          env: { TMUX: '/tmp/tmux-demo', TMUX_PANE: '%11' } as NodeJS.ProcessEnv,
+        },
+        {
+          strategy: 'inside-tmux',
+          execTmux: (args) => {
+            calls.push(args);
+            if (args[0] === 'display-message' && args.includes('#{session_attached}')) throw genericError;
+            return '';
+          },
+          sleepSync: () => {},
+        },
+      ),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /failed to probe/i);
+        assert.match(error.message, /tmux probe failed/i);
+        // Should NOT match the socket permission error message
+        assert.doesNotMatch(error.message, /socket.*permission/i);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, [['display-message', '-p', '-t', '%11', '#{session_attached}']]);
+  });
+
   it('targets an explicit host pane when launching from a container without TMUX', () => {
     const calls: string[][] = [];
     const result = launchQuestionRenderer(

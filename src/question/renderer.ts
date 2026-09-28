@@ -32,6 +32,11 @@ export type ExecTmuxSync = (args: string[]) => string;
 export type SleepSync = (ms: number) => void;
 export type SpawnDetachedRenderer = (command: string, args: string[], options: SpawnOptions) => Pick<ChildProcess, 'pid' | 'unref'>;
 
+export type TmuxSessionProbeResult =
+  | { state: 'attached' }
+  | { state: 'detached' }
+  | { state: 'probe_failed'; reason: 'tmux_socket_denied' | 'tmux_probe_error'; message: string; socketPath?: string };
+
 const QUESTION_TEXT_SETTLE_MS = 120;
 const QUESTION_SUBMIT_REPEAT_DELAY_MS = 100;
 const QUESTION_RENDERER_PANE_SETTLE_MS = 120;
@@ -573,18 +578,53 @@ function resolveReturnTarget(options: {
   return isPaneId(detectedPane) ? detectedPane : undefined;
 }
 
+function isTmuxSocketPermissionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const errorCode = (error as any).code;
+  const errorMessage = error.message ?? '';
+  const errorStderr = (error as any).stderr ?? '';
+  // Check for EPERM or EACCES in error code, message, or stderr
+  return (
+    errorCode === 'EPERM' ||
+    errorCode === 'EACCES' ||
+    /Operation not permitted|Permission denied/.test(errorMessage) ||
+    /Operation not permitted|Permission denied/.test(errorStderr)
+  );
+}
+
+function getTmuxSocketPath(env: NodeJS.ProcessEnv): string | undefined {
+  const tmuxEnv = safeString(env.TMUX).trim();
+  if (!tmuxEnv) return undefined;
+  // TMUX env format is typically: "socket,pid,index" on Unix
+  const socketPath = tmuxEnv.split(',')[0];
+  return socketPath || undefined;
+}
+
 function isCurrentTmuxSessionAttached(
   execTmux: ExecTmuxSync = defaultExecTmux,
   env: NodeJS.ProcessEnv = process.env,
   targetPane?: string,
-): boolean {
+): TmuxSessionProbeResult {
   const paneTarget = targetPane ?? safeString(env.TMUX_PANE).trim();
   const targetArgs = isPaneId(paneTarget) ? ['-t', paneTarget] : [];
   try {
     const attached = execTmux(['display-message', '-p', ...targetArgs, '#{session_attached}']).trim();
-    return Number.parseInt(attached, 10) > 0;
-  } catch {
-    return false;
+    const attachedCount = Number.parseInt(attached, 10);
+    return attachedCount > 0 ? { state: 'attached' } : { state: 'detached' };
+  } catch (error) {
+    if (isTmuxSocketPermissionError(error)) {
+      return {
+        state: 'probe_failed',
+        reason: 'tmux_socket_denied',
+        message: `tmux socket permission denied: ${error instanceof Error ? error.message : String(error)}`,
+        socketPath: getTmuxSocketPath(env),
+      };
+    }
+    return {
+      state: 'probe_failed',
+      reason: 'tmux_probe_error',
+      message: `tmux probe failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -864,10 +904,24 @@ export function launchQuestionRenderer(
     const attachedCheckTarget = safeString(env.TMUX).trim()
       ? returnTarget || safeString(env.TMUX_PANE).trim() || undefined
       : undefined;
-    if (safeString(env.TMUX).trim() && !isCurrentTmuxSessionAttached(execTmux, env, attachedCheckTarget)) {
-      throw new Error(
-        'omx question cannot open a visible renderer because this tmux session has no attached client. Run omx question from an attached tmux pane.',
-      );
+    if (safeString(env.TMUX).trim()) {
+      const probeResult = isCurrentTmuxSessionAttached(execTmux, env, attachedCheckTarget);
+      if (probeResult.state === 'probe_failed') {
+        if (probeResult.reason === 'tmux_socket_denied') {
+          const socketInfo = probeResult.socketPath ? ` at ${probeResult.socketPath}` : '';
+          throw new Error(
+            `omx question cannot connect to tmux socket${socketInfo} due to permission denied. Check that the tmux session is accessible and you have the necessary file permissions.`,
+          );
+        }
+        throw new Error(
+          `omx question failed to probe tmux session state: ${probeResult.message}`,
+        );
+      }
+      if (probeResult.state === 'detached') {
+        throw new Error(
+          'omx question cannot open a visible renderer because this tmux session has no attached client. Run omx question from an attached tmux pane.',
+        );
+      }
     }
 
     supersedeLiveQuestionsForSession(options.cwd, options.sessionId, execTmux, {
