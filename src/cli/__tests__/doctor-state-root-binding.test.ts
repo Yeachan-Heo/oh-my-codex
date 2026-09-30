@@ -244,42 +244,54 @@ describe('doctor state-root/session binding diagnostics', () => {
     }
   });
 
-  it('signals matching-but-unverified selectors in identity-indeterminate diagnostic output', () => {
-    const message = formatStateRootSessionBindingDiagnostic(
-      syntheticSnapshot('identity-indeterminate', {
-        liveness: 'identity-indeterminate',
-        verifiedAliases: {},
-      }),
-      { OMX_SESSION_ID: 'test-session' },
-    );
-    // Must mention the need for identity probe or verification
-    assert.match(message, /identity|probe|verify|unverified|indeterminate/);
-  });
+  describe('identity-indeterminate selectors (#3725)', () => {
+    const snapshot = {
+      cwd: '/repo',
+      baseStateDir: '/repo/.omx/state',
+      rootSource: 'cwd-default',
+      selectedSessionJson: '/repo/.omx/state/session.json',
+      status: 'identity-indeterminate',
+      liveness: 'identity-indeterminate',
+      state: { session_id: 'omx-example', native_session_id: 'native-example', cwd: '/repo' },
+      verifiedAliases: {},
+    } as unknown as Parameters<typeof checkStateRootSessionBinding>[0];
 
-  it('redacts hostile selector strings in diagnostic output', () => {
-    const message = formatStateRootSessionBindingDiagnostic(
-      syntheticSnapshot('identity-indeterminate', {
-        liveness: 'identity-indeterminate',
-        verifiedAliases: {},
-      }),
-      { OMX_SESSION_ID: '../../../etc/passwd' },
-      ['OMX_SESSION_ID'],
-    );
-    // Should not expose the full hostile path
-    assert.doesNotMatch(message, /\.\./);
-    assert.doesNotMatch(message, /passwd/);
-  });
+    it('reports matching selectors as unverified, not bad, and stays fail-closed', () => {
+      const check = checkStateRootSessionBinding(snapshot, {
+        OMX_SESSION_ID: 'omx-example',
+        CODEX_SESSION_ID: 'native-example',
+      });
+      assert.equal(check.status, 'fail');
+      assert.doesNotMatch(check.message, /bad_selectors/);
+      assert.doesNotMatch(check.message, /clear or correct listed selectors/);
+      assert.match(check.message, /unverified=process-identity-indeterminate/);
+    });
 
-  it('keeps status fail for identity-indeterminate even with matching selectors', () => {
-    const check = checkStateRootSessionBinding(
-      syntheticSnapshot('identity-indeterminate', {
-        liveness: 'identity-indeterminate',
-        verifiedAliases: {},
-      }),
-      { OMX_SESSION_ID: 'test-session' },
-    );
-    // Status must remain 'fail' even if selectors match - identity cannot be verified
-    assert.equal(check.status, 'fail');
+    it('still reports a true mismatch as a bad selector', () => {
+      const check = checkStateRootSessionBinding(snapshot, {
+        OMX_SESSION_ID: 'omx-example',
+        CODEX_SESSION_ID: 'native-other',
+      });
+      assert.equal(check.status, 'fail');
+      assert.match(check.message, /bad_selectors=CODEX_SESSION_ID(?![,A-Z_])/);
+      assert.match(check.message, /unverified=process-identity-indeterminate/);
+    });
+
+    it('treats a selector with no recorded session state as bad', () => {
+      const check = checkStateRootSessionBinding(
+        { ...snapshot, state: undefined } as typeof snapshot,
+        { OMX_SESSION_ID: 'omx-example' },
+      );
+      assert.equal(check.status, 'fail');
+      assert.match(check.message, /bad_selectors=OMX_SESSION_ID/);
+      assert.doesNotMatch(check.message, /unverified=/);
+    });
+
+    it('does not echo hostile selector values', () => {
+      const check = checkStateRootSessionBinding(snapshot, { OMX_SESSION_ID: '../../../etc/passwd' });
+      assert.match(check.message, /bad_selectors=OMX_SESSION_ID/);
+      assert.doesNotMatch(check.message, /passwd|\.\.\//);
+    });
   });
 
   it('archives stale projections while preserving the current scope and unrelated artifacts', async () => {

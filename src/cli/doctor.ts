@@ -35,6 +35,7 @@ import {
   readCanonicalSessionBindingSnapshot,
   isModeStateFilename,
   normalizeSessionId,
+  verifiedSessionAliases,
   type CanonicalSessionBindingSnapshot,
   type StateRootSource,
 } from "../mcp/state-paths.js";
@@ -361,6 +362,13 @@ function selectorEvaluation(
   const bad: BindingSelectorName[] = [];
   const unverified: BindingSelectorName[] = [];
   const aliases = new Set(Object.values(snapshot.verifiedAliases ?? {}));
+  // identity-indeterminate snapshots carry no verified aliases, but the recorded ids in
+  // session.json still let us tell a matching selector from a demonstrated mismatch.
+  const recordedIds = new Set(
+    snapshot.status === "identity-indeterminate" && snapshot.state
+      ? Object.values(verifiedSessionAliases(snapshot.state))
+      : [],
+  );
   for (const name of BINDING_SELECTOR_NAMES) {
     const raw = env[name];
     if (typeof raw !== "string" || raw.trim() === "") continue;
@@ -371,24 +379,9 @@ function selectorEvaluation(
       : snapshot.status === "usable"
         ? normalized !== undefined && aliases.has(normalized)
         : false;
-    if (accepted) {
-      // Selector value is verified and matches
-      continue;
-    }
-    // Check if selector is matching-but-unverified: identity-indeterminate status
-    // with empty verifiedAliases means we couldn't probe the process identity,
-    // but the selector value might still match the state we have.
-    if (
-      snapshot.status === "identity-indeterminate" &&
-      Object.keys(snapshot.verifiedAliases ?? {}).length === 0
-    ) {
-      // For identity-indeterminate, we can't confirm mismatch without verified aliases.
-      // The selector may be correct but unverified due to missing process identity probe.
-      unverified.push(name);
-    } else {
-      // For other statuses, the selector value doesn't match what we verified.
-      bad.push(name);
-    }
+    if (accepted) continue;
+    if (normalized !== undefined && recordedIds.has(normalized)) unverified.push(name);
+    else bad.push(name);
   }
   return { nonblank, bad, unverified };
 }
@@ -444,14 +437,12 @@ export function formatStateRootSessionBindingDiagnostic(
   env: NodeJS.ProcessEnv = process.env,
   badSelectors?: readonly BindingSelectorName[],
 ): string {
-  // Always evaluate selectors to get both bad and unverified.
-  // If badSelectors is provided by caller, use it; otherwise use evaluation.bad.
   const evaluation = selectorEvaluation(snapshot, env);
   const failedSelectors =
     badSelectors !== undefined
       ? BINDING_SELECTOR_NAMES.filter((name) => badSelectors.includes(name))
       : evaluation.bad;
-  const unverifiedSelectors = badSelectors === undefined ? evaluation.unverified : [];
+  const unverifiedSelectors = evaluation.unverified.filter((name) => !failedSelectors.includes(name));
   const reportBadSelectors = failedSelectors;
   const inferred = snapshot.rootSource ? undefined : bindingEnvironmentRootSelector(env);
   const source = snapshot.rootSource ?? inferred?.source ?? "cwd-default";
@@ -490,7 +481,6 @@ export function formatStateRootSessionBindingDiagnostic(
   ];
   // Capped output is assembled from whole fields; selector/session evidence is never
   // truncated. The tail form keeps the selected-path proof atomic when all selectors are present.
-  // For unverified selectors, pass empty array since they don't require correction.
   const compactRecovery = compactCappedBindingRecoveryAction(snapshot, rootSelector, failedSelectors);
   const selectedSessionLabel = safeSelectedSessionJsonLabel(snapshot.selectedSessionJson);
   const badSelectorsField = reportBadSelectors.length > 0
@@ -527,7 +517,7 @@ export function formatStateRootSessionBindingDiagnostic(
         : []),
       ...(selectedSessionLabel ? ["selected=session.json"] : []),
       ...(badSelectorsField ? [badSelectorsField] : []),
-      ...(hasUnverifiedSelectors && identityProbeReason ? [`probe=${identityProbeReason}`] : []),
+      ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
     ];
     return canonicalFields.join(";");
   }
@@ -540,6 +530,7 @@ export function formatStateRootSessionBindingDiagnostic(
     ...(includeFixLabel ? [`fix=${recovery}`] : [recovery]),
     ...(selectedEvidence ? [selectedEvidence] : []),
     ...(badSelectorsField ? [badSelectorsField] : []),
+    ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
   ];
   const compactWithFullEvidence = buildCompactFields(
     selectedSessionLabel ? `selected_session_json=${selectedSessionLabel}` : undefined,
@@ -585,7 +576,7 @@ export function formatStateRootSessionBindingDiagnostic(
       : []),
     ...(selectedSessionLabel ? ["selected=session.json"] : []),
     ...(badSelectorsField ? [badSelectorsField] : []),
-    ...(hasUnverifiedSelectors && identityProbeReason ? [`probe=${identityProbeReason}`] : []),
+    ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
   ];
   return sanitizeBindingDiagnosticLine(fallbackFields.join(";"));
 }
