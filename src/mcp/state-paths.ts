@@ -43,7 +43,7 @@ export interface CanonicalSessionBindingSnapshot {
   verifiedAliases: Partial<Record<VerifiedSessionBindingField, string>>;
 }
 
-function verifiedSessionAliases(state: SessionState): Partial<Record<VerifiedSessionBindingField, string>> {
+export function verifiedSessionAliases(state: SessionState): Partial<Record<VerifiedSessionBindingField, string>> {
   const raw = state as SessionState & Record<string, unknown>;
   const aliases: Partial<Record<VerifiedSessionBindingField, string>> = {};
   for (const field of VERIFIED_SESSION_BINDING_FIELDS) {

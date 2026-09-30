@@ -21466,6 +21466,8 @@ async function buildStopHookOutput(
   const suppressParentWorkflowStop = shouldSuppressParentWorkflowStopForSideConversation(payload);
   if (options.sessionScopedOnly) {
     if (!canonicalSessionId || suppressParentWorkflowStop) return null;
+    const execFollowupOutput = await buildExecFollowupStopOutput(cwd, canonicalSessionId);
+    if (execFollowupOutput) return execFollowupOutput;
     for (const mode of ["autopilot", "ultrawork", "ultraqa"] as const) {
       const modeOutput = await buildModeBasedStopOutput(
         mode,
