@@ -373,6 +373,16 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /\[redacted\] denied/);
   });
 
+  it('redacts fine-grained GitHub access tokens', () => {
+    const error = Object.assign(new Error('push failed'), {
+      stderr: 'auth github_pat_11AAAAAAA0abcdefGHIJKL_mnopqrstuvWXYZ0123456789 rejected',
+      status: 128,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /github_pat_|mnopqrstuv/);
+    assert.match(result, /^auth \[redacted\] rejected \| status=128/);
+  });
+
   it('keeps exit metadata from a failure wrapped in an AggregateError', () => {
     const child = Object.assign(new Error('release failed'), { stderr: 'failed', status: 23, signal: 'SIGKILL' });
     const result = describeDetachedLeaderFailure(new AggregateError([child], 'detached abort failed'));
