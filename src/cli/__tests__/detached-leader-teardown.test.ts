@@ -318,6 +318,16 @@ describe('detached leader HUD teardown', () => {
     assert.ok(result.length <= 1024);
   });
 
+  it('never includes captured subprocess stdout', () => {
+    const error = Object.assign(new Error('Command failed: tmux new-session'), {
+      status: 1,
+      stdout: 'UNRELATED_STDOUT_PAYLOAD',
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /UNRELATED_STDOUT_PAYLOAD/);
+    assert.match(result, /status=1/);
+  });
+
   it('includes signal information when present', () => {
     const error = Object.assign(new Error('terminated'), {
       signal: 'SIGTERM',

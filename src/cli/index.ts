@@ -4558,11 +4558,8 @@ function collectNestedStderr(value: unknown, depth: number = 0): string[] {
   
   const err = value as any;
   const stderr = typeof err.stderr === "string" ? err.stderr : err.stderr?.toString?.();
-  const stdout = typeof err.stdout === "string" ? err.stdout : err.stdout?.toString?.();
-  const stderrOrStdout = stderr || stdout;
-  
-  if (stderrOrStdout) {
-    results.push(stderrOrStdout);
+  if (stderr) {
+    results.push(stderr);
   }
   
   // Walk nested errors in AggregateError
