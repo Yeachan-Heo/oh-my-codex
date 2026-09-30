@@ -352,6 +352,8 @@ describe('ralplan advisory non-authoritative native hooks', () => {
     assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
     // Verify that advisory was actually created (has generation_id)
     assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+    // Verify thread_id is persisted as session_id (fallback case)
+    assert.equal(mode.thread_id, sessionId, 'thread_id should fall back to session_id');
   });
 
   it('(b) resolves threadId when thread_id is empty string but threadId is non-empty', async () => {
@@ -390,6 +392,8 @@ describe('ralplan advisory non-authoritative native hooks', () => {
     const mode = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf8'));
     assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
     assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+    // Verify thread_id is persisted as threadId (not session_id)
+    assert.equal(mode.thread_id, 'T-valid', 'thread_id should resolve from threadId, not session_id');
   });
 
   it('(c) prefers explicit thread_id over session_id even with different session identity', async () => {
@@ -427,5 +431,7 @@ describe('ralplan advisory non-authoritative native hooks', () => {
     const mode = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf8'));
     assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
     assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+    // Verify thread_id is persisted as explicit thread_id (not session_id)
+    assert.equal(mode.thread_id, explicitThreadId, 'thread_id should be explicit thread_id, not session_id');
   });
 });
