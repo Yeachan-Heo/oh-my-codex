@@ -22651,48 +22651,6 @@ export async function dispatchCodexNativeHook(
     }
     outputJson = buildNativePostToolUseOutput(payload);
   } else if (hookEventName === "Stop") {
-    // Record completion for typed native collaboration subagents (#3729)
-    if (isSubagentStop) {
-      try {
-        const { recordSubagentTurnForSession, readSubagentTrackingState } = await import('../subagents/tracker.js');
-        const subagentNativeSessionId = safeString(payload.session_id || payload.sessionId || nativeSessionId).trim();
-        const subagentThreadId = safeString(payload.thread_id || payload.threadId || threadId).trim();
-        const childThreadId = subagentThreadId || subagentNativeSessionId;
-        
-        if (childThreadId) {
-          // Find the parent session by looking for a session that has this childThreadId as a tracked subagent
-          // For a subagent Stop hook, canonicalSessionId may be the child's session, not the parent's,
-          // so we must look up the actual parent in the tracking state
-          let parentSessionId: string | null = null;
-          const trackingState = await readSubagentTrackingState(cwd).catch(() => null);
-          if (trackingState) {
-            for (const sessionId of Object.keys(trackingState.sessions ?? {})) {
-              const threads = trackingState.sessions[sessionId]?.threads ?? {};
-              if (childThreadId in threads) {
-                parentSessionId = sessionId;
-                break;
-              }
-            }
-          }
-          
-          if (parentSessionId) {
-            await recordSubagentTurnForSession(cwd, {
-              sessionId: parentSessionId,
-              threadId: childThreadId,
-              completed: true,
-              completionSource: 'native_hook_stop',
-              timestamp: new Date().toISOString(),
-            }).catch(() => {
-              // Non-critical: subagent tracking must never block the hook
-              void 0;
-            });
-          }
-        }
-      } catch (error) {
-        // Non-critical: subagent tracking must never block the hook
-        void error;
-      }
-    }
     if (declaredTeamWorkerStopOnly) {
       outputJson = await buildStopHookOutput(payload, cwd, stateDir, { teamWorkerOnly: true });
     } else if (allowImplicitSessionSideEffects) {
