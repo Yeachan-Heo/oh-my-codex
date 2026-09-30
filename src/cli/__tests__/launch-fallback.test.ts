@@ -2584,7 +2584,7 @@ case "$1" in
     exit 0
     ;;
   new-session)
-    printf 'unsafe-tmux-handle-secret\n' >&2
+    printf 'tmux-new-session-diagnostic\n' >&2
     exit 1
     ;;
 
@@ -2617,7 +2617,10 @@ exit 1
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal(result.status, 1, result.error || result.stderr || result.stdout);
       assert.match(result.stderr, /detached launch safety failure during inert-session/);
-      assert.doesNotMatch(result.stderr, /unsafe-tmux-handle-secret/);
+      // #3723: the bounded stderr summary and exit status lead; tmux -e values never surface.
+      assert.match(result.stderr, /inert-session \(new-session\): tmux-new-session-diagnostic \| status=1 \| Command failed/);
+      assert.match(result.stderr, /-e OMX_SESSION_ID=\[redacted\]/);
+      assert.doesNotMatch(result.stderr, /OMX_SESSION_ID=omx-|dangerously-bypass/);
       assert.doesNotMatch(result.stdout, /fake-codex/);
       assert.match(tmuxLog, /tmux:-V/);
       assert.match(tmuxLog, /tmux:d0-runs:missing/);

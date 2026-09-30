@@ -4539,7 +4539,9 @@ function detachedFailureCode(error: unknown): string {
 
 function sanitizeDetachedFailureText(text: string): string {
   // Collapse whitespace and remove control characters
-  const collapsed = text.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  const collapsed = text.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim()
+    // Redact tmux `-e KEY=VALUE` environment values; keep only the key.
+    .replace(/(\s-e\s+[A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|\S*)/g, "$1=[redacted]");
   // Redact absolute paths: Unix /path/to/file and Windows C:\path\to\file
   const pathRedacted = collapsed.replace(/(?:\/[^\s:]+){2,}|[a-zA-Z]:\\[^\s]+/g, "[path]");
   // Redact secrets: bearer tokens, API keys, JWTs, and other common secret patterns
