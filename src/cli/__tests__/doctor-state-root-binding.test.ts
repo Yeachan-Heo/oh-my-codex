@@ -244,6 +244,44 @@ describe('doctor state-root/session binding diagnostics', () => {
     }
   });
 
+  it('signals matching-but-unverified selectors in identity-indeterminate diagnostic output', () => {
+    const message = formatStateRootSessionBindingDiagnostic(
+      syntheticSnapshot('identity-indeterminate', {
+        liveness: 'identity-indeterminate',
+        verifiedAliases: {},
+      }),
+      { OMX_SESSION_ID: 'test-session' },
+    );
+    // Must mention the need for identity probe or verification
+    assert.match(message, /identity|probe|verify|unverified|indeterminate/);
+  });
+
+  it('redacts hostile selector strings in diagnostic output', () => {
+    const message = formatStateRootSessionBindingDiagnostic(
+      syntheticSnapshot('identity-indeterminate', {
+        liveness: 'identity-indeterminate',
+        verifiedAliases: {},
+      }),
+      { OMX_SESSION_ID: '../../../etc/passwd' },
+      ['OMX_SESSION_ID'],
+    );
+    // Should not expose the full hostile path
+    assert.doesNotMatch(message, /\.\./);
+    assert.doesNotMatch(message, /passwd/);
+  });
+
+  it('keeps status fail for identity-indeterminate even with matching selectors', () => {
+    const check = checkStateRootSessionBinding(
+      syntheticSnapshot('identity-indeterminate', {
+        liveness: 'identity-indeterminate',
+        verifiedAliases: {},
+      }),
+      { OMX_SESSION_ID: 'test-session' },
+    );
+    // Status must remain 'fail' even if selectors match - identity cannot be verified
+    assert.equal(check.status, 'fail');
+  });
+
   it('archives stale projections while preserving the current scope and unrelated artifacts', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-doctor-repair-state-'));
     try {

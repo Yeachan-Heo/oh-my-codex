@@ -356,9 +356,10 @@ export function sanitizeBindingDiagnosticLine(value: string): string {
 function selectorEvaluation(
   snapshot: CanonicalSessionBindingSnapshot,
   env: NodeJS.ProcessEnv,
-): { nonblank: BindingSelectorName[]; bad: BindingSelectorName[] } {
+): { nonblank: BindingSelectorName[]; bad: BindingSelectorName[]; unverified: BindingSelectorName[] } {
   const nonblank: BindingSelectorName[] = [];
   const bad: BindingSelectorName[] = [];
+  const unverified: BindingSelectorName[] = [];
   const aliases = new Set(Object.values(snapshot.verifiedAliases ?? {}));
   for (const name of BINDING_SELECTOR_NAMES) {
     const raw = env[name];
@@ -370,9 +371,26 @@ function selectorEvaluation(
       : snapshot.status === "usable"
         ? normalized !== undefined && aliases.has(normalized)
         : false;
-    if (!accepted) bad.push(name);
+    if (accepted) {
+      // Selector value is verified and matches
+      continue;
+    }
+    // Check if selector is matching-but-unverified: identity-indeterminate status
+    // with empty verifiedAliases means we couldn't probe the process identity,
+    // but the selector value might still match the state we have.
+    if (
+      snapshot.status === "identity-indeterminate" &&
+      Object.keys(snapshot.verifiedAliases ?? {}).length === 0
+    ) {
+      // For identity-indeterminate, we can't confirm mismatch without verified aliases.
+      // The selector may be correct but unverified due to missing process identity probe.
+      unverified.push(name);
+    } else {
+      // For other statuses, the selector value doesn't match what we verified.
+      bad.push(name);
+    }
   }
-  return { nonblank, bad };
+  return { nonblank, bad, unverified };
 }
 
 
@@ -426,14 +444,29 @@ export function formatStateRootSessionBindingDiagnostic(
   env: NodeJS.ProcessEnv = process.env,
   badSelectors?: readonly BindingSelectorName[],
 ): string {
-  const failedSelectorSet = new Set(badSelectors ?? selectorEvaluation(snapshot, env).bad);
-  const failedSelectors = BINDING_SELECTOR_NAMES.filter((name) => failedSelectorSet.has(name));
+  // Always evaluate selectors to get both bad and unverified.
+  // If badSelectors is provided by caller, use it; otherwise use evaluation.bad.
+  const evaluation = selectorEvaluation(snapshot, env);
+  const failedSelectors =
+    badSelectors !== undefined
+      ? BINDING_SELECTOR_NAMES.filter((name) => badSelectors.includes(name))
+      : evaluation.bad;
+  const unverifiedSelectors = badSelectors === undefined ? evaluation.unverified : [];
   const reportBadSelectors = failedSelectors;
   const inferred = snapshot.rootSource ? undefined : bindingEnvironmentRootSelector(env);
   const source = snapshot.rootSource ?? inferred?.source ?? "cwd-default";
   const rootSelector = ROOT_SELECTOR_BY_SOURCE[source] ?? inferred?.selector;
   const pointer = snapshot.status;
-  const unsafe = (pointer !== "usable" && pointer !== "absent") || failedSelectors.length > 0;
+  const unsafe = (pointer !== "usable" && pointer !== "absent") || failedSelectors.length > 0 || unverifiedSelectors.length > 0;
+  const hasUnverifiedSelectors = unverifiedSelectors.length > 0;
+  const identityProbeReason =
+    snapshot.liveness === "identity-indeterminate"
+      ? "process-identity-indeterminate"
+      : snapshot.liveness === "stale-dead"
+        ? "stale-dead"
+        : snapshot.liveness === "usable"
+          ? "usable"
+          : undefined;
   const fields = [
     `src=${source}`,
     ...(rootSelector && unsafe ? [`root_selector=${rootSelector}`] : []),
@@ -444,6 +477,7 @@ export function formatStateRootSessionBindingDiagnostic(
       ? [`selected_session_json=${safeSelectedSessionJsonLabel(snapshot.selectedSessionJson)}`]
       : []),
     ...(reportBadSelectors.length > 0 ? [`bad_selectors=${reportBadSelectors.join(",")}`] : []),
+    ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
   ];
   const raw = fields.join(" ");
   if (raw.length <= 240 && !(rootSelector && unsafe)) return sanitizeBindingDiagnosticLine(raw);
@@ -456,6 +490,7 @@ export function formatStateRootSessionBindingDiagnostic(
   ];
   // Capped output is assembled from whole fields; selector/session evidence is never
   // truncated. The tail form keeps the selected-path proof atomic when all selectors are present.
+  // For unverified selectors, pass empty array since they don't require correction.
   const compactRecovery = compactCappedBindingRecoveryAction(snapshot, rootSelector, failedSelectors);
   const selectedSessionLabel = safeSelectedSessionJsonLabel(snapshot.selectedSessionJson);
   const badSelectorsField = reportBadSelectors.length > 0
@@ -492,6 +527,7 @@ export function formatStateRootSessionBindingDiagnostic(
         : []),
       ...(selectedSessionLabel ? ["selected=session.json"] : []),
       ...(badSelectorsField ? [badSelectorsField] : []),
+      ...(hasUnverifiedSelectors && identityProbeReason ? [`probe=${identityProbeReason}`] : []),
     ];
     return canonicalFields.join(";");
   }
@@ -549,6 +585,7 @@ export function formatStateRootSessionBindingDiagnostic(
       : []),
     ...(selectedSessionLabel ? ["selected=session.json"] : []),
     ...(badSelectorsField ? [badSelectorsField] : []),
+    ...(hasUnverifiedSelectors && identityProbeReason ? [`probe=${identityProbeReason}`] : []),
   ];
   return sanitizeBindingDiagnosticLine(fallbackFields.join(";"));
 }
@@ -574,9 +611,24 @@ export function checkStateRootSessionBinding(
     };
   }
   let status: Check["status"] = "fail";
-  if (snapshot.status === "absent" && evaluation.bad.length === 0) status = "pass";
-  else if (snapshot.status === "stale-dead" && evaluation.bad.length === 0) status = "warn";
-  else if (snapshot.status === "usable" && evaluation.bad.length === 0) status = "pass";
+  if (
+    snapshot.status === "absent" &&
+    evaluation.bad.length === 0 &&
+    evaluation.unverified.length === 0
+  )
+    status = "pass";
+  else if (
+    snapshot.status === "stale-dead" &&
+    evaluation.bad.length === 0 &&
+    evaluation.unverified.length === 0
+  )
+    status = "warn";
+  else if (
+    snapshot.status === "usable" &&
+    evaluation.bad.length === 0 &&
+    evaluation.unverified.length === 0
+  )
+    status = "pass";
   const message = formatStateRootSessionBindingDiagnostic(snapshot, env, evaluation.bad);
   return { name: "State root/session binding", status, message };
 }
