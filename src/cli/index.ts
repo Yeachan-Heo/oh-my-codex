@@ -4589,7 +4589,8 @@ function collectDetachedFailureSegments(
 
 const DETACHED_FAILURE_MAX_CHARS = 1_024;
 const DETACHED_FAILURE_STDERR_MAX_CHARS = 256;
-const DETACHED_FAILURE_STDERR_BUDGET = 640;
+const DETACHED_FAILURE_MESSAGE_RESERVE = 128;
+const DETACHED_FAILURE_SEPARATOR = " | ";
 
 // `execFileSync` messages are `Command failed: <argv joined by spaces>\n<stderr>`. Argument
 // boundaries are lost, so no per-argument redaction is safe (`-e KEY=alpha beta`); keep only
@@ -4607,16 +4608,25 @@ export function describeDetachedLeaderFailure(error: unknown): string {
     ...(segment.signal !== undefined ? [`signal=${segment.signal}`] : []),
     ...(segment.code !== undefined ? [`code=${segment.code}`] : []),
   ];
-  // Stderr shares a fixed budget so exit metadata is never truncated away by many long stderrs.
+  // Exit metadata and a message reserve are budgeted first; stderr shares only what remains,
+  // so no amount of aggregated stderr can push exit metadata past the output cap.
+  const metadataChars = segments
+    .flatMap(metadataOf)
+    .reduce((total, field) => total + field.length + DETACHED_FAILURE_SEPARATOR.length, 0);
   const stderrSegments = segments.filter((segment) => segment.stderr).length;
+  const stderrBudget = Math.max(
+    0,
+    DETACHED_FAILURE_MAX_CHARS - DETACHED_FAILURE_MESSAGE_RESERVE - metadataChars
+      - stderrSegments * DETACHED_FAILURE_SEPARATOR.length,
+  );
   const stderrCap = stderrSegments > 0
-    ? Math.min(DETACHED_FAILURE_STDERR_MAX_CHARS, Math.floor(DETACHED_FAILURE_STDERR_BUDGET / stderrSegments))
+    ? Math.min(DETACHED_FAILURE_STDERR_MAX_CHARS, Math.floor(stderrBudget / stderrSegments))
     : 0;
   const parts: string[] = [];
   for (const segment of segments) {
     if (segment.stderr) {
       const sanitized = sanitizeDetachedFailureText(segment.stderr);
-      parts.push(sanitized.length > stderrCap ? `${sanitized.slice(0, stderrCap - 1)}…` : sanitized);
+      parts.push(sanitized.length > stderrCap ? `${sanitized.slice(0, Math.max(0, stderrCap - 1))}…` : sanitized);
     }
     parts.push(...metadataOf(segment));
   }
@@ -4639,7 +4649,7 @@ export function describeDetachedLeaderFailure(error: unknown): string {
   }
   
   // Join all parts and bound to 1024 characters
-  return parts.filter(Boolean).join(" | ").slice(0, DETACHED_FAILURE_MAX_CHARS);
+  return parts.filter(Boolean).join(DETACHED_FAILURE_SEPARATOR).slice(0, DETACHED_FAILURE_MAX_CHARS);
 }
 
 export class DetachedLaunchSafetyError extends Error {

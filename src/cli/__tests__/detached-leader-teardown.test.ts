@@ -426,6 +426,22 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /cleanup failed: step 1 failed/);
   });
 
+  it('keeps every exit metadata field when fourteen long cleanup failures are aggregated', () => {
+    const children = Array.from({ length: 14 }, (_, n) =>
+      Object.assign(new Error(`cleanup step ${n} failed`), {
+        stderr: 'x'.repeat(400),
+        status: 100 + n,
+        signal: 'SIGTERM',
+        code: 'ECONNREFUSED',
+      }));
+    const result = describeDetachedLeaderFailure(new AggregateError(children, 'post-launch cleanup failed'));
+    assert.ok(result.length <= 1024, `${result.length}`);
+    for (let n = 0; n < 14; n += 1) {
+      assert.match(result, new RegExp(`status=${100 + n} \\| signal=SIGTERM \\| code=ECONNREFUSED`));
+    }
+    assert.match(result, /post-launch cleanup failed/);
+  });
+
   it('never echoes failed-command argv, even values split by unquoted whitespace', () => {
     const error = Object.assign(
       new Error('Command failed: tmux new-session -d -e OMX_TEAM_WORKER_LAUNCH_ARGS=alpha beta-secret -e OMX_SESSION_ID=omx-1\nboom'),
