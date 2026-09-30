@@ -5647,7 +5647,21 @@ export async function launchWithHud(args: string[]): Promise<void> {
   }
 }
 
+function hasHelpArgBeforeEndOfOptions(args: string[]): boolean {
+  const endOfOptionsIndex = args.indexOf("--");
+  const argsBeforeEndOfOptions = endOfOptionsIndex === -1 ? args : args.slice(0, endOfOptionsIndex);
+  return argsBeforeEndOfOptions.some((arg) => arg === "--help" || arg === "-h");
+}
+
 export async function execWithOverlay(args: string[]): Promise<void> {
+  // Early return for help requests: forward directly to codex without session setup
+  if (hasHelpArgBeforeEndOfOptions(args)) {
+    const { omxArgs, suffix } = splitOmxArgsAtEndOfOptions(args);
+    const codexArgs = ["exec", ...omxArgs, ...suffix];
+    runCodexBlocking(process.cwd(), codexArgs, process.env);
+    return;
+  }
+
   const launchCwd = process.cwd();
   const { omxArgs, suffix } = splitOmxArgsAtEndOfOptions(args);
   const parsedWorktree = parseWorktreeMode(omxArgs);
