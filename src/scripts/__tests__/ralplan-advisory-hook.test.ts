@@ -317,4 +317,115 @@ describe('ralplan advisory non-authoritative native hooks', () => {
     } as never, { cwd });
     assert.notEqual(write.outputJson?.decision, 'block');
   });
+
+  it('(a) activates advisory via UserPromptSubmit with session_id + turn_id, no thread_id/threadId', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-thread-native-fallback-'));
+    roots.push(cwd);
+    const sessionId = 'native-dispatch-session-a';
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+      session_id: sessionId, native_session_id: sessionId, owner_codex_session_id: sessionId,
+      leader_thread_id: sessionId, started_at: '2026-08-28T00:00:00.000Z', cwd, state_root: stateDir,
+    }));
+    await writeFile(join(stateDir, 'subagent-tracking.json'), JSON.stringify({
+      schemaVersion: 1,
+      sessions: {
+        [sessionId]: {
+          session_id: sessionId, leader_thread_id: sessionId,
+          threads: { [sessionId]: { thread_id: sessionId, kind: 'leader' } },
+        },
+      },
+    }));
+    // No thread_id or threadId: the hook dispatch should resolve threadId to session_id (fallback)
+    const result = await dispatchCodexNativeHook({
+      hook_event_name: 'UserPromptSubmit',
+      cwd,
+      source: 'codex-app',
+      session_id: sessionId,
+      turn_id: 'turn-fallback-a',
+      prompt: '$ralplan --advisory native dispatch test',
+    });
+    assert.notEqual(result.outputJson?.decision, 'block', 'advisory should activate without explicit thread_id');
+    const mode = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf8'));
+    assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
+    // Verify that advisory was actually created (has generation_id)
+    assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+  });
+
+  it('(b) resolves threadId when thread_id is empty string but threadId is non-empty', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-thread-alias-'));
+    roots.push(cwd);
+    const sessionId = 'native-dispatch-session-b';
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+      session_id: sessionId, native_session_id: sessionId, owner_codex_session_id: sessionId,
+      leader_thread_id: 'T-valid', started_at: '2026-08-28T00:00:00.000Z', cwd, state_root: stateDir,
+    }));
+    await writeFile(join(stateDir, 'subagent-tracking.json'), JSON.stringify({
+      schemaVersion: 1,
+      sessions: {
+        [sessionId]: {
+          session_id: sessionId, leader_thread_id: 'T-valid',
+          threads: { 'T-valid': { thread_id: 'T-valid', kind: 'leader' } },
+        },
+      },
+    }));
+    // Empty thread_id but non-empty threadId: should use threadId (not empty string)
+    const result = await dispatchCodexNativeHook({
+      hook_event_name: 'UserPromptSubmit',
+      cwd,
+      source: 'codex-app',
+      session_id: sessionId,
+      thread_id: '', // Empty thread_id
+      threadId: 'T-valid', // Non-empty threadId should be used
+      turn_id: 'turn-alias-b',
+      prompt: '$ralplan --advisory dispatch threadId resolution',
+    });
+    // With the fix, this should work. With the bug, this would have an empty threadId and might fail.
+    assert.notEqual(result.outputJson?.decision, 'block', 'advisory should activate with threadId alias');
+    const mode = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf8'));
+    assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
+    assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+  });
+
+  it('(c) prefers explicit thread_id over session_id even with different session identity', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-thread-explicit-'));
+    roots.push(cwd);
+    const sessionId = 'native-dispatch-session-c';
+    const explicitThreadId = 'T-explicit-c';
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+      session_id: sessionId, native_session_id: sessionId, owner_codex_session_id: sessionId,
+      leader_thread_id: explicitThreadId, started_at: '2026-08-28T00:00:00.000Z', cwd, state_root: stateDir,
+    }));
+    await writeFile(join(stateDir, 'subagent-tracking.json'), JSON.stringify({
+      schemaVersion: 1,
+      sessions: {
+        [sessionId]: {
+          session_id: sessionId, leader_thread_id: explicitThreadId,
+          threads: { [explicitThreadId]: { thread_id: explicitThreadId, kind: 'leader' } },
+        },
+      },
+    }));
+    // Explicit thread_id different from session_id: explicit should win
+    const result = await dispatchCodexNativeHook({
+      hook_event_name: 'UserPromptSubmit',
+      cwd,
+      source: 'codex-app',
+      session_id: sessionId, // Different from thread_id
+      thread_id: explicitThreadId, // Explicit thread_id
+      turn_id: 'turn-explicit-c',
+      prompt: '$ralplan --advisory dispatch explicit thread test',
+    });
+    assert.notEqual(result.outputJson?.decision, 'block', 'advisory should activate with explicit thread_id');
+    const mode = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf8'));
+    assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
+    assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+  });
 });
