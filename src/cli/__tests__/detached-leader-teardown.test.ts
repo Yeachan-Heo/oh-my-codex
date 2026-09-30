@@ -399,6 +399,13 @@ describe('detached leader HUD teardown', () => {
     );
   });
 
+  it('includes the cause of an AggregateError alongside its errors', () => {
+    const cause = Object.assign(new Error('spawn failed'), { stderr: 'tmux socket missing', status: 2 });
+    const child = Object.assign(new Error('kill-pane failed'), { stderr: 'no pane', status: 1 });
+    const result = describeDetachedLeaderFailure(new AggregateError([child], 'cleanup failed', { cause }));
+    assert.match(result, /^no pane \| status=1 \| tmux socket missing \| status=2 \| cleanup failed/);
+  });
+
   it('reserves space for exit metadata when many long stderrs are aggregated', () => {
     const children = [1, 2, 3, 4, 5].map((n) =>
       Object.assign(new Error(`step ${n} failed`), { stderr: String(n).repeat(400), status: 10 + n }));

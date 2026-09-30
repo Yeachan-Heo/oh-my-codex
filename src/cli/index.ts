@@ -4581,9 +4581,8 @@ function collectDetachedFailureSegments(
   if (Object.keys(segment).length > 0) segments.push(segment);
   if (value instanceof AggregateError) {
     for (const child of value.errors) collectDetachedFailureSegments(child, depth + 1, segments);
-  } else if (err.cause) {
-    collectDetachedFailureSegments(err.cause, depth + 1, segments);
   }
+  if (err.cause) collectDetachedFailureSegments(err.cause, depth + 1, segments);
   return segments;
 }
 
