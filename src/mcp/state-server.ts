@@ -31,6 +31,7 @@ const SUPPORTED_MODES = [
 	"ralplan",
 	"deep-interview",
 	"skill-active",
+	"ultragoal",
 ] as const;
 
 /**
