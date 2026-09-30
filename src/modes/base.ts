@@ -262,6 +262,7 @@ async function startModeUnderCanonicalLock(
     ...(mode === 'ralph' && scope.sessionId ? { owner_omx_session_id: scope.sessionId } : {}),
     ...(startProfile ? {
       session_id: startProfile.sessionId,
+      thread_id: startProfile.rootThreadId,
       workflow_variant: 'advisory',
       advisory_generation_id: startProfile.generationId,
       planning_complete: false,
