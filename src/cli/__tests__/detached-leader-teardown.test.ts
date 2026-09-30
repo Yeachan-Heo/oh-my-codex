@@ -416,6 +416,27 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /^Authorization: \[redacted\] proxy: \[redacted\] gh: \[redacted\] \| status=1/);
   });
 
+  it('redacts every field of a structured Digest header', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: 'Authorization: Digest username="Mufasa", nonce="abc", response="secret"\nnext line',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /Mufasa|nonce|secret/);
+    assert.match(result, /Authorization: \[redacted\]/);
+    assert.match(result, /next line/);
+  });
+
+  it('redacts quoted credential values containing escaped quotes', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: String.raw`{"password":"hunter2\"tail-secret","user":"alice"}`,
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /hunter2|tail-secret/);
+    assert.match(result, /"user":"alice"/);
+  });
+
   it('redacts fine-grained GitHub access tokens', () => {
     const error = Object.assign(new Error('push failed'), {
       stderr: 'auth github_pat_11AAAAAAA0abcdefGHIJKL_mnopqrstuvWXYZ0123456789 rejected',

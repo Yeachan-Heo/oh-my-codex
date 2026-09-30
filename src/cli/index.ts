@@ -4549,12 +4549,12 @@ function sanitizeDetachedFailureText(text: string): string {
   const pathRedacted = collapsed.replace(/(?:\/[^\s:]+){2,}|[a-zA-Z]:\\[^\s]+/g, "[path]");
   // Redact secrets: bearer tokens, API keys, JWTs, and other common secret patterns
   const secretRedacted = pathRedacted.replace(
-    /((?:bearer|basic|digest|token)\s+[^\s"'`]+|sk-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9]{8,}|github_pat_[a-z0-9_]{8,}|eyj[a-z0-9._-]{10,}|[a-f0-9]{32,})/gi,
+    /(digest\s+(?:[a-z0-9_-]+=(?:"(?:\\.|[^"\\])*"?|[^\s,"]+)(?:\s*,\s*)?)+|(?:bearer|basic|digest|token)\s+[^\s"'`]+|sk-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9]{8,}|github_pat_[a-z0-9_]{8,}|eyj[a-z0-9._-]{10,}|[a-f0-9]{32,})/gi,
     "[redacted]"
   )
     // Key-labelled credentials (`api_key=…`, `password: …`): keep the label, drop the value.
     .replace(
-      /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|credentials?|auth)["']?)(\s*[=:]\s*)(?!\[redacted\])(?:"[^"]*"?|'[^']*'?|`[^`]*`?|[^\s"'`,;&]+)/gi,
+      /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|credentials?|auth)["']?)(\s*[=:]\s*)(?!\[redacted\])(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|`(?:\\.|[^`\\])*`?|[^\s"'`,;&]+)/gi,
       "$1$2[redacted]",
     );
   return secretRedacted;
