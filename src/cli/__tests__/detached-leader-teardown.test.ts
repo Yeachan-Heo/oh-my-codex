@@ -373,6 +373,19 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /\[redacted\] denied/);
   });
 
+  it('redacts key-labelled credential values but keeps the label', () => {
+    const error = Object.assign(new Error('login failed password: hunter2'), {
+      stderr: 'bad config api_key=mysecretvalue123 OPENAI_API_KEY=sk_live_value client_secret: abc,def',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /mysecretvalue123|sk_live_value|hunter2|abc/);
+    assert.match(result, /api_key=\[redacted\]/);
+    assert.match(result, /OPENAI_API_KEY=\[redacted\]/);
+    assert.match(result, /client_secret: \[redacted\],def/);
+    assert.match(result, /password: \[redacted\]/);
+  });
+
   it('redacts fine-grained GitHub access tokens', () => {
     const error = Object.assign(new Error('push failed'), {
       stderr: 'auth github_pat_11AAAAAAA0abcdefGHIJKL_mnopqrstuvWXYZ0123456789 rejected',
