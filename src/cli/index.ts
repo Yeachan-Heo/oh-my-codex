@@ -4537,18 +4537,95 @@ function detachedFailureCode(error: unknown): string {
 }
 
 
+function sanitizeDetachedFailureText(text: string): string {
+  // Collapse whitespace and remove control characters
+  const collapsed = text.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim();
+  // Redact absolute paths: Unix /path/to/file and Windows C:\path\to\file
+  const pathRedacted = collapsed.replace(/(?:\/[^\s:]+){2,}|[a-zA-Z]:\\[^\s]+/g, "[path]");
+  // Redact secrets: bearer tokens, API keys, JWTs, and other common secret patterns
+  const secretRedacted = pathRedacted.replace(
+    /(bearer\s+[a-z0-9._:-]+|sk-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9]{8,}|eyj[a-z0-9._-]{10,}|[a-f0-9]{32,})/gi,
+    "[redacted]"
+  );
+  return secretRedacted;
+}
+
+function collectNestedStderr(value: unknown, depth: number = 0): string[] {
+  // Recursively collect stderr from nested errors
+  const results: string[] = [];
+  if (depth > 4) return results;
+  if (!value || typeof value !== "object") return results;
+  
+  const err = value as any;
+  const stderr = typeof err.stderr === "string" ? err.stderr : err.stderr?.toString?.();
+  const stdout = typeof err.stdout === "string" ? err.stdout : err.stdout?.toString?.();
+  const stderrOrStdout = stderr || stdout;
+  
+  if (stderrOrStdout) {
+    results.push(stderrOrStdout);
+  }
+  
+  // Walk nested errors in AggregateError
+  if (value instanceof AggregateError) {
+    for (const child of value.errors) {
+      results.push(...collectNestedStderr(child, depth + 1));
+    }
+  } else if (err.cause) {
+    results.push(...collectNestedStderr(err.cause, depth + 1));
+  }
+  
+  return results;
+}
+
 export function describeDetachedLeaderFailure(error: unknown): string {
+  // Collect all stderr from nested errors
+  const stderrs = collectNestedStderr(error);
+  const parts: string[] = [];
+  
+  // Include sanitized stderr summaries
+  for (const stderr of stderrs) {
+    const sanitized = sanitizeDetachedFailureText(stderr);
+    // Bound stderr to reasonable length before including in output
+    if (sanitized.length > 256) {
+      parts.push(sanitized.slice(0, 255) + "…");
+    } else {
+      parts.push(sanitized);
+    }
+  }
+  
+  // Extract exit status/signal info from top-level error
+  if (error && typeof error === "object") {
+    const err = error as any;
+    if (typeof err.status === "number" && err.status !== null) {
+      parts.push(`status=${err.status}`);
+    }
+    if (typeof err.signal === "string" && err.signal !== null) {
+      parts.push(`signal=${err.signal}`);
+    }
+    if (typeof err.code === "string" && err.code !== null) {
+      parts.push(`code=${err.code}`);
+    }
+  }
+  
+  // Describe the error message chain
   const describe = (value: unknown, depth: number): string => {
     if (depth > 4) return "nested failure";
     if (value instanceof AggregateError) {
-      return [value.message, ...[...value.errors].map((child) => describe(child, depth + 1))]
-        .filter(Boolean)
-        .join(": ");
+      const errorParts = [value.message, ...[...value.errors].map((child) => describe(child, depth + 1))]
+        .filter(Boolean);
+      return errorParts.join(": ");
     }
     if (value instanceof Error) return value.message;
     return String(value);
   };
-  return describe(error, 0).replace(/[\r\n\t]+/g, " ").slice(0, 1_024);
+  
+  const messagePart = describe(error, 0);
+  if (messagePart) {
+    parts.push(sanitizeDetachedFailureText(messagePart));
+  }
+  
+  // Join all parts and bound to 1024 characters
+  return parts.filter(Boolean).join(" | ").slice(0, 1_024);
 }
 
 export class DetachedLaunchSafetyError extends Error {

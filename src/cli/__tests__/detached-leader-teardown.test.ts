@@ -255,6 +255,115 @@ describe('detached leader HUD teardown', () => {
     );
   });
 
+  it('includes bounded stderr summary at the beginning when error has stderr property', () => {
+    const error = Object.assign(new Error('setup failed'), {
+      stderr: 'command not found: node',
+      status: 127,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.match(result, /command not found: node/);
+    assert.match(result, /status=127/);
+    assert.match(result, /setup failed/);
+  });
+
+  it('truncates long stderr to 255 characters with ellipsis marker', () => {
+    const longStderr = 'x'.repeat(300);
+    const error = Object.assign(new Error('stderr test'), {
+      stderr: longStderr,
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.match(result, /^x{255}…/);
+  });
+
+  it('handles Buffer stderr by converting to string', () => {
+    const error = Object.assign(new Error('buffer stderr test'), {
+      stderr: Buffer.from('buffer stderr content'),
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.match(result, /buffer stderr content/);
+  });
+
+  it('redacts absolute paths from stderr and error messages', () => {
+    const error = Object.assign(new Error('failed at /home/user/project/src/file.ts'), {
+      stderr: 'error in /var/log/app.log',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /\/home\/user/);
+    assert.doesNotMatch(result, /\/var\/log/);
+    assert.match(result, /\[path\]/);
+  });
+
+  it('redacts secret patterns from stderr and error messages', () => {
+    const error = Object.assign(new Error('auth failed with sk-proj-abc12345def'), {
+      stderr: 'Bearer token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /sk-proj-abc12345def/);
+    assert.doesNotMatch(result, /eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9/);
+    assert.match(result, /\[redacted\]/);
+  });
+
+  it('handles stderr-only errors without message', () => {
+    const error = Object.assign(new Error(), {
+      stderr: 'connection refused',
+      status: 0,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.match(result, /connection refused/);
+    assert.match(result, /status=0/);
+    assert.ok(result.length <= 1024);
+  });
+
+  it('includes signal information when present', () => {
+    const error = Object.assign(new Error('terminated'), {
+      signal: 'SIGTERM',
+      stderr: 'cleanup failed',
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.match(result, /signal=SIGTERM/);
+    assert.match(result, /cleanup failed/);
+  });
+
+  it('includes code information when present', () => {
+    const error = Object.assign(new Error('io error'), {
+      code: 'ENOENT',
+      stderr: 'file not found',
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.match(result, /code=ENOENT/);
+    assert.match(result, /file not found/);
+  });
+
+  it('walks nested AggregateError causes and includes stderr from any level', () => {
+    const innerError = Object.assign(new Error('inner failure'), {
+      stderr: 'inner stderr content',
+    });
+    const aggregated = new AggregateError(
+      [innerError, new Error('other error')],
+      'aggregate failed',
+    );
+    const result = describeDetachedLeaderFailure(aggregated);
+    // Should include both the nested stderr and the error chain
+    assert.match(result, /inner stderr content/);
+    assert.match(result, /aggregate failed/);
+    assert.match(result, /inner failure/);
+  });
+
+  it('bounds total output to 1024 characters', () => {
+    const longMessage = 'y'.repeat(600);
+    const longStderr = 'z'.repeat(600);
+    const error = Object.assign(new Error(longMessage), {
+      stderr: longStderr,
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.ok(result.length <= 1024, `Expected <= 1024 chars, got ${result.length}`);
+  });
+
   it('derives the detached leader pane from the live pane PID instead of inherited TMUX_PANE', () => {
     const snapshot = [
       '%1\t0\t111',
