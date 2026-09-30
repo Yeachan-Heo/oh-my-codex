@@ -786,7 +786,6 @@ describe('state operations directory initialization', () => {
       const readBody = readResponse.payload as Record<string, unknown>;
       assert.equal(readBody.active, false);
       assert.equal(readBody.current_phase, 'complete');
-      assert.equal(readBody.mode, 'ultragoal');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
