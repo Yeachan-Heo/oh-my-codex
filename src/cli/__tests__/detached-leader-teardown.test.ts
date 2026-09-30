@@ -406,6 +406,16 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /^\{"password":\[redacted\],"api_key": \[redacted\],"user":"alice"\} \| status=1/);
   });
 
+  it('redacts Basic, Digest and token authorization schemes', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: 'Authorization: Basic dXNlcjpwYXNz; proxy: Digest abc123secret; gh: token ghs0plainvalue',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /dXNlcjpwYXNz|abc123secret|ghs0plainvalue/);
+    assert.match(result, /^Authorization: \[redacted\] proxy: \[redacted\] gh: \[redacted\] \| status=1/);
+  });
+
   it('redacts fine-grained GitHub access tokens', () => {
     const error = Object.assign(new Error('push failed'), {
       stderr: 'auth github_pat_11AAAAAAA0abcdefGHIJKL_mnopqrstuvWXYZ0123456789 rejected',
