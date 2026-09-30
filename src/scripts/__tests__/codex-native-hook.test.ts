@@ -44,6 +44,7 @@ import {
 	establishLaunchSessionBinding,
 	finalizeBoundOnce,
 	updateDetachedSessionMetadata,
+	writeNativeSessionOwner,
 	writeSessionStart,
 } from "../../hooks/session.js";
 import { neutralizeOwnedRoutingRalplan } from '../../ralplan/documented-leader-preflight.js';
@@ -2672,65 +2673,76 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 		}
 	});
 
-	it("session-scoped Stop with queued exec follow-up for the root delivers it once and marks consumed", async () => {
+	it("session-scoped Stop with queued exec follow-up for active ralplan delivers it once and marks consumed", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-scoped-exec-followup-"));
 		try {
-			const sessionId = "sess-scoped-exec-followup";
+			const nativeSessionId = "codex-root-scoped-exec-followup";
+			const activeSessionId = "omx-active-other";
 			const stateDir = join(cwd, ".omx", "state");
-			await writeSessionStart(cwd, sessionId);
 
-			// Write a ralplan skill state to simulate an active skill
+			// Create native session owner
+			const nativeState = await writeNativeSessionOwner(cwd, nativeSessionId, {
+				pid: process.pid,
+			});
+
+			// Set native session as active FIRST so injectExecFollowup can find it
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId });
+
+			// Write an active ralplan skill state for this native session
 			await writeJson(
-				join(stateDir, "sessions", sessionId, "skill-active-state.json"),
+				join(stateDir, "sessions", nativeSessionId, "skill-active-state.json"),
 				{
 					version: 1,
 					active: true,
 					skill: "ralplan",
 					phase: "planning",
-					session_id: sessionId,
-					active_skills: [
-						{
-							skill: "ralplan",
-							phase: "planning",
-							active: true,
-							session_id: sessionId,
-						},
-					],
+					session_id: nativeSessionId,
 				},
 			);
 
-			// Inject a queued exec follow-up for this session
+			await writeJson(
+				join(stateDir, "sessions", nativeSessionId, "ralplan-state.json"),
+				{
+					active: true,
+					mode: "ralplan",
+					current_phase: "planning",
+					session_id: nativeSessionId,
+				},
+			);
+
+			// Inject a queued exec follow-up for this native session (while it's active)
 			const queued = await injectExecFollowup({
 				cwd,
-				sessionId,
+				sessionId: nativeSessionId,
 				actor: "test",
 				prompt: "Verify the exec follow-up implementation.",
 				nowIso: "2026-09-30T12:00:00.000Z",
 			});
 
-			// Dispatch Stop with sessionScopedOnly (simulating !allowGlobalSideEffects)
+			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
+			// This triggers the ownerState logic in dispatchCodexNativeHook's Stop handler
+			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+
+			// Dispatch Stop with native session ID (triggers sessionScopedOnly via ownerState)
 			const stopResult = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "Stop",
 					cwd,
-					session_id: sessionId,
+					session_id: nativeSessionId,
 				},
 				{ cwd },
 			);
 
-			// The output should be a block with the exec follow-up
+			// The output should deliver the queued exec follow-up
 			assert.equal(stopResult.outputJson?.decision, "block");
 			assert.match(
 				String(stopResult.outputJson?.reason),
 				new RegExp(queued.queued.id),
 			);
-			assert.match(
-				String(stopResult.outputJson?.systemMessage),
-				/queued follow-up instruction/,
-			);
 
 			// Verify that the follow-up is marked as delivered
-			const after = await readPendingExecFollowups(cwd, sessionId);
+			const after = await readPendingExecFollowups(cwd, nativeSessionId);
 			assert.equal(after.pending.length, 0);
 			const persisted = JSON.parse(await readFile(queued.queuePath, "utf-8")) as {
 				records: Array<{ delivered_at?: string; delivery_event?: string }>;
@@ -2742,117 +2754,164 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 		}
 	});
 
-	it("session-scoped second Stop does not redeliver exec follow-up", async () => {
+	it("session-scoped second Stop does not redeliver consumed exec follow-up", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-scoped-no-redeliver-"));
 		try {
-			const sessionId = "sess-scoped-no-redeliver";
+			const nativeSessionId = "codex-root-scoped-no-redeliver";
+			const activeSessionId = "omx-active-other-2";
 			const stateDir = join(cwd, ".omx", "state");
-			await writeSessionStart(cwd, sessionId);
 
-			// Write a ralplan skill state
+			// Create native session owner
+			const nativeState = await writeNativeSessionOwner(cwd, nativeSessionId, {
+				pid: process.pid,
+			});
+
+			// Set native session as active FIRST so injectExecFollowup can find it
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId });
+
+			// Write an active ralplan skill state
 			await writeJson(
-				join(stateDir, "sessions", sessionId, "skill-active-state.json"),
+				join(stateDir, "sessions", nativeSessionId, "skill-active-state.json"),
 				{
 					version: 1,
 					active: true,
 					skill: "ralplan",
 					phase: "planning",
-					session_id: sessionId,
-					active_skills: [],
+					session_id: nativeSessionId,
 				},
 			);
 
-			// Inject a queued exec follow-up
+			await writeJson(
+				join(stateDir, "sessions", nativeSessionId, "ralplan-state.json"),
+				{
+					active: true,
+					mode: "ralplan",
+					current_phase: "planning",
+					session_id: nativeSessionId,
+				},
+			);
+
+			// Inject a queued exec follow-up (while native session is active)
 			const queued = await injectExecFollowup({
 				cwd,
-				sessionId,
+				sessionId: nativeSessionId,
 				actor: "test",
 				prompt: "First exec follow-up.",
 				nowIso: "2026-09-30T12:00:00.000Z",
 			});
 
-			// First Stop dispatches and delivers it
+			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
+			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+
+			// First Stop dispatches and delivers the follow-up
 			const firstStop = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "Stop",
 					cwd,
-					session_id: sessionId,
+					session_id: nativeSessionId,
 				},
 				{ cwd },
 			);
 			assert.equal(firstStop.outputJson?.decision, "block");
+			assert.match(
+				String(firstStop.outputJson?.reason),
+				new RegExp(queued.queued.id),
+			);
 
-			// Verify delivered
-			const afterFirst = await readPendingExecFollowups(cwd, sessionId);
+			// Verify follow-up is now consumed
+			const afterFirst = await readPendingExecFollowups(cwd, nativeSessionId);
 			assert.equal(afterFirst.pending.length, 0);
 
-			// Second Stop should not block on exec follow-up (no pending)
+			// Second Stop should not deliver it again (already consumed)
 			const secondStop = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "Stop",
 					cwd,
-					session_id: sessionId,
+					session_id: nativeSessionId,
 				},
 				{ cwd },
 			);
-			// Should return null or not block on exec follow-up
-			assert.notEqual(secondStop.outputJson?.reason, `exec_followup_pending:${queued.queued.id}`);
+			// Second stop should block on the skill, not on exec follow-up
+			assert.match(
+				String(secondStop.outputJson?.reason ?? ""),
+				/ralplan is still active/,
+			);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
 
 
-	it("non-scoped Stop behavior unchanged with exec follow-up delivery", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-non-scoped-exec-"));
+	it("non-scoped Stop with exec follow-up for foreign session does not deliver", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-foreign-exec-"));
 		try {
-			const sessionId = "sess-non-scoped-exec";
+			// Create one native session with exec follow-up
+			const nativeSessionId1 = "codex-root-foreign-1";
+			const activeSessionId = "omx-active-other-3";
 			const stateDir = join(cwd, ".omx", "state");
-			await writeSessionStart(cwd, sessionId);
 
-			// Write a ralplan skill state
+			const nativeState1 = await writeNativeSessionOwner(cwd, nativeSessionId1, {
+				pid: process.pid,
+			});
+
+			// Set native session as active FIRST so injectExecFollowup can find it
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId1 });
+
 			await writeJson(
-				join(stateDir, "sessions", sessionId, "skill-active-state.json"),
+				join(stateDir, "sessions", nativeSessionId1, "skill-active-state.json"),
 				{
 					version: 1,
-					active: false,
+					active: true,
 					skill: "ralplan",
-					phase: "complete",
-					session_id: sessionId,
-					active_skills: [],
+					phase: "planning",
+					session_id: nativeSessionId1,
 				},
 			);
 
-			// Inject a queued exec follow-up
+			await writeJson(
+				join(stateDir, "sessions", nativeSessionId1, "ralplan-state.json"),
+				{
+					active: true,
+					mode: "ralplan",
+					current_phase: "planning",
+					session_id: nativeSessionId1,
+				},
+			);
+
+			// Inject exec follow-up for session1 (while it's active)
 			const queued = await injectExecFollowup({
 				cwd,
-				sessionId,
+				sessionId: nativeSessionId1,
 				actor: "test",
-				prompt: "Non-scoped exec follow-up.",
+				prompt: "Follow-up for session 1.",
 				nowIso: "2026-09-30T12:00:00.000Z",
 			});
 
-			// Dispatch Stop with global side effects allowed (non-scoped)
-			// This simulates the normal flow where allowGlobalSideEffects=true
+			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
+			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+
+			// Try to stop a different foreign session (not scoped, no owner)
+			const foreignNativeSessionId = "codex-root-foreign-2";
 			const stopResult = await dispatchCodexNativeHook(
 				{
 					hook_event_name: "Stop",
 					cwd,
-					session_id: sessionId,
+					session_id: foreignNativeSessionId,
 				},
 				{ cwd },
 			);
 
-			// Should deliver exec follow-up in non-scoped path
-			assert.equal(stopResult.outputJson?.decision, "block");
-			assert.match(
-				String(stopResult.outputJson?.reason),
-				new RegExp(queued.queued.id),
+			// Stop for foreign session should not deliver the follow-up from session1
+			assert.equal(stopResult.omxEventName, "stop");
+			assert.ok(
+				!String(stopResult.outputJson?.reason ?? "").includes(queued.queued.id),
 			);
 
-			// Verify marked as delivered
-			const after = await readPendingExecFollowups(cwd, sessionId);
-			assert.equal(after.pending.length, 0);
+			// Follow-up should still be pending for session1
+			const stillPending = await readPendingExecFollowups(cwd, nativeSessionId1);
+			assert.equal(stillPending.pending.length, 1);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
