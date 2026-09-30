@@ -5064,6 +5064,9 @@ if (command !== "launch" && command !== "resume") {
       case "exec":
         if (launchArgs[0] === "inject") {
           await execInjectCommand(launchArgs);
+        } else if (hasHelpArgBeforeEndOfOptions(launchArgs)) {
+          // Informational help (#3731): no session, launch preparation, config repair, or state writes.
+          runCodexBlocking(process.cwd(), ["exec", ...launchArgs], process.env);
         } else {
           await execWithOverlay(launchArgs);
         }
@@ -5654,14 +5657,6 @@ function hasHelpArgBeforeEndOfOptions(args: string[]): boolean {
 }
 
 export async function execWithOverlay(args: string[]): Promise<void> {
-  // Early return for help requests: forward directly to codex without session setup
-  if (hasHelpArgBeforeEndOfOptions(args)) {
-    const { omxArgs, suffix } = splitOmxArgsAtEndOfOptions(args);
-    const codexArgs = ["exec", ...omxArgs, ...suffix];
-    runCodexBlocking(process.cwd(), codexArgs, process.env);
-    return;
-  }
-
   const launchCwd = process.cwd();
   const { omxArgs, suffix } = splitOmxArgsAtEndOfOptions(args);
   const parsedWorktree = parseWorktreeMode(omxArgs);

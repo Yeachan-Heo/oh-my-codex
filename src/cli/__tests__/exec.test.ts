@@ -445,9 +445,18 @@ describe('omx exec', () => {
       await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
       await chmod(fakePsPath, 0o755);
 
-      // Capture initial state
-      const sessionDirBefore = join(wd, '.omx', 'state', 'sessions');
-      const initialExists = existsSync(sessionDirBefore);
+      // An existing owner pointer and session state must survive a help request byte-for-byte.
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', 'omx-owner'), { recursive: true });
+      const pointer = JSON.stringify({ session_id: 'omx-owner', native_session_id: 'native-owner', cwd: wd, pid: process.pid });
+      await writeFile(join(stateDir, 'session.json'), pointer);
+      await writeFile(join(stateDir, 'sessions', 'omx-owner', 'marker.json'), '{"owner":true}');
+      const snapshot = async (): Promise<string> => {
+        const entries = await readdir(join(wd, '.omx'), { recursive: true, withFileTypes: true });
+        const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name)).sort();
+        return JSON.stringify(await Promise.all(files.map(async (file) => [file, await readFile(file, 'utf-8')])));
+      };
+      const before = await snapshot();
 
       const result = runOmx(wd, ['exec', '--help'], {
         HOME: home,
@@ -465,10 +474,7 @@ describe('omx exec', () => {
       const codexCall = await readFile(capturePath, 'utf-8');
       assert.equal(codexCall.trim(), 'exec\n--help');
 
-      // Verify no session directory was created
-      const sessionDirAfter = join(wd, '.omx', 'state', 'sessions');
-      const finalExists = existsSync(sessionDirAfter);
-      assert.equal(initialExists, finalExists, 'session directory state should not change');
+      assert.equal(await snapshot(), before, '.omx state must be byte-identical after help');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -533,13 +539,7 @@ describe('omx exec', () => {
         [
           '#!/bin/sh',
           `printf '%s\n' "$@" > "${capturePath}"`,
-          'if [ "$1" = "exec" ] && [ "$2" = "--" ] && [ "$3" = "--help" ]; then',
-          '  printf "received-help-as-argument\n"',
-          '  exit 0',
-          'else',
-          '  printf "unexpected-args\n"',
-          '  exit 1',
-          'fi',
+          'exit 0',
         ].join('\n'),
       );
       await chmod(fakeCodexPath, 0o755);
@@ -559,12 +559,14 @@ describe('omx exec', () => {
         OMX_HOOK_DERIVED_SIGNALS: '0',
       });
 
-      // This should attempt full session setup (and likely fail, but that's okay for this test)
-      // The key is that it goes through the normal path, not the help shortcut
-      // Verify codex received the args with -- preserved
-      if (result.status === 0) {
-        assert.match(result.stdout, /received-help-as-argument/);
-      }
+      // `--help` after `--` is prompt text: the normal launch path runs and establishes a session.
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.equal(initialExists, false);
+      assert.equal((await readdir(join(wd, '.omx', 'state', 'sessions'))).length, 1);
+      const codexCall = (await readFile(capturePath, 'utf-8')).trim().split('\n');
+      assert.equal(codexCall[0], 'exec');
+      assert.equal(codexCall.at(-1), '--help');
+      assert.notDeepEqual(codexCall, ['exec', '--', '--help']);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
