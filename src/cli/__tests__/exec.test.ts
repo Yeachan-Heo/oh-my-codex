@@ -420,6 +420,157 @@ describe('omx exec', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('forwards omx exec --help directly to codex without session setup', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exec-help-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const capturePath = join(wd, 'fake-codex-call.txt');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        [
+          '#!/bin/sh',
+          `printf '%s\n' "$@" > "${capturePath}"`,
+          'printf "fake-codex-help-output\n"',
+          'exit 0',
+        ].join('\n'),
+      );
+      await chmod(fakeCodexPath, 0o755);
+      const fakePsPath = join(fakeBin, 'ps');
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      // An existing owner pointer and session state must survive a help request byte-for-byte.
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', 'omx-owner'), { recursive: true });
+      const pointer = JSON.stringify({ session_id: 'omx-owner', native_session_id: 'native-owner', cwd: wd, pid: process.pid });
+      await writeFile(join(stateDir, 'session.json'), pointer);
+      await writeFile(join(stateDir, 'sessions', 'omx-owner', 'marker.json'), '{"owner":true}');
+      const snapshot = async (): Promise<string> => {
+        const entries = await readdir(join(wd, '.omx'), { recursive: true, withFileTypes: true });
+        const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name)).sort();
+        return JSON.stringify(await Promise.all(files.map(async (file) => [file, await readFile(file, 'utf-8')])));
+      };
+      const before = await snapshot();
+
+      const result = runOmx(wd, ['exec', '--help'], {
+        HOME: home,
+        NODE_OPTIONS: '',
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex-help-output/);
+
+      // Verify codex received exactly 'exec --help'
+      const codexCall = await readFile(capturePath, 'utf-8');
+      assert.equal(codexCall.trim(), 'exec\n--help');
+
+      assert.equal(await snapshot(), before, '.omx state must be byte-identical after help');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards omx exec -h directly to codex', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exec-help-short-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const capturePath = join(wd, 'fake-codex-call.txt');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        [
+          '#!/bin/sh',
+          `printf '%s\n' "$@" > "${capturePath}"`,
+          'printf "fake-codex-help-output\n"',
+          'exit 0',
+        ].join('\n'),
+      );
+      await chmod(fakeCodexPath, 0o755);
+      const fakePsPath = join(fakeBin, 'ps');
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['exec', '-h'], {
+        HOME: home,
+        NODE_OPTIONS: '',
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex-help-output/);
+
+      // Verify codex received exactly 'exec -h'
+      const codexCall = await readFile(capturePath, 'utf-8');
+      assert.equal(codexCall.trim(), 'exec\n-h');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat --help after -- end-of-options as help request', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exec-no-help-after-marker-'));
+    try {
+      const home = join(wd, 'home');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const capturePath = join(wd, 'fake-codex-call.txt');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(
+        fakeCodexPath,
+        [
+          '#!/bin/sh',
+          `printf '%s\n' "$@" > "${capturePath}"`,
+          'exit 0',
+        ].join('\n'),
+      );
+      await chmod(fakeCodexPath, 0o755);
+      const fakePsPath = join(fakeBin, 'ps');
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const sessionDirBefore = join(wd, '.omx', 'state', 'sessions');
+      const initialExists = existsSync(sessionDirBefore);
+
+      const result = runOmx(wd, ['exec', '--', '--help'], {
+        HOME: home,
+        NODE_OPTIONS: '',
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      // `--help` after `--` is prompt text: the normal launch path runs and establishes a session.
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.equal(initialExists, false);
+      assert.equal((await readdir(join(wd, '.omx', 'state', 'sessions'))).length, 1);
+      const codexCall = (await readFile(capturePath, 'utf-8')).trim().split('\n');
+      assert.equal(codexCall[0], 'exec');
+      assert.equal(codexCall.at(-1), '--help');
+      assert.notDeepEqual(codexCall, ['exec', '--', '--help']);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('omx reasoning root validation', () => {

@@ -5170,6 +5170,9 @@ if (command !== "launch" && command !== "resume") {
       case "exec":
         if (launchArgs[0] === "inject") {
           await execInjectCommand(launchArgs);
+        } else if (hasHelpArgBeforeEndOfOptions(launchArgs)) {
+          // Informational help (#3731): no session, launch preparation, config repair, or state writes.
+          runCodexBlocking(process.cwd(), ["exec", ...launchArgs], process.env);
         } else {
           await execWithOverlay(launchArgs);
         }
@@ -5751,6 +5754,12 @@ export async function launchWithHud(args: string[]): Promise<void> {
       restoreInsideTmuxControlPlane?.();
     }
   }
+}
+
+function hasHelpArgBeforeEndOfOptions(args: string[]): boolean {
+  const endOfOptionsIndex = args.indexOf("--");
+  const argsBeforeEndOfOptions = endOfOptionsIndex === -1 ? args : args.slice(0, endOfOptionsIndex);
+  return argsBeforeEndOfOptions.some((arg) => arg === "--help" || arg === "-h");
 }
 
 export async function execWithOverlay(args: string[]): Promise<void> {
