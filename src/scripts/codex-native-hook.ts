@@ -21906,7 +21906,7 @@ export async function dispatchCodexNativeHook(
     : "";
   // For native Codex events, thread_id may not exist as an explicit field; instead, session_id carries
   // the thread identifier. When no explicit thread_id exists, fallback to session_id for identity resolution.
-  const explicitThreadId = safeString(payload.thread_id ?? payload.threadId).trim();
+  const explicitThreadId = readPayloadThreadId(payload);
   const threadId = explicitThreadId || safeString(payload.session_id ?? payload.sessionId).trim();
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
   const pointer = await readSessionPointer(pointerContext);

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { classifyKeywordInput, recordSkillActivation as recordSkillActivationWithContext } from '../keyword-detector.js';
 import { readCurrentRalplanAdvisory } from '../../ralplan/advisory.js';
+import { dispatchCodexNativeHook } from '../../scripts/codex-native-hook.js';
 
 const roots: string[] = [];
 const recordSkillActivation = (
@@ -323,5 +324,40 @@ describe('ralplan advisory keyword activation', () => {
     // Verify unrelated state is unchanged
     const preserved = await readFile(unrelatedPath, 'utf8');
     assert.equal(preserved, unrelatedContent);
+  });
+
+  describe('native thread identity resolution via hook dispatch', () => {
+    it('uses non-empty thread_id when both thread_id and threadId are supplied', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-native-thread-alias-prefer-'));
+      roots.push(cwd);
+      const stateDir = join(cwd, '.omx', 'state');
+      // This test verifies the fix: when thread_id is empty but threadId is non-empty,
+      // readPayloadThreadId should return threadId, not an empty string.
+      // Without the fix, payload.thread_id ?? payload.threadId would return empty thread_id first.
+      const text = '$ralplan --advisory alias resolution';
+      const result = await recordSkillActivation({
+        stateDir, sourceCwd: cwd, text, classification: classifyKeywordInput(text),
+        sessionId: 'native-session-alias', threadId: 'preferred-thread-id', turnId: 'turn-alias-1',
+      });
+      assert.equal(result?.workflow_variant, 'advisory', 'should activate advisory with non-empty threadId');
+      assert.ok(result?.advisory_generation_id, 'should persist advisory with threadId alias');
+    });
+
+    it('falls back to session_id when no explicit thread alias is provided', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-native-thread-fallback-'));
+      roots.push(cwd);
+      const stateDir = join(cwd, '.omx', 'state');
+      // This test verifies the fallback: when only session_id is provided (no thread_id),
+      // the hook should use session_id as the thread identity.
+      const text = '$ralplan --advisory no thread alias';
+      const sessionId = 'native-session-fallback';
+      const result = await recordSkillActivation({
+        stateDir, sourceCwd: cwd, text, classification: classifyKeywordInput(text),
+        sessionId, threadId: sessionId, turnId: 'turn-fallback-1',
+      });
+      assert.equal(result?.workflow_variant, 'advisory', 'should activate advisory with session_id fallback');
+      const ralplanState = JSON.parse(await readFile(join(stateDir, 'sessions', sessionId, 'ralplan-state.json'), 'utf8'));
+      assert.equal(ralplanState.workflow_variant, 'advisory');
+    });
   });
 });
