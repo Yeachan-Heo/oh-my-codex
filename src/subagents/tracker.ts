@@ -1127,6 +1127,7 @@ export function recordNativeSubagentAuthorityObservation(
         kind: 'subagent',
         ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
         mode: observation.mode,
+        role: observation.mode,
         timestamp,
       });
       const thread = next.sessions[sessionId]?.threads[childThreadId];
