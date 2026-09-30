@@ -4555,47 +4555,41 @@ function sanitizeDetachedFailureText(text: string): string {
   return secretRedacted;
 }
 
-function collectNestedStderr(value: unknown, depth: number = 0): string[] {
-  // Recursively collect stderr from nested errors
-  const results: string[] = [];
-  if (depth > 4) return results;
-  if (!value || typeof value !== "object") return results;
-  
-  const err = value as any;
-  const stderr = typeof err.stderr === "string" ? err.stderr : err.stderr?.toString?.();
-  if (stderr) {
-    results.push(stderr);
-  }
-  
-  // Walk nested errors in AggregateError
-  if (value instanceof AggregateError) {
-    for (const child of value.errors) {
-      results.push(...collectNestedStderr(child, depth + 1));
-    }
-  } else if (err.cause) {
-    results.push(...collectNestedStderr(err.cause, depth + 1));
-  }
-  
-  return results;
+interface DetachedFailureSegment {
+  stderr?: string;
+  status?: number;
+  signal?: string;
+  code?: string;
 }
 
-function collectNestedExitMetadata(
+// One segment per nested error (AggregateError children / cause chain, bounded depth) that
+// carries stderr or exit metadata, so each process result stays attributed to its own error.
+function collectDetachedFailureSegments(
   value: unknown,
   depth: number = 0,
-  found: { status?: number; signal?: string; code?: string } = {},
-): { status?: number; signal?: string; code?: string } {
-  if (depth > 4 || !value || typeof value !== "object") return found;
-  const err = value as { status?: unknown; signal?: unknown; code?: unknown; cause?: unknown };
-  if (found.status === undefined && typeof err.status === "number") found.status = err.status;
-  if (found.signal === undefined && typeof err.signal === "string") found.signal = err.signal;
-  if (found.code === undefined && typeof err.code === "string") found.code = err.code;
+  segments: DetachedFailureSegment[] = [],
+): DetachedFailureSegment[] {
+  if (depth > 4 || !value || typeof value !== "object") return segments;
+  const err = value as { stderr?: unknown; status?: unknown; signal?: unknown; code?: unknown; cause?: unknown };
+  const stderr = typeof err.stderr === "string" ? err.stderr : (err.stderr as { toString?: () => string } | undefined)?.toString?.();
+  const segment: DetachedFailureSegment = {
+    ...(stderr ? { stderr } : {}),
+    ...(typeof err.status === "number" ? { status: err.status } : {}),
+    ...(typeof err.signal === "string" ? { signal: err.signal } : {}),
+    ...(typeof err.code === "string" ? { code: err.code } : {}),
+  };
+  if (Object.keys(segment).length > 0) segments.push(segment);
   if (value instanceof AggregateError) {
-    for (const child of value.errors) collectNestedExitMetadata(child, depth + 1, found);
+    for (const child of value.errors) collectDetachedFailureSegments(child, depth + 1, segments);
   } else if (err.cause) {
-    collectNestedExitMetadata(err.cause, depth + 1, found);
+    collectDetachedFailureSegments(err.cause, depth + 1, segments);
   }
-  return found;
+  return segments;
 }
+
+const DETACHED_FAILURE_MAX_CHARS = 1_024;
+const DETACHED_FAILURE_STDERR_MAX_CHARS = 256;
+const DETACHED_FAILURE_STDERR_BUDGET = 640;
 
 // `execFileSync` messages are `Command failed: <argv joined by spaces>\n<stderr>`. Argument
 // boundaries are lost, so no per-argument redaction is safe (`-e KEY=alpha beta`); keep only
@@ -4607,28 +4601,26 @@ function redactFailedCommandArgv(message: string): string {
 }
 
 export function describeDetachedLeaderFailure(error: unknown): string {
-  // Collect all stderr from nested errors
-  const stderrs = collectNestedStderr(error);
+  const segments = collectDetachedFailureSegments(error);
+  const metadataOf = (segment: DetachedFailureSegment): string[] => [
+    ...(segment.status !== undefined ? [`status=${segment.status}`] : []),
+    ...(segment.signal !== undefined ? [`signal=${segment.signal}`] : []),
+    ...(segment.code !== undefined ? [`code=${segment.code}`] : []),
+  ];
+  // Stderr shares a fixed budget so exit metadata is never truncated away by many long stderrs.
+  const stderrSegments = segments.filter((segment) => segment.stderr).length;
+  const stderrCap = stderrSegments > 0
+    ? Math.min(DETACHED_FAILURE_STDERR_MAX_CHARS, Math.floor(DETACHED_FAILURE_STDERR_BUDGET / stderrSegments))
+    : 0;
   const parts: string[] = [];
-  
-  // Include sanitized stderr summaries
-  for (const stderr of stderrs) {
-    const sanitized = sanitizeDetachedFailureText(stderr);
-    // Bound stderr to reasonable length before including in output
-    if (sanitized.length > 256) {
-      parts.push(sanitized.slice(0, 255) + "…");
-    } else {
-      parts.push(sanitized);
+  for (const segment of segments) {
+    if (segment.stderr) {
+      const sanitized = sanitizeDetachedFailureText(segment.stderr);
+      parts.push(sanitized.length > stderrCap ? `${sanitized.slice(0, stderrCap - 1)}…` : sanitized);
     }
+    parts.push(...metadataOf(segment));
   }
-  
-  // Exit status/signal/code from the first error in the same bounded traversal that carries it,
-  // so wrapped (AggregateError / cause) subprocess failures keep their exit metadata.
-  const exit = collectNestedExitMetadata(error);
-  if (exit.status !== undefined) parts.push(`status=${exit.status}`);
-  if (exit.signal !== undefined) parts.push(`signal=${exit.signal}`);
-  if (exit.code !== undefined) parts.push(`code=${exit.code}`);
-  
+
   // Describe the error message chain
   const describe = (value: unknown, depth: number): string => {
     if (depth > 4) return "nested failure";
@@ -4647,7 +4639,7 @@ export function describeDetachedLeaderFailure(error: unknown): string {
   }
   
   // Join all parts and bound to 1024 characters
-  return parts.filter(Boolean).join(" | ").slice(0, 1_024);
+  return parts.filter(Boolean).join(" | ").slice(0, DETACHED_FAILURE_MAX_CHARS);
 }
 
 export class DetachedLaunchSafetyError extends Error {

@@ -389,6 +389,25 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /^failed \| status=23 \| signal=SIGKILL \| detached abort failed: release failed$/);
   });
 
+  it('keeps each nested failure\'s exit metadata attributed to its own stderr', () => {
+    const first = Object.assign(new Error('kill-pane failed'), { stderr: 'no pane', status: 1 });
+    const second = Object.assign(new Error('rm failed'), { stderr: 'busy', signal: 'SIGKILL', code: 'EBUSY' });
+    const result = describeDetachedLeaderFailure(new AggregateError([first, second], 'cleanup failed'));
+    assert.equal(
+      result,
+      'no pane | status=1 | busy | signal=SIGKILL | code=EBUSY | cleanup failed: kill-pane failed: rm failed',
+    );
+  });
+
+  it('reserves space for exit metadata when many long stderrs are aggregated', () => {
+    const children = [1, 2, 3, 4, 5].map((n) =>
+      Object.assign(new Error(`step ${n} failed`), { stderr: String(n).repeat(400), status: 10 + n }));
+    const result = describeDetachedLeaderFailure(new AggregateError(children, 'cleanup failed'));
+    assert.ok(result.length <= 1024, `${result.length}`);
+    for (const n of [1, 2, 3, 4, 5]) assert.match(result, new RegExp(`\\| status=${10 + n}(?: |$)`));
+    assert.match(result, /cleanup failed: step 1 failed/);
+  });
+
   it('never echoes failed-command argv, even values split by unquoted whitespace', () => {
     const error = Object.assign(
       new Error('Command failed: tmux new-session -d -e OMX_TEAM_WORKER_LAUNCH_ARGS=alpha beta-secret -e OMX_SESSION_ID=omx-1\nboom'),
