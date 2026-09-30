@@ -287,6 +287,30 @@ describe('doctor state-root/session binding diagnostics', () => {
       assert.doesNotMatch(check.message, /unverified=/);
     });
 
+    it('keeps mixed unverified and bad selector evidence within the cap for an explicit root', () => {
+      const message = formatStateRootSessionBindingDiagnostic(
+        { ...snapshot, rootSource: 'team-env' } as typeof snapshot,
+        {
+          OMX_TEAM_STATE_ROOT: '/winning-team-root',
+          OMX_SESSION_ID: 'omx-example',
+          CODEX_SESSION_ID: 'native-other',
+          SESSION_ID: 'other-session',
+        },
+      );
+      assert.equal(message, [
+        'src=team-env',
+        'root=OMX_TEAM_STATE_ROOT',
+        'clear=OMX_TEAM_STATE_ROOT-if-unintended',
+        'ptr=indet',
+        'fix=clear/correct',
+        'no-mutation',
+        'selected=session.json',
+        'bad_selectors=CODEX_SESSION_ID,SESSION_ID',
+        'unverified=process-identity-indeterminate',
+      ].join(';'));
+      assert.ok(message.length <= 240, `${message.length}`);
+    });
+
     it('does not echo hostile selector values', () => {
       const check = checkStateRootSessionBinding(snapshot, { OMX_SESSION_ID: '../../../etc/passwd' });
       assert.match(check.message, /bad_selectors=OMX_SESSION_ID/);

@@ -519,7 +519,12 @@ export function formatStateRootSessionBindingDiagnostic(
       ...(badSelectorsField ? [badSelectorsField] : []),
       ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
     ];
-    return canonicalFields.join(";");
+    const canonical = canonicalFields.join(";");
+    if (canonical.length <= 240) return canonical;
+    // Drop the owner advisory before any selector evidence so the line stays within the cap.
+    return sanitizeBindingDiagnosticLine(
+      canonicalFields.filter((field) => !field.startsWith("owner=")).join(";"),
+    );
   }
   const buildCompactFields = (
     selectedEvidence: string | undefined,
