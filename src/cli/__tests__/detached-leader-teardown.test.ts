@@ -363,6 +363,42 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /inner failure/);
   });
 
+  it('redacts the whole bearer credential including base64 punctuation', () => {
+    const error = Object.assign(new Error('auth failed'), {
+      stderr: 'Authorization: Bearer abc+SECRET/rest== denied',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /SECRET|rest==/);
+    assert.match(result, /\[redacted\] denied/);
+  });
+
+  it('keeps exit metadata from a failure wrapped in an AggregateError', () => {
+    const child = Object.assign(new Error('release failed'), { stderr: 'failed', status: 23, signal: 'SIGKILL' });
+    const result = describeDetachedLeaderFailure(new AggregateError([child], 'detached abort failed'));
+    assert.match(result, /^failed \| status=23 \| signal=SIGKILL \| detached abort failed: release failed$/);
+  });
+
+  it('never echoes failed-command argv, even values split by unquoted whitespace', () => {
+    const error = Object.assign(
+      new Error('Command failed: tmux new-session -d -e OMX_TEAM_WORKER_LAUNCH_ARGS=alpha beta-secret -e OMX_SESSION_ID=omx-1\nboom'),
+      { stderr: 'boom', status: 1 },
+    );
+    const result = describeDetachedLeaderFailure(error);
+    assert.equal(result, 'boom | status=1 | Command failed: tmux new-session [argv redacted]');
+  });
+
+  it('strips terminal escape sequences and control bytes from stderr', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: '\u001b[31mred\u001b[0m \u001b]52;c;Y2xpcA==\u0007tail\u0007\u009b',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /[\u0000-\u001f\u007f-\u009f]/);
+    assert.doesNotMatch(result, /Y2xpcA/);
+    assert.match(result, /^red tail \| status=1/);
+  });
+
   it('bounds total output to 1024 characters', () => {
     const longMessage = 'y'.repeat(600);
     const longStderr = 'z'.repeat(600);

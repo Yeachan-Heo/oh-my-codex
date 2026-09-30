@@ -2619,8 +2619,8 @@ exit 1
       assert.match(result.stderr, /detached launch safety failure during inert-session/);
       // #3723: the bounded stderr summary and exit status lead; tmux -e values never surface.
       assert.match(result.stderr, /inert-session \(new-session\): tmux-new-session-diagnostic \| status=1 \| Command failed/);
-      assert.match(result.stderr, /-e OMX_SESSION_ID=\[redacted\]/);
-      assert.doesNotMatch(result.stderr, /OMX_SESSION_ID=omx-|dangerously-bypass/);
+      assert.match(result.stderr, /Command failed: \[path\] new-session \[argv redacted\]/);
+      assert.doesNotMatch(result.stderr, /OMX_SESSION_ID|dangerously-bypass/);
       assert.doesNotMatch(result.stdout, /fake-codex/);
       assert.match(tmuxLog, /tmux:-V/);
       assert.match(tmuxLog, /tmux:d0-runs:missing/);

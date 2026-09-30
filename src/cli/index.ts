@@ -4538,15 +4538,18 @@ function detachedFailureCode(error: unknown): string {
 
 
 function sanitizeDetachedFailureText(text: string): string {
-  // Collapse whitespace and remove control characters
-  const collapsed = text.replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim()
-    // Redact tmux `-e KEY=VALUE` environment values; keep only the key.
-    .replace(/(\s-e\s+[A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|\S*)/g, "$1=[redacted]");
+  // Drop terminal escape sequences (CSI/OSC), then every remaining C0/C1 control byte,
+  // and collapse whitespace.
+  const collapsed = text
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-_]/g, "")
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   // Redact absolute paths: Unix /path/to/file and Windows C:\path\to\file
   const pathRedacted = collapsed.replace(/(?:\/[^\s:]+){2,}|[a-zA-Z]:\\[^\s]+/g, "[path]");
   // Redact secrets: bearer tokens, API keys, JWTs, and other common secret patterns
   const secretRedacted = pathRedacted.replace(
-    /(bearer\s+[a-z0-9._:-]+|sk-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9]{8,}|eyj[a-z0-9._-]{10,}|[a-f0-9]{32,})/gi,
+    /(bearer\s+[^\s"'`]+|sk-[a-z0-9-]{8,}|gh[pousr]_[a-z0-9]{8,}|eyj[a-z0-9._-]{10,}|[a-f0-9]{32,})/gi,
     "[redacted]"
   );
   return secretRedacted;
@@ -4576,6 +4579,33 @@ function collectNestedStderr(value: unknown, depth: number = 0): string[] {
   return results;
 }
 
+function collectNestedExitMetadata(
+  value: unknown,
+  depth: number = 0,
+  found: { status?: number; signal?: string; code?: string } = {},
+): { status?: number; signal?: string; code?: string } {
+  if (depth > 4 || !value || typeof value !== "object") return found;
+  const err = value as { status?: unknown; signal?: unknown; code?: unknown; cause?: unknown };
+  if (found.status === undefined && typeof err.status === "number") found.status = err.status;
+  if (found.signal === undefined && typeof err.signal === "string") found.signal = err.signal;
+  if (found.code === undefined && typeof err.code === "string") found.code = err.code;
+  if (value instanceof AggregateError) {
+    for (const child of value.errors) collectNestedExitMetadata(child, depth + 1, found);
+  } else if (err.cause) {
+    collectNestedExitMetadata(err.cause, depth + 1, found);
+  }
+  return found;
+}
+
+// `execFileSync` messages are `Command failed: <argv joined by spaces>\n<stderr>`. Argument
+// boundaries are lost, so no per-argument redaction is safe (`-e KEY=alpha beta`); keep only
+// the executable and its subcommand. Stderr is reported separately.
+function redactFailedCommandArgv(message: string): string {
+  const match = /^Command failed: (\S+)(?: ([a-z][a-z-]*))?/.exec(message);
+  if (!match) return message;
+  return `Command failed: ${match[1]}${match[2] ? ` ${match[2]}` : ""} [argv redacted]`;
+}
+
 export function describeDetachedLeaderFailure(error: unknown): string {
   // Collect all stderr from nested errors
   const stderrs = collectNestedStderr(error);
@@ -4592,19 +4622,12 @@ export function describeDetachedLeaderFailure(error: unknown): string {
     }
   }
   
-  // Extract exit status/signal info from top-level error
-  if (error && typeof error === "object") {
-    const err = error as any;
-    if (typeof err.status === "number" && err.status !== null) {
-      parts.push(`status=${err.status}`);
-    }
-    if (typeof err.signal === "string" && err.signal !== null) {
-      parts.push(`signal=${err.signal}`);
-    }
-    if (typeof err.code === "string" && err.code !== null) {
-      parts.push(`code=${err.code}`);
-    }
-  }
+  // Exit status/signal/code from the first error in the same bounded traversal that carries it,
+  // so wrapped (AggregateError / cause) subprocess failures keep their exit metadata.
+  const exit = collectNestedExitMetadata(error);
+  if (exit.status !== undefined) parts.push(`status=${exit.status}`);
+  if (exit.signal !== undefined) parts.push(`signal=${exit.signal}`);
+  if (exit.code !== undefined) parts.push(`code=${exit.code}`);
   
   // Describe the error message chain
   const describe = (value: unknown, depth: number): string => {
@@ -4614,7 +4637,7 @@ export function describeDetachedLeaderFailure(error: unknown): string {
         .filter(Boolean);
       return errorParts.join(": ");
     }
-    if (value instanceof Error) return value.message;
+    if (value instanceof Error) return redactFailedCommandArgv(value.message);
     return String(value);
   };
   
