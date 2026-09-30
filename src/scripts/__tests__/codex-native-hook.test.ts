@@ -67,6 +67,11 @@ import {
 import { getBaseStateDir } from "../../state/paths.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
+import {
+	injectExecFollowup,
+	markExecFollowupsDelivered,
+	readPendingExecFollowups,
+} from "../../exec/followup.js";
 
 
 const ARGUMENT_PRODUCING_RUNTIME_DENIAL_COMMANDS = [
@@ -2662,6 +2667,192 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 				await readFile(auditPath, "utf-8"),
 				/exec_followup_queue_corrupt_recovered/,
 			);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("session-scoped Stop with queued exec follow-up for the root delivers it once and marks consumed", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-scoped-exec-followup-"));
+		try {
+			const sessionId = "sess-scoped-exec-followup";
+			const stateDir = join(cwd, ".omx", "state");
+			await writeSessionStart(cwd, sessionId);
+
+			// Write a ralplan skill state to simulate an active skill
+			await writeJson(
+				join(stateDir, "sessions", sessionId, "skill-active-state.json"),
+				{
+					version: 1,
+					active: true,
+					skill: "ralplan",
+					phase: "planning",
+					session_id: sessionId,
+					active_skills: [
+						{
+							skill: "ralplan",
+							phase: "planning",
+							active: true,
+							session_id: sessionId,
+						},
+					],
+				},
+			);
+
+			// Inject a queued exec follow-up for this session
+			const queued = await injectExecFollowup({
+				cwd,
+				sessionId,
+				actor: "test",
+				prompt: "Verify the exec follow-up implementation.",
+				nowIso: "2026-09-30T12:00:00.000Z",
+			});
+
+			// Dispatch Stop with sessionScopedOnly (simulating !allowGlobalSideEffects)
+			const stopResult = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "Stop",
+					cwd,
+					session_id: sessionId,
+				},
+				{ cwd },
+			);
+
+			// The output should be a block with the exec follow-up
+			assert.equal(stopResult.outputJson?.decision, "block");
+			assert.match(
+				String(stopResult.outputJson?.reason),
+				new RegExp(queued.queued.id),
+			);
+			assert.match(
+				String(stopResult.outputJson?.systemMessage),
+				/queued follow-up instruction/,
+			);
+
+			// Verify that the follow-up is marked as delivered
+			const after = await readPendingExecFollowups(cwd, sessionId);
+			assert.equal(after.pending.length, 0);
+			const persisted = JSON.parse(await readFile(queued.queuePath, "utf-8")) as {
+				records: Array<{ delivered_at?: string; delivery_event?: string }>;
+			};
+			assert.equal(persisted.records[0]?.delivery_event, "stop-hook");
+			assert.ok(persisted.records[0]?.delivered_at);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("session-scoped second Stop does not redeliver exec follow-up", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-scoped-no-redeliver-"));
+		try {
+			const sessionId = "sess-scoped-no-redeliver";
+			const stateDir = join(cwd, ".omx", "state");
+			await writeSessionStart(cwd, sessionId);
+
+			// Write a ralplan skill state
+			await writeJson(
+				join(stateDir, "sessions", sessionId, "skill-active-state.json"),
+				{
+					version: 1,
+					active: true,
+					skill: "ralplan",
+					phase: "planning",
+					session_id: sessionId,
+					active_skills: [],
+				},
+			);
+
+			// Inject a queued exec follow-up
+			const queued = await injectExecFollowup({
+				cwd,
+				sessionId,
+				actor: "test",
+				prompt: "First exec follow-up.",
+				nowIso: "2026-09-30T12:00:00.000Z",
+			});
+
+			// First Stop dispatches and delivers it
+			const firstStop = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "Stop",
+					cwd,
+					session_id: sessionId,
+				},
+				{ cwd },
+			);
+			assert.equal(firstStop.outputJson?.decision, "block");
+
+			// Verify delivered
+			const afterFirst = await readPendingExecFollowups(cwd, sessionId);
+			assert.equal(afterFirst.pending.length, 0);
+
+			// Second Stop should not block on exec follow-up (no pending)
+			const secondStop = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "Stop",
+					cwd,
+					session_id: sessionId,
+				},
+				{ cwd },
+			);
+			// Should return null or not block on exec follow-up
+			assert.notEqual(secondStop.outputJson?.reason, `exec_followup_pending:${queued.queued.id}`);
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+
+	it("non-scoped Stop behavior unchanged with exec follow-up delivery", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-stop-non-scoped-exec-"));
+		try {
+			const sessionId = "sess-non-scoped-exec";
+			const stateDir = join(cwd, ".omx", "state");
+			await writeSessionStart(cwd, sessionId);
+
+			// Write a ralplan skill state
+			await writeJson(
+				join(stateDir, "sessions", sessionId, "skill-active-state.json"),
+				{
+					version: 1,
+					active: false,
+					skill: "ralplan",
+					phase: "complete",
+					session_id: sessionId,
+					active_skills: [],
+				},
+			);
+
+			// Inject a queued exec follow-up
+			const queued = await injectExecFollowup({
+				cwd,
+				sessionId,
+				actor: "test",
+				prompt: "Non-scoped exec follow-up.",
+				nowIso: "2026-09-30T12:00:00.000Z",
+			});
+
+			// Dispatch Stop with global side effects allowed (non-scoped)
+			// This simulates the normal flow where allowGlobalSideEffects=true
+			const stopResult = await dispatchCodexNativeHook(
+				{
+					hook_event_name: "Stop",
+					cwd,
+					session_id: sessionId,
+				},
+				{ cwd },
+			);
+
+			// Should deliver exec follow-up in non-scoped path
+			assert.equal(stopResult.outputJson?.decision, "block");
+			assert.match(
+				String(stopResult.outputJson?.reason),
+				new RegExp(queued.queued.id),
+			);
+
+			// Verify marked as delivered
+			const after = await readPendingExecFollowups(cwd, sessionId);
+			assert.equal(after.pending.length, 0);
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
