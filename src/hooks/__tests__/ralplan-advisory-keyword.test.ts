@@ -266,4 +266,62 @@ describe('ralplan advisory keyword activation', () => {
       assert.equal(JSON.stringify(await readCurrentRalplanAdvisory(cwd, 'session-a')), lifecycleBefore, nextPrompt);
     }
   });
+
+  it('activates advisory when native event uses session_id as thread identity (no explicit thread_id)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-advisory-keyword-native-thread-fallback-'));
+    roots.push(cwd);
+    const stateDir = join(cwd, '.omx', 'state');
+    // Simulate native Codex event: session_id contains thread identifier, no explicit thread_id
+    // This verifies that the native hook correctly falls back to session_id for thread identity
+    const text = '$ralplan --advisory native thread identity test';
+    const result = await recordSkillActivation({
+      stateDir, sourceCwd: cwd, text, classification: classifyKeywordInput(text),
+      sessionId: 'native-session-123', threadId: 'native-session-123', turnId: 'turn-native-1',
+    });
+    assert.equal(result?.workflow_variant, 'advisory');
+    assert.ok(result?.advisory_generation_id);
+    const mode = JSON.parse(await readFile(join(stateDir, 'sessions', 'native-session-123', 'ralplan-state.json'), 'utf8'));
+    assert.equal(mode.workflow_variant, 'advisory');
+  });
+
+  it('explicit thread_id still wins over session_id fallback', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-advisory-keyword-explicit-thread-wins-'));
+    roots.push(cwd);
+    const stateDir = join(cwd, '.omx', 'state');
+    // When both session_id and explicit thread_id are present, thread_id should be used
+    const text = '$ralplan --advisory explicit thread priority';
+    const result = await recordSkillActivation({
+      stateDir, sourceCwd: cwd, text, classification: classifyKeywordInput(text),
+      sessionId: 'session-with-explicit-thread', threadId: 'explicit-thread-abc', turnId: 'turn-explicit-1',
+    });
+    assert.equal(result?.workflow_variant, 'advisory');
+    assert.ok(result?.advisory_generation_id);
+    const mode = JSON.parse(await readFile(join(stateDir, 'sessions', 'session-with-explicit-thread', 'ralplan-state.json'), 'utf8'));
+    assert.equal(mode.workflow_variant, 'advisory');
+  });
+
+  it('preserves unrelated state when native advisory activation succeeds', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-advisory-keyword-state-preservation-'));
+    roots.push(cwd);
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionId = 'native-session-with-state';
+    const sessionDir = join(stateDir, 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    
+    // Write some unrelated state to verify it's not corrupted
+    const unrelatedPath = join(sessionDir, 'unrelated-state.json');
+    const unrelatedContent = JSON.stringify({ version: 1, data: 'important' });
+    await writeFile(unrelatedPath, unrelatedContent);
+    
+    const text = '$ralplan --advisory preserve state test';
+    const result = await recordSkillActivation({
+      stateDir, sourceCwd: cwd, text, classification: classifyKeywordInput(text),
+      sessionId, threadId: sessionId, turnId: 'turn-preserve-1',
+    });
+    assert.equal(result?.workflow_variant, 'advisory');
+    
+    // Verify unrelated state is unchanged
+    const preserved = await readFile(unrelatedPath, 'utf8');
+    assert.equal(preserved, unrelatedContent);
+  });
 });
