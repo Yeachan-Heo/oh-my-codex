@@ -4554,7 +4554,7 @@ function sanitizeDetachedFailureText(text: string): string {
   )
     // Key-labelled credentials (`api_key=…`, `password: …`): keep the label, drop the value.
     .replace(
-      /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|credentials?|auth)["']?)(\s*[=:]\s*)(?!\[redacted\])(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|`(?:\\.|[^`\\])*`?|[^\s"'`,;&]+)/gi,
+      /\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|token|password|passwd|pwd|credentials?|auth)["']?)(\s*[=:]\s*)(?!\[redacted\])(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|`(?:\\.|[^`\\])*`?|[^\s"'`]+)/gi,
       "$1$2[redacted]",
     );
   return secretRedacted;

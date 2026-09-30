@@ -379,10 +379,10 @@ describe('detached leader HUD teardown', () => {
       status: 1,
     });
     const result = describeDetachedLeaderFailure(error);
-    assert.doesNotMatch(result, /mysecretvalue123|sk_live_value|hunter2|abc/);
+    assert.doesNotMatch(result, /mysecretvalue123|sk_live_value|hunter2|abc|def/);
     assert.match(result, /api_key=\[redacted\]/);
     assert.match(result, /OPENAI_API_KEY=\[redacted\]/);
-    assert.match(result, /client_secret: \[redacted\],def/);
+    assert.match(result, /client_secret: \[redacted\]/);
     assert.match(result, /password: \[redacted\]/);
   });
 
