@@ -396,6 +396,16 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /^password=\[redacted\] api_key=\[redacted\] token=\[redacted\] \| status=1/);
   });
 
+  it('redacts credentials whose JSON keys are quoted', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: '{"password":"hunter2","api_key": "mysecretvalue123","user":"alice"}',
+      status: 1,
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /hunter2|mysecretvalue123/);
+    assert.match(result, /^\{"password":\[redacted\],"api_key": \[redacted\],"user":"alice"\} \| status=1/);
+  });
+
   it('redacts fine-grained GitHub access tokens', () => {
     const error = Object.assign(new Error('push failed'), {
       stderr: 'auth github_pat_11AAAAAAA0abcdefGHIJKL_mnopqrstuvWXYZ0123456789 rejected',
