@@ -4575,8 +4575,9 @@ function collectDetachedFailureSegments(
   const segment: DetachedFailureSegment = {
     ...(stderr ? { stderr } : {}),
     ...(typeof err.status === "number" ? { status: err.status } : {}),
-    ...(typeof err.signal === "string" ? { signal: err.signal } : {}),
-    ...(typeof err.code === "string" ? { code: err.code } : {}),
+    // signal/code are symbolic identifiers (SIGKILL, ENOENT); anything else is dropped, never echoed.
+    ...(typeof err.signal === "string" && /^[A-Z0-9_]{1,32}$/.test(err.signal) ? { signal: err.signal } : {}),
+    ...(typeof err.code === "string" && /^[A-Z0-9_]{1,32}$/.test(err.code) ? { code: err.code } : {}),
   };
   if (Object.keys(segment).length > 0) segments.push(segment);
   if (value instanceof AggregateError) {

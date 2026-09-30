@@ -406,6 +406,17 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /^no pane \| status=1 \| tmux socket missing \| status=2 \| cleanup failed/);
   });
 
+  it('drops non-symbolic signal and code values instead of echoing them', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: 'boom',
+      status: 1,
+      signal: '\u001b]52;c;Y2xpcA==\u0007',
+      code: 'ghp_abcdefghijklmnop /home/user/secret',
+    });
+    const result = describeDetachedLeaderFailure(error);
+    assert.equal(result, 'boom | status=1 | x');
+  });
+
   it('reserves space for exit metadata when many long stderrs are aggregated', () => {
     const children = [1, 2, 3, 4, 5].map((n) =>
       Object.assign(new Error(`step ${n} failed`), { stderr: String(n).repeat(400), status: 10 + n }));
