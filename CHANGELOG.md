@@ -10,15 +10,15 @@ All notable changes to this project are documented in this file.
 
 - Expand GPT-6 model recognition: support GPT-6 Sol and Luna, and add gpt-6.1-sol to model catalogs (#3701, #3716).
 - Resolve plugin skill contract resolution, template provenance, and hook trust preservation: fix plugin-skill links in snapshot context, validate templates/AGENTS.md in cache provenance, and preserve foreign hook trust during legacy migration (#3707, #3708, #3704).
-- Fix HUD idle CPU storm and correctness: reconcile hook metadata atomicity, stop noisy reconcile failures, and align native fixtures with authority frames (#3706, #3711, #3722, #3726).
+- Fix HUD idle CPU storm and correctness: reconcile hook metadata atomicity, stop noisy reconcile failures, and align native fixtures with authority frames (#3706, #3711).
 
 ### Fixed
 
 - Plugin integrity and template validation: validate templates directory structure and AGENTS.md in plugin cache provenance checks (#3707); fix plugin skill contract links to resolve inside the plugin snapshot (#3708); preserve foreign hook trust during legacy hook migration (#3704).
 - Team runtime robustness: make queued leader notices safe after shutdown (#3692); keep non-Team guidance available when Team is disabled (#3699, #3700).
-- HUD and tmux correctness: keep hook metadata atomic and verify idle CPU (#3706); stop idle reconciliation CPU storm (#3706); fix tmux question probe error handling (#3711); align native hook fixtures with authority frames (#3722); distinguish matching-but-unverified selectors in identity-indeterminate bindings (#3725, #3726); include stderr summary and exit status in detached leader failure reports (#3723, #3727).
+- HUD and tmux correctness: keep hook metadata atomic and verify idle CPU (#3706); stop idle reconciliation CPU storm (#3706); fix tmux question probe error handling (#3711); align native hook fixtures with authority frames (#3706); distinguish matching-but-unverified selectors in identity-indeterminate bindings (#3725, #3726); include stderr summary and exit status in detached leader failure reports (#3723, #3727).
 - Doctor and notifications: show resolved config path when missing (#3693); strip OSC terminal escapes in notifications (#3694); clarify fresh config doctor evidence (#3691).
-- Session management: deliver exec follow-ups in session-scoped Stop path (#3724, #3728); omx exec --help no longer attempts session establishment with an active owner (#3731, #3732); add 'ultragoal' to supported state read modes (#3733, #3734).
+- Session management: native `$ralplan --advisory` resolves thread identity from `session_id` when the hook payload carries no thread field (#3721, #3722); deliver exec follow-ups in session-scoped Stop path (#3724, #3728); omx exec --help no longer attempts session establishment with an active owner (#3731, #3732); add 'ultragoal' to supported state read modes (#3733, #3734).
 - Configuration: preserve hashes in quoted TOML values (#3712).
 
 ### Maintenance

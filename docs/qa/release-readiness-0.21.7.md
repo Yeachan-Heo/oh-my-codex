@@ -33,12 +33,12 @@
 |---|---|
 | Release collateral | `CHANGELOG.md`, `docs/release-notes-0.21.7.md`, `RELEASE_BODY.md`, `artifacts/release-0.21.7/inventory.md`, this readiness record — all generated from the exact compare range v0.21.6..HEAD |
 | Pre-publication CI readiness | All 7 core gates passing (typecheck, lint, plugin-mirror, capabilities-lock, prompt-guidance, native-agents, prompt-inventory); full test suite gated on PR 3735 CI (not run locally) |
-| Commit history integrity | 49 commits from 27 PRs across 102 files; all commits verified present in the frozen range |
+| Commit history integrity | 49 commits from 25 PRs across 102 files; all commits verified present in the frozen range |
 | Version synchronization | `package.json` at 0.21.7, `Cargo.toml` at 0.21.7, plugin manifest at 0.21.7 — all previously synchronized on dev branch |
 
 ## Release readiness assessment
 
-**Status: Ready for PR and publication review** — all critical gates (typecheck, lint, plugin verification, capabilities, prompt guidance, native agents) are passing. The single full-test-suite skip is due to a system-level npm installation issue unrelated to the release collateral. The frozen candidate has been verified to be an ancestor of `v0.21.6`, contains 49 production commits with clear user-visible changes (plugin fixes, HUD optimization, model expansion), and the collateral documents (CHANGELOG, release notes, inventory, this readiness record) are complete and accurately reflect the range.
+**Status: Ready for PR and publication review** — all critical gates (typecheck, lint, plugin verification, capabilities, prompt guidance, native agents) are passing. The full test suite was not run locally (host npm is broken); it is gated on PR #3735 CI before merge. The frozen candidate has been verified to have `v0.21.6` as an ancestor, contains 49 production commits with clear user-visible changes (plugin fixes, HUD optimization, model expansion), and the collateral documents (CHANGELOG, release notes, inventory, this readiness record) are complete and accurately reflect the range.
 
 **Known issues:**
 - System npm installation has missing dependencies (unrelated to release candidate); bun install verified all project dependencies are present and intact.
