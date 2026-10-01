@@ -2,7 +2,7 @@ import type { TeamTask, TeamTaskCoordinationMechanism } from "./state.js";
 import { existsSync } from "fs";
 import { execFileSync } from "child_process";
 import { mkdir, readFile, rm, stat, writeFile } from "fs/promises";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import {
   getFixLoopInstructions,
   getVerificationInstructions,
@@ -216,8 +216,10 @@ function buildWorkerRootAgentsBackupPath(
     "--git-path",
     "omx/root-agents-backup.json",
   ]);
+  // `--git-path` is relative to the worktree in a primary checkout but absolute
+  // in a linked worktree (where Team workers run), so resolve, never join.
   return gitPath
-    ? join(worktreePath, gitPath)
+    ? resolve(worktreePath, gitPath)
     : join(
         teamStateRoot,
         "team",
