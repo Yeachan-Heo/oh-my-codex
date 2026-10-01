@@ -4580,9 +4580,12 @@ function collectDetachedFailureSegments(
   const segment: DetachedFailureSegment = {
     ...(stderr ? { stderr } : {}),
     ...(typeof err.status === "number" ? { status: err.status } : {}),
-    // signal/code are symbolic identifiers (SIGKILL, ENOENT); anything else is dropped, never echoed.
-    ...(typeof err.signal === "string" && /^[A-Z0-9_]{1,32}$/.test(err.signal) ? { signal: err.signal } : {}),
-    ...(typeof err.code === "string" && /^[A-Z0-9_]{1,32}$/.test(err.code) ? { code: err.code } : {}),
+    // Only known identifiers are reported: OS signal names, OS errno names, or Node `ERR_*` codes.
+    // Any other value is dropped, never echoed.
+    ...(typeof err.signal === "string" && Object.hasOwn(osConstants.signals, err.signal) ? { signal: err.signal } : {}),
+    ...(typeof err.code === "string" && (Object.hasOwn(osConstants.errno, err.code) || /^ERR_[A-Z0-9_]{1,60}$/.test(err.code))
+      ? { code: err.code }
+      : {}),
   };
   if (Object.keys(segment).length > 0) segments.push(segment);
   if (value instanceof AggregateError) {

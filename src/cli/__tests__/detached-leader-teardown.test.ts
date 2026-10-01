@@ -488,6 +488,18 @@ describe('detached leader HUD teardown', () => {
     assert.equal(result, 'boom | status=1 | x');
   });
 
+  it('drops uppercase non-identifier signal and code values such as access key ids', () => {
+    const error = Object.assign(new Error('x'), {
+      stderr: 'boom',
+      status: 1,
+      signal: 'AKIAIOSFODNN7EXAMPLE',
+      code: 'AKIAIOSFODNN7EXAMPLE',
+    });
+    assert.equal(describeDetachedLeaderFailure(error), 'boom | status=1 | x');
+    const known = Object.assign(new Error('y'), { signal: 'SIGKILL', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' });
+    assert.equal(describeDetachedLeaderFailure(known), 'signal=SIGKILL | code=ERR_CHILD_PROCESS_STDIO_MAXBUFFER | y');
+  });
+
   it('reserves space for exit metadata when many long stderrs are aggregated', () => {
     const children = [1, 2, 3, 4, 5].map((n) =>
       Object.assign(new Error(`step ${n} failed`), { stderr: String(n).repeat(400), status: 10 + n }));
