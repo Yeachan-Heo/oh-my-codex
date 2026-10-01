@@ -21900,23 +21900,28 @@ export async function dispatchCodexNativeHook(
   const sessionStartNativeCandidates = hookEventName === "SessionStart"
     ? readSessionStartNativeCandidates(payload)
     : [];
+  // A blank `session_id` falls through to `sessionId`; any other present value
+  // (including a malformed non-string) is kept so provenance can reject it.
+  const rawPayloadSessionAlias = typeof payload.session_id === "string" && payload.session_id.trim() === ""
+    ? payload.sessionId ?? payload.session_id
+    : payload.session_id ?? payload.sessionId;
   const nativeSessionId = declaredTeamWorker
     ? candidateWorkerPayloadSessionId
-    : sessionStartNativeCandidates[0] ?? readPayloadSessionId(payload);
+    : sessionStartNativeCandidates[0] ?? safeString(rawPayloadSessionAlias).trim();
   const sessionStartTranscriptPath = hookEventName === "SessionStart"
     ? safeString(payload.transcript_path ?? payload.transcriptPath).trim()
     : "";
   // For native Codex events, thread_id may not exist as an explicit field; instead, session_id carries
   // the thread identifier. When no explicit thread_id exists, fallback to session_id for identity resolution.
   const explicitThreadId = readPayloadThreadId(payload);
-  const threadId = explicitThreadId || readPayloadSessionId(payload);
+  const threadId = explicitThreadId || safeString(rawPayloadSessionAlias).trim();
   const turnId = safeString(payload.turn_id ?? payload.turnId).trim();
   const pointer = await readSessionPointer(pointerContext);
   const currentSessionState = pointer.status === "usable" ? pointer.state ?? null : null;
   let promptTurnContext: ResolvedPromptTurnContext | null = hookEventName === "UserPromptSubmit"
     ? evaluateResolvedPromptTurn({
       producer: "native",
-      payloadSessionId: readPayloadSessionId(payload) || (payload.session_id ?? payload.sessionId),
+      payloadSessionId: rawPayloadSessionAlias,
       ownerEnvSessionId: undefined,
       selectedPointer: pointer,
       threadFacts: await readNativePromptThreadFacts(cwd, nativeSessionId, threadId, currentSessionState),
