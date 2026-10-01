@@ -4,7 +4,7 @@
 
 - Previous immutable tag: `v0.21.6` → `8dd3b425afc8a526cfa8190e89c2a55a21f46fc9` (commit `cdc24a71408ebd6bd0362f52170f0d7998f77007`); confirmed ancestor of the candidate (`git merge-base --is-ancestor` passes).
 - Frozen candidate: `release/0.21.7` head `38d27ed752d17f18690c43a2acc0f28c7a0e81ed`.
-- Frozen range: `v0.21.6..dev` — 49 commits, 102 files, +7246/−642 before release collateral.
+- Frozen range: `v0.21.6..38d27ed752d17f18690c43a2acc0f28c7a0e81ed` — 49 commits, 102 files, +7246/−642 before release collateral.
 - Release branch: `release/0.21.7`, prepared in a dedicated worktree from the frozen candidate (no shared worktree, no parent-checkout mutation).
 - Full PR inventory and user-visible changes: `docs/release-notes-0.21.7.md`, `artifacts/release-0.21.7/inventory.md`.
 - Authorization: repo owner (Yeachan-Heo) explicitly requested this release in the maintainer channel.
@@ -31,7 +31,7 @@
 
 | Step | Evidence |
 |---|---|
-| Release collateral | `CHANGELOG.md`, `docs/release-notes-0.21.7.md`, `RELEASE_BODY.md`, `artifacts/release-0.21.7/inventory.md`, this readiness record — all generated from the exact compare range v0.21.6..HEAD |
+| Release collateral | `CHANGELOG.md`, `docs/release-notes-0.21.7.md`, `RELEASE_BODY.md`, `artifacts/release-0.21.7/inventory.md`, this readiness record — all generated from the exact compare range v0.21.6..38d27ed752d17f18690c43a2acc0f28c7a0e81ed |
 | Pre-publication CI readiness | All 7 core gates passing (typecheck, lint, plugin-mirror, capabilities-lock, prompt-guidance, native-agents, prompt-inventory); full test suite gated on PR 3735 CI (not run locally) |
 | Commit history integrity | 49 commits from 25 PRs across 102 files; all commits verified present in the frozen range |
 | Version synchronization | `package.json` at 0.21.7, `Cargo.toml` at 0.21.7, plugin manifest at 0.21.7 — all previously synchronized on dev branch |

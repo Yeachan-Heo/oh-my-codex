@@ -1,6 +1,6 @@
 # Release inventory — 0.21.7
 
-Frozen range: `v0.21.6..dev` (49 commits, 102 files changed, +7246/-642).
+Frozen range: `v0.21.6..38d27ed752d17f18690c43a2acc0f28c7a0e81ed` (49 commits, 102 files changed, +7246/-642).
 
 Frozen candidate: `38d27ed752d17f18690c43a2acc0f28c7a0e81ed`.
 
