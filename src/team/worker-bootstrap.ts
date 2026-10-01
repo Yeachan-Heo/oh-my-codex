@@ -1,5 +1,6 @@
 import type { TeamTask, TeamTaskCoordinationMechanism } from "./state.js";
 import { existsSync } from "fs";
+import { execFileSync } from "child_process";
 import { mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import {
@@ -38,6 +39,13 @@ interface WorkerRootAgentsOptions {
   leaderCwd: string;
   worktreePath: string;
   toolContext?: WorktreeToolContext;
+}
+
+interface WorkerRootAgentsBackup {
+  existed: boolean;
+  tracked: boolean;
+  previousContent?: string;
+  skipWorktreeApplied?: boolean;
 }
 
 export function generateWorkerRootAgentsContent(
@@ -173,6 +181,53 @@ export async function writeWorkerWorktreeRootAgentsFile(
   return outPath;
 }
 
+/**
+ * Try to read a git value from the worktree.
+ */
+function tryReadGitValue(
+  cwd: string,
+  args: string[],
+): string | null {
+  try {
+    const value = execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the backup path for a worker's root AGENTS.md.
+ * First tries the legacy git path (v0.21.6), then falls back to the team-state path.
+ */
+function buildWorkerRootAgentsBackupPath(
+  teamStateRoot: string,
+  teamName: string,
+  workerName: string,
+  worktreePath: string,
+): string {
+  const gitPath = tryReadGitValue(worktreePath, [
+    "rev-parse",
+    "--git-path",
+    "omx/root-agents-backup.json",
+  ]);
+  return gitPath
+    ? join(worktreePath, gitPath)
+    : join(
+        teamStateRoot,
+        "team",
+        teamName,
+        "workers",
+        workerName,
+        "root-agents-backup.json",
+      );
+}
+
 export async function removeWorkerWorktreeRootAgentsFile(
   teamName: string,
   workerName: string,
@@ -180,39 +235,61 @@ export async function removeWorkerWorktreeRootAgentsFile(
   worktreePath: string,
 ): Promise<void> {
   // Restore the worktree's original AGENTS.md from backup, if it exists.
-  const backupPath = join(
+  const agentsPath = join(worktreePath, "AGENTS.md");
+  const backupPath = buildWorkerRootAgentsBackupPath(
     teamStateRoot,
-    "team",
     teamName,
-    "workers",
     workerName,
-    "root-agents-backup.json",
+    worktreePath,
   );
-  const worktreeAgentsPath = join(worktreePath, "AGENTS.md");
-  
-  // Check if backup file exists and restore from it
-  if (existsSync(backupPath)) {
-    try {
-      const backupContent = await readFile(backupPath, "utf-8");
-      const backup = JSON.parse(backupContent) as {
-        existed?: boolean;
-        previousContent?: string;
-      };
-      
-      if (backup.existed && backup.previousContent) {
-        // Restore the original content
-        await writeFile(worktreeAgentsPath, backup.previousContent, "utf-8");
-      } else if (!backup.existed) {
-        // File didn't exist originally, remove it
-        await rm(worktreeAgentsPath, { force: true }).catch(() => {});
-      }
-    } catch {
-      // Backup file is malformed, just clean up without restoring
-    }
-    // Clean up the backup file
-    await rm(backupPath, { force: true }).catch(() => {});
+  let backup: WorkerRootAgentsBackup | null = null;
+
+  try {
+    backup = JSON.parse(
+      await readFile(backupPath, "utf-8"),
+    ) as WorkerRootAgentsBackup;
+  } catch {
+    backup = null;
   }
-  
+
+  if (!backup) {
+    // Clean up the generated worker instructions file from .omx state only
+    const outPath = join(
+      teamStateRoot,
+      "team",
+      teamName,
+      "workers",
+      workerName,
+      "AGENTS.md",
+    );
+    await rm(outPath, { force: true }).catch(() => {});
+    return;
+  }
+
+  // Clear skip-worktree flag if it was applied
+  if (backup.tracked && backup.skipWorktreeApplied) {
+    try {
+      execFileSync("git", ["update-index", "--no-skip-worktree", "AGENTS.md"], {
+        cwd: worktreePath,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+
+  // Restore the original content or delete the file
+  if (backup.existed) {
+    await writeFile(agentsPath, backup.previousContent ?? "", "utf-8");
+  } else {
+    await rm(agentsPath, { force: true }).catch(() => {});
+  }
+
+  // Clean up the backup file
+  await rm(backupPath, { force: true }).catch(() => {});
+
   // Clean up the generated worker instructions file from .omx state
   const outPath = join(
     teamStateRoot,
