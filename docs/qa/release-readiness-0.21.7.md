@@ -47,3 +47,17 @@
 ## Publishing contract
 
 Reviewed PR to `dev` branch with complete release collateral, prior-tag ancestry verification, core-gate passing (typecheck, lint, plugin verification, capabilities, guidance, agents, inventory), and version carrier alignment. No administrator bypass required, no tag movement until publication, no blind retries.
+
+## Publication record
+
+| Step | Evidence |
+|---|---|
+| Main promotion | PR #3738 merged to `main` as `1dcf51359f3caeeebfed0bcbeea867ff0838d533` (tree identical to dev `2f6f0ae9`); main CI 51 success / 2 skipped / 0 failures |
+| Tag | `v0.21.7` annotated tag object `35a790052099d42563f7a9c0d2eb9852b97e3bca` → commit `1dcf51359f3caeeebfed0bcbeea867ff0838d533` |
+| GitHub release | Release workflow run `36831786381` success; release published 2026-10-01T07:54:43Z, non-draft, 57 assets |
+| npm | `ci.yml` dispatch run `36834210912` (`release_tag=v0.21.7`, `release_sha=1dcf5135…`): "Publish to npm via trusted publishing" step success; registry `oh-my-codex@0.21.7` published 2026-10-01T08:14:45Z, `dist-tags.latest = 0.21.7`, provenance attestations present |
+
+## Known gaps
+
+- The publish run's terminal conclusion is `failure` only because its "Verify npm publication" step's fixed poll window elapsed before registry propagation, as in 0.21.6. The artifact is published, provenance-signed, and `latest`; no tag was moved and nothing was republished.
+- Main promotion used an admin merge on explicit owner direction to satisfy the required-review rule.

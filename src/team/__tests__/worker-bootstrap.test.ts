@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm, mkdir } from "fs/promises";
-import { join } from "path";
+import { dirname, join } from "path";
 import { existsSync } from "fs";
 import { tmpdir } from "os";
 import {
@@ -1667,6 +1667,123 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /--codex-goal-json/);
     assert.match(inbox, /fresh_leader_get_goal_required/);
     assert.doesNotMatch(inbox, /workers? checkpoint Ultragoal/i);
+  });
+
+  it("removeWorkerWorktreeRootAgentsFile restores from legacy v0.21.6 backup path via git rev-parse", async () => {
+    const { execSync } = await import("child_process");
+    const cwd = await mkdtemp(join(tmpdir(), "omx-legacy-backup-"));
+    const worktree = join(cwd, "worktree");
+    try {
+      // Create a real git repo in the worktree
+      await mkdir(worktree, { recursive: true });
+      await mkdir(join(cwd, ".omx", "state", "team", "legacy-team", "workers", "worker-1"), { recursive: true });
+      
+      // Initialize git repo
+      execSync("git init", { cwd: worktree, stdio: "ignore" });
+      execSync("git config user.email 'test@example.com'", { cwd: worktree, stdio: "ignore" });
+      execSync("git config user.name 'Test User'", { cwd: worktree, stdio: "ignore" });
+      
+      // Create original AGENTS.md content and commit it
+      const originalAgents = "# Original AGENTS\n\nThis is the original content.\n";
+      await writeFile(join(worktree, "AGENTS.md"), originalAgents, "utf8");
+      execSync("git add AGENTS.md", { cwd: worktree, stdio: "ignore" });
+      execSync("git commit -m 'Add AGENTS.md'", { cwd: worktree, stdio: "ignore" });
+      
+      // Create the legacy backup file at .git/omx/root-agents-backup.json
+      const gitDir = join(worktree, ".git");
+      const legacyBackupDir = join(gitDir, "omx");
+      await mkdir(legacyBackupDir, { recursive: true });
+      const legacyBackupPath = join(legacyBackupDir, "root-agents-backup.json");
+      const backup = {
+        existed: true,
+        tracked: true,
+        previousContent: originalAgents,
+        skipWorktreeApplied: true,
+      };
+      await writeFile(legacyBackupPath, JSON.stringify(backup), "utf8");
+      
+      // Simulate v0.21.6 behavior: apply skip-worktree and modify AGENTS.md
+      const modifiedAgents = "# Modified by Team Worker\n\nThis is modified content.\n";
+      await writeFile(join(worktree, "AGENTS.md"), modifiedAgents, "utf8");
+      execSync("git update-index --skip-worktree AGENTS.md", { cwd: worktree, stdio: "ignore" });
+      
+      // Call removeWorkerWorktreeRootAgentsFile
+      await removeWorkerWorktreeRootAgentsFile(
+        "legacy-team",
+        "worker-1",
+        join(cwd, ".omx", "state"),
+        worktree
+      );
+      
+      // Verify that AGENTS.md was restored from the legacy backup
+      const restoredContent = await readFile(join(worktree, "AGENTS.md"), "utf8");
+      assert.equal(restoredContent, originalAgents, "AGENTS.md should be restored from legacy backup");
+      
+      // Verify that the legacy backup file was deleted
+      const backupExists = existsSync(legacyBackupPath);
+      assert.equal(backupExists, false, "Legacy backup file should be deleted");
+      
+      // Verify that skip-worktree was cleared
+      const skipWorktreeOutput = execSync("git ls-files -v AGENTS.md", { cwd: worktree, encoding: "utf-8" });
+      assert.doesNotMatch(skipWorktreeOutput, /^S /m, "skip-worktree flag should be cleared");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("removeWorkerWorktreeRootAgentsFile uses the team-state backup inside a git repo when no legacy backup exists", async () => {
+    const { execSync } = await import("child_process");
+    const cwd = await mkdtemp(join(tmpdir(), "omx-team-backup-git-"));
+    const worktree = join(cwd, "worktree");
+    const stateRoot = join(cwd, ".omx", "state");
+    const workerDir = join(stateRoot, "team", "t", "workers", "worker-1");
+    try {
+      await mkdir(worktree, { recursive: true });
+      await mkdir(workerDir, { recursive: true });
+      execSync("git init -q", { cwd: worktree });
+      const originalAgents = "# Original AGENTS\n";
+      await writeFile(join(workerDir, "root-agents-backup.json"), JSON.stringify({ existed: true, tracked: false, previousContent: originalAgents }), "utf8");
+      await writeFile(join(worktree, "AGENTS.md"), "# Generated worker AGENTS\n", "utf8");
+
+      await removeWorkerWorktreeRootAgentsFile("t", "worker-1", stateRoot, worktree);
+
+      assert.equal(await readFile(join(worktree, "AGENTS.md"), "utf8"), originalAgents);
+      assert.equal(existsSync(join(workerDir, "root-agents-backup.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("removeWorkerWorktreeRootAgentsFile restores a legacy v0.21.6 backup in a linked worktree (absolute --git-path)", async () => {
+    const { execSync } = await import("child_process");
+    const cwd = await mkdtemp(join(tmpdir(), "omx-legacy-backup-linked-"));
+    const repo = join(cwd, "repo");
+    const worktree = join(cwd, "linked");
+    try {
+      await mkdir(repo, { recursive: true });
+      execSync("git init -q", { cwd: repo });
+      execSync("git config user.email 'test@example.com'", { cwd: repo });
+      execSync("git config user.name 'Test User'", { cwd: repo });
+      const originalAgents = "# Original AGENTS\n";
+      await writeFile(join(repo, "AGENTS.md"), originalAgents, "utf8");
+      execSync("git add AGENTS.md && git commit -q -m init", { cwd: repo });
+      execSync(`git worktree add -q ${JSON.stringify(worktree)}`, { cwd: repo });
+
+      const legacyBackupPath = execSync("git rev-parse --git-path omx/root-agents-backup.json", { cwd: worktree, encoding: "utf-8" }).trim();
+      assert.ok(legacyBackupPath.startsWith("/") || /^[A-Za-z]:/.test(legacyBackupPath), "linked worktree --git-path is absolute");
+      await mkdir(dirname(legacyBackupPath), { recursive: true });
+      await writeFile(legacyBackupPath, JSON.stringify({ existed: true, tracked: true, previousContent: originalAgents, skipWorktreeApplied: true }), "utf8");
+      await writeFile(join(worktree, "AGENTS.md"), "# Generated worker AGENTS\n", "utf8");
+      execSync("git update-index --skip-worktree AGENTS.md", { cwd: worktree });
+
+      await removeWorkerWorktreeRootAgentsFile("legacy-team", "worker-1", join(cwd, ".omx", "state"), worktree);
+
+      assert.equal(await readFile(join(worktree, "AGENTS.md"), "utf8"), originalAgents);
+      assert.equal(existsSync(legacyBackupPath), false);
+      assert.doesNotMatch(execSync("git ls-files -v AGENTS.md", { cwd: worktree, encoding: "utf-8" }), /^S /m);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
 });
