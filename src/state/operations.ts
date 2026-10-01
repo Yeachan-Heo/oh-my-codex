@@ -74,6 +74,7 @@ export const SUPPORTED_STATE_READ_MODES = [
   'ralplan',
   'deep-interview',
   'skill-active',
+  'ultragoal',
 ] as const;
 
 export type SupportedStateReadMode = (typeof SUPPORTED_STATE_READ_MODES)[number];

@@ -760,6 +760,55 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('writes and reads ultragoal state', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-ultragoal-'));
+    try {
+      const writeResponse = await executeStateOperation('state_write', {
+        workingDirectory: wd,
+        mode: 'ultragoal',
+        active: false,
+        current_phase: 'complete',
+      });
+
+      assert.equal(writeResponse.isError, undefined);
+      assert.deepEqual(writeResponse.payload, {
+        success: true,
+        mode: 'ultragoal',
+        path: join(wd, '.omx', 'state', 'ultragoal-state.json'),
+      });
+
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'ultragoal',
+      });
+
+      assert.equal(readResponse.isError, undefined);
+      const readBody = readResponse.payload as Record<string, unknown>;
+      assert.equal(readBody.active, false);
+      assert.equal(readBody.current_phase, 'complete');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unknown mode with error message listing supported modes including ultragoal', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-unknown-mode-'));
+    try {
+      const readResponse = await executeStateOperation('state_read', {
+        workingDirectory: wd,
+        mode: 'not-a-mode',
+      });
+
+      assert.equal(readResponse.isError, true);
+      const readBody = readResponse.payload as Record<string, unknown>;
+      assert.ok(typeof readBody.error === 'string');
+      assert.ok((readBody.error as string).includes('mode must be one of'));
+      assert.ok((readBody.error as string).includes('ultragoal'));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('lists active modes from the explicit session scope without leaking a sibling Ralph session', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-foreign-ralph-scope-'));
     try {

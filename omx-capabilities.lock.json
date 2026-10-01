@@ -143,7 +143,7 @@
       ]
     },
     "configured_tools": {
-      "digest": "79e2e21bcb711e5f7cf8142f8649a4e54dfeda911b929a2b5ce0155874fd2c7d",
+      "digest": "01aa27e33f4c314946d72863ac942d03aced63dcdf065a17112f2ca1c0aa5325",
       "disabled_first_party_servers": [],
       "external_servers": [],
       "tools": [
@@ -949,7 +949,8 @@
                   "ultraqa",
                   "ralplan",
                   "deep-interview",
-                  "skill-active"
+                  "skill-active",
+                  "ultragoal"
                 ],
                 "type": "string"
               },
@@ -1000,7 +1001,8 @@
                   "ultraqa",
                   "ralplan",
                   "deep-interview",
-                  "skill-active"
+                  "skill-active",
+                  "ultragoal"
                 ],
                 "type": "string"
               },
