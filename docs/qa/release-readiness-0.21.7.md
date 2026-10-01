@@ -24,7 +24,7 @@
 | Capabilities lock verify | Passed: omx-capabilities.lock.json is valid |
 | Prompt guidance verification (verify:prompt-guidance) | Passed: prompt guidance check ok |
 | Native agents verification (verify:native-agents) | Passed: verified 18 installable native agents and 32 setup prompt assets |
-| Prompt inventory (prompt:inventory) | Passed: all prompt guidance fragments synchronized and documented |
+| Prompt inventory (`node dist/scripts/prompt-inventory.js --check`) | Passed: `prompt invariant check ok (29 skill cards checked)`; catalog docs (`node dist/scripts/generate-catalog-docs.js --check`): `catalog check ok` |
 | Full test suite (test:ci:compiled) | Not run locally (host system npm is broken); verified by CI on collateral PR 3735 head before merge |
 
 ## Publication evidence
