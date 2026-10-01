@@ -1731,6 +1731,29 @@ describe("worker bootstrap", () => {
     }
   });
 
+  it("removeWorkerWorktreeRootAgentsFile uses the team-state backup inside a git repo when no legacy backup exists", async () => {
+    const { execSync } = await import("child_process");
+    const cwd = await mkdtemp(join(tmpdir(), "omx-team-backup-git-"));
+    const worktree = join(cwd, "worktree");
+    const stateRoot = join(cwd, ".omx", "state");
+    const workerDir = join(stateRoot, "team", "t", "workers", "worker-1");
+    try {
+      await mkdir(worktree, { recursive: true });
+      await mkdir(workerDir, { recursive: true });
+      execSync("git init -q", { cwd: worktree });
+      const originalAgents = "# Original AGENTS\n";
+      await writeFile(join(workerDir, "root-agents-backup.json"), JSON.stringify({ existed: true, tracked: false, previousContent: originalAgents }), "utf8");
+      await writeFile(join(worktree, "AGENTS.md"), "# Generated worker AGENTS\n", "utf8");
+
+      await removeWorkerWorktreeRootAgentsFile("t", "worker-1", stateRoot, worktree);
+
+      assert.equal(await readFile(join(worktree, "AGENTS.md"), "utf8"), originalAgents);
+      assert.equal(existsSync(join(workerDir, "root-agents-backup.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("removeWorkerWorktreeRootAgentsFile restores a legacy v0.21.6 backup in a linked worktree (absolute --git-path)", async () => {
     const { execSync } = await import("child_process");
     const cwd = await mkdtemp(join(tmpdir(), "omx-legacy-backup-linked-"));

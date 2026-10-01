@@ -203,7 +203,7 @@ function tryReadGitValue(
 
 /**
  * Build the backup path for a worker's root AGENTS.md.
- * First tries the legacy git path (v0.21.6), then falls back to the team-state path.
+ * Prefers the team-state backup; falls back to the legacy v0.21.6 Git-dir backup only when that file exists.
  */
 function buildWorkerRootAgentsBackupPath(
   teamStateRoot: string,
@@ -211,23 +211,27 @@ function buildWorkerRootAgentsBackupPath(
   workerName: string,
   worktreePath: string,
 ): string {
+  const teamStatePath = join(
+    teamStateRoot,
+    "team",
+    teamName,
+    "workers",
+    workerName,
+    "root-agents-backup.json",
+  );
+  if (existsSync(teamStatePath)) return teamStatePath;
+  // v0.21.6 wrote the backup under the Git dir. `--git-path` is relative in a
+  // primary checkout but absolute in a linked worktree, so resolve, never join.
   const gitPath = tryReadGitValue(worktreePath, [
     "rev-parse",
     "--git-path",
     "omx/root-agents-backup.json",
   ]);
-  // `--git-path` is relative to the worktree in a primary checkout but absolute
-  // in a linked worktree (where Team workers run), so resolve, never join.
-  return gitPath
-    ? resolve(worktreePath, gitPath)
-    : join(
-        teamStateRoot,
-        "team",
-        teamName,
-        "workers",
-        workerName,
-        "root-agents-backup.json",
-      );
+  if (gitPath) {
+    const legacyPath = resolve(worktreePath, gitPath);
+    if (existsSync(legacyPath)) return legacyPath;
+  }
+  return teamStatePath;
 }
 
 export async function removeWorkerWorktreeRootAgentsFile(
