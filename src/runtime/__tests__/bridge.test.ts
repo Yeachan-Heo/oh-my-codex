@@ -117,6 +117,77 @@ describe('resolveRuntimeBinaryPath', () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it('adds .exe suffix on Windows for default fallback binary', () => {
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        exists: () => false,
+        platform: 'win32',
+      });
+      assert.equal(actual, 'omx-runtime.exe');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
+  });
+
+  it('adds .exe suffix on Windows for workspace debug path', () => {
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: (candidate) => candidate === '/debug/runtime.exe',
+        platform: 'win32',
+      });
+      assert.equal(actual, '/debug/runtime.exe');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
+  });
+
+  it('adds .exe suffix on Windows for workspace release path', () => {
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'omx-runtime',
+        exists: (candidate) => candidate === '/release/runtime.exe',
+        platform: 'win32',
+      });
+      assert.equal(actual, '/release/runtime.exe');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
+  });
+
+  it('does not add .exe suffix on non-Windows platforms', () => {
+    const previous = process.env.OMX_RUNTIME_BINARY;
+    try {
+      delete process.env.OMX_RUNTIME_BINARY;
+      const actual = resolveRuntimeBinaryPath({
+        debugPath: '/debug/runtime',
+        releasePath: '/release/runtime',
+        fallbackBinary: 'custom-binary',
+        exists: () => false,
+        platform: 'darwin',
+      });
+      assert.equal(actual, 'custom-binary');
+    } finally {
+      if (typeof previous === 'string') process.env.OMX_RUNTIME_BINARY = previous;
+      else delete process.env.OMX_RUNTIME_BINARY;
+    }
+  });
 });
 
 describe('RuntimeBridgeError', () => {
