@@ -434,4 +434,44 @@ describe('ralplan advisory non-authoritative native hooks', () => {
     // Verify thread_id is persisted as explicit thread_id (not session_id)
     assert.equal(mode.thread_id, explicitThreadId, 'thread_id should be explicit thread_id, not session_id');
   });
+
+  it('(d) regression for issue #3740: resolves thread_id when session_id is empty but sessionId is valid', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-thread-issue-3740-'));
+    roots.push(cwd);
+    const validSessionId = 'native-dispatch-session-d-valid';
+    const stateDir = join(cwd, '.omx', 'state');
+    const sessionDir = join(stateDir, 'sessions', validSessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+      session_id: validSessionId, native_session_id: validSessionId, owner_codex_session_id: validSessionId,
+      leader_thread_id: validSessionId, started_at: '2026-08-28T00:00:00.000Z', cwd, state_root: stateDir,
+    }));
+    await writeFile(join(stateDir, 'subagent-tracking.json'), JSON.stringify({
+      schemaVersion: 1,
+      sessions: {
+        [validSessionId]: {
+          session_id: validSessionId, leader_thread_id: validSessionId,
+          threads: { [validSessionId]: { thread_id: validSessionId, kind: 'leader' } },
+        },
+      },
+    }));
+    // Regression test: empty session_id but valid sessionId (camelCase alias)
+    // Should resolve to sessionId, not empty string
+    const result = await dispatchCodexNativeHook({
+      hook_event_name: 'UserPromptSubmit',
+      cwd,
+      source: 'codex-app',
+      session_id: '', // Empty session_id
+      sessionId: validSessionId, // Valid sessionId alias
+      // No thread_id or threadId provided - should fallback to sessionId
+      turn_id: 'turn-issue-3740',
+      prompt: '$ralplan --advisory regression test for issue #3740',
+    } as never);
+    assert.notEqual(result.outputJson?.decision, 'block', 'advisory should activate with valid sessionId');
+    const mode = JSON.parse(await readFile(join(sessionDir, 'ralplan-state.json'), 'utf8'));
+    assert.equal(mode.workflow_variant, 'advisory', 'workflow_variant should be advisory');
+    assert.ok(mode.advisory_generation_id, 'advisory_generation_id should be persisted');
+    // Verify thread_id is persisted as sessionId (not empty string from session_id)
+    assert.equal(mode.thread_id, validSessionId, 'thread_id should resolve from sessionId alias, not empty session_id');
+  });
 });
