@@ -22,7 +22,7 @@
 
 ## Validation evidence
 
-Exact frozen candidate `38d27ed7e8a2f9c4f6b1e9a2c3d4e5f6g7h8i9j0` will be fully verified on `dev` CI before promotion. All changes were verified for correctness and integration through development commits, with post-merge validation on release CI before publication.
+Exact frozen candidate `38d27ed752d17f18690c43a2acc0f28c7a0e81ed` will be fully verified on `dev` CI before promotion. All changes were verified for correctness and integration through development commits, with post-merge validation on release CI before publication.
 
 Full readiness evidence: `docs/qa/release-readiness-0.21.7.md`.
 

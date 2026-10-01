@@ -3,7 +3,7 @@
 ## Frozen candidate
 
 - Previous immutable tag: `v0.21.6` → `8dd3b42506ad7f8e6f4c8d3a2e7f1b9c5d4e3f2a`; confirmed ancestor of the candidate (`git merge-base --is-ancestor` passes).
-- Frozen candidate: `release/0.21.7` head `38d27ed7e8a2f9c4f6b1e9a2c3d4e5f6g7h8i9j0`.
+- Frozen candidate: `release/0.21.7` head `38d27ed752d17f18690c43a2acc0f28c7a0e81ed`.
 - Frozen range: `v0.21.6..dev` — 49 commits, 102 files, +7246/−642 before release collateral.
 - Release branch: `release/0.21.7`, prepared in a dedicated worktree from the frozen candidate (no shared worktree, no parent-checkout mutation).
 - Full PR inventory and user-visible changes: `docs/release-notes-0.21.7.md`, `artifacts/release-0.21.7/inventory.md`.
@@ -25,14 +25,14 @@
 | Prompt guidance verification (verify:prompt-guidance) | Passed: prompt guidance check ok |
 | Native agents verification (verify:native-agents) | Passed: verified 18 installable native agents and 32 setup prompt assets |
 | Prompt inventory (prompt:inventory) | Passed: all prompt guidance fragments synchronized and documented |
-| Full test suite (test:ci:compiled) | System npm issue prevented execution; gates 1-7 all passed, indicating core functionality intact |
+| Full test suite (test:ci:compiled) | Not run locally (host system npm is broken); verified by CI on collateral PR 3735 head before merge |
 
 ## Publication evidence
 
 | Step | Evidence |
 |---|---|
 | Release collateral | `CHANGELOG.md`, `docs/release-notes-0.21.7.md`, `RELEASE_BODY.md`, `artifacts/release-0.21.7/inventory.md`, this readiness record — all generated from the exact compare range v0.21.6..HEAD |
-| Pre-publication CI readiness | All 7 core gates passing (typecheck, lint, plugin-mirror, capabilities-lock, prompt-guidance, native-agents, prompt-inventory); full test suite pending due to environment npm issue |
+| Pre-publication CI readiness | All 7 core gates passing (typecheck, lint, plugin-mirror, capabilities-lock, prompt-guidance, native-agents, prompt-inventory); full test suite gated on PR 3735 CI (not run locally) |
 | Commit history integrity | 49 commits from 27 PRs across 102 files; all commits verified present in the frozen range |
 | Version synchronization | `package.json` at 0.21.7, `Cargo.toml` at 0.21.7, plugin manifest at 0.21.7 — all previously synchronized on dev branch |
 
