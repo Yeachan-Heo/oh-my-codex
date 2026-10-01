@@ -21902,7 +21902,7 @@ export async function dispatchCodexNativeHook(
     : [];
   const nativeSessionId = declaredTeamWorker
     ? candidateWorkerPayloadSessionId
-    : sessionStartNativeCandidates[0] ?? safeString(payload.session_id ?? payload.sessionId).trim();
+    : sessionStartNativeCandidates[0] ?? readPayloadSessionId(payload);
   const sessionStartTranscriptPath = hookEventName === "SessionStart"
     ? safeString(payload.transcript_path ?? payload.transcriptPath).trim()
     : "";
@@ -21916,7 +21916,7 @@ export async function dispatchCodexNativeHook(
   let promptTurnContext: ResolvedPromptTurnContext | null = hookEventName === "UserPromptSubmit"
     ? evaluateResolvedPromptTurn({
       producer: "native",
-      payloadSessionId: payload.session_id ?? payload.sessionId,
+      payloadSessionId: readPayloadSessionId(payload) || (payload.session_id ?? payload.sessionId),
       ownerEnvSessionId: undefined,
       selectedPointer: pointer,
       threadFacts: await readNativePromptThreadFacts(cwd, nativeSessionId, threadId, currentSessionState),
