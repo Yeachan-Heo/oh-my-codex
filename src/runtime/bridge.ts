@@ -158,10 +158,16 @@ export interface RuntimeBinaryDiscoveryOptions {
   releasePath?: string;
   fallbackBinary?: string;
   exists?: (path: string) => boolean;
+  platform?: NodeJS.Platform;
+}
+
+function binaryNameForPlatform(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'omx-runtime.exe' : 'omx-runtime';
 }
 
 export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions = {}): string {
   const exists = options.exists ?? existsSync;
+  const platform = options.platform ?? process.platform;
   const envOverride = process.env.OMX_RUNTIME_BINARY?.trim();
   if (envOverride) return envOverride;
 
@@ -187,19 +193,20 @@ export function resolveRuntimeBinaryPath(options: RuntimeBinaryDiscoveryOptions 
         // verified cache lookup and falling back to a PATH-only resolution.
         const nodeRequire = createRequire(import.meta.url);
         const { resolveCachedNativeBinaryCandidatePaths } = nodeRequire('../cli/native-assets.js') as typeof import('../cli/native-assets.js');
-        const cands = resolveCachedNativeBinaryCandidatePaths('omx-runtime' as never, version, process.platform as NodeJS.Platform, process.arch, process.env as unknown as Record<string, string>);
+        const cands = resolveCachedNativeBinaryCandidatePaths('omx-runtime' as never, version, platform as NodeJS.Platform, process.arch, process.env as unknown as Record<string, string>);
         for (const p of cands) if (isVerifiedCachedRuntimeBinarySync(p)) return p;
       }
     } catch { /* best-effort */ }
   }
 
-  const workspaceDebug = options.debugPath ?? resolve(__bridge_dirname, '../../target/debug/omx-runtime');
+  const binaryName = binaryNameForPlatform(platform);
+  const workspaceDebug = options.debugPath ?? resolve(__bridge_dirname, '../../target/debug', binaryName);
   if (exists(workspaceDebug)) return workspaceDebug;
 
-  const workspaceRelease = options.releasePath ?? resolve(__bridge_dirname, '../../target/release/omx-runtime');
+  const workspaceRelease = options.releasePath ?? resolve(__bridge_dirname, '../../target/release', binaryName);
   if (exists(workspaceRelease)) return workspaceRelease;
 
-  return options.fallbackBinary ?? 'omx-runtime';
+  return options.fallbackBinary ?? binaryName;
 }
 
 export function resolveBridgeStateDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
