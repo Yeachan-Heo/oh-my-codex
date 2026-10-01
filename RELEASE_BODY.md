@@ -1,33 +1,36 @@
-# oh-my-codex 0.21.6
+# oh-my-codex 0.21.7
 
-`0.21.6` is a maintenance and reliability release for the frozen range `v0.21.5..dev` (52 commits, 101 files, +4294/−707): tmux HUD lifecycle correctness, AGENTS scope fixes, auth/credential record hardening, Team dispatch and Windows startup robustness, a reusable default-model cost/quality evaluation suite, and dependency updates.
+`0.21.7` is a correctness and robustness release for the frozen range `v0.21.6..dev` (49 commits, 102 files, +7246/−642): plugin integrity and template validation, HUD idle CPU optimization and correctness, Team runtime robustness, session management fixes, model catalog expansion, and dependency updates.
 
 ## Highlights
 
-- **Reusable default-model cost/quality evaluations:** a declarative suite for OMX's default model lineup with deterministic stage-transition records, supplied-record reporting, and explicitly documented declaration/validation limits (#3663, #3665, #3666, #3667), answering the evaluation request in issue #3655 without asserting unmeasured numbers.
-- **Self-terminating, leak-free tmux HUD:** stale Team leader panes are skipped during reconciliation, orphan watchers and noisy reconcile failures are gone, and the HUD closes when its tmux leader pane exits. Leader absence is decided from a validated server-wide pane snapshot, so a window move is never mistaken for an exit and a failed tmux query is never treated as evidence (#3660, #3683, #3685).
-- **AGENTS scope correctness:** durable AGENTS content is no longer duplicated into session instructions, and global AGENTS survive project-scoped launches (#3678, #3684).
+- **Plugin skill contract resolution and template validation:** plugin skill links now resolve correctly inside the plugin snapshot context (#3708), and templates/AGENTS.md is validated in cache provenance checks to prevent corruption (#3707). Foreign hook trust is maintained during legacy hook migration (#3704).
+- **HUD idle CPU correctness:** hook metadata is kept atomic (#3706), idle reconciliation CPU storms are eliminated, native fixtures align with authority frames (#3722), and tmux probe errors are properly preserved (#3711).
+- **Team runtime and setup robustness:** queued leader notices remain safe after shutdown (#3692), and non-Team guidance is preserved when Team is disabled (#3699, #3700).
+- **Session management fixes:** session identity binding is corrected (#3725, #3726), stderr summary is included in detached leader failures (#3727), and exec follow-ups are delivered in scoped Stop paths (#3728).
+- **Model catalog expansion:** GPT-6 Sol and Luna models are recognized (#3701), and gpt-6.1-sol is added to model catalogs (#3716).
 
 ## Fixes and compatibility
 
-- Hardened auth storage, TOML boundaries, PATH resolution, and stderr redaction (#3662); oversized stderr suppression no longer swallows the next record (#3676).
-- Windows `EPERM` fsync during Team startup is survivable (#3661); non-directory entries no longer break Team dispatch draining (#3680).
-- Notifications strip complete ANSI CSI sequences instead of leaving partial escapes (#3668).
-- Ordinary requests stay out of optional workflow machinery (#3648); confirmed unused internal exports were removed rather than aliased (#3649); remaining 0.21 capability-parity documentation gaps are closed (#3634).
-- Dependency updates: `zod` 4.6.2, `@biomejs/biome` 2.5.13, `@types/node` 26.5.1 (#3673, #3674, #3675).
+- Plugin system hardening: validate templates directory structure and AGENTS.md in plugin cache provenance (#3707); fix plugin skill contract links in snapshot context (#3708); preserve foreign hook trust during legacy migration (#3704).
+- HUD and tmux stability: keep hook metadata atomic and verify idle CPU (#3706); eliminate idle reconciliation CPU storms; align native hook fixtures with authority frames (#3722); handle tmux question probe errors correctly (#3711).
+- Session management: distinguish matching-but-unverified selectors in identity-indeterminate bindings (#3725, #3726); include stderr summary and exit status in detached leader failures (#3723, #3727); deliver exec follow-ups in session-scoped Stop path (#3724, #3728); prevent omx exec --help from attempting session establishment with an active owner (#3731, #3732); add 'ultragoal' to supported state read modes (#3733, #3734).
+- Team runtime: make queued leader notices safe after shutdown (#3692); preserve non-Team guidance when Team is disabled (#3699, #3700).
+- Configuration and output: show resolved config path when missing (#3693); strip OSC terminal escapes in notifications (#3694); preserve hashes in quoted TOML values (#3712); clarify fresh config doctor evidence (#3691).
+- Dependency updates: `zod` 4.6.5, `@biomejs/biome` 2.5.14, `@types/node` 26.6.3, `@modelcontextprotocol/sdk` 1.30.1 (#3696, #3697, #3698, #3713, #3714).
 
 ## Validation evidence
 
-Exact frozen candidate `750fdd08ef6b902c8ac9bb4f48d440ead87f6d12` is fully green on `dev` CI (17 successful checks, 8 platform-skipped, 0 failures). Every external contribution in this range (#3660, #3668, #3683, #3684, #3685) was independently reproduced on a clean `origin/dev` base before merge, with post-merge `dev` CI re-verified after each merge.
+Frozen candidate verified with all core gates passing: TypeScript typecheck (tsc --noEmit), Biome lint (860 files, no issues), plugin mirror sync verification (24 directories), capabilities lock validation, prompt guidance verification, native agents verification (18 agents, 32 assets), and prompt inventory synchronization. All 49 commits in the range are verified present with clear user-visible changes.
 
-Full readiness evidence: `docs/qa/release-readiness-0.21.6.md`.
+Full readiness evidence: `docs/qa/release-readiness-0.21.7.md`.
 
 ## Contributors
 
-Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@ev78394](https://github.com/ev78394), [@NagyVikt](https://github.com/NagyVikt), [@hiSandog](https://github.com/hiSandog), [@wangxingzhen](https://github.com/wangxingzhen), and [@Xrondev](https://github.com/Xrondev), with dependency updates from Dependabot.
+Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@lee3Q](https://github.com/lee3Q), [@NagyVikt](https://github.com/NagyVikt), [@ev78394](https://github.com/ev78394), [@hiSandog](https://github.com/hiSandog), [@TwegZhang](https://github.com/TwegZhang), [@Xrondev](https://github.com/Xrondev), and [@gaebal-gajae](https://github.com/gaebal-gajae), with dependency updates from Dependabot.
 
 ## Inventory
 
-The reproducible range is recorded in `artifacts/release-0.21.6/inventory.md`.
+The reproducible range is recorded in `artifacts/release-0.21.7/inventory.md`.
 
-**Full Changelog**: [`v0.21.5...v0.21.6`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.5...v0.21.6)
+**Full Changelog**: [`v0.21.6...v0.21.7`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.6...v0.21.7)
