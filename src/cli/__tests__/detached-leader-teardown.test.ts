@@ -444,6 +444,13 @@ describe('detached leader HUD teardown', () => {
     assert.match(result, /^bad key \[redacted\] end \| status=1/);
   });
 
+  it('redacts single-component absolute paths without touching relative fractions', () => {
+    const error = Object.assign(new Error('x'), { stderr: 'cannot open /private-key or /root/ (N/A, 1/2)', status: 1 });
+    const result = describeDetachedLeaderFailure(error);
+    assert.doesNotMatch(result, /private-key|\/root/);
+    assert.match(result, /^cannot open \[path\] or \[path\] \(N\/A, 1\/2\) \| status=1/);
+  });
+
   it('redacts fine-grained GitHub access tokens', () => {
     const error = Object.assign(new Error('push failed'), {
       stderr: 'auth github_pat_11AAAAAAA0abcdefGHIJKL_mnopqrstuvWXYZ0123456789 rejected',

@@ -4546,7 +4546,7 @@ function sanitizeDetachedFailureText(text: string): string {
     .replace(/\s{2,}/g, " ")
     .trim();
   // Redact absolute paths: Unix /path/to/file and Windows C:\path\to\file
-  const pathRedacted = collapsed.replace(/(?:\/[^\s:]+){2,}|[a-zA-Z]:\\[^\s]+/g, "[path]");
+  const pathRedacted = collapsed.replace(/(?<![\w.])(?:\/[^\s:/]+)+\/?|[a-zA-Z]:\\[^\s]+/g, "[path]");
   // Redact secrets: bearer tokens, API keys, JWTs, and other common secret patterns
   const secretRedacted = pathRedacted.replace(
     /(digest\s+(?:[a-z0-9_-]+=(?:"(?:\\.|[^"\\])*"?|[^\s,"]+)(?:\s*,\s*)?)+|(?:bearer|basic|digest|token)\s+[^\s"'`]+|sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{8,}|github_pat_[a-z0-9_]{8,}|eyj[a-z0-9._-]{10,}|[a-f0-9]{32,})/gi,
