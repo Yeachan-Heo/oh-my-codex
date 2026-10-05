@@ -603,7 +603,7 @@ export function checkStateRootSessionBinding(
     return {
       name: "State root/session binding",
       status: "warn",
-      message: "src=cwd-default ptr=absent; Codex session detected but not OMX-managed. Non-OMX workflows do not require OMX binding. To use OMX features: run 'omx init' or verify OMX installation.",
+      message: "src=cwd-default ptr=absent; Codex session detected but may not be OMX-managed — non-OMX workflows do not require OMX binding. No OMX runtime authority verified; this condition alone does not indicate installation damage. For OMX features: run 'omx' to start an OMX-managed session.",
     };
   }
   let status: Check["status"] = "fail";

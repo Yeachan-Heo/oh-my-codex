@@ -35,10 +35,27 @@ describe('doctor state-root/session binding diagnostics', () => {
       { CODEX_SESSION_ID: 'codex-session' },
     );
     assert.equal(check.status, 'warn');
-    assert.match(check.message, /not OMX-managed/);
-    
-    assert.doesNotMatch(check.message, /bad_selectors|clear|relaunch|unset/);
-    assert.doesNotMatch(check.message, /bad_selectors|clear|relaunch/);
+    assert.match(check.message, /may not be OMX-managed/);
+    assert.match(check.message, /non-OMX workflows do not require OMX binding/);
+    assert.match(check.message, /no OMX runtime authority verified/i);
+    assert.match(check.message, /this condition alone does not indicate installation damage/);
+    assert.match(check.message, /omx.*start an OMX-managed session/);
+    assert.doesNotMatch(check.message, /bad_selectors|clear|relaunch|unset|CODEX_SESSION_ID/);
+  });
+
+  it('distinguishes ordinary Codex sessions from broken OMX bindings', () => {
+    const check = checkStateRootSessionBinding(
+      syntheticSnapshot('absent', { rootSource: 'cwd-default' }),
+      { CODEX_SESSION_ID: 'codex-session' },
+    );
+    assert.equal(check.status, 'warn');
+    assert.match(check.message, /may not be OMX-managed/);
+    assert.doesNotMatch(check.message, /is not OMX-managed/);
+    assert.match(check.message, /non-OMX workflows do not require OMX binding/);
+    assert.match(check.message, /no OMX runtime authority verified/i);
+    assert.match(check.message, /this condition alone does not indicate installation damage/);
+    assert.match(check.message, /omx.*start an OMX-managed session/);
+    assert.doesNotMatch(check.message, /unset|CODEX_SESSION_ID/);
   });
 
   it('leaves a fresh workspace untouched when inspecting an ambient Codex session', async () => {
@@ -375,17 +392,3 @@ describe('doctor state-root/session binding diagnostics', () => {
     }
   });
 });
-
-  it('distinguishes ordinary Codex sessions from broken OMX bindings', () => {
-    // Ordinary Codex session without OMX binding should warn but not suggest the session is broken
-    const check = checkStateRootSessionBinding(
-      syntheticSnapshot('absent', { rootSource: 'cwd-default' }),
-      { CODEX_SESSION_ID: 'codex-session' },
-    );
-    assert.equal(check.status, 'warn');
-    assert.match(check.message, /Codex session detected but not OMX-managed/);
-    assert.match(check.message, /[Nn]on-OMX workflows do not require OMX binding/);
-    assert.match(check.message, /omx init/);
-    // Should not suggest breaking the Codex session
-    assert.doesNotMatch(check.message, /unset|CODEX_SESSION_ID/);
-  });
