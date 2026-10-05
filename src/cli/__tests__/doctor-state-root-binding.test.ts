@@ -35,7 +35,9 @@ describe('doctor state-root/session binding diagnostics', () => {
       { CODEX_SESSION_ID: 'codex-session' },
     );
     assert.equal(check.status, 'warn');
-    assert.match(check.message, /runtime binding unavailable/);
+    assert.match(check.message, /may not be OMX-managed/);
+    
+    assert.doesNotMatch(check.message, /bad_selectors|clear|relaunch|unset/);
     assert.doesNotMatch(check.message, /bad_selectors|clear|relaunch/);
   });
 
