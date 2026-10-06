@@ -61,7 +61,7 @@ async function inspectTar(archivePath: string, format: 'tar.xz' | 'tar.gz'): Pro
       source.once('end', next);
     } catch (error) {
       source.resume();
-      next(error);
+      next(error instanceof Error ? error : new Error(String(error)));
     }
   });
   try {
@@ -163,7 +163,7 @@ async function streamTarMember(archivePath: string, format: 'tar.xz' | 'tar.gz',
     found = true;
     source.once('error', next);
     source.once('end', next);
-    source.pipe(output, { end: false });
+    source.pipe(output);
   });
   void pipeline(await tarInput(archivePath, format), extractor).then(() => {
     if (!found) output.destroy(archiveError('archive_binary_missing', rawName));

@@ -20,16 +20,16 @@ function verify(manifest: string, artifacts: string) {
   return spawnSync(process.execPath, [fileURLToPath(new URL('../verify-native-release-assets.js', import.meta.url)), '--manifest', manifest, '--artifacts-dir', artifacts], { encoding: 'utf-8' });
 }
 
-async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+async function collect(stream: AsyncIterable<any>): Promise<Buffer> {
   const output: Buffer[] = [];
   for await (const chunk of stream) output.push(Buffer.from(chunk));
   return Buffer.concat(output);
 }
 
-async function tarArchive(entries: Array<{ name: string; data?: Buffer; type?: tar.Headers['type']; linkname?: string }>, format: 'tar.gz' | 'tar.xz'): Promise<Buffer> {
+async function tarArchive(entries: Array<{ name: string; data?: Buffer; type?: tar.Header['type']; linkname?: string }>, format: 'tar.gz' | 'tar.xz'): Promise<Buffer> {
   const archive = tar.pack();
   for (const item of entries) {
-    const header: tar.Headers = { name: item.name, type: item.type ?? 'file', size: item.data?.length ?? 0, linkname: item.linkname };
+    const header = { name: item.name, type: item.type ?? 'file', size: item.data?.length ?? 0, linkname: item.linkname ?? '' };
     if ((item.type ?? 'file') === 'file') archive.entry(header, item.data ?? Buffer.alloc(0));
     else archive.entry(header);
   }
