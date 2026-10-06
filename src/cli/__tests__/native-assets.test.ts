@@ -55,17 +55,17 @@ async function startStaticServer(root: string): Promise<{ baseUrl: string; close
 function sha256(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
-async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+async function collect(stream: AsyncIterable<any>): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
 
-async function makeTar(entries: Array<{ name: string; data?: Buffer; type?: tar.Headers['type']; linkname?: string }>, format: 'tar.gz' | 'tar.xz' = 'tar.gz'): Promise<Buffer> {
+async function makeTar(entries: Array<{ name: string; data?: Buffer; type?: tar.Header['type']; linkname?: string }>, format: 'tar.gz' | 'tar.xz' = 'tar.gz'): Promise<Buffer> {
   const archive = tar.pack();
   for (const item of entries) {
     const type = item.type ?? 'file';
-    const header: tar.Headers = { name: item.name, type, size: type === 'file' ? item.data?.length ?? 0 : 0, linkname: item.linkname };
+    const header = { name: item.name, type, size: type === 'file' ? item.data?.length ?? 0 : 0, linkname: item.linkname ?? '' };
     if (type === 'file') archive.entry(header, item.data ?? Buffer.alloc(0));
     else archive.entry(header);
   }

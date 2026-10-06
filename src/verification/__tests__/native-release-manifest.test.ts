@@ -11,7 +11,7 @@ import * as yazl from 'yazl';
 import { validateNativeReleaseManifest } from '../../native-assets/policy.js';
 
 
-async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+async function collect(stream: AsyncIterable<any>): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
