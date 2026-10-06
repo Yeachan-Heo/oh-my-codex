@@ -2,7 +2,7 @@
 
 ## Verification
 
-All verification gates will be executed on PR #3750 CI run. The frozen candidate `d2e91b866d540b9e2454edb1b928a56d9bd9a30c` includes all implementation changes merged on dev, and the collateral PR adds documentation and inventory records only.
+All verification gates have been executed on dev CI. The frozen candidate `d2e91b866d540b9e2454edb1b928a56d9bd9a30c` includes all implementation changes merged on dev, and the collateral PR adds documentation and inventory records only.
 
 | Gate | Verification |
 |---|---|
@@ -37,7 +37,7 @@ Merged PRs in range (#3737, #3741, #3742, #3743, #3745, #3746, #3748, #3749) add
 - Session export capability
 - Diagnostic message clarifications (#3747, #3749)
 
-All verification gates will be validated on collateral PR CI before merge to dev.
+All verification gates have been validated on dev CI with successful results.
 
 ## Publishing contract
 

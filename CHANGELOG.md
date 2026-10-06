@@ -11,7 +11,7 @@ All notable changes to this project are documented in this file.
 - Windows binary path compatibility: platform-specific `.exe` suffix is now correctly applied to omx-runtime binary paths on Windows, resolving resolution failures (#3736, #3737).
 - Session management robustness: thread identity resolution for native `$ralplan --advisory` is improved with dedicated `readPayloadSessionId` helper (#3740, #3741); `writeAtomic` Windows EPERM errors are handled correctly (#3744, #3746).
 - Legacy configuration support: support for legacy v0.21.6 AGENTS.md backup paths is restored via git rev-parse (#3739, #3742).
-- Session export capability: local sessions can now be exported as Markdown or JSON format (#3745).
+- Session export capability: local sessions can now be exported as Markdown or JSON format (#3745, authored by @hiSandog).
 - Diagnostic improvements: warning messages for non-OMX Codex sessions are clarified (#3747, #3749).
 
 ### Fixed
@@ -23,7 +23,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
-- Session export: export local sessions as Markdown or JSON format for integration with external systems and documentation.
+- Session export: export local sessions as Markdown or JSON format for integration with external systems and documentation (#3745, authored by @hiSandog).
 
 Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.8.md) and [release readiness](docs/qa/release-readiness-0.21.8.md).
 

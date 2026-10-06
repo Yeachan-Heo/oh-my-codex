@@ -19,13 +19,11 @@
 
 ## New features
 
-- **Session export:** export local sessions as Markdown or JSON format for integration with external systems and documentation pipelines.
+- **Session export:** export local sessions as Markdown or JSON format for integration and documentation (authored by @hiSandog).
 
 ## Validation evidence
 
-Exact frozen candidate `d2e91b866d540b9e2454edb1b928a56d9bd9a30c` will be fully verified on `dev` CI before promotion. All changes were verified for correctness and integration through development commits, with post-merge validation on release CI before publication.
-
-Full readiness evidence: `docs/qa/release-readiness-0.21.8.md`.
+Exact frozen candidate `d2e91b866d540b9e2454edb1b928a56d9bd9a30c` has been validated through all core gates on development CI. All 14 commits in the range are verified present with clear user-visible changes. Complete verification record: `docs/qa/release-readiness-0.21.8.md`.
 
 ## Contributors
 
