@@ -144,7 +144,7 @@ export function parseSinceSpec(value: string | undefined, now = Date.now()): num
   throw new Error(`Invalid --since value "${value}". Use formats like 7d, 24h, or 2026-03-10.`);
 }
 
-export async function listRolloutFiles(root: string): Promise<string[]> {
+export async function listRolloutFiles(root: string, failOnReadError = false): Promise<string[]> {
   if (!existsSync(root)) return [];
 
   const files: string[] = [];
@@ -153,7 +153,10 @@ export async function listRolloutFiles(root: string): Promise<string[]> {
   while (queue.length > 0) {
     const dir = queue.pop();
     if (!dir) continue;
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (failOnReadError && error.code !== 'ENOENT') throw error;
+      return [];
+    });
     for (const entry of entries) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) {
