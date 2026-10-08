@@ -363,6 +363,20 @@ Only user and assistant messages are included by default. System/developer
 instructions and reasoning records are excluded; message text is not redacted.
 See [session export](./docs/session-export.md) for supported records and examples.
 
+### Inspect session token usage
+
+Run `omx session usage --since 7d --sort tokens` to inspect recorded cumulative
+token usage across local active and archived sessions. Add `--project current`
+or `--session <id-fragment>` to narrow the selection, `--json` for structured
+output, and `--codex-home <path>` to inspect one home. `--limit` limits displayed
+sessions; totals still cover all matches. Mirrors of the same session are counted
+once, and missing measurements are reported as unknown.
+
+`--since` selects sessions by their last recorded activity. Their counters can
+include earlier work, so this is not a period consumption or billing report.
+Cached input and reasoning output are subsets of input and output. See
+[session usage](./docs/session-usage.md) for snapshot and coverage semantics.
+
 ### Team runtime
 
 Use the team runtime when you specifically need durable tmux/worktree coordination, not as the default way to begin using OMX. In Codex App or plain outside-tmux sessions, treat `omx team` as a tmux-runtime shell surface rather than a directly available in-app workflow; launch OMX CLI from shell first if you actually want team execution.
