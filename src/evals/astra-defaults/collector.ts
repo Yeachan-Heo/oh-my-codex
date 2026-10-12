@@ -238,7 +238,7 @@ async function defaultCodexInvoker(args: string[], cwd: string): Promise<CodexOu
   return new Promise((resolve, reject) => {
     const child = spawn('npx', ['-y', '@openai/codex', ...args], {
       cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 16 * 60 * 1000, // 16 min hard timeout in spawn
     });
 
@@ -264,8 +264,6 @@ async function defaultCodexInvoker(args: string[], cwd: string): Promise<CodexOu
         stderr,
       });
     });
-
-    child.stdin?.end();
   });
 }
 
