@@ -1,0 +1,561 @@
+{
+  "evidence": "observed",
+  "records": [
+    {
+      "fixtureId": "code-reviewer-known-defect",
+      "configId": "astra-defaults",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "finds-permanent-suppression",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: redact, dropping"
+        },
+        {
+          "name": "no-false-positive-on-control",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 2436,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "executor-bounded-change",
+      "configId": "astra-defaults",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "reports-required-checks",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: npm test"
+        },
+        {
+          "name": "no-scope-inflation",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 5587,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "explore-locate-stop-nudge",
+      "configId": "astra-defaults",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "names-the-hook-source",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: src/hooks"
+        },
+        {
+          "name": "no-unrequested-followup",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 4241,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-exit-status",
+      "configId": "astra-defaults",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-exit-status",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [2] extra: [No command output was provided.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3310,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-failing-tests",
+      "configId": "astra-defaults",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-failing-test-names",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [Please provide the command output.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3687,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "team-worker-delegated-task",
+      "configId": "astra-defaults",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "handoff-names-changed-file",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: docs/"
+        },
+        {
+          "name": "handoff-states-check-outcome",
+          "kind": "must-include",
+          "passed": true
+        },
+        {
+          "name": "no-continuation-after-completion",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 4771,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "code-reviewer-known-defect",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "finds-permanent-suppression",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: redact, dropping"
+        },
+        {
+          "name": "no-false-positive-on-control",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3444,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "executor-bounded-change",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "reports-required-checks",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: npm test"
+        },
+        {
+          "name": "no-scope-inflation",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 18690,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "explore-locate-stop-nudge",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "names-the-hook-source",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: src/hooks"
+        },
+        {
+          "name": "no-unrequested-followup",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 4201,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-exit-status",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-exit-status",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [2] extra: [Please provide the command output.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3583,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-failing-tests",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-failing-test-names",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [Please provide the command output so I can list the failing tests.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 2088,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "team-worker-delegated-task",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "handoff-names-changed-file",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: docs/"
+        },
+        {
+          "name": "handoff-states-check-outcome",
+          "kind": "must-include",
+          "passed": true
+        },
+        {
+          "name": "no-continuation-after-completion",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 5232,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "code-reviewer-known-defect",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "finds-permanent-suppression",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: redact, dropping"
+        },
+        {
+          "name": "no-false-positive-on-control",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 2624,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "executor-bounded-change",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "reports-required-checks",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: npm test"
+        },
+        {
+          "name": "no-scope-inflation",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 5265,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "explore-locate-stop-nudge",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "names-the-hook-source",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: src/hooks"
+        },
+        {
+          "name": "no-unrequested-followup",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 4485,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-exit-status",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-exit-status",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [2] extra: [No command output provided.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3392,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-failing-tests",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-failing-test-names",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [Please provide the command output.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3695,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "team-worker-delegated-task",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "handoff-names-changed-file",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: docs/"
+        },
+        {
+          "name": "handoff-states-check-outcome",
+          "kind": "must-include",
+          "passed": true
+        },
+        {
+          "name": "no-continuation-after-completion",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 5653,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "code-reviewer-known-defect",
+      "configId": "luna-uniform",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "finds-permanent-suppression",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: redact, dropping"
+        },
+        {
+          "name": "no-false-positive-on-control",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 1315,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "executor-bounded-change",
+      "configId": "luna-uniform",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "reports-required-checks",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: npm test"
+        },
+        {
+          "name": "no-scope-inflation",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 2696,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "explore-locate-stop-nudge",
+      "configId": "luna-uniform",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "names-the-hook-source",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: src/hooks, stop"
+        },
+        {
+          "name": "no-unrequested-followup",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 9784,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-exit-status",
+      "configId": "luna-uniform",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-exit-status",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [2] extra: [0]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 2592,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-failing-tests",
+      "configId": "luna-uniform",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-failing-test-names",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [No command output was provided.]"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 3475,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "team-worker-delegated-task",
+      "configId": "luna-uniform",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "handoff-names-changed-file",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: docs/"
+        },
+        {
+          "name": "handoff-states-check-outcome",
+          "kind": "must-include",
+          "passed": true
+        },
+        {
+          "name": "no-continuation-after-completion",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 2318,
+      "usage": null,
+      "operatorMinutes": null,
+      "difficult": false
+    }
+  ]
+}
