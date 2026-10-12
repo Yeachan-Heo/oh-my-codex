@@ -20,8 +20,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 2436,
-      "usage": null,
+      "latencyMs": 16115,
+      "usage": {
+        "inputTokens": 53346,
+        "outputTokens": 193,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -44,8 +51,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 5587,
-      "usage": null,
+      "latencyMs": 23487,
+      "usage": {
+        "inputTokens": 50553,
+        "outputTokens": 281,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -58,7 +72,7 @@
           "name": "names-the-hook-source",
           "kind": "must-include",
           "passed": false,
-          "detail": "missing: src/hooks"
+          "detail": "missing: src/hooks, stop"
         },
         {
           "name": "no-unrequested-followup",
@@ -68,8 +82,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 4241,
-      "usage": null,
+      "latencyMs": 90161,
+      "usage": {
+        "inputTokens": 356581,
+        "outputTokens": 1535,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -82,13 +103,20 @@
           "name": "exact-exit-status",
           "kind": "exact-set",
           "passed": false,
-          "detail": "missing: [2] extra: [No command output was provided.]"
+          "detail": "missing: [2] extra: []"
         }
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 3310,
-      "usage": null,
+      "latencyMs": 3775,
+      "usage": {
+        "inputTokens": 10685,
+        "outputTokens": 26,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -101,13 +129,20 @@
           "name": "exact-failing-test-names",
           "kind": "exact-set",
           "passed": false,
-          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [Please provide the command output.]"
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: []"
         }
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 3687,
-      "usage": null,
+      "latencyMs": 4126,
+      "usage": {
+        "inputTokens": 10694,
+        "outputTokens": 26,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -125,7 +160,8 @@
         {
           "name": "handoff-states-check-outcome",
           "kind": "must-include",
-          "passed": true
+          "passed": false,
+          "detail": "missing: check"
         },
         {
           "name": "no-continuation-after-completion",
@@ -135,286 +171,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 4771,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "code-reviewer-known-defect",
-      "configId": "gpt-6-sol-control",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "finds-permanent-suppression",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: redact, dropping"
-        },
-        {
-          "name": "no-false-positive-on-control",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 3444,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "executor-bounded-change",
-      "configId": "gpt-6-sol-control",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "reports-required-checks",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: npm test"
-        },
-        {
-          "name": "no-scope-inflation",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 18690,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "explore-locate-stop-nudge",
-      "configId": "gpt-6-sol-control",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "names-the-hook-source",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: src/hooks"
-        },
-        {
-          "name": "no-unrequested-followup",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 4201,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "sparkshell-exit-status",
-      "configId": "gpt-6-sol-control",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "exact-exit-status",
-          "kind": "exact-set",
-          "passed": false,
-          "detail": "missing: [2] extra: [Please provide the command output.]"
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 3583,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "sparkshell-failing-tests",
-      "configId": "gpt-6-sol-control",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "exact-failing-test-names",
-          "kind": "exact-set",
-          "passed": false,
-          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [Please provide the command output so I can list the failing tests.]"
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 2088,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "team-worker-delegated-task",
-      "configId": "gpt-6-sol-control",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "handoff-names-changed-file",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: docs/"
-        },
-        {
-          "name": "handoff-states-check-outcome",
-          "kind": "must-include",
-          "passed": true
-        },
-        {
-          "name": "no-continuation-after-completion",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 5232,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "code-reviewer-known-defect",
-      "configId": "gpt-6.1-sol-candidate",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "finds-permanent-suppression",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: redact, dropping"
-        },
-        {
-          "name": "no-false-positive-on-control",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 2624,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "executor-bounded-change",
-      "configId": "gpt-6.1-sol-candidate",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "reports-required-checks",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: npm test"
-        },
-        {
-          "name": "no-scope-inflation",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 5265,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "explore-locate-stop-nudge",
-      "configId": "gpt-6.1-sol-candidate",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "names-the-hook-source",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: src/hooks"
-        },
-        {
-          "name": "no-unrequested-followup",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 4485,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "sparkshell-exit-status",
-      "configId": "gpt-6.1-sol-candidate",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "exact-exit-status",
-          "kind": "exact-set",
-          "passed": false,
-          "detail": "missing: [2] extra: [No command output provided.]"
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 3392,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "sparkshell-failing-tests",
-      "configId": "gpt-6.1-sol-candidate",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "exact-failing-test-names",
-          "kind": "exact-set",
-          "passed": false,
-          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [Please provide the command output.]"
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 3695,
-      "usage": null,
-      "operatorMinutes": null,
-      "difficult": false
-    },
-    {
-      "fixtureId": "team-worker-delegated-task",
-      "configId": "gpt-6.1-sol-candidate",
-      "outcome": "fail",
-      "checks": [
-        {
-          "name": "handoff-names-changed-file",
-          "kind": "must-include",
-          "passed": false,
-          "detail": "missing: docs/"
-        },
-        {
-          "name": "handoff-states-check-outcome",
-          "kind": "must-include",
-          "passed": true
-        },
-        {
-          "name": "no-continuation-after-completion",
-          "kind": "must-not-include",
-          "passed": true
-        }
-      ],
-      "requiredChecksPassed": null,
-      "retries": 0,
-      "latencyMs": 5653,
-      "usage": null,
+      "latencyMs": 18937,
+      "usage": {
+        "inputTokens": 45459,
+        "outputTokens": 236,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -437,8 +202,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 1315,
-      "usage": null,
+      "latencyMs": 22027,
+      "usage": {
+        "inputTokens": 93025,
+        "outputTokens": 1184,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -461,8 +233,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 2696,
-      "usage": null,
+      "latencyMs": 15768,
+      "usage": {
+        "inputTokens": 33442,
+        "outputTokens": 554,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -485,8 +264,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 9784,
-      "usage": null,
+      "latencyMs": 49481,
+      "usage": {
+        "inputTokens": 357143,
+        "outputTokens": 2453,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -499,13 +285,20 @@
           "name": "exact-exit-status",
           "kind": "exact-set",
           "passed": false,
-          "detail": "missing: [2] extra: [0]"
+          "detail": "missing: [2] extra: []"
         }
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 2592,
-      "usage": null,
+      "latencyMs": 3944,
+      "usage": {
+        "inputTokens": 7951,
+        "outputTokens": 173,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -518,13 +311,20 @@
           "name": "exact-failing-test-names",
           "kind": "exact-set",
           "passed": false,
-          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: [No command output was provided.]"
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: []"
         }
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 3475,
-      "usage": null,
+      "latencyMs": 3078,
+      "usage": {
+        "inputTokens": 7958,
+        "outputTokens": 64,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     },
@@ -542,7 +342,8 @@
         {
           "name": "handoff-states-check-outcome",
           "kind": "must-include",
-          "passed": true
+          "passed": false,
+          "detail": "missing: check"
         },
         {
           "name": "no-continuation-after-completion",
@@ -552,8 +353,15 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 2318,
-      "usage": null,
+      "latencyMs": 137465,
+      "usage": {
+        "inputTokens": 850928,
+        "outputTokens": 4145,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
       "operatorMinutes": null,
       "difficult": false
     }
