@@ -4,14 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EvalConfig, EvalFixture, RunRecord } from './types.js';
 import { scoreResponse } from './suite.js';
-import { invokeViaHTTP } from './http-invoker.js';
 
 export interface CollectorOptions {
   timeoutMs?: number;
   /** Called to invoke Codex CLI. Default: npx -y @openai/codex */
   invokeCodex?: (args: string[], cwd: string) => Promise<CodexOutput>;
-  /** Custom OpenAI-compatible API base URL (e.g., https://api.layofflabs.com/v1) */
-  baseUrl?: string;
+  /** Custom provider name to route through (e.g., 'layofflabs') */
+  provider?: string;
+  /** API key environment variable name when using custom provider */
+  apiKeyEnv?: string;
 }
 
 export interface CodexOutput {
@@ -36,9 +37,9 @@ export async function collectRecord(
   options: CollectorOptions = {},
 ): Promise<CollectionResult> {
   const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000; // 15 minutes default
-  const invokeCodex = options.invokeCodex ?? (options.baseUrl
-    ? (args: string[], cwd: string) => invokeViaHTTP(args, cwd, options.baseUrl!)
-    : defaultCodexInvoker);
+  const invokeCodex = options.invokeCodex ?? defaultCodexInvoker;
+  const provider = options.provider;
+  const apiKeyEnv = options.apiKeyEnv ?? 'OPENAI_API_KEY';
 
   const startTime = Date.now();
   const tempDir = mkdtempSync(join(tmpdir(), 'codex-eval-'));
@@ -67,8 +68,29 @@ export async function collectRecord(
       roleConfig.model,
       '-c',
       `reasoning_effort='${roleConfig.reasoningEffort}'`,
-      fixture.prompt,
     ];
+
+    // Add custom provider config if specified
+    if (provider) {
+      // Resolve API key from environment
+      const apiKey = process.env[apiKeyEnv];
+      if (!apiKey) {
+        throw new Error(`${apiKeyEnv} environment variable not set for provider "${provider}"`);
+      }
+
+      // Add provider configuration via -c flags
+      // These override codex's default model_providers configuration
+      args.push(
+        '-c', `model_providers.${provider}.name=${provider}`,
+        '-c', `model_providers.${provider}.base_url=https://api.layofflabs.com/v1`,
+        '-c', `model_providers.${provider}.env_key=${apiKeyEnv}`,
+        '-c', `model_providers.${provider}.wire_api=responses`,
+        '-c', `model_provider=${provider}`,
+      );
+    }
+
+    // Add the prompt at the end
+    args.push(fixture.prompt);
 
     // Run Codex CLI with timeout
     output = await Promise.race([

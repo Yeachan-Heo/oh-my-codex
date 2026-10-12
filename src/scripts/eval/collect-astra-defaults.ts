@@ -8,7 +8,7 @@ import type { RunRecord } from '../../evals/astra-defaults/types.js';
 /**
  * Live collector runner for astra-defaults evaluation.
  * Usage:
- *   node dist/scripts/eval/collect-astra-defaults.js [suite-dir] [output-file] [--base-url <url>] [config-ids...]
+ *   node dist/scripts/eval/collect-astra-defaults.js [suite-dir] [output-file] [--provider <name>] [config-ids...]
  *
  * Examples:
  *   # Run all configs
@@ -20,11 +20,11 @@ import type { RunRecord } from '../../evals/astra-defaults/types.js';
  *     records.json \
  *     astra-defaults gpt-6.1-sol-candidate gpt-6-sol-control luna-uniform
  *
- *   # Run with custom OpenAI-compatible API endpoint
+ *   # Run with custom provider (e.g., Layofflabs)
  *   node dist/scripts/eval/collect-astra-defaults.js \
  *     missions/astra-default-evaluation \
  *     records.json \
- *     --base-url https://api.layofflabs.com/v1 \
+ *     --provider layofflabs \
  *     gpt-6.1-sol-candidate gpt-6-sol-control
  */
 
@@ -49,12 +49,12 @@ async function main() {
     ? args.shift()!
     : join(process.cwd(), 'astra-defaults-records.json');
 
-  let baseUrl: string | undefined;
-  if (args[0] === '--base-url') {
+  let provider: string | undefined;
+  if (args[0] === '--provider') {
     args.shift();
-    baseUrl = args.shift();
-    if (!baseUrl) {
-      throw new Error('--base-url requires a URL argument');
+    provider = args.shift();
+    if (!provider) {
+      throw new Error('--provider requires a provider name argument');
     }
   }
 
@@ -87,7 +87,7 @@ async function main() {
 
   let aborted = false;
 
-  for await (const { fixture, config, result } of collectMatrix(suite.fixtures, configs, { baseUrl })) {
+  for await (const { fixture, config, result } of collectMatrix(suite.fixtures, configs, { provider })) {
     stats.total++;
     const { record } = result;
     records.push(record);
