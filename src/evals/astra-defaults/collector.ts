@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawn, execSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EvalConfig, EvalFixture, RunRecord } from './types.js';
@@ -13,6 +13,8 @@ export interface CollectorOptions {
   provider?: string;
   /** API key environment variable name when using custom provider */
   apiKeyEnv?: string;
+  /** Skip git clone (for testing). Default: false */
+  skipGitClone?: boolean;
 }
 
 export interface CodexOutput {
@@ -28,7 +30,7 @@ export interface CollectionResult {
 
 /**
  * Collects a single RunRecord by executing Codex CLI against a fixture/config pair.
- * Creates a disposable temp workspace, seeds it with fixture inputs, runs Codex,
+ * Clones the pinned OMX revision, seeds it with fixture inputs, runs Codex,
  * captures output/token usage/latency, and grades against fixture checks.
  */
 export async function collectRecord(
@@ -38,32 +40,63 @@ export async function collectRecord(
 ): Promise<CollectionResult> {
   const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000; // 15 minutes default
   const invokeCodex = options.invokeCodex ?? defaultCodexInvoker;
-  const provider = options.provider;
+  
+  // Auto-detect if we need layofflabs provider for OMX-internal model names
+  const roleConfig = config.roles[fixture.surface];
+  const modelName = roleConfig?.model ?? '';
+  const isOmxInternalModel = !modelName.includes('/') && /^(gpt-[0-9]|gpt-[0-9]\.[0-9]|o[0-9]\d?-[a-z])/.test(modelName);
+  
+  const provider = options.provider ?? (isOmxInternalModel ? 'layofflabs' : undefined);
   const apiKeyEnv = options.apiKeyEnv ?? 'OPENAI_API_KEY';
 
   const startTime = Date.now();
   const tempDir = mkdtempSync(join(tmpdir(), 'codex-eval-'));
   let output: CodexOutput | null = null;
+  const skipGitClone = options.skipGitClone ?? false;
 
   try {
-    // Seed temp workspace with fixture inputs
+    // Clone the pinned OMX revision into the temp workspace (unless testing)
+    if (!skipGitClone) {
+      const gitUrl = 'origin' in process.env ? process.env.origin : 'https://github.com/Yeachan-Heo/oh-my-codex';
+      const gitRef = config.omxRevision;
+      try {
+        execSync(`git clone --depth 1 --branch-point ${gitRef} ${gitUrl} .`, {
+          cwd: tempDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch {
+        // Branch-point not supported, try direct clone with shallow history
+        try {
+          execSync(`git clone ${gitUrl} .`, {
+            cwd: tempDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          execSync(`git checkout ${gitRef}`, {
+            cwd: tempDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch (e) {
+          throw new Error(`Failed to clone OMX at revision ${gitRef}: ${(e as Error).message}`);
+        }
+      }
+    }
+
+    // Seed temp workspace with fixture inputs (overlay on repo)
     for (const [name, content] of Object.entries(fixture.inputs)) {
       writeFileSync(join(tempDir, name), content, 'utf-8');
     }
 
     // Build Codex args with config model/reasoning overrides
     // Use the surface from the fixture to select the right role config
-    const roleConfig = config.roles[fixture.surface];
     if (!roleConfig) {
       throw new Error(`No role config for surface "${fixture.surface}" in config "${config.id}"`);
     }
 
-    // Build args for: codex exec --json --skip-git-repo-check --ephemeral -m <model> -c reasoning_effort=<effort> <prompt>
+    // Build args for: codex exec --json -m <model> -c reasoning_effort=<effort> <prompt>
+    // Use the cloned repo context (do NOT use --skip-git-repo-check or --ephemeral)
     const args = [
       'exec',
       '--json',
-      '--skip-git-repo-check',
-      '--ephemeral',
       '-m',
       roleConfig.model,
       '-c',
@@ -89,8 +122,17 @@ export async function collectRecord(
       );
     }
 
-    // Add the prompt at the end
-    args.push(fixture.prompt);
+    // Construct the full prompt with fixture inputs embedded
+    let fullPrompt = fixture.prompt;
+    const inputKeys = Object.keys(fixture.inputs);
+    if (inputKeys.length > 0) {
+      // Append fixture inputs to the prompt for context
+      const inputContext = inputKeys
+        .map((key) => `${key}:\n${fixture.inputs[key]}`)
+        .join('\n\n');
+      fullPrompt = `${fullPrompt}\n\n${inputContext}`;
+    }
+    args.push(fullPrompt);
 
     // Run Codex CLI with timeout
     output = await Promise.race([

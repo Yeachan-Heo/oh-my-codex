@@ -44,7 +44,7 @@ test('collector: pass when response matches checks', async () => {
     stderr: '',
   });
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.strictEqual(result.record.outcome, 'pass');
   assert.strictEqual(result.record.checks.length, 2);
@@ -70,7 +70,7 @@ test('collector: fail when response does not match checks', async () => {
     stderr: '',
   });
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.strictEqual(result.record.outcome, 'fail');
   assert.ok(result.record.checks.some((c) => !c.passed));
@@ -83,7 +83,7 @@ test('collector: error when Codex exits non-zero', async () => {
     stderr: 'Codex error: authentication failed',
   });
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.strictEqual(result.record.outcome, 'error');
   assert.ok(result.record.notes?.includes('exit code 1'));
@@ -97,7 +97,7 @@ test('collector: error when JSON parsing fails', async () => {
     stderr: '',
   });
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.strictEqual(result.record.outcome, 'error');
   assert.ok(result.record.notes?.includes('Failed to parse'));
@@ -118,7 +118,7 @@ test('collector: error when missing role config', async () => {
   const result = await collectRecord(
     { ...fixture, surface: 'executor' },
     badConfig,
-    { invokeCodex: mockCodexInvoker },
+    { invokeCodex: mockCodexInvoker, skipGitClone: true },
   );
 
   assert.strictEqual(result.record.outcome, 'error');
@@ -132,7 +132,7 @@ test('collector: handle null usage data gracefully', async () => {
     stderr: '',
   });
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.strictEqual(result.record.outcome, 'pass');
   assert.strictEqual(result.record.usage, null);
@@ -150,7 +150,7 @@ test('collector: records latency on success', async () => {
     };
   };
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.ok((result.record.latencyMs ?? 0) >= 10);
 });
@@ -165,7 +165,33 @@ test('collector: records latency even on error', async () => {
     };
   };
 
-  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker });
+  const result = await collectRecord(fixture, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
 
   assert.ok((result.record.latencyMs ?? 0) >= 10);
+});
+
+test('collector: embeds fixture inputs into prompt', async () => {
+  let capturedPrompt = '';
+  const mockCodexInvoker = async (args: string[]): Promise<CodexOutput> => {
+    // The prompt is the last argument
+    capturedPrompt = args[args.length - 1] ?? '';
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({ response: 'Found a bug in the code. The variable is used correctly.' }),
+      stderr: '',
+    };
+  };
+
+  const fixtureWithInputs: EvalFixture = {
+    ...fixture,
+    inputs: { commandOutput: 'test output line 1\ntest output line 2' },
+  };
+
+  const result = await collectRecord(fixtureWithInputs, config, { invokeCodex: mockCodexInvoker, skipGitClone: true });
+
+  // Verify prompt includes both the template and the fixture inputs
+  assert.ok(capturedPrompt.includes('Find the bug in this code'));
+  assert.ok(capturedPrompt.includes('commandOutput'));
+  assert.ok(capturedPrompt.includes('test output line 1'));
+  assert.strictEqual(result.record.outcome, 'pass');
 });

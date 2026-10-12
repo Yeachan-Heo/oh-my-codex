@@ -20,10 +20,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 16115,
+      "latencyMs": 11177,
       "usage": {
-        "inputTokens": 53346,
-        "outputTokens": 193,
+        "inputTokens": 10867,
+        "outputTokens": 65,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -51,10 +51,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 23487,
+      "latencyMs": 49984,
       "usage": {
-        "inputTokens": 50553,
-        "outputTokens": 281,
+        "inputTokens": 101382,
+        "outputTokens": 610,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -82,10 +82,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 90161,
+      "latencyMs": 44343,
       "usage": {
-        "inputTokens": 356581,
-        "outputTokens": 1535,
+        "inputTokens": 144323,
+        "outputTokens": 715,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -108,10 +108,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 3775,
+      "latencyMs": 9610,
       "usage": {
-        "inputTokens": 10685,
-        "outputTokens": 26,
+        "inputTokens": 10706,
+        "outputTokens": 5,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -134,10 +134,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 4126,
+      "latencyMs": 10791,
       "usage": {
-        "inputTokens": 10694,
-        "outputTokens": 26,
+        "inputTokens": 10754,
+        "outputTokens": 17,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -171,10 +171,374 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 18937,
+      "latencyMs": 31746,
       "usage": {
-        "inputTokens": 45459,
-        "outputTokens": 236,
+        "inputTokens": 66302,
+        "outputTokens": 384,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "code-reviewer-known-defect",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "finds-permanent-suppression",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: redact, dropping"
+        },
+        {
+          "name": "no-false-positive-on-control",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 15949,
+      "usage": {
+        "inputTokens": 10422,
+        "outputTokens": 293,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "executor-bounded-change",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "reports-required-checks",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: npm test"
+        },
+        {
+          "name": "no-scope-inflation",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 72010,
+      "usage": {
+        "inputTokens": 190146,
+        "outputTokens": 1969,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "explore-locate-stop-nudge",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "names-the-hook-source",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: src/hooks, stop"
+        },
+        {
+          "name": "no-unrequested-followup",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 54400,
+      "usage": {
+        "inputTokens": 251009,
+        "outputTokens": 1735,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-exit-status",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-exit-status",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [2] extra: []"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 8628,
+      "usage": {
+        "inputTokens": 10259,
+        "outputTokens": 5,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-failing-tests",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-failing-test-names",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: []"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 9583,
+      "usage": {
+        "inputTokens": 10305,
+        "outputTokens": 17,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "team-worker-delegated-task",
+      "configId": "gpt-6-sol-control",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "handoff-names-changed-file",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: docs/"
+        },
+        {
+          "name": "handoff-states-check-outcome",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: check"
+        },
+        {
+          "name": "no-continuation-after-completion",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 50197,
+      "usage": {
+        "inputTokens": 177996,
+        "outputTokens": 1513,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "code-reviewer-known-defect",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "finds-permanent-suppression",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: redact, dropping"
+        },
+        {
+          "name": "no-false-positive-on-control",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 14046,
+      "usage": {
+        "inputTokens": 10931,
+        "outputTokens": 95,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "executor-bounded-change",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "reports-required-checks",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: npm test"
+        },
+        {
+          "name": "no-scope-inflation",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 61070,
+      "usage": {
+        "inputTokens": 123781,
+        "outputTokens": 655,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "explore-locate-stop-nudge",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "names-the-hook-source",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: src/hooks, stop"
+        },
+        {
+          "name": "no-unrequested-followup",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 37086,
+      "usage": {
+        "inputTokens": 84992,
+        "outputTokens": 618,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-exit-status",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-exit-status",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [2] extra: []"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 9755,
+      "usage": {
+        "inputTokens": 10774,
+        "outputTokens": 5,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "sparkshell-failing-tests",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "exact-failing-test-names",
+          "kind": "exact-set",
+          "passed": false,
+          "detail": "missing: [redactor resumes after an oversized record, leader repairs a stale pane] extra: []"
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 8938,
+      "usage": {
+        "inputTokens": 10818,
+        "outputTokens": 17,
+        "uncachedInputTokens": null,
+        "cacheReadTokens": null,
+        "cacheWriteTokens": null,
+        "source": "codex exec --json"
+      },
+      "operatorMinutes": null,
+      "difficult": false
+    },
+    {
+      "fixtureId": "team-worker-delegated-task",
+      "configId": "gpt-6.1-sol-candidate",
+      "outcome": "fail",
+      "checks": [
+        {
+          "name": "handoff-names-changed-file",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: docs/"
+        },
+        {
+          "name": "handoff-states-check-outcome",
+          "kind": "must-include",
+          "passed": false,
+          "detail": "missing: check"
+        },
+        {
+          "name": "no-continuation-after-completion",
+          "kind": "must-not-include",
+          "passed": true
+        }
+      ],
+      "requiredChecksPassed": null,
+      "retries": 0,
+      "latencyMs": 35042,
+      "usage": {
+        "inputTokens": 95823,
+        "outputTokens": 463,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -202,10 +566,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 22027,
+      "latencyMs": 16827,
       "usage": {
-        "inputTokens": 93025,
-        "outputTokens": 1184,
+        "inputTokens": 8129,
+        "outputTokens": 511,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -233,10 +597,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 15768,
+      "latencyMs": 47158,
       "usage": {
-        "inputTokens": 33442,
-        "outputTokens": 554,
+        "inputTokens": 154330,
+        "outputTokens": 1228,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -264,10 +628,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 49481,
+      "latencyMs": 50395,
       "usage": {
-        "inputTokens": 357143,
-        "outputTokens": 2453,
+        "inputTokens": 399906,
+        "outputTokens": 2290,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -290,10 +654,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 3944,
+      "latencyMs": 8308,
       "usage": {
-        "inputTokens": 7951,
-        "outputTokens": 173,
+        "inputTokens": 7972,
+        "outputTokens": 5,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -316,10 +680,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 3078,
+      "latencyMs": 7719,
       "usage": {
-        "inputTokens": 7958,
-        "outputTokens": 64,
+        "inputTokens": 8018,
+        "outputTokens": 17,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
@@ -353,10 +717,10 @@
       ],
       "requiredChecksPassed": null,
       "retries": 0,
-      "latencyMs": 137465,
+      "latencyMs": 75282,
       "usage": {
-        "inputTokens": 850928,
-        "outputTokens": 4145,
+        "inputTokens": 514710,
+        "outputTokens": 2957,
         "uncachedInputTokens": null,
         "cacheReadTokens": null,
         "cacheWriteTokens": null,
