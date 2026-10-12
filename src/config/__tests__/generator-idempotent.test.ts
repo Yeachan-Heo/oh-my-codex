@@ -785,6 +785,55 @@ describe("config generator idempotency (#384)", () => {
     );
   });
 
+  it("preserves multiline arrays in [tui] section (terminal_title, terminal_title, etc)", () => {
+    const toml = buildMergedConfig(
+      [
+        "[tui]",
+        "terminal_title = [",
+        '  "thread-title",',
+        '  "model-with-reasoning",',
+        '  "context-remaining",',
+        "]",
+        "screen_reader_detection_done = true",
+        "status_line = [",
+        '  "git-branch",',
+        '  "context-remaining",',
+        "]",
+        "",
+      ].join("\n"),
+      "/tmp/omx",
+    );
+
+    assert.equal(count(toml, /^\[tui\]$/gm), 1, "[tui] should appear once");
+    assert.ok(
+      toml.includes(
+        [
+          "terminal_title = [",
+          '"thread-title",',
+          '"model-with-reasoning",',
+          '"context-remaining",',
+          "]",
+        ].join("\n"),
+      ),
+      "multiline terminal_title array should be preserved",
+    );
+    assert.ok(
+      toml.includes("screen_reader_detection_done = true"),
+      "scalar keys should be preserved",
+    );
+    assert.ok(
+      toml.includes(
+        [
+          "status_line = [",
+          '"git-branch",',
+          '"context-remaining",',
+          "]",
+        ].join("\n"),
+      ),
+      "multiline status_line should be preserved",
+    );
+  });
+
   it("preserves a customized managed-block status_line when refreshing setup", () => {
     const firstRun = buildMergedConfig("", "/tmp/omx");
     const customized = firstRun.replace(

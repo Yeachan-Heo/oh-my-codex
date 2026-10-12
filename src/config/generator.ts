@@ -3593,38 +3593,41 @@ function upsertTuiStatusLine(
       }
 
       const key = keyMatch[1];
+      
+      // Accumulate all lines of the entry (handles multi-line arrays and values)
+      const entryLines = [trimmed];
+      while (
+        !parseStandaloneToml(entryLines.join("\n")) &&
+        i + 1 < section.end
+      ) {
+        i += 1;
+        entryLines.push(lines[i].trim());
+      }
+      const entryContent = entryLines.join("\n");
+      
       if (key === "status_line") {
-        const entryLines = [trimmed];
-        while (
-          !parseStandaloneToml(entryLines.join("\n")) &&
-          i + 1 < section.end
-        ) {
-          i += 1;
-          entryLines.push(lines[i].trim());
-        }
-        const statusLineEntry = entryLines.join("\n");
         const hasMarker =
           lastNonBlankBeforeStatusLine === OMX_MANAGED_STATUS_LINE_MARKER;
         const isManagedByMarker =
-          hasMarker && OMX_PRESET_STATUS_LINE_VALUES.has(statusLineEntry);
+          hasMarker && OMX_PRESET_STATUS_LINE_VALUES.has(entryContent);
         const isManagedByLegacyValue =
-          !hasMarker && statusLineEntry === LEGACY_OMX_STATUS_LINE;
+          !hasMarker && entryContent === LEGACY_OMX_STATUS_LINE;
         const isOmxManagedStatusLine =
           isManagedByMarker || isManagedByLegacyValue;
 
         if (!options.forceStatusLinePreset || !isOmxManagedStatusLine) {
-          preservedStatusLine ??= statusLineEntry;
+          preservedStatusLine ??= entryContent;
         }
-        lastNonBlankBeforeStatusLine = statusLineEntry;
+        lastNonBlankBeforeStatusLine = entryContent;
         continue;
       }
       if (seenKeys.has(key)) {
-        lastNonBlankBeforeStatusLine = trimmed;
+        lastNonBlankBeforeStatusLine = entryContent;
         continue;
       }
       seenKeys.add(key);
-      preservedKeyLines.push(trimmed);
-      lastNonBlankBeforeStatusLine = trimmed;
+      preservedKeyLines.push(entryContent);
+      lastNonBlankBeforeStatusLine = entryContent;
     }
   }
 
