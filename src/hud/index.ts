@@ -263,9 +263,12 @@ export async function runWatchMode(
       const killTimer = setTimeout(() => {
         // The detached child leads its own process group on POSIX; kill the
         // group so a subprocess it started (tmux) does not outlive it.
+        // Windows has no process groups: `taskkill /T` ends the tree (psmux).
         try {
-          if (process.platform === 'win32' || child.pid === undefined) child.kill('SIGKILL');
-          else process.kill(-child.pid, 'SIGKILL');
+          if (child.pid === undefined) child.kill('SIGKILL');
+          else if (process.platform === 'win32') {
+            execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5_000 });
+          } else process.kill(-child.pid, 'SIGKILL');
         } catch {
           child.kill('SIGKILL');
         }
