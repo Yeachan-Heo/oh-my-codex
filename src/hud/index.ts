@@ -260,7 +260,16 @@ export async function runWatchMode(
       // so the watcher can retry instead of waiting on it forever. Not spawn's
       // `timeout` option: its timer is referenced and would keep a stopped
       // watcher's process alive until it fires.
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), dependencies.repairTimeoutMs);
+      const killTimer = setTimeout(() => {
+        // The detached child leads its own process group on POSIX; kill the
+        // group so a subprocess it started (tmux) does not outlive it.
+        try {
+          if (process.platform === 'win32' || child.pid === undefined) child.kill('SIGKILL');
+          else process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }, dependencies.repairTimeoutMs);
       killTimer.unref();
       const settled = new Promise<boolean>((resolve) => {
         child.once('error', () => { clearTimeout(killTimer); resolve(false); });

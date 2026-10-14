@@ -46,28 +46,38 @@ function repairWatchEnv(sessionId: string): Record<string, string> {
 }
 
 // Stands in for a reconcile child that hangs before doing any work. It logs
-// its pid first, so every line of the log is one spawn.
-async function writeHangingReconcileEntry(root: string): Promise<{
+// its pid first, so every line of the log is one spawn. With `withGrandchild`
+// it also starts a hanging grandchild in the child's process group, as the real
+// child does when it runs tmux, and logs that pid too.
+async function writeHangingReconcileEntry(root: string, withGrandchild = false): Promise<{
   entry: string;
   spawnLog: string;
   readSpawnPids: () => Promise<number[]>;
+  readGrandchildPids: () => Promise<number[]>;
   killSpawned: () => Promise<void>;
 }> {
   const entry = join(root, 'dist', 'cli', 'omx.js');
   const spawnLog = join(root, 'dist', 'cli', 'spawns.log');
+  const grandchildLog = join(root, 'dist', 'cli', 'grandchildren.log');
   await mkdir(join(root, 'dist', 'cli'), { recursive: true });
   await writeFile(entry, [
     "require('node:fs').appendFileSync(require('node:path').join(__dirname, 'spawns.log'), process.pid + '\\n');",
+    ...(withGrandchild ? [
+      "const grandchild = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "require('node:fs').appendFileSync(require('node:path').join(__dirname, 'grandchildren.log'), grandchild.pid + '\\n');",
+    ] : []),
     'setInterval(() => {}, 1000);',
     '',
   ].join('\n'));
-  const readSpawnPids = async (): Promise<number[]> => {
-    const text = await readFile(spawnLog, 'utf-8').catch(() => '');
+  const readPids = async (log: string): Promise<number[]> => {
+    const text = await readFile(log, 'utf-8').catch(() => '');
     return text.split('\n').filter(Boolean).map(Number);
   };
+  const readSpawnPids = (): Promise<number[]> => readPids(spawnLog);
+  const readGrandchildPids = (): Promise<number[]> => readPids(grandchildLog);
   // Without the timeout the hang children never exit; do not leak them.
   const killSpawned = async (): Promise<void> => {
-    for (const pid of await readSpawnPids()) {
+    for (const pid of [...await readSpawnPids(), ...await readGrandchildPids()]) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
@@ -75,7 +85,21 @@ async function writeHangingReconcileEntry(root: string): Promise<{
       }
     }
   };
-  return { entry, spawnLog, readSpawnPids, killSpawned };
+  return { entry, spawnLog, readSpawnPids, readGrandchildPids, killSpawned };
+}
+
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
 }
 
 function flush(): Promise<void> {
@@ -245,6 +269,48 @@ describe('runWatchMode', () => {
         spawns = (await readSpawnPids()).length;
       }
       assert.ok(spawns >= 2, `expected a second repair child after the first was killed, saw ${spawns}`);
+    } finally {
+      stop?.();
+      await promise;
+      await killSpawned();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('kills the process group of a timed-out repair child, not only the child', { skip: process.platform === 'win32' }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-hud-repair-group-'));
+    const { entry, readSpawnPids, readGrandchildPids, killSpawned } = await writeHangingReconcileEntry(root, true);
+    let tick: (() => void) | undefined;
+    let stop: (() => void) | undefined;
+    const promise = runWatchMode('/repo', WATCH_FLAGS, {
+      isTTY: true,
+      env: { ...repairWatchEnv('repair-group-test'), OMX_ENTRY_PATH: entry },
+      isOwnerAliveFn: async () => true,
+      isSessionAttachedFn: () => true,
+      listCurrentWindowPanesFn: () => REPAIR_WATCH_PANES,
+      readHudLeaderOwnerFn: () => 'current',
+      readHudConfigFn: async () => REPAIR_WATCH_CONFIG,
+      readAllStateFn: async () => emptyCtx(),
+      renderHudFn: () => 'frame',
+      repairTimeoutMs: 1000,
+      runAuthorityTickFn: async () => {},
+      writeStdout: () => {}, writeStderr: () => {},
+      registerSigint: handler => { stop = handler; },
+      setIntervalFn: handler => { tick = handler; return {} as ReturnType<typeof setInterval>; },
+      clearIntervalFn: () => {},
+    });
+    try {
+      const deadline = Date.now() + 5000;
+      let grandchildren: number[] = [];
+      while (grandchildren.length === 0 && Date.now() < deadline) {
+        tick?.();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        grandchildren = await readGrandchildPids();
+      }
+      assert.ok(grandchildren.length > 0, 'the repair child never started its grandchild');
+      const [child] = await readSpawnPids();
+      assert.ok(await waitForExit(child!, 5000), 'the hung repair child was not killed by the timeout');
+      assert.ok(await waitForExit(grandchildren[0]!, 5000), 'a subprocess of the repair child outlived the timeout kill');
     } finally {
       stop?.();
       await promise;
