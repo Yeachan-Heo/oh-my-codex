@@ -8,6 +8,10 @@ export const HUD_TMUX_MAX_HEIGHT_LINES = 3;
 // let the later reconcile path add the HUD when there is room. (closes #2754)
 export const HUD_TMUX_MIN_LAUNCH_WINDOW_HEIGHT_LINES = 45;
 export const HUD_RESIZE_RECONCILE_DELAY_SECONDS = 2;
+// Upper bound for one watcher-spawned `omx hud --reconcile-tmux` child. The
+// watcher runs a single repair child at a time, so a child that never exits
+// would otherwise block every later repair for the life of the watcher.
+export const HUD_WATCH_REPAIR_TIMEOUT_MS = 30_000;
 
 /**
  * Shared cramped-window heuristic for the tmux HUD split. Both the launch path
