@@ -1,5 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -31,6 +33,49 @@ function emptyCtx(): HudRenderContext {
     hudNotify: null,
     session: null,
   };
+}
+
+// A leader pane and no HUD pane, so every watcher tick asks for a repair.
+const REPAIR_WATCH_PANES = [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex', panePid: '101',
+  paneLeft: 0, paneTop: 0, paneWidth: 80, paneHeight: 22, paneBottom: 21, windowWidth: 80, windowHeight: 23 }];
+const REPAIR_WATCH_CONFIG = { preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } } as const;
+
+function repairWatchEnv(sessionId: string): Record<string, string> {
+  return { TMUX: 'tmux', TMUX_PANE: '%2', OMX_SESSION_ID: sessionId,
+    [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_LEADER_PANE_ENV]: '%1' };
+}
+
+// Stands in for a reconcile child that hangs before doing any work. It logs
+// its pid first, so every line of the log is one spawn.
+async function writeHangingReconcileEntry(root: string): Promise<{
+  entry: string;
+  spawnLog: string;
+  readSpawnPids: () => Promise<number[]>;
+  killSpawned: () => Promise<void>;
+}> {
+  const entry = join(root, 'dist', 'cli', 'omx.js');
+  const spawnLog = join(root, 'dist', 'cli', 'spawns.log');
+  await mkdir(join(root, 'dist', 'cli'), { recursive: true });
+  await writeFile(entry, [
+    "require('node:fs').appendFileSync(require('node:path').join(__dirname, 'spawns.log'), process.pid + '\\n');",
+    'setInterval(() => {}, 1000);',
+    '',
+  ].join('\n'));
+  const readSpawnPids = async (): Promise<number[]> => {
+    const text = await readFile(spawnLog, 'utf-8').catch(() => '');
+    return text.split('\n').filter(Boolean).map(Number);
+  };
+  // Without the timeout the hang children never exit; do not leak them.
+  const killSpawned = async (): Promise<void> => {
+    for (const pid of await readSpawnPids()) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // ESRCH: the timeout already reaped this child.
+      }
+    }
+  };
+  return { entry, spawnLog, readSpawnPids, killSpawned };
 }
 
 function flush(): Promise<void> {
@@ -171,33 +216,17 @@ describe('runWatchMode', () => {
 
   it('bounds a watcher repair child that never exits so a later tick can repair again', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-hud-repair-timeout-'));
-    const entry = join(root, 'dist', 'cli', 'omx.js');
-    const spawnLog = join(root, 'dist', 'cli', 'spawns.log');
-    await mkdir(join(root, 'dist', 'cli'), { recursive: true });
-    // Stands in for a reconcile child that hangs before doing any work.
-    await writeFile(entry, [
-      "require('node:fs').appendFileSync(require('node:path').join(__dirname, 'spawns.log'), process.pid + '\\n');",
-      'setInterval(() => {}, 1000);',
-      '',
-    ].join('\n'));
+    const { entry, readSpawnPids, killSpawned } = await writeHangingReconcileEntry(root);
     let tick: (() => void) | undefined;
     let stop: (() => void) | undefined;
-    // One child pid per line; every line is one spawn.
-    const readSpawnPids = async (): Promise<number[]> => {
-      const text = await readFile(spawnLog, 'utf-8').catch(() => '');
-      return text.split('\n').filter(Boolean).map(Number);
-    };
     const promise = runWatchMode('/repo', WATCH_FLAGS, {
       isTTY: true,
-      env: { TMUX: 'tmux', TMUX_PANE: '%2', OMX_SESSION_ID: 'repair-timeout-test',
-        [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_LEADER_PANE_ENV]: '%1',
-        OMX_ENTRY_PATH: entry },
+      env: { ...repairWatchEnv('repair-timeout-test'), OMX_ENTRY_PATH: entry },
       isOwnerAliveFn: async () => true,
       isSessionAttachedFn: () => true,
-      listCurrentWindowPanesFn: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex', panePid: '101',
-        paneLeft: 0, paneTop: 0, paneWidth: 80, paneHeight: 22, paneBottom: 21, windowWidth: 80, windowHeight: 23 }],
+      listCurrentWindowPanesFn: () => REPAIR_WATCH_PANES,
       readHudLeaderOwnerFn: () => 'current',
-      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
+      readHudConfigFn: async () => REPAIR_WATCH_CONFIG,
       readAllStateFn: async () => emptyCtx(),
       renderHudFn: () => 'frame',
       repairTimeoutMs: 1500,
@@ -219,14 +248,70 @@ describe('runWatchMode', () => {
     } finally {
       stop?.();
       await promise;
-      // Without the timeout the hang children never exit; do not leak them.
-      for (const pid of await readSpawnPids()) {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {
-          // ESRCH: the timeout already reaped this child.
-        }
-      }
+      await killSpawned();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not keep a stopped watcher process alive while its repair child hangs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-hud-repair-exit-'));
+    const { entry, spawnLog, readSpawnPids, killSpawned } = await writeHangingReconcileEntry(root);
+    // The watcher runs in its own process: the test runner's own handles would
+    // hide a timer that keeps the event loop alive. The repair timeout is far
+    // longer than the test waits, so only an unreferenced timer lets it exit.
+    // The script is plain JS, not type-checked: keep its dependencies in step
+    // with runWatchMode.
+    const script = join(root, 'watch.mjs');
+    await writeFile(script, `
+import { existsSync } from 'node:fs';
+const { runWatchMode } = await import(${JSON.stringify(new URL('../index.js', import.meta.url).href)});
+let tick;
+let stop;
+const done = runWatchMode('/repo', ${JSON.stringify(WATCH_FLAGS)}, {
+  isTTY: true,
+  env: ${JSON.stringify({ ...repairWatchEnv('repair-exit-test'), OMX_ENTRY_PATH: entry })},
+  isOwnerAliveFn: async () => true,
+  isSessionAttachedFn: () => true,
+  listCurrentWindowPanesFn: () => ${JSON.stringify(REPAIR_WATCH_PANES)},
+  readHudLeaderOwnerFn: () => 'current',
+  readHudConfigFn: async () => (${JSON.stringify(REPAIR_WATCH_CONFIG)}),
+  readAllStateFn: async () => (${JSON.stringify(emptyCtx())}),
+  renderHudFn: () => 'frame',
+  repairTimeoutMs: 60000,
+  runAuthorityTickFn: async () => {},
+  writeStdout: () => {}, writeStderr: () => {},
+  registerSigint: (handler) => { stop = handler; },
+  setIntervalFn: (handler) => { tick = handler; return {}; },
+  clearIntervalFn: () => {},
+});
+const spawnLog = ${JSON.stringify(spawnLog)};
+for (let i = 0; i < 100 && !existsSync(spawnLog); i += 1) {
+  tick?.();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+if (!existsSync(spawnLog)) {
+  console.error('no repair child was spawned');
+  process.exit(2);
+}
+console.log('stopping');
+stop();
+await done;
+`);
+    const watcher = spawn(process.execPath, [script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    watcher.stderr.on('data', (chunk) => { stderr += chunk; });
+    // Counted from stop(), so a slow start cannot pass for a watcher kept alive.
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    watcher.stdout.once('data', () => { killTimer = setTimeout(() => watcher.kill('SIGKILL'), 15000); });
+    try {
+      const [code, signal] = await once(watcher, 'close');
+      assert.equal(signal, null, 'watcher process still running 15 s after stop() with a hung repair child');
+      assert.equal(code, 0, stderr);
+      assert.equal((await readSpawnPids()).length, 1);
+    } finally {
+      clearTimeout(killTimer);
+      watcher.kill('SIGKILL');
+      await killSpawned();
       await rm(root, { recursive: true, force: true });
     }
   });

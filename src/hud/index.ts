@@ -255,14 +255,16 @@ export async function runWatchMode(
         stdio: 'ignore',
         detached: true,
         windowsHide: true,
-        // A child stuck before it runs any JS never exits on its own; bound it
-        // so the watcher can retry instead of waiting on it forever.
-        timeout: dependencies.repairTimeoutMs,
-        killSignal: 'SIGKILL',
       });
+      // A child stuck before it runs any JS never exits on its own; bound it
+      // so the watcher can retry instead of waiting on it forever. Not spawn's
+      // `timeout` option: its timer is referenced and would keep a stopped
+      // watcher's process alive until it fires.
+      const killTimer = setTimeout(() => child.kill('SIGKILL'), dependencies.repairTimeoutMs);
+      killTimer.unref();
       const settled = new Promise<boolean>((resolve) => {
-        child.once('error', () => resolve(false));
-        child.once('close', (code) => resolve(code === 0));
+        child.once('error', () => { clearTimeout(killTimer); resolve(false); });
+        child.once('close', (code) => { clearTimeout(killTimer); resolve(code === 0); });
       });
       child.unref();
       return settled;
