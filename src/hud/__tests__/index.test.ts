@@ -169,6 +169,68 @@ describe('runWatchMode', () => {
     await promise;
   });
 
+  it('bounds a watcher repair child that never exits so a later tick can repair again', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-hud-repair-timeout-'));
+    const entry = join(root, 'dist', 'cli', 'omx.js');
+    const spawnLog = join(root, 'dist', 'cli', 'spawns.log');
+    await mkdir(join(root, 'dist', 'cli'), { recursive: true });
+    // Stands in for a reconcile child that hangs before doing any work.
+    await writeFile(entry, [
+      "require('node:fs').appendFileSync(require('node:path').join(__dirname, 'spawns.log'), process.pid + '\\n');",
+      'setInterval(() => {}, 1000);',
+      '',
+    ].join('\n'));
+    let tick: (() => void) | undefined;
+    let stop: (() => void) | undefined;
+    // One child pid per line; every line is one spawn.
+    const readSpawnPids = async (): Promise<number[]> => {
+      const text = await readFile(spawnLog, 'utf-8').catch(() => '');
+      return text.split('\n').filter(Boolean).map(Number);
+    };
+    const promise = runWatchMode('/repo', WATCH_FLAGS, {
+      isTTY: true,
+      env: { TMUX: 'tmux', TMUX_PANE: '%2', OMX_SESSION_ID: 'repair-timeout-test',
+        [OMX_TMUX_HUD_OWNER_ENV]: '1', [OMX_TMUX_HUD_LEADER_PANE_ENV]: '%1',
+        OMX_ENTRY_PATH: entry },
+      isOwnerAliveFn: async () => true,
+      isSessionAttachedFn: () => true,
+      listCurrentWindowPanesFn: () => [{ paneId: '%1', currentCommand: 'codex', startCommand: 'codex', panePid: '101',
+        paneLeft: 0, paneTop: 0, paneWidth: 80, paneHeight: 22, paneBottom: 21, windowWidth: 80, windowHeight: 23 }],
+      readHudLeaderOwnerFn: () => 'current',
+      readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
+      readAllStateFn: async () => emptyCtx(),
+      renderHudFn: () => 'frame',
+      repairTimeoutMs: 1500,
+      runAuthorityTickFn: async () => {},
+      writeStdout: () => {}, writeStderr: () => {},
+      registerSigint: handler => { stop = handler; },
+      setIntervalFn: handler => { tick = handler; return {} as ReturnType<typeof setInterval>; },
+      clearIntervalFn: () => {},
+    });
+    try {
+      const deadline = Date.now() + 15000;
+      let spawns = 0;
+      while (spawns < 2 && Date.now() < deadline) {
+        tick?.();
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        spawns = (await readSpawnPids()).length;
+      }
+      assert.ok(spawns >= 2, `expected a second repair child after the first was killed, saw ${spawns}`);
+    } finally {
+      stop?.();
+      await promise;
+      // Without the timeout the hang children never exit; do not leak them.
+      for (const pid of await readSpawnPids()) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // ESRCH: the timeout already reaped this child.
+        }
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves a live cwd when the HUD launch path was reused by another run', () => {
     const resolved = resolveHudWatchCwd('/home/tools/calc', {
       getCwd: () => '/home/tools/calc',

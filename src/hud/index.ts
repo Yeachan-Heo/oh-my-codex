@@ -15,7 +15,11 @@ import { readlinkSync, realpathSync } from 'node:fs';
 import { readAllState, readHudConfig, readHudLayoutProjection } from './state.js';
 import { getHudRenderMaxLines, renderHud } from './render.js';
 import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from './types.js';
-import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES } from './constants.js';
+import {
+  HUD_TMUX_HEIGHT_LINES,
+  HUD_TMUX_ULTRAGOAL_HEIGHT_LINES,
+  HUD_WATCH_REPAIR_TIMEOUT_MS,
+} from './constants.js';
 import { sleep } from '../utils/sleep.js';
 import { runHudAuthorityTick } from './authority.js';
 import { isHudWatchSessionAttached } from './session-attached.js';
@@ -98,6 +102,7 @@ interface RunWatchModeDependencies {
   readHudHookHealthFn: (input: ReadHudHookHealthInput) => HudHookHealth;
   readHudLeaderOwnerFn: (leaderPaneId: string, ownerId: string) => 'current' | 'mismatch' | 'unknown';
   reconcileTmuxHudFn: (cwd: string, leaderPanePid?: string) => Promise<void | boolean>;
+  repairTimeoutMs: number;
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
   registerSigint: (handler: () => void) => void | (() => void);
@@ -228,6 +233,7 @@ export async function runWatchMode(
     readHudLayoutProjectionFn: deps.readHudLayoutProjectionFn ?? readHudLayoutProjection,
     readHudHookHealthFn: deps.readHudHookHealthFn ?? readHudHookHealth,
     readHudLeaderOwnerFn: deps.readHudLeaderOwnerFn ?? readHudLeaderOwnerIdentity,
+    repairTimeoutMs: deps.repairTimeoutMs ?? HUD_WATCH_REPAIR_TIMEOUT_MS,
     reconcileTmuxHudFn: deps.reconcileTmuxHudFn ?? (async (reconcileCwd, leaderPanePid) => {
       const leaderPaneId = dependencies.env[OMX_TMUX_HUD_LEADER_PANE_ENV]?.trim();
       if (!leaderPaneId?.startsWith('%') || !leaderPanePid) return false;
@@ -249,6 +255,10 @@ export async function runWatchMode(
         stdio: 'ignore',
         detached: true,
         windowsHide: true,
+        // A child stuck before it runs any JS never exits on its own; bound it
+        // so the watcher can retry instead of waiting on it forever.
+        timeout: dependencies.repairTimeoutMs,
+        killSignal: 'SIGKILL',
       });
       const settled = new Promise<boolean>((resolve) => {
         child.once('error', () => resolve(false));
