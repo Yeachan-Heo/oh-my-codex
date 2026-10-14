@@ -419,6 +419,26 @@ describe('buildGitBranchLabel caching', () => {
     });
   });
 
+  it('recomputes after a backward clock adjustment', async (t) => {
+    await withTempRepo('omx-hud-label-cache-clock-back-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const state = { branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+      let now = 1_700_000_000_000;
+      t.mock.method(Date, 'now', () => now);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(calls.length, 2);
+      // Simulate a backward clock adjustment (e.g., NTP correction)
+      now -= 5_000;
+      // A change the fingerprint cannot see. The cache should be invalidated
+      // even though the age is negative, preventing stale labels during time adjustments.
+      state.remoteUrl = 'https://github.com/acme/rewritten-repo.git';
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'rewritten-repo/main');
+      assert.equal(calls.length, 4);
+    });
+  });
+
   it('recomputes after HEAD is replaced, even with the same size and mtime', async () => {
     await withTempRepo('omx-hud-label-cache-head-', async (cwd) => {
       await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');

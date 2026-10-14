@@ -713,7 +713,8 @@ export function buildGitBranchLabel(
   const cache = gitLabelCache.get(gitRunner) ?? new Map();
   const cached = cache.get(cacheKey);
   const now = Date.now();
-  if (cached?.fingerprint === fingerprint && now - cached.computedAt < GIT_LABEL_CACHE_TTL_MS) return cached.label;
+  const age = now - cached?.computedAt;
+  if (cached?.fingerprint === fingerprint && age >= 0 && age < GIT_LABEL_CACHE_TTL_MS) return cached.label;
 
   const label = computeGitBranchLabel(cwd, config, gitRunner);
   cache.delete(cacheKey);
