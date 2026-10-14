@@ -329,9 +329,8 @@ describe('HUD resize hook helpers', () => {
       context.skip('tmux is unavailable');
       return;
     }
-    const serverRoot = join(process.cwd(), '.omx', `h${process.pid}-${Date.now()}`);
+    const serverRoot = mkdtempSync(join(tmpdir(), 'omx-hud-tmux-'));
     const socketPath = join(serverRoot, 's');
-    mkdirSync(serverRoot, { recursive: true });
     const tmux = (args: string[]): string => execFileSync('tmux', ['-S', socketPath, ...args], { encoding: 'utf8' });
     try {
       tmux(['new-session', '-d', '-s', 'omx-hook-health', 'sleep 30']);
