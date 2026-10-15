@@ -1,3 +1,4 @@
+import { validateCompletionEvidence } from '../completion-evidence.js';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { existsSync } from 'fs';
@@ -47,7 +48,7 @@ export async function computeTaskReadiness(
 interface ClaimTaskDeps extends TaskReadDeps {
   teamName: string;
   cwd: string;
-  readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string }> } | null>;
+  readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string; working_dir?: string }> } | null>;
   withTaskClaimLock: <T>(teamName: string, taskId: string, cwd: string, fn: () => Promise<T>) => Promise<{ ok: true; value: T } | { ok: false }>;
   normalizeTask: (task: TeamTask) => TeamTaskV2;
   isTerminalTaskStatus: (status: TeamTaskStatus) => boolean;
@@ -105,7 +106,7 @@ export async function claimTask(
       ...v,
       status: 'in_progress',
       owner: workerName,
-      claim: { owner: workerName, token: claimToken, leased_until: new Date(Date.now() + 15 * 60 * 1000).toISOString() },
+      claim: { owner: workerName, token: claimToken, claimed_at: new Date().toISOString(), leased_until: new Date(Date.now() + 15 * 60 * 1000).toISOString() },
       version: v.version + 1,
     };
 
@@ -174,6 +175,7 @@ function requiresCoordinationComplianceEvidence(task: TeamTaskV2): boolean {
 }
 
 interface TransitionDeps extends ClaimTaskDeps {
+  evidenceCwd: string;
   canTransitionTaskStatus: (from: TeamTaskStatus, to: TeamTaskStatus) => boolean;
   appendTeamEvent: (
     teamName: string,
@@ -229,6 +231,17 @@ export async function transitionTaskStatus(
       return { ok: false as const, error: 'missing_coordination_compliance_evidence' as const };
     }
 
+    if (to === 'completed' && v.requires_code_change === true) {
+      try {
+        const config = await deps.readTeamConfig(deps.teamName, deps.cwd);
+        const evidenceCwd = config?.workers.find((worker) => worker.name === v.owner)?.working_dir || deps.evidenceCwd;
+        await validateCompletionEvidence(evidenceCwd, deps.teamName, v, normalizedResult);
+      } catch (error) {
+        return { ok: false as const, error: 'invalid_completion_evidence' as const,
+          reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
+
     const updated: TeamTaskV2 = {
       ...v,
       status: to,
@@ -261,7 +274,7 @@ export async function transitionTaskStatus(
 
   if (!lock.ok) return { ok: false, error: 'claim_conflict' };
 
-  if (to === 'completed') {
+  if (to === 'completed' && lock.value.ok) {
     const existing = await deps.readMonitorSnapshot(deps.teamName, deps.cwd);
     const updated: TeamMonitorSnapshotState = existing
       ? { ...existing, completedEventTaskIds: { ...(existing.completedEventTaskIds ?? {}), [taskId]: true } }

@@ -137,6 +137,7 @@ export interface TeamTask {
 }
 
 export interface TeamTaskClaim {
+  claimed_at?: string;
   owner: string;
   token: string;
   leased_until: string;
@@ -305,7 +306,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' | 'invalid_completion_evidence'; reason?: string };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
