@@ -22573,6 +22573,7 @@ export async function dispatchCodexNativeHook(
     && /^[ \t]*omx[ \t]+cancel\b/.test(readPreToolUseCommand(payload));
   if (omxEventName && !bypassGenericPreToolUsePluginDispatch && allowImplicitSessionSideEffects && allowGlobalSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
     const baseContext = buildBaseContext(cwd, payload, hookEventName!, canonicalSessionId);
+    if (isSubagentStop) baseContext.is_subagent_stop = true;
     if (resolvedNativeSessionId) {
       baseContext.native_session_id = resolvedNativeSessionId;
       baseContext.codex_session_id = resolvedNativeSessionId;

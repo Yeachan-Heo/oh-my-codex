@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { MANAGED_HOOK_EVENTS, buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { writeSessionStart } from "../../hooks/session.js";
-import { readSubagentTrackingState, recordNativeSubagentAuthorityObservation, withCrossProcessFileLockSync } from "../../subagents/tracker.js";
+import { createSubagentTrackingState, readSubagentTrackingState, recordNativeSubagentAuthorityObservation, recordSubagentTurn, withCrossProcessFileLockSync } from "../../subagents/tracker.js";
 import { dispatchCodexNativeHook, mapCodexHookEventToOmxEvent } from "../codex-native-hook.js";
 import { CODEX_HOOK_EVENT_NAMES, extractRawCodexHookEventName, MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
 import { MANAGED_CODEX_HOOK_EVENTS } from "../smoke-packed-install.js";
@@ -115,6 +115,52 @@ describe("native hook protocol compatibility", () => {
     assert.deepEqual(events.map(event => [event.thread_id, event.turn_id]), [
       [agentId, "child-turn-1"], ["other-child", "child-turn-1"], [agentId, "child-turn-2"],
     ]);
+  });
+
+  it("deduplicates lifecycle hooks when legacy Stop and SubagentStop report the same child turn", async () => {
+    await start();
+    const eventsPath = await captureLifecycle({ includeChildAgents: true });
+    const legacyFirstChild = "legacy-first-child";
+    const nativeFirstChild = "native-first-child";
+    for (const childThreadId of [legacyFirstChild, nativeFirstChild]) {
+      recordNativeSubagentAuthorityObservation(cwd, {
+        sessionIds: [sessionId], childThreadId, parentThreadId: parentId,
+        rootNativeSessionId: parentId, authorityEvidence: "valid",
+      });
+    }
+
+    await dispatchCodexNativeHook({
+      hook_event_name: "Stop", cwd, session_id: sessionId,
+      thread_id: legacyFirstChild, turn_id: "turn-legacy-first", stop_hook_active: true,
+    });
+    await dispatchCodexNativeHook(stop({ agent_id: legacyFirstChild, turn_id: "turn-legacy-first" }));
+    await dispatchCodexNativeHook(stop({ agent_id: nativeFirstChild, turn_id: "turn-native-first" }));
+    await dispatchCodexNativeHook({
+      hook_event_name: "Stop", cwd, session_id: sessionId,
+      thread_id: nativeFirstChild, turn_id: "turn-native-first", stop_hook_active: true,
+    });
+
+    const events = (await readFile(eventsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(events.map(event => [event.event, event.thread_id, event.turn_id]), [
+      ["stop", legacyFirstChild, "turn-legacy-first"],
+      ["subagent-stop", nativeFirstChild, "turn-native-first"],
+    ]);
+  });
+
+  it("does not treat missing turn IDs as proof of a duplicate completion", () => {
+    const first = recordSubagentTurn(createSubagentTrackingState(), {
+      sessionId, threadId: agentId, kind: "subagent", completed: true,
+      completionSource: "native_stop_event",
+    });
+    const second = recordSubagentTurn(first, {
+      sessionId, threadId: agentId, kind: "subagent", completed: true,
+      completionSource: "native_stop_event",
+    });
+
+    assert.equal(
+      second.sessions[sessionId]!.threads[agentId]!.turn_count,
+      first.sessions[sessionId]!.threads[agentId]!.turn_count + 1,
+    );
   });
 
   it("keeps malformed tracker authority bytes intact and returns CLI no-op with a diagnostic", async () => {

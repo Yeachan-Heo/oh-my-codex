@@ -295,7 +295,29 @@ function shouldDedupeHookEvent(event: HookEventEnvelope): boolean {
 		|| event.event === "keyword-detector";
 }
 
+function getNativeSubagentCompletionIdentity(
+	event: HookEventEnvelope,
+): { threadId: string; turnId: string } | null {
+	if (event.source !== "native") return null;
+	const threadId = event.thread_id?.trim();
+	const turnId = event.turn_id?.trim();
+	if (!threadId || !turnId) return null;
+	if (event.event === "subagent-stop") return { threadId, turnId };
+	if (event.event === "stop" && event.context.is_subagent_stop === true) return { threadId, turnId };
+	return null;
+}
+
 function buildHookEventFingerprint(event: HookEventEnvelope): string {
+	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
+	if (subagentCompletion) {
+		return createLifecycleBroadcastFingerprint({
+			event: "subagent-completion",
+			source: event.source,
+			session_id: event.session_id || "",
+			thread_id: subagentCompletion.threadId,
+			turn_id: subagentCompletion.turnId,
+		});
+	}
 	return createLifecycleBroadcastFingerprint({
 		event: event.event,
 		source: event.source,
@@ -305,6 +327,17 @@ function buildHookEventFingerprint(event: HookEventEnvelope): string {
 		mode: event.mode || "",
 		context: event.context,
 	});
+}
+
+function buildHookEventDedupeKey(event: HookEventEnvelope): string {
+	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
+	if (subagentCompletion) {
+		return `subagent-stop:${JSON.stringify([subagentCompletion.threadId, subagentCompletion.turnId])}`;
+	}
+	if (event.event === "subagent-stop") {
+		return `subagent-stop:${JSON.stringify([event.thread_id || "", event.turn_id || ""])}`;
+	}
+	return event.event;
 }
 
 export async function dispatchHookEvent(
@@ -357,9 +390,7 @@ export async function dispatchHookEvent(
 	const dedupeFingerprint = shouldDedupeHookEvent(event)
 		? buildHookEventFingerprint(event)
 		: "";
-	const dedupeEventKey = event.event === "subagent-stop"
-		? `subagent-stop:${JSON.stringify([event.thread_id || "", event.turn_id || ""])}`
-		: event.event;
+	const dedupeEventKey = buildHookEventDedupeKey(event);
 	if (
 		dedupeFingerprint
 		&& !shouldSendLifecycleHookBroadcast(
