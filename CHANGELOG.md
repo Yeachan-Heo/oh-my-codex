@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.14] - 2026-10-15
+
+Patch release for the frozen range `v0.21.13..7fd6e95a839c0c0c14de67a7bc976c4d9134b923` (3 commits, 9 files, +1,480/−71; PRs #3793 and #3803).
+
+### Added
+
+- Add `omx session timeline <session-id>` to reconstruct tool execution, turn boundaries, and context compactions from active or archived transcripts, with tool diagnostics including observed durations, exit codes, failures, and incomplete calls (#3793, authored by @hiSandog).
+
+### Integration
+
+- Back-merge the v0.21.13 release into dev (#3803, authored by @Yeachan-Heo).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.14.md) and [release readiness](docs/qa/release-readiness-0.21.14.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.13...v0.21.14
+
 ## [0.21.13] - 2026-10-15
 
 Patch release for the frozen range `v0.21.12..51fa7eed6877b91706629174a2deeff83d1ce08f` (6 commits, 10 files, +576/−52; PRs #3787, #3795, #3796).

@@ -1,40 +1,37 @@
-# oh-my-codex 0.21.13
+# oh-my-codex 0.21.14
 
-`0.21.13` is a patch release for the frozen range `v0.21.12..51fa7eed6877b91706629174a2deeff83d1ce08f` (6 commits, 10 files, +576/−52).
+`0.21.14` is a patch release for the frozen range `v0.21.13..7fd6e95a839c0c0c14de67a7bc976c4d9134b923` (3 commits, 9 files, +1,480/−71).
 
 ## Highlights
 
-- **Bound hook-spawned HUD reconciliation (#3787):** reconciliation processes started by hooks now have a timeout, preventing a hung child from blocking later reconciliation. Fixes #3785.
-- **Dependency updates:** update `serde_json` from 1.0.151 to 1.0.154 (#3795) and `@types/node` from 26.6.4 to 26.6.5 (#3796).
+- **Session execution timelines and tool diagnostics (#3793):** add `omx session timeline <session-id>` to reconstruct tool execution, turn boundaries, and context compactions from active or archived transcripts. Filter and sort tool events, inspect observed durations, exit codes, failures, incomplete calls, and per-tool totals.
 
-## Fixes and compatibility
+## Compatibility
 
-- Bound hook-spawned reconciliation processes to prevent indefinite waits (#3787, fixes #3785).
-- No CLI command, protocol, or package-layout changes are included.
+- This continues the 0.21.x patch train with an additive session subcommand; it does not remove or change existing CLI commands, protocols, or package layout.
 
 ## Validation evidence
 
-Frozen candidate `51fa7eed6877b91706629174a2deeff83d1ce08f` is green on dev CI. Local build, typecheck, and relevant test results are recorded in `docs/qa/release-readiness-0.21.13.md`.
+Frozen candidate `7fd6e95a839c0c0c14de67a7bc976c4d9134b923` is green on dev CI (24 checks succeeded; the conditional npm publish job was skipped). Local build, typecheck, and relevant test results are recorded in `docs/qa/release-readiness-0.21.14.md`.
 
-Full readiness evidence: `docs/qa/release-readiness-0.21.13.md`.
+Full readiness evidence: `docs/qa/release-readiness-0.21.14.md`.
 
 ## Merged PR inventory
 
 | PR | Author | Title |
 |---|---|---|
-| [#3787](https://github.com/Yeachan-Heo/oh-my-codex/pull/3787) | @Yeachan-Heo | fix(hud): bound hook-spawned reconcile processes with timeout (Fixes #3785) |
-| [#3795](https://github.com/Yeachan-Heo/oh-my-codex/pull/3795) | @dependabot | build(deps): bump serde_json from 1.0.151 to 1.0.154 |
-| [#3796](https://github.com/Yeachan-Heo/oh-my-codex/pull/3796) | @dependabot | build(deps-dev): bump @types/node from 26.6.4 to 26.6.5 |
+| [#3793](https://github.com/Yeachan-Heo/oh-my-codex/pull/3793) | @hiSandog | feat(session): add execution timelines and tool diagnostics |
+| [#3803](https://github.com/Yeachan-Heo/oh-my-codex/pull/3803) | @Yeachan-Heo | chore: back-merge v0.21.13 release to dev (integration only) |
 
 ## Contributors
 
-Thanks to @Yeachan-Heo and @dependabot.
+Thanks to @hiSandog for the session timeline feature and @Yeachan-Heo for the release back-merge.
 
 ## Inventory
 
-The reproducible range is recorded in `artifacts/release-0.21.13/inventory.md`.
+The reproducible range is recorded in `artifacts/release-0.21.14/inventory.md`.
 
-**Full Changelog**: [`v0.21.12...v0.21.13`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.12...v0.21.13)
+**Full Changelog**: [`v0.21.13...v0.21.14`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.13...v0.21.14)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
