@@ -13,6 +13,14 @@ describe('worker completion evidence', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
     try {
       await initTeamState('proof', 'review', 'executor', 1, cwd);
+      const malformedFlag = await executeTeamApiOperation('create-task', {
+        team_name: 'proof', subject: 'code', description: 'implement', requires_code_change: 'true',
+      }, cwd);
+      assert.equal(malformedFlag.ok, false);
+      if (!malformedFlag.ok) {
+        assert.equal(malformedFlag.error.code, 'invalid_input');
+        assert.match(malformedFlag.error.message, /requires_code_change must be a boolean/);
+      }
       for (const entry of [
         { status: 'completed' as const, requires_code_change: false, result: 'Reviewed the implementation' },
         { status: 'completed' as const, requires_code_change: undefined, result: 'Verification: PASS review' },
@@ -71,7 +79,7 @@ describe('worker completion evidence', () => {
         verification: [{ command: 'node --test', result: 'passed', output: '2 tests passed' }], unverified: [],
       }));
       const marker = 'EVIDENCE_RECORDED: .omx/evidence/test-results.json';
-      for (const result of [marker, `Verification:\n${marker}`]) {
+      for (const result of [marker, `Verification:\n${marker}`, `Verification:\n ${marker}`]) {
         const rejected = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
         assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
         assert.match(rejected.reason ?? '', /Verification/);

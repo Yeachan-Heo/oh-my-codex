@@ -769,6 +769,9 @@ export async function executeTeamApiOperation(
         if (!teamName || !subject || !description) {
           return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name, subject, description are required' } };
         }
+        if (opArgs.requires_code_change !== undefined && typeof opArgs.requires_code_change !== 'boolean') {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'requires_code_change must be a boolean when provided' } };
+        }
         const owner = opArgs.owner as string | undefined;
         const blockedBy = opArgs.blocked_by as string[] | undefined;
         const requiresCodeChange = opArgs.requires_code_change as boolean | undefined;
