@@ -227,7 +227,8 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         const callId = asString(payload.call_id);
         const result = asObject(payload.result);
         const ok = asObject(result?.Ok);
-        if (callId && pending.has(callId) && !ambiguous.has(callId) && ok?.isError === true) {
+        const failed = ok?.isError === true || (result !== null && Object.hasOwn(result, 'Err'));
+        if (callId && pending.has(callId) && !ambiguous.has(callId) && failed) {
           mcpToolFailures.add(callId);
         }
       } else {

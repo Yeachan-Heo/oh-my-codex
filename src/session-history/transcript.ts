@@ -103,7 +103,9 @@ export async function* readResolvedSessionTranscriptLines(
   } catch (error) {
     // Codex can move an active transcript into the archive after resolution but before open.
     if (yieldedLine || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    const refreshed = await resolveSessionTranscript(options);
+    const selectedId = transcript.id;
+    const refreshed = await resolveSessionTranscript({ ...options, session: selectedId });
+    if (refreshed.id !== selectedId) throw new Error('The selected transcript changed during inspection. Try again.');
     onResolved(refreshed);
     yield* readSessionTranscriptLines(refreshed.path);
   }

@@ -52,7 +52,7 @@ arguments or output to investigate an event.
 | Status/event | Meaning |
 | --- | --- |
 | `completed` | A result was recorded without an explicit failure marker. This is not a guarantee of success. |
-| `failed` | A result has a nonzero integer exit code, `isError: true`, or `is_error: true`, or its MCP lifecycle event reports `result.Ok.isError: true`. |
+| `failed` | A result has a nonzero integer exit code, `isError: true`, or `is_error: true`, or its MCP lifecycle event reports `result.Ok.isError: true` or a `result.Err` variant. |
 | `incomplete` | A call has no uniquely matched result in the inspected transcript. It may be interrupted, truncated, or still running. |
 | `orphan_output` | A result has no uniquely matching earlier call. Its own status is available, but it is not counted as a completed or failed call. |
 

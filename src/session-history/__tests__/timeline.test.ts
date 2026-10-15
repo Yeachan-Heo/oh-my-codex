@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildSessionTimeline, type TimelineToolEvent } from '../timeline.js';
@@ -114,24 +114,32 @@ describe('buildSessionTimeline', () => {
     await fixture([
       call('mcp-failed', 1, 'read', 'mcp__filesystem'),
       call('mcp-completed', 2, 'read', 'mcp__filesystem'),
+      call('mcp-transport-error', 3, 'read', 'mcp__filesystem'),
       record('event_msg', {
         type: 'mcp_tool_call_end', call_id: 'mcp-failed', result: { Ok: { isError: true } },
       }, 3),
       record('event_msg', {
         type: 'mcp_tool_call_end', call_id: 'mcp-completed', result: { Ok: { isError: false } },
       }, 4),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'mcp-transport-error', result: { Err: 'PRIVATE_MCP_TRANSPORT_ERROR' },
+      }, 5),
       output('mcp-failed', 5, 'Wall time: 0.1 seconds\nOutput:\nPermission denied'),
       output('mcp-completed', 6, 'Wall time: 0.1 seconds\nOutput:\nRead complete'),
+      output('mcp-transport-error', 7, 'Wall time: 0.1 seconds\nOutput:\nConnection failed'),
     ]);
     const options = { session: 'timeline-id', codexHomeDir: home };
     const report = await buildSessionTimeline(options);
     assert.deepEqual(report.events.map((event) => event.kind === 'tool' ? [event.call_id, event.status, event.exit_code] : null), [
-      ['mcp-failed', 'failed', null], ['mcp-completed', 'completed', null],
+      ['mcp-failed', 'failed', null], ['mcp-completed', 'completed', null], ['mcp-transport-error', 'failed', null],
     ]);
-    assert.equal(report.summary.failed, 1);
+    assert.equal(report.summary.failed, 2);
     assert.equal(report.summary.completed, 1);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_MCP_TRANSPORT_ERROR/);
     const failures = await buildSessionTimeline({ ...options, status: 'failed' });
-    assert.deepEqual(failures.events.map((event) => event.kind === 'tool' ? event.call_id : null), ['mcp-failed']);
+    assert.deepEqual(failures.events.map((event) => event.kind === 'tool' ? event.call_id : null), [
+      'mcp-failed', 'mcp-transport-error',
+    ]);
   });
 
   it('does not guess pairings for missing or duplicate outstanding call IDs', async () => {
@@ -201,6 +209,23 @@ describe('buildSessionTimeline', () => {
     const report = await buildSessionTimeline(options);
     assert.equal(report.archived, true);
     assert.equal(report.summary.tool_calls, 1);
+  });
+
+  it('does not replace a missing exact session with another prefix match during retry', async () => {
+    const selectedPath = await fixture([], 'abc');
+    await fixture([], 'abcd');
+    const options = { session: 'abc', codexHomeDir: home };
+    const transcript = await resolveSessionTranscript(options);
+    await unlink(selectedPath);
+
+    let resolvedAnotherTranscript = false;
+    const readLines = async () => {
+      for await (const _line of readResolvedSessionTranscriptLines(options, transcript, () => {
+        resolvedAnotherTranscript = true;
+      })) { /* drain the selected transcript */ }
+    };
+    await assert.rejects(readLines(), /selected transcript changed during inspection/);
+    assert.equal(resolvedAnotherTranscript, false);
   });
 
   it('keeps missing, invalid, and reversed timestamps unknown and reports gaps', async () => {
