@@ -449,4 +449,38 @@ export async function onHookEvent() {}
       await rm(stateRoot, { recursive: true, force: true });
     }
   });
+
+  it('keeps a successful child completion deduped when dispatch logging fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-log-failure-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-log-failure-root-'));
+    const runsPath = join(cwd, 'plugin-runs.txt');
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'successful.mjs'), `import { appendFileSync } from 'node:fs';
+export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN_RUNS, 'ran\\n'); }
+`);
+      await writeFile(join(cwd, '.omx', 'logs'), 'not a directory');
+      const event = buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: 'sess-claim-log-failure',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      });
+      const options = {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1', OMX_TEST_PLUGIN_RUNS: runsPath },
+      };
+
+      await assert.rejects(dispatchHookEvent(event, options), /EEXIST|ENOTDIR/);
+      assert.equal((await readFile(runsPath, 'utf8')).trim().split('\n').length, 1);
+      await assert.rejects(dispatchHookEvent(event, options), /EEXIST|ENOTDIR/);
+      assert.equal((await readFile(runsPath, 'utf8')).trim().split('\n').length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
 });

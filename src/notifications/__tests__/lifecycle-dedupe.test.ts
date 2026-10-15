@@ -12,6 +12,7 @@ import {
   recordLifecycleNotificationSent,
   shouldSendLifecycleHookBroadcast,
   recordLifecycleHookBroadcastSent,
+  renewLifecycleHookBroadcastClaim,
   releaseLifecycleHookBroadcast,
 } from '../lifecycle-dedupe.js';
 import type { FullNotificationPayload } from '../types.js';
@@ -162,12 +163,45 @@ describe('lifecycle notification dedupe', () => {
     try {
       const abandonedClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs);
       assert.equal(abandonedClaim.acquired, true);
-      assert.equal(claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 59_999).acquired, false);
+      assert.equal(claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 119_999).acquired, false);
 
-      const recoveredClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 60_000);
+      const recoveredClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 120_000);
       assert.equal(recoveredClaim.acquired, true);
       assert.ok(recoveredClaim.claimId);
-      releaseLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', recoveredClaim.claimId!, startMs + 60_001);
+      releaseLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', recoveredClaim.claimId!, startMs + 120_001);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('renews an active child-hook claim and rejects renewal by a stale owner', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-hook-claim-renewal-'));
+    const sessionId = 'claim-renewal-session';
+    const eventKey = 'subagent-stop:["child-a","turn-1"]';
+    const startMs = Date.parse('2026-04-12T00:00:00.000Z');
+    try {
+      const claim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs);
+      assert.equal(claim.acquired, true);
+      assert.ok(claim.claimId);
+      assert.equal(renewLifecycleHookBroadcastClaim(
+        stateDir, sessionId, eventKey, 'fingerprint', 'stale-claim', startMs + 60_000,
+      ), false);
+      assert.equal(renewLifecycleHookBroadcastClaim(
+        stateDir, sessionId, eventKey, 'fingerprint', claim.claimId!, startMs + 60_000,
+      ), true);
+      assert.deepEqual(
+        claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 120_000),
+        { acquired: false, reason: 'duplicate' },
+      );
+
+      const expiredClaim = claimLifecycleHookBroadcast(
+        stateDir, sessionId, eventKey, 'fingerprint', startMs + 180_000,
+      );
+      assert.equal(expiredClaim.acquired, true);
+      assert.ok(expiredClaim.claimId);
+      releaseLifecycleHookBroadcast(
+        stateDir, sessionId, eventKey, 'fingerprint', expiredClaim.claimId!, startMs + 180_001,
+      );
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }

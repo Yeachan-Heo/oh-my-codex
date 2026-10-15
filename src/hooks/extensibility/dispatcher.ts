@@ -9,6 +9,7 @@ import {
 	claimLifecycleHookBroadcast,
 	completeLifecycleHookBroadcast,
 	createLifecycleBroadcastFingerprint,
+	renewLifecycleHookBroadcastClaim,
 	recordLifecycleHookBroadcastSent,
 	releaseLifecycleHookBroadcast,
 	shouldSendLifecycleHookBroadcast,
@@ -34,6 +35,7 @@ interface RunnerResult {
 
 const RESULT_PREFIX = "__OMX_PLUGIN_RESULT__ ";
 const RUNNER_SIGKILL_GRACE_MS = 250;
+const CHILD_COMPLETION_CLAIM_RENEW_INTERVAL_MS = 15_000;
 
 function hooksLogPath(cwd: string): string {
 	const day = new Date().toISOString().slice(0, 10);
@@ -431,7 +433,23 @@ export async function dispatchHookEvent(
 	}
 
 	let dedupeClaimFinalized = false;
+	let dedupeClaimRenewalFailed = false;
+	let dedupeClaimRenewalTimer: ReturnType<typeof setInterval> | undefined;
 	try {
+		const claimId = dedupeClaimId;
+		if (subagentCompletion && claimId) {
+			dedupeClaimRenewalTimer = setInterval(() => {
+				if (!renewLifecycleHookBroadcastClaim(
+					stateRoot,
+					event.session_id,
+					dedupeEventKey,
+					dedupeFingerprint,
+					claimId,
+				)) {
+					dedupeClaimRenewalFailed = true;
+				}
+			}, CHILD_COMPLETION_CLAIM_RENEW_INTERVAL_MS);
+		}
 		const plugins = await discoverHookPlugins(cwd);
 		summary.plugin_count = plugins.length;
 
@@ -442,6 +460,10 @@ export async function dispatchHookEvent(
 			options.sideEffectsEnabled ?? (!inTeamWorker || allowTeamSideEffects);
 
 		for (const plugin of plugins) {
+			if (dedupeClaimRenewalFailed) {
+				summary.reason = "dedupe_unavailable";
+				break;
+			}
 			const result = await runPluginRunner(
 				plugin,
 				event,
@@ -464,6 +486,7 @@ export async function dispatchHookEvent(
 			});
 		}
 
+		if (dedupeClaimRenewalFailed) summary.reason = "dedupe_unavailable";
 		if (dedupeFingerprint && summary.results.some((result) => result.ok)) {
 			if (subagentCompletion && dedupeClaimId) {
 				completeLifecycleHookBroadcast(
@@ -495,14 +518,25 @@ export async function dispatchHookEvent(
 
 		return summary;
 	} finally {
+		if (dedupeClaimRenewalTimer) clearInterval(dedupeClaimRenewalTimer);
 		if (subagentCompletion && dedupeClaimId && !dedupeClaimFinalized) {
-			releaseLifecycleHookBroadcast(
-				stateRoot,
-				event.session_id,
-				dedupeEventKey,
-				dedupeFingerprint,
-				dedupeClaimId,
-			);
+			if (summary.results.some((result) => result.ok)) {
+				completeLifecycleHookBroadcast(
+					stateRoot,
+					event.session_id,
+					dedupeEventKey,
+					dedupeFingerprint,
+					dedupeClaimId,
+				);
+			} else {
+				releaseLifecycleHookBroadcast(
+					stateRoot,
+					event.session_id,
+					dedupeEventKey,
+					dedupeFingerprint,
+					dedupeClaimId,
+				);
+			}
 		}
 	}
 }

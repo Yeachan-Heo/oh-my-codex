@@ -7,7 +7,7 @@ import type { NotificationEvent, FullNotificationPayload } from './types.js';
 const SESSION_ID_SAFE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
 const LIFECYCLE_DEDUPE_FILE = 'lifecycle-notif-state.json';
 const LIFECYCLE_DEDUPE_WINDOW_MS = 5_000;
-const LIFECYCLE_HOOK_CLAIM_WINDOW_MS = 60_000;
+const LIFECYCLE_HOOK_CLAIM_WINDOW_MS = 120_000;
 const DEDUPED_EVENTS = new Set<NotificationEvent>(['session-start', 'session-stop', 'session-end']);
 
 interface LifecycleDedupeEntry {
@@ -257,6 +257,38 @@ export function claimLifecycleHookBroadcast(
   } catch {
     // Do not run side-effecting hooks without an atomic child-completion claim.
     return { acquired: false, reason: 'unavailable' };
+  }
+}
+
+export function renewLifecycleHookBroadcastClaim(
+  stateDir: string,
+  sessionId: string | undefined,
+  eventKey: string,
+  fingerprint: string,
+  claimId: string,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!sessionId || !stateDir || !claimId) return false;
+
+  const path = getStatePath(stateDir, sessionId);
+  try {
+    return withCrossProcessFileLockSync(path, (lock) => {
+      const state = readState(path);
+      const hookEvents = state.hookEvents && typeof state.hookEvents === 'object'
+        ? state.hookEvents
+        : {};
+      const previous = hookEvents[eventKey];
+      if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return false;
+      hookEvents[eventKey] = {
+        ...previous,
+        claimedAt: new Date(nowMs).toISOString(),
+      };
+      state.hookEvents = hookEvents;
+      lock.assertOwnership();
+      return writeState(path, state, lock.publish);
+    });
+  } catch {
+    return false;
   }
 }
 
