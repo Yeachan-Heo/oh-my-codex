@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { renderHud } from '../render.js';
@@ -349,6 +349,241 @@ describe('buildGitBranchLabel', () => {
       await withWindowsPlatform(() => {
         assert.equal(buildGitBranchLabel(cwd), `${basename(cwd)}/worktree-branch`);
       });
+    });
+  });
+});
+
+
+type CountingGitState = { branch: string | null; remoteUrl: string };
+
+function countingGitRunner(state: CountingGitState) {
+  const calls: string[] = [];
+  const runner = (_cwd: string, args: string[]) => {
+    const command = args.join(' ');
+    calls.push(command);
+    if (command === 'rev-parse --abbrev-ref HEAD') return state.branch;
+    if (command === 'remote get-url origin') return state.remoteUrl;
+    throw new Error('Unexpected command: git ' + command);
+  };
+  return { runner, calls };
+}
+
+function remoteConfig(url: string): string {
+  return ['[remote "origin"]', `  url = ${url}`, ''].join('\n');
+}
+
+async function createPlainGitDirFixture(cwd: string, branch: string, url: string): Promise<void> {
+  const gitDir = join(cwd, '.git');
+  await mkdir(gitDir, { recursive: true });
+  await writeFile(join(gitDir, 'HEAD'), `ref: refs/heads/${branch}\n`);
+  await writeFile(join(gitDir, 'config'), remoteConfig(url));
+}
+
+// git replaces HEAD and config by renaming a freshly written <file>.lock over them.
+async function rewriteLikeGit(path: string, content: string): Promise<void> {
+  await writeFile(`${path}.lock`, content);
+  await rename(`${path}.lock`, path);
+}
+
+describe('buildGitBranchLabel caching', () => {
+  it('reuses the label while HEAD and config are unchanged', async () => {
+    await withTempRepo('omx-hud-label-cache-hit-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const { runner, calls } = countingGitRunner({ branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' });
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(calls.length, 2);
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(calls.length, 2);
+    });
+  });
+
+  it('recomputes an unchanged label once the cache entry is 30 seconds old', async (t) => {
+    await withTempRepo('omx-hud-label-cache-ttl-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const state = { branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+      let now = 1_700_000_000_000;
+      t.mock.method(Date, 'now', () => now);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      // A change the fingerprint cannot see, such as an insteadOf rule in the global config.
+      state.remoteUrl = 'https://github.com/acme/rewritten-repo.git';
+      now += 29_999;
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(calls.length, 2);
+      now += 1;
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'rewritten-repo/main');
+      assert.equal(calls.length, 4);
+    });
+  });
+
+  it('recomputes after a backward clock adjustment', async (t) => {
+    await withTempRepo('omx-hud-label-cache-clock-back-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const state = { branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+      let now = 1_700_000_000_000;
+      t.mock.method(Date, 'now', () => now);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(calls.length, 2);
+      // Simulate a backward clock adjustment (e.g., NTP correction)
+      now -= 5_000;
+      // A change the fingerprint cannot see. The cache should be invalidated
+      // even though the age is negative, preventing stale labels during time adjustments.
+      state.remoteUrl = 'https://github.com/acme/rewritten-repo.git';
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'rewritten-repo/main');
+      assert.equal(calls.length, 4);
+    });
+  });
+
+  it('recomputes after HEAD is replaced, even with the same size and mtime', async () => {
+    await withTempRepo('omx-hud-label-cache-head-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const headPath = join(cwd, '.git', 'HEAD');
+      const fixedSeconds = 1_700_000_000;
+      await utimes(headPath, fixedSeconds, fixedSeconds);
+      const state = { branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      const before = await stat(headPath);
+
+      state.branch = 'next';
+      await writeFile(`${headPath}.lock`, 'ref: refs/heads/next\n');
+      await utimes(`${headPath}.lock`, fixedSeconds, fixedSeconds);
+      await rename(`${headPath}.lock`, headPath);
+      const after = await stat(headPath);
+      assert.equal(after.size, before.size);
+      assert.equal(after.mtimeMs, before.mtimeMs);
+      assert.notEqual(after.ino, before.ino);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/next');
+      assert.equal(calls.length, 4);
+    });
+  });
+
+  it('recomputes after the remote url in config changes', async () => {
+    await withTempRepo('omx-hud-label-cache-remote-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const state = { branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+
+      state.remoteUrl = 'https://github.com/acme/renamed-repository.git';
+      await rewriteLikeGit(join(cwd, '.git', 'config'), remoteConfig(state.remoteUrl));
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'renamed-repository/main');
+      assert.equal(calls.length, 4);
+    });
+  });
+
+  it('recomputes after the common-dir config of a worktree changes', async () => {
+    await withTempRepo('omx-hud-label-cache-worktree-', async (cwd) => {
+      await createWorktreePointerFixture(cwd);
+      const state = { branch: 'worktree-branch', remoteUrl: 'git@github.com:acme/worktree-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'worktree-repo/worktree-branch');
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'worktree-repo/worktree-branch');
+      assert.equal(calls.length, 2);
+
+      state.remoteUrl = 'git@github.com:acme/moved-repository.git';
+      await rewriteLikeGit(join(cwd, '.git-admin', 'config'), remoteConfig(state.remoteUrl));
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'moved-repository/worktree-branch');
+      assert.equal(calls.length, 4);
+    });
+  });
+
+  it('keeps one cached label per git display config', async () => {
+    await withTempRepo('omx-hud-label-cache-config-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const { runner, calls } = countingGitRunner({ branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' });
+      const branchOnly = { preset: 'focused', git: { display: 'branch' }, statusLine: { preset: 'focused' } } as const;
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(buildGitBranchLabel(cwd, branchOnly, runner), 'main');
+      assert.equal(calls.length, 3);
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(buildGitBranchLabel(cwd, branchOnly, runner), 'main');
+      assert.equal(calls.length, 3);
+    });
+  });
+
+  it('does not cache when there is no git layout', async () => {
+    await withTempRepo('omx-hud-label-cache-nogit-', async (cwd) => {
+      const { runner, calls } = countingGitRunner({ branch: 'main', remoteUrl: 'https://github.com/acme/first-repo.git' });
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+      assert.equal(calls.length, 4);
+    });
+  });
+
+  it('does not cache a null label', async () => {
+    await withTempRepo('omx-hud-label-cache-null-', async (cwd) => {
+      await createPlainGitDirFixture(cwd, 'main', 'https://github.com/acme/first-repo.git');
+      const state: CountingGitState = { branch: null, remoteUrl: 'https://github.com/acme/first-repo.git' };
+      const { runner, calls } = countingGitRunner(state);
+
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), null);
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), null);
+      assert.equal(calls.length, 2);
+
+      // The first commit creates refs/heads/main without touching HEAD or config.
+      state.branch = 'main';
+      assert.equal(buildGitBranchLabel(cwd, undefined, runner), 'first-repo/main');
+    });
+  });
+
+  it('shows a branch switch and a remote change from real git on the next call', { skip: process.platform === 'win32' }, async () => {
+    await withTempRepo('omx-hud-label-cache-realgit-', async (cwd) => {
+      initGitRepo(cwd);
+
+      assert.equal(buildGitBranchLabel(cwd), 'origin-repo/safe-branch');
+      execFileSync('git', ['checkout', '-b', 'other-branch'], { cwd, stdio: 'ignore' });
+      assert.equal(buildGitBranchLabel(cwd), 'origin-repo/other-branch');
+      execFileSync('git', ['remote', 'set-url', 'origin', 'https://github.com/acme/renamed-repo.git'], { cwd, stdio: 'ignore' });
+      assert.equal(buildGitBranchLabel(cwd), 'renamed-repo/other-branch');
+      execFileSync('git', ['checkout', '--detach'], { cwd, stdio: 'ignore' });
+      assert.equal(buildGitBranchLabel(cwd), 'renamed-repo/HEAD');
+    });
+  });
+
+  it('shows a branch switch in a reftable repository and its linked worktree', { skip: process.platform === 'win32' }, async (t) => {
+    await withTempRepo('omx-hud-label-cache-reftable-', async (cwd) => {
+      try {
+        execFileSync('git', ['init', '--ref-format=reftable'], { cwd, stdio: 'ignore' });
+      } catch {
+        t.skip('git does not support --ref-format=reftable');
+        return;
+      }
+      const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+      git(cwd, 'config', 'user.email', 'test@example.com');
+      git(cwd, 'config', 'user.name', 'Test User');
+      git(cwd, 'remote', 'add', 'origin', 'https://github.com/acme/reftable-repo.git');
+      git(cwd, 'checkout', '-b', 'first-branch');
+      git(cwd, 'commit', '--allow-empty', '-m', 'init');
+
+      const headPath = join(cwd, '.git', 'HEAD');
+      const headBefore = await stat(headPath);
+      assert.equal(buildGitBranchLabel(cwd), 'reftable-repo/first-branch');
+      git(cwd, 'checkout', '-b', 'second-branch');
+      const headAfter = await stat(headPath);
+      assert.equal(headAfter.ino, headBefore.ino);
+      assert.equal(headAfter.mtimeMs, headBefore.mtimeMs);
+      assert.equal(buildGitBranchLabel(cwd), 'reftable-repo/second-branch');
+
+      const worktree = join(cwd, 'linked');
+      git(cwd, 'worktree', 'add', '-b', 'linked-branch', worktree);
+      assert.equal(buildGitBranchLabel(worktree), 'reftable-repo/linked-branch');
+      git(worktree, 'checkout', '-b', 'linked-next');
+      assert.equal(buildGitBranchLabel(worktree), 'reftable-repo/linked-next');
+      assert.equal(buildGitBranchLabel(cwd), 'reftable-repo/second-branch');
     });
   });
 });

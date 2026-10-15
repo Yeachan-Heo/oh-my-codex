@@ -4,10 +4,12 @@
  * Reads .omx/state/ files to build HUD render context.
  */
 
+import { statSync } from 'fs';
 import { open, readFile, readdir, stat } from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { join, basename } from 'path';
 import { findGitLayout, readGitLayoutFile } from '../utils/git-layout.js';
+import type { GitLayout } from '../utils/git-layout.js';
 import { resolveOmxDisplayVersionSync } from '../utils/version.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import type { RuntimeSnapshot } from '../runtime/bridge.js';
@@ -642,11 +644,7 @@ export function readGitBranch(cwd: string): string | null {
   return readGitBranchName(cwd, runGit);
 }
 
-export function buildGitBranchLabel(
-  cwd: string,
-  config: ResolvedHudConfig = DEFAULT_HUD_CONFIG,
-  gitRunner: GitRunner = runGit,
-): string | null {
+function computeGitBranchLabel(cwd: string, config: ResolvedHudConfig, gitRunner: GitRunner): string | null {
   const branch = readGitBranchName(cwd, gitRunner);
   if (!branch) return null;
 
@@ -656,6 +654,79 @@ export function buildGitBranchLabel(
 
   const repoLabel = resolveRepoLabel(cwd, config, gitRunner);
   return repoLabel ? `${repoLabel}/${branch}` : branch;
+}
+
+const GIT_LABEL_CACHE_MAX_ENTRIES = 16;
+// Upper bound on staleness for changes the fingerprint cannot see: global or
+// included git config, insteadOf rules, or a git call that failed or timed out
+// while the label was computed.
+const GIT_LABEL_CACHE_TTL_MS = 30_000;
+const gitLabelCache = new WeakMap<GitRunner, Map<string, { fingerprint: string; label: string; computedAt: number }>>();
+
+function gitFileStamp(path: string): string {
+  try {
+    const { ino, size, mtimeMs } = statSync(path);
+    return `${ino}:${size}:${mtimeMs}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+/**
+ * Identifies the git state the label is derived from without spawning git.
+ * git writes HEAD and config through a lockfile and renames it into place, so
+ * the inode changes on every write even when the mtime granularity is coarse.
+ * With the reftable ref backend, HEAD is a fixed `ref: refs/heads/.invalid`
+ * stub and a checkout only rewrites `reftable/tables.list` (per worktree for a
+ * linked worktree, in the common dir for the main one), so those are stamped
+ * too. They change on every ref update, which only costs a recompute.
+ */
+function gitLabelFingerprint(layout: GitLayout): string {
+  return [
+    layout.gitDir,
+    layout.commonDir,
+    gitFileStamp(join(layout.gitDir, 'HEAD')),
+    gitFileStamp(join(layout.gitDir, 'config')),
+    gitFileStamp(join(layout.commonDir, 'config')),
+    gitFileStamp(join(layout.gitDir, 'reftable', 'tables.list')),
+    gitFileStamp(join(layout.commonDir, 'reftable', 'tables.list')),
+  ].join('|');
+}
+
+/**
+ * The attached HUD calls this once per second, and each call can spawn up to
+ * four git processes. Reuse the label until HEAD, a ref table or a git config
+ * file changes, or for at most GIT_LABEL_CACHE_TTL_MS.
+ */
+export function buildGitBranchLabel(
+  cwd: string,
+  config: ResolvedHudConfig = DEFAULT_HUD_CONFIG,
+  gitRunner: GitRunner = runGit,
+): string | null {
+  const layout = findGitLayout(cwd);
+  if (!layout) return computeGitBranchLabel(cwd, config, gitRunner);
+
+  const cacheKey = `${cwd}\0${JSON.stringify(config.git)}`;
+  // Taken before the git calls: a write that lands mid-compute then fails the
+  // next comparison and is recomputed, instead of being masked by a newer stamp.
+  const fingerprint = gitLabelFingerprint(layout);
+  const cache = gitLabelCache.get(gitRunner) ?? new Map();
+  const cached = cache.get(cacheKey);
+  const now = Date.now();
+  const age = now - cached?.computedAt;
+  if (cached?.fingerprint === fingerprint && age >= 0 && age < GIT_LABEL_CACHE_TTL_MS) return cached.label;
+
+  const label = computeGitBranchLabel(cwd, config, gitRunner);
+  cache.delete(cacheKey);
+  // A null label is not cached: in a repo with no commits yet, HEAD and config
+  // stay unchanged when the first commit creates the branch, and a failed or
+  // timed-out git call would otherwise stick until the next git write.
+  if (label !== null) {
+    if (cache.size >= GIT_LABEL_CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value as string);
+    cache.set(cacheKey, { fingerprint, label, computedAt: now });
+  }
+  gitLabelCache.set(gitRunner, cache);
+  return label;
 }
 
 const TERMINAL_OR_INACTIVE_PHASES = new Set(['complete', 'completed', 'cancelled', 'canceled', 'failed', 'inactive', 'cleared']);
