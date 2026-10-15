@@ -43,6 +43,14 @@ describe('worker completion evidence', () => {
       assert.ok(claim.ok);
       const rejected = await transitionTaskStatus('proof', pending.id, 'in_progress', 'completed', claim.claimToken, cwd);
       assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
+
+      const bypass = await createTask('proof', { subject: 'code', description: 'implement', status: 'pending', requires_code_change: false }, cwd);
+      const beforeBypass = await readTask('proof', bypass.id, cwd);
+      await assert.rejects(
+        updateTask('proof', bypass.id, { status: 'completed', requires_code_change: true }, cwd),
+        /transition-task-status/,
+      );
+      assert.deepEqual(await readTask('proof', bypass.id, cwd), beforeBypass);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

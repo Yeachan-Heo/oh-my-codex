@@ -1839,9 +1839,12 @@ export async function updateTask(
       if (updates.requires_code_change === true && existing.requires_code_change !== true && isTerminalTaskStatus(existing.status)) {
         throw new Error('Cannot enable completion evidence for a terminal task.');
       }
-      if (existing.requires_code_change === true) {
-        if (updates.status === 'completed' && existing.status !== 'completed') throw new Error('Use transition-task-status with completion evidence.');
-        if (updates.requires_code_change === false) throw new Error('Cannot disable completion evidence for an implementation task.');
+      if (updates.status === 'completed' && existing.status !== 'completed'
+        && (updates.requires_code_change ?? existing.requires_code_change) === true) {
+        throw new Error('Use transition-task-status with completion evidence.');
+      }
+      if (existing.requires_code_change === true && updates.requires_code_change === false) {
+        throw new Error('Cannot disable completion evidence for an implementation task.');
       }
       const rawDeps = updates.depends_on ?? updates.blocked_by ?? existing.depends_on ?? existing.blocked_by ?? [];
       const normalizedDeps = Array.isArray(rawDeps) ? rawDeps : [];

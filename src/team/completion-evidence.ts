@@ -25,7 +25,9 @@ export async function validateCompletionEvidence(
   const stat = await lstat(target);
   if (!stat.isFile() || stat.size === 0 || stat.size > 1024 * 1024) throw new Error('Evidence must be a non-empty JSON file of at most 1 MiB.');
   const since = Date.parse(task.claim?.claimed_at ?? task.created_at);
-  if (!Number.isFinite(since) || stat.mtimeMs < since) throw new Error('Evidence predates the current task claim.');
+  // Claim timestamps have millisecond precision, while some filesystems round
+  // mtimes down (and FAT timestamps have a two-second resolution).
+  if (!Number.isFinite(since) || stat.mtimeMs < since - 2_000) throw new Error('Evidence predates the current task claim.');
   const evidence = JSON.parse(await readFile(target, 'utf8'));
   const claimHash = createHash('sha256').update(task.claim?.token ?? '').digest('hex');
   if (!evidence || evidence.teamName !== teamName || evidence.taskId !== task.id || evidence.claimTokenSha256 !== claimHash) {
