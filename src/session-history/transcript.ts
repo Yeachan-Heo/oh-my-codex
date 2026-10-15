@@ -17,6 +17,15 @@ export interface SessionTranscript {
   archived: boolean;
 }
 
+export async function revalidateTranscriptMatches(matches: SessionTranscript[]): Promise<SessionTranscript[]> {
+  const current: SessionTranscript[] = [];
+  for (const match of matches) {
+    const transcript = await readTranscriptMeta(match.path, match.archived);
+    if (transcript?.id === match.id) current.push(transcript);
+  }
+  return current;
+}
+
 function asObject(value: unknown): JsonRecord | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as JsonRecord : null;
@@ -80,7 +89,8 @@ export async function resolveSessionTranscript(options: SessionTranscriptOptions
     }
   }
   const exact = matches.filter((match) => match.id === selector);
-  const candidates = exact.length > 0 ? exact : matches;
+  let candidates = exact.length > 0 ? exact : matches;
+  if (candidates.length > 1) candidates = await revalidateTranscriptMatches(candidates);
   if (candidates.length === 0) throw new Error(`No local session matches "${selector}".`);
   if (candidates.length > 1) {
     const ids = [...new Set(candidates.map((match) => match.id))].sort().join(', ');

@@ -238,11 +238,13 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         const result = asObject(payload.result);
         const ok = asObject(result?.Ok);
         const failed = ok?.isError === true || (result !== null && Object.hasOwn(result, 'Err'));
-        if (callId && pending.has(callId) && !ambiguous.has(callId) && failed) {
-          mcpToolFailures.add(callId);
+        const hasLifecycleResult = result !== null && (Object.hasOwn(result, 'Ok') || Object.hasOwn(result, 'Err'));
+        if (callId && pending.has(callId) && !ambiguous.has(callId) && hasLifecycleResult) {
+          if (failed) mcpToolFailures.add(callId);
+          else mcpToolFailures.delete(callId);
           const call = pending.get(callId);
           if (call) {
-            call.status = 'failed';
+            call.status = failed ? 'failed' : 'completed';
             call.result_line_number = lineNumber;
             call.completed_at = time;
             call.duration_ms = null;

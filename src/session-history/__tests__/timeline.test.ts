@@ -4,7 +4,7 @@ import { appendFile, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildSessionTimeline, type TimelineToolEvent } from '../timeline.js';
-import { readResolvedSessionTranscriptLines, resolveSessionTranscript } from '../transcript.js';
+import { readResolvedSessionTranscriptLines, revalidateTranscriptMatches, resolveSessionTranscript } from '../transcript.js';
 
 const START = '2026-10-14T10:00:00.000Z';
 function time(seconds: number): string { return new Date(Date.parse(START) + seconds * 1000).toISOString(); }
@@ -162,6 +162,48 @@ describe('buildSessionTimeline', () => {
     assert.deepEqual(failures.events.map((event) => event.kind === 'tool' ? event.call_id : null), [
       'mcp-failed', 'mcp-transport-error', 'mcp-output-less',
     ]);
+  });
+
+  it('finalizes successful MCP lifecycle results without output and refines later output', async () => {
+    await fixture([
+      call('mcp-output-less', 1, 'read', 'mcp__filesystem'),
+      call('mcp-late-output', 2, 'read', 'mcp__filesystem'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'mcp-output-less', result: { Ok: { isError: false } },
+      }, 3),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'mcp-late-output', result: { Ok: { isError: false } },
+      }, 4),
+      output('mcp-late-output', 5, { exit_code: 2 }),
+    ]);
+    const options = { session: 'timeline-id', codexHomeDir: home };
+    const report = await buildSessionTimeline(options);
+    assert.deepEqual(report.events.map((event) => event.kind === 'tool' ? [
+      event.call_id, event.status, event.result_line_number, event.duration_ms, event.exit_code,
+    ] : null), [
+      ['mcp-output-less', 'completed', 4, 2000, null],
+      ['mcp-late-output', 'failed', 6, 3000, 2],
+    ]);
+    assert.equal(report.summary.completed, 1);
+    assert.equal(report.summary.failed, 1);
+    assert.deepEqual((await buildSessionTimeline({ ...options, status: 'completed' })).events.map((event) => event.kind), ['tool']);
+    assert.deepEqual((await buildSessionTimeline({ ...options, status: 'failed' })).events.map((event) => event.kind), ['tool']);
+  });
+
+  it('revalidates stale active transcript matches after an archive move', async () => {
+    const activePath = await fixture([], 'archive-race');
+    const archivedPath = join(home, 'archived_sessions', 'rollout-archive-race.jsonl');
+    await mkdir(join(home, 'archived_sessions'), { recursive: true });
+    const discovered = {
+      path: activePath, id: 'archive-race', startedAt: START, cwd: '/PRIVATE_PROJECT', archived: false,
+    };
+    await rename(activePath, archivedPath);
+
+    const matches = await revalidateTranscriptMatches([
+      discovered,
+      { ...discovered, path: archivedPath, archived: true },
+    ]);
+    assert.deepEqual(matches, [{ ...discovered, path: archivedPath, archived: true }]);
   });
 
   it('does not guess pairings for missing or duplicate outstanding call IDs', async () => {
