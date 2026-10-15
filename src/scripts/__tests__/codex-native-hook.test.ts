@@ -466,6 +466,7 @@ async function configureAuthoritativeTeamWorker(
   cwd: string,
   teamName: string,
   workerPaneId = "%10",
+  workerCwd = cwd,
 ): Promise<void> {
   const stateRoot = join(cwd, ".omx", "state");
   await initTeamState(teamName, "session pointer ownership regression", "executor", 1, cwd, undefined, {
@@ -486,8 +487,8 @@ async function configureAuthoritativeTeamWorker(
     state.leader_cwd = cwd;
     state.workers = (state.workers ?? []).map((worker) => ({
       ...worker,
-      working_dir: cwd,
-      worktree_path: cwd,
+      working_dir: workerCwd,
+      worktree_path: workerCwd,
       team_state_root: stateRoot,
     }));
     await writeJson(filePath, state);
@@ -497,8 +498,8 @@ async function configureAuthoritativeTeamWorker(
     index: 1,
     role: "executor",
     pane_id: workerPaneId,
-    working_dir: cwd,
-    worktree_path: cwd,
+    working_dir: workerCwd,
+    worktree_path: workerCwd,
     team_state_root: stateRoot,
   });
   process.env.TMUX = "1";
@@ -5200,13 +5201,14 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 
   it("records native child completion from an authoritative Team worker session", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-subagent-stop-"));
+    const workerCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-worktree-"));
     const originalCodexHome = process.env.CODEX_HOME;
     try {
       await writeSessionStart(cwd, "leader-session", {
         nativeSessionId: "leader-native",
         pid: process.pid,
       });
-      await configureAuthoritativeTeamWorker(cwd, "team-worker-subagent-stop");
+      await configureAuthoritativeTeamWorker(cwd, "team-worker-subagent-stop", "%10", workerCwd);
       const stateDir = join(cwd, ".omx", "state");
       const leaderPointerPath = join(stateDir, "session.json");
       const leaderPointerBefore = await readFile(leaderPointerPath, "utf-8");
@@ -5219,7 +5221,9 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       const eventsPath = join(cwd, "child-events.jsonl");
       await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
       await writeFile(join(cwd, ".omx", "hooks", "capture.mjs"), `import { appendFileSync } from 'node:fs';
-export function onHookEvent(event) { appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify(event) + '\\n'); }
+export function onHookEvent(event) {
+  appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify({ event, pluginCwd: process.cwd(), teamStateRoot: process.env.OMX_TEAM_STATE_ROOT }) + '\\n');
+}
 `);
 
       const parentSessionId = "team-worker-native-session";
@@ -5227,26 +5231,35 @@ export function onHookEvent(event) { appendFileSync(${JSON.stringify(eventsPath)
       const turnId = "team-worker-child-turn";
       await dispatchCodexNativeHook({
         hook_event_name: "SubagentStop",
-        cwd,
+        cwd: workerCwd,
         session_id: parentSessionId,
         agent_id: childThreadId,
         agent_type: "executor",
         turn_id: turnId,
-      }, { cwd });
+      }, { cwd: workerCwd });
 
-      const tracking = await readSubagentTrackingState(cwd);
+      const tracking = await readSubagentTrackingState(workerCwd);
       const child = tracking.sessions[parentSessionId]?.threads[childThreadId];
       assert.equal(child?.completion_source, "native_stop_event");
       assert.equal(child?.last_completed_turn_id, turnId);
       assert.equal(child?.status, "closed");
       const events = (await readFile(eventsPath, "utf-8")).trim().split("\n").map((line) => JSON.parse(line));
-      assert.deepEqual(events.map((event) => [event.event, event.session_id, event.thread_id, event.turn_id]), [
-        ["subagent-stop", parentSessionId, childThreadId, turnId],
+      assert.deepEqual(events.map(({ event, pluginCwd, teamStateRoot }) => ({
+        event: [event.event, event.session_id, event.thread_id, event.turn_id],
+        pluginCwd,
+        teamStateRoot,
+      })), [
+        {
+          event: ["subagent-stop", parentSessionId, childThreadId, turnId],
+          pluginCwd: workerCwd,
+          teamStateRoot: stateDir,
+        },
       ]);
       assert.equal(await readFile(leaderPointerPath, "utf-8"), leaderPointerBefore);
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;
+      await rm(workerCwd, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
     }
   });

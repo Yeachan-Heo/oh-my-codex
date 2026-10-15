@@ -452,7 +452,7 @@ export async function dispatchHookEvent(
 				}
 			}, CHILD_COMPLETION_CLAIM_RENEW_INTERVAL_MS);
 		}
-		const plugins = await discoverHookPlugins(cwd);
+		const plugins = await discoverHookPlugins(options.pluginDiscoveryCwd ?? cwd);
 		summary.plugin_count = plugins.length;
 
 		const inTeamWorker = isTeamWorker(env);

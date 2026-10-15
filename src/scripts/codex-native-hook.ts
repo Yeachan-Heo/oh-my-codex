@@ -21853,6 +21853,7 @@ export async function dispatchCodexNativeHook(
     const parentSessionId = readStrictStopPayloadSessionId(payload);
     const agentId = normalizeSessionId(safeString(payload.agent_id).trim());
     let sessionId: string | null = null;
+    let pluginDiscoveryCwd: string | undefined;
     if (parentSessionId && agentId && agentId !== parentSessionId) {
       const authoritativeTeamWorker = hasRawTeamWorkerDeclaration()
         ? await resolveAuthoritativeTeamWorkerContext(cwd)
@@ -21860,6 +21861,7 @@ export async function dispatchCodexNativeHook(
       if (authoritativeTeamWorker) {
         // Team workers can own child agents without the shared leader pointer or tracker summary.
         sessionId = parentSessionId;
+        pluginDiscoveryCwd = authoritativeTeamWorker.canonicalLeaderCwd;
       } else {
         const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
         if (pointer.status === "usable" && pointer.state && !sessionPointerAliases(pointer.state).has(agentId)) {
@@ -21901,6 +21903,7 @@ export async function dispatchCodexNativeHook(
             mode: safeString(payload.agent_type).trim() || undefined,
           }),
           cwd,
+          ...(pluginDiscoveryCwd ? { pluginDiscoveryCwd } : {}),
           allowTeamWorkerSideEffects: false,
         });
       }
