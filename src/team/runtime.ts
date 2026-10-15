@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 
 import { join, resolve, dirname } from 'path';
@@ -139,7 +139,7 @@ import { synthesizeDelegationPlan } from './delegation-policy.js';
 import { coordinationPlansEqual, synthesizeCoordinationPlan, synthesizeCoordinationPlans } from './coordination-protocol.js';
 import { loadRolePrompt } from './role-router.js';
 import { composeRoleInstructionsForRole } from '../agents/native-config.js';
-import { codexPromptsDir } from '../utils/paths.js';
+import { codexPromptsDir, resolveOmxCliEntryPath } from '../utils/paths.js';
 import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   resolveTeamWorkerLaunchDiagnostics,
@@ -3811,11 +3811,18 @@ export async function startTeam(
     }
 
     const workerStartups = workerBootstrapPlans.map((plan) => {
+      const omxEntryPath = plan.workerCli === 'codex'
+        ? resolveOmxCliEntryPath({ cwd: plan.workerWorkspace.cwd })
+        : null;
       const env: Record<string, string> = {
         [TEAM_STATE_ROOT_ENV]: teamStateRoot,
         [TEAM_LEADER_CWD_ENV]: leaderCwd,
         [MODEL_INSTRUCTIONS_FILE_ENV]: plan.instructionsFilePath,
         OMX_TEAM_DISPLAY_NAME: displayName,
+        ...(omxEntryPath ? {
+          OMX_CODEX_LAUNCH_ID: randomUUID(),
+          OMX_ENTRY_PATH: omxEntryPath,
+        } : {}),
         // Issue #3629: prompt-mode workers are direct codex children and do
         // read this CODEX_HOME. It is the child-export value: unset for
         // project-scope leaders (codex then uses the caller's own home, the
