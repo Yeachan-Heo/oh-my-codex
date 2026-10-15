@@ -23,6 +23,96 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
    - `omx team api transition-task-status --json` (`in_progress -> completed|failed`)
 4. Use `omx team api release-task-claim --json` only for rollback/requeue-to-pending flows.
 
+## Worker completion evidence
+
+Tasks explicitly marked `requires_code_change: true` must supply a JSON evidence
+report before transitioning from `in_progress` to `completed`. This validates the
+report's format and association with the current claim; it does not authenticate
+whether the reported commands actually ran. Existing claim, lease, delegation and
+coordination checks still apply.
+
+After claiming, write the report under `.omx/evidence/` in the worker's assigned
+`working_dir`. If that directory is not configured, paths resolve from the API
+call's working directory. Use a path without whitespace, for example
+`.omx/evidence/task-1.json`:
+
+```json
+{
+  "teamName": "my-team",
+  "taskId": "1",
+  "claimTokenSha256": "<SHA-256 hex digest of the current claim token>",
+  "summary": "Fix addition and verify positive and negative inputs",
+  "verification": [
+    {
+      "command": "node --test add.test.mjs",
+      "result": "passed",
+      "output": "2 tests passed; 0 failed"
+    }
+  ],
+  "unverified": ["Manual UI validation was not run"]
+}
+```
+
+Replace the example identity, digest and verification output with the actual task
+and observed results. Hash the token returned by the latest successful `claim-task`
+using SHA-256 with lowercase hexadecimal encoding; do not put the raw token in the
+report.
+`verification` must contain at least one check with a non-empty command, the exact
+result `"passed"`, and non-empty output. `summary` must be non-empty. Obvious
+placeholder values such as `TODO`, `TBD` and `not run` are rejected in these text
+fields. `unverified` is a required array of non-empty, non-placeholder descriptions
+of validation gaps; use `[]` when there are none.
+
+Complete through the existing API, with both a structured verification summary
+and the evidence marker on its own line in the `result` string:
+
+```bash
+omx team api transition-task-status --input '{"team_name":"my-team","task_id":"1","from":"in_progress","to":"completed","claim_token":"<current-claim-token>","result":"Verification: PASS\nEVIDENCE_RECORDED: .omx/evidence/task-1.json"}' --json
+```
+
+The summary must pass the existing team verification gate: include `Verification:`
+or a `## Verification` heading and PASS/FAIL checks or command references. A marker
+alone, or a heading without a verification signal, is rejected even with a valid
+report. The task stays `in_progress`, so the client can correct the result and retry
+with the same live claim instead of leaving a completed task stuck in `team-verify`.
+
+The report must be a regular, non-empty JSON file of at most 1 MiB, located inside
+the worker's `.omx/evidence/` directory. Symlinked files or directories beneath
+the working directory are rejected. Its
+modification time must be at or after the current claim's `claimed_at`, and its
+`teamName`, string `taskId` and `claimTokenSha256` must match the task and claim.
+After releasing and reclaiming, regenerate the report with the new token's hash;
+refreshing only the old report's modification time is insufficient.
+
+A rejected report returns `data.ok: false`, `data.error: "invalid_completion_evidence"`
+and a human-readable `data.reason`. The outer envelope may still have `ok: true`:
+clients must inspect `data.ok`, not just the process exit status or envelope. A
+rejection leaves the task, completion events and completion monitor marker unchanged.
+
+### Compatibility
+
+- Tasks with `requires_code_change: false` or an absent flag retain their existing
+  completion behavior. Transitions to `failed` do not require this report. Already
+  completed task records are not revalidated.
+- Existing clients completing tasks marked `true` must now create and cite the
+  report, retain the structured verification summary, and handle
+  `invalid_completion_evidence`; neither plain-text verification nor a report
+  marker alone is sufficient.
+- Once `requires_code_change` is `true`, `update-task` cannot set it to `false`,
+  including while pending or after releasing a claim. This returns outer
+  `ok: false` with `error.code: "operation_failed"`. Choose the flag when defining
+  the task; releasing a claim does not disable the evidence requirement.
+- `update-task` can enable the requirement before a task is terminal, but cannot
+  change a false or absent flag to `true` on a `completed` or `failed` task. It
+  returns `operation_failed` without changing the terminal record. Reapplying
+  `true` to an already-enabled task and updating other metadata remain supported.
+- New claims include `claimed_at`. It is optional for persisted-state compatibility;
+  validation falls back to the task's `created_at` for older claims without it.
+- The CLI operation names, envelope schema version and successful transition shape
+  are unchanged. Implementation tasks must enter `completed` through the claim-safe
+  transition path; the shared `updateTask` helper also rejects direct completion
+  of tasks already marked `true`.
+
 ## Legacy MCP -> CLI migration table
 
 | Legacy `team_*` tool | CLI operation |
