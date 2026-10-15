@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { MANAGED_HOOK_EVENTS, buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { writeSessionStart } from "../../hooks/session.js";
-import { readSubagentTrackingState, recordNativeSubagentAuthorityObservation } from "../../subagents/tracker.js";
+import { readSubagentTrackingState, recordNativeSubagentAuthorityObservation, withCrossProcessFileLockSync } from "../../subagents/tracker.js";
 import { dispatchCodexNativeHook, mapCodexHookEventToOmxEvent } from "../codex-native-hook.js";
 import { CODEX_HOOK_EVENT_NAMES, extractRawCodexHookEventName } from "../hook-payload-guard.js";
 import { MANAGED_CODEX_HOOK_EVENTS } from "../smoke-packed-install.js";
@@ -52,6 +53,12 @@ describe("native hook protocol compatibility", () => {
     await writeSessionStart(cwd, sessionId, { nativeSessionId: parentId, pid: process.pid });
   }
 
+  function runStopCli() {
+    return spawnSync(process.execPath, [join(process.cwd(), "dist/scripts/codex-native-hook.js")], {
+      cwd, env: process.env, input: JSON.stringify(stop()), encoding: "utf8", timeout: 10_000,
+    });
+  }
+
   async function captureLifecycle(notifications: Record<string, unknown>): Promise<string> {
     await writeFile(join(process.env.CODEX_HOME!, ".omx-config.json"), JSON.stringify({
       notifications: { enabled: true, ...notifications },
@@ -79,7 +86,7 @@ describe("native hook protocol compatibility", () => {
         assert.equal(existsSync(eventsPath), false);
         return;
       }
-      await dispatchCodexNativeHook(stop());
+      await dispatchCodexNativeHook(stop({ stop_hook_active: true, stopHookActive: true }));
       const events = (await readFile(eventsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
       assert.equal(events.length, 1);
       assert.equal(events[0].event, "subagent-stop");
@@ -89,10 +96,61 @@ describe("native hook protocol compatibility", () => {
       assert.equal(events[0].turn_id, "child-turn-1");
       assert.equal(events[0].context.native_session_id, agentId);
       assert.equal(events[0].context.payload.session_id, parentId);
+      assert.equal(events[0].context.payload.stop_hook_active, undefined);
+      assert.equal(events[0].context.payload.stopHookActive, undefined);
       await dispatchCodexNativeHook(stop({ turn_id: "child-turn-2" }));
       assert.equal((await readFile(eventsPath, "utf8")).trim().split("\n").length, 2);
     });
   }
+
+  it("deduplicates interleaved child and turn replays independently", async () => {
+    await start();
+    const eventsPath = await captureLifecycle({ includeChildAgents: true });
+    await dispatchCodexNativeHook(stop());
+    await dispatchCodexNativeHook(stop({ agent_id: "other-child" }));
+    await dispatchCodexNativeHook(stop());
+    await dispatchCodexNativeHook(stop({ turn_id: "child-turn-2" }));
+    await dispatchCodexNativeHook(stop());
+    const events = (await readFile(eventsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(events.map(event => [event.thread_id, event.turn_id]), [
+      [agentId, "child-turn-1"], ["other-child", "child-turn-1"], [agentId, "child-turn-2"],
+    ]);
+  });
+
+  it("keeps malformed tracker authority bytes intact and returns CLI no-op with a diagnostic", async () => {
+    await start();
+    const eventsPath = await captureLifecycle({ includeChildAgents: true });
+    const trackerPath = join(cwd, ".omx/state/subagent-tracking.json");
+    const malformed = '{"schemaVersion":1,"sessions":{"preserve-authority":';
+    await writeFile(trackerPath, malformed);
+    const result = runStopCli();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+    assert.equal(await readFile(trackerPath, "utf8"), malformed);
+    assert.equal(existsSync(eventsPath), false);
+    const logDir = join(cwd, ".omx/logs");
+    const logFile = (await readdir(logDir)).find(name => name.startsWith("native-hook-"));
+    assert.ok(logFile);
+    const diagnostic = await readFile(join(logDir, logFile), "utf8");
+    assert.match(diagnostic, /native_subagent_completion_tracking_error/);
+    assert.match(diagnostic, /Malformed subagent tracker authority state/);
+  });
+
+  it("returns CLI no-op without dispatch or mutation when the tracker lock stays held", async () => {
+    await start();
+    const eventsPath = await captureLifecycle({ includeChildAgents: true });
+    recordNativeSubagentAuthorityObservation(cwd, {
+      sessionIds: [sessionId], childThreadId: agentId, parentThreadId: parentId,
+      rootNativeSessionId: parentId, authorityEvidence: "valid",
+    });
+    const trackerPath = join(cwd, ".omx/state/subagent-tracking.json");
+    const before = await readFile(trackerPath, "utf8");
+    const result = withCrossProcessFileLockSync(trackerPath, () => runStopCli());
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+    assert.equal(await readFile(trackerPath, "utf8"), before);
+    assert.equal(existsSync(eventsPath), false);
+  });
 
   it("rejects unbound identities before opted-in SubagentStop lifecycle dispatch", async () => {
     await start();

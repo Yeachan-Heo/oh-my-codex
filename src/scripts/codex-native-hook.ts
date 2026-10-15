@@ -884,9 +884,11 @@ function sanitizePayloadForHookContext(
     return sanitized;
   }
 
-  if (hookEventName === "Stop") {
+  if (hookEventName === "Stop" || hookEventName === "SubagentStop") {
     delete sanitized.stop_hook_active;
     delete sanitized.stopHookActive;
+  }
+  if (hookEventName === "Stop") {
     delete sanitized.sessionId;
     sanitized.session_id = canonicalSessionId.trim() || safeString(payload.session_id ?? payload.sessionId).trim();
   }
@@ -21856,15 +21858,20 @@ export async function dispatchCodexNativeHook(
       const summary = await readSubagentSessionSummary(cwd, sessionId);
       if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
         || summary?.allThreadIds.includes(parentSessionId)) {
-        await recordSubagentTurnForSession(cwd, {
-          sessionId,
-          threadId: agentId,
-          turnId: readPayloadTurnId(payload) || undefined,
-          kind: "subagent",
-          mode: safeString(payload.agent_type).trim() || undefined,
-          completed: true,
-          completionSource: "native_stop_event",
-        });
+        try {
+          await recordSubagentTurnForSession(cwd, {
+            sessionId,
+            threadId: agentId,
+            turnId: readPayloadTurnId(payload) || undefined,
+            kind: "subagent",
+            mode: safeString(payload.agent_type).trim() || undefined,
+            completed: true,
+            completionSource: "native_stop_event",
+          });
+        } catch (error) {
+          await logNativeHookCliError(cwd, "native_subagent_completion_tracking_error", error, payload, { agent_id: agentId });
+          return { hookEventName, omxEventName, skillState: null, outputJson: null };
+        }
         if (!shouldSuppressSubagentLifecycleHookDispatch()) {
           await dispatchHookEventRuntime({
             event: buildNativeHookEvent(omxEventName!, {

@@ -25,6 +25,32 @@ function buildPayload(overrides: Partial<FullNotificationPayload> = {}): FullNot
 }
 
 describe('lifecycle notification dedupe', () => {
+  it('prunes expired child-turn keys while retaining live keys and other lifecycle state', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-child-expiry-'));
+    try {
+      const payload = buildPayload();
+      const startMs = Date.parse('2026-04-12T00:00:00.000Z');
+      const oldKey = 'subagent-stop:["child-a","turn-1"]';
+      const liveKey = 'subagent-stop:["child-b","turn-1"]';
+      const nextKey = 'subagent-stop:["child-a","turn-2"]';
+      recordLifecycleNotificationSent(stateDir, payload, startMs);
+      recordLifecycleHookBroadcastSent(stateDir, payload.sessionId, 'stop', 'leader', startMs);
+      recordLifecycleHookBroadcastSent(stateDir, payload.sessionId, oldKey, 'old', startMs);
+      recordLifecycleHookBroadcastSent(stateDir, payload.sessionId, liveKey, 'live', startMs + 1_000);
+      recordLifecycleHookBroadcastSent(stateDir, payload.sessionId, nextKey, 'next', startMs + 5_000);
+      const state = JSON.parse(await readFile(join(stateDir, 'sessions', payload.sessionId!, 'lifecycle-notif-state.json'), 'utf8'));
+      assert.equal(state.hookEvents[oldKey], undefined);
+      assert.equal(state.hookEvents[liveKey].fingerprint, 'live');
+      assert.equal(state.hookEvents[nextKey].fingerprint, 'next');
+      assert.equal(state.hookEvents.stop.fingerprint, 'leader');
+      assert.ok(state.events['session-end']);
+      assert.equal(shouldSendLifecycleHookBroadcast(stateDir, payload.sessionId, liveKey, 'live', startMs + 5_999), false);
+      assert.equal(shouldSendLifecycleHookBroadcast(stateDir, payload.sessionId, liveKey, 'live', startMs + 6_000), true);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('suppresses duplicate session lifecycle notifications for the same session transition', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-dedupe-'));
     try {

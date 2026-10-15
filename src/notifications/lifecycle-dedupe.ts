@@ -118,6 +118,13 @@ function recordScopedLifecycleBroadcastSent(
   const bucketState = state[bucket] && typeof state[bucket] === 'object'
     ? state[bucket]
     : {};
+  if (bucket === 'hookEvents') {
+    for (const [key, entry] of Object.entries(bucketState)) {
+      if (!key.startsWith('subagent-stop:')) continue;
+      const sentAtMs = Date.parse(entry?.sentAt ?? '');
+      if (!Number.isFinite(sentAtMs) || nowMs - sentAtMs >= LIFECYCLE_DEDUPE_WINDOW_MS) delete bucketState[key];
+    }
+  }
   bucketState[eventKey] = {
     fingerprint,
     sentAt: new Date(nowMs).toISOString(),

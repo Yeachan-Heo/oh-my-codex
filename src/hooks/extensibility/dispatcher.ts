@@ -357,12 +357,15 @@ export async function dispatchHookEvent(
 	const dedupeFingerprint = shouldDedupeHookEvent(event)
 		? buildHookEventFingerprint(event)
 		: "";
+	const dedupeEventKey = event.event === "subagent-stop"
+		? `subagent-stop:${JSON.stringify([event.thread_id || "", event.turn_id || ""])}`
+		: event.event;
 	if (
 		dedupeFingerprint
 		&& !shouldSendLifecycleHookBroadcast(
 			stateRoot,
 			event.session_id,
-			event.event,
+			dedupeEventKey,
 			dedupeFingerprint,
 		)
 	) {
@@ -416,7 +419,7 @@ export async function dispatchHookEvent(
 		recordLifecycleHookBroadcastSent(
 			stateRoot,
 			event.session_id,
-			event.event,
+			dedupeEventKey,
 			dedupeFingerprint,
 		);
 	}
