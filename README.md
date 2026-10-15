@@ -382,7 +382,8 @@ Cached input and reasoning output are subsets of input and output. See
 Run `omx session timeline <session-id>` to inspect tool calls, turn boundaries,
 and context compactions without exporting conversation text. Calls are paired
 with their results by call ID, including parallel calls, and the report shows
-explicit failures, unmatched calls, observed durations, and per-tool totals.
+explicit failures, unmatched calls, observed durations, and namespace-aware
+per-tool totals.
 Use `--kind tools --sort duration --limit 10` to find slow calls, `--status failed`
 to inspect failures, or `--tool <name>` to focus on one tool. Filters and pagination
 affect the event list; summary counts always cover the whole session.

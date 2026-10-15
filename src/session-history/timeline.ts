@@ -7,6 +7,7 @@ export type ToolStatus = 'completed' | 'failed' | 'incomplete';
 export interface SessionTimelineOptions extends SessionTranscriptOptions {
   kind?: TimelineKindFilter;
   tool?: string;
+  namespace?: string;
   status?: ToolStatus;
   minDurationMs?: number;
   sort?: 'chronological' | 'duration';
@@ -22,6 +23,7 @@ interface EventLocation {
 export interface TimelineToolEvent extends EventLocation {
   kind: 'tool';
   name: string | null;
+  namespace: string | null;
   call_id: string | null;
   status: ToolStatus;
   result_line_number: number | null;
@@ -38,6 +40,7 @@ export type SessionTimelineEvent = TimelineToolEvent | (EventLocation & (
 
 export interface TimelineToolSummary {
   name: string | null;
+  namespace: string | null;
   calls: number;
   completed: number;
   failed: number;
@@ -84,6 +87,7 @@ export interface SessionTimelineReport {
     limit: number;
     matched_events: number;
     has_more: boolean;
+    namespace: string | null;
   };
   events: SessionTimelineEvent[];
 }
@@ -138,18 +142,23 @@ function summarize(events: SessionTimelineEvent[]): SessionTimelineReport['summa
     events: events.length, tool_calls: 0, completed: 0, failed: 0, incomplete: 0,
     orphan_outputs: 0, turns_started: 0, turns_completed: 0, turns_aborted: 0, compactions: 0, tools: [],
   };
-  const tools = new Map<string | null, TimelineToolSummary>();
+  const tools = new Map<string | null, Map<string | null, TimelineToolSummary>>();
   for (const event of events) {
     if (event.kind === 'tool') {
       summary.tool_calls++;
       summary[event.status]++;
-      let tool = tools.get(event.name);
+      let namespaceTools = tools.get(event.namespace);
+      if (!namespaceTools) {
+        namespaceTools = new Map();
+        tools.set(event.namespace, namespaceTools);
+      }
+      let tool = namespaceTools.get(event.name);
       if (!tool) {
         tool = {
-          name: event.name, calls: 0, completed: 0, failed: 0, incomplete: 0,
+          name: event.name, namespace: event.namespace, calls: 0, completed: 0, failed: 0, incomplete: 0,
           measured_calls: 0, total_duration_ms: null, max_duration_ms: null,
         };
-        tools.set(event.name, tool);
+        namespaceTools.set(event.name, tool);
       }
       tool.calls++;
       tool[event.status]++;
@@ -164,8 +173,10 @@ function summarize(events: SessionTimelineEvent[]): SessionTimelineReport['summa
     else if (event.kind === 'turn_aborted') summary.turns_aborted++;
     else summary.compactions++;
   }
-  summary.tools = [...tools.values()].sort((a, b) =>
-    (b.total_duration_ms ?? -1) - (a.total_duration_ms ?? -1) || (a.name ?? '').localeCompare(b.name ?? ''));
+  summary.tools = [...tools.values()].flatMap((namespaceTools) => [...namespaceTools.values()]).sort((a, b) =>
+    (b.total_duration_ms ?? -1) - (a.total_duration_ms ?? -1)
+    || (a.namespace ?? '').localeCompare(b.namespace ?? '')
+    || (a.name ?? '').localeCompare(b.name ?? ''));
   return summary;
 }
 
@@ -214,7 +225,8 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
       const callId = asString(payload.call_id);
       if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
         const event: TimelineToolEvent = {
-          ...location, kind: 'tool', name: asString(payload.name), call_id: callId, status: 'incomplete',
+          ...location, kind: 'tool', name: asString(payload.name), namespace: asString(payload.namespace),
+          call_id: callId, status: 'incomplete',
           result_line_number: null, completed_at: null, duration_ms: null, exit_code: null,
         };
         events.push(event);
@@ -249,6 +261,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
     if (kind === 'turns' && !['turn_start', 'turn_complete', 'turn_aborted'].includes(event.kind)) return false;
     if (kind === 'compactions' && event.kind !== 'compaction') return false;
     if (options.tool && (event.kind !== 'tool' || event.name !== options.tool)) return false;
+    if (options.namespace && (event.kind !== 'tool' || event.namespace !== options.namespace)) return false;
     if (options.status && (!('status' in event) || event.status !== options.status)) return false;
     if (minDuration !== null && (event.kind !== 'tool' || event.duration_ms === null || event.duration_ms < minDuration)) return false;
     return true;
@@ -266,6 +279,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
     selection: {
       kind, tool: options.tool ?? null, status: options.status ?? null, min_duration_ms: minDuration,
       sort, offset, limit, matched_events: selected.length, has_more: offset + page.length < selected.length,
+      namespace: options.namespace ?? null,
     },
     events: page,
   };

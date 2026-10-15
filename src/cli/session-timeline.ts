@@ -9,6 +9,7 @@ Use an exact session id or a unique prefix. Only metadata is displayed.
 Options:
   --kind <kind>        all | tools | turns | compactions (default: all)
   --tool <name>        Select calls to an exact tool name
+  --namespace <name>   Select calls in an exact tool namespace
   --status <status>    completed | failed | incomplete
   --min-duration <ms>  Select paired calls with at least this observed duration
   --sort <order>       chronological | duration (default: chronological)
@@ -32,7 +33,7 @@ Examples:
 
 export function parseSessionTimelineArgs(args: string[]): { options: SessionTimelineOptions; json: boolean; output?: string } {
   const parsed: { options: SessionTimelineOptions; json: boolean; output?: string } = { options: { session: '' }, json: false };
-  const valuedFlags = new Set(['--kind', '--tool', '--status', '--min-duration', '--sort', '--offset', '--limit', '--codex-home', '--output']);
+  const valuedFlags = new Set(['--kind', '--tool', '--namespace', '--status', '--min-duration', '--sort', '--offset', '--limit', '--codex-home', '--output']);
   for (let index = 0; index < args.length; index++) {
     const token = args[index];
     if (token === '--json') { parsed.json = true; continue; }
@@ -78,6 +79,7 @@ export function parseSessionTimelineArgs(args: string[]): { options: SessionTime
         break;
       }
       case '--tool': parsed.options.tool = value; break;
+      case '--namespace': parsed.options.namespace = value; break;
       case '--codex-home': parsed.options.codexHomeDir = value; break;
       case '--output': parsed.output = value; break;
     }
@@ -94,6 +96,11 @@ function duration(value: number | null): string {
   return value === null ? 'unknown' : `${value}ms`;
 }
 
+function toolName(name: string | null, namespace: string | null): string {
+  const label = plain(name ?? '(unknown)');
+  return namespace === null ? label : `${label} namespace=${plain(namespace)}`;
+}
+
 export function formatSessionTimeline(report: SessionTimelineReport): string {
   const { summary, selection, diagnostics } = report;
   const lines = [
@@ -107,7 +114,7 @@ export function formatSessionTimeline(report: SessionTimelineReport): string {
   if (summary.tools.length) {
     lines.push('', 'Tools (whole session):');
     for (const tool of summary.tools) {
-      lines.push(`  ${plain(tool.name ?? '(unknown)')}: calls=${tool.calls} completed=${tool.completed} failed=${tool.failed} incomplete=${tool.incomplete} measured=${tool.measured_calls} total=${duration(tool.total_duration_ms)} max=${duration(tool.max_duration_ms)}`);
+      lines.push(`  ${toolName(tool.name, tool.namespace)}: calls=${tool.calls} completed=${tool.completed} failed=${tool.failed} incomplete=${tool.incomplete} measured=${tool.measured_calls} total=${duration(tool.total_duration_ms)} max=${duration(tool.max_duration_ms)}`);
     }
   }
   lines.push('', `Events: ${report.events.length} shown, ${selection.matched_events} match(es), offset=${selection.offset}, sort=${selection.sort}.`);
@@ -115,7 +122,7 @@ export function formatSessionTimeline(report: SessionTimelineReport): string {
   for (const event of report.events) {
     const prefix = `L${event.line_number} ${event.timestamp ?? 'unknown'} ${event.kind}`;
     if (event.kind === 'tool') {
-      lines.push(`${prefix} ${plain(event.name ?? '(unknown)')} ${event.status} duration=${duration(event.duration_ms)} call=${plain(event.call_id ?? '(missing)')} result=${event.result_line_number === null ? 'none' : `L${event.result_line_number}`}${event.exit_code === null ? '' : ` exit=${event.exit_code}`}`);
+      lines.push(`${prefix} ${toolName(event.name, event.namespace)} ${event.status} duration=${duration(event.duration_ms)} call=${plain(event.call_id ?? '(missing)')} result=${event.result_line_number === null ? 'none' : `L${event.result_line_number}`}${event.exit_code === null ? '' : ` exit=${event.exit_code}`}`);
     } else if (event.kind === 'orphan_output') {
       lines.push(`${prefix} ${event.status} call=${plain(event.call_id ?? '(missing)')}${event.exit_code === null ? '' : ` exit=${event.exit_code}`}`);
     } else if (event.kind === 'compaction') lines.push(prefix);

@@ -13,10 +13,10 @@ describe('parseSessionTimelineArgs', () => {
   it('accepts separated and equals flags with strict numeric values', () => {
     assert.deepEqual(parseSessionTimelineArgs(['abc']), { options: { session: 'abc' }, json: false });
     assert.deepEqual(parseSessionTimelineArgs([
-      'abc', '--kind=tools', '--tool', 'exec', '--status=failed', '--sort', 'duration',
+      'abc', '--kind=tools', '--tool', 'exec', '--namespace=mcp__filesystem', '--status=failed', '--sort', 'duration',
       '--min-duration=200', '--offset', '1', '--limit=5', '--codex-home', '/home', '--json', '--output=report.json',
     ]), {
-      options: { session: 'abc', kind: 'tools', tool: 'exec', status: 'failed', sort: 'duration', minDurationMs: 200, offset: 1, limit: 5, codexHomeDir: '/home' },
+      options: { session: 'abc', kind: 'tools', tool: 'exec', namespace: 'mcp__filesystem', status: 'failed', sort: 'duration', minDurationMs: 200, offset: 1, limit: 5, codexHomeDir: '/home' },
       json: true, output: 'report.json',
     });
   });
@@ -25,7 +25,7 @@ describe('parseSessionTimelineArgs', () => {
     [], [' '], ['abc', 'def'], ['abc', '--unknown'], ['abc', '--json=true'], ['abc', '--kind=messages'],
     ['abc', '--status=success'], ['abc', '--sort=recent'], ['abc', '--limit=0'], ['abc', '--limit=10001'],
     ['abc', '--limit=1.5'], ['abc', '--limit=2oops'], ['abc', '--offset=-1'], ['abc', '--min-duration=NaN'],
-    ['abc', '--offset=9007199254740992'], ['abc', '--tool='], ['abc', '--output'],
+    ['abc', '--offset=9007199254740992'], ['abc', '--tool='], ['abc', '--namespace='], ['abc', '--output'],
     ['abc', '--codex-home', '--json'], ['abc', '--min-duration=1e3'],
   ]) {
     it(`rejects ${JSON.stringify(args)}`, () => { assert.throws(() => parseSessionTimelineArgs(args)); });
@@ -44,14 +44,14 @@ describe('omx session timeline', () => {
     });
   }
 
-  async function fixture(count = 1, name = 'exec'): Promise<string> {
+  async function fixture(count = 1, name = 'exec', namespace?: string): Promise<string> {
     const root = join(cwd, 'home', 'sessions');
     await mkdir(root, { recursive: true });
     const path = join(root, 'rollout-cli-session.jsonl');
     const rows: unknown[] = [{ type: 'session_meta', payload: { id: 'cli-session', cwd, timestamp: '2026-10-14T10:00:00Z' } }];
     for (let i = 0; i < count; i++) {
       rows.push(
-        { type: 'response_item', timestamp: '2026-10-14T10:00:01Z', payload: { type: 'function_call', call_id: `call-${i}`, name, arguments: 'PRIVATE_ARGUMENTS' } },
+        { type: 'response_item', timestamp: '2026-10-14T10:00:01Z', payload: { type: 'function_call', call_id: `call-${i}`, name, ...(namespace === undefined ? {} : { namespace }), arguments: 'PRIVATE_ARGUMENTS' } },
         { type: 'response_item', timestamp: '2026-10-14T10:00:03Z', payload: { type: 'function_call_output', call_id: `call-${i}`, output: { exit_code: 1, output: 'PRIVATE_OUTPUT' } } },
       );
     }
@@ -100,6 +100,21 @@ describe('omx session timeline', () => {
     assert.match(empty.stdout, /3 tool call\(s\)/);
   });
 
+  it('filters and displays a namespaced tool without merging its identity', async () => {
+    await fixture(2, 'read', 'mcp__filesystem');
+    const args = ['timeline', 'cli-session', '--tool', 'read', '--namespace', 'mcp__filesystem'];
+    const human = run(args);
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(human.stdout, /read namespace=mcp__filesystem failed/);
+
+    const json = run([...args, '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    const report = JSON.parse(json.stdout);
+    assert.equal(report.selection.namespace, 'mcp__filesystem');
+    assert.equal(report.events.length, 2);
+    assert.ok(report.events.every((event: { namespace: string }) => event.namespace === 'mcp__filesystem'));
+  });
+
   it('writes private output files and refuses to overwrite a report or its source', async () => {
     const source = await fixture();
     const output = join(cwd, 'report with spaces.json');
@@ -145,7 +160,9 @@ describe('omx session timeline', () => {
   });
 
   it('exposes session and timeline help without opening a history', () => {
-    assert.match(run(['--help']).stdout, /omx session timeline <session-id>/);
+    const sessionHelp = run(['--help']).stdout;
+    assert.match(sessionHelp, /omx session timeline <session-id>/);
+    assert.match(sessionHelp, /--namespace <name>/);
     const help = run(['timeline', '--help', '--codex-home', '/does-not-exist']);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /--min-duration/);

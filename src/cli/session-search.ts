@@ -12,7 +12,7 @@ Usage:
   omx session export <session-id> [--format markdown|json] [--output <path>] [--include-tools]
   omx session friction [options]
   omx session usage [--since <spec>] [--project <scope>] [--sort recent|tokens] [--json]
-  omx session timeline <session-id> [--kind tools|turns|compactions] [--sort duration] [--json]
+  omx session timeline <session-id> [--kind tools|turns|compactions] [--sort duration] [--tool <name>] [--namespace <name>] [--json]
   omx session lock <inspect|recover> [--cwd <path>] [--json]
   omx session pointer recover [--cwd <path>] [--json]
 

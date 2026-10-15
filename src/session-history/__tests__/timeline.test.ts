@@ -8,8 +8,11 @@ import { buildSessionTimeline, type TimelineToolEvent } from '../timeline.js';
 const START = '2026-10-14T10:00:00.000Z';
 function time(seconds: number): string { return new Date(Date.parse(START) + seconds * 1000).toISOString(); }
 function record(type: string, payload: unknown, seconds = 0) { return { type, timestamp: time(seconds), payload }; }
-function call(id: string | null, seconds: number, name = 'exec') {
-  return record('response_item', { type: 'function_call', name, call_id: id, arguments: 'PRIVATE_ARGUMENTS' }, seconds);
+function call(id: string | null, seconds: number, name = 'exec', namespace?: string) {
+  return record('response_item', {
+    type: 'function_call', name, call_id: id, arguments: 'PRIVATE_ARGUMENTS',
+    ...(namespace === undefined ? {} : { namespace }),
+  }, seconds);
 }
 function output(id: string | null, seconds: number, result: unknown = { exit_code: 0 }) {
   return record('response_item', { type: 'function_call_output', call_id: id, output: result }, seconds);
@@ -48,7 +51,7 @@ describe('buildSessionTimeline', () => {
       'turn_start', 'tool', 'tool', 'compaction', 'turn_complete', 'turn_start', 'tool', 'turn_aborted',
     ]);
     assert.deepEqual(report.events[1], {
-      kind: 'tool', name: 'exec', call_id: 'slow', status: 'failed', line_number: 3,
+      kind: 'tool', name: 'exec', namespace: null, call_id: 'slow', status: 'failed', line_number: 3,
       timestamp: time(1), result_line_number: 6, completed_at: time(5), duration_ms: 4000, exit_code: 2,
     });
     assert.equal(report.duration_ms, 10_000);
@@ -57,8 +60,8 @@ describe('buildSessionTimeline', () => {
       events: 8, tool_calls: 3, completed: 1, failed: 1, incomplete: 1, orphan_outputs: 0,
       turns_started: 2, turns_completed: 1, turns_aborted: 1, compactions: 1,
       tools: [
-        { name: 'exec', calls: 2, completed: 0, failed: 1, incomplete: 1, measured_calls: 1, total_duration_ms: 4000, max_duration_ms: 4000 },
-        { name: 'search', calls: 1, completed: 1, failed: 0, incomplete: 0, measured_calls: 1, total_duration_ms: 1000, max_duration_ms: 1000 },
+        { name: 'exec', namespace: null, calls: 2, completed: 0, failed: 1, incomplete: 1, measured_calls: 1, total_duration_ms: 4000, max_duration_ms: 4000 },
+        { name: 'search', namespace: null, calls: 1, completed: 1, failed: 0, incomplete: 0, measured_calls: 1, total_duration_ms: 1000, max_duration_ms: 1000 },
       ],
     });
     assert.equal(await readFile(path, 'utf-8'), before);
@@ -128,6 +131,26 @@ describe('buildSessionTimeline', () => {
     const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
     assert.deepEqual(report.events.map((event) => (event as TimelineToolEvent).duration_ms), [1000, 2000]);
     assert.equal(report.diagnostics.ambiguous_call_ids, 0);
+  });
+
+  it('keeps namespace as part of tool summary and filter identity', async () => {
+    await fixture([
+      call('server-a', 1, 'read', 'mcp__server-a'), call('server-b', 2, 'read', 'mcp__server-b'),
+      output('server-a', 3), output('server-b', 4),
+    ]);
+    const options = { session: 'timeline-id', codexHomeDir: home };
+    const report = await buildSessionTimeline(options);
+    assert.deepEqual(report.summary.tools.map(({ namespace, name, calls }) => ({ namespace, name, calls })), [
+      { namespace: 'mcp__server-a', name: 'read', calls: 1 },
+      { namespace: 'mcp__server-b', name: 'read', calls: 1 },
+    ]);
+    assert.equal((await buildSessionTimeline({ ...options, tool: 'read' })).events.length, 2);
+
+    const filtered = await buildSessionTimeline({ ...options, tool: 'read', namespace: 'mcp__server-b' });
+    assert.equal(filtered.selection.namespace, 'mcp__server-b');
+    assert.equal(filtered.events.length, 1);
+    assert.equal(filtered.events[0].kind, 'tool');
+    if (filtered.events[0].kind === 'tool') assert.equal(filtered.events[0].namespace, 'mcp__server-b');
   });
 
   it('keeps missing, invalid, and reversed timestamps unknown and reports gaps', async () => {

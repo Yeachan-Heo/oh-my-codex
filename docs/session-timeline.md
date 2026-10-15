@@ -11,13 +11,16 @@ Find an ID with `omx session search "a phrase you remember"`, then inspect it:
 omx session timeline <session-id>
 omx session timeline <session-id> --kind tools --sort duration --limit 10
 omx session timeline <session-id> --status failed
-omx session timeline <session-id> --tool functions.exec_command --min-duration 1000
+omx session timeline <session-id> --tool exec_command --min-duration 1000
+omx session timeline <session-id> --tool read --namespace mcp__filesystem
 omx session timeline <session-id> --kind turns
 omx session timeline <session-id> --kind compactions
 omx session timeline <session-id> --json --output timeline.json
 ```
 
-Tool names use exact, case-sensitive matching; copy the name from the report.
+Tool names and namespaces use exact, case-sensitive matching; copy them from the
+report. Use `--namespace` with `--tool` to distinguish namespaced tools that
+share a name.
 `--min-duration` is an inclusive threshold in milliseconds and excludes unknown
 durations, including incomplete calls. It can be combined with `--tool` and
 `--status`.
@@ -36,12 +39,13 @@ owner-only permissions where supported and sends confirmation to stderr. Existin
 files and symlinks are never overwritten. Omitting `--output` supports piping to
 other tools.
 
-Reports contain metadata: session, turn and call IDs, tool names, timestamps,
-source line numbers, statuses, exit codes, and aggregate counts. Message text,
-system/developer instructions, reasoning, tool arguments, tool outputs, and
-transcript/project filesystem paths are excluded. The retained IDs and tool names
-are not anonymized. Use `omx session export <session-id> --include-tools` when you need the
-actual arguments or output to investigate an event.
+Reports contain metadata: session, turn and call IDs, tool names and namespaces,
+timestamps, source line numbers, statuses, exit codes, and aggregate counts.
+Message text, system/developer instructions, reasoning, tool arguments, tool
+outputs, and transcript/project filesystem paths are excluded. The retained IDs,
+tool names, and namespaces are not anonymized. Use
+`omx session export <session-id> --include-tools` when you need the actual
+arguments or output to investigate an event.
 
 ## Status and timing semantics
 
@@ -83,6 +87,7 @@ including records that are not themselves timeline events. Idle time is included
 | --- | --- |
 | `--kind` | `all` (default), `tools`, `turns`, `compactions` |
 | `--tool` | Exact tool name; selects call events only |
+| `--namespace` | Exact tool namespace; selects call events only and can be combined with `--tool` |
 | `--status` | `completed`, `failed`, `incomplete`; applies to calls and orphan outputs |
 | `--min-duration` | Non-negative integer milliseconds; selects measured calls only |
 | `--sort` | `chronological` (default) or `duration` |
