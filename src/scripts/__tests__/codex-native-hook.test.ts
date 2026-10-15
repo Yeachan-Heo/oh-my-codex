@@ -841,6 +841,7 @@ describe("codex native hook config", () => {
 			"UserPromptSubmit",
 			"PreCompact",
 			"PostCompact",
+			"SubagentStop",
 			"Stop",
 		]);
 

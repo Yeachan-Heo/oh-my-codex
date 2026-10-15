@@ -94,7 +94,7 @@ configuration. Re-running it is safe.
 | `PostToolUseFailure` | none | runtime-only | runtime-fallback | Fold into runtime/fallback handling until native support exists |
 | non-Bash tool interception | `PreToolUse` / `PostToolUse` when provided by Codex | native hook | native-partial | OMX stays no-op for unrelated non-Bash tools, but native subagent capacity failures and close-agent cleanup requests are handled when Codex provides those tool events |
 | code simplifier stop follow-up | none | runtime-only | runtime-fallback | Cleanup follow-up stays on runtime/fallback surfaces, not native Stop |
-| `SubagentStop` | none | runtime-only | not-supported-yet | OMC-specific lifecycle extension |
+| Native child completion | `SubagentStop` | `subagent-stop` | native | Records descriptive child completion under the matching parent session. Uses `agent_id` for the child, accepts nullable transcript/message fields, and deduplicates the same child turn against legacy `Stop`; never runs leader Stop gates or grants reopen authority. Unbound or malformed identities are ignored. |
 | `session-end` | none | `session-end` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 | wiki session capture | none | `session-end` | runtime-fallback | Wiki session-log capture runs from the existing runtime session-end cleanup path, not from a native Codex hook |
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |

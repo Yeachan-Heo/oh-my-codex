@@ -949,6 +949,10 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
   const requestedKind = input.kind === 'leader' || input.kind === 'subagent' ? input.kind : undefined;
   const requestedLeaderThreadId = input.leaderThreadId?.trim();
   const existingThread = existingSession.threads[threadId];
+  // Native Stop and SubagentStop can describe the same child turn.
+  if (input.completed && input.completionSource === 'native_stop_event'
+    && existingThread?.completed_at && existingThread.completion_source === 'native_stop_event'
+    && (existingThread.last_completed_turn_id ?? '') === (input.turnId?.trim() ?? '')) return normalized;
   const existingKind = existingThread?.kind === 'leader' || existingThread?.kind === 'subagent' ? existingThread.kind : undefined;
   const existingLeaderThreadId = existingSession.leader_thread_id?.trim();
   // `leader_thread_id` is the session's top-level leader boundary.  A native

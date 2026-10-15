@@ -33,6 +33,7 @@ const MANAGED_HOOK_EVENTS = [
   "UserPromptSubmit",
   "PreCompact",
   "PostCompact",
+  "SubagentStop",
   "Stop",
 ] as const;
 

@@ -20,6 +20,7 @@ const CODEX_HOOK_EVENT_NAMES = new Set([
   'UserPromptSubmit',
   'PreCompact',
   'PostCompact',
+  'SubagentStop',
   'Stop',
 ]);
 

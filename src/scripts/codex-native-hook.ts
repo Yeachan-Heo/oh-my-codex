@@ -208,6 +208,7 @@ type CodexHookEventName =
   | "UserPromptSubmit"
   | "PreCompact"
   | "PostCompact"
+  | "SubagentStop"
   | "Stop";
 
 type CodexHookPayload = Record<string, unknown>;
@@ -715,6 +716,7 @@ function readHookEventName(payload: CodexHookPayload): CodexHookEventName | null
     || raw === "UserPromptSubmit"
     || raw === "PreCompact"
     || raw === "PostCompact"
+    || raw === "SubagentStop"
     || raw === "Stop"
   ) {
     return raw;
@@ -746,6 +748,8 @@ export function mapCodexHookEventToOmxEvent(
       return "pre-compact";
     case "PostCompact":
       return "post-compact";
+    case "SubagentStop":
+      return "subagent-stop";
     case "Stop":
       return "stop";
     default:
@@ -21841,6 +21845,30 @@ export async function dispatchCodexNativeHook(
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
   const reconcileAdvisory = options.reconcileRalplanAdvisoryFn ?? reconcileRalplanAdvisory;
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
+  if (hookEventName === "SubagentStop") {
+    // This event names the parent session and child agent separately; it is not a leader Stop.
+    const parentSessionId = readStrictStopPayloadSessionId(payload);
+    const agentId = normalizeSessionId(safeString(payload.agent_id).trim());
+    const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
+    if (parentSessionId && agentId && agentId !== parentSessionId && pointer.status === "usable" && pointer.state
+      && !sessionPointerAliases(pointer.state).has(agentId)) {
+      const sessionId = pointer.state.session_id;
+      const summary = await readSubagentSessionSummary(cwd, sessionId);
+      if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
+        || summary?.allThreadIds.includes(parentSessionId)) {
+        await recordSubagentTurnForSession(cwd, {
+          sessionId,
+          threadId: agentId,
+          turnId: readPayloadTurnId(payload) || undefined,
+          kind: "subagent",
+          mode: safeString(payload.agent_type).trim() || undefined,
+          completed: true,
+          completionSource: "native_stop_event",
+        });
+      }
+    }
+    return { hookEventName, omxEventName, skillState: null, outputJson: null };
+  }
   // #3497 / C1 boundary: documented-leader PreToolUse hard gate removed.
   if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
     void payload;
@@ -22688,6 +22716,7 @@ export async function dispatchCodexNativeHook(
           await recordSubagentTurnForSession(cwd, {
             sessionId: canonicalSessionId.trim(),
             threadId: threadId.trim(),
+            turnId: readPayloadTurnId(payload) || undefined,
             completed: true,
             completionSource: 'native_stop_event',
             timestamp: new Date().toISOString(),

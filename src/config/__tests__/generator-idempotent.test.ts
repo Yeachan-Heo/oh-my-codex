@@ -196,6 +196,7 @@ function assertSingleManagedHookTrustState(toml: string): void {
       "/tmp/codex/hooks.json:pre_tool_use:0:0",
       "/tmp/codex/hooks.json:session_start:0:0",
       "/tmp/codex/hooks.json:stop:0:0",
+      "/tmp/codex/hooks.json:subagent_stop:0:0",
       "/tmp/codex/hooks.json:user_prompt_submit:0:0",
     ],
   );
