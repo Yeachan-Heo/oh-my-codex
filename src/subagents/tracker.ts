@@ -1082,6 +1082,38 @@ export async function recordSubagentTurnForSession(cwd: string, input: RecordSub
     return next;
   });
 }
+
+/**
+ * Records a turn in the canonical tracker session and any already-existing,
+ * correlated subagent partitions. Completion events must not bootstrap those
+ * additional partitions on their own.
+ */
+export async function recordSubagentTurnForSessionPartitions(
+  cwd: string,
+  input: RecordSubagentTurnInput,
+  correlatedSessionIds: string[],
+): Promise<SubagentTrackingState> {
+  const primarySessionId = input.sessionId.trim();
+  const threadId = input.threadId.trim();
+  const sessionIds = [...new Set([
+    primarySessionId,
+    ...correlatedSessionIds.map((sessionId) => sessionId.trim()),
+  ].filter(Boolean))];
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const strict = readSubagentTrackingStateStrictSync(cwd);
+    if (!strict.ok) throw new Error('Malformed subagent tracker authority state');
+    let next = strict.state;
+    for (const sessionId of sessionIds) {
+      if (sessionId !== primarySessionId
+        && strict.state.sessions[sessionId]?.threads[threadId]?.kind !== 'subagent') continue;
+      next = recordSubagentTurn(next, { ...input, sessionId });
+    }
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, next, context.publish);
+    return next;
+  });
+}
+
 export function recordNativeSubagentAuthorityObservation(
   cwd: string,
   observation: NativeSubagentAuthorityObservation,

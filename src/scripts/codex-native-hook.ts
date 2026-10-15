@@ -26,6 +26,7 @@ import {
   readSubagentTrackingState,
   recordNativeSubagentAuthorityObservation,
   recordSubagentTurnForSession,
+  recordSubagentTurnForSessionPartitions,
   repairPersistedRootIdentity,
   quarantinePersistedRootAuthority,
   revokeNativeSubagentAuthorities,
@@ -21859,7 +21860,7 @@ export async function dispatchCodexNativeHook(
       if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
         || summary?.allThreadIds.includes(parentSessionId)) {
         try {
-          await recordSubagentTurnForSession(cwd, {
+          await recordSubagentTurnForSessionPartitions(cwd, {
             sessionId,
             threadId: agentId,
             turnId: readPayloadTurnId(payload) || undefined,
@@ -21867,7 +21868,7 @@ export async function dispatchCodexNativeHook(
             mode: safeString(payload.agent_type).trim() || undefined,
             completed: true,
             completionSource: "native_stop_event",
-          });
+          }, [parentSessionId]);
         } catch (error) {
           await logNativeHookCliError(cwd, "native_subagent_completion_tracking_error", error, payload, { agent_id: agentId });
           return { hookEventName, omxEventName, skillState: null, outputJson: null };

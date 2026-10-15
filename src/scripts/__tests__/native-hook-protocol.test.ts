@@ -257,6 +257,29 @@ describe("native hook protocol compatibility", () => {
     assert.ok(thread.completed_at);
     assert.equal(thread.direct_child_root_id, undefined);
     assert.equal(state.sessions[sessionId]!.threads[parentId], undefined);
+    assert.equal(state.sessions[parentId], undefined);
+  });
+
+  it("completes the child in every existing correlated tracker partition", async () => {
+    await start();
+    recordNativeSubagentAuthorityObservation(cwd, {
+      sessionIds: [sessionId, parentId],
+      childThreadId: agentId,
+      parentThreadId: parentId,
+      authorityEvidence: "absent",
+    });
+
+    await dispatchCodexNativeHook(stop());
+
+    const state = await readSubagentTrackingState(cwd);
+    for (const partitionId of [sessionId, parentId]) {
+      const thread = state.sessions[partitionId]?.threads[agentId];
+      assert.equal(thread?.kind, "subagent");
+      assert.equal(thread?.completion_source, "native_stop_event");
+      assert.equal(thread?.last_completed_turn_id, "child-turn-1");
+      assert.ok(thread?.completed_at);
+      assert.equal(thread?.direct_child_root_id, undefined);
+    }
   });
 
   it("deduplicates replays and legacy Stop for the same child turn, but records a new turn", async () => {
