@@ -1084,28 +1084,25 @@ export async function recordSubagentTurnForSession(cwd: string, input: RecordSub
 }
 
 /**
- * Records a turn in the canonical tracker session and any already-existing,
- * correlated subagent partitions. Completion events must not bootstrap those
- * additional partitions on their own.
+ * Records a turn in the canonical tracker session and every existing tracker
+ * partition that already records this thread as a subagent. Completion events
+ * must not bootstrap additional partitions on their own.
  */
 export async function recordSubagentTurnForSessionPartitions(
   cwd: string,
   input: RecordSubagentTurnInput,
-  correlatedSessionIds: string[],
 ): Promise<SubagentTrackingState> {
   const primarySessionId = input.sessionId.trim();
   const threadId = input.threadId.trim();
-  const sessionIds = [...new Set([
-    primarySessionId,
-    ...correlatedSessionIds.map((sessionId) => sessionId.trim()),
-  ].filter(Boolean))];
   return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
     const strict = readSubagentTrackingStateStrictSync(cwd);
     if (!strict.ok) throw new Error('Malformed subagent tracker authority state');
+    const sessionIds = new Set(primarySessionId ? [primarySessionId] : []);
+    for (const [sessionId, session] of Object.entries(strict.state.sessions)) {
+      if (session.threads[threadId]?.kind === 'subagent') sessionIds.add(sessionId);
+    }
     let next = strict.state;
     for (const sessionId of sessionIds) {
-      if (sessionId !== primarySessionId
-        && strict.state.sessions[sessionId]?.threads[threadId]?.kind !== 'subagent') continue;
       next = recordSubagentTurn(next, { ...input, sessionId });
     }
     context.assertOwnership();

@@ -263,22 +263,24 @@ describe("native hook protocol compatibility", () => {
   it("completes the child in every existing correlated tracker partition", async () => {
     await start();
     recordNativeSubagentAuthorityObservation(cwd, {
-      sessionIds: [sessionId, parentId],
+      sessionIds: [sessionId, parentId, "previous-canonical-session"],
       childThreadId: agentId,
       parentThreadId: parentId,
-      authorityEvidence: "absent",
+      rootNativeSessionId: parentId,
+      authorityEvidence: "valid",
     });
 
     await dispatchCodexNativeHook(stop());
 
     const state = await readSubagentTrackingState(cwd);
-    for (const partitionId of [sessionId, parentId]) {
+    for (const partitionId of [sessionId, parentId, "previous-canonical-session"]) {
       const thread = state.sessions[partitionId]?.threads[agentId];
       assert.equal(thread?.kind, "subagent");
       assert.equal(thread?.completion_source, "native_stop_event");
       assert.equal(thread?.last_completed_turn_id, "child-turn-1");
       assert.ok(thread?.completed_at);
-      assert.equal(thread?.direct_child_root_id, undefined);
+      assert.equal(thread?.status, "closed");
+      assert.equal(thread?.direct_child_root_id, parentId);
     }
   });
 

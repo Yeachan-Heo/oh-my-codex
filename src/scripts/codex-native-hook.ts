@@ -21868,7 +21868,7 @@ export async function dispatchCodexNativeHook(
             mode: safeString(payload.agent_type).trim() || undefined,
             completed: true,
             completionSource: "native_stop_event",
-          }, [parentSessionId]);
+          });
         } catch (error) {
           await logNativeHookCliError(cwd, "native_subagent_completion_tracking_error", error, payload, { agent_id: agentId });
           return { hookEventName, omxEventName, skillState: null, outputJson: null };
