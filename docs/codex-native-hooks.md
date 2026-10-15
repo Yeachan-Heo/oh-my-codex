@@ -134,6 +134,10 @@ current worker pane recorded under the strictly resolved Team state root. A
 leader native-session match wins before this check, and a payload with any named
 unknown or foreign identity cannot borrow the Team exemption.
 
+Verified Team workers discover hook plugins from the canonical leader checkout
+for every dispatched native event, while plugins still execute in the worker
+worktree with the shared Team state root.
+
 Known read-only MCP compatibility tools are governed by an explicit name contract,
 not a read-looking prefix heuristic. The audited contract covers filesystem/state
 reads, trace timeline/summary, code-intelligence diagnostic, symbol, hover, and

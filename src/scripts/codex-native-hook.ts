@@ -22611,6 +22611,7 @@ export async function dispatchCodexNativeHook(
     await dispatchHookEventRuntime({
       event,
       cwd,
+      pluginDiscoveryCwd: authoritativeTeamWorkerEvidence?.canonicalLeaderCwd,
       allowTeamWorkerSideEffects: false,
     });
   }

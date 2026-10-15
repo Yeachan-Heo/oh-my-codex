@@ -5199,9 +5199,9 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
     }
   });
 
-  it("records native child completion from an authoritative Team worker session", async () => {
+  it("discovers leader plugins for authoritative Team worker events in an isolated worktree", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-subagent-stop-"));
-    const workerCwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-worktree-"));
+    const workerCwd = realpathSync(await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-worktree-")));
     const originalCodexHome = process.env.CODEX_HOME;
     try {
       await writeSessionStart(cwd, "leader-session", {
@@ -5255,6 +5255,21 @@ export function onHookEvent(event) {
           teamStateRoot: stateDir,
         },
       ]);
+      await dispatchCodexNativeHook({
+        hook_event_name: "SessionStart",
+        cwd: workerCwd,
+        session_id: parentSessionId,
+      }, { cwd: workerCwd, sessionOwnerPid: process.pid });
+      const workerEvents = (await readFile(eventsPath, "utf-8")).trim().split("\n").map((line) => JSON.parse(line)).slice(1);
+      assert.deepEqual(workerEvents.map(({ event, pluginCwd, teamStateRoot }) => ({
+        event: event.event,
+        pluginCwd,
+        teamStateRoot,
+      })), [{
+        event: "session-start",
+        pluginCwd: workerCwd,
+        teamStateRoot: stateDir,
+      }]);
       assert.equal(await readFile(leaderPointerPath, "utf-8"), leaderPointerBefore);
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
