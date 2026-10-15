@@ -102,6 +102,10 @@ rejection leaves the task, completion events and completion monitor marker uncha
   including while pending or after releasing a claim. This returns outer
   `ok: false` with `error.code: "operation_failed"`. Choose the flag when defining
   the task; releasing a claim does not disable the evidence requirement.
+- `update-task` can enable the requirement before a task is terminal, but cannot
+  change a false or absent flag to `true` on a `completed` or `failed` task. It
+  returns `operation_failed` without changing the terminal record. Reapplying
+  `true` to an already-enabled task and updating other metadata remain supported.
 - New claims include `claimed_at`. It is optional for persisted-state compatibility;
   validation falls back to the task's `created_at` for older claims without it.
 - The CLI operation names, envelope schema version and successful transition shape

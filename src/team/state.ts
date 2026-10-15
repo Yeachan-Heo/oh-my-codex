@@ -1836,6 +1836,9 @@ export async function updateTask(
         throw new Error(`Invalid task status: ${updates.status}`);
       }
 
+      if (updates.requires_code_change === true && existing.requires_code_change !== true && isTerminalTaskStatus(existing.status)) {
+        throw new Error('Cannot enable completion evidence for a terminal task.');
+      }
       if (existing.requires_code_change === true) {
         if (updates.status === 'completed' && existing.status !== 'completed') throw new Error('Use transition-task-status with completion evidence.');
         if (updates.requires_code_change === false) throw new Error('Cannot disable completion evidence for an implementation task.');

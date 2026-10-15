@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { TeamTask } from './state.js';
 import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
 
@@ -16,7 +16,7 @@ export async function validateCompletionEvidence(
   if (!path) throw new Error('Include EVIDENCE_RECORDED: .omx/evidence/<file>.json in the completion result.');
   const target = resolve(cwd, path);
   const rel = relative(resolve(cwd, '.omx/evidence'), target);
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error('Evidence must be inside .omx/evidence.');
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('Evidence must be inside .omx/evidence.');
   let current = await realpath(cwd);
   for (const part of relative(resolve(cwd), target).split(/[/\\]/)) {
     current = join(current, part);

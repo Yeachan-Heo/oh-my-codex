@@ -9,7 +9,46 @@ import { executeTeamApiOperation } from '../api-interop.js';
 import { monitorTeam } from '../runtime.js';
 
 describe('worker completion evidence', () => {
-  it('rejects marker-only results before completion and lets a corrected result finish team verification', async () => {
+  it('rejects enabling evidence on terminal tasks through the public API without reclassifying them', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
+    try {
+      await initTeamState('proof', 'review', 'executor', 1, cwd);
+      for (const entry of [
+        { status: 'completed' as const, requires_code_change: false, result: 'Reviewed the implementation' },
+        { status: 'completed' as const, requires_code_change: undefined, result: 'Verification: PASS review' },
+        { status: 'failed' as const, requires_code_change: false, result: undefined },
+      ]) {
+        const task = await createTask('proof', { subject: 'review', description: 'read only', status: 'pending', requires_code_change: entry.requires_code_change }, cwd);
+        const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
+        assert.ok(claim.ok);
+        assert.equal((await transitionTaskStatus('proof', task.id, 'in_progress', entry.status, claim.claimToken, cwd, { result: entry.result })).ok, true);
+        const before = await readTask('proof', task.id, cwd);
+        const response = await executeTeamApiOperation('update-task', {
+          team_name: 'proof', task_id: task.id, requires_code_change: true,
+        }, cwd);
+        assert.equal(response.ok, false);
+        if (!response.ok) {
+          assert.equal(response.error.code, 'operation_failed');
+          assert.match(response.error.message, /Cannot enable/);
+        }
+        assert.deepEqual(await readTask('proof', task.id, cwd), before);
+        assert.ok(await updateTask('proof', task.id, { description: 'Review notes updated' }, cwd));
+      }
+      assert.equal((await monitorTeam('proof', cwd))?.phase, 'team-fix');
+      const pending = await createTask('proof', { subject: 'code', description: 'implement', status: 'pending', requires_code_change: false }, cwd);
+      const enabled = await executeTeamApiOperation('update-task', { team_name: 'proof', task_id: pending.id, requires_code_change: true }, cwd);
+      assert.equal(enabled.ok, true);
+      assert.ok(await updateTask('proof', pending.id, { requires_code_change: true }, cwd));
+      const claim = await claimTask('proof', pending.id, 'worker-1', null, cwd);
+      assert.ok(claim.ok);
+      const rejected = await transitionTaskStatus('proof', pending.id, 'in_progress', 'completed', claim.claimToken, cwd);
+      assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects marker-only results and accepts valid dot-prefixed evidence through team verification', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
     try {
       await initTeamState('proof', 'implement', 'executor', 1, cwd);
@@ -17,13 +56,13 @@ describe('worker completion evidence', () => {
       const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
       assert.ok(claim.ok);
       await mkdir(join(cwd, '.omx/evidence'), { recursive: true });
-      await writeFile(join(cwd, '.omx/evidence/task.json'), JSON.stringify({
+      await writeFile(join(cwd, '.omx/evidence/..task.json'), JSON.stringify({
         teamName: 'proof', taskId: task.id,
         claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
         summary: 'Fix addition and exercise positive and negative inputs',
         verification: [{ command: 'node --test', result: 'passed', output: '2 tests passed' }], unverified: [],
       }));
-      const marker = 'EVIDENCE_RECORDED: .omx/evidence/task.json';
+      const marker = 'EVIDENCE_RECORDED: .omx/evidence/..task.json';
       for (const result of [marker, `Verification:\n${marker}`]) {
         const rejected = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
         assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
@@ -33,6 +72,7 @@ describe('worker completion evidence', () => {
       }
       const completed = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result: `Verification:\n- PASS node --test: 2 tests passed\n${marker}` });
       assert.equal(completed.ok, true);
+      assert.ok(await updateTask('proof', task.id, { requires_code_change: true }, cwd));
       for (let poll = 0; poll < 2; poll += 1) {
         const snapshot = await monitorTeam('proof', cwd);
         assert.equal(snapshot?.phase, 'complete');
@@ -126,7 +166,7 @@ describe('worker completion evidence', () => {
       const path = '.omx/evidence/task.json';
       const complete = (result?: string) => transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
       const reject = async (result?: string) => {
-        const response = await complete(result);
+        const response = await complete(`Verification: PASS\n${result ?? ''}`);
         assert.equal(response.ok, false);
         if (!response.ok) assert.equal(response.error, 'invalid_completion_evidence');
         assert.equal((await readTask('proof', task.id, cwd))?.status, 'in_progress');
