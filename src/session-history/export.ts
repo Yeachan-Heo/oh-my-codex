@@ -1,4 +1,4 @@
-import { readSessionTranscriptLines, resolveSessionTranscript, type SessionTranscriptOptions } from './transcript.js';
+import { readResolvedSessionTranscriptLines, resolveSessionTranscript, type SessionTranscriptOptions } from './transcript.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -66,7 +66,7 @@ function toolText(value: unknown): string {
 }
 
 export async function exportSessionHistory(options: SessionExportOptions): Promise<SessionExportDocument> {
-  const transcript = await resolveSessionTranscript(options);
+  let transcript = await resolveSessionTranscript(options);
   const messages: SessionExportEntry[] = [];
   const eventMessages: SessionExportEntry[] = [];
   const tools: SessionExportEntry[] = [];
@@ -74,7 +74,9 @@ export async function exportSessionHistory(options: SessionExportOptions): Promi
   let lineNumber = 0;
   let skippedRecords = 0;
 
-  for await (const line of readSessionTranscriptLines(transcript.path)) {
+  for await (const line of readResolvedSessionTranscriptLines(options, transcript, (resolved) => {
+    transcript = resolved;
+  })) {
     lineNumber += 1;
     if (line.trim() === '') continue;
     const record = parseRecord(line);

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildSessionTimeline, type TimelineToolEvent } from '../timeline.js';
+import { readResolvedSessionTranscriptLines, resolveSessionTranscript } from '../transcript.js';
 
 const START = '2026-10-14T10:00:00.000Z';
 function time(seconds: number): string { return new Date(Date.parse(START) + seconds * 1000).toISOString(); }
@@ -152,6 +153,27 @@ describe('buildSessionTimeline', () => {
     assert.equal(filtered.events.length, 1);
     assert.equal(filtered.events[0].kind, 'tool');
     if (filtered.events[0].kind === 'tool') assert.equal(filtered.events[0].namespace, 'mcp__server-b');
+  });
+
+  it('re-resolves a transcript moved to the archive before the timeline opens it', async () => {
+    const activePath = await fixture([call('archived-call', 1)], 'archive-race');
+    const options = { session: 'archive-race', codexHomeDir: home };
+    let transcript = await resolveSessionTranscript(options);
+    const archivedPath = join(home, 'archived_sessions', 'rollout-archive-race.jsonl');
+    await mkdir(join(home, 'archived_sessions'), { recursive: true });
+    await rename(activePath, archivedPath);
+
+    const lines: string[] = [];
+    for await (const line of readResolvedSessionTranscriptLines(options, transcript, (resolved) => {
+      transcript = resolved;
+    })) lines.push(line);
+    assert.equal(transcript.archived, true);
+    assert.equal(transcript.path, archivedPath);
+    assert.equal(lines.length, 2);
+
+    const report = await buildSessionTimeline(options);
+    assert.equal(report.archived, true);
+    assert.equal(report.summary.tool_calls, 1);
   });
 
   it('keeps missing, invalid, and reversed timestamps unknown and reports gaps', async () => {

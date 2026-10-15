@@ -88,3 +88,23 @@ export async function resolveSessionTranscript(options: SessionTranscriptOptions
   }
   return candidates[0];
 }
+
+export async function* readResolvedSessionTranscriptLines(
+  options: SessionTranscriptOptions,
+  transcript: SessionTranscript,
+  onResolved: (transcript: SessionTranscript) => void,
+): AsyncGenerator<string> {
+  let yieldedLine = false;
+  try {
+    for await (const line of readSessionTranscriptLines(transcript.path)) {
+      yieldedLine = true;
+      yield line;
+    }
+  } catch (error) {
+    // Codex can move an active transcript into the archive after resolution but before open.
+    if (yieldedLine || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const refreshed = await resolveSessionTranscript(options);
+    onResolved(refreshed);
+    yield* readSessionTranscriptLines(refreshed.path);
+  }
+}

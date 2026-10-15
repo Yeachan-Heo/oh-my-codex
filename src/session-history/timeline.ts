@@ -1,4 +1,4 @@
-import { readSessionTranscriptLines, resolveSessionTranscript, type SessionTranscriptOptions } from './transcript.js';
+import { readResolvedSessionTranscriptLines, resolveSessionTranscript, type SessionTranscriptOptions } from './transcript.js';
 
 type JsonRecord = Record<string, unknown>;
 export type TimelineKindFilter = 'all' | 'tools' | 'turns' | 'compactions';
@@ -191,16 +191,20 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
   if (!['all', 'tools', 'turns', 'compactions'].includes(kind)) throw new Error('Invalid --kind.');
   if (!['chronological', 'duration'].includes(sort)) throw new Error('Invalid --sort.');
   if (options.status && !['completed', 'failed', 'incomplete'].includes(options.status)) throw new Error('Invalid --status.');
-  const transcript = await resolveSessionTranscript(options);
+  let transcript = await resolveSessionTranscript(options);
   const events: SessionTimelineEvent[] = [];
   const pending = new Map<string, TimelineToolEvent>();
   const ambiguous = new Set<string>();
   const diagnostics = { malformed_records: 0, invalid_timestamps: 0, reversed_tool_timestamps: 0, ambiguous_call_ids: 0 };
-  const startedAt = timestamp(transcript.startedAt);
+  let startedAt = timestamp(transcript.startedAt);
   let lastActivityAt = startedAt;
   let lineNumber = 0;
 
-  for await (const line of readSessionTranscriptLines(transcript.path)) {
+  for await (const line of readResolvedSessionTranscriptLines(options, transcript, (resolved) => {
+    transcript = resolved;
+    startedAt = timestamp(resolved.startedAt);
+    lastActivityAt = startedAt;
+  })) {
     lineNumber++;
     const record = parseRecord(line);
     const payload = asObject(record?.payload);
