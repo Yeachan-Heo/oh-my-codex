@@ -749,6 +749,62 @@ describe('official Codex plugin layout', () => {
     });
   });
 
+  it('routes nested SubagentStop from a Team worker launch through that worker tracker partition', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const cwd = join(cacheRoot, 'project');
+      const workerSessionId = 'team-worker-session';
+      const trackedParentId = 'worker-native-child';
+      const calledPath = join(cacheRoot, 'called.txt');
+      const delegatePath = join(cacheRoot, 'record-delegate.mjs');
+      await mkdir(cwd);
+      await writeSessionStart(cwd, 'team-leader-session', { nativeSessionId: 'native-leader', pid: process.pid });
+      await recordSubagentTurnForSession(cwd, {
+        sessionId: workerSessionId,
+        threadId: trackedParentId,
+        kind: 'subagent',
+      });
+      await writeFile(
+        delegatePath,
+        "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.OMX_PLUGIN_SENTINEL, 'delegated');\n",
+        'utf-8',
+      );
+      await writeJson(join(cachePluginRoot, 'hooks/omx-command.json'), {
+        command: process.execPath,
+        argsPrefix: [delegatePath],
+      });
+      const routingPath = join(cwd, 'state/plugin-hook-routing/team-worker-launch.json');
+      await writeJson(routingPath, {
+        routing: 'omx-plugin-hook-routing-only:v1',
+        ownerSessionId: workerSessionId,
+      });
+      const hookEnv = {
+        OMX_ROOT: cwd,
+        OMX_CODEX_LAUNCH_ID: 'team-worker-launch',
+        OMX_PLUGIN_SENTINEL: calledPath,
+      };
+      const payload = {
+        hook_event_name: 'SubagentStop',
+        cwd,
+        session_id: trackedParentId,
+        agent_id: 'nested-worker-child',
+        turn_id: 'nested-worker-turn',
+      };
+
+      const tracked = runPluginNativeHook(cachePluginRoot, JSON.stringify(payload), hookEnv);
+      assert.equal(tracked.status, 0, tracked.stderr || tracked.stdout);
+      assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'delegated');
+      await rm(calledPath, { force: true });
+
+      const untracked = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({ ...payload, session_id: 'untracked-worker-child' }),
+        hookEnv,
+      );
+      assert.equal(untracked.status, 0, untracked.stderr || untracked.stdout);
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+    });
+  });
+
   it('rejects unsafe plugin routing records without delegating and keeps Stop schema-safe', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const calledPath = join(cacheRoot, 'called.txt');

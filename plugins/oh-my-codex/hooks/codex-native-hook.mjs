@@ -200,11 +200,13 @@ function isChildRoutingSubagentStop(payload, ownerSessionId) {
   if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SubagentStop' || !ownerSessionId) return false;
   const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
   const stateDir = listAuthoritativeStateBaseDirs(cwd)[0];
+  const parentSessionId = hookPayloadSessionId(null, payload);
+  if (!isSafeRoutingSessionId(parentSessionId)) return false;
+  const tracking = readJsonFile(join(stateDir, 'subagent-tracking.json'));
+  if (tracking?.sessions?.[ownerSessionId]?.threads?.[parentSessionId]?.kind === 'subagent') return true;
   const session = readJsonFile(join(stateDir, 'session.json'));
   if (!isSessionStateAuthoritativeForCwd(session, cwd)
     || ![session.session_id, session.native_session_id, session.owner_omx_session_id, session.owner_codex_session_id, session.codex_session_id].includes(ownerSessionId)) return false;
-  const tracking = readJsonFile(join(stateDir, 'subagent-tracking.json'));
-  const parentSessionId = hookPayloadSessionId(null, payload);
   return tracking?.sessions?.[session.session_id]?.threads?.[parentSessionId]?.kind === 'subagent';
 }
 

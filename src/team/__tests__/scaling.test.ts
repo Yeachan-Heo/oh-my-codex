@@ -991,21 +991,28 @@ exit 0
     const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-up-policy-matrix-bin-'));
     const tmuxLogPath = join(fakeBinDir, 'tmux.log');
     const capturePath = join(cwd, 'worker-argv.txt');
+    const routingCapturePath = join(cwd, 'worker-routing-context.txt');
     const emptyCodexHome = await mkdtemp(join(tmpdir(), 'omx-scale-up-policy-matrix-codex-home-'));
     const previousPath = process.env.PATH;
     const previousArgv = process.argv;
     const previousBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const previousLaunchId = process.env.OMX_CODEX_LAUNCH_ID;
+    const previousEntryPath = process.env.OMX_ENTRY_PATH;
+    const observedLaunchIds = new Set<string>();
     try {
       await writeSuccessfulScaleUpTmuxStub(fakeBinDir, tmuxLogPath);
       await writeFile(
         join(fakeBinDir, 'codex'),
         `#!/bin/sh
 printf '%s\\n' "$@" > '${capturePath}'
+printf '%s\\n' "$OMX_CODEX_LAUNCH_ID" "$OMX_ENTRY_PATH" > '${routingCapturePath}'
 `,
       );
       await chmod(join(fakeBinDir, 'codex'), 0o755);
       process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
       process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+      delete process.env.OMX_CODEX_LAUNCH_ID;
+      delete process.env.OMX_ENTRY_PATH;
 
       const runScaleUpCase = async (params: {
         teamName: string;
@@ -1014,6 +1021,7 @@ printf '%s\\n' "$@" > '${capturePath}'
         inheritedModel?: string;
       }): Promise<string[]> => {
         await writeFile(capturePath, '');
+        await writeFile(routingCapturePath, '');
         await initTeamState(params.teamName, 'task', 'executor', 1, cwd);
         await configureScaleUpTeamForDirectDispatch(params.teamName, cwd);
         const result = await scaleUp(
@@ -1031,6 +1039,8 @@ printf '%s\\n' "$@" > '${capturePath}'
             OMX_TEAM_SCALING_ENABLED: '1',
             OMX_TEAM_SKIP_READY_WAIT: '1',
             CODEX_HOME: emptyCodexHome,
+            OMX_CODEX_LAUNCH_ID: 'leader-inherited-launch-id',
+            OMX_ENTRY_PATH: '/leader/omx.js',
             OMX_TEAM_WORKER_LAUNCH_ARGS: params.launchArgs,
             ...(params.inheritedModel ? { [TEAM_WORKER_INHERITED_MODEL_ENV]: params.inheritedModel } : {}),
           },
@@ -1040,6 +1050,13 @@ printf '%s\\n' "$@" > '${capturePath}'
         const startupScriptPath = workerStartupScriptPath(cwd, params.teamName, 'worker-2');
         const scriptResult = execFileSync('/bin/sh', [startupScriptPath], { encoding: 'utf-8' });
         assert.equal(scriptResult, '');
+        const [launchId, entryPath] = (await readFile(routingCapturePath, 'utf-8')).trim().split('\n');
+        assert.ok(launchId);
+        assert.notEqual(launchId, 'leader-inherited-launch-id');
+        assert.equal(observedLaunchIds.has(launchId), false, 'each scaled Codex worker must have its own launch token');
+        observedLaunchIds.add(launchId);
+        assert.ok(entryPath && existsSync(entryPath));
+        assert.notEqual(entryPath, '/leader/omx.js');
         return (await readFile(capturePath, 'utf-8')).trim().split('\n');
       };
 
@@ -1110,6 +1127,10 @@ printf '%s\\n' "$@" > '${capturePath}'
       else delete process.env.PATH;
       if (typeof previousBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = previousBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof previousLaunchId === 'string') process.env.OMX_CODEX_LAUNCH_ID = previousLaunchId;
+      else delete process.env.OMX_CODEX_LAUNCH_ID;
+      if (typeof previousEntryPath === 'string') process.env.OMX_ENTRY_PATH = previousEntryPath;
+      else delete process.env.OMX_ENTRY_PATH;
       await rm(emptyCodexHome, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
       await rm(fakeBinDir, { recursive: true, force: true });

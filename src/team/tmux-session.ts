@@ -2,7 +2,7 @@ import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
 import { closeSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import {
@@ -2306,6 +2306,14 @@ function buildWorkerProcessLaunchSpecForMode(
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
     workerEnv[key] = value;
+  }
+  delete workerEnv.OMX_CODEX_LAUNCH_ID;
+  if (workerCli === 'codex') {
+    const omxEntryPath = resolveOmxCliEntryPath({ cwd });
+    if (omxEntryPath) {
+      workerEnv.OMX_CODEX_LAUNCH_ID = randomUUID();
+      workerEnv.OMX_ENTRY_PATH = omxEntryPath;
+    }
   }
 
   return {
