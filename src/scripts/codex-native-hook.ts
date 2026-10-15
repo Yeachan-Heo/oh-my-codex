@@ -22854,8 +22854,12 @@ async function readStdinJson(): Promise<NativeHookCliReadResult> {
   }
 }
 
-function inferHookEventNameFromMalformedInput(raw: string): CodexHookEventName | null {
-  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|Stop)\b/i);
+function inferHookEventNameFromMalformedInput(
+  raw: string,
+  rawHookEventName?: CodexHookEventName | null,
+): CodexHookEventName | null {
+  if (rawHookEventName) return rawHookEventName;
+  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|SubagentStop|Stop)\b/i);
   const value = match?.[1];
   if (!value) return null;
   return readHookEventName({ hook_event_name: value });
@@ -22876,15 +22880,17 @@ function buildMalformedStdinHookOutput(
   parseError: Error,
   rawInput: string,
   cwd = process.cwd(),
+  rawHookEventName?: CodexHookEventName | null,
 ): Record<string, unknown> {
   const reason =
     "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.";
   const systemMessage =
     `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
-  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput, rawHookEventName);
   if (inferredHookEventName === "PreToolUse") {
     return buildUnparseablePreToolUseDenyOutput(reason, systemMessage);
   }
+  if (inferredHookEventName === "SubagentStop") return {};
   if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
     return {
       decision: "block",
@@ -22933,6 +22939,7 @@ async function buildOversizedStdinHookOutput(
 ): Promise<Record<string, unknown>> {
   const systemMessage =
     `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
+  if (rawHookEventName === "SubagentStop") return {};
   if (rawHookEventName === "PreToolUse") {
     return buildUnparseablePreToolUseDenyOutput(systemMessage, systemMessage);
   }
@@ -23046,7 +23053,7 @@ export async function runCodexNativeHookCli(): Promise<void> {
       {},
       buildRawInputLogFields(rawInput),
     );
-    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd()));
+    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd(), rawHookEventName));
     return;
   }
 

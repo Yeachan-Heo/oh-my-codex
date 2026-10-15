@@ -9,7 +9,7 @@ import { MANAGED_HOOK_EVENTS, buildManagedCodexHooksConfig } from "../../config/
 import { writeSessionStart } from "../../hooks/session.js";
 import { readSubagentTrackingState, recordNativeSubagentAuthorityObservation, withCrossProcessFileLockSync } from "../../subagents/tracker.js";
 import { dispatchCodexNativeHook, mapCodexHookEventToOmxEvent } from "../codex-native-hook.js";
-import { CODEX_HOOK_EVENT_NAMES, extractRawCodexHookEventName } from "../hook-payload-guard.js";
+import { CODEX_HOOK_EVENT_NAMES, extractRawCodexHookEventName, MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
 import { MANAGED_CODEX_HOOK_EVENTS } from "../smoke-packed-install.js";
 
 describe("native hook protocol compatibility", () => {
@@ -53,9 +53,9 @@ describe("native hook protocol compatibility", () => {
     await writeSessionStart(cwd, sessionId, { nativeSessionId: parentId, pid: process.pid });
   }
 
-  function runStopCli() {
+  function runNativeHookCli(input = JSON.stringify(stop())) {
     return spawnSync(process.execPath, [join(process.cwd(), "dist/scripts/codex-native-hook.js")], {
-      cwd, env: process.env, input: JSON.stringify(stop()), encoding: "utf8", timeout: 10_000,
+      cwd, env: process.env, input, encoding: "utf8", timeout: 10_000,
     });
   }
 
@@ -123,7 +123,7 @@ describe("native hook protocol compatibility", () => {
     const trackerPath = join(cwd, ".omx/state/subagent-tracking.json");
     const malformed = '{"schemaVersion":1,"sessions":{"preserve-authority":';
     await writeFile(trackerPath, malformed);
-    const result = runStopCli();
+    const result = runNativeHookCli();
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.deepEqual(JSON.parse(result.stdout), {});
     assert.equal(await readFile(trackerPath, "utf8"), malformed);
@@ -145,7 +145,7 @@ describe("native hook protocol compatibility", () => {
     });
     const trackerPath = join(cwd, ".omx/state/subagent-tracking.json");
     const before = await readFile(trackerPath, "utf8");
-    const result = withCrossProcessFileLockSync(trackerPath, () => runStopCli());
+    const result = withCrossProcessFileLockSync(trackerPath, () => runNativeHookCli());
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.deepEqual(JSON.parse(result.stdout), {});
     assert.equal(await readFile(trackerPath, "utf8"), before);
@@ -256,5 +256,24 @@ describe("native hook protocol compatibility", () => {
   it("does not bootstrap a root session from a standalone SubagentStop", async () => {
     assert.equal((await dispatchCodexNativeHook(stop())).outputJson, null);
     assert.equal(existsSync(join(cwd, ".omx")), false);
+  });
+
+  it("does not apply leader Stop behavior to malformed SubagentStop input", async () => {
+    await start();
+    const result = runNativeHookCli('{"hook_event_name":"SubagentStop",');
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+  });
+
+  it("does not block an oversized SubagentStop completion", async () => {
+    await start();
+    const result = runNativeHookCli(JSON.stringify({
+      ...stop(),
+      oversized_field: "x".repeat(MAX_NATIVE_STDIN_JSON_BYTES),
+    }));
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {});
   });
 });

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { withCrossProcessFileLockSync } from '../subagents/tracker.js';
 import type { NotificationEvent, FullNotificationPayload } from './types.js';
 
 const SESSION_ID_SAFE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
@@ -44,10 +45,16 @@ function readState(path: string): LifecycleDedupeState {
   }
 }
 
-function writeState(path: string, state: LifecycleDedupeState): void {
+function writeState(
+  path: string,
+  state: LifecycleDedupeState,
+  publish?: (contents: string) => void,
+): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(state, null, 2));
+    const contents = JSON.stringify(state, null, 2);
+    if (publish) publish(contents);
+    else writeFileSync(path, contents);
   } catch {
     // best effort
   }
@@ -114,23 +121,30 @@ function recordScopedLifecycleBroadcastSent(
   if (!sessionId || !stateDir) return;
 
   const path = getStatePath(stateDir, sessionId);
-  const state = readState(path);
-  const bucketState = state[bucket] && typeof state[bucket] === 'object'
-    ? state[bucket]
-    : {};
-  if (bucket === 'hookEvents') {
-    for (const [key, entry] of Object.entries(bucketState)) {
-      if (!key.startsWith('subagent-stop:')) continue;
-      const sentAtMs = Date.parse(entry?.sentAt ?? '');
-      if (!Number.isFinite(sentAtMs) || nowMs - sentAtMs >= LIFECYCLE_DEDUPE_WINDOW_MS) delete bucketState[key];
-    }
+  try {
+    withCrossProcessFileLockSync(path, (lock) => {
+      const state = readState(path);
+      const bucketState = state[bucket] && typeof state[bucket] === 'object'
+        ? state[bucket]
+        : {};
+      if (bucket === 'hookEvents') {
+        for (const [key, entry] of Object.entries(bucketState)) {
+          if (!key.startsWith('subagent-stop:')) continue;
+          const sentAtMs = Date.parse(entry?.sentAt ?? '');
+          if (!Number.isFinite(sentAtMs) || nowMs - sentAtMs >= LIFECYCLE_DEDUPE_WINDOW_MS) delete bucketState[key];
+        }
+      }
+      bucketState[eventKey] = {
+        fingerprint,
+        sentAt: new Date(nowMs).toISOString(),
+      };
+      state[bucket] = bucketState;
+      lock.assertOwnership();
+      writeState(path, state, lock.publish);
+    });
+  } catch {
+    // Lifecycle receipts are best effort; lock failure must not break hook dispatch.
   }
-  bucketState[eventKey] = {
-    fingerprint,
-    sentAt: new Date(nowMs).toISOString(),
-  };
-  state[bucket] = bucketState;
-  writeState(path, state);
 }
 
 export function createLifecycleBroadcastFingerprint(value: unknown): string {
