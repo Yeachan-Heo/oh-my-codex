@@ -6,10 +6,13 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  claimLifecycleHookBroadcast,
+  completeLifecycleHookBroadcast,
   shouldSendLifecycleNotification,
   recordLifecycleNotificationSent,
   shouldSendLifecycleHookBroadcast,
   recordLifecycleHookBroadcastSent,
+  releaseLifecycleHookBroadcast,
 } from '../lifecycle-dedupe.js';
 import type { FullNotificationPayload } from '../types.js';
 
@@ -45,7 +48,7 @@ function waitForChildExit(child: ReturnType<typeof spawn>): Promise<void> {
 }
 
 describe('lifecycle notification dedupe', () => {
-  it('preserves concurrent hook receipts across processes', async () => {
+  it('atomically claims duplicate child-hook deliveries and preserves other children across processes', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-concurrent-hook-'));
     const sessionId = 'parallel-session';
     const statePath = join(stateDir, 'sessions', sessionId, 'lifecycle-notif-state.json');
@@ -67,42 +70,105 @@ describe('lifecycle notification dedupe', () => {
     `;
     const holder = spawn(process.execPath, ['--input-type=module', '-e', holderSource], { stdio: 'ignore' });
     const holderExit = waitForChildExit(holder);
-    const children: Array<{ child: ReturnType<typeof spawn>; donePath: string; exit: Promise<void> }> = [];
+    const children: Array<{
+      child: ReturnType<typeof spawn>;
+      childId: string;
+      startedPath: string;
+      donePath: string;
+      exit: Promise<void>;
+    }> = [];
 
     try {
       await waitForFiles([readyPath]);
-      for (const childId of ['child-a', 'child-b']) {
-        const startedPath = join(stateDir, `${childId}.started`);
-        const donePath = join(stateDir, `${childId}.done`);
+      const writers = [
+        { writerId: 'child-a-first', childId: 'child-a' },
+        { writerId: 'child-a-replay', childId: 'child-a' },
+        { writerId: 'child-b-first', childId: 'child-b' },
+      ];
+      for (const { writerId, childId } of writers) {
+        const startedPath = join(stateDir, `${writerId}.started`);
+        const donePath = join(stateDir, `${writerId}.done`);
         const eventKey = `subagent-stop:${JSON.stringify([childId, 'turn-1'])}`;
         const writerSource = `
           import { writeFileSync } from 'node:fs';
-          import { recordLifecycleHookBroadcastSent } from ${JSON.stringify(lifecycleModuleUrl)};
+          import { claimLifecycleHookBroadcast } from ${JSON.stringify(lifecycleModuleUrl)};
           writeFileSync(${JSON.stringify(startedPath)}, 'started');
-          recordLifecycleHookBroadcastSent(${JSON.stringify(stateDir)}, ${JSON.stringify(sessionId)}, ${JSON.stringify(eventKey)}, ${JSON.stringify(childId)});
-          writeFileSync(${JSON.stringify(donePath)}, 'done');
+          const claim = claimLifecycleHookBroadcast(${JSON.stringify(stateDir)}, ${JSON.stringify(sessionId)}, ${JSON.stringify(eventKey)}, ${JSON.stringify(childId)});
+          writeFileSync(${JSON.stringify(donePath)}, JSON.stringify(claim));
         `;
         const child = spawn(process.execPath, ['--input-type=module', '-e', writerSource], { stdio: 'ignore' });
-        children.push({ child, donePath, exit: waitForChildExit(child) });
+        children.push({ child, childId, startedPath, donePath, exit: waitForChildExit(child) });
       }
-      await waitForFiles(children.map(({ donePath }) => donePath.replace(/\.done$/, '.started')));
+      await waitForFiles(children.map(({ startedPath }) => startedPath));
       await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.deepEqual(children.map(({ donePath }) => existsSync(donePath)), [false, false]);
+      assert.deepEqual(children.map(({ donePath }) => existsSync(donePath)), [false, false, false]);
 
       await writeFile(releasePath, 'release');
       await Promise.all(children.map(({ exit }) => exit));
       await holderExit;
 
+      const results = await Promise.all(children.map(async (writer) => ({
+        ...writer,
+        ...(JSON.parse(await readFile(writer.donePath, 'utf8')) as { acquired: boolean }),
+      })));
+      assert.equal(results.filter(({ childId, acquired }) => childId === 'child-a' && acquired).length, 1);
+      assert.equal(results.filter(({ childId, acquired }) => childId === 'child-b' && acquired).length, 1);
       const state = JSON.parse(await readFile(statePath, 'utf8'));
       for (const childId of ['child-a', 'child-b']) {
         const eventKey = `subagent-stop:${JSON.stringify([childId, 'turn-1'])}`;
         assert.equal(state.hookEvents[eventKey].fingerprint, childId);
+        assert.ok(state.hookEvents[eventKey].claimId);
       }
     } finally {
       await writeFile(releasePath, 'release').catch(() => {});
       for (const { child } of children) child.kill();
       holder.kill();
       await Promise.allSettled([...children.map(({ exit }) => exit), holderExit]);
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('releases failed child-hook claims and records successful dispatches', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-hook-claim-'));
+    const sessionId = 'claim-session';
+    const eventKey = 'subagent-stop:["child-a","turn-1"]';
+    const startMs = Date.parse('2026-04-12T00:00:00.000Z');
+    try {
+      const failedDispatchClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs);
+      assert.equal(failedDispatchClaim.acquired, true);
+      assert.ok(failedDispatchClaim.claimId);
+      assert.equal(claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 1).acquired, false);
+
+      releaseLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', failedDispatchClaim.claimId!, startMs + 2);
+      const retryClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 3);
+      assert.equal(retryClaim.acquired, true);
+      assert.ok(retryClaim.claimId);
+
+      completeLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', retryClaim.claimId!, startMs + 4);
+      assert.equal(claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 5).acquired, false);
+      assert.equal(shouldSendLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 5_003), false);
+      assert.equal(shouldSendLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 5_004), true);
+      assert.equal(claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 5_004).acquired, true);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a replay to reclaim a child-hook receipt after an abandoned claim expires', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-hook-claim-expiry-'));
+    const sessionId = 'claim-expiry-session';
+    const eventKey = 'subagent-stop:["child-a","turn-1"]';
+    const startMs = Date.parse('2026-04-12T00:00:00.000Z');
+    try {
+      const abandonedClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs);
+      assert.equal(abandonedClaim.acquired, true);
+      assert.equal(claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 59_999).acquired, false);
+
+      const recoveredClaim = claimLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', startMs + 60_000);
+      assert.equal(recoveredClaim.acquired, true);
+      assert.ok(recoveredClaim.claimId);
+      releaseLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', recoveredClaim.claimId!, startMs + 60_001);
+    } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
   });

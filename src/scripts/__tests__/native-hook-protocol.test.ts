@@ -147,6 +147,18 @@ describe("native hook protocol compatibility", () => {
     ]);
   });
 
+  it("does not deduplicate separate SubagentStop completions when turn IDs are absent", async () => {
+    await start();
+    const eventsPath = await captureLifecycle({ includeChildAgents: true });
+    await dispatchCodexNativeHook(stop({ turn_id: null }));
+    await dispatchCodexNativeHook(stop({ turn_id: null }));
+
+    const events = (await readFile(eventsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map(event => event.event), ["subagent-stop", "subagent-stop"]);
+    assert.deepEqual(events.map(event => event.turn_id), [undefined, undefined]);
+  });
+
   it("does not treat missing turn IDs as proof of a duplicate completion", () => {
     const first = recordSubagentTurn(createSubagentTrackingState(), {
       sessionId, threadId: agentId, kind: "subagent", completed: true,

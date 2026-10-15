@@ -415,4 +415,38 @@ export async function onHookEvent() {}
       await rm(stateRoot, { recursive: true, force: true });
     }
   });
+
+  it('releases a child completion claim when every plugin dispatch fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-failure-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-failure-root-'));
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'failing.mjs'), 'export async function onHookEvent() { throw new Error("dispatch failed"); }');
+      const event = buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: 'sess-claim-failure',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      });
+      const options = {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
+      };
+
+      const first = await dispatchHookEvent(event, options);
+      const second = await dispatchHookEvent(event, options);
+
+      assert.equal(first.results.length, 1);
+      assert.equal(first.results[0].ok, false);
+      assert.equal(second.reason, 'ok');
+      assert.equal(second.results.length, 1);
+      assert.equal(second.results[0].ok, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
 });
