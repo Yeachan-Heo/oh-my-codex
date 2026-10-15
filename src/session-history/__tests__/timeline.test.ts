@@ -84,6 +84,18 @@ describe('buildSessionTimeline', () => {
     assert.equal((report.events[0] as TimelineToolEvent).duration_ms, 1000);
   });
 
+  it('coalesces paired top-level and event-message compaction records', async () => {
+    await fixture([
+      record('compacted', { message: 'PRIVATE_COMPACTION' }, 1),
+      record('event_msg', { type: 'token_count', input_tokens: 1200, cached_input_tokens: 400 }, 2),
+      record('event_msg', { type: 'context_compacted', tokens_before: 1200, tokens_after: 300 }, 3),
+    ]);
+    const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
+    assert.equal(report.summary.compactions, 1);
+    assert.deepEqual(report.events, [{ kind: 'compaction', line_number: 2, timestamp: time(1) }]);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_COMPACTION/);
+  });
+
   it('recognizes explicit failures without classifying arbitrary output text as errors', async () => {
     const results: Array<[unknown, string, number | null]> = [
       [{ exit_code: 1 }, 'failed', 1],

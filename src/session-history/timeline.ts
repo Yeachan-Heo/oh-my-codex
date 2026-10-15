@@ -196,6 +196,8 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
   const pending = new Map<string, TimelineToolEvent>();
   const ambiguous = new Set<string>();
   const mcpToolFailures = new Set<string>();
+  const topLevelCompactions: Array<EventLocation & { kind: 'compaction' }> = [];
+  let nextUnpairedTopLevelCompaction = 0;
   const diagnostics = { malformed_records: 0, invalid_timestamps: 0, reversed_tool_timestamps: 0, ambiguous_call_ids: 0 };
   let startedAt = timestamp(transcript.startedAt);
   let lastActivityAt = startedAt;
@@ -220,8 +222,16 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
     if (time && (!lastActivityAt || Date.parse(time) > Date.parse(lastActivityAt))) lastActivityAt = time;
     const location = { line_number: lineNumber, timestamp: time };
 
-    if (record.type === 'compacted' || (record.type === 'event_msg' && payload?.type === 'context_compacted')) {
-      events.push({ ...location, kind: 'compaction' });
+    if (record.type === 'compacted') {
+      const compaction: EventLocation & { kind: 'compaction' } = { ...location, kind: 'compaction' };
+      events.push(compaction);
+      topLevelCompactions.push(compaction);
+    } else if (record.type === 'event_msg' && payload?.type === 'context_compacted') {
+      const paired = topLevelCompactions[nextUnpairedTopLevelCompaction];
+      if (paired) {
+        nextUnpairedTopLevelCompaction++;
+        if (!paired.timestamp) paired.timestamp = time;
+      } else events.push({ ...location, kind: 'compaction' });
     } else if (record.type === 'event_msg' && payload) {
       if (payload.type === 'mcp_tool_call_end') {
         const callId = asString(payload.call_id);

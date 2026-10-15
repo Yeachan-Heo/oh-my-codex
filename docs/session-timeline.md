@@ -114,10 +114,12 @@ pagination is not a persistent snapshot.
 - `event_msg`: `task_started`, `task_complete`, `turn_aborted`, `context_compacted`, and MCP `mcp_tool_call_end` failure metadata.
 - Top-level `compacted` records.
 
-Each recorded boundary or compaction is shown; no turns are invented from message
-text, and unsupported tool families are not counted. Histories that contain only
-conversation messages can have an empty timeline. Tool calls inside an execution
-wrapper are visible only if Codex records them separately.
+Each recorded boundary or compaction is shown. A later `context_compacted` event
+coalesces with an unmatched preceding top-level `compacted` record; either form is
+retained when it appears alone. No turns are invented from message text, and
+unsupported tool families are not counted. Histories that contain only conversation
+messages can have an empty timeline. Tool calls inside an execution wrapper are
+visible only if Codex records them separately.
 
 The reader streams JSONL and retains event metadata, not message or output bodies.
 It tolerates malformed rows and partially written tails. `diagnostics` reports
