@@ -450,6 +450,49 @@ export async function onHookEvent() {}
     }
   });
 
+  it('dedupes child completions across child and parent session aliases', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-child-alias-dedupe-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-child-alias-root-'));
+    const runsPath = join(cwd, 'plugin-runs.txt');
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'successful.mjs'), `import { appendFileSync } from 'node:fs';
+export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN_RUNS, 'ran\\n'); }
+`);
+      const options = {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1', OMX_TEST_PLUGIN_RUNS: runsPath },
+      };
+      const legacyChildStop = buildHookEvent('stop', {
+        source: 'native',
+        session_id: 'child-1',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: { is_subagent_stop: true },
+      });
+      const nativeSubagentStop = buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: 'parent-session',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      });
+
+      const first = await dispatchHookEvent(legacyChildStop, options);
+      const replay = await dispatchHookEvent(nativeSubagentStop, options);
+
+      assert.equal(first.results[0]?.ok, true);
+      assert.equal(replay.reason, 'deduped');
+      assert.deepEqual(replay.results, []);
+      assert.equal((await readFile(runsPath, 'utf8')).trim().split('\n').length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a successful child completion deduped when dispatch logging fails', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-log-failure-'));
     const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-log-failure-root-'));
@@ -488,7 +531,8 @@ export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN
     const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-invalid-hook-state-'));
     const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-invalid-hook-state-root-'));
     const sessionId = 'sess-invalid-hook-state';
-    const receiptPath = join(stateRoot, 'sessions', sessionId, 'lifecycle-notif-state.json');
+    const childId = 'child-1';
+    const receiptPath = join(stateRoot, 'sessions', childId, 'lifecycle-notif-state.json');
     const receiptContents = JSON.stringify({ hookEvents: [] });
     const runsPath = join(cwd, 'plugin-runs.txt');
     try {
@@ -497,12 +541,12 @@ export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN
       await writeFile(join(dir, 'should-not-run.mjs'), `import { writeFileSync } from 'node:fs';
 export async function onHookEvent() { writeFileSync(${JSON.stringify(runsPath)}, 'ran'); }
 `);
-      await mkdir(join(stateRoot, 'sessions', sessionId), { recursive: true });
+      await mkdir(join(stateRoot, 'sessions', childId), { recursive: true });
       await writeFile(receiptPath, receiptContents);
       const result = await dispatchHookEvent(buildHookEvent('subagent-stop', {
         source: 'native',
         session_id: sessionId,
-        thread_id: 'child-1',
+        thread_id: childId,
         turn_id: 'turn-1',
         context: {},
       }), {

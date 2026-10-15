@@ -317,10 +317,10 @@ function getNativeSubagentCompletionIdentity(
 function buildHookEventFingerprint(event: HookEventEnvelope): string {
 	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
 	if (subagentCompletion) {
+		// Legacy Stop and SubagentStop can carry different session aliases.
 		return createLifecycleBroadcastFingerprint({
 			event: "subagent-completion",
 			source: event.source,
-			session_id: event.session_id || "",
 			thread_id: subagentCompletion.threadId,
 			turn_id: subagentCompletion.turnId,
 		});
@@ -396,13 +396,15 @@ export async function dispatchHookEvent(
 		: "";
 	const dedupeEventKey = buildHookEventDedupeKey(event);
 	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
+	// Legacy child Stop and SubagentStop can carry different session aliases.
+	const dedupeSessionId = subagentCompletion?.threadId ?? event.session_id;
 	let dedupeClaimId: string | undefined;
 	let shouldDispatch = true;
 	let dedupeBlockReason = "deduped";
 	if (dedupeFingerprint && subagentCompletion) {
 		const claim = claimLifecycleHookBroadcast(
 			stateRoot,
-			event.session_id,
+			dedupeSessionId,
 			dedupeEventKey,
 			dedupeFingerprint,
 		);
@@ -441,7 +443,7 @@ export async function dispatchHookEvent(
 			dedupeClaimRenewalTimer = setInterval(() => {
 				if (!renewLifecycleHookBroadcastClaim(
 					stateRoot,
-					event.session_id,
+					dedupeSessionId,
 					dedupeEventKey,
 					dedupeFingerprint,
 					claimId,
@@ -491,7 +493,7 @@ export async function dispatchHookEvent(
 			if (subagentCompletion && dedupeClaimId) {
 				completeLifecycleHookBroadcast(
 					stateRoot,
-					event.session_id,
+					dedupeSessionId,
 					dedupeEventKey,
 					dedupeFingerprint,
 					dedupeClaimId,
@@ -508,7 +510,7 @@ export async function dispatchHookEvent(
 		} else if (subagentCompletion && dedupeClaimId) {
 			releaseLifecycleHookBroadcast(
 				stateRoot,
-				event.session_id,
+				dedupeSessionId,
 				dedupeEventKey,
 				dedupeFingerprint,
 				dedupeClaimId,
@@ -523,7 +525,7 @@ export async function dispatchHookEvent(
 			if (summary.results.some((result) => result.ok)) {
 				completeLifecycleHookBroadcast(
 					stateRoot,
-					event.session_id,
+					dedupeSessionId,
 					dedupeEventKey,
 					dedupeFingerprint,
 					dedupeClaimId,
@@ -531,7 +533,7 @@ export async function dispatchHookEvent(
 			} else {
 				releaseLifecycleHookBroadcast(
 					stateRoot,
-					event.session_id,
+					dedupeSessionId,
 					dedupeEventKey,
 					dedupeFingerprint,
 					dedupeClaimId,

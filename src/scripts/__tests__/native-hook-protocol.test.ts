@@ -130,13 +130,13 @@ describe("native hook protocol compatibility", () => {
     }
 
     await dispatchCodexNativeHook({
-      hook_event_name: "Stop", cwd, session_id: sessionId,
+      hook_event_name: "Stop", cwd, session_id: legacyFirstChild,
       thread_id: legacyFirstChild, turn_id: "turn-legacy-first", stop_hook_active: true,
     });
     await dispatchCodexNativeHook(stop({ agent_id: legacyFirstChild, turn_id: "turn-legacy-first" }));
     await dispatchCodexNativeHook(stop({ agent_id: nativeFirstChild, turn_id: "turn-native-first" }));
     await dispatchCodexNativeHook({
-      hook_event_name: "Stop", cwd, session_id: sessionId,
+      hook_event_name: "Stop", cwd, session_id: nativeFirstChild,
       thread_id: nativeFirstChild, turn_id: "turn-native-first", stop_hook_active: true,
     });
 
