@@ -809,6 +809,8 @@ await done;
         [OMX_TMUX_HUD_OWNER_ENV]: '1',
         [OMX_TMUX_HUD_LEADER_PANE_ENV]: '%1',
       },
+      isSessionAttachedFn: () => true,
+      isOwnerAliveFn: async () => true,
       listCurrentWindowPanesFn: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex', panePid: '101', sessionId: '$1', windowId: '@1',
           paneLeft: 0, paneTop: 0, paneWidth: 80, paneHeight: 20, paneBottom: 19, windowWidth: 80, windowHeight: 24 },
@@ -863,6 +865,7 @@ await done;
         return true;
       },
       reconcileTmuxHudFn: async () => {},
+      runAuthorityTickFn: async () => {},
     });
 
     await flush();
