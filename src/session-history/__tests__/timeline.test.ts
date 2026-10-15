@@ -235,7 +235,7 @@ describe('buildSessionTimeline', () => {
       record('event_msg', {
         type: 'mcp_tool_call_end', call_id: 'orphan-with-output', result: { Err: 'PRIVATE_TRANSPORT_ERROR' },
       }, 1),
-      output('orphan-with-output', 2, 'Wall time: 0.1 seconds\nOutput:\nConnection failed'),
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'orphan-with-output', output: 'Connection failed' } },
       record('event_msg', {
         type: 'mcp_tool_call_end', call_id: 'orphan-without-output', result: { Ok: { isError: true } },
       }, 3),
@@ -244,17 +244,52 @@ describe('buildSessionTimeline', () => {
     const options = { session: 'timeline-id', codexHomeDir: home };
     const report = await buildSessionTimeline(options);
     assert.deepEqual(report.events.map((event) => event.kind === 'orphan_output' ? [
-      event.line_number, event.call_id, event.status,
+      event.line_number, event.timestamp, event.call_id, event.status,
     ] : null), [
-      [3, 'orphan-with-output', 'failed'],
-      [4, 'orphan-without-output', 'failed'],
-      [5, null, 'completed'],
+      [3, time(1), 'orphan-with-output', 'failed'],
+      [4, time(3), 'orphan-without-output', 'failed'],
+      [5, time(4), null, 'completed'],
     ]);
     assert.equal(report.summary.orphan_outputs, 3);
     assert.equal(report.summary.tool_calls, 0);
     assert.equal((await buildSessionTimeline({ ...options, status: 'failed' })).events.length, 2);
     assert.equal((await buildSessionTimeline({ ...options, status: 'completed' })).events.length, 1);
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_TRANSPORT_ERROR/);
+  });
+
+  it('preserves lifecycle timing when later output timestamps are missing or invalid', async () => {
+    await fixture([
+      call('missing-output-time', 1, 'read', 'mcp__filesystem'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'missing-output-time', result: { Ok: { isError: false } },
+      }, 2),
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'missing-output-time', output: 'done' } },
+      call('invalid-output-time', 4, 'read', 'mcp__filesystem'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'invalid-output-time', result: { Ok: { isError: false } },
+      }, 5),
+      { ...output('invalid-output-time', 6), timestamp: 'PRIVATE_INVALID_TIMESTAMP' },
+      call('valid-output-time', 7, 'read', 'mcp__filesystem'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'valid-output-time', result: { Ok: { isError: false } },
+      }, 8),
+      output('valid-output-time', 10),
+    ]);
+    const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
+    assert.deepEqual(report.events.map((event) => event.kind === 'tool' ? [
+      event.call_id, event.result_line_number, event.completed_at, event.duration_ms,
+    ] : null), [
+      ['missing-output-time', 4, time(2), 1000],
+      ['invalid-output-time', 7, time(5), 1000],
+      ['valid-output-time', 10, time(10), 3000],
+    ]);
+    assert.equal(report.summary.tools[0].measured_calls, 3);
+    assert.equal(report.summary.tools[0].total_duration_ms, 5000);
+    assert.equal((await buildSessionTimeline({
+      session: 'timeline-id', codexHomeDir: home, minDurationMs: 1000,
+    })).events.length, 3);
+    assert.equal(report.diagnostics.invalid_timestamps, 1);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_INVALID_TIMESTAMP/);
   });
 
   it('revalidates stale active transcript matches after an archive move', async () => {

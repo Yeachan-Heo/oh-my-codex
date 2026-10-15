@@ -330,7 +330,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
           if (lifecycleResult && callId) {
             unmatchedMcpResults.delete(callId);
             events.push({
-              ...location, kind: 'orphan_output', call_id: callId,
+              ...location, timestamp: time ?? lifecycleResult.timestamp, kind: 'orphan_output', call_id: callId,
               status: lifecycleResult.status === 'failed' || finalOutcome.status === 'failed' ? 'failed' : 'completed',
               exit_code: finalOutcome.exit_code ?? lifecycleResult.exit_code,
             });
@@ -338,12 +338,14 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
           continue;
         }
         pending.delete(callId);
-        Object.assign(call, finalOutcome, { result_line_number: lineNumber, completed_at: time, duration_ms: null });
+        Object.assign(call, finalOutcome, { result_line_number: lineNumber });
         if (time && call.timestamp) {
           const duration = Date.parse(time) - Date.parse(call.timestamp);
-          if (duration >= 0) call.duration_ms = duration;
-          else diagnostics.reversed_tool_timestamps++;
-        }
+          if (duration >= 0) {
+            call.completed_at = time;
+            call.duration_ms = duration;
+          } else diagnostics.reversed_tool_timestamps++;
+        } else if (call.completed_at === null && time) call.completed_at = time;
       }
     }
   }
