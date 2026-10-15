@@ -591,6 +591,34 @@ describe('official Codex plugin layout', () => {
     });
   });
 
+  it('emits a JSON no-op for oversized plugin SubagentStop input', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const cwd = join(cacheRoot, 'project');
+      const launchId = 'oversized-subagent-stop';
+      await mkdir(cwd);
+      await writeJson(join(cwd, 'state/plugin-hook-routing', `${launchId}.json`), {
+        routing: 'omx-plugin-hook-routing-only:v1',
+        ownerSessionId: 'native-root',
+      });
+
+      const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        cwd,
+        session_id: 'native-root',
+        agent_id: 'native-child',
+        padding: 'x'.repeat(2 * 1024 * 1024),
+      }), {
+        OMX_ROOT: cwd,
+        OMX_ENTRY_PATH: omxBin,
+        OMX_CODEX_LAUNCH_ID: launchId,
+      });
+
+      assert.equal(result.error, undefined, result.error?.message ?? '');
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+    });
+  });
+
   it('no-ops plugin hooks for nested plain Codex sessions that inherit omx launch env', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const calledPath = join(cacheRoot, 'called.txt');

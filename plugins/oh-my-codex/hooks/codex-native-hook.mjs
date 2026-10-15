@@ -257,8 +257,8 @@ function isPluginHookRoutingSession(input, payload) {
   }
 }
 
-function writePlainCodexNoop(isStop) {
-  if (isStop) process.stdout.write('{}\n');
+function writePlainCodexNoop(emitJson) {
+  if (emitJson) process.stdout.write('{}\n');
   process.exitCode = 0;
 }
 
@@ -540,6 +540,10 @@ async function main() {
     const eventName = extractTopLevelHookEventName(input.toString('utf8'));
     if (eventName === 'PreToolUse' || eventName === 'PostToolUse') {
       writeOversizedToolHookOutput(eventName);
+      return;
+    }
+    if (eventName === 'SubagentStop') {
+      writePlainCodexNoop(true);
       return;
     }
     console.error(`[oh-my-codex] ${message}`);
