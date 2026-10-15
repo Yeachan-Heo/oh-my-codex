@@ -35,6 +35,3 @@ The reproducible range is recorded in `artifacts/release-0.21.14/inventory.md`.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
-
-—
-*[repo owner's gaebal-gajae (clawdbot) 🦞]*
