@@ -6,8 +6,43 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claimTask, createTask, initTeamState, readMonitorSnapshot, readTask, releaseTaskClaim, saveTeamConfig, transitionTaskStatus, updateTask, teamEventLogPath } from '../state.js';
 import { executeTeamApiOperation } from '../api-interop.js';
+import { monitorTeam } from '../runtime.js';
 
 describe('worker completion evidence', () => {
+  it('rejects marker-only results before completion and lets a corrected result finish team verification', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
+    try {
+      await initTeamState('proof', 'implement', 'executor', 1, cwd);
+      const task = await createTask('proof', { subject: 'code', description: 'implement', status: 'pending', requires_code_change: true }, cwd);
+      const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
+      assert.ok(claim.ok);
+      await mkdir(join(cwd, '.omx/evidence'), { recursive: true });
+      await writeFile(join(cwd, '.omx/evidence/task.json'), JSON.stringify({
+        teamName: 'proof', taskId: task.id,
+        claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+        summary: 'Fix addition and exercise positive and negative inputs',
+        verification: [{ command: 'node --test', result: 'passed', output: '2 tests passed' }], unverified: [],
+      }));
+      const marker = 'EVIDENCE_RECORDED: .omx/evidence/task.json';
+      for (const result of [marker, `Verification:\n${marker}`]) {
+        const rejected = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
+        assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
+        assert.match(rejected.reason ?? '', /Verification/);
+        assert.equal((await readTask('proof', task.id, cwd))?.status, 'in_progress');
+        assert.equal((await readMonitorSnapshot('proof', cwd))?.completedEventTaskIds?.[task.id], undefined);
+      }
+      const completed = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result: `Verification:\n- PASS node --test: 2 tests passed\n${marker}` });
+      assert.equal(completed.ok, true);
+      for (let poll = 0; poll < 2; poll += 1) {
+        const snapshot = await monitorTeam('proof', cwd);
+        assert.equal(snapshot?.phase, 'complete');
+        assert.ok(!snapshot?.recommendations.some((recommendation) => recommendation.includes('Verification evidence missing')));
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('cannot disable evidence through the public API before claiming or after releasing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
     try {
@@ -59,7 +94,7 @@ describe('worker completion evidence', () => {
       const path = '.omx/evidence/task.json';
       await mkdir(join(workerCwd, '.omx/evidence'), { recursive: true });
       await writeFile(join(workerCwd, path), JSON.stringify(evidence));
-      const complete = () => transitionTaskStatus('proof', task.id, 'in_progress', 'completed', next.claimToken, cwd, { result: `EVIDENCE_RECORDED: ${path}` });
+      const complete = () => transitionTaskStatus('proof', task.id, 'in_progress', 'completed', next.claimToken, cwd, { result: `Verification: PASS\nEVIDENCE_RECORDED: ${path}` });
       const rejected = await complete();
       assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
       evidence.claimTokenSha256 = createHash('sha256').update(next.claimToken).digest('hex');

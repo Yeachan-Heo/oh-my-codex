@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { TeamTask } from './state.js';
+import { hasStructuredVerificationEvidence } from '../verification/verifier.js';
 
 function text(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
@@ -37,5 +38,8 @@ export async function validateCompletionEvidence(
       return !text(value.command) || value.result !== 'passed' || !text(value.output);
     }) || !Array.isArray(evidence.unverified) || evidence.unverified.some((item: unknown) => !text(item))) {
     throw new Error('Evidence requires summary, passing verification checks (command/result/output), and an unverified array.');
+  }
+  if (!hasStructuredVerificationEvidence(result)) {
+    throw new Error('Include a Verification: section with PASS/FAIL checks or command references in the completion result.');
   }
 }

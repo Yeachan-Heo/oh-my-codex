@@ -63,12 +63,18 @@ placeholder values such as `TODO`, `TBD` and `not run` are rejected in these tex
 fields. `unverified` is a required array of non-empty, non-placeholder descriptions
 of validation gaps; use `[]` when there are none.
 
-Complete through the existing API, with the evidence marker on its own line in
-the `result` string:
+Complete through the existing API, with both a structured verification summary
+and the evidence marker on its own line in the `result` string:
 
 ```bash
 omx team api transition-task-status --input '{"team_name":"my-team","task_id":"1","from":"in_progress","to":"completed","claim_token":"<current-claim-token>","result":"Verification: PASS\nEVIDENCE_RECORDED: .omx/evidence/task-1.json"}' --json
 ```
+
+The summary must pass the existing team verification gate: include `Verification:`
+or a `## Verification` heading and PASS/FAIL checks or command references. A marker
+alone, or a heading without a verification signal, is rejected even with a valid
+report. The task stays `in_progress`, so the client can correct the result and retry
+with the same live claim instead of leaving a completed task stuck in `team-verify`.
 
 The report must be a regular, non-empty JSON file of at most 1 MiB, located inside
 the worker's `.omx/evidence/` directory. Symlinked files or directories beneath
@@ -89,8 +95,9 @@ rejection leaves the task, completion events and completion monitor marker uncha
   completion behavior. Transitions to `failed` do not require this report. Already
   completed task records are not revalidated.
 - Existing clients completing tasks marked `true` must now create and cite the
-  report and handle `invalid_completion_evidence`; plain-text verification alone
-  is no longer sufficient.
+  report, retain the structured verification summary, and handle
+  `invalid_completion_evidence`; neither plain-text verification nor a report
+  marker alone is sufficient.
 - Once `requires_code_change` is `true`, `update-task` cannot set it to `false`,
   including while pending or after releasing a claim. This returns outer
   `ok: false` with `error.code: "operation_failed"`. Choose the flag when defining
