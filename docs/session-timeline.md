@@ -114,8 +114,9 @@ pagination is not a persistent snapshot.
 - `event_msg`: `task_started`, `task_complete`, `turn_aborted`, `context_compacted`, and MCP `mcp_tool_call_end` result metadata.
 - Top-level `compacted` records.
 
-Each recorded boundary or compaction is shown. A later `context_compacted` event
-coalesces with an unmatched preceding top-level `compacted` record; either form is
+Each recorded boundary or compaction is shown. A following `context_compacted`
+event coalesces with the latest unmatched top-level `compacted` record when only
+token-count metadata intervenes; other records break the pairing. Either form is
 retained when it appears alone. No turns are invented from message text, and
 unsupported tool families are not counted. Histories that contain only conversation
 messages can have an empty timeline. Tool calls inside an execution wrapper are

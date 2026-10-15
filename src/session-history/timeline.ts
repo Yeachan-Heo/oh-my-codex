@@ -196,8 +196,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
   const pending = new Map<string, TimelineToolEvent>();
   const ambiguous = new Set<string>();
   const mcpToolFailures = new Set<string>();
-  const topLevelCompactions: Array<EventLocation & { kind: 'compaction' }> = [];
-  let nextUnpairedTopLevelCompaction = 0;
+  let unmatchedTopLevelCompaction: (EventLocation & { kind: 'compaction' }) | null = null;
   const diagnostics = { malformed_records: 0, invalid_timestamps: 0, reversed_tool_timestamps: 0, ambiguous_call_ids: 0 };
   let startedAt = timestamp(transcript.startedAt);
   let lastActivityAt = startedAt;
@@ -215,22 +214,31 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
       throw new Error('The selected transcript changed during timeline inspection. Try again.');
     }
     if (!line.trim()) continue;
-    if (!record) { diagnostics.malformed_records++; continue; }
+    if (!record) {
+      unmatchedTopLevelCompaction = null;
+      diagnostics.malformed_records++;
+      continue;
+    }
     const rawTime = record.timestamp ?? payload?.timestamp;
     const time = timestamp(rawTime);
     if (rawTime !== undefined && rawTime !== null && time === null) diagnostics.invalid_timestamps++;
     if (time && (!lastActivityAt || Date.parse(time) > Date.parse(lastActivityAt))) lastActivityAt = time;
     const location = { line_number: lineNumber, timestamp: time };
+    const isTokenCount = record.type === 'event_msg' && payload?.type === 'token_count';
+    const isContextCompacted = record.type === 'event_msg' && payload?.type === 'context_compacted';
+    if (unmatchedTopLevelCompaction && !isTokenCount && !isContextCompacted && record.type !== 'compacted') {
+      unmatchedTopLevelCompaction = null;
+    }
 
     if (record.type === 'compacted') {
       const compaction: EventLocation & { kind: 'compaction' } = { ...location, kind: 'compaction' };
       events.push(compaction);
-      topLevelCompactions.push(compaction);
-    } else if (record.type === 'event_msg' && payload?.type === 'context_compacted') {
-      const paired = topLevelCompactions[nextUnpairedTopLevelCompaction];
+      unmatchedTopLevelCompaction = compaction;
+    } else if (isContextCompacted) {
+      const paired = unmatchedTopLevelCompaction;
       if (paired) {
-        nextUnpairedTopLevelCompaction++;
         if (!paired.timestamp) paired.timestamp = time;
+        unmatchedTopLevelCompaction = null;
       } else events.push({ ...location, kind: 'compaction' });
     } else if (record.type === 'event_msg' && payload) {
       if (payload.type === 'mcp_tool_call_end') {
@@ -271,12 +279,20 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         };
         events.push(event);
         if (callId) {
-          // With two outstanding calls sharing an ID, result attribution is unknowable.
           if (pending.has(callId)) {
-            pending.delete(callId);
-            ambiguous.add(callId);
-            mcpToolFailures.delete(callId);
-            diagnostics.ambiguous_call_ids++;
+            const prior = pending.get(callId);
+            if (prior && prior.result_line_number !== null) {
+              // Lifecycle results finalize a call even when its separate output is absent.
+              pending.delete(callId);
+              mcpToolFailures.delete(callId);
+              pending.set(callId, event);
+            } else {
+              // With two outstanding calls sharing an ID, result attribution is unknowable.
+              pending.delete(callId);
+              ambiguous.add(callId);
+              mcpToolFailures.delete(callId);
+              diagnostics.ambiguous_call_ids++;
+            }
           } else if (!ambiguous.has(callId)) pending.set(callId, event);
         }
       } else if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {

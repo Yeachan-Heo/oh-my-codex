@@ -96,6 +96,18 @@ describe('buildSessionTimeline', () => {
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_COMPACTION/);
   });
 
+  it('does not coalesce unrelated compactions across turn boundaries', async () => {
+    await fixture([
+      record('compacted', {}, 1),
+      record('event_msg', { type: 'task_started', turn_id: 'turn-1' }, 2),
+      record('event_msg', { type: 'task_complete', turn_id: 'turn-1' }, 3),
+      record('event_msg', { type: 'context_compacted' }, 4),
+    ]);
+    const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
+    assert.equal(report.summary.compactions, 2);
+    assert.deepEqual(report.events.filter((event) => event.kind === 'compaction').map((event) => event.timestamp), [time(1), time(4)]);
+  });
+
   it('recognizes explicit failures without classifying arbitrary output text as errors', async () => {
     const results: Array<[unknown, string, number | null]> = [
       [{ exit_code: 1 }, 'failed', 1],
@@ -188,6 +200,34 @@ describe('buildSessionTimeline', () => {
     assert.equal(report.summary.failed, 1);
     assert.deepEqual((await buildSessionTimeline({ ...options, status: 'completed' })).events.map((event) => event.kind), ['tool']);
     assert.deepEqual((await buildSessionTimeline({ ...options, status: 'failed' })).events.map((event) => event.kind), ['tool']);
+  });
+
+  it('allows call ID reuse after successful and failed MCP lifecycle results without output', async () => {
+    await fixture([
+      call('reused-after-lifecycle', 1, 'read', 'mcp__filesystem'),
+      call('reused-after-failure', 1, 'read', 'mcp__filesystem'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'reused-after-lifecycle', result: { Ok: { isError: false } },
+      }, 2),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'reused-after-failure', result: { Err: 'PRIVATE_ERROR' },
+      }, 2),
+      call('reused-after-lifecycle', 3, 'read', 'mcp__filesystem'),
+      call('reused-after-failure', 3, 'read', 'mcp__filesystem'),
+      output('reused-after-lifecycle', 5, { exit_code: 2 }),
+      output('reused-after-failure', 5, { exit_code: 0 }),
+    ]);
+    const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
+    assert.deepEqual(report.events.map((event) => event.kind === 'tool' ? [
+      event.call_id, event.status, event.result_line_number, event.duration_ms, event.exit_code,
+    ] : null), [
+      ['reused-after-lifecycle', 'completed', 4, 1000, null],
+      ['reused-after-failure', 'failed', 5, 1000, null],
+      ['reused-after-lifecycle', 'failed', 8, 2000, 2],
+      ['reused-after-failure', 'completed', 9, 2000, 0],
+    ]);
+    assert.equal(report.diagnostics.ambiguous_call_ids, 0);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_ERROR/);
   });
 
   it('revalidates stale active transcript matches after an archive move', async () => {
