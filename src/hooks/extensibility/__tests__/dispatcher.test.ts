@@ -483,4 +483,41 @@ export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN
       await rm(stateRoot, { recursive: true, force: true });
     }
   });
+
+  it('blocks child plugin side effects when the persisted receipt bucket is invalid', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-invalid-hook-state-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-invalid-hook-state-root-'));
+    const sessionId = 'sess-invalid-hook-state';
+    const receiptPath = join(stateRoot, 'sessions', sessionId, 'lifecycle-notif-state.json');
+    const receiptContents = JSON.stringify({ hookEvents: [] });
+    const runsPath = join(cwd, 'plugin-runs.txt');
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'should-not-run.mjs'), `import { writeFileSync } from 'node:fs';
+export async function onHookEvent() { writeFileSync(${JSON.stringify(runsPath)}, 'ran'); }
+`);
+      await mkdir(join(stateRoot, 'sessions', sessionId), { recursive: true });
+      await writeFile(receiptPath, receiptContents);
+      const result = await dispatchHookEvent(buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: sessionId,
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      }), {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
+      });
+
+      assert.equal(result.reason, 'dedupe_unavailable');
+      assert.deepEqual(result.results, []);
+      assert.equal(existsSync(runsPath), false);
+      assert.equal(await readFile(receiptPath, 'utf8'), receiptContents);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
 });

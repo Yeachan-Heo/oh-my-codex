@@ -39,14 +39,33 @@ function getStatePath(stateDir: string, sessionId: string): string {
   return join(stateDir, LIFECYCLE_DEDUPE_FILE);
 }
 
-function readState(path: string): LifecycleDedupeState {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readStateFromDisk(path: string): LifecycleDedupeState | null {
   try {
     if (!existsSync(path)) return {};
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as LifecycleDedupeState;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    if (!isRecord(parsed)
+      || (parsed.events !== undefined && !isRecord(parsed.events))
+      || (parsed.hookEvents !== undefined && !isRecord(parsed.hookEvents))) return null;
+    return parsed as LifecycleDedupeState;
   } catch {
-    return {};
+    return null;
   }
+}
+
+function readState(path: string): LifecycleDedupeState {
+  return readStateFromDisk(path) ?? {};
+}
+
+function readBucketState(
+  state: LifecycleDedupeState,
+  bucket: 'events' | 'hookEvents',
+): Record<string, LifecycleDedupeEntry> {
+  const bucketState = state[bucket];
+  return isRecord(bucketState) ? bucketState as Record<string, LifecycleDedupeEntry> : {};
 }
 
 function writeState(
@@ -124,9 +143,7 @@ function shouldSendScopedLifecycleBroadcast(
 
   const path = getStatePath(stateDir, sessionId);
   const state = readState(path);
-  const bucketState = state[bucket] && typeof state[bucket] === 'object'
-    ? state[bucket]
-    : {};
+  const bucketState = readBucketState(state, bucket);
   return shouldSendFingerprint(bucketState?.[eventKey], fingerprint, nowMs);
 }
 
@@ -144,9 +161,7 @@ function recordScopedLifecycleBroadcastSent(
   try {
     withCrossProcessFileLockSync(path, (lock) => {
       const state = readState(path);
-      const bucketState = state[bucket] && typeof state[bucket] === 'object'
-        ? state[bucket]
-        : {};
+      const bucketState = readBucketState(state, bucket);
       if (bucket === 'hookEvents') {
         pruneExpiredChildTurnEntries(bucketState, nowMs);
       }
@@ -229,10 +244,9 @@ export function claimLifecycleHookBroadcast(
   const claimId = randomUUID();
   try {
     return withCrossProcessFileLockSync(path, (lock) => {
-      const state = readState(path);
-      const hookEvents = state.hookEvents && typeof state.hookEvents === 'object'
-        ? state.hookEvents
-        : {};
+      const state = readStateFromDisk(path);
+      if (!state) return { acquired: false, reason: 'unavailable' };
+      const hookEvents = readBucketState(state, 'hookEvents');
       pruneExpiredChildTurnEntries(hookEvents, nowMs);
       const previous = hookEvents[eventKey];
       if (previous?.claimId) {
@@ -273,10 +287,9 @@ export function renewLifecycleHookBroadcastClaim(
   const path = getStatePath(stateDir, sessionId);
   try {
     return withCrossProcessFileLockSync(path, (lock) => {
-      const state = readState(path);
-      const hookEvents = state.hookEvents && typeof state.hookEvents === 'object'
-        ? state.hookEvents
-        : {};
+      const state = readStateFromDisk(path);
+      if (!state) return false;
+      const hookEvents = readBucketState(state, 'hookEvents');
       const previous = hookEvents[eventKey];
       if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return false;
       hookEvents[eventKey] = {
@@ -306,9 +319,7 @@ export function completeLifecycleHookBroadcast(
   try {
     withCrossProcessFileLockSync(path, (lock) => {
       const state = readState(path);
-      const hookEvents = state.hookEvents && typeof state.hookEvents === 'object'
-        ? state.hookEvents
-        : {};
+      const hookEvents = readBucketState(state, 'hookEvents');
       const previous = hookEvents[eventKey];
       if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return;
       hookEvents[eventKey] = {
@@ -339,9 +350,7 @@ export function releaseLifecycleHookBroadcast(
   try {
     withCrossProcessFileLockSync(path, (lock) => {
       const state = readState(path);
-      const hookEvents = state.hookEvents && typeof state.hookEvents === 'object'
-        ? state.hookEvents
-        : {};
+      const hookEvents = readBucketState(state, 'hookEvents');
       const previous = hookEvents[eventKey];
       if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return;
       delete hookEvents[eventKey];

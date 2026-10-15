@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -169,6 +169,30 @@ describe('lifecycle notification dedupe', () => {
       assert.equal(recoveredClaim.acquired, true);
       assert.ok(recoveredClaim.claimId);
       releaseLifecycleHookBroadcast(stateDir, sessionId, eventKey, 'fingerprint', recoveredClaim.claimId!, startMs + 120_001);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on non-record lifecycle receipt state', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'omx-lifecycle-invalid-hook-state-'));
+    const sessionId = 'invalid-hook-state-session';
+    const statePath = join(stateDir, 'sessions', sessionId, 'lifecycle-notif-state.json');
+    try {
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      for (const contents of ['[]', JSON.stringify({ hookEvents: [] })]) {
+        await writeFile(statePath, contents);
+        assert.deepEqual(
+          claimLifecycleHookBroadcast(
+            stateDir,
+            sessionId,
+            'subagent-stop:["child-a","turn-1"]',
+            'fingerprint',
+          ),
+          { acquired: false, reason: 'unavailable' },
+        );
+        assert.equal(await readFile(statePath, 'utf8'), contents);
+      }
     } finally {
       await rm(stateDir, { recursive: true, force: true });
     }
