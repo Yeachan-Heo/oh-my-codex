@@ -888,6 +888,7 @@ export async function executeTeamApiOperation(
             result: typeof transitionResult === 'string' ? transitionResult : undefined,
             error: typeof transitionError === 'string' ? transitionError : undefined,
           },
+          fallbackCwd,
         );
         return { ok: true, operation, data: result as unknown as Record<string, unknown> };
       }

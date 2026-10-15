@@ -1911,12 +1911,14 @@ export async function transitionTaskStatus(
   claimToken: string,
   cwd: string,
   terminalData?: { result?: string; error?: string },
+  evidenceCwd = cwd,
 ): Promise<TransitionTaskResult> {
   return await withTeamTaskBarrier(teamName, cwd, async () => {
     await recoverTeamMembershipTaskTransaction(teamName, cwd);
     return await transitionTaskStatusImpl(taskId, from, to, claimToken, terminalData, {
       teamName,
       cwd,
+      evidenceCwd,
       readTask,
       readTeamConfig,
       withTaskClaimLock,

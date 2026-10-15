@@ -41,7 +41,8 @@ export async function validateCompletionEvidence(
     }) || !Array.isArray(evidence.unverified) || evidence.unverified.some((item: unknown) => !text(item))) {
     throw new Error('Evidence requires summary, passing verification checks (command/result/output), and an unverified array.');
   }
-  if (!hasStructuredVerificationEvidence(result)) {
+  const verificationSummary = (result ?? '').replace(/^[ \t]*EVIDENCE_RECORDED:[ \t]*\S+[ \t]*\r?$/gm, '');
+  if (!hasStructuredVerificationEvidence(verificationSummary)) {
     throw new Error('Include a Verification: section with PASS/FAIL checks or command references in the completion result.');
   }
 }

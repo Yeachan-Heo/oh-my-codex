@@ -64,13 +64,13 @@ describe('worker completion evidence', () => {
       const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
       assert.ok(claim.ok);
       await mkdir(join(cwd, '.omx/evidence'), { recursive: true });
-      await writeFile(join(cwd, '.omx/evidence/..task.json'), JSON.stringify({
+      await writeFile(join(cwd, '.omx/evidence/test-results.json'), JSON.stringify({
         teamName: 'proof', taskId: task.id,
         claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
         summary: 'Fix addition and exercise positive and negative inputs',
         verification: [{ command: 'node --test', result: 'passed', output: '2 tests passed' }], unverified: [],
       }));
-      const marker = 'EVIDENCE_RECORDED: .omx/evidence/..task.json';
+      const marker = 'EVIDENCE_RECORDED: .omx/evidence/test-results.json';
       for (const result of [marker, `Verification:\n${marker}`]) {
         const rejected = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result });
         assert.ok(!rejected.ok && rejected.error === 'invalid_completion_evidence');
@@ -154,6 +154,42 @@ describe('worker completion evidence', () => {
       assert.equal((await transitionTaskStatus('proof', readOnly.id, 'in_progress', 'completed', readClaim.claimToken, cwd)).ok, true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the API caller directory when worker and team state roots differ', async () => {
+    const stateCwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-state-'));
+    const callerCwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-caller-'));
+    const previousStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      const config = await initTeamState('proof', 'implement', 'executor', 1, stateCwd);
+      delete config.workers[0]!.working_dir;
+      await saveTeamConfig(config, stateCwd);
+      process.env.OMX_TEAM_STATE_ROOT = join(stateCwd, '.omx', 'state');
+      const task = await createTask('proof', { subject: 'code', description: 'implement', status: 'pending', requires_code_change: true }, stateCwd);
+      const claim = await claimTask('proof', task.id, 'worker-1', null, stateCwd);
+      assert.ok(claim.ok);
+      const path = '.omx/evidence/task.json';
+      await mkdir(join(callerCwd, '.omx/evidence'), { recursive: true });
+      await writeFile(join(callerCwd, path), JSON.stringify({
+        teamName: 'proof', taskId: task.id,
+        claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+        summary: 'Implement division',
+        verification: [{ command: 'node --test', result: 'passed', output: '4 tests passed' }],
+        unverified: [],
+      }));
+      const result = await executeTeamApiOperation('transition-task-status', {
+        team_name: 'proof', task_id: task.id, from: 'in_progress', to: 'completed',
+        claim_token: claim.claimToken, result: `Verification: PASS\nEVIDENCE_RECORDED: ${path}`,
+      }, callerCwd);
+      assert.equal(result.ok, true);
+      if (result.ok) assert.equal(result.data.ok, true);
+      assert.equal((await readTask('proof', task.id, stateCwd))?.status, 'completed');
+    } finally {
+      if (previousStateRoot === undefined) delete process.env.OMX_TEAM_STATE_ROOT;
+      else process.env.OMX_TEAM_STATE_ROOT = previousStateRoot;
+      await rm(stateCwd, { recursive: true, force: true });
+      await rm(callerCwd, { recursive: true, force: true });
     }
   });
 

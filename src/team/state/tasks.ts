@@ -175,6 +175,7 @@ function requiresCoordinationComplianceEvidence(task: TeamTaskV2): boolean {
 }
 
 interface TransitionDeps extends ClaimTaskDeps {
+  evidenceCwd: string;
   canTransitionTaskStatus: (from: TeamTaskStatus, to: TeamTaskStatus) => boolean;
   appendTeamEvent: (
     teamName: string,
@@ -233,7 +234,7 @@ export async function transitionTaskStatus(
     if (to === 'completed' && v.requires_code_change === true) {
       try {
         const config = await deps.readTeamConfig(deps.teamName, deps.cwd);
-        const evidenceCwd = config?.workers.find((worker) => worker.name === v.owner)?.working_dir ?? deps.cwd;
+        const evidenceCwd = config?.workers.find((worker) => worker.name === v.owner)?.working_dir || deps.evidenceCwd;
         await validateCompletionEvidence(evidenceCwd, deps.teamName, v, normalizedResult);
       } catch (error) {
         return { ok: false as const, error: 'invalid_completion_evidence' as const,
