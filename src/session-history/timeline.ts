@@ -195,6 +195,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
   const events: SessionTimelineEvent[] = [];
   const pending = new Map<string, TimelineToolEvent>();
   const ambiguous = new Set<string>();
+  const mcpToolFailures = new Set<string>();
   const diagnostics = { malformed_records: 0, invalid_timestamps: 0, reversed_tool_timestamps: 0, ambiguous_call_ids: 0 };
   let startedAt = timestamp(transcript.startedAt);
   let lastActivityAt = startedAt;
@@ -222,10 +223,19 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
     if (record.type === 'compacted' || (record.type === 'event_msg' && payload?.type === 'context_compacted')) {
       events.push({ ...location, kind: 'compaction' });
     } else if (record.type === 'event_msg' && payload) {
-      const boundary = payload.type === 'task_started' ? 'turn_start'
-        : payload.type === 'task_complete' ? 'turn_complete'
-          : payload.type === 'turn_aborted' ? 'turn_aborted' : null;
-      if (boundary) events.push({ ...location, kind: boundary, turn_id: asString(payload.turn_id) });
+      if (payload.type === 'mcp_tool_call_end') {
+        const callId = asString(payload.call_id);
+        const result = asObject(payload.result);
+        const ok = asObject(result?.Ok);
+        if (callId && pending.has(callId) && !ambiguous.has(callId) && ok?.isError === true) {
+          mcpToolFailures.add(callId);
+        }
+      } else {
+        const boundary = payload.type === 'task_started' ? 'turn_start'
+          : payload.type === 'task_complete' ? 'turn_complete'
+            : payload.type === 'turn_aborted' ? 'turn_aborted' : null;
+        if (boundary) events.push({ ...location, kind: boundary, turn_id: asString(payload.turn_id) });
+      }
     } else if (record.type === 'response_item' && payload) {
       const callId = asString(payload.call_id);
       if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
@@ -240,18 +250,21 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
           if (pending.has(callId)) {
             pending.delete(callId);
             ambiguous.add(callId);
+            mcpToolFailures.delete(callId);
             diagnostics.ambiguous_call_ids++;
           } else if (!ambiguous.has(callId)) pending.set(callId, event);
         }
       } else if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+        const mcpFailed = callId ? mcpToolFailures.delete(callId) : false;
         const outcome = toolOutcome(payload.output);
+        const finalOutcome = mcpFailed ? { ...outcome, status: 'failed' as const } : outcome;
         const call = callId ? pending.get(callId) : undefined;
         if (!call || !callId) {
-          events.push({ ...location, kind: 'orphan_output', call_id: callId, ...outcome });
+          events.push({ ...location, kind: 'orphan_output', call_id: callId, ...finalOutcome });
           continue;
         }
         pending.delete(callId);
-        Object.assign(call, outcome, { result_line_number: lineNumber, completed_at: time });
+        Object.assign(call, finalOutcome, { result_line_number: lineNumber, completed_at: time });
         if (time && call.timestamp) {
           const duration = Date.parse(time) - Date.parse(call.timestamp);
           if (duration >= 0) call.duration_ms = duration;

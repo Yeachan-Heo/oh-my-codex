@@ -110,12 +110,39 @@ describe('buildSessionTimeline', () => {
     }), results.map(([, status, code]) => [status, code]));
   });
 
+  it('uses MCP lifecycle errors to classify the paired output', async () => {
+    await fixture([
+      call('mcp-failed', 1, 'read', 'mcp__filesystem'),
+      call('mcp-completed', 2, 'read', 'mcp__filesystem'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'mcp-failed', result: { Ok: { isError: true } },
+      }, 3),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'mcp-completed', result: { Ok: { isError: false } },
+      }, 4),
+      output('mcp-failed', 5, 'Wall time: 0.1 seconds\nOutput:\nPermission denied'),
+      output('mcp-completed', 6, 'Wall time: 0.1 seconds\nOutput:\nRead complete'),
+    ]);
+    const options = { session: 'timeline-id', codexHomeDir: home };
+    const report = await buildSessionTimeline(options);
+    assert.deepEqual(report.events.map((event) => event.kind === 'tool' ? [event.call_id, event.status, event.exit_code] : null), [
+      ['mcp-failed', 'failed', null], ['mcp-completed', 'completed', null],
+    ]);
+    assert.equal(report.summary.failed, 1);
+    assert.equal(report.summary.completed, 1);
+    const failures = await buildSessionTimeline({ ...options, status: 'failed' });
+    assert.deepEqual(failures.events.map((event) => event.kind === 'tool' ? event.call_id : null), ['mcp-failed']);
+  });
+
   it('does not guess pairings for missing or duplicate outstanding call IDs', async () => {
     await fixture([
       output('orphan', 0, { isError: true }),
       call(null, 1), output(null, 2),
-      call('duplicate', 3), call('duplicate', 4), call('duplicate', 5),
-      output('duplicate', 6), output('duplicate', 7),
+      call('duplicate', 3),
+      record('event_msg', { type: 'mcp_tool_call_end', call_id: 'duplicate', result: { Ok: { isError: true } } }, 4),
+      call('duplicate', 5), call('duplicate', 6),
+      record('event_msg', { type: 'mcp_tool_call_end', call_id: 'duplicate', result: { Ok: { isError: true } } }, 7),
+      output('duplicate', 8), output('duplicate', 9),
     ]);
     const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
     assert.equal(report.summary.incomplete, 4);

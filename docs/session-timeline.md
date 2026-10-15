@@ -52,7 +52,7 @@ arguments or output to investigate an event.
 | Status/event | Meaning |
 | --- | --- |
 | `completed` | A result was recorded without an explicit failure marker. This is not a guarantee of success. |
-| `failed` | A result carries a nonzero integer exit code, `isError: true`, or `is_error: true`. |
+| `failed` | A result has a nonzero integer exit code, `isError: true`, or `is_error: true`, or its MCP lifecycle event reports `result.Ok.isError: true`. |
 | `incomplete` | A call has no uniquely matched result in the inspected transcript. It may be interrupted, truncated, or still running. |
 | `orphan_output` | A result has no uniquely matching earlier call. Its own status is available, but it is not counted as a completed or failed call. |
 
@@ -111,7 +111,7 @@ pagination is not a persistent snapshot.
 
 - `response_item`: `function_call`, `custom_tool_call`, and their corresponding
   `*_output` records.
-- `event_msg`: `task_started`, `task_complete`, `turn_aborted`, and `context_compacted`.
+- `event_msg`: `task_started`, `task_complete`, `turn_aborted`, `context_compacted`, and MCP `mcp_tool_call_end` failure metadata.
 - Top-level `compacted` records.
 
 Each recorded boundary or compaction is shown; no turns are invented from message
