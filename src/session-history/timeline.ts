@@ -127,7 +127,8 @@ function toolOutcome(output: unknown): { status: 'completed' | 'failed'; exit_co
   if (!object && typeof output === 'string') {
     const prefix = output.slice(0, 4096);
     const boundary = /\r?\n(?:Final output|Output):(?:\r?\n|$)/.exec(prefix);
-    const header = boundary ? prefix.slice(0, boundary.index) : '';
+    const explicitExitHeader = /^(Process exited with code -?\d+)\r?(?:\r?\n|$)/.exec(prefix);
+    const header = boundary ? prefix.slice(0, boundary.index) : (explicitExitHeader?.[1] ?? '');
     if (/^(?:Chunk ID:|Wall time:|Process exited with code )/.test(header)) {
       const match = /^(?:Process exited with code|Exit code:) (-?\d+)\r?$/m.exec(header);
       if (match && Number.isSafeInteger(Number(match[1]))) exitCode = Number(match[1]);

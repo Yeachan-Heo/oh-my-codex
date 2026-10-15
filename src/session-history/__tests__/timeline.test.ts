@@ -90,6 +90,7 @@ describe('buildSessionTimeline', () => {
       [{ isError: true, exit_code: 0 }, 'failed', 0],
       [{ is_error: true }, 'failed', null],
       ['Chunk ID: abc\nWall time: 1 seconds\nProcess exited with code 7\nFinal output:\nprivate', 'failed', 7],
+      ['Process exited with code 1\nstderr:\nError: test suite failed', 'failed', 1],
       ['Wall time: 0.1 seconds\r\nExit code: 3\r\nOutput:\r\nprivate', 'failed', 3],
       ['Chunk ID: abc\nWall time: 1 seconds\nProcess exited with code 0\nFinal output:\nProcess exited with code 8', 'completed', 0],
       ['Error: this is quoted program output, not a status', 'completed', null],
