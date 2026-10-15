@@ -230,6 +230,33 @@ describe('buildSessionTimeline', () => {
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_ERROR/);
   });
 
+  it('retains unmatched MCP lifecycle results and coalesces a later orphan output', async () => {
+    await fixture([
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'orphan-with-output', result: { Err: 'PRIVATE_TRANSPORT_ERROR' },
+      }, 1),
+      output('orphan-with-output', 2, 'Wall time: 0.1 seconds\nOutput:\nConnection failed'),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'orphan-without-output', result: { Ok: { isError: true } },
+      }, 3),
+      record('event_msg', { type: 'mcp_tool_call_end', result: { Ok: { isError: false } } }, 4),
+    ]);
+    const options = { session: 'timeline-id', codexHomeDir: home };
+    const report = await buildSessionTimeline(options);
+    assert.deepEqual(report.events.map((event) => event.kind === 'orphan_output' ? [
+      event.line_number, event.call_id, event.status,
+    ] : null), [
+      [3, 'orphan-with-output', 'failed'],
+      [4, 'orphan-without-output', 'failed'],
+      [5, null, 'completed'],
+    ]);
+    assert.equal(report.summary.orphan_outputs, 3);
+    assert.equal(report.summary.tool_calls, 0);
+    assert.equal((await buildSessionTimeline({ ...options, status: 'failed' })).events.length, 2);
+    assert.equal((await buildSessionTimeline({ ...options, status: 'completed' })).events.length, 1);
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE_TRANSPORT_ERROR/);
+  });
+
   it('revalidates stale active transcript matches after an archive move', async () => {
     const activePath = await fixture([], 'archive-race');
     const archivedPath = join(home, 'archived_sessions', 'rollout-archive-race.jsonl');
@@ -258,15 +285,17 @@ describe('buildSessionTimeline', () => {
     ]);
     const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
     assert.equal(report.summary.incomplete, 3);
-    assert.equal(report.summary.orphan_outputs, 4);
+    assert.equal(report.summary.orphan_outputs, 5);
     assert.equal(report.summary.failed, 1); // The first call failed while its ID was still unique.
     assert.equal(report.diagnostics.ambiguous_call_ids, 1);
     assert.equal(report.summary.tools[0].total_duration_ms, 1000);
     const failures = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home, status: 'failed' });
-    assert.equal(failures.events.length, 2);
+    assert.equal(failures.events.length, 3);
     assert.equal(failures.events[0].kind, 'orphan_output');
     assert.equal(failures.events[1].kind, 'tool');
     if (failures.events[1].kind === 'tool') assert.equal(failures.events[1].call_id, 'duplicate');
+    assert.equal(failures.events[2].kind, 'orphan_output');
+    if (failures.events[2].kind === 'orphan_output') assert.equal(failures.events[2].call_id, 'duplicate');
   });
 
   it('allows sequential ID reuse after a result without joining separate calls', async () => {

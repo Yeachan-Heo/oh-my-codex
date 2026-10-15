@@ -123,6 +123,8 @@ messages can have an empty timeline. Tool calls inside an execution wrapper are
 visible only if Codex records them separately. A uniquely matched MCP
 `mcp_tool_call_end` `Ok` or `Err` result completes or fails its call even when no
 separate output record follows; a later output record refines the result when present.
+An unmatched lifecycle result is retained as an `orphan_output`; it coalesces with a
+later output using the same ID only when that ID is not ambiguous.
 
 The reader streams JSONL and retains event metadata, not message or output bodies.
 It tolerates malformed rows and partially written tails. `diagnostics` reports

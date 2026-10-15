@@ -38,6 +38,13 @@ export type SessionTimelineEvent = TimelineToolEvent | (EventLocation & (
   | { kind: 'orphan_output'; call_id: string | null; status: 'completed' | 'failed'; exit_code: number | null }
 ));
 
+type OrphanOutputEvent = EventLocation & {
+  kind: 'orphan_output';
+  call_id: string | null;
+  status: 'completed' | 'failed';
+  exit_code: number | null;
+};
+
 export interface TimelineToolSummary {
   name: string | null;
   namespace: string | null;
@@ -196,6 +203,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
   const pending = new Map<string, TimelineToolEvent>();
   const ambiguous = new Set<string>();
   const mcpToolFailures = new Set<string>();
+  const unmatchedMcpResults = new Map<string, OrphanOutputEvent>();
   let unmatchedTopLevelCompaction: (EventLocation & { kind: 'compaction' }) | null = null;
   const diagnostics = { malformed_records: 0, invalid_timestamps: 0, reversed_tool_timestamps: 0, ambiguous_call_ids: 0 };
   let startedAt = timestamp(transcript.startedAt);
@@ -247,20 +255,32 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         const ok = asObject(result?.Ok);
         const failed = ok?.isError === true || (result !== null && Object.hasOwn(result, 'Err'));
         const hasLifecycleResult = result !== null && (Object.hasOwn(result, 'Ok') || Object.hasOwn(result, 'Err'));
-        if (callId && pending.has(callId) && !ambiguous.has(callId) && hasLifecycleResult) {
-          if (failed) mcpToolFailures.add(callId);
-          else mcpToolFailures.delete(callId);
-          const call = pending.get(callId);
-          if (call) {
-            call.status = failed ? 'failed' : 'completed';
-            call.result_line_number = lineNumber;
-            call.completed_at = time;
-            call.duration_ms = null;
-            if (time && call.timestamp) {
-              const duration = Date.parse(time) - Date.parse(call.timestamp);
-              if (duration >= 0) call.duration_ms = duration;
-              else diagnostics.reversed_tool_timestamps++;
+        if (hasLifecycleResult) {
+          if (callId && pending.has(callId) && !ambiguous.has(callId)) {
+            if (failed) mcpToolFailures.add(callId);
+            else mcpToolFailures.delete(callId);
+            const call = pending.get(callId);
+            if (call) {
+              call.status = failed ? 'failed' : 'completed';
+              call.result_line_number = lineNumber;
+              call.completed_at = time;
+              call.duration_ms = null;
+              if (time && call.timestamp) {
+                const duration = Date.parse(time) - Date.parse(call.timestamp);
+                if (duration >= 0) call.duration_ms = duration;
+                else diagnostics.reversed_tool_timestamps++;
+              }
             }
+          } else {
+            const orphan: OrphanOutputEvent = {
+              ...location, kind: 'orphan_output', call_id: callId,
+              status: failed ? 'failed' : 'completed', exit_code: null,
+            };
+            if (callId && !ambiguous.has(callId)) {
+              const previous = unmatchedMcpResults.get(callId);
+              if (previous) events.push(previous);
+              unmatchedMcpResults.set(callId, orphan);
+            } else events.push(orphan);
           }
         }
       } else {
@@ -279,6 +299,11 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         };
         events.push(event);
         if (callId) {
+          const priorLifecycleResult = unmatchedMcpResults.get(callId);
+          if (priorLifecycleResult) {
+            events.push(priorLifecycleResult);
+            unmatchedMcpResults.delete(callId);
+          }
           if (pending.has(callId)) {
             const prior = pending.get(callId);
             if (prior && prior.result_line_number !== null) {
@@ -301,7 +326,15 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         const finalOutcome = mcpFailed ? { ...outcome, status: 'failed' as const } : outcome;
         const call = callId ? pending.get(callId) : undefined;
         if (!call || !callId) {
-          events.push({ ...location, kind: 'orphan_output', call_id: callId, ...finalOutcome });
+          const lifecycleResult = callId ? unmatchedMcpResults.get(callId) : undefined;
+          if (lifecycleResult && callId) {
+            unmatchedMcpResults.delete(callId);
+            events.push({
+              ...location, kind: 'orphan_output', call_id: callId,
+              status: lifecycleResult.status === 'failed' || finalOutcome.status === 'failed' ? 'failed' : 'completed',
+              exit_code: finalOutcome.exit_code ?? lifecycleResult.exit_code,
+            });
+          } else events.push({ ...location, kind: 'orphan_output', call_id: callId, ...finalOutcome });
           continue;
         }
         pending.delete(callId);
@@ -314,6 +347,9 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
       }
     }
   }
+
+  events.push(...unmatchedMcpResults.values());
+  events.sort((a, b) => a.line_number - b.line_number);
 
   const selected = events.filter((event) => {
     if (kind === 'tools' && event.kind !== 'tool' && event.kind !== 'orphan_output') return false;
