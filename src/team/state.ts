@@ -227,6 +227,7 @@ export interface TeamTask {
 }
 
 export interface TeamTaskClaim {
+  claimed_at?: string;
   owner: string;
   token: string;
   leased_until: string;
@@ -436,7 +437,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' | 'invalid_completion_evidence'; reason?: string };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
@@ -1835,6 +1836,10 @@ export async function updateTask(
         throw new Error(`Invalid task status: ${updates.status}`);
       }
 
+      if (existing.requires_code_change === true) {
+        if (updates.status === 'completed' && existing.status !== 'completed') throw new Error('Use transition-task-status with completion evidence.');
+        if (updates.requires_code_change === false) throw new Error('Cannot disable completion evidence for an implementation task.');
+      }
       const rawDeps = updates.depends_on ?? updates.blocked_by ?? existing.depends_on ?? existing.blocked_by ?? [];
       const normalizedDeps = Array.isArray(rawDeps) ? rawDeps : [];
       const merged = normalizeTask({
