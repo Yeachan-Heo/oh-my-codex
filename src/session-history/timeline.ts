@@ -230,6 +230,18 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
         const failed = ok?.isError === true || (result !== null && Object.hasOwn(result, 'Err'));
         if (callId && pending.has(callId) && !ambiguous.has(callId) && failed) {
           mcpToolFailures.add(callId);
+          const call = pending.get(callId);
+          if (call) {
+            call.status = 'failed';
+            call.result_line_number = lineNumber;
+            call.completed_at = time;
+            call.duration_ms = null;
+            if (time && call.timestamp) {
+              const duration = Date.parse(time) - Date.parse(call.timestamp);
+              if (duration >= 0) call.duration_ms = duration;
+              else diagnostics.reversed_tool_timestamps++;
+            }
+          }
         }
       } else {
         const boundary = payload.type === 'task_started' ? 'turn_start'
@@ -265,7 +277,7 @@ export async function buildSessionTimeline(options: SessionTimelineOptions): Pro
           continue;
         }
         pending.delete(callId);
-        Object.assign(call, finalOutcome, { result_line_number: lineNumber, completed_at: time });
+        Object.assign(call, finalOutcome, { result_line_number: lineNumber, completed_at: time, duration_ms: null });
         if (time && call.timestamp) {
           const duration = Date.parse(time) - Date.parse(call.timestamp);
           if (duration >= 0) call.duration_ms = duration;

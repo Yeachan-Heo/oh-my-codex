@@ -110,11 +110,12 @@ describe('buildSessionTimeline', () => {
     }), results.map(([, status, code]) => [status, code]));
   });
 
-  it('uses MCP lifecycle errors to classify the paired output', async () => {
+  it('uses MCP lifecycle errors for paired and output-less calls', async () => {
     await fixture([
       call('mcp-failed', 1, 'read', 'mcp__filesystem'),
       call('mcp-completed', 2, 'read', 'mcp__filesystem'),
       call('mcp-transport-error', 3, 'read', 'mcp__filesystem'),
+      call('mcp-output-less', 4, 'read', 'mcp__filesystem'),
       record('event_msg', {
         type: 'mcp_tool_call_end', call_id: 'mcp-failed', result: { Ok: { isError: true } },
       }, 3),
@@ -124,6 +125,9 @@ describe('buildSessionTimeline', () => {
       record('event_msg', {
         type: 'mcp_tool_call_end', call_id: 'mcp-transport-error', result: { Err: 'PRIVATE_MCP_TRANSPORT_ERROR' },
       }, 5),
+      record('event_msg', {
+        type: 'mcp_tool_call_end', call_id: 'mcp-output-less', result: { Ok: { isError: true } },
+      }, 6),
       output('mcp-failed', 5, 'Wall time: 0.1 seconds\nOutput:\nPermission denied'),
       output('mcp-completed', 6, 'Wall time: 0.1 seconds\nOutput:\nRead complete'),
       output('mcp-transport-error', 7, 'Wall time: 0.1 seconds\nOutput:\nConnection failed'),
@@ -132,13 +136,19 @@ describe('buildSessionTimeline', () => {
     const report = await buildSessionTimeline(options);
     assert.deepEqual(report.events.map((event) => event.kind === 'tool' ? [event.call_id, event.status, event.exit_code] : null), [
       ['mcp-failed', 'failed', null], ['mcp-completed', 'completed', null], ['mcp-transport-error', 'failed', null],
+      ['mcp-output-less', 'failed', null],
     ]);
-    assert.equal(report.summary.failed, 2);
+    assert.equal(report.summary.failed, 3);
     assert.equal(report.summary.completed, 1);
+    assert.equal(report.summary.incomplete, 0);
+    const outputLess = report.events.find((event) => event.kind === 'tool' && event.call_id === 'mcp-output-less');
+    assert.equal(outputLess?.kind === 'tool' ? outputLess.result_line_number : null, 9);
+    assert.equal(outputLess?.kind === 'tool' ? outputLess.completed_at : null, time(6));
+    assert.equal(outputLess?.kind === 'tool' ? outputLess.duration_ms : null, 2000);
     assert.doesNotMatch(JSON.stringify(report), /PRIVATE_MCP_TRANSPORT_ERROR/);
     const failures = await buildSessionTimeline({ ...options, status: 'failed' });
     assert.deepEqual(failures.events.map((event) => event.kind === 'tool' ? event.call_id : null), [
-      'mcp-failed', 'mcp-transport-error',
+      'mcp-failed', 'mcp-transport-error', 'mcp-output-less',
     ]);
   });
 
@@ -153,14 +163,16 @@ describe('buildSessionTimeline', () => {
       output('duplicate', 8), output('duplicate', 9),
     ]);
     const report = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home });
-    assert.equal(report.summary.incomplete, 4);
+    assert.equal(report.summary.incomplete, 3);
     assert.equal(report.summary.orphan_outputs, 4);
-    assert.equal(report.summary.failed, 0); // The orphan failure cannot be attributed to a call.
+    assert.equal(report.summary.failed, 1); // The first call failed while its ID was still unique.
     assert.equal(report.diagnostics.ambiguous_call_ids, 1);
-    assert.equal(report.summary.tools[0].total_duration_ms, null);
+    assert.equal(report.summary.tools[0].total_duration_ms, 1000);
     const failures = await buildSessionTimeline({ session: 'timeline-id', codexHomeDir: home, status: 'failed' });
-    assert.equal(failures.events.length, 1);
+    assert.equal(failures.events.length, 2);
     assert.equal(failures.events[0].kind, 'orphan_output');
+    assert.equal(failures.events[1].kind, 'tool');
+    if (failures.events[1].kind === 'tool') assert.equal(failures.events[1].call_id, 'duplicate');
   });
 
   it('allows sequential ID reuse after a result without joining separate calls', async () => {
