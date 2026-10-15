@@ -66,7 +66,7 @@ import {
 	readUltragoalPlan,
 } from "../../ultragoal/artifacts.js";
 import { getBaseStateDir } from "../../state/paths.js";
-import { recordNativeSubagentAuthorityObservation } from "../../subagents/tracker.js";
+import { readSubagentTrackingState, recordNativeSubagentAuthorityObservation } from "../../subagents/tracker.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
 import {
@@ -5194,6 +5194,59 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       assert.notEqual(leaderStop.outputJson?.stopReason, "session_scope_unmatched");
       assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), leaderPointerBefore);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records native child completion from an authoritative Team worker session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-subagent-stop-"));
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      await writeSessionStart(cwd, "leader-session", {
+        nativeSessionId: "leader-native",
+        pid: process.pid,
+      });
+      await configureAuthoritativeTeamWorker(cwd, "team-worker-subagent-stop");
+      const stateDir = join(cwd, ".omx", "state");
+      const leaderPointerPath = join(stateDir, "session.json");
+      const leaderPointerBefore = await readFile(leaderPointerPath, "utf-8");
+      const codexHome = join(cwd, "codex-home");
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(codexHome, { recursive: true });
+      await writeJson(join(codexHome, ".omx-config.json"), {
+        notifications: { enabled: true, includeChildAgents: true },
+      });
+      const eventsPath = join(cwd, "child-events.jsonl");
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "hooks", "capture.mjs"), `import { appendFileSync } from 'node:fs';
+export function onHookEvent(event) { appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify(event) + '\\n'); }
+`);
+
+      const parentSessionId = "team-worker-native-session";
+      const childThreadId = "team-worker-native-child";
+      const turnId = "team-worker-child-turn";
+      await dispatchCodexNativeHook({
+        hook_event_name: "SubagentStop",
+        cwd,
+        session_id: parentSessionId,
+        agent_id: childThreadId,
+        agent_type: "executor",
+        turn_id: turnId,
+      }, { cwd });
+
+      const tracking = await readSubagentTrackingState(cwd);
+      const child = tracking.sessions[parentSessionId]?.threads[childThreadId];
+      assert.equal(child?.completion_source, "native_stop_event");
+      assert.equal(child?.last_completed_turn_id, turnId);
+      assert.equal(child?.status, "closed");
+      const events = (await readFile(eventsPath, "utf-8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(events.map((event) => [event.event, event.session_id, event.thread_id, event.turn_id]), [
+        ["subagent-stop", parentSessionId, childThreadId, turnId],
+      ]);
+      assert.equal(await readFile(leaderPointerPath, "utf-8"), leaderPointerBefore);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
       await rm(cwd, { recursive: true, force: true });
     }
   });

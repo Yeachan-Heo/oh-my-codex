@@ -21852,44 +21852,57 @@ export async function dispatchCodexNativeHook(
     // This event names the parent session and child agent separately; it is not a leader Stop.
     const parentSessionId = readStrictStopPayloadSessionId(payload);
     const agentId = normalizeSessionId(safeString(payload.agent_id).trim());
-    const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
-    if (parentSessionId && agentId && agentId !== parentSessionId && pointer.status === "usable" && pointer.state
-      && !sessionPointerAliases(pointer.state).has(agentId)) {
-      const sessionId = pointer.state.session_id;
-      const summary = await readSubagentSessionSummary(cwd, sessionId);
-      if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
-        || summary?.allThreadIds.includes(parentSessionId)) {
-        try {
-          await recordSubagentTurnForSessionPartitions(cwd, {
-            sessionId,
-            threadId: agentId,
-            turnId: readPayloadTurnId(payload) || undefined,
-            kind: "subagent",
+    let sessionId: string | null = null;
+    if (parentSessionId && agentId && agentId !== parentSessionId) {
+      const authoritativeTeamWorker = hasRawTeamWorkerDeclaration()
+        ? await resolveAuthoritativeTeamWorkerContext(cwd)
+        : null;
+      if (authoritativeTeamWorker) {
+        // Team workers can own child agents without the shared leader pointer or tracker summary.
+        sessionId = parentSessionId;
+      } else {
+        const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
+        if (pointer.status === "usable" && pointer.state && !sessionPointerAliases(pointer.state).has(agentId)) {
+          const candidateSessionId = pointer.state.session_id;
+          const summary = await readSubagentSessionSummary(cwd, candidateSessionId);
+          if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
+            || summary?.allThreadIds.includes(parentSessionId)) {
+            sessionId = candidateSessionId;
+          }
+        }
+      }
+    }
+    if (sessionId && agentId) {
+      try {
+        await recordSubagentTurnForSessionPartitions(cwd, {
+          sessionId,
+          threadId: agentId,
+          turnId: readPayloadTurnId(payload) || undefined,
+          kind: "subagent",
+          mode: safeString(payload.agent_type).trim() || undefined,
+          completed: true,
+          completionSource: "native_stop_event",
+        });
+      } catch (error) {
+        await logNativeHookCliError(cwd, "native_subagent_completion_tracking_error", error, payload, { agent_id: agentId });
+        return { hookEventName, omxEventName, skillState: null, outputJson: null };
+      }
+      if (!shouldSuppressSubagentLifecycleHookDispatch()) {
+        await dispatchHookEventRuntime({
+          event: buildNativeHookEvent(omxEventName!, {
+            ...buildBaseContext(cwd, payload, hookEventName, sessionId),
+            native_session_id: agentId,
+            codex_session_id: agentId,
+            omx_session_id: sessionId,
+          }, {
+            session_id: sessionId,
+            thread_id: agentId,
+            turn_id: readPayloadTurnId(payload) || undefined,
             mode: safeString(payload.agent_type).trim() || undefined,
-            completed: true,
-            completionSource: "native_stop_event",
-          });
-        } catch (error) {
-          await logNativeHookCliError(cwd, "native_subagent_completion_tracking_error", error, payload, { agent_id: agentId });
-          return { hookEventName, omxEventName, skillState: null, outputJson: null };
-        }
-        if (!shouldSuppressSubagentLifecycleHookDispatch()) {
-          await dispatchHookEventRuntime({
-            event: buildNativeHookEvent(omxEventName!, {
-              ...buildBaseContext(cwd, payload, hookEventName, sessionId),
-              native_session_id: agentId,
-              codex_session_id: agentId,
-              omx_session_id: sessionId,
-            }, {
-              session_id: sessionId,
-              thread_id: agentId,
-              turn_id: readPayloadTurnId(payload) || undefined,
-              mode: safeString(payload.agent_type).trim() || undefined,
-            }),
-            cwd,
-            allowTeamWorkerSideEffects: false,
-          });
-        }
+          }),
+          cwd,
+          allowTeamWorkerSideEffects: false,
+        });
       }
     }
     return { hookEventName, omxEventName, skillState: null, outputJson: null };
