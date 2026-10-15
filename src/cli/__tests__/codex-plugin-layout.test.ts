@@ -7,6 +7,8 @@ import { delimiter, dirname, join, relative, sep } from 'node:path';
 import { buildMergedConfig } from '../../config/generator.js';
 import type { CatalogManifest } from '../../catalog/schema.js';
 import { getSetupInstallableSkillNames } from '../../catalog/installable.js';
+import { writeSessionStart } from '../../hooks/session.js';
+import { readSubagentTrackingState, recordSubagentTurnForSession } from '../../subagents/tracker.js';
 import {
   buildOmxPluginMcpManifest,
   OMX_FIRST_PARTY_MCP_ENTRYPOINTS,
@@ -673,6 +675,49 @@ describe('official Codex plugin layout', () => {
         assert.equal(result.stdout, '');
         await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
       }
+    });
+  });
+
+  it('routes nested SubagentStop only for a tracked parent of the launch owner', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const cwd = join(cacheRoot, 'project');
+      await mkdir(cwd);
+      await writeSessionStart(cwd, 'omx-root', { nativeSessionId: 'native-root', pid: process.pid });
+      await recordSubagentTurnForSession(cwd, { sessionId: 'omx-root', threadId: 'native-parent', kind: 'subagent' });
+      const pointerPath = join(cwd, '.omx/state/session.json');
+      const pointer = await readFile(pointerPath, 'utf8');
+      const routingPath = join(cwd, 'state/plugin-hook-routing/nested-stop.json');
+      await writeJson(routingPath, { routing: 'omx-plugin-hook-routing-only:v1', ownerSessionId: 'native-root' });
+      await writeJson(join(cachePluginRoot, 'hooks/omx-command.json'), { command: process.execPath, argsPrefix: [omxBin] });
+      const hookEnv = { OMX_ROOT: cwd, OMX_CODEX_LAUNCH_ID: 'nested-stop', CODEX_HOME: join(cacheRoot, 'codex-home') };
+      const payload = {
+        hook_event_name: 'SubagentStop', cwd, session_id: 'native-parent', agent_id: 'native-grandchild',
+        turn_id: 'grandchild-turn', transcript_path: null, agent_transcript_path: null,
+      };
+      const before = await readSubagentTrackingState(cwd);
+      for (const overrides of [
+        { session_id: 'untracked-parent' },
+        { session_id: 'foreign-parent' },
+      ]) {
+        const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({ ...payload, ...overrides }), hookEnv);
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.deepEqual(await readSubagentTrackingState(cwd), before);
+      }
+      await writeJson(routingPath, { routing: 'omx-plugin-hook-routing-only:v1', ownerSessionId: 'foreign-root' });
+      const foreign = runPluginNativeHook(cachePluginRoot, JSON.stringify(payload), hookEnv);
+      assert.equal(foreign.status, 0, foreign.stderr || foreign.stdout);
+      assert.deepEqual(await readSubagentTrackingState(cwd), before);
+      await writeJson(routingPath, { routing: 'omx-plugin-hook-routing-only:v1', ownerSessionId: 'native-root' });
+      const nested = runPluginNativeHook(cachePluginRoot, JSON.stringify(payload), hookEnv);
+      assert.equal(nested.status, 0, nested.stderr || nested.stdout);
+      const state = await readSubagentTrackingState(cwd);
+      const child = state.sessions['omx-root']!.threads['native-grandchild'];
+      assert.ok(child?.completed_at);
+      assert.equal(child.kind, 'subagent');
+      assert.equal(child.last_completed_turn_id, 'grandchild-turn');
+      assert.equal(child.direct_child_root_id, undefined);
+      assert.equal(state.sessions['native-parent'], undefined);
+      assert.equal(await readFile(pointerPath, 'utf8'), pointer);
     });
   });
 

@@ -290,6 +290,7 @@ function shouldDedupeHookEvent(event: HookEventEnvelope): boolean {
 	if (event.source !== "native") return false;
 	return event.event === "session-start"
 		|| event.event === "stop"
+		|| event.event === "subagent-stop"
 		|| event.event === "session-end"
 		|| event.event === "keyword-detector";
 }

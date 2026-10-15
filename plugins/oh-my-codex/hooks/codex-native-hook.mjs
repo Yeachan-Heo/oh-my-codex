@@ -196,6 +196,18 @@ function isChildRoutingSessionStart(payload, ownerSessionId) {
   }
 }
 
+function isChildRoutingSubagentStop(payload, ownerSessionId) {
+  if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SubagentStop' || !ownerSessionId) return false;
+  const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
+  const stateDir = listAuthoritativeStateBaseDirs(cwd)[0];
+  const session = readJsonFile(join(stateDir, 'session.json'));
+  if (!isSessionStateAuthoritativeForCwd(session, cwd)
+    || ![session.session_id, session.native_session_id, session.owner_omx_session_id, session.owner_codex_session_id, session.codex_session_id].includes(ownerSessionId)) return false;
+  const tracking = readJsonFile(join(stateDir, 'subagent-tracking.json'));
+  const parentSessionId = hookPayloadSessionId(null, payload);
+  return tracking?.sessions?.[session.session_id]?.threads?.[parentSessionId]?.kind === 'subagent';
+}
+
 function readPinnedRoutingRecord(routingPath) {
   let fd;
   try {
@@ -234,7 +246,8 @@ function isPluginHookRoutingSession(input, payload) {
       const ownerSessionId = routing.routing === OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER && isSafeRoutingSessionId(routing.ownerSessionId)
         ? routing.ownerSessionId
         : '';
-      return ownerSessionId === sessionId || isChildRoutingSessionStart(payload, ownerSessionId);
+      return ownerSessionId === sessionId || isChildRoutingSessionStart(payload, ownerSessionId)
+        || isChildRoutingSubagentStop(payload, ownerSessionId);
     }
     mkdirSync(dirname(routingPath), { recursive: true });
     writeFileSync(routingPath, `${JSON.stringify({ routing: OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER, ownerSessionId: sessionId })}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });

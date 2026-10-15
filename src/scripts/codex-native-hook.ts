@@ -21865,6 +21865,23 @@ export async function dispatchCodexNativeHook(
           completed: true,
           completionSource: "native_stop_event",
         });
+        if (!shouldSuppressSubagentLifecycleHookDispatch()) {
+          await dispatchHookEventRuntime({
+            event: buildNativeHookEvent(omxEventName!, {
+              ...buildBaseContext(cwd, payload, hookEventName, sessionId),
+              native_session_id: agentId,
+              codex_session_id: agentId,
+              omx_session_id: sessionId,
+            }, {
+              session_id: sessionId,
+              thread_id: agentId,
+              turn_id: readPayloadTurnId(payload) || undefined,
+              mode: safeString(payload.agent_type).trim() || undefined,
+            }),
+            cwd,
+            allowTeamWorkerSideEffects: false,
+          });
+        }
       }
     }
     return { hookEventName, omxEventName, skillState: null, outputJson: null };

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +24,8 @@ describe("native hook protocol compatibility", () => {
       if (key.startsWith("OMX_") || key === "CODEX_THREAD_ID") delete process.env[key];
     }
     cwd = await realpath(await mkdtemp(join(tmpdir(), "omx-native-protocol-")));
+    process.env.CODEX_HOME = join(cwd, "codex-home");
+    await mkdir(process.env.CODEX_HOME);
   });
   afterEach(async () => {
     process.env = env;
@@ -49,6 +51,58 @@ describe("native hook protocol compatibility", () => {
   async function start(): Promise<void> {
     await writeSessionStart(cwd, sessionId, { nativeSessionId: parentId, pid: process.pid });
   }
+
+  async function captureLifecycle(notifications: Record<string, unknown>): Promise<string> {
+    await writeFile(join(process.env.CODEX_HOME!, ".omx-config.json"), JSON.stringify({
+      notifications: { enabled: true, ...notifications },
+    }));
+    const eventsPath = join(cwd, "child-events.jsonl");
+    await mkdir(join(cwd, ".omx/hooks"), { recursive: true });
+    await writeFile(join(cwd, ".omx/hooks/capture.mjs"),
+      `import { appendFileSync } from 'node:fs';\nexport function onHookEvent(event) { appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify(event) + '\\n'); }\n`);
+    return eventsPath;
+  }
+
+  for (const notifications of [
+    { verbosity: "session", includeChildAgents: true },
+    { verbosity: "agent" },
+    { verbosity: "verbose" },
+    { verbosity: "session" },
+    { verbosity: "minimal" },
+  ]) {
+    it(`applies the SubagentStop lifecycle policy for ${JSON.stringify(notifications)}`, async () => {
+      await start();
+      const eventsPath = await captureLifecycle(notifications);
+      await dispatchCodexNativeHook(stop());
+      assert.ok((await readSubagentTrackingState(cwd)).sessions[sessionId]!.threads[agentId]!.completed_at);
+      if (notifications.includeChildAgents !== true && !["agent", "verbose"].includes(notifications.verbosity)) {
+        assert.equal(existsSync(eventsPath), false);
+        return;
+      }
+      await dispatchCodexNativeHook(stop());
+      const events = (await readFile(eventsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(events.length, 1);
+      assert.equal(events[0].event, "subagent-stop");
+      assert.equal(events[0].source, "native");
+      assert.equal(events[0].session_id, sessionId);
+      assert.equal(events[0].thread_id, agentId);
+      assert.equal(events[0].turn_id, "child-turn-1");
+      assert.equal(events[0].context.native_session_id, agentId);
+      assert.equal(events[0].context.payload.session_id, parentId);
+      await dispatchCodexNativeHook(stop({ turn_id: "child-turn-2" }));
+      assert.equal((await readFile(eventsPath, "utf8")).trim().split("\n").length, 2);
+    });
+  }
+
+  it("rejects unbound identities before opted-in SubagentStop lifecycle dispatch", async () => {
+    await start();
+    const eventsPath = await captureLifecycle({ includeChildAgents: true });
+    for (const overrides of [{ session_id: "foreign-parent" }, { agent_id: parentId }, { agent_id: null }]) {
+      await dispatchCodexNativeHook(stop(overrides));
+    }
+    assert.equal(existsSync(eventsPath), false);
+    assert.equal(existsSync(join(cwd, ".omx/state/subagent-tracking.json")), false);
+  });
 
   it("keeps setup, bounded input parsing, dispatch, plugin, and packed smoke event rosters aligned", async () => {
     assert.deepEqual(CODEX_HOOK_EVENT_NAMES, MANAGED_HOOK_EVENTS);
