@@ -1,13 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildHudLayoutHookSlot,
   buildHudLayoutReconcileHookCommand,
+  buildPosixHudReconcileSupervisorCommand,
+  buildWindowsHudReconcileSupervisorCommand,
   boundHudHeight,
   buildHudResizeHookName,
   buildHudResizeHookSlot,
@@ -35,6 +37,7 @@ import {
   readHudLeaderOwnerIdentity,
   registerHudResizeHook,
   resizeTmuxPaneIfCurrent,
+  shellEscapeSingle,
   unregisterHudResizeHook,
 } from '../tmux.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS } from '../constants.js';
@@ -167,7 +170,7 @@ describe('HUD resize hook helpers', () => {
     assert.match(registrationCommand(registrations[0]!) ?? '', new RegExp(`sleep ${HUD_RESIZE_RECONCILE_DELAY_SECONDS}`));
     for (const registration of registrations) {
       if (process.platform !== 'win32' && registrationSlot(registration) !== hookSlot) {
-        assert.match(registrationCommand(registration) ?? '', /hud --reconcile-tmux >\/dev\/null 2>&1 \|\| true/);
+        assert.match(registrationCommand(registration) ?? '', /--reconcile-timeout-ms=30000/);
       }
       const suffixIndex = registration[1] === '-w' ? 6 : 5;
       assert.equal(registration[suffixIndex], ';');
@@ -232,10 +235,135 @@ describe('HUD resize hook helpers', () => {
 
     for (const fragment of [
       '$env:TMUX', '$env:TMUX_PANE', '$env:OMX_TMUX_HUD_OWNER', '$env:OMX_HUD_WATCH_REPAIR',
-      '$env:OMX_HUD_WATCH_LEADER_PID', '$env:OMX_SESSION_ID', '$env:OMX_ROOT',
+      '$env:OMX_HUD_WATCH_LEADER_PID', '$env:OMX_ENTRY_PATH', '$env:OMX_SESSION_ID', '$env:OMX_ROOT',
       '$env:OMX_STATE_ROOT', '$env:OMX_TEAM_STATE_ROOT',
       'socket,42,0', '%1', '101', 'sess-a', 'C:\\repo', 'C:\\state', 'C:\\team',
     ]) assert.ok(command.includes(fragment), fragment);
+  });
+
+  it('registers hook-spawned reconcile commands with a portable parent watchdog', () => {
+    const base = parseHudResizeHookContext('$7|@3\n', '%1', '%9', {
+      leaderPanePid: '101',
+      hudPanePid: '109',
+    });
+    assert.ok(base);
+    const context = { ...base, ownerId: 'sess-a' };
+    const posixCommand = buildHudLayoutReconcileHookCommand(
+      'tmux',
+      '/repo/dist/cli/omx.js',
+      '%1',
+      context,
+      context.layoutHookSlot,
+      { cwd: '/repo', env: { TMUX: '/tmp/tmux', OMX_SESSION_ID: 'sess-a' } },
+      'darwin',
+    );
+
+    assert.match(posixCommand, /hud --reconcile-tmux --reconcile-timeout-ms=30000/);
+    assert.match(posixCommand, /exec env TMUX=/);
+    assert.match(posixCommand, /OMX_ENTRY_PATH=/);
+    assert.match(posixCommand, /\)\s*>\s*\/dev\/null 2>&1 \|\| true/);
+    assert.doesNotMatch(posixCommand, /\btimeout\s/);
+
+    const windowsCommand = buildHudLayoutReconcileHookCommand(
+      'tmux.exe',
+      'C:\\repo\\omx.js',
+      '%1',
+      context,
+      context.layoutHookSlot,
+      { cwd: 'C:\\repo', env: { TMUX: 'socket,42,0', OMX_SESSION_ID: 'sess-a' } },
+      'win32',
+    );
+
+    assert.match(windowsCommand, /hud --reconcile-tmux --reconcile-timeout-ms=30000/);
+    assert.match(windowsCommand, /\$env:OMX_ENTRY_PATH/);
+    assert.match(windowsCommand, /Start-Process/);
+    assert.match(windowsCommand, /WaitForExit\(35000\)/);
+    assert.match(windowsCommand, /taskkill\.exe \/PID \$child\.Id \/T \/F/);
+    assert.match(windowsCommand, /exit 0/);
+    assert.doesNotMatch(windowsCommand, /exit 1|ExitCode/);
+    assert.doesNotMatch(windowsCommand, /RedirectStandard(Output|Error)/);
+  });
+
+  it('bounds POSIX Node startup before CLI dispatch with the shell supervisor', () => {
+    if (process.platform === 'win32') return;
+
+    const testDir = mkdtempSync(join(tmpdir(), 'omx-hud-shell-watchdog-'));
+    try {
+      const entry = join(testDir, 'startup-hang.mjs');
+      writeFileSync(entry, 'while (true) {}');
+      const command = `exec env OMX_TEST=ready ${shellEscapeSingle(process.execPath)} ${shellEscapeSingle(entry)}`;
+      const startedAt = Date.now();
+      const supervisor = buildPosixHudReconcileSupervisorCommand(command, 1_000);
+      const result = spawnSync(
+        '/bin/sh',
+        ['-c', `(${supervisor}) >/dev/null 2>&1 || true`],
+        { encoding: 'utf8', timeout: 5_000 },
+      );
+
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0);
+      assert.ok(Date.now() - startedAt < 4_000, 'the external watchdog exits promptly');
+      assert.ok(supervisor.includes(`trap 'kill "$s" 2>/dev/null || :; wait "$s" 2>/dev/null || :; exit' TERM`));
+      assert.match(supervisor, /mkfifo "\$ready_fifo"/);
+      assert.match(supervisor, /kill -TERM "\$child"/);
+      assert.match(supervisor, /kill -KILL "\$child"/);
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reaps the POSIX watchdog sleep when reconciliation completes early', () => {
+    if (process.platform === 'win32') return;
+
+    const testDir = mkdtempSync(join(tmpdir(), 'omx-hud-shell-watchdog-cleanup-'));
+    const binDir = join(testDir, 'bin');
+    const sleepPidPath = join(testDir, 'sleep.pid');
+
+    try {
+      mkdirSync(binDir);
+      writeFileSync(join(binDir, 'sleep'), '#!/bin/sh\nprintf "%s\\n" "$$" >> "$OMX_TEST_SLEEP_PIDS"\nexec /bin/sleep "$@"\n', { mode: 0o755 });
+      const command = buildPosixHudReconcileSupervisorCommand('/bin/sleep 0.1', 10_000);
+      const result = spawnSync('/bin/sh', ['-c', `(${command}) >/dev/null 2>&1 || true`], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ''}`,
+          OMX_TEST_SLEEP_PIDS: sleepPidPath,
+        },
+        timeout: 5_000,
+      });
+
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0);
+      assert.ok(existsSync(sleepPidPath), 'the watchdog started its sleep process');
+      const sleepPid = Number(readFileSync(sleepPidPath, 'utf8').trim());
+      assert.ok(Number.isSafeInteger(sleepPid) && sleepPid > 0);
+      assert.throws(() => process.kill(sleepPid, 0), { code: 'ESRCH' }, 'the watchdog reaps its sleep process');
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds Windows Node startup with the PowerShell supervisor', () => {
+    if (process.platform !== 'win32') return;
+
+    const testDir = mkdtempSync(join(tmpdir(), 'omx-hud-powershell-watchdog-'));
+    try {
+      const entry = join(testDir, 'startup-hang.mjs');
+      writeFileSync(entry, 'while (true) {}');
+      const command = buildWindowsHudReconcileSupervisorCommand(process.execPath, entry, testDir, 1_000);
+      const startedAt = Date.now();
+      const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+        encoding: 'utf8',
+        timeout: 8_000,
+      });
+
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0);
+      assert.ok(Date.now() - startedAt < 7_000, 'PowerShell kills Node before the outer test timeout');
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it('reads exact hook health with one non-mutating tmux probe', () => {
