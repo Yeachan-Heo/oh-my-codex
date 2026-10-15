@@ -227,6 +227,7 @@ export interface TeamTask {
 }
 
 export interface TeamTaskClaim {
+  claimed_at?: string;
   owner: string;
   token: string;
   leased_until: string;
@@ -436,7 +437,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' | 'invalid_completion_evidence'; reason?: string };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
@@ -1835,6 +1836,16 @@ export async function updateTask(
         throw new Error(`Invalid task status: ${updates.status}`);
       }
 
+      if (updates.requires_code_change === true && existing.requires_code_change !== true && isTerminalTaskStatus(existing.status)) {
+        throw new Error('Cannot enable completion evidence for a terminal task.');
+      }
+      if (updates.status === 'completed' && existing.status !== 'completed'
+        && (updates.requires_code_change ?? existing.requires_code_change) === true) {
+        throw new Error('Use transition-task-status with completion evidence.');
+      }
+      if (existing.requires_code_change === true && updates.requires_code_change === false) {
+        throw new Error('Cannot disable completion evidence for an implementation task.');
+      }
       const rawDeps = updates.depends_on ?? updates.blocked_by ?? existing.depends_on ?? existing.blocked_by ?? [];
       const normalizedDeps = Array.isArray(rawDeps) ? rawDeps : [];
       const merged = normalizeTask({
@@ -1900,12 +1911,14 @@ export async function transitionTaskStatus(
   claimToken: string,
   cwd: string,
   terminalData?: { result?: string; error?: string },
+  evidenceCwd = cwd,
 ): Promise<TransitionTaskResult> {
   return await withTeamTaskBarrier(teamName, cwd, async () => {
     await recoverTeamMembershipTaskTransaction(teamName, cwd);
     return await transitionTaskStatusImpl(taskId, from, to, claimToken, terminalData, {
       teamName,
       cwd,
+      evidenceCwd,
       readTask,
       readTeamConfig,
       withTaskClaimLock,
