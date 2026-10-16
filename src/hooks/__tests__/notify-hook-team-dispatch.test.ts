@@ -220,6 +220,7 @@ const mailbox = readJson(mailboxPath, { records: [] });
 const timestamp = nowIso();
 switch (command.command) {
   case 'QueueDispatch':
+    writeJson(path.join(dir, 'events.json'), [...readJson(path.join(dir, 'events.json'), []), { event: 'DispatchQueued', request_id: command.request_id, metadata: command.metadata }]);
     dispatch.records.push({ request_id: command.request_id, target: command.target, status: 'pending', created_at: timestamp, notified_at: null, delivered_at: null, failed_at: null, reason: null, metadata: command.metadata ?? null });
     writeJson(dispatchPath, dispatch);
     process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target }) + '\\n');
@@ -233,6 +234,17 @@ switch (command.command) {
       writeJson(dispatchPath, dispatch);
     }
     process.stdout.write(JSON.stringify({ event: 'DispatchNotified', request_id: command.request_id, channel: command.channel }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkFailed': {
+    const record = dispatch.records.find((entry) => entry.request_id === command.request_id);
+    if (record) {
+      record.status = 'failed';
+      record.failed_at = timestamp;
+      record.reason = command.reason;
+      writeJson(dispatchPath, dispatch);
+    }
+    process.stdout.write(JSON.stringify({ event: 'DispatchFailed', request_id: command.request_id, reason: command.reason }) + '\\n');
     process.exit(0);
   }
   case 'CreateMailboxMessage':
@@ -670,6 +682,8 @@ exit 1
       assert.equal((await drain()).processed, 1);
       assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'notified');
       assert.equal(injections, 1);
+      await assert.rejects(drain, /team-mailbox-scope-v1/);
+      await writeFile(runtimePath, supported);
       assert.equal((await drain()).processed, 0);
       assert.equal(injections, 1, 'post-injection schema drift must not leave the request eligible for replay');
     } finally {
@@ -678,6 +692,147 @@ exit 1
       if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
       else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps pure JSON requests visible after a runtime swap', async () => {
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    for (const mode of ['disabled', 'unavailable', 'mixed']) {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-json-runtime-swap-'));
+      try {
+        process.env.OMX_RUNTIME_BRIDGE = mode === 'disabled' ? '0' : '1';
+        process.env.OMX_RUNTIME_BINARY = join(cwd, 'missing-runtime');
+        await initTeamState('alpha', 'task', 'executor', 1, cwd);
+        if (mode === 'mixed') await writeFile(join(cwd, '.omx', 'state', 'events.json'), '[]');
+        const requests = [];
+        for (const trigger of ['first legacy instruction', 'second legacy instruction']) {
+          requests.push((await enqueueDispatchRequest('alpha', {
+            kind: 'inbox', to_worker: 'worker-1', worker_index: 1, trigger_message: trigger,
+          }, cwd)).request.request_id);
+        }
+        const runtimePath = join(cwd, 'runtime');
+        await writeCompatRuntimeFixture(runtimePath);
+        const supported = await readFile(runtimePath, 'utf8');
+        process.env.OMX_RUNTIME_BINARY = runtimePath;
+        process.env.OMX_RUNTIME_BRIDGE = '1';
+        let injections = 0;
+        const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+        const drain = () => mod.drainPendingTeamDispatch({ cwd, maxPerTick: 1,
+          injector: async () => {
+            injections += 1;
+            if (injections === 1) await writeFile(runtimePath, supported.replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []'));
+            return { ok: true, reason: 'injected_for_test' };
+          } });
+        assert.equal((await drain()).processed, 1);
+        assert.equal((await readDispatchRequest('alpha', requests[1], cwd))?.status, 'pending');
+        await assert.rejects(drain, /team-mailbox-scope-v1/);
+        await writeFile(runtimePath, supported);
+        assert.equal((await drain()).processed, 1);
+        assert.equal((await drain()).processed, 0);
+        assert.equal(injections, 2);
+        for (const id of requests) assert.equal((await readDispatchRequest('alpha', id, cwd))?.status, 'notified');
+        for (const file of ['snapshot.json', 'mailbox.json', 'team/alpha/dispatch/runtime-finalizations.jsonl', ...(mode !== 'mixed' ? ['events.json'] : []), ...(mode === 'disabled' ? ['dispatch.json'] : [])]) {
+          await assert.rejects(readFile(join(cwd, '.omx', 'state', file)), { code: 'ENOENT' });
+        }
+      } finally {
+        if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+        else process.env.OMX_RUNTIME_BINARY = previousBinary;
+        if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+        else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('finalizes claims when the runtime becomes incompatible after injection', async () => {
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    const previousPath = process.env.PATH;
+    try {
+      for (const mode of ['notified', 'failed', 'default-injector']) {
+        const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-runtime-swap-'));
+        try {
+          const runtimePath = join(cwd, 'omx-runtime');
+          await writeCompatRuntimeFixture(runtimePath);
+          const supported = await readFile(runtimePath, 'utf8');
+          const incompatible = supported.replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []');
+          process.env.OMX_RUNTIME_BINARY = runtimePath;
+          process.env.OMX_RUNTIME_BRIDGE = '1';
+          await initTeamState('alpha', 'task', 'executor', 1, cwd);
+          const message = await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'read once', cwd);
+          const queued = await enqueueDispatchRequest('alpha', {
+            kind: 'mailbox', to_worker: 'worker-1', worker_index: 1,
+            message_id: message.message_id, trigger_message: 'read once',
+          }, cwd);
+          const stateDir = join(cwd, '.omx', 'state');
+          const compatPath = join(stateDir, 'dispatch.json');
+          const pending = await readFile(compatPath, 'utf8');
+          const tmuxLogPath = join(cwd, 'tmux.log');
+          let injections = 0;
+          const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+          const options = mode === 'default-injector' ? {} : {
+            injector: async () => {
+              injections += 1;
+              await writeFile(runtimePath, incompatible);
+              return { ok: mode === 'notified', reason: 'injected_for_test' };
+            },
+          };
+          if (mode === 'default-injector') {
+            const binDir = join(cwd, 'bin');
+            await mkdir(binDir);
+            const oldBinary = join(cwd, 'old-runtime');
+            await writeFile(oldBinary, incompatible);
+            await writeFile(join(binDir, 'tmux'), buildFakeTmux(tmuxLogPath).replace(
+              'if [[ "$cmd" == "send-keys" ]]; then',
+              `if [[ "$cmd" == "send-keys" ]]; then\n  cp "${oldBinary}" "${runtimePath}"`,
+            ));
+            await chmod(join(binDir, 'tmux'), 0o755);
+            process.env.PATH = `${binDir}:${previousPath || ''}`;
+            const config = await readTeamConfig('alpha', cwd);
+            assert.ok(config);
+            config.workers[0].pane_id = '%42';
+            config.workers[0].pid = 4242;
+            bindCanonicalTeamPaneAuthority(config);
+            await saveTeamConfig(config, cwd);
+          }
+          const drain = () => mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, ...options });
+          assert.equal((await drain()).processed, 1);
+          const expectedStatus = mode === 'failed' ? 'failed' : 'notified';
+          assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, expectedStatus);
+          assert.deepEqual(await listDispatchProcessingLeases(cwd, 'alpha'), []);
+          assert.equal((await listMailboxMessages('alpha', 'worker-1', cwd))[0].notified_at, undefined);
+          // Model a later runtime command rebuilding compatibility output from its pending event history.
+          await writeFile(compatPath, pending);
+          const journalPath = join(stateDir, 'team', 'alpha', 'dispatch', 'runtime-finalizations.jsonl');
+          const journal = await readFile(journalPath, 'utf8');
+          await assert.rejects(drain, /team-mailbox-scope-v1/);
+          assert.equal(await readFile(journalPath, 'utf8'), journal);
+          process.env.OMX_RUNTIME_BRIDGE = '0';
+          await assert.rejects(drain, /runtime finalizations require the runtime bridge/);
+          process.env.OMX_RUNTIME_BRIDGE = '1';
+          await writeFile(runtimePath, supported);
+          assert.equal((await drain()).processed, 0);
+          assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, expectedStatus);
+          assert.equal((await drain()).processed, 0);
+          await assert.rejects(readFile(journalPath), { code: 'ENOENT' });
+          if (mode === 'default-injector') {
+            const log = await readFile(tmuxLogPath, 'utf8');
+            assert.equal(log.split('\n').filter((line) => line.startsWith('paste-buffer -t %42 ')).length, 1);
+            assert.equal(log.split('\n').filter((line) => line === 'send-keys -t %42 Enter').length, 2);
+          } else assert.equal(injections, 1);
+        } finally {
+          process.env.PATH = previousPath;
+          await rm(cwd, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
     }
   });
 

@@ -324,13 +324,13 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
     return outcome;
   }
   if (isConfirmedNotification(outcome)) {
-    await markMessageNotified(params.teamName, params.toWorker, message.message_id, params.cwd);
     await markDispatchRequestNotified(
       params.teamName,
       queued.request.request_id,
       { message_id: message.message_id, last_reason: outcome.reason },
       params.cwd,
     );
+    await markMessageNotified(params.teamName, params.toWorker, message.message_id, params.cwd);
   } else {
     await markImmediateDispatchFailure({
       teamName: params.teamName,
@@ -425,13 +425,13 @@ export async function queueBroadcastMailboxMessage(params: QueueBroadcastParams)
     outcomes.push(outcome);
 
     if (isConfirmedNotification(outcome)) {
-      await markMessageNotified(params.teamName, recipient.workerName, message.message_id, params.cwd);
       await markDispatchRequestNotified(
         params.teamName,
         queued.request.request_id,
         { message_id: message.message_id, last_reason: outcome.reason },
         params.cwd,
       );
+      await markMessageNotified(params.teamName, recipient.workerName, message.message_id, params.cwd);
     } else {
       await markImmediateDispatchFailure({
         teamName: params.teamName,

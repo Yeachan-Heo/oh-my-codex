@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
@@ -95,8 +96,15 @@ interface MailboxDeps {
 
 function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
   if (!isBridgeEnabled()) return false;
+  const stateDir = resolveBridgeStateDir(cwd);
+  if ((command.command === 'MarkMailboxNotified' || command.command === 'MarkMailboxDelivered')
+    && !['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)))) {
+    // Match the runtime's fresh-engine test; callers already proved JSON ownership.
+    preflightRuntimeBridge(stateDir);
+    return false;
+  }
   try {
-    getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
+    getDefaultBridge(stateDir).execCommand(command);
     return true;
   } catch (error) {
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
