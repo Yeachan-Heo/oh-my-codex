@@ -94,7 +94,7 @@ configuration. Re-running it is safe.
 | `PostToolUseFailure` | none | runtime-only | runtime-fallback | Fold into runtime/fallback handling until native support exists |
 | non-Bash tool interception | `PreToolUse` / `PostToolUse` when provided by Codex | native hook | native-partial | OMX stays no-op for unrelated non-Bash tools, but native subagent capacity failures and close-agent cleanup requests are handled when Codex provides those tool events |
 | code simplifier stop follow-up | none | runtime-only | runtime-fallback | Cleanup follow-up stays on runtime/fallback surfaces, not native Stop |
-| `SubagentStop` | none | runtime-only | not-supported-yet | OMC-specific lifecycle extension |
+| Native child completion | `SubagentStop` | `subagent-stop` | native | Records descriptive child completion under the matching parent session, including known nested parents in plugin mode. Uses `agent_id` for the child, accepts nullable transcript/message fields, and deduplicates the same child turn against legacy `Stop`. Lifecycle hook dispatch honors `notifications.includeChildAgents` and `agent`/`verbose` verbosity; replay flags are ignored and dispatch dedupe is scoped per child/turn within the existing five-second window, with expired child keys pruned on subsequent writes. Tracker write failures are logged and return a no-op without dispatching hooks or rewriting malformed authority state. Never runs leader Stop gates or grants reopen authority. Unbound or malformed identities are ignored. |
 | `session-end` | none | `session-end` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 | wiki session capture | none | `session-end` | runtime-fallback | Wiki session-log capture runs from the existing runtime session-end cleanup path, not from a native Codex hook |
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
@@ -133,6 +133,10 @@ the Team environment agrees with the durable worker identity, Team config, and
 current worker pane recorded under the strictly resolved Team state root. A
 leader native-session match wins before this check, and a payload with any named
 unknown or foreign identity cannot borrow the Team exemption.
+
+Verified Team workers discover hook plugins from the canonical leader checkout
+for every dispatched native event, while plugins still execute in the worker
+worktree with the shared Team state root.
 
 Known read-only MCP compatibility tools are governed by an explicit name contract,
 not a read-looking prefix heuristic. The audited contract covers filesystem/state

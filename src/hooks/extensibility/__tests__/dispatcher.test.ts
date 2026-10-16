@@ -415,4 +415,153 @@ export async function onHookEvent() {}
       await rm(stateRoot, { recursive: true, force: true });
     }
   });
+
+  it('releases a child completion claim when every plugin dispatch fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-failure-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-failure-root-'));
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'failing.mjs'), 'export async function onHookEvent() { throw new Error("dispatch failed"); }');
+      const event = buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: 'sess-claim-failure',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      });
+      const options = {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
+      };
+
+      const first = await dispatchHookEvent(event, options);
+      const second = await dispatchHookEvent(event, options);
+
+      assert.equal(first.results.length, 1);
+      assert.equal(first.results[0].ok, false);
+      assert.equal(second.reason, 'ok');
+      assert.equal(second.results.length, 1);
+      assert.equal(second.results[0].ok, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('dedupes child completions across child and parent session aliases', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-child-alias-dedupe-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-child-alias-root-'));
+    const runsPath = join(cwd, 'plugin-runs.txt');
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'successful.mjs'), `import { appendFileSync } from 'node:fs';
+export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN_RUNS, 'ran\\n'); }
+`);
+      const options = {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1', OMX_TEST_PLUGIN_RUNS: runsPath },
+      };
+      const legacyChildStop = buildHookEvent('stop', {
+        source: 'native',
+        session_id: 'child-1',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: { is_subagent_stop: true },
+      });
+      const nativeSubagentStop = buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: 'parent-session',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      });
+
+      const first = await dispatchHookEvent(legacyChildStop, options);
+      const replay = await dispatchHookEvent(nativeSubagentStop, options);
+
+      assert.equal(first.results[0]?.ok, true);
+      assert.equal(replay.reason, 'deduped');
+      assert.deepEqual(replay.results, []);
+      assert.equal((await readFile(runsPath, 'utf8')).trim().split('\n').length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a successful child completion deduped when dispatch logging fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-log-failure-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-claim-log-failure-root-'));
+    const runsPath = join(cwd, 'plugin-runs.txt');
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'successful.mjs'), `import { appendFileSync } from 'node:fs';
+export async function onHookEvent() { appendFileSync(process.env.OMX_TEST_PLUGIN_RUNS, 'ran\\n'); }
+`);
+      await writeFile(join(cwd, '.omx', 'logs'), 'not a directory');
+      const event = buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: 'sess-claim-log-failure',
+        thread_id: 'child-1',
+        turn_id: 'turn-1',
+        context: {},
+      });
+      const options = {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1', OMX_TEST_PLUGIN_RUNS: runsPath },
+      };
+
+      await assert.rejects(dispatchHookEvent(event, options), /EEXIST|ENOTDIR/);
+      assert.equal((await readFile(runsPath, 'utf8')).trim().split('\n').length, 1);
+      await assert.rejects(dispatchHookEvent(event, options), /EEXIST|ENOTDIR/);
+      assert.equal((await readFile(runsPath, 'utf8')).trim().split('\n').length, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks child plugin side effects when the persisted receipt bucket is invalid', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-invalid-hook-state-'));
+    const stateRoot = await mkdtemp(join(tmpdir(), 'omx-dispatch-invalid-hook-state-root-'));
+    const sessionId = 'sess-invalid-hook-state';
+    const childId = 'child-1';
+    const receiptPath = join(stateRoot, 'sessions', childId, 'lifecycle-notif-state.json');
+    const receiptContents = JSON.stringify({ hookEvents: [] });
+    const runsPath = join(cwd, 'plugin-runs.txt');
+    try {
+      const dir = join(cwd, '.omx', 'hooks');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'should-not-run.mjs'), `import { writeFileSync } from 'node:fs';
+export async function onHookEvent() { writeFileSync(${JSON.stringify(runsPath)}, 'ran'); }
+`);
+      await mkdir(join(stateRoot, 'sessions', childId), { recursive: true });
+      await writeFile(receiptPath, receiptContents);
+      const result = await dispatchHookEvent(buildHookEvent('subagent-stop', {
+        source: 'native',
+        session_id: sessionId,
+        thread_id: childId,
+        turn_id: 'turn-1',
+        context: {},
+      }), {
+        cwd,
+        stateRoot,
+        env: { ...process.env, OMX_HOOK_PLUGINS: '1' },
+      });
+
+      assert.equal(result.reason, 'dedupe_unavailable');
+      assert.deepEqual(result.results, []);
+      assert.equal(existsSync(runsPath), false);
+      assert.equal(await readFile(receiptPath, 'utf8'), receiptContents);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
 });

@@ -66,7 +66,7 @@ import {
 	readUltragoalPlan,
 } from "../../ultragoal/artifacts.js";
 import { getBaseStateDir } from "../../state/paths.js";
-import { recordNativeSubagentAuthorityObservation } from "../../subagents/tracker.js";
+import { readSubagentTrackingState, recordNativeSubagentAuthorityObservation } from "../../subagents/tracker.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
 import { generateOverlay, writeSessionModelInstructionsFile } from "../../hooks/agents-overlay.js";
@@ -467,6 +467,7 @@ async function configureAuthoritativeTeamWorker(
   cwd: string,
   teamName: string,
   workerPaneId = "%10",
+  workerCwd = cwd,
 ): Promise<void> {
   const stateRoot = join(cwd, ".omx", "state");
   await initTeamState(teamName, "session pointer ownership regression", "executor", 1, cwd, undefined, {
@@ -487,8 +488,8 @@ async function configureAuthoritativeTeamWorker(
     state.leader_cwd = cwd;
     state.workers = (state.workers ?? []).map((worker) => ({
       ...worker,
-      working_dir: cwd,
-      worktree_path: cwd,
+      working_dir: workerCwd,
+      worktree_path: workerCwd,
       team_state_root: stateRoot,
     }));
     await writeJson(filePath, state);
@@ -498,8 +499,8 @@ async function configureAuthoritativeTeamWorker(
     index: 1,
     role: "executor",
     pane_id: workerPaneId,
-    working_dir: cwd,
-    worktree_path: cwd,
+    working_dir: workerCwd,
+    worktree_path: workerCwd,
     team_state_root: stateRoot,
   });
   process.env.TMUX = "1";
@@ -842,6 +843,7 @@ describe("codex native hook config", () => {
 			"UserPromptSubmit",
 			"PreCompact",
 			"PostCompact",
+			"SubagentStop",
 			"Stop",
 		]);
 
@@ -5194,6 +5196,86 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       assert.notEqual(leaderStop.outputJson?.stopReason, "session_scope_unmatched");
       assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), leaderPointerBefore);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers leader plugins for authoritative Team worker events in an isolated worktree", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-subagent-stop-"));
+    const workerCwd = realpathSync(await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-worktree-")));
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      await writeSessionStart(cwd, "leader-session", {
+        nativeSessionId: "leader-native",
+        pid: process.pid,
+      });
+      await configureAuthoritativeTeamWorker(cwd, "team-worker-subagent-stop", "%10", workerCwd);
+      const stateDir = join(cwd, ".omx", "state");
+      const leaderPointerPath = join(stateDir, "session.json");
+      const leaderPointerBefore = await readFile(leaderPointerPath, "utf-8");
+      const codexHome = join(cwd, "codex-home");
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(codexHome, { recursive: true });
+      await writeJson(join(codexHome, ".omx-config.json"), {
+        notifications: { enabled: true, includeChildAgents: true },
+      });
+      const eventsPath = join(cwd, "child-events.jsonl");
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "hooks", "capture.mjs"), `import { appendFileSync } from 'node:fs';
+export function onHookEvent(event) {
+  appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify({ event, pluginCwd: process.cwd(), teamStateRoot: process.env.OMX_TEAM_STATE_ROOT }) + '\\n');
+}
+`);
+
+      const parentSessionId = "team-worker-native-session";
+      const childThreadId = "team-worker-native-child";
+      const turnId = "team-worker-child-turn";
+      await dispatchCodexNativeHook({
+        hook_event_name: "SubagentStop",
+        cwd: workerCwd,
+        session_id: parentSessionId,
+        agent_id: childThreadId,
+        agent_type: "executor",
+        turn_id: turnId,
+      }, { cwd: workerCwd });
+
+      const tracking = await readSubagentTrackingState(workerCwd);
+      const child = tracking.sessions[parentSessionId]?.threads[childThreadId];
+      assert.equal(child?.completion_source, "native_stop_event");
+      assert.equal(child?.last_completed_turn_id, turnId);
+      assert.equal(child?.status, "closed");
+      const events = (await readFile(eventsPath, "utf-8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(events.map(({ event, pluginCwd, teamStateRoot }) => ({
+        event: [event.event, event.session_id, event.thread_id, event.turn_id],
+        pluginCwd,
+        teamStateRoot,
+      })), [
+        {
+          event: ["subagent-stop", parentSessionId, childThreadId, turnId],
+          pluginCwd: workerCwd,
+          teamStateRoot: stateDir,
+        },
+      ]);
+      await dispatchCodexNativeHook({
+        hook_event_name: "SessionStart",
+        cwd: workerCwd,
+        session_id: parentSessionId,
+      }, { cwd: workerCwd, sessionOwnerPid: process.pid });
+      const workerEvents = (await readFile(eventsPath, "utf-8")).trim().split("\n").map((line) => JSON.parse(line)).slice(1);
+      assert.deepEqual(workerEvents.map(({ event, pluginCwd, teamStateRoot }) => ({
+        event: event.event,
+        pluginCwd,
+        teamStateRoot,
+      })), [{
+        event: "session-start",
+        pluginCwd: workerCwd,
+        teamStateRoot: stateDir,
+      }]);
+      assert.equal(await readFile(leaderPointerPath, "utf-8"), leaderPointerBefore);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      await rm(workerCwd, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
     }
   });

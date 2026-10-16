@@ -1489,6 +1489,37 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('assigns fresh plugin-hook routing context to each Codex worker launch', () => {
+    const previousEntryPath = process.env.OMX_ENTRY_PATH;
+    const previousLaunchId = process.env.OMX_CODEX_LAUNCH_ID;
+    delete process.env.OMX_ENTRY_PATH;
+    delete process.env.OMX_CODEX_LAUNCH_ID;
+    try {
+      const inheritedLeaderContext = {
+        OMX_CODEX_LAUNCH_ID: 'leader-inherited-launch-id',
+        OMX_ENTRY_PATH: '/leader/omx.js',
+      };
+      const first = buildWorkerProcessLaunchSpec(
+        'routing-team', 1, [], '/tmp/workspace', inheritedLeaderContext, 'codex',
+      );
+      const second = buildWorkerProcessLaunchSpec(
+        'routing-team', 2, [], '/tmp/workspace', inheritedLeaderContext, 'codex',
+      );
+
+      assert.ok(first.env.OMX_CODEX_LAUNCH_ID);
+      assert.notEqual(first.env.OMX_CODEX_LAUNCH_ID, inheritedLeaderContext.OMX_CODEX_LAUNCH_ID);
+      assert.notEqual(first.env.OMX_CODEX_LAUNCH_ID, second.env.OMX_CODEX_LAUNCH_ID);
+      assert.ok(first.env.OMX_ENTRY_PATH && fs.existsSync(first.env.OMX_ENTRY_PATH));
+      assert.notEqual(first.env.OMX_ENTRY_PATH, inheritedLeaderContext.OMX_ENTRY_PATH);
+      assert.ok(second.env.OMX_ENTRY_PATH && fs.existsSync(second.env.OMX_ENTRY_PATH));
+    } finally {
+      if (typeof previousEntryPath === 'string') process.env.OMX_ENTRY_PATH = previousEntryPath;
+      else delete process.env.OMX_ENTRY_PATH;
+      if (typeof previousLaunchId === 'string') process.env.OMX_CODEX_LAUNCH_ID = previousLaunchId;
+      else delete process.env.OMX_CODEX_LAUNCH_ID;
+    }
+  });
+
   it('auto-selects claude worker CLI from claude model', () => {
     const prevShell = process.env.SHELL;
     const prevCli = process.env.OMX_TEAM_WORKER_CLI;

@@ -58,6 +58,28 @@ describe("reportHerdrLifecycleEvent", () => {
 		assert.equal(transport.calls.length, 0);
 	});
 
+	it("does not report child completion as a pane lifecycle transition", async () => {
+		const transport = new RecordingTransport();
+		for (const event of [
+			buildNativeHookEvent("subagent-stop"),
+			buildNativeHookEvent("stop", { is_subagent_stop: true }),
+		]) {
+			const result = await reportHerdrLifecycleEvent({
+				cwd: baseDir,
+				event,
+				bridgeOptions: {
+					env: enabledEnv,
+					transport,
+					seqFn: () => ++seq,
+					stateBaseDir: baseDir,
+				},
+			});
+			assert.equal(result.wired, false);
+			assert.equal(result.reason, "child-lifecycle-event");
+		}
+		assert.equal(transport.calls.length, 0);
+	});
+
 	it("reports a working transition for a working event", async () => {
 		const transport = new RecordingTransport();
 		const result = await reportHerdrLifecycleEvent({

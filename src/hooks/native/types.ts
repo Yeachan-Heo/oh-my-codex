@@ -12,6 +12,7 @@ export type CodexHookEventName =
   | "UserPromptSubmit"
   | "PreCompact"
   | "PostCompact"
+  | "SubagentStop"
   | "Stop";
 
 export type CodexHookPayload = Record<string, unknown>;

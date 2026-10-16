@@ -28,6 +28,14 @@ export interface HerdrWiringResult {
 export async function reportHerdrLifecycleEvent(
 	input: HerdrWiringInput,
 ): Promise<HerdrWiringResult> {
+	if (
+		input.event.event === "subagent-stop"
+		|| (input.event.event === "stop" && input.event.context.is_subagent_stop === true)
+	) {
+		// Herdr owns pane/session lifecycle, not child-agent completion state.
+		return { wired: false, reason: "child-lifecycle-event" };
+	}
+
 	const env = input.bridgeOptions?.env ?? detectHerdrEnv();
 	if (!env.enabled) {
 		return { wired: false, reason: "herdr-not-detected" };

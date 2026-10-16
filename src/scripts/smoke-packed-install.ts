@@ -53,6 +53,7 @@ export const MANAGED_CODEX_HOOK_EVENTS = [
   'UserPromptSubmit',
   'PreCompact',
   'PostCompact',
+  'SubagentStop',
   'Stop',
 ] as const;
 
@@ -2327,6 +2328,16 @@ export function buildNativeHookSmokePayload(
         ...base,
         transcript_path: join(smokeCwd, 'nonexistent-transcript.jsonl'),
         prompt: 'packed install native hook smoke test',
+      };
+    case 'SubagentStop':
+      return {
+        ...base,
+        agent_id: 'packed-install-smoke-child',
+        agent_type: 'executor',
+        turn_id: 'packed-install-smoke-child-turn',
+        agent_transcript_path: null,
+        last_assistant_message: null,
+        stop_hook_active: false,
       };
     case 'PreCompact':
     case 'PostCompact':
@@ -5102,7 +5113,7 @@ export async function smokePackedHookTrustLifecycle(
     const initialHooksContent = readFileSync(hooksPath, 'utf-8');
     assertForeignHookGroupsPreserved(preSetupForeignSnapshot, initialHooksContent, marker);
     if (rawManagedHookCount(initialHooksContent) !== MANAGED_CODEX_HOOK_EVENTS.length) {
-      throw new Error('packed setup did not install exactly seven managed native hooks');
+      throw new Error(`packed setup did not install exactly ${MANAGED_CODEX_HOOK_EVENTS.length} managed native hooks`);
     }
     assertManagedHooksAppendAfterForeign(initialHooksContent, marker);
     const generatedTrust = generatedHookTrustState(readFileSync(configPath, 'utf-8'));
