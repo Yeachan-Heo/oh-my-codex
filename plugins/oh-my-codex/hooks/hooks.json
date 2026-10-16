@@ -61,6 +61,16 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/codex-native-hook.mjs\""
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

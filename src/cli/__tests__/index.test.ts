@@ -38,6 +38,7 @@ import {
   collectInheritableTeamWorkerArgs,
   resolveTeamWorkerLaunchArgsEnv,
   injectModelInstructionsBypassArgs,
+  buildStartupModelInstructionsEnv,
   resolveWorkerSparkModel,
   resolveSetupInstallModeArg,
   resolveSetupMcpModeArg,
@@ -6988,6 +6989,20 @@ describe("readTopLevelTomlString", () => {
 });
 
 describe("injectModelInstructionsBypassArgs", () => {
+  it("advertises startup instructions only when OMX injects its session file", () => {
+    const cwd = "/tmp/my-project";
+    const sessionId = "sess-startup";
+    const expected = join(cwd, ".omx", "state", "sessions", sessionId, "AGENTS.md");
+    assert.equal(buildStartupModelInstructionsEnv(cwd, [], sessionId, {}).OMX_STARTUP_MODEL_INSTRUCTIONS_FILE, expected);
+    assert.equal(buildStartupModelInstructionsEnv(cwd, ["--", "-c", 'model_instructions_file="prompt"'], sessionId, {}).OMX_STARTUP_MODEL_INSTRUCTIONS_FILE, expected);
+    for (const args of [["-c", 'model_instructions_file="custom"'], ['--config=model_instructions_file="custom"']]) {
+      assert.equal(buildStartupModelInstructionsEnv(cwd, args, sessionId, {}).OMX_STARTUP_MODEL_INSTRUCTIONS_FILE, "");
+    }
+    for (const env of [{ OMX_BYPASS_DEFAULT_SYSTEM_PROMPT: "0" }, { OMX_MODEL_INSTRUCTIONS_FILE: "custom" }]) {
+      assert.equal(buildStartupModelInstructionsEnv(cwd, [], sessionId, env).OMX_STARTUP_MODEL_INSTRUCTIONS_FILE, "");
+    }
+  });
+
   it("appends model_instructions_file override by default", () => {
     const args = injectModelInstructionsBypassArgs(
       "/tmp/my-project",

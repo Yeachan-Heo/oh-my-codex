@@ -9,6 +9,7 @@ export const CODEX_HOOK_EVENT_NAMES = [
   "UserPromptSubmit",
   "PreCompact",
   "PostCompact",
+  "SubagentStop",
   "Stop",
 ] as const;
 

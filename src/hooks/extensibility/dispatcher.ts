@@ -6,8 +6,12 @@ import { getPackageRoot } from "../../utils/package.js";
 import { omxRoot } from "../../utils/paths.js";
 import { getBaseStateDir } from "../../mcp/state-paths.js";
 import {
+	claimLifecycleHookBroadcast,
+	completeLifecycleHookBroadcast,
 	createLifecycleBroadcastFingerprint,
+	renewLifecycleHookBroadcastClaim,
 	recordLifecycleHookBroadcastSent,
+	releaseLifecycleHookBroadcast,
 	shouldSendLifecycleHookBroadcast,
 } from "../../notifications/lifecycle-dedupe.js";
 import {
@@ -31,6 +35,7 @@ interface RunnerResult {
 
 const RESULT_PREFIX = "__OMX_PLUGIN_RESULT__ ";
 const RUNNER_SIGKILL_GRACE_MS = 250;
+const CHILD_COMPLETION_CLAIM_RENEW_INTERVAL_MS = 15_000;
 
 function hooksLogPath(cwd: string): string {
 	const day = new Date().toISOString().slice(0, 10);
@@ -288,13 +293,38 @@ function shouldForceEnableRuntimeHookDispatch(
 
 function shouldDedupeHookEvent(event: HookEventEnvelope): boolean {
 	if (event.source !== "native") return false;
+	if (event.event === "subagent-stop" || (event.event === "stop" && event.context.is_subagent_stop === true)) {
+		return getNativeSubagentCompletionIdentity(event) !== null;
+	}
 	return event.event === "session-start"
 		|| event.event === "stop"
 		|| event.event === "session-end"
 		|| event.event === "keyword-detector";
 }
 
+function getNativeSubagentCompletionIdentity(
+	event: HookEventEnvelope,
+): { threadId: string; turnId: string } | null {
+	if (event.source !== "native") return null;
+	const threadId = event.thread_id?.trim();
+	const turnId = event.turn_id?.trim();
+	if (!threadId || !turnId) return null;
+	if (event.event === "subagent-stop") return { threadId, turnId };
+	if (event.event === "stop" && event.context.is_subagent_stop === true) return { threadId, turnId };
+	return null;
+}
+
 function buildHookEventFingerprint(event: HookEventEnvelope): string {
+	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
+	if (subagentCompletion) {
+		// Legacy Stop and SubagentStop can carry different session aliases.
+		return createLifecycleBroadcastFingerprint({
+			event: "subagent-completion",
+			source: event.source,
+			thread_id: subagentCompletion.threadId,
+			turn_id: subagentCompletion.turnId,
+		});
+	}
 	return createLifecycleBroadcastFingerprint({
 		event: event.event,
 		source: event.source,
@@ -304,6 +334,14 @@ function buildHookEventFingerprint(event: HookEventEnvelope): string {
 		mode: event.mode || "",
 		context: event.context,
 	});
+}
+
+function buildHookEventDedupeKey(event: HookEventEnvelope): string {
+	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
+	if (subagentCompletion) {
+		return `subagent-stop:${JSON.stringify([subagentCompletion.threadId, subagentCompletion.turnId])}`;
+	}
+	return event.event;
 }
 
 export async function dispatchHookEvent(
@@ -356,22 +394,39 @@ export async function dispatchHookEvent(
 	const dedupeFingerprint = shouldDedupeHookEvent(event)
 		? buildHookEventFingerprint(event)
 		: "";
-	if (
-		dedupeFingerprint
-		&& !shouldSendLifecycleHookBroadcast(
+	const dedupeEventKey = buildHookEventDedupeKey(event);
+	const subagentCompletion = getNativeSubagentCompletionIdentity(event);
+	// Legacy child Stop and SubagentStop can carry different session aliases.
+	const dedupeSessionId = subagentCompletion?.threadId ?? event.session_id;
+	let dedupeClaimId: string | undefined;
+	let shouldDispatch = true;
+	let dedupeBlockReason = "deduped";
+	if (dedupeFingerprint && subagentCompletion) {
+		const claim = claimLifecycleHookBroadcast(
+			stateRoot,
+			dedupeSessionId,
+			dedupeEventKey,
+			dedupeFingerprint,
+		);
+		shouldDispatch = claim.acquired;
+		if (claim.acquired) dedupeClaimId = claim.claimId;
+		else if (claim.reason === "unavailable") dedupeBlockReason = "dedupe_unavailable";
+	} else if (dedupeFingerprint) {
+		shouldDispatch = shouldSendLifecycleHookBroadcast(
 			stateRoot,
 			event.session_id,
-			event.event,
+			dedupeEventKey,
 			dedupeFingerprint,
-		)
-	) {
-		summary.reason = "deduped";
+		);
+	}
+	if (dedupeFingerprint && !shouldDispatch) {
+		summary.reason = dedupeBlockReason;
 		await appendHooksLog(cwd, {
 			type: "hook_dispatch",
 			event: event.event,
 			source: event.source,
 			enabled: true,
-			reason: "deduped",
+			reason: dedupeBlockReason,
 			session_id: event.session_id || null,
 			thread_id: event.thread_id || null,
 			turn_id: event.turn_id || null,
@@ -379,46 +434,111 @@ export async function dispatchHookEvent(
 		return summary;
 	}
 
-	const plugins = await discoverHookPlugins(cwd);
-	summary.plugin_count = plugins.length;
+	let dedupeClaimFinalized = false;
+	let dedupeClaimRenewalFailed = false;
+	let dedupeClaimRenewalTimer: ReturnType<typeof setInterval> | undefined;
+	try {
+		const claimId = dedupeClaimId;
+		if (subagentCompletion && claimId) {
+			dedupeClaimRenewalTimer = setInterval(() => {
+				if (!renewLifecycleHookBroadcastClaim(
+					stateRoot,
+					dedupeSessionId,
+					dedupeEventKey,
+					dedupeFingerprint,
+					claimId,
+				)) {
+					dedupeClaimRenewalFailed = true;
+				}
+			}, CHILD_COMPLETION_CLAIM_RENEW_INTERVAL_MS);
+		}
+		const plugins = await discoverHookPlugins(options.pluginDiscoveryCwd ?? cwd);
+		summary.plugin_count = plugins.length;
 
-	const inTeamWorker = isTeamWorker(env);
-	const allowTeamSideEffects =
-		options.allowTeamWorkerSideEffects ?? options.allowInTeamWorker ?? false;
-	const sideEffectsEnabled =
-		options.sideEffectsEnabled ?? (!inTeamWorker || allowTeamSideEffects);
+		const inTeamWorker = isTeamWorker(env);
+		const allowTeamSideEffects =
+			options.allowTeamWorkerSideEffects ?? options.allowInTeamWorker ?? false;
+		const sideEffectsEnabled =
+			options.sideEffectsEnabled ?? (!inTeamWorker || allowTeamSideEffects);
 
-	for (const plugin of plugins) {
-		const result = await runPluginRunner(
-			plugin,
-			event,
-			{ ...options, cwd, env, stateRoot },
-			sideEffectsEnabled,
-		);
-		summary.results.push(result);
+		for (const plugin of plugins) {
+			if (dedupeClaimRenewalFailed) {
+				summary.reason = "dedupe_unavailable";
+				break;
+			}
+			const result = await runPluginRunner(
+				plugin,
+				event,
+				{ ...options, cwd, env, stateRoot },
+				sideEffectsEnabled,
+			);
+			summary.results.push(result);
 
-		await appendHooksLog(cwd, {
-			type: "hook_plugin_dispatch",
-			event: event.event,
-			source: event.source,
-			plugin: plugin.id,
-			file: plugin.file,
-			ok: result.ok,
-			status: result.status,
-			reason: result.reason,
-			error: result.error,
-			duration_ms: result.duration_ms,
-		});
+			await appendHooksLog(cwd, {
+				type: "hook_plugin_dispatch",
+				event: event.event,
+				source: event.source,
+				plugin: plugin.id,
+				file: plugin.file,
+				ok: result.ok,
+				status: result.status,
+				reason: result.reason,
+				error: result.error,
+				duration_ms: result.duration_ms,
+			});
+		}
+
+		if (dedupeClaimRenewalFailed) summary.reason = "dedupe_unavailable";
+		if (dedupeFingerprint && summary.results.some((result) => result.ok)) {
+			if (subagentCompletion && dedupeClaimId) {
+				completeLifecycleHookBroadcast(
+					stateRoot,
+					dedupeSessionId,
+					dedupeEventKey,
+					dedupeFingerprint,
+					dedupeClaimId,
+				);
+				dedupeClaimFinalized = true;
+			} else {
+				recordLifecycleHookBroadcastSent(
+					stateRoot,
+					event.session_id,
+					dedupeEventKey,
+					dedupeFingerprint,
+				);
+			}
+		} else if (subagentCompletion && dedupeClaimId) {
+			releaseLifecycleHookBroadcast(
+				stateRoot,
+				dedupeSessionId,
+				dedupeEventKey,
+				dedupeFingerprint,
+				dedupeClaimId,
+			);
+			dedupeClaimFinalized = true;
+		}
+
+		return summary;
+	} finally {
+		if (dedupeClaimRenewalTimer) clearInterval(dedupeClaimRenewalTimer);
+		if (subagentCompletion && dedupeClaimId && !dedupeClaimFinalized) {
+			if (summary.results.some((result) => result.ok)) {
+				completeLifecycleHookBroadcast(
+					stateRoot,
+					dedupeSessionId,
+					dedupeEventKey,
+					dedupeFingerprint,
+					dedupeClaimId,
+				);
+			} else {
+				releaseLifecycleHookBroadcast(
+					stateRoot,
+					dedupeSessionId,
+					dedupeEventKey,
+					dedupeFingerprint,
+					dedupeClaimId,
+				);
+			}
+		}
 	}
-
-	if (dedupeFingerprint && summary.results.some((result) => result.ok)) {
-		recordLifecycleHookBroadcastSent(
-			stateRoot,
-			event.session_id,
-			event.event,
-			dedupeFingerprint,
-		);
-	}
-
-	return summary;
 }

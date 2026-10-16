@@ -2527,6 +2527,7 @@ const MANAGED_HOOK_TRUST_KEY_LABELS: Record<
 	UserPromptSubmit: "user_prompt_submit",
 	PreCompact: "pre_compact",
 	PostCompact: "post_compact",
+	SubagentStop: "subagent_stop",
 	Stop: "stop",
 };
 

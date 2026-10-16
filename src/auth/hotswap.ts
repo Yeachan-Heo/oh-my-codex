@@ -44,6 +44,7 @@ export interface HotswapLifecycle {
   cleanupRuntimeCodexHome: (runtimeCodexHome?: string, projectCodexHome?: string) => Promise<void>;
   normalizeCodexLaunchArgs: (args: string[]) => string[];
   injectModelInstructionsBypassArgs: (cwd: string, args: string[], env: NodeJS.ProcessEnv, defaultFilePath?: string) => string[];
+  buildStartupModelInstructionsEnv: (cwd: string, args: string[], sessionId: string, env: NodeJS.ProcessEnv) => Record<string, string>;
   sessionModelInstructionsPath: (cwd: string, sessionId: string) => string;
   resolveOmxRootForLaunch: (cwd: string, env: NodeJS.ProcessEnv) => string | undefined;
   resolveNotifyTempContract: (args: string[], env: NodeJS.ProcessEnv) => {
@@ -282,7 +283,10 @@ export async function runAuthHotswap(options: HotswapOptions): Promise<number> {
         lifecycle.sessionModelInstructionsPath(cwd, sessionId),
       );
       process.stderr.write(`[omx auth] using slot ${currentSlot}\n`);
-      const result = await runCodexDirect(cwd, attemptArgs, baseEnv);
+      const result = await runCodexDirect(cwd, attemptArgs, {
+        ...baseEnv,
+        ...lifecycle.buildStartupModelInstructionsEnv(cwd, resumeArgs ?? normalizedArgs, sessionId, baseEnv),
+      });
       if (result.status === 0) return 0;
       const authInvalid = isAuthInvalidationError(result.stderr);
       const quota = isQuotaError({ status: result.status, signal: result.signal, stderr: result.stderr }, config);

@@ -3,6 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 import { expect } from './test-helpers.js';
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -82,4 +83,29 @@ describe('Wiki lifecycle hooks', () => {
     expect(result.additionalContext).toContain('legacy pages at .omx/wiki/');
     expect(fs.existsSync(getWikiDir(tempDir))).toBe(false);
   });
+
+  for (const fixture of [{ pages: 1, titleChars: 8192 }, { pages: 24, titleChars: 96 }, { pages: 1, titleChars: 32 }]) {
+    it(`bounds startup context for ${fixture.pages} pages with ${fixture.titleChars}-character titles`, () => {
+      const wikiDir = ensureWikiDir(tempDir);
+      const title = 'T'.repeat(fixture.titleChars);
+      for (let i = 0; i < fixture.pages; i++) {
+        fs.writeFileSync(path.join(wikiDir, `page-${i}.md`), serializePage({
+          filename: `page-${i}.md`,
+          frontmatter: {
+            title, tags: [], sources: [], links: [], category: 'reference', confidence: 'high',
+            created: '2026-10-16T00:00:00.000Z', updated: '2026-10-16T00:00:00.000Z',
+            schemaVersion: WIKI_SCHEMA_VERSION,
+          },
+          content: `\n${'Summary '.repeat(10)}\n`,
+        }));
+      }
+      const context = onSessionStart({ cwd: tempDir }).additionalContext ?? '';
+      assert.ok(context.length <= 3500, `received ${context.length} characters`);
+      assert.match(context, /wiki_query/);
+      assert.equal(context.includes('Wiki index truncated'), fixture.titleChars === 8192 || fixture.pages === 24);
+      if (fixture.titleChars === 32) assert.ok(context.includes(title));
+      assert.ok(context.split('\n').filter(line => line.startsWith('- [')).every(line => line.includes(') — ')));
+      assert.equal(fs.readFileSync(path.join(wikiDir, 'page-0.md'), 'utf8').includes(title), true);
+    });
+  }
 });

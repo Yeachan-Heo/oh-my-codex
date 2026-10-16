@@ -26,6 +26,7 @@ import {
   readSubagentTrackingState,
   recordNativeSubagentAuthorityObservation,
   recordSubagentTurnForSession,
+  recordSubagentTurnForSessionPartitions,
   repairPersistedRootIdentity,
   quarantinePersistedRootAuthority,
   revokeNativeSubagentAuthorities,
@@ -149,6 +150,7 @@ import {
   onPreCompact as buildWikiPreCompactContext,
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
+import { sessionModelInstructionsPath } from "../hooks/agents-overlay.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
 import { deriveAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import {
@@ -208,6 +210,7 @@ type CodexHookEventName =
   | "UserPromptSubmit"
   | "PreCompact"
   | "PostCompact"
+  | "SubagentStop"
   | "Stop";
 
 type CodexHookPayload = Record<string, unknown>;
@@ -715,6 +718,7 @@ function readHookEventName(payload: CodexHookPayload): CodexHookEventName | null
     || raw === "UserPromptSubmit"
     || raw === "PreCompact"
     || raw === "PostCompact"
+    || raw === "SubagentStop"
     || raw === "Stop"
   ) {
     return raw;
@@ -746,6 +750,8 @@ export function mapCodexHookEventToOmxEvent(
       return "pre-compact";
     case "PostCompact":
       return "post-compact";
+    case "SubagentStop":
+      return "subagent-stop";
     case "Stop":
       return "stop";
     default:
@@ -880,9 +886,11 @@ function sanitizePayloadForHookContext(
     return sanitized;
   }
 
-  if (hookEventName === "Stop") {
+  if (hookEventName === "Stop" || hookEventName === "SubagentStop") {
     delete sanitized.stop_hook_active;
     delete sanitized.stopHookActive;
+  }
+  if (hookEventName === "Stop") {
     delete sanitized.sessionId;
     sanitized.session_id = canonicalSessionId.trim() || safeString(payload.session_id ?? payload.sessionId).trim();
   }
@@ -2266,6 +2274,22 @@ async function buildSessionStartContext(
 ): Promise<string | null> {
   const sections: string[] = [];
 
+  let startupInstructions = "";
+  const startupFile = process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE;
+  if (readSessionStartSource(options.payload) === "startup" && startupFile
+    && resolve(startupFile) === sessionModelInstructionsPath(cwd, sessionId)) {
+    try {
+      startupInstructions = await readFile(startupFile, "utf-8");
+    } catch {
+      // Missing launch evidence must preserve hook-delivered memory.
+    }
+  }
+  const startupMemory = startupInstructions.match(/(?:^|\n)\*\*Project Context:\*\*\r?\n([\s\S]*?)(?=\r?\n\r?\n|$)/)?.[1] ?? "";
+  const alreadyInStartupInstructions = (label: string, value: string): boolean =>
+    startupMemory.split(/\r?\n/).some(line => line.trim().replace(/\s+/g, " ") === `- ${label}: ${value}`);
+  const startupPriority = startupInstructions.match(/(?:^|\n)\*\*Priority Notes:\*\*\r?\n([\s\S]*?)(?=\r?\n\r?\n|$)/)?.[1]
+    .replace(/\s+/g, " ").trim();
+
   sections.push(buildExecutionEnvironmentSection(cwd, {
     hookEventName: options.hookEventName,
     payload: options.payload,
@@ -2310,13 +2334,13 @@ async function buildSessionStartContext(
     const summary: string[] = [];
     const relativeMemoryPath = relative(cwd, projectMemoryPath).replace(/\\/g, "/");
     summary.push(`- source: ${relativeMemoryPath === "project-memory.json" ? "project-memory.json" : ".omx/project-memory.json"}`);
-    if (techStack) summary.push(`- stack: ${techStack}`);
-    if (conventions) summary.push(`- conventions: ${conventions}`);
-    if (build) summary.push(`- build: ${build}`);
+    if (techStack && !alreadyInStartupInstructions("Stack", techStack)) summary.push(`- stack: ${techStack}`);
+    if (conventions && !alreadyInStartupInstructions("Conventions", conventions)) summary.push(`- conventions: ${conventions}`);
+    if (build && !alreadyInStartupInstructions("Build", build)) summary.push(`- build: ${build}`);
     if (directives.length > 0) {
       const firstDirective = directives[0] as Record<string, unknown>;
       const directive = safeContextSnippet(firstDirective.directive);
-      if (directive) summary.push(`- directive: ${directive}`);
+      if (directive && !alreadyInStartupInstructions("Directive", directive)) summary.push(`- directive: ${directive}`);
     }
     if (notes.length > 0) {
       const firstNote = notes[0] as Record<string, unknown>;
@@ -2344,7 +2368,7 @@ async function buildSessionStartContext(
           .map((line) => line.trim())
           .filter(Boolean)
           .join(" ");
-        if (section) {
+        if (section && startupPriority !== section.replace(/\s+/g, " ")) {
           sections.push(`[Priority notes]\n- ${section.slice(0, 220)}`);
         }
       }
@@ -21841,6 +21865,68 @@ export async function dispatchCodexNativeHook(
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
   const reconcileAdvisory = options.reconcileRalplanAdvisoryFn ?? reconcileRalplanAdvisory;
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
+  if (hookEventName === "SubagentStop") {
+    // This event names the parent session and child agent separately; it is not a leader Stop.
+    const parentSessionId = readStrictStopPayloadSessionId(payload);
+    const agentId = normalizeSessionId(safeString(payload.agent_id).trim());
+    let sessionId: string | null = null;
+    let pluginDiscoveryCwd: string | undefined;
+    if (parentSessionId && agentId && agentId !== parentSessionId) {
+      const authoritativeTeamWorker = hasRawTeamWorkerDeclaration()
+        ? await resolveAuthoritativeTeamWorkerContext(cwd)
+        : null;
+      if (authoritativeTeamWorker) {
+        // Team workers can own child agents without the shared leader pointer or tracker summary.
+        sessionId = parentSessionId;
+        pluginDiscoveryCwd = authoritativeTeamWorker.canonicalLeaderCwd;
+      } else {
+        const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
+        if (pointer.status === "usable" && pointer.state && !sessionPointerAliases(pointer.state).has(agentId)) {
+          const candidateSessionId = pointer.state.session_id;
+          const summary = await readSubagentSessionSummary(cwd, candidateSessionId);
+          if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
+            || summary?.allThreadIds.includes(parentSessionId)) {
+            sessionId = candidateSessionId;
+          }
+        }
+      }
+    }
+    if (sessionId && agentId) {
+      try {
+        await recordSubagentTurnForSessionPartitions(cwd, {
+          sessionId,
+          threadId: agentId,
+          turnId: readPayloadTurnId(payload) || undefined,
+          kind: "subagent",
+          mode: safeString(payload.agent_type).trim() || undefined,
+          completed: true,
+          completionSource: "native_stop_event",
+        });
+      } catch (error) {
+        await logNativeHookCliError(cwd, "native_subagent_completion_tracking_error", error, payload, { agent_id: agentId });
+        return { hookEventName, omxEventName, skillState: null, outputJson: null };
+      }
+      if (!shouldSuppressSubagentLifecycleHookDispatch()) {
+        await dispatchHookEventRuntime({
+          event: buildNativeHookEvent(omxEventName!, {
+            ...buildBaseContext(cwd, payload, hookEventName, sessionId),
+            native_session_id: agentId,
+            codex_session_id: agentId,
+            omx_session_id: sessionId,
+          }, {
+            session_id: sessionId,
+            thread_id: agentId,
+            turn_id: readPayloadTurnId(payload) || undefined,
+            mode: safeString(payload.agent_type).trim() || undefined,
+          }),
+          cwd,
+          ...(pluginDiscoveryCwd ? { pluginDiscoveryCwd } : {}),
+          allowTeamWorkerSideEffects: false,
+        });
+      }
+    }
+    return { hookEventName, omxEventName, skillState: null, outputJson: null };
+  }
   // #3497 / C1 boundary: documented-leader PreToolUse hard gate removed.
   if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
     void payload;
@@ -22521,6 +22607,7 @@ export async function dispatchCodexNativeHook(
     && /^[ \t]*omx[ \t]+cancel\b/.test(readPreToolUseCommand(payload));
   if (omxEventName && !bypassGenericPreToolUsePluginDispatch && allowImplicitSessionSideEffects && allowGlobalSideEffects && !skipCanonicalSessionStartContext && !suppressNoisySubagentLifecycleDispatch) {
     const baseContext = buildBaseContext(cwd, payload, hookEventName!, canonicalSessionId);
+    if (isSubagentStop) baseContext.is_subagent_stop = true;
     if (resolvedNativeSessionId) {
       baseContext.native_session_id = resolvedNativeSessionId;
       baseContext.codex_session_id = resolvedNativeSessionId;
@@ -22541,6 +22628,7 @@ export async function dispatchCodexNativeHook(
     await dispatchHookEventRuntime({
       event,
       cwd,
+      pluginDiscoveryCwd: authoritativeTeamWorkerEvidence?.canonicalLeaderCwd,
       allowTeamWorkerSideEffects: false,
     });
   }
@@ -22688,6 +22776,7 @@ export async function dispatchCodexNativeHook(
           await recordSubagentTurnForSession(cwd, {
             sessionId: canonicalSessionId.trim(),
             threadId: threadId.trim(),
+            turnId: readPayloadTurnId(payload) || undefined,
             completed: true,
             completionSource: 'native_stop_event',
             timestamp: new Date().toISOString(),
@@ -22801,8 +22890,12 @@ async function readStdinJson(): Promise<NativeHookCliReadResult> {
   }
 }
 
-function inferHookEventNameFromMalformedInput(raw: string): CodexHookEventName | null {
-  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|Stop)\b/i);
+function inferHookEventNameFromMalformedInput(
+  raw: string,
+  rawHookEventName?: CodexHookEventName | null,
+): CodexHookEventName | null {
+  if (rawHookEventName) return rawHookEventName;
+  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|SubagentStop|Stop)\b/i);
   const value = match?.[1];
   if (!value) return null;
   return readHookEventName({ hook_event_name: value });
@@ -22823,15 +22916,17 @@ function buildMalformedStdinHookOutput(
   parseError: Error,
   rawInput: string,
   cwd = process.cwd(),
+  rawHookEventName?: CodexHookEventName | null,
 ): Record<string, unknown> {
   const reason =
     "OMX native hook received malformed JSON input. Preserve runtime state, inspect the emitting hook payload yourself, and retry with valid JSON.";
   const systemMessage =
     `${reason} stdin JSON parsing failed inside codex-native-hook: ${parseError.message}.`;
-  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput);
+  const inferredHookEventName = inferHookEventNameFromMalformedInput(rawInput, rawHookEventName);
   if (inferredHookEventName === "PreToolUse") {
     return buildUnparseablePreToolUseDenyOutput(reason, systemMessage);
   }
+  if (inferredHookEventName === "SubagentStop") return {};
   if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
     return {
       decision: "block",
@@ -22880,6 +22975,7 @@ async function buildOversizedStdinHookOutput(
 ): Promise<Record<string, unknown>> {
   const systemMessage =
     `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
+  if (rawHookEventName === "SubagentStop") return {};
   if (rawHookEventName === "PreToolUse") {
     return buildUnparseablePreToolUseDenyOutput(systemMessage, systemMessage);
   }
@@ -22993,7 +23089,7 @@ export async function runCodexNativeHookCli(): Promise<void> {
       {},
       buildRawInputLogFields(rawInput),
     );
-    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd()));
+    writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd(), rawHookEventName));
     return;
   }
 

@@ -205,6 +205,7 @@ export type HookDispatchSummary = HookDispatchResult;
 
 export interface HookDispatchOptions {
   cwd?: string;
+  pluginDiscoveryCwd?: string;
   stateRoot?: string;
   event?: HookEventEnvelope;
   env?: NodeJS.ProcessEnv;
@@ -223,6 +224,7 @@ export interface HookValidateOptions {
 
 export interface HookRuntimeDispatchInput {
   cwd: string;
+  pluginDiscoveryCwd?: string;
   event: HookEventEnvelope;
   allowTeamWorkerSideEffects?: boolean;
   sideEffectsEnabled?: boolean;

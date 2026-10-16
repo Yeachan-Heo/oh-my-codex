@@ -34,6 +34,7 @@ export async function dispatchHookEventRuntime(input: HookRuntimeDispatchInput):
 
   const result = await dispatchHookEvent(input.event, {
     cwd: input.cwd,
+    pluginDiscoveryCwd: input.pluginDiscoveryCwd,
     allowTeamWorkerSideEffects: input.allowTeamWorkerSideEffects,
     enabled,
   });

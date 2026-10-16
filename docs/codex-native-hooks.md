@@ -94,7 +94,7 @@ configuration. Re-running it is safe.
 | `PostToolUseFailure` | none | runtime-only | runtime-fallback | Fold into runtime/fallback handling until native support exists |
 | non-Bash tool interception | `PreToolUse` / `PostToolUse` when provided by Codex | native hook | native-partial | OMX stays no-op for unrelated non-Bash tools, but native subagent capacity failures and close-agent cleanup requests are handled when Codex provides those tool events |
 | code simplifier stop follow-up | none | runtime-only | runtime-fallback | Cleanup follow-up stays on runtime/fallback surfaces, not native Stop |
-| `SubagentStop` | none | runtime-only | not-supported-yet | OMC-specific lifecycle extension |
+| Native child completion | `SubagentStop` | `subagent-stop` | native | Records descriptive child completion under the matching parent session, including known nested parents in plugin mode. Uses `agent_id` for the child, accepts nullable transcript/message fields, and deduplicates the same child turn against legacy `Stop`. Lifecycle hook dispatch honors `notifications.includeChildAgents` and `agent`/`verbose` verbosity; replay flags are ignored and dispatch dedupe is scoped per child/turn within the existing five-second window, with expired child keys pruned on subsequent writes. Tracker write failures are logged and return a no-op without dispatching hooks or rewriting malformed authority state. Never runs leader Stop gates or grants reopen authority. Unbound or malformed identities are ignored. |
 | `session-end` | none | `session-end` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
 | wiki session capture | none | `session-end` | runtime-fallback | Wiki session-log capture runs from the existing runtime session-end cleanup path, not from a native Codex hook |
 | `session-idle` | none | `session-idle` | runtime-fallback | Still emitted from runtime/notify path, not native Codex hooks |
@@ -133,6 +133,10 @@ the Team environment agrees with the durable worker identity, Team config, and
 current worker pane recorded under the strictly resolved Team state root. A
 leader native-session match wins before this check, and a payload with any named
 unknown or foreign identity cannot borrow the Team exemption.
+
+Verified Team workers discover hook plugins from the canonical leader checkout
+for every dispatched native event, while plugins still execute in the worker
+worktree with the shared Team state root.
 
 Known read-only MCP compatibility tools are governed by an explicit name contract,
 not a read-looking prefix heuristic. The audited contract covers filesystem/state
@@ -230,7 +234,8 @@ instead of using an unrelated docs edit as a blanket suppression.
 The approved OMX-native wiki backport keeps lifecycle ownership intentionally narrow:
 
 - **Storage** lives under repository `omx_wiki/`, not ignored `.omx/wiki/` runtime state and not `.omc/wiki/`.
-- **SessionStart** may surface bounded wiki context from `omx_wiki/` when the wiki already exists, but it should stay read-mostly and must not block the native hook path on expensive writes or index rebuilds.
+- **SessionStart** may surface bounded wiki context from `omx_wiki/` when the wiki already exists, limited by both `maxContextLines` and 3,500 characters. Character truncation keeps complete index lines and a retrieval hint; stored pages are unchanged. Startup writes stay read-mostly and must not block the native hook path on expensive writes or index rebuilds.
+- OMX launches advertise their automatically selected session instruction file through `OMX_STARTUP_MODEL_INSTRUCTIONS_FILE`. On `source=startup`, the native adapter omits project-memory fields and priority notes only when the exact content is already present in that session file. Custom instruction overrides, unavailable files, omitted or changed content, and resume events retain hook delivery. This environment hint is only for duplicate context suppression, not session authority.
 - **SessionEnd** remains a runtime/notify-path responsibility for best-effort, non-blocking session capture into `omx_wiki/`.
 - **PreCompact** and **PostCompact** are native and no-stdout by default: they record the lifecycle seams without emitting advisory `additionalContext` that Codex rejects for compact hook events.
 - **Routing should stay explicit**: prefer `$wiki` or task verbs like `wiki query` / `wiki add`, and avoid implicit bare `wiki` noun activation.

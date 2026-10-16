@@ -949,6 +949,11 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
   const requestedKind = input.kind === 'leader' || input.kind === 'subagent' ? input.kind : undefined;
   const requestedLeaderThreadId = input.leaderThreadId?.trim();
   const existingThread = existingSession.threads[threadId];
+  // Native Stop and SubagentStop can describe the same child turn.
+  const completedTurnId = input.turnId?.trim();
+  if (input.completed && completedTurnId && input.completionSource === 'native_stop_event'
+    && existingThread?.completed_at && existingThread.completion_source === 'native_stop_event'
+    && existingThread.last_completed_turn_id === completedTurnId) return normalized;
   const existingKind = existingThread?.kind === 'leader' || existingThread?.kind === 'subagent' ? existingThread.kind : undefined;
   const existingLeaderThreadId = existingSession.leader_thread_id?.trim();
   // `leader_thread_id` is the session's top-level leader boundary.  A native
@@ -1077,6 +1082,35 @@ export async function recordSubagentTurnForSession(cwd: string, input: RecordSub
     return next;
   });
 }
+
+/**
+ * Records a turn in the canonical tracker session and every existing tracker
+ * partition that already records this thread as a subagent. Completion events
+ * must not bootstrap additional partitions on their own.
+ */
+export async function recordSubagentTurnForSessionPartitions(
+  cwd: string,
+  input: RecordSubagentTurnInput,
+): Promise<SubagentTrackingState> {
+  const primarySessionId = input.sessionId.trim();
+  const threadId = input.threadId.trim();
+  return withCrossProcessFileLockSync(subagentTrackingPath(cwd), (context) => {
+    const strict = readSubagentTrackingStateStrictSync(cwd);
+    if (!strict.ok) throw new Error('Malformed subagent tracker authority state');
+    const sessionIds = new Set(primarySessionId ? [primarySessionId] : []);
+    for (const [sessionId, session] of Object.entries(strict.state.sessions)) {
+      if (session.threads[threadId]?.kind === 'subagent') sessionIds.add(sessionId);
+    }
+    let next = strict.state;
+    for (const sessionId of sessionIds) {
+      next = recordSubagentTurn(next, { ...input, sessionId });
+    }
+    context.assertOwnership();
+    writeSubagentTrackingStateSync(cwd, next, context.publish);
+    return next;
+  });
+}
+
 export function recordNativeSubagentAuthorityObservation(
   cwd: string,
   observation: NativeSubagentAuthorityObservation,

@@ -1,15 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { withCrossProcessFileLockSync } from '../subagents/tracker.js';
 import type { NotificationEvent, FullNotificationPayload } from './types.js';
 
 const SESSION_ID_SAFE_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
 const LIFECYCLE_DEDUPE_FILE = 'lifecycle-notif-state.json';
 const LIFECYCLE_DEDUPE_WINDOW_MS = 5_000;
+const LIFECYCLE_HOOK_CLAIM_WINDOW_MS = 120_000;
 const DEDUPED_EVENTS = new Set<NotificationEvent>(['session-start', 'session-stop', 'session-end']);
 
 interface LifecycleDedupeEntry {
   fingerprint?: string;
   sentAt?: string;
+  claimId?: string;
+  claimedAt?: string;
 }
 
 interface LifecycleDedupeState {
@@ -34,22 +39,47 @@ function getStatePath(stateDir: string, sessionId: string): string {
   return join(stateDir, LIFECYCLE_DEDUPE_FILE);
 }
 
-function readState(path: string): LifecycleDedupeState {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readStateFromDisk(path: string): LifecycleDedupeState | null {
   try {
     if (!existsSync(path)) return {};
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as LifecycleDedupeState;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+    if (!isRecord(parsed)
+      || (parsed.events !== undefined && !isRecord(parsed.events))
+      || (parsed.hookEvents !== undefined && !isRecord(parsed.hookEvents))) return null;
+    return parsed as LifecycleDedupeState;
   } catch {
-    return {};
+    return null;
   }
 }
 
-function writeState(path: string, state: LifecycleDedupeState): void {
+function readState(path: string): LifecycleDedupeState {
+  return readStateFromDisk(path) ?? {};
+}
+
+function readBucketState(
+  state: LifecycleDedupeState,
+  bucket: 'events' | 'hookEvents',
+): Record<string, LifecycleDedupeEntry> {
+  const bucketState = state[bucket];
+  return isRecord(bucketState) ? bucketState as Record<string, LifecycleDedupeEntry> : {};
+}
+
+function writeState(
+  path: string,
+  state: LifecycleDedupeState,
+  publish: (contents: string) => void,
+): boolean {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(state, null, 2));
+    publish(JSON.stringify(state, null, 2));
+    return true;
   } catch {
     // best effort
+    return false;
   }
 }
 
@@ -85,6 +115,22 @@ function shouldSendFingerprint(
   return nowMs - previousMs >= LIFECYCLE_DEDUPE_WINDOW_MS;
 }
 
+function pruneExpiredChildTurnEntries(
+  hookEvents: Record<string, LifecycleDedupeEntry>,
+  nowMs: number,
+): void {
+  for (const [key, entry] of Object.entries(hookEvents)) {
+    if (!key.startsWith('subagent-stop:')) continue;
+    if (entry?.claimId) {
+      const claimedAtMs = Date.parse(entry.claimedAt ?? '');
+      if (!Number.isFinite(claimedAtMs) || nowMs - claimedAtMs >= LIFECYCLE_HOOK_CLAIM_WINDOW_MS) delete hookEvents[key];
+      continue;
+    }
+    const sentAtMs = Date.parse(entry?.sentAt ?? '');
+    if (!Number.isFinite(sentAtMs) || nowMs - sentAtMs >= LIFECYCLE_DEDUPE_WINDOW_MS) delete hookEvents[key];
+  }
+}
+
 function shouldSendScopedLifecycleBroadcast(
   stateDir: string,
   sessionId: string | undefined,
@@ -97,9 +143,7 @@ function shouldSendScopedLifecycleBroadcast(
 
   const path = getStatePath(stateDir, sessionId);
   const state = readState(path);
-  const bucketState = state[bucket] && typeof state[bucket] === 'object'
-    ? state[bucket]
-    : {};
+  const bucketState = readBucketState(state, bucket);
   return shouldSendFingerprint(bucketState?.[eventKey], fingerprint, nowMs);
 }
 
@@ -114,16 +158,24 @@ function recordScopedLifecycleBroadcastSent(
   if (!sessionId || !stateDir) return;
 
   const path = getStatePath(stateDir, sessionId);
-  const state = readState(path);
-  const bucketState = state[bucket] && typeof state[bucket] === 'object'
-    ? state[bucket]
-    : {};
-  bucketState[eventKey] = {
-    fingerprint,
-    sentAt: new Date(nowMs).toISOString(),
-  };
-  state[bucket] = bucketState;
-  writeState(path, state);
+  try {
+    withCrossProcessFileLockSync(path, (lock) => {
+      const state = readState(path);
+      const bucketState = readBucketState(state, bucket);
+      if (bucket === 'hookEvents') {
+        pruneExpiredChildTurnEntries(bucketState, nowMs);
+      }
+      bucketState[eventKey] = {
+        fingerprint,
+        sentAt: new Date(nowMs).toISOString(),
+      };
+      state[bucket] = bucketState;
+      lock.assertOwnership();
+      writeState(path, state, lock.publish);
+    });
+  } catch {
+    // Lifecycle receipts are best effort; lock failure must not break hook dispatch.
+  }
 }
 
 export function createLifecycleBroadcastFingerprint(value: unknown): string {
@@ -177,6 +229,140 @@ export function shouldSendLifecycleHookBroadcast(
     fingerprint,
     nowMs,
   );
+}
+
+export function claimLifecycleHookBroadcast(
+  stateDir: string,
+  sessionId: string | undefined,
+  eventKey: string,
+  fingerprint: string,
+  nowMs: number = Date.now(),
+): { acquired: true; claimId?: string } | { acquired: false; reason: 'duplicate' | 'unavailable' } {
+  if (!sessionId || !stateDir) return { acquired: true };
+
+  const path = getStatePath(stateDir, sessionId);
+  const claimId = randomUUID();
+  try {
+    return withCrossProcessFileLockSync(path, (lock) => {
+      const state = readStateFromDisk(path);
+      if (!state) return { acquired: false, reason: 'unavailable' };
+      const hookEvents = readBucketState(state, 'hookEvents');
+      pruneExpiredChildTurnEntries(hookEvents, nowMs);
+      const previous = hookEvents[eventKey];
+      if (previous?.claimId) {
+        const claimedAtMs = Date.parse(previous.claimedAt ?? '');
+        if (Number.isFinite(claimedAtMs) && nowMs - claimedAtMs < LIFECYCLE_HOOK_CLAIM_WINDOW_MS) {
+          return { acquired: false, reason: 'duplicate' };
+        }
+      } else if (!shouldSendFingerprint(previous, fingerprint, nowMs)) {
+        return { acquired: false, reason: 'duplicate' };
+      }
+
+      hookEvents[eventKey] = {
+        fingerprint,
+        claimId,
+        claimedAt: new Date(nowMs).toISOString(),
+      };
+      state.hookEvents = hookEvents;
+      lock.assertOwnership();
+      if (!writeState(path, state, lock.publish)) return { acquired: false, reason: 'unavailable' };
+      return { acquired: true, claimId };
+    });
+  } catch {
+    // Do not run side-effecting hooks without an atomic child-completion claim.
+    return { acquired: false, reason: 'unavailable' };
+  }
+}
+
+export function renewLifecycleHookBroadcastClaim(
+  stateDir: string,
+  sessionId: string | undefined,
+  eventKey: string,
+  fingerprint: string,
+  claimId: string,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!sessionId || !stateDir || !claimId) return false;
+
+  const path = getStatePath(stateDir, sessionId);
+  try {
+    return withCrossProcessFileLockSync(path, (lock) => {
+      const state = readStateFromDisk(path);
+      if (!state) return false;
+      const hookEvents = readBucketState(state, 'hookEvents');
+      const previous = hookEvents[eventKey];
+      if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return false;
+      hookEvents[eventKey] = {
+        ...previous,
+        claimedAt: new Date(nowMs).toISOString(),
+      };
+      state.hookEvents = hookEvents;
+      lock.assertOwnership();
+      return writeState(path, state, lock.publish);
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function completeLifecycleHookBroadcast(
+  stateDir: string,
+  sessionId: string | undefined,
+  eventKey: string,
+  fingerprint: string,
+  claimId: string,
+  nowMs: number = Date.now(),
+): void {
+  if (!sessionId || !stateDir || !claimId) return;
+
+  const path = getStatePath(stateDir, sessionId);
+  try {
+    withCrossProcessFileLockSync(path, (lock) => {
+      const state = readState(path);
+      const hookEvents = readBucketState(state, 'hookEvents');
+      const previous = hookEvents[eventKey];
+      if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return;
+      hookEvents[eventKey] = {
+        fingerprint,
+        sentAt: new Date(nowMs).toISOString(),
+      };
+      state.hookEvents = hookEvents;
+      pruneExpiredChildTurnEntries(hookEvents, nowMs);
+      lock.assertOwnership();
+      writeState(path, state, lock.publish);
+    });
+  } catch {
+    // Lifecycle receipts are best effort; lock failure must not break hook dispatch.
+  }
+}
+
+export function releaseLifecycleHookBroadcast(
+  stateDir: string,
+  sessionId: string | undefined,
+  eventKey: string,
+  fingerprint: string,
+  claimId: string,
+  nowMs: number = Date.now(),
+): void {
+  if (!sessionId || !stateDir || !claimId) return;
+
+  const path = getStatePath(stateDir, sessionId);
+  try {
+    withCrossProcessFileLockSync(path, (lock) => {
+      const state = readState(path);
+      const hookEvents = readBucketState(state, 'hookEvents');
+      const previous = hookEvents[eventKey];
+      if (previous?.claimId !== claimId || previous.fingerprint !== fingerprint) return;
+      delete hookEvents[eventKey];
+      if (Object.keys(hookEvents).length > 0) state.hookEvents = hookEvents;
+      else delete state.hookEvents;
+      pruneExpiredChildTurnEntries(hookEvents, nowMs);
+      lock.assertOwnership();
+      writeState(path, state, lock.publish);
+    });
+  } catch {
+    // Lifecycle receipts are best effort; lock failure must not break hook dispatch.
+  }
 }
 
 export function recordLifecycleHookBroadcastSent(
