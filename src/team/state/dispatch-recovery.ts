@@ -3,8 +3,8 @@ import { readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getDefaultBridge, type RuntimeCommand } from '../../runtime/bridge.js';
 
-function hasRuntimeAuthority(stateDir: string): boolean {
-  return ['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)));
+export function hasRuntimeAuthority(stateDir: string): boolean {
+  return ['events.json', 'snapshot.json', 'mailbox.json', 'dispatch-seen.json'].some((name) => existsSync(join(stateDir, name)));
 }
 
 function readRuntimeDispatchRequestIds(stateDir: string): string[] | null {

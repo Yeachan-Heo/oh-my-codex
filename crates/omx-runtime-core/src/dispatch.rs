@@ -180,6 +180,59 @@ impl DispatchLog {
         &self.records
     }
 
+    pub(crate) fn recover_pending_hook_attempts(&mut self, projection: &Self) {
+        let projected: std::collections::HashMap<_, _> = projection
+            .records()
+            .iter()
+            .map(|record| (record.request_id.as_str(), record))
+            .collect();
+        for record in &mut self.records {
+            let Some(previous) = projected.get(record.request_id.as_str()) else {
+                continue;
+            };
+            if record.status != DispatchStatus::Pending
+                || previous.status != DispatchStatus::Pending
+                || record.target != previous.target
+            {
+                continue;
+            }
+            let Some(metadata) = record
+                .metadata
+                .as_mut()
+                .and_then(|value| value.as_object_mut())
+            else {
+                continue;
+            };
+            let Some(previous_metadata) = previous
+                .metadata
+                .as_ref()
+                .and_then(|value| value.as_object())
+            else {
+                continue;
+            };
+            let team = metadata.get("team_name").and_then(|value| value.as_str());
+            if team.map_or(true, str::is_empty)
+                || team
+                    != previous_metadata
+                        .get("team_name")
+                        .and_then(|value| value.as_str())
+            {
+                continue;
+            }
+            // Hook retries have no runtime event; all other fields remain event-owned.
+            for key in ["attempt_count", "last_attempt_at"] {
+                if let Some(value) = previous_metadata.get(key) {
+                    if (key == "attempt_count" && value.as_u64().is_some())
+                        || (key == "last_attempt_at" && value.is_string())
+                    {
+                        metadata.insert(key.into(), value.clone());
+                    }
+                }
+            }
+            record.reason = previous.reason.clone();
+        }
+    }
+
     pub fn request_ids(&self) -> impl Iterator<Item = &str> {
         self.records.iter().map(|record| record.request_id.as_str())
     }

@@ -401,14 +401,13 @@ impl RuntimeEngine {
             }
             Err(error) => return Err(error.into()),
         };
-        let persisted_dispatch_ids = match std::fs::read_to_string(dir.join("dispatch.json")) {
-            Ok(json) => {
-                let dispatch: DispatchLog = serde_json::from_str(&json)?;
-                collect_unique_dispatch_ids(dispatch.request_ids())?
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+        let dispatch_projection = match std::fs::read_to_string(dir.join("dispatch.json")) {
+            Ok(json) => serde_json::from_str::<DispatchLog>(&json)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DispatchLog::new(),
             Err(error) => return Err(error.into()),
         };
+        let persisted_dispatch_ids =
+            collect_unique_dispatch_ids(dispatch_projection.request_ids())?;
 
         drop(lock_file);
 
@@ -428,6 +427,9 @@ impl RuntimeEngine {
             .into());
         }
         engine.seen_dispatch_ids = ledger;
+        engine
+            .dispatch
+            .recover_pending_hook_attempts(&dispatch_projection);
 
         if let Some(mut mailbox_state) = mailbox {
             let mut body_by_message = std::collections::HashMap::new();
@@ -813,6 +815,80 @@ pub fn derive_readiness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DispatchStatus;
+
+    #[test]
+    fn load_preserves_pending_hook_attempts_across_teams_without_overriding_events() {
+        let dir = std::env::temp_dir().join(format!("omx-hook-recovery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = RuntimeEngine::new().with_state_dir(&dir);
+        for (id, team) in [
+            ("alpha", "alpha"),
+            ("beta", "beta"),
+            ("notified", "alpha"),
+            ("wrong-team", "alpha"),
+            ("wrong-target", "alpha"),
+            ("terminal-projection", "alpha"),
+        ] {
+            engine.process(RuntimeCommand::QueueDispatch {
+                request_id: id.into(), target: "worker-1".into(),
+                metadata: Some(serde_json::json!({"team_name": team, "attempt_count": 0, "trigger_message": "original"})),
+            }).unwrap();
+        }
+        engine
+            .process(RuntimeCommand::MarkNotified {
+                request_id: "notified".into(),
+                channel: "runtime".into(),
+            })
+            .unwrap();
+        engine.persist().unwrap();
+        let path = dir.join("dispatch.json");
+        let mut projection: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for record in projection["records"].as_array_mut().unwrap() {
+            record["status"] = serde_json::json!("pending");
+            record["reason"] = serde_json::json!("tmux_send_keys_unconfirmed");
+            record["metadata"]["attempt_count"] = serde_json::json!(2);
+            record["metadata"]["last_attempt_at"] = serde_json::json!("2026-10-16T00:00:00Z");
+            record["metadata"]["trigger_message"] = serde_json::json!("corrupted");
+            match record["request_id"].as_str().unwrap() {
+                "wrong-team" => record["metadata"]["team_name"] = serde_json::json!("beta"),
+                "wrong-target" => record["target"] = serde_json::json!("worker-2"),
+                "terminal-projection" => record["status"] = serde_json::json!("delivered"),
+                _ => {}
+            }
+        }
+        std::fs::write(&path, serde_json::to_string(&projection).unwrap()).unwrap();
+        let mut loaded = RuntimeEngine::load(&dir).unwrap();
+        loaded.process(RuntimeCommand::CaptureSnapshot).unwrap();
+        loaded.persist().unwrap();
+        let reloaded = RuntimeEngine::load(&dir).unwrap();
+        for record in reloaded.dispatch.records() {
+            let metadata = record.metadata.as_ref().unwrap();
+            assert_eq!(metadata["trigger_message"], "original");
+            assert_eq!(record.target, "worker-1");
+            if record.request_id == "alpha" || record.request_id == "beta" {
+                assert_eq!(metadata["attempt_count"], 2);
+                assert_eq!(metadata["last_attempt_at"], "2026-10-16T00:00:00Z");
+                assert_eq!(record.reason.as_deref(), Some("tmux_send_keys_unconfirmed"));
+                assert_eq!(record.status, DispatchStatus::Pending);
+            } else {
+                assert_eq!(metadata["attempt_count"], 0);
+                assert!(metadata.get("last_attempt_at").is_none());
+                assert_eq!(metadata["team_name"], "alpha");
+                assert_eq!(
+                    record.status,
+                    if record.request_id == "notified" {
+                        DispatchStatus::Notified
+                    } else {
+                        DispatchStatus::Pending
+                    }
+                );
+                assert_ne!(record.reason.as_deref(), Some("tmux_send_keys_unconfirmed"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn process_acquire_authority() {
@@ -1120,8 +1196,24 @@ mod tests {
         engine.persist().unwrap();
         std::fs::write(dir.join("mailbox.json"), pending_snapshot).unwrap();
 
-        let loaded = RuntimeEngine::load(&dir).unwrap();
+        let mut loaded = RuntimeEngine::load(&dir).unwrap();
         assert!(loaded.mailbox.records()[0].delivered_at.is_some());
+        let recovered_timestamp = loaded.mailbox.records()[0].delivered_at.clone();
+        loaded
+            .process(RuntimeCommand::MarkMailboxDelivered {
+                team_name: Some("alpha".into()),
+                message_id: "stale-snapshot".into(),
+            })
+            .unwrap();
+        loaded.persist().unwrap();
+        let persisted: MailboxLog =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("mailbox.json")).unwrap())
+                .unwrap();
+        assert_eq!(persisted.records()[0].delivered_at, recovered_timestamp);
+        assert_eq!(
+            RuntimeEngine::load(&dir).unwrap().mailbox.records()[0].delivered_at,
+            recovered_timestamp
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

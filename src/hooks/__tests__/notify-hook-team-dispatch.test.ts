@@ -14,6 +14,7 @@ import {
   saveTeamConfig,
 } from '../../team/state.js';
 import { pathToFileURL } from 'node:url';
+import { getDefaultBridge } from '../../runtime/bridge.js';
 
 function buildFakeTmux(tmuxLogPath: string): string {
   return `#!/usr/bin/env bash
@@ -322,6 +323,78 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
+  it('refreshes durable dispatch events before claiming a stale pending projection', async () => {
+    for (const status of ['notified', 'delivered'] as const) {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-event-replay-'));
+      try {
+        await initTeamState('alpha', 'task', 'executor', 1, cwd);
+        const queued = await enqueueDispatchRequest('alpha', {
+          kind: 'inbox', to_worker: 'worker-1', trigger_message: 'must not reinject',
+          transport_preference: 'hook_preferred_with_fallback',
+        }, cwd);
+        const stateDir = join(cwd, '.omx', 'state');
+        const projectionPath = join(stateDir, 'dispatch.json');
+        const staleProjection = await readFile(projectionPath, 'utf8');
+        const bridge = getDefaultBridge(stateDir);
+        bridge.execCommand({ command: 'MarkNotified', request_id: queued.request.request_id, channel: 'tmux' });
+        if (status === 'delivered') bridge.execCommand({ command: 'MarkDelivered', request_id: queued.request.request_id });
+        await writeFile(projectionPath, staleProjection);
+        let injections = 0;
+        const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const result = await drainPendingTeamDispatch({ cwd, injector: async () => {
+            injections += 1;
+            return { ok: true, reason: 'unexpected injection' };
+          } });
+          assert.equal(result.processed, 0);
+        }
+        assert.equal(injections, 0);
+        assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, status);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('preserves pending retry counts across Team refreshes with cooldowns disabled', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-replay-retries-'));
+    const previousIssue = process.env.OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS;
+    const previousTrigger = process.env.OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS;
+    try {
+      process.env.OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS = '0';
+      process.env.OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS = '0';
+      const ids = new Map<string, string>();
+      for (const team of ['alpha', 'beta']) {
+        await initTeamState(team, 'task', 'executor', 1, cwd);
+        const queued = await enqueueDispatchRequest(team, {
+          kind: 'inbox', to_worker: 'worker-1', trigger_message: 'retry ' + team,
+        }, cwd);
+        ids.set(team, queued.request.request_id);
+      }
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      let injections = 0;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        await drainPendingTeamDispatch({ cwd, injector: async () => {
+          injections += 1;
+          return { ok: true, reason: 'tmux_send_keys_unconfirmed' };
+        } });
+        for (const [team, id] of ids) {
+          const record = await readDispatchRequest(team, id, cwd);
+          if (attempt < 3) assert.equal(record?.attempt_count, attempt);
+          assert.equal(record?.status, attempt === 3 ? 'failed' : 'pending');
+        }
+      }
+      await drainPendingTeamDispatch({ cwd, injector: async () => { assert.fail('failed request reinjected'); } });
+      assert.equal(injections, 6);
+    } finally {
+      if (previousIssue === undefined) delete process.env.OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS;
+      else process.env.OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS = previousIssue;
+      if (previousTrigger === undefined) delete process.env.OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS;
+      else process.env.OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS = previousTrigger;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('marks pending request as notified and preserves mailbox notified_at semantics', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     try {
@@ -525,6 +598,42 @@ exit 1
       else delete process.env.PATH;
       if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
       else delete process.env.OMX_RUNTIME_BINARY;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not commit a shadow-only mailbox receipt when runtime disappears after injection', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-mailbox-transport-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtime = join(cwd, 'runtime');
+      await writeCompatRuntimeFixture(runtime);
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const message = await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'receipt', cwd);
+      const request = await enqueueDispatchRequest('alpha', { kind: 'mailbox', to_worker: 'worker-1',
+        message_id: message.message_id, trigger_message: 'read receipt' }, cwd);
+      const shadowPath = join(cwd, '.omx/state/team/alpha/mailbox/worker-1.json');
+      const shadow = await readFile(shadowPath, 'utf8');
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      assert.equal((await drainPendingTeamDispatch({ cwd, injector: async () => {
+        await rm(runtime);
+        return { ok: true, reason: 'confirmed injection', delivery_confirmed: true,
+          pane: null, pane_source: null, readiness_evidence: null, pane_current_command: null,
+          exact_pane_proof: null, tmux_injection_attempted: false };
+      } })).processed, 1);
+      assert.equal(await readFile(shadowPath, 'utf8'), shadow);
+      await writeCompatRuntimeFixture(runtime);
+      await drainPendingTeamDispatch({ cwd, injector: async () => { assert.fail('confirmed injection repeated'); } });
+      assert.equal((await readDispatchRequest('alpha', request.request.request_id, cwd))?.status, 'delivered');
+      assert.equal((await listMailboxMessages('alpha', 'worker-1', cwd))[0].notified_at, undefined);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -861,6 +970,91 @@ exit 1
     }
   });
 
+  it('recovers confirmed delivery when the default injector loses its runtime', async () => {
+    for (const failure of ['missing', 'incompatible']) {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-delivery-recovery-'));
+      const previousBinary = process.env.OMX_RUNTIME_BINARY;
+      const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+      const previousPath = process.env.PATH;
+      try {
+        const runtime = join(cwd, 'omx-runtime');
+        await writeCompatRuntimeFixture(runtime);
+        const supported = await readFile(runtime, 'utf8');
+        process.env.OMX_RUNTIME_BINARY = runtime;
+        process.env.OMX_RUNTIME_BRIDGE = '1';
+        const bin = join(cwd, 'bin');
+        await mkdir(bin);
+        const sabotage = failure === 'missing' ? `rm -f "${runtime}"`
+          : `printf '#!/usr/bin/env node\nconsole.log("{}");\n' > "${runtime}"`;
+        await writeFile(join(bin, 'tmux'), buildFakeTmux(join(cwd, 'tmux.log')).replace(
+          'if [[ "$cmd" == "send-keys" ]]; then',
+          `if [[ "$cmd" == "send-keys" ]]; then\n  ${sabotage}`,
+        ));
+        await chmod(join(bin, 'tmux'), 0o755);
+        process.env.PATH = `${bin}:${previousPath || ''}`;
+        await initTeamState('alpha', 'task', 'executor', 1, cwd);
+        const config = await readTeamConfig('alpha', cwd);
+        assert.ok(config);
+        config.workers[0].pane_id = '%42';
+        config.workers[0].pid = 4242;
+        bindCanonicalTeamPaneAuthority(config);
+        await saveTeamConfig(config, cwd);
+        const queued = await enqueueDispatchRequest('alpha', {
+          kind: 'inbox', to_worker: 'worker-1', worker_index: 1, pane_id: '%42', trigger_message: 'receipt',
+        }, cwd);
+        const projectionPath = join(cwd, '.omx/state/dispatch.json');
+        const pendingProjection = await readFile(projectionPath, 'utf8');
+        const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+        assert.equal((await drainPendingTeamDispatch({ cwd, maxPerTick: 5 })).processed, 1);
+        const journal = join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl');
+        assert.deepEqual((await readFile(journal, 'utf8')).trim().split('\n').map(line => JSON.parse(line).command), ['MarkNotified', 'MarkDelivered', 'MarkNotified', 'MarkDelivered']);
+        await writeFile(runtime, supported);
+        await chmod(runtime, 0o755);
+        await writeFile(projectionPath, pendingProjection);
+        assert.equal((await drainPendingTeamDispatch({ cwd, injector: async () => { assert.fail('delivered request reinjected'); } })).processed, 0);
+        assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'delivered');
+        await assert.rejects(readFile(journal), { code: 'ENOENT' });
+      } finally {
+        if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+        else process.env.OMX_RUNTIME_BINARY = previousBinary;
+        if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+        else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('requires Team ownership proof for hook notifications with the bridge disabled', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-disabled-ownership-'));
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      await initTeamState('beta', 'task', 'executor', 1, cwd);
+      const foreign = await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'alpha only', cwd);
+      const own = await sendDirectMessage('beta', 'leader-fixed', 'worker-1', 'beta only', cwd);
+      const shadowPath = join(cwd, '.omx/state/team/beta/mailbox/worker-1.json');
+      await writeFile(shadowPath, JSON.stringify({ worker: 'worker-1', messages: [foreign, own] }));
+      for (const message of [foreign, own]) {
+        await enqueueDispatchRequest('beta', { kind: 'mailbox', to_worker: 'worker-1', worker_index: 1,
+          message_id: message.message_id, trigger_message: `read ${message.message_id}` }, cwd);
+      }
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      assert.equal((await drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'injected_for_test' }) })).processed, 2);
+      const shadow = JSON.parse(await readFile(shadowPath, 'utf8'));
+      assert.deepEqual(shadow.messages[0], JSON.parse(JSON.stringify(foreign)));
+      assert.ok(shadow.messages[1].notified_at);
+      assert.equal((await listMailboxMessages('alpha', 'worker-1', cwd))[0].notified_at, undefined);
+    } finally {
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps pure JSON requests visible after a runtime swap', async () => {
     const previousBinary = process.env.OMX_RUNTIME_BINARY;
     const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
@@ -870,13 +1064,13 @@ exit 1
         process.env.OMX_RUNTIME_BRIDGE = mode === 'disabled' ? '0' : '1';
         process.env.OMX_RUNTIME_BINARY = join(cwd, 'missing-runtime');
         await initTeamState('alpha', 'task', 'executor', 1, cwd);
-        if (mode === 'mixed') await writeFile(join(cwd, '.omx', 'state', 'events.json'), '[]');
         const requests = [];
         for (const trigger of ['first legacy instruction', 'second legacy instruction']) {
           requests.push((await enqueueDispatchRequest('alpha', {
             kind: 'inbox', to_worker: 'worker-1', worker_index: 1, trigger_message: trigger,
           }, cwd)).request.request_id);
         }
+        if (mode === 'mixed') await writeFile(join(cwd, '.omx', 'state', 'events.json'), '[]');
         const runtimePath = join(cwd, 'runtime');
         await writeCompatRuntimeFixture(runtimePath);
         const supported = await readFile(runtimePath, 'utf8');

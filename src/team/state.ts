@@ -25,6 +25,7 @@ import {
   mailboxRecordBelongsToTeam,
   mailboxMessageIdentity,
   mailboxMessageContentMatches,
+  hasUniqueScopedMailboxMatch,
 } from './state/mailbox.js';
 import {
   enqueueDispatchRequest as enqueueDispatchRequestImpl,
@@ -2061,14 +2062,16 @@ async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string,
     const previous = existingById.get(message?.message_id);
     return previous && previous.created_at !== message.created_at && mailboxMessageContentMatches(previous, message);
   });
+  const records = needsRecovery && isBridgeEnabled() ? getDefaultBridge(resolveBridgeStateDir(cwd)).readMailboxRecords() : [];
   const recoverableIds = needsRecovery && isBridgeEnabled()
     ? await readLegacyMailboxMessageIds(teamName, mailbox.worker, existing, teamEventLogPath(teamName, cwd),
-      getDefaultBridge(resolveBridgeStateDir(cwd)).readMailboxRecords())
+      records)
     : new Set<string>();
   const updates = new Map<string, TeamMailboxMessage[]>();
   for (const incoming of mailbox.messages) {
     const previous = existingById.get(incoming?.message_id);
-    const recovering = recoverableIds.has(incoming?.message_id) && previous && mailboxMessageContentMatches(previous, incoming);
+    const recovering = previous && mailboxMessageContentMatches(previous, incoming)
+      && (recoverableIds.has(incoming?.message_id) || hasUniqueScopedMailboxMatch(teamName, incoming, records, existing.messages));
     const message = recovering ? { ...incoming, created_at: previous.created_at } : incoming;
     const key = mailboxMessageIdentity(message);
     const pending = recovering ? [] : updates.get(key) ?? [];
@@ -2496,6 +2499,23 @@ export async function retireTeamMailboxMessages(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+  if (isBridgeEnabled()) {
+    const stateDir = resolveBridgeStateDir(cwd);
+    if (['events.json', 'snapshot.json', 'mailbox.json', 'dispatch-seen.json'].some((name) => existsSync(join(stateDir, name)))) {
+      const bridge = getDefaultBridge(stateDir);
+      // Creations can outlive both their projection and their per-Team shadow.
+      try { bridge.execCommand({ command: 'CaptureSnapshot' }); } catch (error) {
+        throw new Error('authoritative_mailbox_retirement_discovery_failed', { cause: error });
+      }
+      for (const record of bridge.readMailboxRecords()) {
+        if (record?.team_name !== teamName) continue;
+        if (typeof record.to_worker !== 'string' || !WORKER_NAME_SAFE_PATTERN.test(record.to_worker)) {
+          throw new Error('authoritative_mailbox_retirement_discovery_failed');
+        }
+        targets.add(record.to_worker);
+      }
+    }
+  }
   for (const workerName of targets) {
     await withMailboxLock(teamName, workerName, cwd, async () => {
       const mailbox = await readLegacyMailbox(teamName, workerName, cwd);
@@ -2536,8 +2556,9 @@ export async function retireTeamMailboxMessages(
           if (!mailboxRecordBelongsToTeam(authoritative, teamName, workerName, legacyMessageIds)) continue;
           const normalized = normalizeBridgeMailboxMessage(authoritative, legacyMessageIds.has(authoritative.message_id)
             ? mailbox.messages.find((entry) => entry.message_id === authoritative.message_id) : undefined);
+          const uniqueScopedMatch = hasUniqueScopedMailboxMatch(teamName, normalized, bridgeRecords, mailbox.messages);
           let message = mailbox.messages.find((entry) => mailboxMessageIdentity(entry) === mailboxMessageIdentity(normalized)
-            || (legacyMessageIds.has(authoritative.message_id) && mailboxMessageContentMatches(entry, normalized)));
+            || ((legacyMessageIds.has(authoritative.message_id) || uniqueScopedMatch) && mailboxMessageContentMatches(entry, normalized)));
           if (!message) {
             message = normalized;
             mailbox.messages.push(message);

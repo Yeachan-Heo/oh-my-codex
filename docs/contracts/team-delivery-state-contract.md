@@ -168,3 +168,22 @@ Instead:
 - patch `last_reason` to record the confirmed fallback path
 - treat fallback success as an operational recovery event, not as a rewrite of
   the original hook-attempt state machine
+
+Scoped provisional shadows with a different creation timestamp are reconciled by
+a unique same-content scoped record during acknowledgement, hook notification,
+and retirement, even when a crash prevented the Team creation journal append.
+Before retiring fallback-only shadows, existing runtime authority is refreshed
+to rule out durable creations missing from the mailbox projection. A failed
+refresh blocks cleanup. Queue creation rejects transport fallback whenever
+runtime authority exists, so JSON cannot add IDs absent from the runtime ledger.
+
+Before hook claims are built, existing runtime authority is replayed and persisted
+to prevent stale pending projections from causing repeat injection. Pending
+retry/defer bookkeeping is retained without overriding event-derived status.
+Repeated mailbox delivery acknowledges only the uniquely selected scoped record
+and preserves its timestamp, allowing retries to persist replay-repaired state.
+
+Mailbox acknowledgements fail closed if existing runtime authority cannot be
+refreshed. Hook mailbox notification failures leave the shadow unchanged rather
+than recording a receipt that event replay would discard; dispatch injection
+receipts remain independently recoverable.

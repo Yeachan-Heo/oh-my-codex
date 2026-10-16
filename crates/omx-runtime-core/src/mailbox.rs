@@ -114,12 +114,10 @@ impl MailboxLog {
         team_name: Option<&str>,
     ) -> Result<Option<String>, MailboxError> {
         let record = self.find_mut(message_id, team_name)?;
-        if record.delivered_at.is_some() {
-            return Err(MailboxError::AlreadyDelivered {
-                message_id: message_id.to_string(),
-            });
+        // Retrying a durable acknowledgement must still repair its stale projection.
+        if record.delivered_at.is_none() {
+            record.delivered_at = Some(now_iso());
         }
-        record.delivered_at = Some(now_iso());
         Ok(record.team_name.clone())
     }
 
@@ -319,12 +317,20 @@ mod tests {
     }
 
     #[test]
-    fn mark_delivered_twice_errors() {
+    fn mark_delivered_twice_preserves_timestamp_and_scope_checks() {
         let mut log = MailboxLog::new();
-        log.create(None, "msg-1", "a", "b", "body").unwrap();
-        log.mark_delivered("msg-1", None).unwrap();
-        let err = log.mark_delivered("msg-1", None).unwrap_err();
-        assert!(matches!(err, MailboxError::AlreadyDelivered { .. }));
+        log.create(Some("alpha".into()), "msg-1", "a", "b", "body")
+            .unwrap();
+        log.mark_delivered("msg-1", Some("alpha")).unwrap();
+        let timestamp = log.records()[0].delivered_at.clone();
+        assert_eq!(
+            log.mark_delivered("msg-1", Some("alpha")).unwrap(),
+            Some("alpha".into())
+        );
+        assert_eq!(log.records()[0].delivered_at, timestamp);
+        for team in [None, Some("beta")] {
+            assert!(log.mark_delivered("msg-1", team).is_err());
+        }
     }
 
     #[test]

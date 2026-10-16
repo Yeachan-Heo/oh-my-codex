@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
 export interface TeamMailboxMessage {
@@ -45,8 +45,7 @@ export async function readLegacyMailboxMessageIds(
       if (message?.to_worker !== workerName) shadowIds.delete(message?.message_id);
     }
   }
-  const relevantBridgeRecords = bridgeRecords.filter((record) => record.to_worker === workerName
-    && (record.team_name == null || record.team_name === teamName));
+  const relevantBridgeRecords = bridgeRecords.filter((record) => record.team_name == null || record.team_name === teamName);
   const bridgeIds = new Set<string>();
   for (const record of relevantBridgeRecords) {
     if (bridgeIds.has(record.message_id)) duplicateIds.add(record.message_id);
@@ -118,16 +117,7 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
     if (hasRuntimeAuthority && (!existsSync(mailboxCompatPath) || isAbsentFromCompat())) {
       // Refresh a missing or stale projection before deciding that a proven
       // shadow message has no authoritative runtime record.
-      try {
-        bridge.execCommand({ command: 'CaptureSnapshot' });
-      } catch (error) {
-        if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-        if (isRuntimeTransportError(error)) {
-          if (existsSync(mailboxCompatPath) && isAbsentFromCompat()) return false;
-          throw error;
-        }
-        throw error;
-      }
+      bridge.execCommand({ command: 'CaptureSnapshot' });
       compat = bridge.readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json');
     }
     if (isAbsentFromCompat() || !hasRuntimeAuthority) {
@@ -153,6 +143,17 @@ export function mailboxMessageIdentity(message: TeamMailboxMessage | MailboxReco
 export function mailboxMessageContentMatches(left: TeamMailboxMessage | MailboxRecord, right: TeamMailboxMessage | MailboxRecord): boolean {
   return left?.message_id === right?.message_id && left?.from_worker === right?.from_worker
     && left?.to_worker === right?.to_worker && left?.body === right?.body;
+}
+
+export function hasUniqueScopedMailboxMatch(
+  teamName: string,
+  message: TeamMailboxMessage,
+  records: MailboxRecord[],
+  shadows: TeamMailboxMessage[],
+): boolean {
+  const scoped = records.filter((record) => record.team_name === teamName && record.message_id === message.message_id);
+  return scoped.length === 1 && mailboxMessageContentMatches(scoped[0], message)
+    && shadows.filter((shadow) => mailboxMessageContentMatches(shadow, message)).length === 1;
 }
 
 export function normalizeBridgeMailboxMessage(record: MailboxRecord, recovery?: TeamMailboxMessage): TeamMailboxMessage {

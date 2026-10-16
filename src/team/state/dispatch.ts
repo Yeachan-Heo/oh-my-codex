@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, resolveBridgeStateDir, RuntimeBridgeError, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
-import { hasRuntimeDispatchIdentity, recordRuntimeFinalization } from './dispatch-recovery.js';
+import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization } from './dispatch-recovery.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 import { isTeamReminderIntent, type TeamReminderIntent } from '../reminder-intents.js';
 import {
@@ -191,7 +191,8 @@ function executeBridgeCommand(deps: DispatchDeps, command: RuntimeCommand): bool
       recordRuntimeFinalization(stateDir, deps.teamName, command);
       return false;
     }
-    if (!isTransportFailure) throw error;
+    if (!isTransportFailure || (command.command === 'QueueDispatch'
+      && hasRuntimeAuthority(resolveBridgeStateDir(deps.cwd)))) throw error;
     return false;
   }
 }
