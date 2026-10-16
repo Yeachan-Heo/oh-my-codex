@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.15] - 2026-10-16
+
+Patch release for the frozen range `v0.21.14..38bbaab4c818cadcfe2b69de22c52cf56e670ca0` (6 commits, 39 files, +2,199/−152; PRs #3798, #3806, #3807, #3808, #3809, and #3811).
+
+### Fixed
+
+- Record native `SubagentStop` completion events and route nested native subagent lifecycles through tracked parents, preventing completed children from being left without completion records (#3798, #3809; authored by @shenyankm and @Yeachan-Heo).
+- Bound startup Wiki context and suppress memory already present in session instructions, avoiding duplicate or oversized startup context (#3808, authored by @shenyankm).
+
+### Maintenance
+
+- Make collector latency assertions deterministic by injecting a clock and removing timing-sensitive sleeps (#3811, authored by @Yeachan-Heo).
+
+### Integration
+
+- Back-merge v0.21.14 into dev and restore the normal main-to-dev ancestry after the squash merge (#3806, #3807; authored by @Yeachan-Heo).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.15.md) and [release readiness](docs/qa/release-readiness-0.21.15.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.14...v0.21.15
+
 ## [0.21.14] - 2026-10-15
 
 Patch release for the frozen range `v0.21.13..7fd6e95a839c0c0c14de67a7bc976c4d9134b923` (3 commits, 9 files, +1,480/−71; PRs #3793 and #3803).

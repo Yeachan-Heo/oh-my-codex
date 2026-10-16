@@ -855,6 +855,25 @@ describe('official Codex plugin layout', () => {
       assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'delegated');
       await rm(calledPath, { force: true });
 
+      const deeperParentId = 'nested-worker-grandchild';
+      const transcriptPath = join(cacheRoot, 'nested-worker-grandchild.jsonl');
+      await writeFile(transcriptPath, `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: deeperParentId,
+          source: { subagent: { thread_spawn: { parent_thread_id: trackedParentId } } },
+        },
+      })}\n`, 'utf-8');
+      const nestedStart = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+        hook_event_name: 'SessionStart',
+        cwd,
+        session_id: deeperParentId,
+        transcript_path: transcriptPath,
+      }), hookEnv);
+      assert.equal(nestedStart.status, 0, nestedStart.stderr || nestedStart.stdout);
+      assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'delegated');
+      await rm(calledPath, { force: true });
+
       const untracked = runPluginNativeHook(
         cachePluginRoot,
         JSON.stringify({ ...payload, session_id: 'untracked-worker-child' }),
@@ -863,7 +882,6 @@ describe('official Codex plugin layout', () => {
       assert.equal(untracked.status, 0, untracked.stderr || untracked.stdout);
       await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
 
-      const deeperParentId = 'nested-worker-grandchild';
       await recordSubagentTurnForSession(cwd, {
         sessionId: trackedParentId,
         threadId: deeperParentId,

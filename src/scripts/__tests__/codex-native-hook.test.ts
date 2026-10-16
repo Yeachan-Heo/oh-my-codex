@@ -5280,6 +5280,133 @@ export function onHookEvent(event) {
     }
   });
 
+  it("tracks native child SessionStart events under verified Team worker parents", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-child-start-"));
+    const workerCwd = realpathSync(await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-child-worktree-")));
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      await writeSessionStart(cwd, "leader-session", {
+        nativeSessionId: "leader-native",
+        pid: process.pid,
+      });
+      await configureAuthoritativeTeamWorker(cwd, "team-worker-child-start", "%10", workerCwd);
+      const stateDir = join(cwd, ".omx", "state");
+      const pointerPath = join(stateDir, "session.json");
+      const pointerBefore = await readFile(pointerPath, "utf-8");
+      const codexHome = join(cwd, "codex-home");
+      process.env.CODEX_HOME = codexHome;
+      await writeJson(join(codexHome, ".omx-config.json"), {
+        notifications: { enabled: true, includeChildAgents: true },
+      });
+      const eventsPath = join(cwd, "team-worker-child-events.jsonl");
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "hooks", "capture.mjs"), `import { appendFileSync } from 'node:fs';
+export function onHookEvent(event) {
+  appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify({ event: event.event, session_id: event.session_id, omx_session_id: event.omx_session_id }) + '\\n');
+}
+`);
+
+      const workerSessionId = "team-worker-native-session";
+      const childSessionId = "team-worker-child-session";
+      const grandchildSessionId = "team-worker-grandchild-session";
+      for (const [sessionId, parentThreadId] of [
+        [childSessionId, workerSessionId],
+        [grandchildSessionId, childSessionId],
+      ]) {
+        const transcriptPath = join(workerCwd, `${sessionId}.jsonl`);
+        await writeFile(transcriptPath, `${JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: sessionId,
+            source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId } } },
+          },
+        })}\n`);
+        await dispatchCodexNativeHook({
+          hook_event_name: "SessionStart",
+          cwd: workerCwd,
+          session_id: sessionId,
+          transcript_path: transcriptPath,
+        }, { cwd: workerCwd, sessionOwnerPid: process.pid });
+      }
+
+      assert.equal(existsSync(eventsPath), false, "Team worker child starts must not dispatch in the leader session scope");
+      const trackingAfterStarts = await readSubagentTrackingState(workerCwd);
+      assert.equal(trackingAfterStarts.sessions[workerSessionId]?.threads[childSessionId]?.kind, "subagent");
+      assert.equal(trackingAfterStarts.sessions[childSessionId]?.threads[grandchildSessionId]?.kind, "subagent");
+
+      const leafSessionId = "team-worker-leaf-session";
+      const turnId = "team-worker-leaf-turn";
+      await dispatchCodexNativeHook({
+        hook_event_name: "SubagentStop",
+        cwd: workerCwd,
+        session_id: grandchildSessionId,
+        agent_id: leafSessionId,
+        turn_id: turnId,
+      }, { cwd: workerCwd });
+      const trackingAfterStop = await readSubagentTrackingState(workerCwd);
+      const leaf = trackingAfterStop.sessions[grandchildSessionId]?.threads[leafSessionId];
+      assert.equal(leaf?.completion_source, "native_stop_event");
+      assert.equal(leaf?.last_completed_turn_id, turnId);
+      assert.equal(leaf?.status, "closed");
+      assert.equal(await readFile(pointerPath, "utf-8"), pointerBefore);
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      await rm(workerCwd, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps native SubagentStop best-effort when opted-in hook dispatch fails", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-dispatch-failure-"));
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      const codexHome = join(cwd, "codex-home");
+      process.env.CODEX_HOME = codexHome;
+      await writeJson(join(codexHome, ".omx-config.json"), {
+        notifications: { enabled: true, includeChildAgents: true },
+      });
+      const parentSessionId = "dispatch-failure-parent";
+      const childSessionId = "dispatch-failure-child";
+      await writeSessionStart(cwd, "dispatch-failure-session", {
+        nativeSessionId: parentSessionId,
+        pid: process.pid,
+      });
+      const eventsPath = join(cwd, "subagent-events.jsonl");
+      await mkdir(join(cwd, ".omx", "hooks"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "hooks", "capture.mjs"), `import { appendFileSync } from 'node:fs';
+export function onHookEvent(event) {
+  appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify({ event: event.event, thread_id: event.thread_id }) + '\\n');
+}
+`);
+      const logsPath = join(cwd, ".omx", "logs");
+      await rm(logsPath, { recursive: true, force: true });
+      await writeFile(logsPath, "not a directory");
+      const payload = {
+        hook_event_name: "SubagentStop",
+        cwd,
+        session_id: parentSessionId,
+        agent_id: childSessionId,
+        turn_id: "dispatch-failure-turn",
+      };
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = runNativeHookCliResult(payload, { cwd, env: process.env });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      }
+
+      const events = (await readFile(eventsPath, "utf-8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(events, [{ event: "subagent-stop", thread_id: childSessionId }]);
+      const tracking = await readSubagentTrackingState(cwd);
+      assert.equal(tracking.sessions["dispatch-failure-session"]?.threads[childSessionId]?.completion_source, "native_stop_event");
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("rejects leader aliases from foreign-cwd pointer evidence in a worker worktree", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-foreign-alias-"));
     try {

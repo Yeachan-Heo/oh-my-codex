@@ -2,6 +2,7 @@ import { spawn, execSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type { EvalConfig, EvalFixture, RunRecord } from './types.js';
 import { scoreResponse } from './suite.js';
 
@@ -15,6 +16,8 @@ export interface CollectorOptions {
   apiKeyEnv?: string;
   /** Skip git clone (for testing). Default: false */
   skipGitClone?: boolean;
+  /** Clock used to measure elapsed latency. Default: performance.now */
+  clock?: () => number;
 }
 
 export interface CodexOutput {
@@ -41,6 +44,7 @@ export async function collectRecord(
 ): Promise<CollectionResult> {
   const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000; // 15 minutes default
   const invokeCodex = options.invokeCodex ?? defaultCodexInvoker;
+  const clock = options.clock ?? (() => performance.now());
   
   // Auto-detect if we need layofflabs provider for OMX-internal model names
   const roleConfig = config.roles[fixture.surface];
@@ -50,7 +54,7 @@ export async function collectRecord(
   const provider = options.provider ?? (isOmxInternalModel ? 'layofflabs' : undefined);
   const apiKeyEnv = options.apiKeyEnv ?? 'OPENAI_API_KEY';
 
-  const startTime = Date.now();
+  const startTime = clock();
   const tempDir = mkdtempSync(join(tmpdir(), 'codex-eval-'));
   let output: CodexOutput | null = null;
   const skipGitClone = options.skipGitClone ?? false;
@@ -127,16 +131,24 @@ export async function collectRecord(
     }
     args.push(fullPrompt);
 
-    // Run Codex CLI with timeout
-    output = await Promise.race([
-      invokeCodex(args, tempDir),
-      new Promise<CodexOutput>((_, reject) =>
-        setTimeout(() => reject(new Error(`Codex execution timeout after ${timeoutMs}ms`)), timeoutMs),
-      ),
-    ]);
+    // Run Codex CLI with timeout and release the timer when invocation settles.
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    try {
+      output = await Promise.race([
+        invokeCodex(args, tempDir),
+        new Promise<CodexOutput>((_, reject) => {
+          timeoutTimer = setTimeout(
+            () => reject(new Error(`Codex execution timeout after ${timeoutMs}ms`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+    }
 
     // Parse output and grade response
-    const latencyMs = Date.now() - startTime;
+    const latencyMs = clock() - startTime;
 
     if (output.exitCode !== 0) {
       // Codex failed; record error outcome
@@ -254,7 +266,7 @@ export async function collectRecord(
       responseDebug,
     };
   } catch (error) {
-    const latencyMs = Date.now() - startTime;
+    const latencyMs = clock() - startTime;
     return {
       record: {
         fixtureId: fixture.id,

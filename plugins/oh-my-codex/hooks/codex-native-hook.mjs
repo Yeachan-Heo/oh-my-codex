@@ -171,6 +171,8 @@ function isSafeRoutingSessionId(value) {
 function isChildRoutingSessionStart(payload, ownerSessionId) {
   if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SessionStart' || !ownerSessionId) return false;
   const childSessionId = hookPayloadSessionId(null, payload);
+  const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
+  const stateDir = listAuthoritativeStateBaseDirs(cwd)[0];
   const transcriptCandidate = payload?.transcript_path ?? payload?.transcriptPath;
   const transcriptPath = typeof transcriptCandidate === 'string' ? transcriptCandidate.trim() : '';
   if (!childSessionId || !transcriptPath) return false;
@@ -184,11 +186,19 @@ function isChildRoutingSessionStart(payload, ownerSessionId) {
     const record = JSON.parse(firstLine);
     const metadata = record?.type === 'session_meta' && record?.payload && typeof record.payload === 'object' ? record.payload : null;
     const spawn = metadata?.source?.subagent?.thread_spawn;
+    const parentThreadId = spawn && typeof spawn === 'object' ? spawn.parent_thread_id : null;
     const metadataIds = [metadata?.id, metadata?.session_id].filter((value) => value !== undefined);
     return metadataIds.length > 0
       && metadataIds.every((value) => value === childSessionId)
       && spawn && typeof spawn === 'object'
-      && spawn.parent_thread_id === ownerSessionId;
+      && typeof parentThreadId === 'string'
+      && (parentThreadId === ownerSessionId
+        || (isSafeRoutingSessionId(parentThreadId)
+          && isTrackedSubagentInSessionTree(
+            readJsonFile(join(stateDir, 'subagent-tracking.json')),
+            ownerSessionId,
+            parentThreadId,
+          )));
   } catch {
     return false;
   } finally {
