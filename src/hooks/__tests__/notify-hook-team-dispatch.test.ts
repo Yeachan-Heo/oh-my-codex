@@ -596,6 +596,40 @@ exit 1
     }
   });
 
+  it('notifies a Team-proven shadow message when the runtime compatibility mailbox is missing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-mailbox-legacy-notified-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath);
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('legacy-notified', 'task', 'executor', 1, cwd);
+      const message = await sendDirectMessage('legacy-notified', 'leader-fixed', 'worker-1', 'recoverable', cwd);
+      const queued = await enqueueDispatchRequest('legacy-notified', {
+        kind: 'mailbox', to_worker: 'worker-1', worker_index: 1,
+        message_id: message.message_id, trigger_message: 'check mailbox',
+      }, cwd);
+      await rm(join(cwd, '.omx', 'state', 'mailbox.json'), { force: true });
+
+      const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+      const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+        injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+
+      assert.equal(result.processed, 1);
+      const mailbox = await listMailboxMessages('legacy-notified', 'worker-1', cwd);
+      assert.ok(mailbox.find((entry) => entry.message_id === message.message_id)?.notified_at);
+      assert.equal((await readDispatchRequest('legacy-notified', queued.request.request_id, cwd))?.status, 'notified');
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   it('logs structured evidence when bridge dispatch compat cannot be parsed and legacy requests are used', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
