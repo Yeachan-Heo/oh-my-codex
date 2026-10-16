@@ -60,6 +60,7 @@ import {
 } from '../state.js';
 import { normalizeDispatchRequest } from '../state/dispatch.js';
 import { claimTask as claimTaskWithDeps } from '../state/tasks.js';
+import { sendDirectMessage as sendDirectMessageWithDeps, type TeamMailbox } from '../state/mailbox.js';
 import { withScalingLock as withScalingLeaseLock, withTeamLock } from '../state/locks.js';
 import type { TeamTaskV2 } from '../state/types.js';
 import type { TeamReminderIntent } from '../reminder-intents.js';
@@ -1918,6 +1919,76 @@ exit 1
       const parsed = JSON.parse(mailboxDisk) as { messages: Array<{ delivered_at?: string }> };
       assert.ok(parsed.messages.some((m) => typeof m.delivered_at === 'string'));
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes fallback mailbox ownership before releasing the mailbox lock', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-fallback-dedupe-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    process.env.OMX_RUNTIME_BINARY = join(cwd, 'missing-runtime');
+    process.env.OMX_RUNTIME_BRIDGE = '1';
+    let lockTail: Promise<void> = Promise.resolve();
+    let lockHeld = false;
+    let mailbox: TeamMailbox = { worker: 'worker-1', messages: [] };
+    let writes = 0;
+    let events = 0;
+    const eventIds = new Set<string>();
+    const copyMailbox = (source: TeamMailbox): TeamMailbox => ({
+      worker: source.worker,
+      messages: source.messages.map((message) => ({ ...message })),
+    });
+    const deps = {
+      teamName: 'mailbox-fallback-dedupe',
+      cwd,
+      withMailboxLock: async <T>(_teamName: string, _workerName: string, _cwd: string, fn: () => Promise<T>): Promise<T> => {
+        const previous = lockTail;
+        let release!: () => void;
+        lockTail = new Promise<void>((resolve) => { release = resolve; });
+        await previous;
+        lockHeld = true;
+        try {
+          return await fn();
+        } finally {
+          lockHeld = false;
+          release();
+        }
+      },
+      readMailbox: async (): Promise<TeamMailbox> => copyMailbox({
+        worker: mailbox.worker,
+        messages: mailbox.messages.filter((message) => eventIds.has(message.message_id)),
+      }),
+      readLegacyMailbox: async (): Promise<TeamMailbox> => copyMailbox(mailbox),
+      writeMailbox: async (_teamName: string, updated: TeamMailbox): Promise<void> => {
+        mailbox = copyMailbox(updated);
+        writes += 1;
+      },
+      appendTeamEvent: async (_teamName: string, event: { message_id?: string | null }): Promise<void> => {
+        assert.equal(lockHeld, true, 'fallback ownership evidence must be published under the mailbox lock');
+        events += 1;
+        if (typeof event.message_id === 'string') eventIds.add(event.message_id);
+      },
+      readTeamConfig: async (): Promise<{ created_at: string; workers: Array<{ name: string }> }> => ({
+        created_at: '2000-01-01T00:00:00.000Z',
+        workers: [],
+      }),
+    };
+
+    try {
+      const [first, second] = await Promise.all([
+        sendDirectMessageWithDeps('leader-fixed', 'worker-1', 'same body', deps),
+        sendDirectMessageWithDeps('leader-fixed', 'worker-1', 'same body', deps),
+      ]);
+      assert.equal(first.message_id, second.message_id);
+      assert.equal(mailbox.messages.length, 1);
+      assert.equal(writes, 1);
+      assert.equal(events, 1);
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
       await rm(cwd, { recursive: true, force: true });
     }
   });

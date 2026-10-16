@@ -1105,7 +1105,9 @@ async function updateMailboxNotified(stateDir, teamName, workerName, messageId) 
     const msg = mailbox.messages.find((candidate) => candidate?.message_id === messageId && candidate.to_worker === workerName);
     if (process.env.OMX_RUNTIME_BRIDGE !== '0') {
       const record = getDefaultBridge(stateDir).readMailboxRecords().find((candidate) => candidate.message_id === messageId);
-      const legacyIds = await readLegacyMailboxMessageIds(teamName, workerName, mailbox, join(teamDirPath, 'events', 'events.ndjson'));
+      const legacyIds = !record || record.team_name == null
+        ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, join(teamDirPath, 'events', 'events.ndjson'))
+        : new Set<string>();
       if (record) {
         if (!mailboxRecordBelongsToTeam(record, teamName, workerName, legacyIds)) return false;
         runtimeExec({ command: 'MarkMailboxNotified', team_name: teamName, message_id: messageId }, stateDir, teamName);

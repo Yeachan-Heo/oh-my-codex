@@ -30,6 +30,7 @@ export async function readLegacyMailboxMessageIds(
     ? mailbox.messages.filter((message) => message?.to_worker === workerName && typeof message.message_id === 'string').map((message) => message.message_id)
     : []);
   const ids = new Set<string>();
+  if (shadowIds.size === 0) return ids;
   const events = await readFile(eventPath, 'utf8').catch(() => '');
   for (const line of events.split('\n')) {
     try {
@@ -113,11 +114,14 @@ export async function sendDirectMessage(
     const dedupeCandidates = [...mailbox.messages];
     if (deps.readLegacyMailbox) {
       const seenMessageIds = new Set(dedupeCandidates.map((candidate) => candidate.message_id));
-      const legacyIds = isBridgeEnabled()
-        ? await readLegacyMailboxMessageIds(deps.teamName, toWorker, legacyMailbox,
-          join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'))
-        : new Set(legacyMailbox.messages.map((candidate) => candidate.message_id));
-      for (const legacyMessage of legacyMailbox.messages) {
+      const missingLegacyMessages = legacyMailbox.messages.filter((message) => !seenMessageIds.has(message.message_id));
+      const legacyIds = missingLegacyMessages.length === 0
+        ? new Set<string>()
+        : isBridgeEnabled()
+          ? await readLegacyMailboxMessageIds(deps.teamName, toWorker, legacyMailbox,
+            join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'))
+          : new Set(missingLegacyMessages.map((candidate) => candidate.message_id));
+      for (const legacyMessage of missingLegacyMessages) {
         if (legacyIds.has(legacyMessage.message_id) && !seenMessageIds.has(legacyMessage.message_id)) {
           dedupeCandidates.push(legacyMessage);
           seenMessageIds.add(legacyMessage.message_id);
@@ -187,6 +191,13 @@ export async function sendDirectMessage(
         await deps.writeMailbox(deps.teamName, updatedShadowMailbox, deps.cwd);
       }
     }
+    if (created) {
+      await deps.appendTeamEvent(
+        deps.teamName,
+        { type: 'message_received', worker: toWorker, task_id: undefined, message_id: msgId, reason: undefined },
+        deps.cwd,
+      );
+    }
   });
 
   if (!msg) {
@@ -195,11 +206,6 @@ export async function sendDirectMessage(
   const persistedMessage = msg as TeamMailboxMessage;
 
   if (created) {
-    await deps.appendTeamEvent(
-      deps.teamName,
-      { type: 'message_received', worker: toWorker, task_id: undefined, message_id: persistedMessage.message_id, reason: undefined },
-      deps.cwd,
-    );
     await appendTeamDeliveryLogForCwd(deps.cwd, {
       event: 'mailbox_created',
       source: 'team.state.mailbox',
