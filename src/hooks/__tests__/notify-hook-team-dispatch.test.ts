@@ -804,7 +804,7 @@ exit 1
     }
   });
 
-  it('propagates semantic runtime finalization failures without writing success to JSON', async () => {
+  it('journals confirmed injection before semantic failure and recovers without reinjection', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-semantic-finalization-failure-'));
     const previousBinary = process.env.OMX_RUNTIME_BINARY;
     const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
@@ -819,17 +819,37 @@ exit 1
         kind: 'inbox', to_worker: 'worker-1', trigger_message: 'semantic finalization failure',
       }, cwd);
       process.env.OMX_TEST_REJECT_MARK_NOTIFIED = '1';
+      let injections = 0;
+      const injector = async () => {
+        injections += 1;
+        return {
+          ok: true,
+          reason: 'injected_for_test',
+          delivery_confirmed: true,
+          pane: null,
+          pane_source: null,
+          readiness_evidence: null,
+          pane_current_command: null,
+          exact_pane_proof: null,
+          tmux_injection_attempted: false,
+        };
+      };
 
       const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
       await assert.rejects(
-        () => drainPendingTeamDispatch({ cwd, injector: async () => ({ ok: true, reason: 'injected_for_test' }) }),
+        () => drainPendingTeamDispatch({ cwd, injector }),
         /exec-scoped failed/,
       );
       assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'pending');
-      await assert.rejects(
-        readFile(join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl')),
-        { code: 'ENOENT' },
-      );
+      const journalPath = join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl');
+      assert.deepEqual((await readFile(journalPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line).command),
+        ['MarkNotified', 'MarkDelivered']);
+
+      delete process.env.OMX_TEST_REJECT_MARK_NOTIFIED;
+      assert.equal((await drainPendingTeamDispatch({ cwd, injector })).processed, 0);
+      assert.equal(injections, 1, 'a confirmed injection must never be retried while its receipt is reconciled');
+      assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'delivered');
+      await assert.rejects(readFile(journalPath), { code: 'ENOENT' });
     } finally {
       if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
       else process.env.OMX_RUNTIME_BINARY = previousBinary;
@@ -954,7 +974,7 @@ exit 1
           const journal = await readFile(journalPath, 'utf8');
           const journalCommands = journal.trim().split('\n').map((line) => JSON.parse(line).command);
           assert.deepEqual(journalCommands, mode === 'default-injector'
-            ? ['MarkNotified', 'MarkDelivered']
+            ? ['MarkNotified', 'MarkDelivered', 'MarkNotified', 'MarkDelivered']
             : [mode === 'failed' ? 'MarkFailed' : 'MarkNotified']);
           await assert.rejects(drain, /team-mailbox-scope-v1/);
           assert.equal(await readFile(journalPath, 'utf8'), journal);

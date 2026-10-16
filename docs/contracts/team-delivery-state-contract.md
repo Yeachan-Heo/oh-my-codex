@@ -28,6 +28,9 @@ If the runtime becomes unavailable or incompatible after pane input (hook, direc
 and a pending runtime-finalization journal, including delivered receipts. Before claiming more work, the hook
 replays those outcomes against event-derived runtime state and clears the journal;
 an incompatible or disabled bridge leaves recovery blocked without re-injection.
+A pane-confirmed injection persists its notified/delivered receipt before runtime
+finalization; a semantic rejection remains an error, while the next hook drain
+reconciles that receipt before claiming work so it cannot inject the prompt again.
 Journal creation uses the atomically published dispatch identity ledger, avoiding
 partially rewritten event/projection files; replay checks the request's Team before mutation.
 Pure JSON queues keep their completion in JSON without creating runtime authority.

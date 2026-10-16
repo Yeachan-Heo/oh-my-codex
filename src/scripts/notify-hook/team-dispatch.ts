@@ -704,6 +704,16 @@ async function finalizeClaimedDispatchRequest({
           status: 'failed',
         });
       } else {
+        if (result.delivery_confirmed === true && process.env.OMX_RUNTIME_BRIDGE !== '0'
+          && hasRuntimeDispatchIdentity(stateDir, request.request_id)) {
+          // Persist a no-reinject receipt before runtime finalization can reject semantically.
+          recordRuntimeFinalization(stateDir, teamName, {
+            command: 'MarkNotified', request_id: request.request_id, channel: 'tmux',
+          });
+          recordRuntimeFinalization(stateDir, teamName, {
+            command: 'MarkDelivered', request_id: request.request_id,
+          });
+        }
         request.status = 'notified';
         request.notified_at = nowIso;
         request.last_reason = result.reason;
