@@ -69,6 +69,7 @@ import { getBaseStateDir } from "../../state/paths.js";
 import { recordNativeSubagentAuthorityObservation } from "../../subagents/tracker.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "../notify-hook/team-worker-stop.js";
 import { MAX_NATIVE_STDIN_JSON_BYTES } from "../hook-payload-guard.js";
+import { generateOverlay, writeSessionModelInstructionsFile } from "../../hooks/agents-overlay.js";
 import {
 	injectExecFollowup,
 	markExecFollowupsDelivered,
@@ -6338,6 +6339,64 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  for (const scenario of ["startup", "direct-codex", "resume", "unknown-source", "missing-file", "foreign-session", "omitted-sections", "changed-memory", "shortened-memory"] as const) {
+    it(`preserves startup memory delivery for ${scenario}`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-startup-context-"));
+      const previous = process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE;
+      const sessionId = "sess-startup-context";
+      const stack = "UNIQUE_STACK_MARKER TypeScript";
+      const priority = "UNIQUE_PRIORITY_MARKER Save a checkpoint. Keep review evidence.";
+      try {
+        await writeJson(join(cwd, ".omx", "project-memory.json"), {
+          techStack: stack,
+          build: "UNIQUE_BUILD_MARKER npm test",
+          conventions: "UNIQUE_CONVENTIONS_MARKER small diffs",
+          directives: [{ directive: "UNIQUE_DIRECTIVE_MARKER preserve evidence", priority: "high" }],
+          notes: [{ content: "HOOK_ONLY_MEMORY_NOTE" }],
+        });
+        await writeFile(join(cwd, ".omx", "notepad.md"), `## PRIORITY\n${priority.replace(" Keep", "\nKeep")}\n`);
+        const overlay = scenario === "omitted-sections" ? "Runtime instructions without memory." : await generateOverlay(cwd, sessionId);
+        const instructionsPath = await writeSessionModelInstructionsFile(cwd, sessionId, overlay);
+        process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE = scenario === "foreign-session"
+          ? await writeSessionModelInstructionsFile(cwd, "another-session", overlay)
+          : instructionsPath;
+        if (scenario === "direct-codex") delete process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE;
+        if (scenario === "missing-file") await rm(instructionsPath);
+        if (scenario === "changed-memory") {
+          await writeJson(join(cwd, ".omx", "project-memory.json"), { techStack: "UPDATED_STACK_MARKER" });
+          await writeFile(join(cwd, ".omx", "notepad.md"), "## PRIORITY\nUPDATED_PRIORITY_MARKER\n");
+        }
+        if (scenario === "shortened-memory") {
+          await writeJson(join(cwd, ".omx", "project-memory.json"), { techStack: "UNIQUE_STACK_MARKER" });
+          await writeFile(join(cwd, ".omx", "notepad.md"), "## PRIORITY\nUNIQUE_PRIORITY_MARKER\n");
+        }
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "SessionStart", cwd, session_id: sessionId,
+          ...(scenario === "unknown-source" ? {} : { source: scenario === "resume" ? "resume" : "startup" }),
+        }, { cwd, sessionOwnerPid: process.pid });
+        const context = JSON.stringify(result.outputJson);
+        if (scenario === "changed-memory") {
+          assert.match(context, /UPDATED_STACK_MARKER/);
+          assert.match(context, /UPDATED_PRIORITY_MARKER/);
+        } else if (scenario === "shortened-memory") {
+          assert.match(context, /UNIQUE_STACK_MARKER/);
+          assert.match(context, /UNIQUE_PRIORITY_MARKER/);
+        } else {
+          assert.equal(context.includes(stack), scenario !== "startup");
+          assert.equal(context.includes(priority), scenario !== "startup");
+          assert.equal(context.includes("UNIQUE_BUILD_MARKER"), scenario !== "startup");
+          assert.equal(context.includes("UNIQUE_CONVENTIONS_MARKER"), scenario !== "startup");
+          assert.equal(context.includes("UNIQUE_DIRECTIVE_MARKER"), scenario !== "startup");
+          assert.match(context, /HOOK_ONLY_MEMORY_NOTE/);
+        }
+      } finally {
+        if (previous === undefined) delete process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE;
+        else process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE = previous;
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("includes persisted project-memory summary in SessionStart context", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-session-memory-"));

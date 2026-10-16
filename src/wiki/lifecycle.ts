@@ -19,6 +19,8 @@ import {
 } from './storage.js';
 import { DEFAULT_WIKI_CONFIG, type WikiConfig, WIKI_SCHEMA_VERSION } from './types.js';
 
+const MAX_SESSION_START_CONTEXT_CHARS = 3500;
+
 function loadWikiConfig(root: string): WikiConfig {
   const candidates = [join(root, '.omx-config.json'), join(codexHome(), '.omx-config.json')];
 
@@ -80,7 +82,10 @@ export function onSessionStart(data: { cwd?: string }): { additionalContext?: st
       ...index.split('\n').slice(0, config.maxContextLines),
     ].join('\n');
 
-    return { additionalContext: summary };
+    if (summary.length <= MAX_SESSION_START_CONTEXT_CHARS) return { additionalContext: summary };
+    const notice = '\n[Wiki index truncated; use wiki_list or wiki_query for more.]';
+    const bounded = summary.slice(0, MAX_SESSION_START_CONTEXT_CHARS - notice.length);
+    return { additionalContext: bounded.slice(0, bounded.lastIndexOf('\n')) + notice };
   } catch {
     return {};
   }

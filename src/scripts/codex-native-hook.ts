@@ -149,6 +149,7 @@ import {
   onPreCompact as buildWikiPreCompactContext,
   onSessionStart as buildWikiSessionStartContext,
 } from "../wiki/lifecycle.js";
+import { sessionModelInstructionsPath } from "../hooks/agents-overlay.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeStateForActiveDecision } from "../autoresearch/skill-validation.js";
 import { deriveAutopilotChildPhase, normalizeAutopilotPhase } from "../autopilot/fsm.js";
 import {
@@ -2266,6 +2267,22 @@ async function buildSessionStartContext(
 ): Promise<string | null> {
   const sections: string[] = [];
 
+  let startupInstructions = "";
+  const startupFile = process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE;
+  if (readSessionStartSource(options.payload) === "startup" && startupFile
+    && resolve(startupFile) === sessionModelInstructionsPath(cwd, sessionId)) {
+    try {
+      startupInstructions = await readFile(startupFile, "utf-8");
+    } catch {
+      // Missing launch evidence must preserve hook-delivered memory.
+    }
+  }
+  const startupMemory = startupInstructions.match(/(?:^|\n)\*\*Project Context:\*\*\r?\n([\s\S]*?)(?=\r?\n\r?\n|$)/)?.[1] ?? "";
+  const alreadyInStartupInstructions = (label: string, value: string): boolean =>
+    startupMemory.split(/\r?\n/).some(line => line.trim().replace(/\s+/g, " ") === `- ${label}: ${value}`);
+  const startupPriority = startupInstructions.match(/(?:^|\n)\*\*Priority Notes:\*\*\r?\n([\s\S]*?)(?=\r?\n\r?\n|$)/)?.[1]
+    .replace(/\s+/g, " ").trim();
+
   sections.push(buildExecutionEnvironmentSection(cwd, {
     hookEventName: options.hookEventName,
     payload: options.payload,
@@ -2310,13 +2327,13 @@ async function buildSessionStartContext(
     const summary: string[] = [];
     const relativeMemoryPath = relative(cwd, projectMemoryPath).replace(/\\/g, "/");
     summary.push(`- source: ${relativeMemoryPath === "project-memory.json" ? "project-memory.json" : ".omx/project-memory.json"}`);
-    if (techStack) summary.push(`- stack: ${techStack}`);
-    if (conventions) summary.push(`- conventions: ${conventions}`);
-    if (build) summary.push(`- build: ${build}`);
+    if (techStack && !alreadyInStartupInstructions("Stack", techStack)) summary.push(`- stack: ${techStack}`);
+    if (conventions && !alreadyInStartupInstructions("Conventions", conventions)) summary.push(`- conventions: ${conventions}`);
+    if (build && !alreadyInStartupInstructions("Build", build)) summary.push(`- build: ${build}`);
     if (directives.length > 0) {
       const firstDirective = directives[0] as Record<string, unknown>;
       const directive = safeContextSnippet(firstDirective.directive);
-      if (directive) summary.push(`- directive: ${directive}`);
+      if (directive && !alreadyInStartupInstructions("Directive", directive)) summary.push(`- directive: ${directive}`);
     }
     if (notes.length > 0) {
       const firstNote = notes[0] as Record<string, unknown>;
@@ -2344,7 +2361,7 @@ async function buildSessionStartContext(
           .map((line) => line.trim())
           .filter(Boolean)
           .join(" ");
-        if (section) {
+        if (section && startupPriority !== section.replace(/\s+/g, " ")) {
           sections.push(`[Priority notes]\n- ${section.slice(0, 220)}`);
         }
       }

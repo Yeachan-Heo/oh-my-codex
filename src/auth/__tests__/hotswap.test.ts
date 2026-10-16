@@ -26,6 +26,7 @@ function lifecycle(overrides: Partial<HotswapLifecycle> = {}): HotswapLifecycle 
     cleanupRuntimeCodexHome: async () => {},
     normalizeCodexLaunchArgs: (args) => args,
     injectModelInstructionsBypassArgs: (_cwd, args) => args,
+    buildStartupModelInstructionsEnv: () => ({ OMX_STARTUP_MODEL_INSTRUCTIONS_FILE: "" }),
     sessionModelInstructionsPath: (cwd, sessionId) => join(cwd, `${sessionId}.md`),
     resolveOmxRootForLaunch: () => undefined,
     resolveNotifyTempContract: (args) => ({
@@ -53,6 +54,33 @@ async function writeAuthSlot(home: string, slot = "first"): Promise<string> {
 }
 
 describe("auth hotswap pointer abort lifecycle", () => {
+  it("passes the selected startup instructions hint to the Codex child", { skip: process.platform === "win32" }, async () => {
+    const home = await mkdtemp(join(tmpdir(), "omx-hotswap-startup-context-"));
+    let selected = "";
+    try {
+      await writeAuthSlot(home);
+      const bin = join(home, "bin");
+      const output = join(home, "startup-context.txt");
+      await mkdir(bin);
+      await writeFile(join(bin, "codex"), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(output)}, process.env.OMX_STARTUP_MODEL_INSTRUCTIONS_FILE ?? '');\n`);
+      await chmod(join(bin, "codex"), 0o755);
+      const status = await runAuthHotswap({
+        cwd: home, home, env: { PATH: bin }, argv: [],
+        lifecycle: lifecycle({
+          buildStartupModelInstructionsEnv: (cwd, _args, sessionId) => {
+            selected = join(cwd, `${sessionId}.md`);
+            return { OMX_STARTUP_MODEL_INSTRUCTIONS_FILE: selected };
+          },
+        }),
+      });
+      assert.equal(status, 0);
+      assert.ok(selected);
+      assert.equal(await readFile(output, "utf8"), selected);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("redacts OAuth fields split across child stderr chunks", { skip: process.platform === "win32" }, async (t) => {
     const home = await mkdtemp(join(tmpdir(), "omx-hotswap-stderr-"));
     let output = "";

@@ -230,7 +230,8 @@ instead of using an unrelated docs edit as a blanket suppression.
 The approved OMX-native wiki backport keeps lifecycle ownership intentionally narrow:
 
 - **Storage** lives under repository `omx_wiki/`, not ignored `.omx/wiki/` runtime state and not `.omc/wiki/`.
-- **SessionStart** may surface bounded wiki context from `omx_wiki/` when the wiki already exists, but it should stay read-mostly and must not block the native hook path on expensive writes or index rebuilds.
+- **SessionStart** may surface bounded wiki context from `omx_wiki/` when the wiki already exists, limited by both `maxContextLines` and 3,500 characters. Character truncation keeps complete index lines and a retrieval hint; stored pages are unchanged. Startup writes stay read-mostly and must not block the native hook path on expensive writes or index rebuilds.
+- OMX launches advertise their automatically selected session instruction file through `OMX_STARTUP_MODEL_INSTRUCTIONS_FILE`. On `source=startup`, the native adapter omits project-memory fields and priority notes only when the exact content is already present in that session file. Custom instruction overrides, unavailable files, omitted or changed content, and resume events retain hook delivery. This environment hint is only for duplicate context suppression, not session authority.
 - **SessionEnd** remains a runtime/notify-path responsibility for best-effort, non-blocking session capture into `omx_wiki/`.
 - **PreCompact** and **PostCompact** are native and no-stdout by default: they record the lifecycle seams without emitting advisory `additionalContext` that Codex rejects for compact hook events.
 - **Routing should stay explicit**: prefer `$wiki` or task verbs like `wiki query` / `wiki add`, and avoid implicit bare `wiki` noun activation.
