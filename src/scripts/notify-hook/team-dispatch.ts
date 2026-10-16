@@ -1205,24 +1205,32 @@ async function listTeamDirectories(teamRoot: string): Promise<string[]> {
   return names;
 }
 
-// Cache only a projection verified against unchanged event bytes; later mutations invalidate it.
+// Cache only a projection verified against unchanged event contents and state versions.
 const refreshedDispatchStates = new Map();
 async function refreshDispatchProjection(stateDir) {
-  const readState = async () => Promise.all(['events.json', 'dispatch.json'].map((name) =>
-    readFile(join(stateDir, name), 'utf8').catch((error) => {
+  const readStateVersion = async () => Promise.all(['events.json', 'dispatch.json'].map((name) =>
+    stat(join(stateDir, name), { bigint: true }).then((info) =>
+      [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].map(String).join(':')).catch((error) => {
       if (error.code === 'ENOENT') return null;
       throw error;
     })));
-  const before = await readState();
+  const before = await readStateVersion();
   const cached = refreshedDispatchStates.get(stateDir);
   if (cached && cached.state[0] === before[0] && cached.state[1] === before[1]) return cached.records;
   refreshedDispatchStates.delete(stateDir);
+  const eventsPath = join(stateDir, 'events.json');
+  const readEvents = () => readFile(eventsPath, 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  const eventsBefore = await readEvents();
   const snapshot = getDefaultBridge(stateDir).execCommand({ command: 'CaptureSnapshot' });
   if (!Array.isArray(snapshot.dispatch_records)) return; // Older compatible runtimes do not return records.
-  const after = await readState();
+  const eventsAfter = await readEvents();
+  const after = await readStateVersion();
   let projected;
-  try { projected = JSON.parse(after[1]).records; } catch { /* A concurrent writer cannot prove a cache entry. */ }
-  if (before[0] === after[0] && isDeepStrictEqual(projected, snapshot.dispatch_records)) {
+  try { projected = JSON.parse(await readFile(join(stateDir, 'dispatch.json'), 'utf8')).records; } catch { /* A concurrent writer cannot prove a cache entry. */ }
+  if (eventsBefore === eventsAfter && isDeepStrictEqual(projected, snapshot.dispatch_records)) {
     refreshedDispatchStates.set(stateDir, { state: after, records: snapshot.dispatch_records });
   }
   return snapshot.dispatch_records;

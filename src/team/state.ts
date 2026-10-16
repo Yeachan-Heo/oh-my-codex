@@ -26,6 +26,7 @@ import {
   mailboxMessageIdentity,
   mailboxMessageContentMatches,
   hasUniqueScopedMailboxMatch,
+  needsLegacyMailboxEvidence,
 } from './state/mailbox.js';
 import {
   enqueueDispatchRequest as enqueueDispatchRequestImpl,
@@ -2005,7 +2006,7 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
       const compat = bridge.readCompatFile<{ records?: unknown[] }>('mailbox.json');
       if (compat) {
         const bridgeRecords = bridge.readMailboxRecords();
-        const legacyMessageIds = legacyMailbox.messages.length > 0
+        const legacyMessageIds = needsLegacyMailboxEvidence(teamName, workerName, legacyMailbox, bridgeRecords)
           ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
         const legacyById = new Map(

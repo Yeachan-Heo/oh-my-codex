@@ -61,7 +61,7 @@ import {
 import { normalizeDispatchRequest } from '../state/dispatch.js';
 import { queueDirectMailboxMessage, queueBroadcastMailboxMessage, type TeamNotifier } from '../mcp-comm.js';
 import { claimTask as claimTaskWithDeps } from '../state/tasks.js';
-import { sendDirectMessage as sendDirectMessageWithDeps, markMessageDelivered as markMessageDeliveredWithDeps, normalizeBridgeMailboxMessage, type TeamMailbox } from '../state/mailbox.js';
+import { sendDirectMessage as sendDirectMessageWithDeps, markMessageDelivered as markMessageDeliveredWithDeps, needsLegacyMailboxEvidence, normalizeBridgeMailboxMessage, type TeamMailbox } from '../state/mailbox.js';
 import { withScalingLock as withScalingLeaseLock, withTeamLock } from '../state/locks.js';
 import type { TeamTaskV2 } from '../state/types.js';
 import type { TeamReminderIntent } from '../reminder-intents.js';
@@ -2066,6 +2066,21 @@ exit 1
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('skips legacy ownership scans when shadow messages have complete scoped runtime records', () => {
+    const message = {
+      message_id: 'scoped-message',
+      from_worker: 'leader-fixed',
+      to_worker: 'worker-1',
+      body: 'complete payload',
+      created_at: '2026-10-16T00:00:00.000Z',
+    };
+    const mailbox = { worker: 'worker-1', messages: [message] };
+    const scopedRecord = { ...message, team_name: 'alpha', notified_at: null, delivered_at: null };
+    assert.equal(needsLegacyMailboxEvidence('alpha', 'worker-1', mailbox, [scopedRecord]), false);
+    assert.equal(needsLegacyMailboxEvidence('alpha', 'worker-1', mailbox, []), true);
+    assert.equal(needsLegacyMailboxEvidence('alpha', 'worker-1', mailbox, [{ ...scopedRecord, body: '' }]), true);
   });
 
   it('keeps concurrent delivery acknowledgements idempotent', async () => {

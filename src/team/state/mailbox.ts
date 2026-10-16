@@ -80,6 +80,34 @@ export function mailboxRecordBelongsToTeam(
     : record.team_name === teamName);
 }
 
+export function needsLegacyMailboxEvidence(
+  teamName: string,
+  workerName: string,
+  mailbox: TeamMailbox,
+  bridgeRecords: readonly MailboxRecord[],
+): boolean {
+  if (!Array.isArray(bridgeRecords) || bridgeRecords.some((record) => !record || typeof record.message_id !== 'string')) {
+    return true;
+  }
+  const recordsById = new Map<string, MailboxRecord[]>();
+  for (const record of bridgeRecords) {
+    if (record.team_name !== teamName || record.to_worker !== workerName) continue;
+    const matches = recordsById.get(record.message_id) ?? [];
+    matches.push(record);
+    recordsById.set(record.message_id, matches);
+  }
+  const seenIds = new Set<string>();
+  for (const message of mailbox.messages) {
+    if (typeof message?.message_id !== 'string' || message.message_id === '' || seenIds.has(message.message_id)) return true;
+    seenIds.add(message.message_id);
+    const records = recordsById.get(message.message_id);
+    if (records?.length !== 1) return true;
+    const [record] = records;
+    if (!mailboxMessageContentMatches(message, record) || (!record.body && message.body)) return true;
+  }
+  return false;
+}
+
 interface MailboxDeps {
   teamName: string;
   cwd: string;
