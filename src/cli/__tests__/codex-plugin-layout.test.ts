@@ -541,6 +541,25 @@ describe('official Codex plugin layout', () => {
       assert.deepEqual(parseSingleJsonStdout(stop.stdout), {});
       await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
 
+      const subagentStop = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          hook_event_name: 'SubagentStop',
+          session_id: 'plain-codex-parent',
+          agent_id: 'plain-codex-child',
+          turn_id: 'plain-codex-child-turn',
+        }),
+        {
+          OMX_ENTRY_PATH: '',
+          OMX_CODEX_LAUNCH_ID: '',
+          OMX_NATIVE_HOOK_COMMAND: commandPath,
+        },
+      );
+
+      assert.equal(subagentStop.status, 0, subagentStop.stderr || subagentStop.stdout);
+      assert.deepEqual(parseSingleJsonStdout(subagentStop.stdout), {});
+      await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
       const oversizedUserPrompt = runPluginNativeHook(
         cachePluginRoot,
         JSON.stringify({

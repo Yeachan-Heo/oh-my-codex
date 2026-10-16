@@ -519,12 +519,14 @@ function parseSingleJsonObjectOutput(raw) {
 async function main() {
   const { input, oversized, totalBytes } = await readBoundedStdin({ drainOversized: true });
   const payload = parseHookPayload(input);
+  const eventName = extractTopLevelHookEventName(input.toString('utf8'));
   const routedByLaunchCorrelation = isPluginHookRoutingSession(input, payload);
   const isStop = detectStopHookInput(input);
+  const isSubagentStop = eventName === 'SubagentStop';
   const isCompact = detectCompactHookInput(input);
 
   if (!routedByLaunchCorrelation) {
-    writePlainCodexNoop(isStop);
+    writePlainCodexNoop(isStop || isSubagentStop);
     return;
   }
 
@@ -539,7 +541,6 @@ async function main() {
       writeOversizedStopNoop();
       return;
     }
-    const eventName = extractTopLevelHookEventName(input.toString('utf8'));
     if (eventName === 'PreToolUse' || eventName === 'PostToolUse') {
       writeOversizedToolHookOutput(eventName);
       return;
