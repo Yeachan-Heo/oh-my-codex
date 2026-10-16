@@ -657,6 +657,47 @@ exit 1
     }
   });
 
+  it('does not dispatch unscoped runtime records to the Team currently being scanned', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-unscoped-dispatch-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath);
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const compatPath = join(cwd, '.omx', 'state', 'dispatch.json');
+      const compat = JSON.stringify({ records: [{
+        request_id: 'legacy-unscoped',
+        target: 'worker-1',
+        status: 'pending',
+        created_at: '2026-01-01T00:00:00.000Z',
+        notified_at: null,
+        delivered_at: null,
+        failed_at: null,
+        reason: 'foreign prompt',
+        metadata: { kind: 'inbox', trigger_message: 'foreign prompt' },
+      }] });
+      await writeFile(compatPath, compat);
+
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      let injections = 0;
+      assert.deepEqual(await drainPendingTeamDispatch({ cwd, injector: async () => {
+        injections += 1;
+        return { ok: true, reason: 'injected_for_test' };
+      } }), { processed: 0, skipped: 0, failed: 0 });
+      assert.equal(injections, 0);
+      assert.equal(await readFile(compatPath, 'utf8'), compat);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('persists an injected request when runtime compatibility changes after preflight', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-runtime-swap-'));
     const previousBinary = process.env.OMX_RUNTIME_BINARY;
@@ -692,6 +733,53 @@ exit 1
       await writeFile(projectionPath, pendingProjection);
       assert.equal((await drain()).processed, 0);
       assert.equal(injections, 1, 'post-injection schema drift must not leave the request eligible for replay');
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('journals an injected request when the runtime disappears after preflight', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-runtime-unavailable-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath);
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox', to_worker: 'worker-1', worker_index: 1, trigger_message: 'investigate ABC-789',
+      }, cwd);
+      const stateDir = join(cwd, '.omx', 'state');
+      const projectionPath = join(stateDir, 'dispatch.json');
+      const pendingProjection = await readFile(projectionPath, 'utf8');
+      const supported = await readFile(runtimePath, 'utf8');
+      let injections = 0;
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      const drain = () => drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+        injector: async () => {
+          injections += 1;
+          await rm(runtimePath);
+          return { ok: true, reason: 'injected_for_test' };
+        } });
+
+      assert.equal((await drain()).processed, 1);
+      const journalPath = join(stateDir, 'team/alpha/dispatch/runtime-finalizations.jsonl');
+      assert.equal(JSON.parse((await readFile(journalPath, 'utf8')).trim()).command, 'MarkNotified');
+      assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'notified');
+
+      await writeFile(runtimePath, supported);
+      await chmod(runtimePath, 0o755);
+      await writeFile(projectionPath, pendingProjection);
+      assert.equal((await drain()).processed, 0);
+      assert.equal(injections, 1, 'transport failure after injection must not leave the request eligible for replay');
+      assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'notified');
+      await assert.rejects(readFile(journalPath), { code: 'ENOENT' });
     } finally {
       if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
       else process.env.OMX_RUNTIME_BINARY = previousBinary;
@@ -1054,6 +1142,10 @@ if [[ "\${1:-}" == "schema" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == "exec-scoped" ]]; then
+  if [[ "$*" == *'"command":"QueueDispatch"'* ]]; then
+    printf '{"event":"DispatchQueued","request_id":"request","target":"worker-1"}\n'
+    exit 0
+  fi
   echo "runtime schema drift" >&2
   exit 43
 fi

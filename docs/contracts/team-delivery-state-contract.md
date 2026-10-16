@@ -21,9 +21,10 @@ send's provisional row. Mutations use `exec-scoped`, which checks Team isolation
 in the executing runtime process before opening state. Older binaries reject this
 subcommand, including when swapped into the configured path after the schema probe.
 The bridge executes the configured binary in place and does not require an executable
-temporary directory. Queue creation propagates schema and unsupported-subcommand
-failures without adding JSON-only IDs to runtime projections.
-If the runtime becomes incompatible after pane input (hook, direct, or broadcast), runtime-backed dispatch saves its outcome
+temporary directory. Queue creation propagates schema, unsupported-subcommand,
+and semantic runtime-state failures; only classified transport failures use
+the JSON fallback.
+If the runtime becomes unavailable or incompatible after pane input (hook, direct, or broadcast), runtime-backed dispatch saves its outcome
 and a pending runtime-finalization journal, including delivered receipts. Before claiming more work, the hook
 replays those outcomes against event-derived runtime state and clears the journal;
 an incompatible or disabled bridge leaves recovery blocked without re-injection.
@@ -37,8 +38,9 @@ Teams may share a runtime state directory and reuse names such as `worker-1`
 and `leader-fixed`. New mailbox creation commands, creation events, and records
 carry the canonical `team_name`; mailbox reads and mutations require that Team
 and the addressed worker. Rust rejects a missing or different Team on mutations
-of scoped records. Notification hooks and shutdown retirement follow the same
-ownership rule.
+of scoped records and rejects duplicate creation IDs within a Team while
+permitting reuse across Teams. Notification hooks and shutdown retirement follow
+the same ownership rule.
 Proven JSON-only messages can still be acknowledged after enabling a compatible
 runtime if no persisted runtime authority exists yet, or a valid mailbox projection
 contains no matching ID. Proven fallback rows remain visible alongside runtime
@@ -53,13 +55,17 @@ Duplicate IDs or conflicting sender, recipient, or nonempty body across shadow
 and runtime records cannot prove legacy ownership;
 those records remain hidden and require manual recovery.
 Shadows alone are insufficient: older readers could copy another Team's records
-into them. Unproven old records are retained on disk but hidden from bridge-backed
-mailbox operations, including the JSON fallback. In particular, an old send that
-crashed before appending its creation event requires manual recovery rather than
-guessing ownership. Explicitly disabling the bridge keeps the legacy JSON lane.
+into them. Unproven old records are retained on disk but hidden from mailbox
+operations, including when the bridge is disabled. Disabling the bridge selects
+the legacy JSON storage lane; it does not bypass Team ownership checks. In
+particular, an old send that crashed before appending its creation event requires
+manual recovery rather than guessing ownership.
 
 Scoped records remain readable and can be retired if their shadow is missing;
-their Team ownership survives persistence and event replay.
+their Team ownership survives persistence and event replay. Event replay restores
+mailbox creations and acknowledgements absent from a stale compatibility snapshot,
+and an unreadable existing mailbox snapshot fails closed rather than discarding
+recoverable message bodies.
 
 Runtime acknowledgement rejections propagate to the caller; only transport
 failures may use the JSON fallback. Acknowledgements hold the mailbox lock across

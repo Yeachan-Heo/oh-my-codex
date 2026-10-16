@@ -155,6 +155,10 @@ const timestamp = nowIso();
 
 switch (command.command) {
   case 'QueueDispatch': {
+    if (process.env.OMX_TEST_REJECT_QUEUE_DISPATCH === '1') {
+      process.stderr.write('runtime state could not load\\n');
+      process.exit(1);
+    }
     writeJson(path.join(dir, 'events.json'), [...readJson(path.join(dir, 'events.json'), []), { event: 'DispatchQueued', request_id: command.request_id, metadata: command.metadata }]);
     writeJson(path.join(dir, 'dispatch-seen.json'), { schema_version: 2, ledger_epoch: 1, request_ids: [...readJson(path.join(dir, 'dispatch-seen.json'), { request_ids: [] }).request_ids, command.request_id] });
     dispatch.records.push({
@@ -721,6 +725,76 @@ exit 1
     } finally {
       if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
       else delete process.env.OMX_RUNTIME_BINARY;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('hides unscoped bridge dispatch records instead of assigning them to the caller Team', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-unscoped-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'runtime');
+      await writeCompatRuntimeFixture(runtimePath, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('dispatch-scope-alpha', 't', 'executor', 1, cwd);
+      await initTeamState('dispatch-scope-beta', 't', 'executor', 1, cwd);
+      const compatPath = join(cwd, '.omx', 'state', 'dispatch.json');
+      await writeFile(compatPath, JSON.stringify({ records: [
+        {
+          request_id: 'unscoped-request', target: 'worker-1', status: 'pending', created_at: '2026-01-01T00:00:00.000Z',
+          notified_at: null, delivered_at: null, failed_at: null, reason: 'foreign prompt', metadata: { kind: 'inbox' },
+        },
+        {
+          request_id: 'beta-request', target: 'worker-1', status: 'pending', created_at: '2026-01-01T00:00:00.000Z',
+          notified_at: null, delivered_at: null, failed_at: null, reason: 'beta prompt',
+          metadata: { kind: 'inbox', team_name: 'dispatch-scope-beta', trigger_message: 'beta prompt' },
+        },
+      ] }));
+
+      assert.deepEqual(await listDispatchRequests('dispatch-scope-alpha', cwd), []);
+      assert.deepEqual((await listDispatchRequests('dispatch-scope-beta', cwd)).map((request) => request.request_id), ['beta-request']);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not convert semantic QueueDispatch failures into JSON-only requests', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-dispatch-semantic-failure-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    const previousRejectQueue = process.env.OMX_TEST_REJECT_QUEUE_DISPATCH;
+    try {
+      const teamName = 'dispatch-semantic-failure';
+      const runtimePath = join(cwd, 'runtime');
+      await writeCompatRuntimeFixture(runtimePath, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      process.env.OMX_TEST_REJECT_QUEUE_DISPATCH = '1';
+      await initTeamState(teamName, 't', 'executor', 1, cwd);
+      await writeFile(join(cwd, '.omx', 'state', 'events.json'), '[]');
+
+      await assert.rejects(
+        () => enqueueDispatchRequest(teamName, {
+          kind: 'inbox', to_worker: 'worker-1', trigger_message: 'do not queue on corrupted runtime state',
+        }, cwd),
+        /exec-scoped failed/,
+      );
+      assert.deepEqual(await listDispatchRequests(teamName, cwd), []);
+      const compatPath = join(cwd, '.omx', 'state', 'dispatch.json');
+      await assert.rejects(readFile(compatPath), { code: 'ENOENT' });
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      if (previousRejectQueue === undefined) delete process.env.OMX_TEST_REJECT_QUEUE_DISPATCH;
+      else process.env.OMX_TEST_REJECT_QUEUE_DISPATCH = previousRejectQueue;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2483,6 +2557,38 @@ exit 1
     }
   });
 
+  it('keeps bridge-disabled reads, deduplication, and retirement scoped by Team evidence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-disabled-bridge-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BINARY = join(cwd, 'missing-runtime');
+      process.env.OMX_RUNTIME_BRIDGE = '0';
+      await initTeamState('disabled-alpha', 't', 'executor', 1, cwd);
+      await initTeamState('disabled-beta', 't', 'executor', 1, cwd);
+      const foreign = await sendDirectMessage('disabled-beta', 'leader-fixed', 'worker-1', 'foreign private data', cwd);
+      const shadowPath = join(cwd, '.omx', 'state', 'team', 'disabled-alpha', 'mailbox', 'worker-1.json');
+      await writeFile(shadowPath, JSON.stringify({ worker: 'worker-1', messages: [foreign] }));
+
+      assert.deepEqual(await listMailboxMessages('disabled-alpha', 'worker-1', cwd), []);
+      assert.equal(await markMessageNotified('disabled-alpha', 'worker-1', foreign.message_id, cwd), false);
+      assert.equal(await markMessageDelivered('disabled-alpha', 'worker-1', foreign.message_id, cwd), false);
+      const beforeRetirement = await readFile(shadowPath, 'utf8');
+      await assert.rejects(() => retireTeamMailboxMessages('disabled-alpha', ['worker-1'], cwd), /authoritative_mailbox_retirement_discovery_failed/);
+      assert.equal(await readFile(shadowPath, 'utf8'), beforeRetirement);
+
+      const own = await sendDirectMessage('disabled-alpha', 'leader-fixed', 'worker-1', 'foreign private data', cwd);
+      assert.notEqual(own.message_id, foreign.message_id, 'unproven foreign shadows must not deduplicate local sends');
+      assert.deepEqual((await listMailboxMessages('disabled-alpha', 'worker-1', cwd)).map((message) => message.message_id), [own.message_id]);
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('reads and retires scoped bridge messages when their compatibility shadow is missing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-missing-shadow-'));
     const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
@@ -2687,6 +2793,45 @@ exit 1
         else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
         await rm(cwd, { recursive: true, force: true });
       }
+    }
+  });
+
+  it('journals dispatch finalizations when the runtime is unavailable', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-transport-recovery-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtime = join(cwd, 'runtime');
+      const missingRuntime = join(cwd, 'missing-runtime');
+      await writeCompatRuntimeFixture(runtime, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const request = (await enqueueDispatchRequest('alpha', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'transport recovery',
+      }, cwd)).request;
+      await markDispatchRequestNotified('alpha', request.request_id, {}, cwd);
+
+      process.env.OMX_RUNTIME_BINARY = missingRuntime;
+      assert.equal((await markDispatchRequestDelivered('alpha', request.request_id, {}, cwd))?.status, 'delivered');
+      const stateDir = join(cwd, '.omx', 'state');
+      const journal = join(stateDir, 'team', 'alpha', 'dispatch', 'runtime-finalizations.jsonl');
+      assert.equal(JSON.parse((await readFile(journal, 'utf8')).trim()).command, 'MarkDelivered');
+
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      const projection = JSON.parse(await readFile(join(stateDir, 'dispatch.json'), 'utf8'));
+      projection.records[0].status = 'notified';
+      await writeFile(join(stateDir, 'dispatch.json'), JSON.stringify(projection));
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      await drainPendingTeamDispatch({ cwd, injector: async () => { assert.fail('delivered request reinjected'); } });
+      assert.equal((await readDispatchRequest('alpha', request.request_id, cwd))?.status, 'delivered');
+      assert.equal(existsSync(journal), false);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 

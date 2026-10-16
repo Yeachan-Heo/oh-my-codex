@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, RuntimeBridgeError, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, resolveBridgeStateDir, RuntimeBridgeError, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { recordRuntimeFinalization } from './dispatch-recovery.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 import { isTeamReminderIntent, type TeamReminderIntent } from '../reminder-intents.js';
@@ -180,8 +180,8 @@ function executeBridgeCommand(deps: DispatchDeps, command: RuntimeCommand): bool
     getDefaultBridge(resolveBridgeStateDir(deps.cwd)).execCommand(command);
     return true;
   } catch (error) {
-    if (error instanceof RuntimeBridgeError && error.context.command === 'schema' && command.command === 'QueueDispatch') throw error;
-    if (error instanceof RuntimeBridgeError && error.context.command === 'schema'
+    if (command.command === 'QueueDispatch' && !isRuntimeTransportError(error)) throw error;
+    if (((error instanceof RuntimeBridgeError && error.context.command === 'schema') || isRuntimeTransportError(error))
       && (command.command === 'MarkNotified' || command.command === 'MarkDelivered' || command.command === 'MarkFailed')) {
       const stateDir = resolveBridgeStateDir(deps.cwd);
       recordRuntimeFinalization(stateDir, deps.teamName, command);
@@ -217,7 +217,7 @@ export function normalizeBridgeDispatchRecord(
   const metadataTeamName = typeof metadata.team_name === 'string' && metadata.team_name.trim() !== ''
     ? metadata.team_name.trim()
     : null;
-  if (metadataTeamName !== null && metadataTeamName !== teamName) return null;
+  if (metadataTeamName !== teamName) return null;
 
   return normalizeDispatchRequest(
     teamName,

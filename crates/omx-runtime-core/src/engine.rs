@@ -230,7 +230,7 @@ impl RuntimeEngine {
                     &from_worker,
                     &to_worker,
                     &body,
-                );
+                )?;
                 RuntimeEvent::MailboxMessageCreated {
                     team_name,
                     message_id,
@@ -385,9 +385,11 @@ impl RuntimeEngine {
         let events_path = dir.join("events.json");
         let events_json = std::fs::read_to_string(&events_path)?;
         let mut events: Vec<RuntimeEvent> = serde_json::from_str(&events_json)?;
-        let mailbox = std::fs::read_to_string(dir.join("mailbox.json"))
-            .ok()
-            .and_then(|mailbox_json| serde_json::from_str::<MailboxLog>(&mailbox_json).ok());
+        let mailbox = match std::fs::read_to_string(dir.join("mailbox.json")) {
+            Ok(mailbox_json) => Some(serde_json::from_str::<MailboxLog>(&mailbox_json)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         let ledger = match std::fs::read_to_string(dir.join(DISPATCH_SEEN_LEDGER_FILE)) {
             Ok(json) => parse_dispatch_seen_ledger(&json)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -427,13 +429,13 @@ impl RuntimeEngine {
         }
         engine.seen_dispatch_ids = ledger;
 
-        if let Some(mailbox_state) = mailbox {
+        if let Some(mut mailbox_state) = mailbox {
             let mut body_by_message = std::collections::HashMap::new();
             for record in mailbox_state.records() {
                 body_by_message
-                    .entry((record.team_name.as_deref(), record.message_id.as_str()))
+                    .entry((record.team_name.clone(), record.message_id.clone()))
                     .and_modify(|body| *body = None)
-                    .or_insert(Some(record.body.as_str()));
+                    .or_insert(Some(record.body.clone()));
             }
 
             for event in &mut events {
@@ -446,16 +448,41 @@ impl RuntimeEngine {
                 {
                     if body.is_none() {
                         if let Some(Some(record_body)) =
-                            body_by_message.get(&(team_name.as_deref(), message_id.as_str()))
+                            body_by_message.get(&(team_name.clone(), message_id.clone()))
                         {
                             if !record_body.is_empty() {
-                                *body = Some((*record_body).to_string());
+                                *body = Some(record_body.clone());
                             }
                         }
+                    }
+                    if let Some(body) = body.as_deref() {
+                        mailbox_state.recover_body(team_name.as_deref(), message_id, body);
                     }
                 }
             }
             engine.mailbox = mailbox_state;
+            for event in &events {
+                match event {
+                    RuntimeEvent::MailboxMessageCreated {
+                        team_name,
+                        message_id,
+                        ..
+                    } if !engine.mailbox.records().iter().any(|record| {
+                        record.message_id == *message_id
+                            && record.team_name.as_deref() == team_name.as_deref()
+                    }) =>
+                    {
+                        replay_event(&mut engine, event)?
+                    }
+                    RuntimeEvent::MailboxNotified { .. }
+                    | RuntimeEvent::MailboxDelivered { .. }
+                        if !mailbox_acknowledgement_is_reflected(&engine.mailbox, event) =>
+                    {
+                        replay_event(&mut engine, event)?;
+                    }
+                    _ => {}
+                }
+            }
         }
 
         engine.event_log = events;
@@ -647,7 +674,7 @@ fn replay_event(engine: &mut RuntimeEngine, event: &RuntimeEvent) -> Result<(), 
             to_worker,
             body,
         } => {
-            engine.mailbox.create(
+            engine.mailbox.replay_create(
                 team_name.clone(),
                 message_id,
                 from_worker,
@@ -691,6 +718,66 @@ fn replay_event(engine: &mut RuntimeEngine, event: &RuntimeEvent) -> Result<(), 
         event => replay_dispatch_event(&mut engine.dispatch, event)?,
     }
     Ok(())
+}
+
+fn mailbox_acknowledgement_is_reflected(mailbox: &MailboxLog, event: &RuntimeEvent) -> bool {
+    let (message_id, team_name, delivered) = match event {
+        RuntimeEvent::MailboxNotified {
+            message_id,
+            team_name,
+        } => (message_id.as_str(), team_name.as_deref(), false),
+        RuntimeEvent::MailboxDelivered {
+            message_id,
+            team_name,
+        } => (message_id.as_str(), team_name.as_deref(), true),
+        _ => return false,
+    };
+
+    let record = if let Some(team_name) = team_name {
+        let mut scoped = mailbox.records().iter().filter(|record| {
+            record.message_id == message_id && record.team_name.as_deref() == Some(team_name)
+        });
+        match scoped.next() {
+            Some(record) => {
+                if scoped.next().is_none() {
+                    Some(record)
+                } else {
+                    None
+                }
+            }
+            None => {
+                let mut matches = mailbox
+                    .records()
+                    .iter()
+                    .filter(|record| record.message_id == message_id);
+                let first = matches.next();
+                if matches.next().is_none() {
+                    first.filter(|record| record.team_name.is_none())
+                } else {
+                    None
+                }
+            }
+        }
+    } else {
+        let mut matches = mailbox
+            .records()
+            .iter()
+            .filter(|record| record.message_id == message_id);
+        let first = matches.next();
+        if matches.next().is_none() {
+            first
+        } else {
+            None
+        }
+    };
+
+    record.is_some_and(|record| {
+        if delivered {
+            record.delivered_at.is_some()
+        } else {
+            record.notified_at.is_some() || record.delivered_at.is_some()
+        }
+    })
 }
 
 pub fn derive_readiness(
@@ -844,15 +931,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut engine = RuntimeEngine::new().with_state_dir(&dir);
         for team_name in [None, Some("beta".to_string())] {
-            engine
-                .process(RuntimeCommand::CreateMailboxMessage {
-                    team_name,
-                    message_id: "collision".into(),
-                    from_worker: "leader-fixed".into(),
-                    to_worker: "worker-1".into(),
-                    body: "payload".into(),
-                })
-                .unwrap();
+            let event = RuntimeEvent::MailboxMessageCreated {
+                team_name,
+                message_id: "collision".into(),
+                from_worker: "leader-fixed".into(),
+                to_worker: "worker-1".into(),
+                body: Some("payload".into()),
+            };
+            replay_event(&mut engine, &event).unwrap();
+            engine.event_log.push(event);
         }
         engine
             .process(RuntimeCommand::MarkMailboxNotified {
@@ -886,7 +973,7 @@ mod tests {
         ] {
             let mut engine = RuntimeEngine::new();
             for scope in &scopes {
-                engine.mailbox.create(
+                engine.mailbox.replay_create(
                     scope.clone(),
                     "legacy-event",
                     "leader-fixed",
@@ -1007,6 +1094,38 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_event_log_preserves_acknowledgement_over_a_stale_snapshot() {
+        let dir =
+            std::env::temp_dir().join(format!("omx-mailbox-stale-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = RuntimeEngine::new().with_state_dir(&dir);
+        engine
+            .process(RuntimeCommand::CreateMailboxMessage {
+                team_name: Some("alpha".into()),
+                message_id: "stale-snapshot".into(),
+                from_worker: "leader-fixed".into(),
+                to_worker: "worker-1".into(),
+                body: "delivery survives a stale projection".into(),
+            })
+            .unwrap();
+        engine.persist().unwrap();
+        let pending_snapshot = std::fs::read_to_string(dir.join("mailbox.json")).unwrap();
+
+        engine
+            .process(RuntimeCommand::MarkMailboxDelivered {
+                team_name: Some("alpha".into()),
+                message_id: "stale-snapshot".into(),
+            })
+            .unwrap();
+        engine.persist().unwrap();
+        std::fs::write(dir.join("mailbox.json"), pending_snapshot).unwrap();
+
+        let loaded = RuntimeEngine::load(&dir).unwrap();
+        assert!(loaded.mailbox.records()[0].delivered_at.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn persist_and_load_round_trip_preserves_mailbox_body() {
         let dir = std::env::temp_dir().join("omx-runtime-test-mailbox-body");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1098,6 +1217,94 @@ mod tests {
     }
 
     #[test]
+    fn load_backfills_empty_snapshot_body_from_creation_event() {
+        let dir = std::env::temp_dir().join(format!(
+            "omx-runtime-test-mailbox-event-body-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("events.json"),
+            serde_json::to_string_pretty(&vec![RuntimeEvent::MailboxMessageCreated {
+                team_name: Some("alpha".into()),
+                message_id: "msg-scoped".into(),
+                from_worker: "worker-1".into(),
+                to_worker: "leader-fixed".into(),
+                body: Some("event body".into()),
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("mailbox.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "records": [{
+                    "team_name": "alpha",
+                    "message_id": "msg-scoped",
+                    "from_worker": "worker-1",
+                    "to_worker": "leader-fixed",
+                    "body": "",
+                    "created_at": "2026-04-04T00:00:00.000Z",
+                    "notified_at": null,
+                    "delivered_at": null
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(DISPATCH_SEEN_LEDGER_FILE),
+            r#"{"schema_version":2,"ledger_epoch":1,"request_ids":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("engine.lock"), "").unwrap();
+
+        let loaded = RuntimeEngine::load(&dir).unwrap();
+        loaded.persist().unwrap();
+        let mailbox_json = std::fs::read_to_string(dir.join("mailbox.json")).unwrap();
+        let mailbox: serde_json::Value = serde_json::from_str(&mailbox_json).unwrap();
+        assert_eq!(mailbox["records"][0]["body"], "event body");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_an_unreadable_mailbox_snapshot() {
+        let dir = std::env::temp_dir().join(format!(
+            "omx-runtime-test-mailbox-corrupt-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("events.json"),
+            serde_json::to_string_pretty(&vec![RuntimeEvent::MailboxMessageCreated {
+                team_name: None,
+                message_id: "msg-legacy".into(),
+                from_worker: "worker-1".into(),
+                to_worker: "leader-fixed".into(),
+                body: None,
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("mailbox.json"), "{").unwrap();
+        std::fs::write(
+            dir.join(DISPATCH_SEEN_LEDGER_FILE),
+            r#"{"schema_version":2,"ledger_epoch":1,"request_ids":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("engine.lock"), "").unwrap();
+
+        assert!(RuntimeEngine::load(&dir).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mailbox.json")).unwrap(),
+            "{"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn mailbox_body_backfill_respects_team_and_rejects_duplicate_keys() {
         let dir =
             std::env::temp_dir().join(format!("omx-mailbox-backfill-scope-{}", std::process::id()));
@@ -1112,15 +1319,15 @@ mod tests {
             (None, "duplicate-legacy", "second legacy"),
             (Some("gamma"), "scoped-only", "gamma secret"),
         ] {
-            engine
-                .process(RuntimeCommand::CreateMailboxMessage {
-                    team_name: team_name.map(String::from),
-                    message_id: message_id.into(),
-                    from_worker: "leader-fixed".into(),
-                    to_worker: "worker-1".into(),
-                    body: body.into(),
-                })
-                .unwrap();
+            let event = RuntimeEvent::MailboxMessageCreated {
+                team_name: team_name.map(String::from),
+                message_id: message_id.into(),
+                from_worker: "leader-fixed".into(),
+                to_worker: "worker-1".into(),
+                body: Some(body.into()),
+            };
+            replay_event(&mut engine, &event).unwrap();
+            engine.event_log.push(event);
         }
         engine.persist().unwrap();
         for event in &mut engine.event_log {

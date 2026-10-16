@@ -41,7 +41,7 @@ function runtimeExec(command, stateDir, team) {
     getDefaultBridge(stateDir).execCommand(command);
   } catch (error) {
     if (command.command === 'MarkMailboxNotified' && !isRuntimeTransportError(error)) throw error;
-    if (error instanceof RuntimeBridgeError && error.context.command === 'schema'
+    if (((error instanceof RuntimeBridgeError && error.context.command === 'schema') || isRuntimeTransportError(error))
       && (command.command === 'MarkNotified' || command.command === 'MarkFailed')) {
       // Compatibility JSON alone is overwritten by runtime event replay.
       recordRuntimeFinalization(stateDir, team, command);
@@ -159,7 +159,7 @@ async function readBridgeDispatchRequests(stateDir, teamName) {
       if (!record || typeof record !== 'object') return null;
       const metadata = record.metadata && typeof record.metadata === 'object' ? record.metadata : {};
       const metadataTeam = safeString(metadata.team_name).trim();
-      if (metadataTeam && metadataTeam !== teamName) return null;
+      if (!metadataTeam || metadataTeam !== teamName) return null;
       return {
         request_id: safeString(record.request_id).trim(),
         kind: safeString(metadata.kind).trim() || 'inbox',

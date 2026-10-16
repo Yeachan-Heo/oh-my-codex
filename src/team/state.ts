@@ -2026,13 +2026,10 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
     }
   }
 
-  if (isBridgeEnabled()) {
-    const ids = legacyMailbox.messages.length > 0
-      ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd))
-      : new Set<string>();
-    return { worker: workerName, messages: legacyMailbox.messages.filter((message) => ids.has(message?.message_id)) };
-  }
-  return legacyMailbox;
+  const ids = legacyMailbox.messages.length > 0
+    ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd))
+    : new Set<string>();
+  return { worker: workerName, messages: legacyMailbox.messages.filter((message) => ids.has(message?.message_id)) };
 }
 
 async function readLegacyMailbox(teamName: string, workerName: string, cwd: string): Promise<TeamMailbox> {
@@ -2577,8 +2574,15 @@ export async function retireTeamMailboxMessages(
         return;
       }
 
+      const legacyMessageIds = mailbox.messages.length > 0
+        ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd))
+        : new Set<string>();
       const pending = mailbox.messages.filter((message) => !message.delivered_at);
       if (pending.length === 0) return;
+      const unproven = pending.filter((message) => !legacyMessageIds.has(message.message_id));
+      if (unproven.length > 0) {
+        throw new Error(`authoritative_mailbox_retirement_discovery_failed:${unproven.map((message) => message.message_id).join(',')}`);
+      }
       const deliveredAt = new Date().toISOString();
       for (const message of pending) message.delivered_at = deliveredAt;
       await writeMailbox(teamName, mailbox, cwd);

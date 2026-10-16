@@ -184,11 +184,9 @@ export async function sendDirectMessage(
       const missingLegacyMessages = legacyMailbox.messages.filter((message) => !seenMessageIds.has(message.message_id));
       const legacyIds = missingLegacyMessages.length === 0
         ? new Set<string>()
-        : isBridgeEnabled()
-          ? await readLegacyMailboxMessageIds(deps.teamName, toWorker, legacyMailbox,
-            join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'),
-            getDefaultBridge(resolveBridgeStateDir(deps.cwd)).readMailboxRecords())
-          : new Set(missingLegacyMessages.map((candidate) => candidate.message_id));
+        : await readLegacyMailboxMessageIds(deps.teamName, toWorker, legacyMailbox,
+          join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'),
+          isBridgeEnabled() ? getDefaultBridge(resolveBridgeStateDir(deps.cwd)).readMailboxRecords() : []);
       for (const legacyMessage of missingLegacyMessages) {
         if (legacyIds.has(legacyMessage.message_id) && !seenMessageIds.has(legacyMessage.message_id)) {
           dedupeCandidates.push(legacyMessage);
