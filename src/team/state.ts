@@ -2005,7 +2005,7 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
         const needsLegacyOwnership = legacyMailbox.messages.length > 0
           && bridgeRecords.some((record) => record.to_worker === workerName && record.team_name == null);
         const legacyMessageIds = needsLegacyOwnership
-          ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd))
+          ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
         const legacyById = new Map(
           legacyMailbox.messages
@@ -2503,7 +2503,7 @@ export async function retireTeamMailboxMessages(
         const needsLegacyOwnership = mailbox.messages.length > 0
           && bridgeRecords.some((record) => record.to_worker === workerName && record.team_name == null);
         const legacyMessageIds = needsLegacyOwnership
-          ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd))
+          ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
         const bridgeIds = new Set(bridgeRecords.map((record) => record.message_id));
         const unproven = mailbox.messages.filter((message) => !message.delivered_at && !bridgeIds.has(message.message_id));
@@ -2526,7 +2526,8 @@ export async function retireTeamMailboxMessages(
               throw new Error(`authoritative_mailbox_retirement_failed:${message.message_id}`);
             }
           }
-          const verified = bridge.readMailboxRecords().find((record) => record.message_id === message.message_id);
+          const verified = bridge.readMailboxRecords().find((record) => record.message_id === message.message_id
+            && mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds));
           if (!verified?.delivered_at) {
             throw new Error(`authoritative_mailbox_retirement_verification_failed:${message.message_id}`);
           }

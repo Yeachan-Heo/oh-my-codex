@@ -241,7 +241,10 @@ switch (command.command) {
     process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
     process.exit(0);
   case 'MarkMailboxNotified': {
-    const record = mailbox.records.find((entry) => entry.message_id === command.message_id);
+    const candidates = mailbox.records.filter((entry) => entry.message_id === command.message_id);
+    const scoped = candidates.filter((entry) => command.team_name != null && entry.team_name === command.team_name);
+    const record = scoped.length === 1 ? scoped[0] : scoped.length === 0 && candidates.length === 1 && candidates[0].team_name == null ? candidates[0] : null;
+    if (!record) process.exit(1);
     if (record) {
       record.notified_at = timestamp;
       writeJson(mailboxPath, mailbox);
@@ -584,6 +587,56 @@ exit 1
           const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<{ message_id: string; notified_at: string | null }> };
           assert.equal(compat.records.find((record) => record.message_id === foreign.message_id)?.notified_at, null);
           assert.equal(typeof compat.records.find((record) => record.message_id === own.message_id)?.notified_at, 'string');
+        } finally {
+          await rm(cwd, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+    }
+  });
+
+  it('notifies only the scoped Team record when a legacy record has the same ID', async () => {
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      for (const scoped of [false, true]) {
+        const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-mailbox-collision-'));
+        try {
+          const runtimePath = join(cwd, 'omx-runtime');
+          await writeCompatRuntimeFixture(runtimePath);
+          process.env.OMX_RUNTIME_BINARY = runtimePath;
+          process.env.OMX_RUNTIME_BRIDGE = '1';
+          await initTeamState('alpha', 'task', 'executor', 1, cwd);
+          await initTeamState('beta', 'task', 'executor', 1, cwd);
+          const foreign = await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'alpha only', cwd);
+          const own = await sendDirectMessage('beta', 'leader-fixed', 'worker-1', 'beta only', cwd);
+          const betaDir = join(cwd, '.omx', 'state', 'team', 'beta');
+          const shadowPath = join(betaDir, 'mailbox', 'worker-1.json');
+          await writeFile(shadowPath, JSON.stringify({ worker: 'worker-1', messages: [{ ...own, message_id: foreign.message_id }] }));
+          const journalPath = join(betaDir, 'events', 'events.ndjson');
+          await writeFile(journalPath, (await readFile(journalPath, 'utf8')).replaceAll(own.message_id, foreign.message_id));
+          const compatPath = join(cwd, '.omx', 'state', 'mailbox.json');
+          const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<Record<string, unknown>> };
+          delete compat.records[0].team_name;
+          compat.records[1].message_id = foreign.message_id;
+          if (!scoped) delete compat.records[1].team_name;
+          await writeFile(compatPath, JSON.stringify(compat));
+          await enqueueDispatchRequest('beta', {
+            kind: 'mailbox', to_worker: 'worker-1', worker_index: 1,
+            message_id: foreign.message_id, trigger_message: 'check mailbox',
+          }, cwd);
+          const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+          await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+            injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+          const after = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<{ notified_at: string | null }> };
+          assert.equal(after.records[0].notified_at, null);
+          assert.equal(Boolean(after.records[1].notified_at), scoped);
+          const shadow = JSON.parse(await readFile(shadowPath, 'utf8')) as { messages: Array<{ notified_at?: string }> };
+          assert.equal(Boolean(shadow.messages[0].notified_at), scoped);
         } finally {
           await rm(cwd, { recursive: true, force: true });
         }

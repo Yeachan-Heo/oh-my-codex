@@ -25,10 +25,29 @@ export async function readLegacyMailboxMessageIds(
   workerName: string,
   mailbox: TeamMailbox,
   eventPath: string,
+  bridgeRecords: readonly MailboxRecord[] = [],
 ): Promise<Set<string>> {
-  const shadowIds = new Set(mailbox.worker === workerName
-    ? mailbox.messages.filter((message) => message?.to_worker === workerName && typeof message.message_id === 'string').map((message) => message.message_id)
-    : []);
+  if (!Array.isArray(bridgeRecords) || bridgeRecords.some((record) => !record || typeof record.message_id !== 'string')) {
+    return new Set<string>();
+  }
+  const shadowIds = new Set<string>();
+  const duplicateIds = new Set<string>();
+  if (mailbox.worker === workerName) {
+    for (const message of mailbox.messages) {
+      if (typeof message?.message_id !== 'string') continue;
+      if (shadowIds.has(message.message_id)) duplicateIds.add(message.message_id);
+      shadowIds.add(message.message_id);
+    }
+    for (const message of mailbox.messages) {
+      if (message?.to_worker !== workerName) shadowIds.delete(message?.message_id);
+    }
+  }
+  const bridgeIds = new Set<string>();
+  for (const record of bridgeRecords) {
+    if (bridgeIds.has(record.message_id)) duplicateIds.add(record.message_id);
+    bridgeIds.add(record.message_id);
+  }
+  for (const id of duplicateIds) shadowIds.delete(id);
   const ids = new Set<string>();
   if (shadowIds.size === 0) return ids;
   const events = await readFile(eventPath, 'utf8').catch(() => '');
@@ -119,7 +138,8 @@ export async function sendDirectMessage(
         ? new Set<string>()
         : isBridgeEnabled()
           ? await readLegacyMailboxMessageIds(deps.teamName, toWorker, legacyMailbox,
-            join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'))
+            join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'),
+            getDefaultBridge(resolveBridgeStateDir(deps.cwd)).readMailboxRecords())
           : new Set(missingLegacyMessages.map((candidate) => candidate.message_id));
       for (const legacyMessage of missingLegacyMessages) {
         if (legacyIds.has(legacyMessage.message_id) && !seenMessageIds.has(legacyMessage.message_id)) {

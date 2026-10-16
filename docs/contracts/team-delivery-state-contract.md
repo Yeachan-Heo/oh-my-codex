@@ -19,9 +19,13 @@ carry the canonical `team_name`; mailbox reads and mutations require that Team
 and the addressed worker. Rust rejects a missing or different Team on mutations
 of scoped records. Notification hooks and shutdown retirement follow the same
 ownership rule.
+Acknowledgement events retain the selected record's Team for replay. Older
+acknowledgement events without a Team are replayed only for globally unique IDs.
 
 Older records without `team_name` remain readable only when both the Team's
 per-worker shadow and its `message_received` creation journal prove ownership.
+Duplicate IDs in the shadow or shared runtime cannot prove legacy ownership;
+those records remain hidden and require manual recovery.
 Shadows alone are insufficient: older readers could copy another Team's records
 into them. Unproven old records are retained on disk but hidden from bridge-backed
 mailbox operations, including the JSON fallback. In particular, an old send that

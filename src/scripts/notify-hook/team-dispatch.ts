@@ -1104,14 +1104,15 @@ async function updateMailboxNotified(stateDir, teamName, workerName, messageId) 
     if (!mailbox || mailbox.worker !== workerName || !Array.isArray(mailbox.messages)) return false;
     const msg = mailbox.messages.find((candidate) => candidate?.message_id === messageId && candidate.to_worker === workerName);
     if (process.env.OMX_RUNTIME_BRIDGE !== '0') {
-      const record = getDefaultBridge(stateDir).readMailboxRecords().find((candidate) => candidate.message_id === messageId);
-      const legacyIds = !record || record.team_name == null
-        ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, join(teamDirPath, 'events', 'events.ndjson'))
+      const records = getDefaultBridge(stateDir).readMailboxRecords();
+      const candidates = records.filter((candidate) => candidate.message_id === messageId);
+      const legacyIds = candidates.length === 0 || candidates.some((record) => record.team_name == null)
+        ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, join(teamDirPath, 'events', 'events.ndjson'), records)
         : new Set<string>();
+      const record = candidates.find((candidate) => mailboxRecordBelongsToTeam(candidate, teamName, workerName, legacyIds));
       if (record) {
-        if (!mailboxRecordBelongsToTeam(record, teamName, workerName, legacyIds)) return false;
         runtimeExec({ command: 'MarkMailboxNotified', team_name: teamName, message_id: messageId }, stateDir, teamName);
-      } else if (!legacyIds.has(messageId)) {
+      } else if (candidates.length > 0 || !legacyIds.has(messageId)) {
         return false;
       }
     }

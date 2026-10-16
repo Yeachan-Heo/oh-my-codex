@@ -68,51 +68,74 @@ impl MailboxLog {
         });
     }
 
-    pub fn mark_notified(&mut self, message_id: &str) -> Result<(), MailboxError> {
-        let record = self.find_mut(message_id)?;
+    pub fn mark_notified(
+        &mut self,
+        message_id: &str,
+        team_name: Option<&str>,
+    ) -> Result<Option<String>, MailboxError> {
+        let record = self.find_mut(message_id, team_name)?;
         if record.delivered_at.is_some() {
             return Err(MailboxError::AlreadyDelivered {
                 message_id: message_id.to_string(),
             });
         }
         record.notified_at = Some(now_iso());
-        Ok(())
+        Ok(record.team_name.clone())
     }
 
-    pub fn mark_delivered(&mut self, message_id: &str) -> Result<(), MailboxError> {
-        let record = self.find_mut(message_id)?;
+    pub fn mark_delivered(
+        &mut self,
+        message_id: &str,
+        team_name: Option<&str>,
+    ) -> Result<Option<String>, MailboxError> {
+        let record = self.find_mut(message_id, team_name)?;
         if record.delivered_at.is_some() {
             return Err(MailboxError::AlreadyDelivered {
                 message_id: message_id.to_string(),
             });
         }
         record.delivered_at = Some(now_iso());
-        Ok(())
-    }
-
-    pub fn check_team(
-        &self,
-        message_id: &str,
-        team_name: Option<&str>,
-    ) -> Result<(), MailboxError> {
-        self.records
-            .iter()
-            .find(|record| record.message_id == message_id)
-            .filter(|record| record.team_name.is_none() || record.team_name.as_deref() == team_name)
-            .map(|_| ())
-            .ok_or_else(|| MailboxError::NotFound {
-                message_id: message_id.to_string(),
-            })
+        Ok(record.team_name.clone())
     }
 
     pub fn records(&self) -> &[MailboxRecord] {
         &self.records
     }
 
-    fn find_mut(&mut self, message_id: &str) -> Result<&mut MailboxRecord, MailboxError> {
-        self.records
-            .iter_mut()
-            .find(|r| r.message_id == message_id)
+    fn find_mut(
+        &mut self,
+        message_id: &str,
+        team_name: Option<&str>,
+    ) -> Result<&mut MailboxRecord, MailboxError> {
+        let mut scoped = self.records.iter().enumerate().filter(|(_, record)| {
+            record.message_id == message_id
+                && team_name.is_some()
+                && record.team_name.as_deref() == team_name
+        });
+        let first = scoped.next().map(|(index, _)| index);
+        let index = if scoped.next().is_some() {
+            None
+        } else if first.is_some() {
+            first
+        } else {
+            // Legacy ownership is checked by the caller; duplicate IDs cannot prove identity.
+            let mut matches = self
+                .records
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| record.message_id == message_id);
+            let first = matches
+                .next()
+                .filter(|(_, record)| record.team_name.is_none())
+                .map(|(index, _)| index);
+            if matches.next().is_none() {
+                first
+            } else {
+                None
+            }
+        };
+        index
+            .map(|index| &mut self.records[index])
             .ok_or_else(|| MailboxError::NotFound {
                 message_id: message_id.to_string(),
             })
@@ -200,7 +223,7 @@ mod tests {
     fn mark_notified_sets_timestamp() {
         let mut log = MailboxLog::new();
         log.create(None, "msg-1", "a", "b", "body");
-        log.mark_notified("msg-1").unwrap();
+        log.mark_notified("msg-1", None).unwrap();
         assert!(log.records()[0].notified_at.is_some());
     }
 
@@ -208,21 +231,21 @@ mod tests {
     fn mark_delivered_sets_timestamp() {
         let mut log = MailboxLog::new();
         log.create(None, "msg-1", "a", "b", "body");
-        log.mark_delivered("msg-1").unwrap();
+        log.mark_delivered("msg-1", None).unwrap();
         assert!(log.records()[0].delivered_at.is_some());
     }
 
     #[test]
     fn mark_notified_not_found() {
         let mut log = MailboxLog::new();
-        let err = log.mark_notified("nonexistent").unwrap_err();
+        let err = log.mark_notified("nonexistent", None).unwrap_err();
         assert!(matches!(err, MailboxError::NotFound { .. }));
     }
 
     #[test]
     fn mark_delivered_not_found() {
         let mut log = MailboxLog::new();
-        let err = log.mark_delivered("nonexistent").unwrap_err();
+        let err = log.mark_delivered("nonexistent", None).unwrap_err();
         assert!(matches!(err, MailboxError::NotFound { .. }));
     }
 
@@ -230,8 +253,8 @@ mod tests {
     fn mark_notified_already_delivered_errors() {
         let mut log = MailboxLog::new();
         log.create(None, "msg-1", "a", "b", "body");
-        log.mark_delivered("msg-1").unwrap();
-        let err = log.mark_notified("msg-1").unwrap_err();
+        log.mark_delivered("msg-1", None).unwrap();
+        let err = log.mark_notified("msg-1", None).unwrap_err();
         assert!(matches!(err, MailboxError::AlreadyDelivered { .. }));
     }
 
@@ -239,17 +262,38 @@ mod tests {
     fn mark_delivered_twice_errors() {
         let mut log = MailboxLog::new();
         log.create(None, "msg-1", "a", "b", "body");
-        log.mark_delivered("msg-1").unwrap();
-        let err = log.mark_delivered("msg-1").unwrap_err();
+        log.mark_delivered("msg-1", None).unwrap();
+        let err = log.mark_delivered("msg-1", None).unwrap_err();
         assert!(matches!(err, MailboxError::AlreadyDelivered { .. }));
+    }
+
+    #[test]
+    fn ambiguous_mailbox_ids_cannot_be_acknowledged() {
+        for scopes in [
+            vec![None, None],
+            vec![Some("beta".to_string()), Some("beta".to_string())],
+        ] {
+            let mut log = MailboxLog::new();
+            for scope in scopes {
+                log.create(scope, "duplicate", "leader-fixed", "worker-1", "body");
+            }
+            for team in [None, Some("alpha"), Some("beta")] {
+                assert!(log.mark_notified("duplicate", team).is_err());
+                assert!(log.mark_delivered("duplicate", team).is_err());
+            }
+            assert!(log
+                .records()
+                .iter()
+                .all(|record| record.notified_at.is_none() && record.delivered_at.is_none()));
+        }
     }
 
     #[test]
     fn full_lifecycle() {
         let mut log = MailboxLog::new();
         log.create(None, "msg-1", "worker-a", "worker-b", "task payload");
-        log.mark_notified("msg-1").unwrap();
-        log.mark_delivered("msg-1").unwrap();
+        log.mark_notified("msg-1", None).unwrap();
+        log.mark_delivered("msg-1", None).unwrap();
 
         let r = &log.records()[0];
         assert!(r.notified_at.is_some());
@@ -262,7 +306,7 @@ mod tests {
         log.create(None, "msg-1", "a", "b", "first");
         log.create(None, "msg-2", "b", "a", "second");
         assert_eq!(log.records().len(), 2);
-        log.mark_delivered("msg-2").unwrap();
+        log.mark_delivered("msg-2", None).unwrap();
         assert!(log.records()[1].delivered_at.is_some());
         assert!(log.records()[0].delivered_at.is_none());
     }
@@ -271,7 +315,7 @@ mod tests {
     fn serialization_round_trip() {
         let mut log = MailboxLog::new();
         log.create(None, "msg-1", "a", "b", "payload");
-        log.mark_notified("msg-1").unwrap();
+        log.mark_notified("msg-1", None).unwrap();
         let json = serde_json::to_string(&log).unwrap();
         let deserialized: MailboxLog = serde_json::from_str(&json).unwrap();
         assert_eq!(log.records().len(), deserialized.records().len());

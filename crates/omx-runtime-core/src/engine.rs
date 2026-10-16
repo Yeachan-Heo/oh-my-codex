@@ -243,17 +243,25 @@ impl RuntimeEngine {
                 message_id,
                 team_name,
             } => {
-                self.mailbox.check_team(&message_id, team_name.as_deref())?;
-                self.mailbox.mark_notified(&message_id)?;
-                RuntimeEvent::MailboxNotified { message_id }
+                let team_name = self
+                    .mailbox
+                    .mark_notified(&message_id, team_name.as_deref())?;
+                RuntimeEvent::MailboxNotified {
+                    team_name,
+                    message_id,
+                }
             }
             RuntimeCommand::MarkMailboxDelivered {
                 message_id,
                 team_name,
             } => {
-                self.mailbox.check_team(&message_id, team_name.as_deref())?;
-                self.mailbox.mark_delivered(&message_id)?;
-                RuntimeEvent::MailboxDelivered { message_id }
+                let team_name = self
+                    .mailbox
+                    .mark_delivered(&message_id, team_name.as_deref())?;
+                RuntimeEvent::MailboxDelivered {
+                    team_name,
+                    message_id,
+                }
             }
         };
 
@@ -640,11 +648,37 @@ fn replay_event(engine: &mut RuntimeEngine, event: &RuntimeEvent) -> Result<(), 
                 body.as_deref().unwrap_or(""),
             );
         }
-        RuntimeEvent::MailboxNotified { message_id } => {
-            let _ = engine.mailbox.mark_notified(message_id);
+        RuntimeEvent::MailboxNotified {
+            message_id,
+            team_name,
         }
-        RuntimeEvent::MailboxDelivered { message_id } => {
-            let _ = engine.mailbox.mark_delivered(message_id);
+        | RuntimeEvent::MailboxDelivered {
+            message_id,
+            team_name,
+        } => {
+            // Older acknowledgement events have no scope and are safe only for a unique ID.
+            let replay_team = team_name.clone().or_else(|| {
+                let mut records = engine
+                    .mailbox
+                    .records()
+                    .iter()
+                    .filter(|record| record.message_id == *message_id);
+                let first = records.next()?;
+                if records.next().is_none() {
+                    first.team_name.clone()
+                } else {
+                    None
+                }
+            });
+            if matches!(event, RuntimeEvent::MailboxNotified { .. }) {
+                let _ = engine
+                    .mailbox
+                    .mark_notified(message_id, replay_team.as_deref());
+            } else {
+                let _ = engine
+                    .mailbox
+                    .mark_delivered(message_id, replay_team.as_deref());
+            }
         }
         RuntimeEvent::DispatchRecordsRemoved { .. } | RuntimeEvent::SnapshotCaptured => {}
         event => replay_dispatch_event(&mut engine.dispatch, event)?,
@@ -797,6 +831,77 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_mutation_selects_scoped_record_after_legacy_id_collision() {
+        let dir =
+            std::env::temp_dir().join(format!("omx-mailbox-collision-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = RuntimeEngine::new().with_state_dir(&dir);
+        for team_name in [None, Some("beta".to_string())] {
+            engine
+                .process(RuntimeCommand::CreateMailboxMessage {
+                    team_name,
+                    message_id: "collision".into(),
+                    from_worker: "leader-fixed".into(),
+                    to_worker: "worker-1".into(),
+                    body: "payload".into(),
+                })
+                .unwrap();
+        }
+        engine
+            .process(RuntimeCommand::MarkMailboxNotified {
+                team_name: Some("beta".into()),
+                message_id: "collision".into(),
+            })
+            .unwrap();
+        engine
+            .process(RuntimeCommand::MarkMailboxDelivered {
+                team_name: Some("beta".into()),
+                message_id: "collision".into(),
+            })
+            .unwrap();
+        engine.persist().unwrap();
+        std::fs::remove_file(dir.join("mailbox.json")).unwrap();
+        let engine = RuntimeEngine::load(&dir).unwrap();
+        assert!(engine.mailbox.records()[0].notified_at.is_none());
+        assert!(engine.mailbox.records()[0].delivered_at.is_none());
+        assert!(engine.mailbox.records()[1].notified_at.is_some());
+        assert!(engine.mailbox.records()[1].delivered_at.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_mailbox_acknowledgements_replay_only_for_unique_ids() {
+        for scopes in [
+            vec![None],
+            vec![Some("alpha".to_string())],
+            vec![None, None],
+            vec![None, Some("beta".to_string())],
+        ] {
+            let mut engine = RuntimeEngine::new();
+            for scope in &scopes {
+                engine.mailbox.create(
+                    scope.clone(),
+                    "legacy-event",
+                    "leader-fixed",
+                    "worker-1",
+                    "body",
+                );
+            }
+            for event in ["MailboxNotified", "MailboxDelivered"] {
+                let event: RuntimeEvent = serde_json::from_value(serde_json::json!({
+                    "event": event, "message_id": "legacy-event"
+                }))
+                .unwrap();
+                replay_event(&mut engine, &event).unwrap();
+            }
+            for record in engine.mailbox.records() {
+                assert_eq!(record.notified_at.is_some(), scopes.len() == 1);
+                assert_eq!(record.delivered_at.is_some(), scopes.len() == 1);
+            }
+        }
+    }
+
+    #[test]
     fn mailbox_team_check_guards_the_record_mutated_when_ids_repeat() {
         let mut engine = RuntimeEngine::new();
         for team in ["alpha", "beta"] {
@@ -815,18 +920,17 @@ mod tests {
                 team_name: Some("beta".into()),
                 message_id: "repeated".into(),
             })
-            .is_err());
+            .is_ok());
         assert!(engine
             .process(RuntimeCommand::MarkMailboxDelivered {
                 team_name: Some("beta".into()),
                 message_id: "repeated".into(),
             })
-            .is_err());
-        assert!(engine
-            .mailbox
-            .records()
-            .iter()
-            .all(|record| record.notified_at.is_none() && record.delivered_at.is_none()));
+            .is_ok());
+        assert!(engine.mailbox.records()[0].notified_at.is_none());
+        assert!(engine.mailbox.records()[0].delivered_at.is_none());
+        assert!(engine.mailbox.records()[1].notified_at.is_some());
+        assert!(engine.mailbox.records()[1].delivered_at.is_some());
         engine
             .process(RuntimeCommand::MarkMailboxDelivered {
                 team_name: Some("alpha".into()),
@@ -834,7 +938,7 @@ mod tests {
             })
             .unwrap();
         assert!(engine.mailbox.records()[0].delivered_at.is_some());
-        assert!(engine.mailbox.records()[1].delivered_at.is_none());
+        assert!(engine.mailbox.records()[1].delivered_at.is_some());
     }
 
     #[test]

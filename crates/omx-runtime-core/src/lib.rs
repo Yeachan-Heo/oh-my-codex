@@ -291,9 +291,13 @@ pub enum RuntimeEvent {
         body: Option<String>,
     },
     MailboxNotified {
+        #[serde(default)]
+        team_name: Option<String>,
         message_id: String,
     },
     MailboxDelivered {
+        #[serde(default)]
+        team_name: Option<String>,
         message_id: String,
     },
 }

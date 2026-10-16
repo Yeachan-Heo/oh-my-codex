@@ -100,8 +100,8 @@ export type RuntimeEvent =
   | { event: 'ReplayRequested'; cursor?: string }
   | { event: 'SnapshotCaptured' }
   | { event: 'MailboxMessageCreated'; team_name?: string; message_id: string; from_worker: string; to_worker: string; body?: string }
-  | { event: 'MailboxNotified'; message_id: string }
-  | { event: 'MailboxDelivered'; message_id: string };
+  | { event: 'MailboxNotified'; team_name?: string | null; message_id: string }
+  | { event: 'MailboxDelivered'; team_name?: string | null; message_id: string };
 
 export interface DispatchRecord {
   request_id: string;
