@@ -289,11 +289,9 @@ describe('RuntimeBridge.readDispatchRecordsStrict', () => {
 });
 
 describe('RuntimeBridge.execCommand / readSnapshot (parse guard)', () => {
-  // The bridge's `validateSchemaOnce` is a module-level singleton: a single
-  // fake-binary that returns the same string regardless of subcommand would
-  // make test ordering matter. Branch on $1 so the schema probe always sees
-  // a valid manifest while exec/snapshot return the test-supplied stdout.
+  // Keep schema probes separate from exec/snapshot output in fake runtimes.
   const validSchema = JSON.stringify({
+    capabilities: ['team-mailbox-scope-v1'],
     commands: [
       'acquire-authority', 'renew-authority', 'queue-dispatch',
       'mark-notified', 'mark-delivered', 'mark-failed', 'remove-dispatch-records',
@@ -301,13 +299,13 @@ describe('RuntimeBridge.execCommand / readSnapshot (parse guard)', () => {
     ],
   });
 
-  function withFakeBinary(stdout: string, run: (bridge: RuntimeBridge) => void): void {
+  function withFakeBinary(stdout: string, run: (bridge: RuntimeBridge, binaryPath: string) => void, schema = validSchema): void {
     const stateDir = mkdtempSync(join(tmpdir(), 'omx-bridge-exec-'));
     const binaryPath = join(stateDir, 'fake-runtime.sh');
     const script = `#!/bin/sh
 case "$1" in
   schema)
-    printf '%s' ${JSON.stringify(validSchema)}
+    printf '%s' ${JSON.stringify(schema)}
     ;;
   *)
     printf '%s' ${JSON.stringify(stdout)}
@@ -317,11 +315,32 @@ esac
     writeFileSync(binaryPath, script, 'utf-8');
     chmodSync(binaryPath, 0o755);
     try {
-      run(new RuntimeBridge({ stateDir, binaryPath }));
+      run(new RuntimeBridge({ stateDir, binaryPath }), binaryPath);
     } finally {
       rmSync(stateDir, { recursive: true, force: true });
     }
   }
+
+  it('rejects missing Team scope capability even after another runtime was validated', () => {
+    const command = { command: 'CaptureSnapshot' as const };
+    withFakeBinary('{"event":"SnapshotCaptured"}', (bridge) => bridge.execCommand(command));
+    for (const capabilities of [undefined, [], 'team-mailbox-scope-v1']) {
+      withFakeBinary('{"event":"SnapshotCaptured"}', (bridge) => {
+        assert.throws(() => bridge.execCommand(command), /team-mailbox-scope-v1/);
+      }, JSON.stringify({ ...JSON.parse(validSchema), capabilities }));
+    }
+  });
+
+  it('revalidates a runtime replaced at the same path before the next mutation', () => {
+    const command = { command: 'CaptureSnapshot' as const };
+    withFakeBinary('{"event":"SnapshotCaptured"}', (bridge, binaryPath) => {
+      bridge.execCommand(command);
+      writeFileSync(binaryPath, `#!/bin/sh
+printf '%s' '{"commands":[],"capabilities":[]}'
+`);
+      assert.throws(() => bridge.execCommand(command), /team-mailbox-scope-v1/);
+    });
+  });
 
   it('execCommand surfaces RuntimeBridgeError when stdout is non-JSON', () => {
     withFakeBinary('not-json-at-all', (bridge) => {

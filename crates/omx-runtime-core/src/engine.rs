@@ -428,19 +428,26 @@ impl RuntimeEngine {
         engine.seen_dispatch_ids = ledger;
 
         if let Some(mailbox_state) = mailbox {
-            let body_by_message_id: std::collections::HashMap<&str, &str> = mailbox_state
-                .records()
-                .iter()
-                .map(|record| (record.message_id.as_str(), record.body.as_str()))
-                .collect();
+            let mut body_by_message = std::collections::HashMap::new();
+            for record in mailbox_state.records() {
+                body_by_message
+                    .entry((record.team_name.as_deref(), record.message_id.as_str()))
+                    .and_modify(|body| *body = None)
+                    .or_insert(Some(record.body.as_str()));
+            }
 
             for event in &mut events {
                 if let RuntimeEvent::MailboxMessageCreated {
-                    message_id, body, ..
+                    team_name,
+                    message_id,
+                    body,
+                    ..
                 } = event
                 {
                     if body.is_none() {
-                        if let Some(record_body) = body_by_message_id.get(message_id.as_str()) {
+                        if let Some(Some(record_body)) =
+                            body_by_message.get(&(team_name.as_deref(), message_id.as_str()))
+                        {
                             if !record_body.is_empty() {
                                 *body = Some((*record_body).to_string());
                             }
@@ -1087,6 +1094,72 @@ mod tests {
             serde_json::Value::String("recovered body".into())
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mailbox_body_backfill_respects_team_and_rejects_duplicate_keys() {
+        let dir =
+            std::env::temp_dir().join(format!("omx-mailbox-backfill-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = RuntimeEngine::new().with_state_dir(&dir);
+        for (team_name, message_id, body) in [
+            (None, "collision", "legacy"),
+            (Some("beta"), "collision", "beta secret"),
+            (Some("alpha"), "collision", "alpha secret"),
+            (Some("alpha"), "collision", "ambiguous alpha"),
+            (None, "duplicate-legacy", "first legacy"),
+            (None, "duplicate-legacy", "second legacy"),
+            (Some("gamma"), "scoped-only", "gamma secret"),
+        ] {
+            engine
+                .process(RuntimeCommand::CreateMailboxMessage {
+                    team_name: team_name.map(String::from),
+                    message_id: message_id.into(),
+                    from_worker: "leader-fixed".into(),
+                    to_worker: "worker-1".into(),
+                    body: body.into(),
+                })
+                .unwrap();
+        }
+        engine.persist().unwrap();
+        for event in &mut engine.event_log {
+            if let RuntimeEvent::MailboxMessageCreated {
+                team_name,
+                message_id,
+                body,
+                ..
+            } = event
+            {
+                *body = None;
+                if message_id == "scoped-only" {
+                    *team_name = None;
+                }
+            }
+        }
+        engine.persist().unwrap();
+        let loaded = RuntimeEngine::load(&dir).unwrap();
+        loaded.persist().unwrap();
+        let expected = [
+            Some("legacy"),
+            Some("beta secret"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        assert_eq!(loaded.event_log.len(), expected.len());
+        for (event, expected_body) in loaded.event_log.iter().zip(expected) {
+            assert!(
+                matches!(event, RuntimeEvent::MailboxMessageCreated {body, ..} if body.as_deref() == expected_body)
+            );
+        }
+        std::fs::remove_file(dir.join("mailbox.json")).unwrap();
+        let replayed = RuntimeEngine::load(&dir).unwrap();
+        for (record, expected_body) in replayed.mailbox.records().iter().zip(expected) {
+            assert_eq!(record.body, expected_body.unwrap_or(""));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1,13 +1,12 @@
 // @ts-nocheck
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
-import { execFileSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
-import { getDefaultBridge, resolveBridgeStateDir, resolveRuntimeBinaryPath } from '../../runtime/bridge.js';
+import { getDefaultBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
-import { mailboxRecordBelongsToTeam, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
+import { mailboxMessageContentMatches, mailboxMessageIdentity, mailboxRecordBelongsToTeam, normalizeBridgeMailboxMessage, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,13 +37,11 @@ import {
 function runtimeExec(command, stateDir, team) {
   if (process.env.OMX_RUNTIME_BRIDGE === '0') return;
   try {
-    const binaryPath = resolveRuntimeBinaryPath();
-    execFileSync(binaryPath, ['exec', JSON.stringify(command), `--state-dir=${stateDir}`], {
-      timeout: 5000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    getDefaultBridge(stateDir).execCommand(command);
   } catch (error) {
+    if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
+    const cause = error instanceof Error ? error.cause : undefined;
+    if (command.command === 'MarkMailboxNotified' && (typeof cause?.code !== 'string' || cause?.status != null)) throw error;
     recordBridgeFallback({
       stateDir,
       team,
@@ -1102,15 +1099,23 @@ async function updateMailboxNotified(stateDir, teamName, workerName, messageId) 
   return await withMailboxLock(teamDirPath, workerName, async () => {
     const mailbox = await readJson(mailboxPath, { worker: workerName, messages: [] });
     if (!mailbox || mailbox.worker !== workerName || !Array.isArray(mailbox.messages)) return false;
-    const msg = mailbox.messages.find((candidate) => candidate?.message_id === messageId && candidate.to_worker === workerName);
+    let msg = mailbox.messages.find((candidate) => candidate?.message_id === messageId && candidate.to_worker === workerName);
     if (process.env.OMX_RUNTIME_BRIDGE !== '0') {
       const records = getDefaultBridge(stateDir).readMailboxRecords();
       const candidates = records.filter((candidate) => candidate.message_id === messageId);
-      const legacyIds = candidates.length === 0 || candidates.some((record) => record.team_name == null)
+      const legacyIds = candidates.length === 0 || candidates.some((record) => record.team_name == null || record.body === ''
+        || mailbox.messages.some((message) => message?.message_id === messageId && message.created_at !== record.created_at))
         ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, join(teamDirPath, 'events', 'events.ndjson'), records)
         : new Set<string>();
       const record = candidates.find((candidate) => mailboxRecordBelongsToTeam(candidate, teamName, workerName, legacyIds));
       if (record) {
+        const normalized = normalizeBridgeMailboxMessage(record, legacyIds.has(messageId) ? msg : undefined);
+        msg = mailbox.messages.find((candidate) => mailboxMessageIdentity(candidate) === mailboxMessageIdentity(normalized)
+          || (legacyIds.has(messageId) && mailboxMessageContentMatches(candidate, normalized)));
+        if (!msg) {
+          msg = normalized;
+          mailbox.messages.push(msg);
+        }
         runtimeExec({ command: 'MarkMailboxNotified', team_name: teamName, message_id: messageId }, stateDir, teamName);
       } else if (candidates.length > 0 || !legacyIds.has(messageId)) {
         return false;

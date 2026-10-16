@@ -23,6 +23,8 @@ import {
   normalizeBridgeMailboxMessage,
   readLegacyMailboxMessageIds,
   mailboxRecordBelongsToTeam,
+  mailboxMessageIdentity,
+  mailboxMessageContentMatches,
 } from './state/mailbox.js';
 import {
   enqueueDispatchRequest as enqueueDispatchRequestImpl,
@@ -2003,7 +2005,7 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
       if (compat) {
         const bridgeRecords = bridge.readMailboxRecords();
         const needsLegacyOwnership = legacyMailbox.messages.length > 0
-          && bridgeRecords.some((record) => record.to_worker === workerName && record.team_name == null);
+          && bridgeRecords.some((record) => record.to_worker === workerName && (record.team_name == null || record.body === ''));
         const legacyMessageIds = needsLegacyOwnership
           ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
@@ -2014,14 +2016,8 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
         );
         const bridgeMessages = bridgeRecords
           .filter((record) => mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds))
-          .map((record) => {
-            const normalized = normalizeBridgeMailboxMessage(record);
-            if (!normalized.body) {
-              const legacyMessage = legacyById.get(normalized.message_id);
-              if (legacyMessage?.body) return { ...normalized, body: legacyMessage.body };
-            }
-            return normalized;
-          });
+          .map((record) => normalizeBridgeMailboxMessage(record,
+            legacyMessageIds.has(record.message_id) ? legacyById.get(record.message_id) : undefined));
         return { worker: workerName, messages: bridgeMessages };
       }
     } catch {
@@ -2053,13 +2049,36 @@ async function readLegacyMailbox(teamName: string, workerName: string, cwd: stri
   }
 }
 
-async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string): Promise<void> {
+async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string, replacedMessage?: TeamMailboxMessage): Promise<void> {
   const p = mailboxPath(teamName, mailbox.worker, cwd);
   const existing = await readLegacyMailbox(teamName, mailbox.worker, cwd);
-  const updatedIds = new Set(mailbox.messages.map((message) => message.message_id));
-  // Filtered bridge views must not delete unproven shadows needed for recovery.
-  const preserved = existing.messages.filter((message) => !updatedIds.has(message?.message_id));
-  await writeAtomic(p, JSON.stringify({ ...mailbox, messages: [...preserved, ...mailbox.messages] }, null, 2));
+  if (replacedMessage) {
+    const index = existing.messages.findIndex((message) => mailboxMessageIdentity(message) === mailboxMessageIdentity(replacedMessage));
+    if (index >= 0) existing.messages.splice(index, 1);
+  }
+  const existingById = new Map(existing.messages.map((message) => [message?.message_id, message]));
+  const needsRecovery = mailbox.messages.some((message) => {
+    const previous = existingById.get(message?.message_id);
+    return previous && previous.created_at !== message.created_at && mailboxMessageContentMatches(previous, message);
+  });
+  const recoverableIds = needsRecovery && isBridgeEnabled()
+    ? await readLegacyMailboxMessageIds(teamName, mailbox.worker, existing, teamEventLogPath(teamName, cwd),
+      getDefaultBridge(resolveBridgeStateDir(cwd)).readMailboxRecords())
+    : new Set<string>();
+  const updates = new Map<string, TeamMailboxMessage[]>();
+  for (const incoming of mailbox.messages) {
+    const previous = existingById.get(incoming?.message_id);
+    const recovering = recoverableIds.has(incoming?.message_id) && previous && mailboxMessageContentMatches(previous, incoming);
+    const message = recovering ? { ...incoming, created_at: previous.created_at } : incoming;
+    const key = mailboxMessageIdentity(message);
+    const pending = recovering ? [] : updates.get(key) ?? [];
+    pending.push(message);
+    updates.set(key, pending);
+  }
+  // Match immutable content one row at a time, retaining colliding recovery rows.
+  const messages = existing.messages.map((message) => updates.get(mailboxMessageIdentity(message))?.shift() ?? message);
+  for (const pending of updates.values()) messages.push(...pending);
+  await writeAtomic(p, JSON.stringify({ ...mailbox, messages }, null, 2));
 }
 
 async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
@@ -2496,12 +2515,14 @@ export async function retireTeamMailboxMessages(
           || typeof record.to_worker !== 'string'
           || typeof record.body !== 'string'
           || typeof record.created_at !== 'string'
+          || (record.team_name != null && (typeof record.team_name !== 'string' || !TEAM_NAME_SAFE_PATTERN.test(record.team_name)))
           || (record.notified_at !== null && typeof record.notified_at !== 'string')
           || (record.delivered_at !== null && typeof record.delivered_at !== 'string'))) {
           throw new Error('authoritative_mailbox_retirement_discovery_failed');
         }
         const needsLegacyOwnership = mailbox.messages.length > 0
-          && bridgeRecords.some((record) => record.to_worker === workerName && record.team_name == null);
+          && bridgeRecords.some((record) => record.to_worker === workerName && (record.team_name == null || record.body === ''
+            || mailbox.messages.some((message) => message?.message_id === record.message_id && message.created_at !== record.created_at)));
         const legacyMessageIds = needsLegacyOwnership
           ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
@@ -2514,9 +2535,12 @@ export async function retireTeamMailboxMessages(
         let retiredFromAuthoritative = 0;
         for (const authoritative of bridgeRecords) {
           if (!mailboxRecordBelongsToTeam(authoritative, teamName, workerName, legacyMessageIds)) continue;
-          let message = mailbox.messages.find((entry) => entry.message_id === authoritative.message_id);
+          const normalized = normalizeBridgeMailboxMessage(authoritative, legacyMessageIds.has(authoritative.message_id)
+            ? mailbox.messages.find((entry) => entry.message_id === authoritative.message_id) : undefined);
+          let message = mailbox.messages.find((entry) => mailboxMessageIdentity(entry) === mailboxMessageIdentity(normalized)
+            || (legacyMessageIds.has(authoritative.message_id) && mailboxMessageContentMatches(entry, normalized)));
           if (!message) {
-            message = normalizeBridgeMailboxMessage(authoritative);
+            message = normalized;
             mailbox.messages.push(message);
             changed = true;
           }

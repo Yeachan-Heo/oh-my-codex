@@ -15,6 +15,7 @@ pub use mailbox::{MailboxError, MailboxLog, MailboxRecord};
 pub use replay::ReplayState;
 
 pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
+pub const RUNTIME_CAPABILITIES: &[&str] = &["team-mailbox-scope-v1"];
 pub const RUNTIME_COMMAND_NAMES: &[&str] = &[
     "acquire-authority",
     "renew-authority",

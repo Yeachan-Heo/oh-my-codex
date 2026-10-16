@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
 export interface TeamMailboxMessage {
@@ -78,7 +78,7 @@ interface MailboxDeps {
   withMailboxLock: <T>(teamName: string, workerName: string, cwd: string, fn: () => Promise<T>) => Promise<T>;
   readMailbox: (teamName: string, workerName: string, cwd: string) => Promise<TeamMailbox>;
   readLegacyMailbox?: (teamName: string, workerName: string, cwd: string) => Promise<TeamMailbox>;
-  writeMailbox: (teamName: string, mailbox: TeamMailbox, cwd: string) => Promise<void>;
+  writeMailbox: (teamName: string, mailbox: TeamMailbox, cwd: string, replacedMessage?: TeamMailboxMessage) => Promise<void>;
   appendTeamEvent: (
     teamName: string,
     event: {
@@ -98,17 +98,33 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
   try {
     getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
+    if (command.command !== 'CreateMailboxMessage') {
+      const cause = error instanceof Error ? error.cause as (NodeJS.ErrnoException & { status?: number | null }) | undefined : undefined;
+      if (typeof cause?.code !== 'string' || cause.status != null) throw error;
+    }
     return false;
   }
 }
 
-export function normalizeBridgeMailboxMessage(record: MailboxRecord): TeamMailboxMessage {
+export function mailboxMessageIdentity(message: TeamMailboxMessage | MailboxRecord): string {
+  return JSON.stringify([message?.message_id, message?.from_worker, message?.to_worker, message?.body, message?.created_at]);
+}
+
+export function mailboxMessageContentMatches(left: TeamMailboxMessage | MailboxRecord, right: TeamMailboxMessage | MailboxRecord): boolean {
+  return left?.message_id === right?.message_id && left?.from_worker === right?.from_worker
+    && left?.to_worker === right?.to_worker && left?.body === right?.body;
+}
+
+export function normalizeBridgeMailboxMessage(record: MailboxRecord, recovery?: TeamMailboxMessage): TeamMailboxMessage {
+  const recoveredBody = recovery?.message_id === record.message_id
+    && recovery.from_worker === record.from_worker && recovery.to_worker === record.to_worker ? recovery.body : '';
   return {
     message_id: record.message_id,
     from_worker: record.from_worker,
     to_worker: record.to_worker,
-    body: record.body,
+    body: record.body || recoveredBody,
     created_at: record.created_at,
     notified_at: record.notified_at ?? undefined,
     delivered_at: record.delivered_at ?? undefined,
@@ -206,9 +222,9 @@ export async function sendDirectMessage(
           worker: legacyMailbox.worker,
           messages: [...shadowMailbox.messages],
         };
-        const shadowIndex = updatedShadowMailbox.messages.findIndex((candidate) => candidate.message_id === msgId);
+        const shadowIndex = updatedShadowMailbox.messages.findIndex((candidate) => mailboxMessageIdentity(candidate) === mailboxMessageIdentity(provisionalMessage));
         if (shadowIndex >= 0) updatedShadowMailbox.messages[shadowIndex] = msg;
-        await deps.writeMailbox(deps.teamName, updatedShadowMailbox, deps.cwd);
+        await deps.writeMailbox(deps.teamName, updatedShadowMailbox, deps.cwd, provisionalMessage);
       }
     }
     if (created) {
@@ -264,7 +280,7 @@ export async function markMessageDelivered(
   const existingMailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
   const existingMessage = existingMailbox.messages.find((message) => message.message_id === messageId);
   if (!existingMessage) return false;
-  if (existingMessage.delivered_at) return true;
+  if (existingMessage.delivered_at && existingMailbox.messages.filter((message) => message.message_id === messageId).length === 1) return true;
 
   if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', team_name: deps.teamName, message_id: messageId })) {
     const updated = await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {

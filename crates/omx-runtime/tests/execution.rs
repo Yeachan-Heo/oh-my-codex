@@ -178,6 +178,10 @@ fn schema_json_subcommand_prints_valid_json() {
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(parsed["schema_version"], 1);
+    assert!(parsed["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("team-mailbox-scope-v1")));
     assert!(parsed["commands"].is_array());
     assert!(parsed["events"].is_array());
 }

@@ -13,6 +13,10 @@ called out in issue #1243.
 
 ### Team mailbox isolation
 
+The JS bridge requires the `team-mailbox-scope-v1` runtime capability before
+mutating runtime state, including notification hooks. Older runtimes are rejected;
+rebuild or upgrade the runtime rather than allowing it to discard Team scope.
+
 Teams may share a runtime state directory and reuse names such as `worker-1`
 and `leader-fixed`. New mailbox creation commands, creation events, and records
 carry the canonical `team_name`; mailbox reads and mutations require that Team
@@ -34,6 +38,12 @@ guessing ownership. Explicitly disabling the bridge keeps the legacy JSON lane.
 
 Scoped records remain readable and can be retired if their shadow is missing;
 their Team ownership survives persistence and event replay.
+
+Runtime acknowledgement rejections propagate to the caller; only transport
+failures may use the JSON fallback. Shadow updates preserve colliding recovery
+rows. A proven, unique legacy ID can reconcile runtime timestamp changes without
+creating duplicate shadows. Old body-less creation events recover content only
+from a unique record with the same Team and message ID.
 
 ### `pending` / `notified` / `delivered` / `failed`
 

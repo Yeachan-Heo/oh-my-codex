@@ -131,7 +131,7 @@ export interface MailboxRecord {
 // ---------------------------------------------------------------------------
 
 /**
- * Raised when the omx-runtime binary returns output that fails JSON decoding.
+ * Raised when the runtime protocol or compatibility output is invalid.
  *
  * Distinguishing parse failure from spawn failure (which `run()` already wraps
  * in a generic `Error`) lets callers — e.g. dispatch loops in
@@ -151,8 +151,6 @@ export class RuntimeBridgeError extends Error {
     this.context = context;
   }
 }
-
-let schemaValidated = false;
 
 export interface RuntimeBinaryDiscoveryOptions {
   debugPath?: string;
@@ -259,7 +257,7 @@ export class RuntimeBridge {
 
   /** Execute a RuntimeCommand and return the resulting RuntimeEvent. */
   execCommand(cmd: RuntimeCommand, options?: { compact?: boolean }): RuntimeEvent {
-    this.validateSchemaOnce();
+    this.validateSchema();
     const json = JSON.stringify(cmd);
     const args = ['exec', json];
     if (this.stateDir) args.push(`--state-dir=${this.stateDir}`);
@@ -310,6 +308,7 @@ export class RuntimeBridge {
 
   /** Initialize a fresh state directory. */
   initStateDir(dir: string): void {
+    this.validateSchema();
     this.run(['init', dir]);
     this.stateDir = dir;
   }
@@ -391,30 +390,25 @@ export class RuntimeBridge {
   // Private helpers
   // -------------------------------------------------------------------------
 
-  private validateSchemaOnce(): void {
-    if (schemaValidated) return;
+  private validateSchema(): void {
+    const stdout = this.run(['schema', '--json']);
+    let schema;
     try {
-      const stdout = this.run(['schema', '--json']);
-      const schema = JSON.parse(stdout);
-      const expectedCommands = [
-        'acquire-authority', 'renew-authority', 'queue-dispatch',
-        'mark-notified', 'mark-delivered', 'mark-failed', 'remove-dispatch-records',
-        'request-replay', 'capture-snapshot',
-      ];
-      const missing = expectedCommands.filter(
-        (c) => !schema.commands?.includes(c),
-      );
-      if (missing.length > 0) {
-        throw new Error(
-          `omx-runtime schema missing commands: ${missing.join(', ')}. ` +
-          `Bridge types may be out of sync with the Rust binary.`,
-        );
-      }
-      schemaValidated = true;
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('schema missing')) throw err;
-      // Binary not available — schema validation skipped
-      schemaValidated = true;
+      schema = JSON.parse(stdout);
+    } catch (cause) {
+      throw new RuntimeBridgeError('omx-runtime schema returned non-JSON output', { command: 'schema', cause });
+    }
+    if (!Array.isArray(schema?.capabilities) || !schema.capabilities.includes('team-mailbox-scope-v1')) {
+      throw new RuntimeBridgeError('omx-runtime requires team-mailbox-scope-v1; rebuild or upgrade the runtime', { command: 'schema' });
+    }
+    const expectedCommands = [
+      'acquire-authority', 'renew-authority', 'queue-dispatch',
+      'mark-notified', 'mark-delivered', 'mark-failed', 'remove-dispatch-records',
+      'request-replay', 'capture-snapshot',
+    ];
+    const missing = expectedCommands.filter((command) => !Array.isArray(schema.commands) || !schema.commands.includes(command));
+    if (missing.length > 0) {
+      throw new RuntimeBridgeError(`omx-runtime schema missing commands: ${missing.join(', ')}`, { command: 'schema' });
     }
   }
 
@@ -430,7 +424,7 @@ export class RuntimeBridge {
     } catch (err: unknown) {
       const execErr = err as { stderr?: string; message?: string };
       const stderr = execErr.stderr?.trim() ?? execErr.message ?? 'unknown error';
-      throw new Error(`omx-runtime ${args[0]} failed: ${stderr}`);
+      throw new Error(`omx-runtime ${args[0]} failed: ${stderr}`, { cause: err });
     }
   }
 }

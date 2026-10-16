@@ -207,7 +207,7 @@ function writeJson(file, value) {
 }
 function nowIso() { return new Date().toISOString(); }
 if (argv[0] === 'schema') {
-  process.stdout.write(JSON.stringify({ schema_version: 1, commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','remove-dispatch-records','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
+  process.stdout.write(JSON.stringify({ schema_version: 1, capabilities: ['team-mailbox-scope-v1'], commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','remove-dispatch-records','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
   process.exit(0);
 }
 if (argv[0] !== 'exec') process.exit(1);
@@ -456,7 +456,7 @@ describe('notify-hook team dispatch consumer', () => {
 set -eu
 printf '%s\n' "$*" >> "${runtimeLogPath}"
 if [[ "\${1:-}" == "schema" ]]; then
-  printf '{"schema_version":1,"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
+  printf '{"schema_version":1,"capabilities":["team-mailbox-scope-v1"],"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
   exit 0
 fi
 if [[ "\${1:-}" == "exec" ]]; then
@@ -590,6 +590,66 @@ exit 1
         } finally {
           await rm(cwd, { recursive: true, force: true });
         }
+      }
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+    }
+  });
+
+  it('keeps hook shadow updates safe on runtime rejection, recovery collisions, and clock drift', async () => {
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      for (const mode of ['rejected', 'recovery', 'bodyless-drift', 'old-runtime']) {
+        const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-shadow-identity-'));
+        try {
+          const runtimePath = join(cwd, 'omx-runtime');
+          await writeCompatRuntimeFixture(runtimePath);
+          process.env.OMX_RUNTIME_BINARY = runtimePath;
+          process.env.OMX_RUNTIME_BRIDGE = '1';
+          await initTeamState('alpha', 'task', 'executor', 1, cwd);
+          const own = await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'own', cwd);
+          const shadowPath = join(cwd, '.omx', 'state', 'team', 'alpha', 'mailbox', 'worker-1.json');
+          const recovery = { ...own, body: 'recover this payload' };
+          if (mode === 'recovery') await writeFile(shadowPath, JSON.stringify({ worker: 'worker-1', messages: [recovery, recovery, own] }));
+          const shadowBefore = await readFile(shadowPath, 'utf8');
+          const compatPath = join(cwd, '.omx', 'state', 'mailbox.json');
+          const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<Record<string, unknown>> };
+          if (mode === 'rejected') compat.records.push({ ...compat.records[0], body: 'ambiguous' });
+          if (mode === 'bodyless-drift') {
+            compat.records[0].body = '';
+            compat.records[0].created_at = '2020-01-01T00:00:00.000Z';
+          }
+          await writeFile(compatPath, JSON.stringify(compat));
+          const authoritativeBefore = await readFile(compatPath, 'utf8');
+          await enqueueDispatchRequest('alpha', { kind: 'mailbox', to_worker: 'worker-1', worker_index: 1,
+            message_id: own.message_id, trigger_message: 'check mailbox' }, cwd);
+          if (mode === 'old-runtime') {
+            await writeFile(runtimePath, (await readFile(runtimePath, 'utf8')).replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []'));
+          }
+          const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+          await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+            injector: async () => ({ ok: true, reason: 'injected_for_test' }) }).catch((error) => {
+              if (mode !== 'old-runtime') throw error;
+              assert.match(String(error), /team-mailbox-scope-v1/);
+            });
+          if (mode === 'rejected' || mode === 'old-runtime') {
+            assert.equal(await readFile(shadowPath, 'utf8'), shadowBefore);
+            if (mode === 'old-runtime') assert.equal(await readFile(compatPath, 'utf8'), authoritativeBefore);
+            const after = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<{ notified_at: string | null }> };
+            assert.ok(after.records.every((record) => record.notified_at === null));
+          } else {
+            const shadow = JSON.parse(await readFile(shadowPath, 'utf8')) as { messages: Array<typeof own> };
+            assert.equal(shadow.messages.length, mode === 'recovery' ? 3 : 1);
+            if (mode === 'recovery') assert.deepEqual(shadow.messages.slice(0, 2), [recovery, recovery].map((message) => JSON.parse(JSON.stringify(message))));
+            const [message] = await listMailboxMessages('alpha', 'worker-1', cwd);
+            assert.equal(message.body, 'own');
+            assert.ok(message.notified_at);
+          }
+        } finally { await rm(cwd, { recursive: true, force: true }); }
       }
     } finally {
       if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
@@ -746,6 +806,10 @@ exit 1
         join(fakeBinDir, 'omx-runtime'),
         `#!/usr/bin/env bash
 set -eu
+if [[ "\${1:-}" == "schema" ]]; then
+  printf '{"schema_version":1,"capabilities":["team-mailbox-scope-v1"],"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"]}\n'
+  exit 0
+fi
 if [[ "\${1:-}" == "exec" ]]; then
   echo "runtime schema drift" >&2
   exit 43

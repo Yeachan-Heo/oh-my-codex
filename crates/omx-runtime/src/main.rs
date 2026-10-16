@@ -27,6 +27,7 @@ fn run() -> Result<(), String> {
             if second == Some("--json") {
                 let summary = serde_json::json!({
                     "schema_version": omx_runtime_core::RUNTIME_SCHEMA_VERSION,
+                    "capabilities": omx_runtime_core::RUNTIME_CAPABILITIES,
                     "commands": omx_runtime_core::RUNTIME_COMMAND_NAMES,
                     "events": omx_runtime_core::RUNTIME_EVENT_NAMES,
                     "transport": "tmux",

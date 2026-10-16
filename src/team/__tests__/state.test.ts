@@ -123,6 +123,7 @@ function nowIso() {
 if (argv[0] === 'schema') {
   process.stdout.write(JSON.stringify({
     schema_version: 1,
+    capabilities: ['team-mailbox-scope-v1'],
     commands: [
       'acquire-authority',
       'renew-authority',
@@ -568,7 +569,7 @@ describe('team state', () => {
 set -eu
 printf '%s\n' "$*" >> "${runtimeLogPath}"
 if [[ "\${1:-}" == "schema" ]]; then
-  printf '{"schema_version":1,"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
+  printf '{"schema_version":1,"capabilities":["team-mailbox-scope-v1"],"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
   exit 0
 fi
 if [[ "\${1:-}" == "exec" ]]; then
@@ -2090,6 +2091,75 @@ exit 1
     }
   });
 
+  it('propagates rejected mailbox acknowledgements without changing shadow data', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-rejected-ack-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      await initTeamState('ambiguous-ack', 't', 'executor', 1, cwd);
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      const own = await sendDirectMessage('ambiguous-ack', 'leader-fixed', 'worker-1', 'own', cwd);
+      const compatPath = join(cwd, '.omx', 'state', 'mailbox.json');
+      const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<Record<string, unknown>> };
+      compat.records.push({ ...compat.records[0], body: 'ambiguous' });
+      await writeFile(compatPath, JSON.stringify(compat));
+      const shadowPath = join(cwd, '.omx', 'state', 'team', 'ambiguous-ack', 'mailbox', 'worker-1.json');
+      const before = await readFile(shadowPath, 'utf8');
+      const authoritativeBefore = await readFile(compatPath, 'utf8');
+      for (const mutate of [markMessageNotified, markMessageDelivered]) {
+        await assert.rejects(() => mutate('ambiguous-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec failed/);
+        assert.equal(await readFile(shadowPath, 'utf8'), before);
+        assert.equal(await readFile(compatPath, 'utf8'), authoritativeBefore);
+      }
+      compat.records[0].delivered_at = new Date().toISOString();
+      await writeFile(compatPath, JSON.stringify(compat));
+      await assert.rejects(() => markMessageDelivered('ambiguous-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec failed/);
+      assert.equal(await readFile(shadowPath, 'utf8'), before);
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves colliding recovery rows when mirroring a scoped acknowledgement', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-shadow-collision-'));
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      await initTeamState('shadow-collision', 't', 'executor', 1, cwd);
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      const own = await sendDirectMessage('shadow-collision', 'leader-fixed', 'worker-1', 'own', cwd);
+      const recovery = { ...own, body: 'recover this legacy payload' };
+      const shadowPath = join(cwd, '.omx', 'state', 'team', 'shadow-collision', 'mailbox', 'worker-1.json');
+      await writeFile(shadowPath, JSON.stringify({ worker: 'worker-1', messages: [recovery, recovery, own] }));
+      for (const mutate of [
+        () => markMessageNotified('shadow-collision', 'worker-1', own.message_id, cwd),
+        async () => { assert.equal(await retireTeamMailboxMessages('shadow-collision', ['worker-1'], cwd), 1); return true; },
+        () => markMessageDelivered('shadow-collision', 'worker-1', own.message_id, cwd),
+      ]) {
+        assert.equal(await mutate(), true);
+        const shadow = JSON.parse(await readFile(shadowPath, 'utf8')) as { messages: typeof own[] };
+        assert.deepEqual(shadow.messages.filter((message) => message.body === recovery.body), [recovery, recovery].map((message) => JSON.parse(JSON.stringify(message))));
+        assert.equal(shadow.messages.length, 3);
+      }
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects colliding legacy IDs even with valid creation evidence for both Teams', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-id-collision-'));
     const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
@@ -2322,13 +2392,18 @@ exit 1
       const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<Record<string, unknown>> };
       const record = compat.records.find((entry) => entry.message_id === message.message_id);
       assert.ok(record);
-      record.body = null;
-      await writeFile(compatPath, JSON.stringify(compat, null, 2));
-
-      await assert.rejects(
-        retireTeamMailboxMessages('team-retire-malformed-record', ['worker-1'], cwd),
-        /authoritative_mailbox_retirement_discovery_failed/,
-      );
+      const original = { ...record };
+      const shadowPath = join(cwd, '.omx', 'state', 'team', 'team-retire-malformed-record', 'mailbox', 'worker-1.json');
+      const shadowBefore = await readFile(shadowPath, 'utf8');
+      for (const invalid of [{ body: null }, ...[0, false, {}, [], '', ' ', 'invalid/name'].map((team_name) => ({ team_name }))]) {
+        Object.assign(record, original, invalid);
+        await writeFile(compatPath, JSON.stringify(compat, null, 2));
+        await assert.rejects(
+          retireTeamMailboxMessages('team-retire-malformed-record', ['worker-1'], cwd),
+          /authoritative_mailbox_retirement_discovery_failed/,
+        );
+        assert.equal(await readFile(shadowPath, 'utf8'), shadowBefore);
+      }
       assert.equal((await readFile(runtimeLogPath, 'utf8')).split('MarkMailboxDelivered').length - 1, 0);
     } finally {
       if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
@@ -2432,13 +2507,13 @@ exit 1
       assert.equal(typeof messages[0]?.delivered_at, 'string');
 
       assert.equal(existsSync(legacyPath), true, 'bridge-success path should shadow-write legacy mailbox JSON for body recovery');
-      const after = JSON.parse(await readFile(legacyPath, 'utf8')) as { messages: Array<{ message_id: string; body: string }> };
+      const after = JSON.parse(await readFile(legacyPath, 'utf8')) as { messages: Array<{ message_id: string; body: string; created_at: string }> };
       assert.equal(after.messages.length, 1);
       assert.equal(after.messages[0]?.message_id, message.message_id);
       assert.equal(after.messages[0]?.body, 'hello');
 
       const compatPath = join(cwd, '.omx', 'state', 'mailbox.json');
-      const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<{ message_id: string; body: string }> };
+      const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<{ message_id: string; body: string; created_at: string }> };
       const compatRecord = compat.records.find((entry) => entry.message_id === message.message_id);
       assert.ok(compatRecord);
 
@@ -2451,11 +2526,16 @@ exit 1
       assert.equal(deliveredCallsAfter, deliveredCallsBefore, 'idempotent delivered calls should not invoke bridge a second time');
 
       compatRecord!.body = '';
+      compatRecord!.created_at = '2026-01-01T00:00:00.000Z';
       await writeFile(compatPath, JSON.stringify(compat, null, 2));
 
       const recovered = await listMailboxMessages('team-mailbox-bridge-authority', 'worker-2', cwd);
       assert.equal(recovered.length, 1);
       assert.equal(recovered[0]?.body, 'hello', 'legacy shadow mailbox should backfill blank compat bodies');
+      assert.equal(await markMessageNotified('team-mailbox-bridge-authority', 'worker-2', message.message_id, cwd), true);
+      const repairedShadow = JSON.parse(await readFile(legacyPath, 'utf8')) as { messages: Array<{ created_at: string }> };
+      assert.equal(repairedShadow.messages.length, 1, 'old runtime clock drift must not duplicate a proven shadow');
+      assert.equal(repairedShadow.messages[0].created_at, after.messages[0].created_at);
     } finally {
       if (typeof previousRuntimeBinary === 'string') process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
       else delete process.env.OMX_RUNTIME_BINARY;
