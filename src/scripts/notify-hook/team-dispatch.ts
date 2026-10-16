@@ -39,8 +39,8 @@ function runtimeExec(command, stateDir, team) {
   try {
     getDefaultBridge(stateDir).execCommand(command);
   } catch (error) {
-    if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-    if (command.command === 'MarkMailboxNotified' && !isRuntimeTransportError(error)) throw error;
+    const schemaMismatch = error instanceof RuntimeBridgeError && error.context.command === 'schema';
+    if (!schemaMismatch && command.command === 'MarkMailboxNotified' && !isRuntimeTransportError(error)) throw error;
     recordBridgeFallback({
       stateDir,
       team,

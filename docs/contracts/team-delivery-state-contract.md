@@ -17,7 +17,9 @@ The JS bridge requires the `team-mailbox-scope-v1` runtime capability before
 mutating runtime state, including notification hooks. Sends validate before writing
 provisional shadows, and dispatch validates before reserving cooldowns or injecting
 into a pane. A runtime rejected after provisional creation removes only that
-send's provisional row.
+send's provisional row. If compatibility changes after pane input, the hook records
+completion through its JS dispatch projection rather than replaying the same side
+effect, without issuing the rejected command to the incompatible runtime.
 Older runtimes are rejected;
 rebuild or upgrade the runtime rather than allowing it to discard Team scope.
 
