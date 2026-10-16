@@ -638,6 +638,47 @@ describe('official Codex plugin layout', () => {
     });
   });
 
+  it('emits a JSON no-op when a plugin SubagentStop launcher fails', async () => {
+    await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
+      const cwd = join(cacheRoot, 'project');
+      const launchId = 'failing-subagent-stop';
+      await mkdir(cwd);
+      await writeJson(join(cwd, 'state/plugin-hook-routing', `${launchId}.json`), {
+        routing: 'omx-plugin-hook-routing-only:v1',
+        ownerSessionId: 'native-root',
+      });
+      const payload = JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        cwd,
+        session_id: 'native-root',
+        agent_id: 'native-child',
+        turn_id: 'native-child-turn',
+      });
+      const hookEnv = {
+        OMX_ROOT: cwd,
+        OMX_ENTRY_PATH: omxBin,
+        OMX_CODEX_LAUNCH_ID: launchId,
+      };
+
+      for (const command of [join(cacheRoot, 'missing-omx'), process.execPath]) {
+        const result = runPluginNativeHook(cachePluginRoot, payload, {
+          ...hookEnv,
+          OMX_NATIVE_HOOK_COMMAND: command,
+        });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        assert.deepEqual(parseSingleJsonStdout(result.stdout), {});
+      }
+
+      await writeFile(join(cachePluginRoot, 'hooks/omx-command.json'), '{invalid json', 'utf-8');
+      const malformedLauncher = runPluginNativeHook(cachePluginRoot, payload, {
+        ...hookEnv,
+        OMX_NATIVE_HOOK_COMMAND: '',
+      });
+      assert.equal(malformedLauncher.status, 0, malformedLauncher.stderr || malformedLauncher.stdout);
+      assert.deepEqual(parseSingleJsonStdout(malformedLauncher.stdout), {});
+    });
+  });
+
   it('no-ops plugin hooks for nested plain Codex sessions that inherit omx launch env', async () => {
     await withPluginCacheCopy(async (cachePluginRoot, cacheRoot) => {
       const calledPath = join(cacheRoot, 'called.txt');
@@ -821,6 +862,25 @@ describe('official Codex plugin layout', () => {
       );
       assert.equal(untracked.status, 0, untracked.stderr || untracked.stdout);
       await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+
+      const deeperParentId = 'nested-worker-grandchild';
+      await recordSubagentTurnForSession(cwd, {
+        sessionId: trackedParentId,
+        threadId: deeperParentId,
+        kind: 'subagent',
+      });
+      const deeper = runPluginNativeHook(
+        cachePluginRoot,
+        JSON.stringify({
+          ...payload,
+          session_id: deeperParentId,
+          agent_id: 'nested-worker-great-grandchild',
+          turn_id: 'nested-worker-deeper-turn',
+        }),
+        hookEnv,
+      );
+      assert.equal(deeper.status, 0, deeper.stderr || deeper.stdout);
+      assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'delegated');
     });
   });
 

@@ -11,7 +11,7 @@ const OMX_PLUGIN_HOOK_LAUNCHER_CONTRACT_MARKER = 'omx-plugin-hook-launcher:v1';
 const OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER = 'omx-plugin-hook-routing-only:v1';
 const MAX_WRAPPER_STDIN_BYTES = 1024 * 1024;
 const RAW_EVENT_SCAN_BYTES = 64 * 1024;
-const MAX_STOP_STDOUT_BYTES = 1024 * 1024;
+const MAX_BUFFERED_HOOK_STDOUT_BYTES = 1024 * 1024;
 const MAX_ROUTING_RECORD_BYTES = 4 * 1024;
 const CODEX_HOOK_EVENT_NAMES = new Set([
   'SessionStart',
@@ -196,6 +196,24 @@ function isChildRoutingSessionStart(payload, ownerSessionId) {
   }
 }
 
+function isTrackedSubagentInSessionTree(tracking, rootSessionId, targetThreadId) {
+  const pendingSessionIds = [rootSessionId];
+  const visitedSessionIds = new Set();
+  while (pendingSessionIds.length > 0) {
+    const sessionId = pendingSessionIds.pop();
+    if (!sessionId || visitedSessionIds.has(sessionId)) continue;
+    visitedSessionIds.add(sessionId);
+    const threads = tracking?.sessions?.[sessionId]?.threads;
+    if (!threads || typeof threads !== 'object' || Array.isArray(threads)) continue;
+    if (threads[targetThreadId]?.kind === 'subagent') return true;
+    for (const [threadId, thread] of Object.entries(threads)) {
+      if (thread?.kind !== 'subagent' || !isSafeRoutingSessionId(threadId)) continue;
+      if (tracking?.sessions?.[threadId] && !visitedSessionIds.has(threadId)) pendingSessionIds.push(threadId);
+    }
+  }
+  return false;
+}
+
 function isChildRoutingSubagentStop(payload, ownerSessionId) {
   if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SubagentStop' || !ownerSessionId) return false;
   const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
@@ -203,11 +221,11 @@ function isChildRoutingSubagentStop(payload, ownerSessionId) {
   const parentSessionId = hookPayloadSessionId(null, payload);
   if (!isSafeRoutingSessionId(parentSessionId)) return false;
   const tracking = readJsonFile(join(stateDir, 'subagent-tracking.json'));
-  if (tracking?.sessions?.[ownerSessionId]?.threads?.[parentSessionId]?.kind === 'subagent') return true;
+  if (isTrackedSubagentInSessionTree(tracking, ownerSessionId, parentSessionId)) return true;
   const session = readJsonFile(join(stateDir, 'session.json'));
   if (!isSessionStateAuthoritativeForCwd(session, cwd)
     || ![session.session_id, session.native_session_id, session.owner_omx_session_id, session.owner_codex_session_id, session.codex_session_id].includes(ownerSessionId)) return false;
-  return tracking?.sessions?.[session.session_id]?.threads?.[parentSessionId]?.kind === 'subagent';
+  return isTrackedSubagentInSessionTree(tracking, session.session_id, parentSessionId);
 }
 
 function readPinnedRoutingRecord(routingPath) {
@@ -344,11 +362,15 @@ function writeCompactFallback() {
   process.exitCode = 0;
 }
 
-function failLauncher(error, isStop, isCompact, stopReason = 'plugin_stop_hook_launcher_failure') {
+function failLauncher(error, isStop, isCompact, isSubagentStop, stopReason = 'plugin_stop_hook_launcher_failure') {
   const detail = error instanceof Error ? error.message : String(error);
   console.error(`[oh-my-codex] ${detail}`);
   if (isStop) {
     writeStopFallback(stopReason, detail);
+    return;
+  }
+  if (isSubagentStop) {
+    writePlainCodexNoop(true);
     return;
   }
   if (isCompact) {
@@ -558,7 +580,7 @@ async function main() {
   try {
     launcher = readConfiguredLauncher();
   } catch (error) {
-    failLauncher(error, isStop, isCompact);
+    failLauncher(error, isStop, isCompact, isSubagentStop);
     return;
   }
 
@@ -567,24 +589,24 @@ async function main() {
 
   const stdoutChunks = [];
   let stdoutBytes = 0;
-  let bufferedStopStdoutBytes = 0;
-  let stopStdoutOversized = false;
+  let bufferedHookStdoutBytes = 0;
+  let hookStdoutOversized = false;
   let childSpawnError = null;
   let childStdinError = null;
 
   child.stdout.on('data', (chunk) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     stdoutBytes += buffer.byteLength;
-    if (isStop) {
-      if (!stopStdoutOversized) {
-        const remaining = MAX_STOP_STDOUT_BYTES - bufferedStopStdoutBytes;
+    if (isStop || isSubagentStop) {
+      if (!hookStdoutOversized) {
+        const remaining = MAX_BUFFERED_HOOK_STDOUT_BYTES - bufferedHookStdoutBytes;
         if (remaining > 0) {
           const slice = buffer.subarray(0, remaining);
           stdoutChunks.push(slice);
-          bufferedStopStdoutBytes += slice.byteLength;
+          bufferedHookStdoutBytes += slice.byteLength;
         }
         if (buffer.byteLength > remaining) {
-          stopStdoutOversized = true;
+          hookStdoutOversized = true;
           child.stdout.destroy();
           child.kill();
         }
@@ -601,8 +623,22 @@ async function main() {
     childSpawnError = error;
   });
   child.on('close', (code, signal) => {
-    if (isStop && stopStdoutOversized) {
-      writeStopFallback('plugin_stop_hook_launcher_stdout_oversized', `codex-native-hook produced more than ${MAX_STOP_STDOUT_BYTES} bytes of Stop hook stdout`);
+    if (isStop && hookStdoutOversized) {
+      writeStopFallback('plugin_stop_hook_launcher_stdout_oversized', `codex-native-hook produced more than ${MAX_BUFFERED_HOOK_STDOUT_BYTES} bytes of Stop hook stdout`);
+      return;
+    }
+
+    if (isSubagentStop) {
+      if (!hookStdoutOversized && !childSpawnError && !childStdinError && !signal && code === 0) {
+        const stdoutText = Buffer.concat(stdoutChunks).toString('utf8');
+        const parsed = parseSingleJsonObjectOutput(stdoutText);
+        if (parsed) {
+          process.stdout.write(`${JSON.stringify(parsed)}\n`);
+          process.exitCode = 0;
+          return;
+        }
+      }
+      writePlainCodexNoop(true);
       return;
     }
 
