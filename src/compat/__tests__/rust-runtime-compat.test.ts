@@ -70,7 +70,7 @@ if (argv[0] === 'schema') {
   process.stdout.write(JSON.stringify({ schema_version: 1, capabilities: ['team-mailbox-scope-v1'], commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','remove-dispatch-records','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
   process.exit(0);
 }
-if (argv[0] !== 'exec') process.exit(1);
+if (argv[0] !== 'exec' && argv[0] !== 'exec-scoped') process.exit(1);
 const command = JSON.parse(argv[1] || '{}');
 const dir = stateDir();
 const dispatchPath = path.join(dir, 'dispatch.json');

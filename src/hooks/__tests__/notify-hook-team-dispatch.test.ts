@@ -210,7 +210,7 @@ if (argv[0] === 'schema') {
   process.stdout.write(JSON.stringify({ schema_version: 1, capabilities: ['team-mailbox-scope-v1'], commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','remove-dispatch-records','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
   process.exit(0);
 }
-if (argv[0] !== 'exec') process.exit(1);
+if (argv[0] !== 'exec' && argv[0] !== 'exec-scoped') process.exit(1);
 const command = JSON.parse(argv[1] || '{}');
 const dir = stateDir();
 const dispatchPath = path.join(dir, 'dispatch.json');
@@ -455,7 +455,7 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
-  it('invokes omx-runtime exec via shared bridge fallback', async () => {
+  it('invokes omx-runtime exec-scoped via shared bridge fallback', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
     const fakeBinDir = join(cwd, 'fake-bin');
     const runtimeLogPath = join(cwd, 'runtime.log');
@@ -472,7 +472,7 @@ if [[ "\${1:-}" == "schema" ]]; then
   printf '{"schema_version":1,"capabilities":["team-mailbox-scope-v1"],"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
   exit 0
 fi
-if [[ "\${1:-}" == "exec" ]]; then
+if [[ "\${1:-}" == "exec-scoped" ]]; then
   printf '{"event":"DispatchNotified","request_id":"runtime-fallback","channel":"tmux"}\n'
   exit 0
 fi
@@ -501,7 +501,7 @@ exit 1
       });
 
       const runtimeLog = await readFile(runtimeLogPath, 'utf8');
-      assert.match(runtimeLog, /^exec \{"command":"MarkNotified"/m);
+      assert.match(runtimeLog, /^exec-scoped \{"command":"MarkNotified"/m);
 
       const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
       assert.equal(request?.status, 'notified');
@@ -1053,7 +1053,7 @@ if [[ "\${1:-}" == "schema" ]]; then
   printf '{"schema_version":1,"capabilities":["team-mailbox-scope-v1"],"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"]}\n'
   exit 0
 fi
-if [[ "\${1:-}" == "exec" ]]; then
+if [[ "\${1:-}" == "exec-scoped" ]]; then
   echo "runtime schema drift" >&2
   exit 43
 fi

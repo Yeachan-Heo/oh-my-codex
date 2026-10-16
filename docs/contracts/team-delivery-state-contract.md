@@ -17,10 +17,12 @@ The JS bridge requires the `team-mailbox-scope-v1` runtime capability before
 mutating runtime state, including notification hooks. Sends validate before writing
 provisional shadows, and dispatch validates before reserving cooldowns or injecting
 into a pane. A runtime rejected after provisional creation removes only that
-send's provisional row. Each mutation validates and executes a private copy of the
-selected runtime, so replacing its configured path cannot change the executable
-between the capability check and mutation. Queue creation propagates executable
-snapshot and schema validation failures without adding JSON-only IDs to runtime projections.
+send's provisional row. Mutations use `exec-scoped`, which checks Team isolation
+in the executing runtime process before opening state. Older binaries reject this
+subcommand, including when swapped into the configured path after the schema probe.
+The bridge executes the configured binary in place and does not require an executable
+temporary directory. Queue creation propagates schema and unsupported-subcommand
+failures without adding JSON-only IDs to runtime projections.
 If the runtime becomes incompatible after pane input (hook, direct, or broadcast), runtime-backed dispatch saves its outcome
 and a pending runtime-finalization journal, including delivered receipts. Before claiming more work, the hook
 replays those outcomes against event-derived runtime state and clears the journal;

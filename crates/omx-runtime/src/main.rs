@@ -71,7 +71,12 @@ fn run() -> Result<(), String> {
             }
             Ok(())
         }
-        Some("exec") => {
+        Some("exec") | Some("exec-scoped") => {
+            if first == Some("exec-scoped")
+                && !omx_runtime_core::RUNTIME_CAPABILITIES.contains(&"team-mailbox-scope-v1")
+            {
+                return Err("omx-runtime requires team-mailbox-scope-v1".to_string());
+            }
             let json_input = second.ok_or("exec requires a JSON command argument")?;
             let state_dir = args.iter().find_map(|a| a.strip_prefix("--state-dir="));
             let compact = args.iter().any(|a| a == "--compact");
@@ -537,6 +542,7 @@ fn print_usage() {
         "  snapshot [--json] [--state-dir=DIR]  print a runtime snapshot\n",
         "  mux-contract                        print the mux boundary summary\n",
         "  exec <json> [--state-dir=DIR]       process a runtime command from JSON\n",
+        "  exec-scoped <json> [--state-dir=DIR]  require Team isolation in the executing process\n",
         "  lease-mutex <absolute-canonical-dir> <expected-dev> <expected-ino> <safe-leaf>  hold native lease mutex over stdin JSON protocol\n",
         "  init <state-dir>                    initialize a fresh state directory\n",
     ));

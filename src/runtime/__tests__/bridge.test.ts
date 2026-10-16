@@ -342,9 +342,26 @@ printf '%s' '{"commands":[],"capabilities":[]}'
     });
   });
 
-  it('uses the validated executable when its original path changes during schema', () => {
+  it('executes the configured runtime without relocating it to the temp directory', () => {
     withFakeBinary('{"event":"SnapshotCaptured"}', (bridge, binaryPath) => {
-      const old = `#!/usr/bin/env node\nconsole.log(JSON.stringify({event:'UnsafeMutation'}));\n`;
+      writeFileSync(binaryPath, `#!/usr/bin/env node
+if (process.argv[2] === 'schema') console.log(${JSON.stringify(validSchema)});
+else console.log(JSON.stringify({event:'SnapshotCaptured',binary:process.argv[1],subcommand:process.argv[2]}));
+`);
+      assert.deepEqual(bridge.execCommand({ command: 'CaptureSnapshot' }), {
+        event: 'SnapshotCaptured', binary: binaryPath, subcommand: 'exec-scoped',
+      });
+    });
+  });
+
+  it('rejects an old executable swapped in after schema without mutating state', () => {
+    withFakeBinary('{"event":"SnapshotCaptured"}', (bridge, binaryPath) => {
+      const mutationPath = `${binaryPath}.mutation`;
+      const old = `#!/usr/bin/env node
+if (process.argv[2] === 'exec-scoped') { console.error('unknown subcommand ' + String.fromCharCode(96) + 'exec-scoped' + String.fromCharCode(96)); process.exit(1); }
+require('fs').writeFileSync(${JSON.stringify(mutationPath)}, 'unsafe');
+console.log(JSON.stringify({event:'UnsafeMutation'}));
+`;
       writeFileSync(binaryPath, `#!/usr/bin/env node
 const fs = require('fs');
 if (process.argv[2] === 'schema') {
@@ -352,7 +369,12 @@ if (process.argv[2] === 'schema') {
   console.log(${JSON.stringify(validSchema)});
 } else console.log(JSON.stringify({event:'SnapshotCaptured'}));
 `);
-      assert.deepEqual(bridge.execCommand({ command: 'CaptureSnapshot' }), { event: 'SnapshotCaptured' });
+      assert.throws(() => bridge.execCommand({ command: 'CaptureSnapshot' }), (error: unknown) => {
+        assert.ok(error instanceof RuntimeBridgeError);
+        assert.equal(error.context.command, 'schema');
+        return true;
+      });
+      assert.throws(() => readFileSync(mutationPath), { code: 'ENOENT' });
     });
   });
 

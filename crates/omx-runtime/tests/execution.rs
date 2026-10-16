@@ -247,6 +247,32 @@ fn exec_subcommand_processes_json_command() {
 }
 
 #[test]
+fn exec_scoped_checks_and_persists_team_scope_in_the_mutating_process() {
+    let dir = std::env::temp_dir().join("omx-runtime-test-exec-scoped");
+    let _ = std::fs::remove_dir_all(&dir);
+    let state_arg = format!("--state-dir={}", dir.display());
+    let command = r#"{"command":"CreateMailboxMessage","team_name":"alpha","message_id":"scoped","from_worker":"leader-fixed","to_worker":"worker-1","body":"private"}"#;
+    let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))
+        .args(["exec-scoped", command, &state_arg, "--compact"])
+        .output()
+        .expect("ran omx-runtime");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let event: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(event["team_name"], "alpha");
+    let mailbox: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("mailbox.json")).unwrap()).unwrap();
+    assert_eq!(mailbox["records"][0]["team_name"], "alpha");
+    let events: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("events.json")).unwrap()).unwrap();
+    assert_eq!(events[0]["team_name"], "alpha");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn exec_acquire_authority_returns_event() {
     let cmd_json = r#"{"command":"AcquireAuthority","owner":"w1","lease_id":"l1","leased_until":"2026-03-19T02:00:00Z"}"#;
     let output = Command::new(env!("CARGO_BIN_EXE_omx-runtime"))

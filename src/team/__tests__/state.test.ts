@@ -143,7 +143,7 @@ if (argv[0] === 'schema') {
   process.exit(0);
 }
 
-if (argv[0] !== 'exec') process.exit(1);
+if (argv[0] !== 'exec' && argv[0] !== 'exec-scoped') process.exit(1);
 
 const command = JSON.parse(argv[1] || '{}');
 const dir = stateDir();
@@ -575,7 +575,7 @@ if [[ "\${1:-}" == "schema" ]]; then
   printf '{"schema_version":1,"capabilities":["team-mailbox-scope-v1"],"commands":["acquire-authority","renew-authority","queue-dispatch","mark-notified","mark-delivered","mark-failed","remove-dispatch-records","request-replay","capture-snapshot"],"events":[],"transport":"tmux"}\n'
   exit 0
 fi
-if [[ "\${1:-}" == "exec" ]]; then
+if [[ "\${1:-}" == "exec-scoped" ]]; then
   if [[ "$*" == *'"command":"CaptureSnapshot"'* ]]; then
     printf '{"event":"SnapshotCaptured"}\n'
   else
@@ -601,7 +601,7 @@ exit 1
       );
 
       const runtimeLog = await readFile(runtimeLogPath, 'utf8');
-      const queueLine = runtimeLog.split('\n').find((line) => line.startsWith('exec {"command":"QueueDispatch"'));
+      const queueLine = runtimeLog.split('\n').find((line) => line.startsWith('exec-scoped {"command":"QueueDispatch"'));
       assert.ok(queueLine, 'expected QueueDispatch bridge call');
       const jsonStart = queueLine.indexOf('{');
       const stateDirFlag = queueLine.lastIndexOf(' --state-dir=');
@@ -798,7 +798,7 @@ exit 1
 
       assert.deepEqual(JSON.parse(await readFile(legacyPath, 'utf8')), []);
       const runtimeLog = await readFile(runtimeLogPath, 'utf8');
-      const removalLine = runtimeLog.split('\n').find((line) => line.startsWith('exec {"command":"RemoveDispatchRecords"'));
+      const removalLine = runtimeLog.split('\n').find((line) => line.startsWith('exec-scoped {"command":"RemoveDispatchRecords"'));
       assert.ok(removalLine);
       const removalPayload = JSON.parse(removalLine.slice(removalLine.indexOf('{'), removalLine.lastIndexOf(' --state-dir='))) as { request_ids: string[] };
       assert.deepEqual(removalPayload.request_ids, [scopedRequestId]);
@@ -2344,13 +2344,13 @@ exit 1
       const before = await readFile(shadowPath, 'utf8');
       const authoritativeBefore = await readFile(compatPath, 'utf8');
       for (const mutate of [markMessageNotified, markMessageDelivered]) {
-        await assert.rejects(() => mutate('ambiguous-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec failed/);
+        await assert.rejects(() => mutate('ambiguous-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec-scoped failed/);
         assert.equal(await readFile(shadowPath, 'utf8'), before);
         assert.equal(await readFile(compatPath, 'utf8'), authoritativeBefore);
       }
       compat.records[0].delivered_at = new Date().toISOString();
       await writeFile(compatPath, JSON.stringify(compat));
-      await assert.rejects(() => markMessageDelivered('ambiguous-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec failed/);
+      await assert.rejects(() => markMessageDelivered('ambiguous-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec-scoped failed/);
       assert.equal(await readFile(shadowPath, 'utf8'), before);
     } finally {
       if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
@@ -2537,11 +2537,7 @@ exit 1
         await assert.rejects(() => enqueueDispatchRequest('alpha', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'rejected' }, cwd), /team-mailbox-scope-v1|schema failed/);
         assert.deepEqual(await Promise.all(files.map(f => readFile(join(cwd, '.omx/state', f), 'utf8'))), before);
       }
-      if (process.platform !== 'win32' && process.getuid?.() !== 0) {
-        await chmod(runtime, 0o111);
-        await assert.rejects(() => enqueueDispatchRequest('alpha', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'unreadable binary' }, cwd), /executable snapshot failed/);
-        assert.deepEqual(await Promise.all(files.map(f => readFile(join(cwd, '.omx/state', f), 'utf8'))), before);
-      }
+
     } finally {
       if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
       else process.env.OMX_RUNTIME_BINARY = previousBinary;
@@ -2700,8 +2696,8 @@ exit 1
           for (const name of ['events.json', 'snapshot.json', 'mailbox.json']) {
             const authorityPath = join(cwd, '.omx', 'state', name);
             await writeFile(authorityPath, '{invalid');
-            await assert.rejects(() => markMessageNotified('legacy-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec failed/);
-            await assert.rejects(() => markMessageDelivered('legacy-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec failed/);
+            await assert.rejects(() => markMessageNotified('legacy-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec-scoped failed/);
+            await assert.rejects(() => markMessageDelivered('legacy-ack', 'worker-1', own.message_id, cwd), /omx-runtime exec-scoped failed/);
             await rm(authorityPath);
           }
           const runtimeLogBefore = await readFile(runtimeLogPath, 'utf8');
