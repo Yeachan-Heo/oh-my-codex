@@ -282,55 +282,33 @@ export async function markMessageDelivered(
   messageId: string,
   deps: MailboxDeps,
 ): Promise<boolean> {
-  const existingMailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-  const existingMessage = existingMailbox.messages.find((message) => message.message_id === messageId);
-  if (!existingMessage) return false;
-  if (existingMessage.delivered_at && existingMailbox.messages.filter((message) => message.message_id === messageId).length === 1) return true;
-
-  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', team_name: deps.teamName, message_id: messageId })) {
-    const updated = await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
-      const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-      const msg = mailbox.messages.find((message) => message.message_id === messageId);
-      if (!msg) return false;
-      if (!msg.delivered_at) {
-        msg.delivered_at = new Date().toISOString();
-        await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
-      } else {
-        await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
-      }
-      return true;
-    });
-    if (updated) {
-      await appendTeamDeliveryLogForCwd(deps.cwd, {
-        event: 'delivered',
-        source: 'team.state.mailbox',
-        team: deps.teamName,
-        message_id: messageId,
-        to_worker: workerName,
-        transport: 'bridge',
-        result: 'updated',
-      });
-    }
-    return updated;
-  }
+  if (!(await deps.readMailbox(deps.teamName, workerName, deps.cwd)).messages.some((message) => message.message_id === messageId)) return false;
+  let transport: 'bridge' | 'legacy-json' | undefined;
   const updated = await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
+    const existingMailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+    const existingMessage = existingMailbox.messages.find((message) => message.message_id === messageId);
+    if (!existingMessage) return false;
+    if (existingMessage.delivered_at && existingMailbox.messages.filter((message) => message.message_id === messageId).length === 1) return true;
+
+    transport = executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', team_name: deps.teamName, message_id: messageId })
+      ? 'bridge' : 'legacy-json';
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-    const msg = mailbox.messages.find((m) => m.message_id === messageId);
+    const msg = mailbox.messages.find((message) => message.message_id === messageId);
     if (!msg) return false;
-    if (!msg.delivered_at) {
-      msg.delivered_at = new Date().toISOString();
+    if (!msg.delivered_at || transport === 'bridge') {
+      if (!msg.delivered_at) msg.delivered_at = new Date().toISOString();
       await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
     }
     return true;
   });
-  if (updated) {
+  if (updated && transport) {
     await appendTeamDeliveryLogForCwd(deps.cwd, {
       event: 'delivered',
       source: 'team.state.mailbox',
       team: deps.teamName,
       message_id: messageId,
       to_worker: workerName,
-      transport: 'legacy-json',
+      transport,
       result: 'updated',
     });
   }
@@ -345,19 +323,15 @@ export async function markMessageNotified(
   const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
   if (!mailbox.messages.some((message) => message.message_id === messageId)) return false;
 
-  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxNotified', team_name: deps.teamName, message_id: messageId })) {
-    return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
-      const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-      const msg = mailbox.messages.find((message) => message.message_id === messageId);
-      if (!msg) return false;
-      msg.notified_at = new Date().toISOString();
-      await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);
-      return true;
-    });
-  }
   return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
+    const existingMailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+    const existingMessage = existingMailbox.messages.find((message) => message.message_id === messageId);
+    if (!existingMessage) return false;
+    if (existingMessage.delivered_at && existingMailbox.messages.filter((message) => message.message_id === messageId).length === 1) return true;
+
+    executeBridgeCommand(deps.cwd, { command: 'MarkMailboxNotified', team_name: deps.teamName, message_id: messageId });
     const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
-    const msg = mailbox.messages.find((m) => m.message_id === messageId);
+    const msg = mailbox.messages.find((message) => message.message_id === messageId);
     if (!msg) return false;
     msg.notified_at = new Date().toISOString();
     await deps.writeMailbox(deps.teamName, mailbox, deps.cwd);

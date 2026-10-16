@@ -610,7 +610,7 @@ exit 1
       process.env.OMX_RUNTIME_BRIDGE = '1';
       await initTeamState('alpha', 'task', 'executor', 1, cwd);
       const requests = [];
-      for (const trigger of ['perform the next task', 'check the next task']) {
+      for (const trigger of ['investigate ABC-123', 'investigate ABC-456']) {
         const queued = await enqueueDispatchRequest('alpha', {
           kind: 'inbox', to_worker: 'worker-1', worker_index: 1, trigger_message: trigger,
         }, cwd);
@@ -625,6 +625,8 @@ exit 1
       for (let tick = 0; tick < 2; tick += 1) {
         await assert.rejects(drain, /team-mailbox-scope-v1/);
         assert.equal(injections, 0);
+        const cooldownPath = join(cwd, '.omx', 'state', 'team', 'alpha', 'dispatch', 'issue-cooldown.json');
+        assert.deepEqual(JSON.parse(await readFile(cooldownPath, 'utf8').catch(() => '{"by_issue":{}}')).by_issue, {});
         assert.deepEqual(await listDispatchProcessingLeases(cwd, 'alpha'), []);
         for (const requestId of requests) assert.equal((await readDispatchRequest('alpha', requestId, cwd))?.status, 'pending');
       }

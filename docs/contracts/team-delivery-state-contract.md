@@ -15,8 +15,9 @@ called out in issue #1243.
 
 The JS bridge requires the `team-mailbox-scope-v1` runtime capability before
 mutating runtime state, including notification hooks. Sends validate before writing
-provisional shadows, and dispatch validates before pane injection. A runtime
-rejected after provisional creation removes only that send's provisional row.
+provisional shadows, and dispatch validates before reserving cooldowns or injecting
+into a pane. A runtime rejected after provisional creation removes only that
+send's provisional row.
 Older runtimes are rejected;
 rebuild or upgrade the runtime rather than allowing it to discard Team scope.
 
@@ -43,9 +44,12 @@ Scoped records remain readable and can be retired if their shadow is missing;
 their Team ownership survives persistence and event replay.
 
 Runtime acknowledgement rejections propagate to the caller; only transport
-failures may use the JSON fallback. Shadow updates preserve colliding recovery
-rows. A proven, unique legacy ID can reconcile runtime timestamp changes without
-creating duplicate shadows. Old body-less creation events recover content only
+failures may use the JSON fallback. Acknowledgements hold the mailbox lock across
+their read and mutation. Concurrent delivery repeats and notification of an already
+delivered message succeed without another runtime mutation.
+Shadow updates preserve colliding recovery rows; any pending shadow left after
+retirement blocks Team cleanup until it is recovered. A proven, unique legacy ID
+can reconcile runtime timestamp changes without creating duplicate shadows. Old body-less creation events recover content only
 from a unique record with the same Team and message ID.
 
 ### `pending` / `notified` / `delivered` / `failed`

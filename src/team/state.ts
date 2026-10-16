@@ -2565,6 +2565,10 @@ export async function retireTeamMailboxMessages(
           await writeMailbox(teamName, mailbox, cwd);
           retired += retiredFromAuthoritative;
         }
+        const unresolved = mailbox.messages.filter((message) => !message.delivered_at);
+        if (unresolved.length > 0) {
+          throw new Error(`authoritative_mailbox_retirement_discovery_failed:${unresolved.map((message) => message.message_id).join(',')}`);
+        }
         return;
       }
 

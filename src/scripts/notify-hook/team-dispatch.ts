@@ -1212,6 +1212,9 @@ export async function drainPendingTeamDispatch({
       const usingLegacyRequests = bridgeRequests === null;
       const requests = usingLegacyRequests ? await readJson(requestsPath, []) : bridgeRequests;
       if (!Array.isArray(requests)) return;
+      if (requests.some((request) => request && typeof request === 'object' && !shouldSkipRequest(request))) {
+        preflightRuntimeBridge(stateDir);
+      }
       const issueCooldownState = await readIssueCooldownState(teamDirPath);
       const triggerCooldownState = await readTriggerCooldownState(teamDirPath);
       const issueCooldownByIssue = issueCooldownState.by_issue || {};
@@ -1332,7 +1335,6 @@ export async function drainPendingTeamDispatch({
     try {
       for (const claim of claims) {
         try {
-          preflightRuntimeBridge(stateDir);
           const result = await injector(claim.request, config, resolve(cwd), stateDir);
           const delta = await finalizeClaimedDispatchRequest({
             claim,
