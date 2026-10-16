@@ -187,3 +187,14 @@ Mailbox acknowledgements fail closed if existing runtime authority cannot be
 refreshed. Hook mailbox notification failures leave the shadow unchanged rather
 than recording a receipt that event replay would discard; dispatch injection
 receipts remain independently recoverable.
+
+Hook drains claim from the dispatch records returned by CaptureSnapshot, so a
+concurrent projection replacement cannot overwrite that authoritative result.
+They cache it only when the projection matches the returned records and event
+bytes stay unchanged, and reuse it only while event and dispatch bytes remain
+unchanged. Older runtimes without returned records refresh on every drain without
+caching. This skips repeated idle persistence without
+missing event-only queues or changes between Teams. CaptureSnapshot still
+refreshes compatibility files and returns SnapshotCaptured, but does not append
+that no-op event to replay history; historical SnapshotCaptured events remain
+readable.

@@ -265,10 +265,18 @@ impl RuntimeEngine {
             }
         };
 
-        if !matches!(event, RuntimeEvent::DispatchRecordsRemoved { .. }) {
+        // Projection refreshes do not change domain state or need replay history.
+        if !matches!(
+            event,
+            RuntimeEvent::DispatchRecordsRemoved { .. } | RuntimeEvent::SnapshotCaptured
+        ) {
             self.event_log.push(event.clone());
         }
         Ok(event)
+    }
+
+    pub fn dispatch_records(&self) -> &[crate::DispatchRecord] {
+        self.dispatch.records()
     }
 
     pub fn snapshot(&self) -> RuntimeSnapshot {
@@ -961,11 +969,11 @@ mod tests {
     }
 
     #[test]
-    fn event_log_accumulates() {
+    fn snapshot_refresh_does_not_accumulate_events() {
         let mut engine = RuntimeEngine::new();
         engine.process(RuntimeCommand::CaptureSnapshot).unwrap();
         engine.process(RuntimeCommand::CaptureSnapshot).unwrap();
-        assert_eq!(engine.event_log().len(), 2);
+        assert_eq!(engine.event_log().len(), 0);
     }
 
     #[test]

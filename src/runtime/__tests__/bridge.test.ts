@@ -289,6 +289,26 @@ describe('RuntimeBridge.readDispatchRecordsStrict', () => {
 });
 
 describe('RuntimeBridge.execCommand / readSnapshot (parse guard)', () => {
+  it('captures real runtime dispatch records larger than the pipe buffer limit', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'omx-bridge-large-snapshot-'));
+    try {
+      const bridge = new RuntimeBridge({ stateDir });
+      const trigger = 'x'.repeat(20_000);
+      for (let index = 0; index < 60; index += 1) {
+        bridge.execCommand({ command: 'QueueDispatch', request_id: `large-${index}`, target: 'worker-1',
+          metadata: { team_name: 'alpha', trigger_message: trigger } });
+      }
+      const snapshot = bridge.execCommand({ command: 'CaptureSnapshot' });
+      assert.equal(snapshot.event, 'SnapshotCaptured');
+      assert.ok('dispatch_records' in snapshot && Array.isArray(snapshot.dispatch_records));
+      assert.equal(snapshot.dispatch_records.length, 60);
+      assert.ok(Buffer.byteLength(JSON.stringify(snapshot)) > 1024 * 1024);
+      assert.ok(snapshot.dispatch_records.every((record) => record.metadata?.trigger_message === trigger));
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   // Keep schema probes separate from exec/snapshot output in fake runtimes.
   const validSchema = JSON.stringify({
     capabilities: ['team-mailbox-scope-v1'],

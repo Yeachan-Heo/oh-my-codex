@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } fro
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { safeString } from './utils.js';
 import { getDefaultBridge, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
@@ -134,12 +135,12 @@ function readJson(path, fallback) {
     .catch(() => fallback);
 }
 
-async function readBridgeDispatchRequests(stateDir, teamName) {
+async function readBridgeDispatchRequests(stateDir, teamName, authoritativeRecords) {
   const candidate = join(stateDir, 'dispatch.json');
-  if (!existsSync(candidate)) return null;
+  if (!authoritativeRecords && !existsSync(candidate)) return null;
   let parsed;
   try {
-    parsed = JSON.parse(await readFile(candidate, 'utf8'));
+    parsed = authoritativeRecords ? { records: authoritativeRecords } : JSON.parse(await readFile(candidate, 'utf8'));
   } catch (error) {
     recordBridgeFallback({
       stateDir,
@@ -1204,6 +1205,29 @@ async function listTeamDirectories(teamRoot: string): Promise<string[]> {
   return names;
 }
 
+// Cache only a projection verified against unchanged event bytes; later mutations invalidate it.
+const refreshedDispatchStates = new Map();
+async function refreshDispatchProjection(stateDir) {
+  const readState = async () => Promise.all(['events.json', 'dispatch.json'].map((name) =>
+    readFile(join(stateDir, name), 'utf8').catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    })));
+  const before = await readState();
+  const cached = refreshedDispatchStates.get(stateDir);
+  if (cached && cached.state[0] === before[0] && cached.state[1] === before[1]) return cached.records;
+  refreshedDispatchStates.delete(stateDir);
+  const snapshot = getDefaultBridge(stateDir).execCommand({ command: 'CaptureSnapshot' });
+  if (!Array.isArray(snapshot.dispatch_records)) return; // Older compatible runtimes do not return records.
+  const after = await readState();
+  let projected;
+  try { projected = JSON.parse(after[1]).records; } catch { /* A concurrent writer cannot prove a cache entry. */ }
+  if (before[0] === after[0] && isDeepStrictEqual(projected, snapshot.dispatch_records)) {
+    refreshedDispatchStates.set(stateDir, { state: after, records: snapshot.dispatch_records });
+  }
+  return snapshot.dispatch_records;
+}
+
 export async function drainPendingTeamDispatch({
   cwd,
   stateDir = resolveBridgeStateDir(cwd),
@@ -1244,12 +1268,12 @@ export async function drainPendingTeamDispatch({
     const claims = [];
     await withDispatchLock(teamDirPath, async () => {
       await reconcileRuntimeFinalizations(stateDir, teamName);
+      let authoritativeRecords;
       if (hasRuntimeAuthority(stateDir)) {
         if (process.env.OMX_RUNTIME_BRIDGE === '0') throw new Error('runtime dispatch authority requires an enabled bridge');
-        // Events may be durable while the dispatch projection still says pending.
-        getDefaultBridge(stateDir).execCommand({ command: 'CaptureSnapshot' });
+        authoritativeRecords = await refreshDispatchProjection(stateDir);
       }
-      const bridgeRequests = await readBridgeDispatchRequests(stateDir, teamName);
+      const bridgeRequests = await readBridgeDispatchRequests(stateDir, teamName, authoritativeRecords);
       const usingLegacyRequests = bridgeRequests === null;
       const requests = usingLegacyRequests ? await readJson(requestsPath, []) : bridgeRequests;
       if (!Array.isArray(requests)) return;

@@ -125,9 +125,14 @@ fn run() -> Result<(), String> {
                     .map_err(|e| format!("compatibility view failed: {e}"))?;
             }
 
+            let mut response = serde_json::to_value(&event).map_err(|e| e.to_string())?;
+            if matches!(event, omx_runtime_core::RuntimeEvent::SnapshotCaptured) {
+                response["dispatch_records"] =
+                    serde_json::to_value(engine.dispatch_records()).map_err(|e| e.to_string())?;
+            }
             println!(
                 "{}",
-                serde_json::to_string_pretty(&event).map_err(|e| e.to_string())?
+                serde_json::to_string_pretty(&response).map_err(|e| e.to_string())?
             );
             Ok(())
         }

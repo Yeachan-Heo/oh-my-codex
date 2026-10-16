@@ -8,8 +8,9 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, openSync, closeSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
@@ -98,7 +99,7 @@ export type RuntimeEvent =
   | { event: 'DispatchFailed'; request_id: string; reason: string }
   | { event: 'DispatchRecordsRemoved'; request_ids: string[] }
   | { event: 'ReplayRequested'; cursor?: string }
-  | { event: 'SnapshotCaptured' }
+  | { event: 'SnapshotCaptured'; dispatch_records?: DispatchRecord[] }
   | { event: 'MailboxMessageCreated'; team_name?: string | null; message_id: string; from_worker: string; to_worker: string; body?: string }
   | { event: 'MailboxNotified'; team_name?: string | null; message_id: string }
   | { event: 'MailboxDelivered'; team_name?: string | null; message_id: string };
@@ -264,7 +265,7 @@ export class RuntimeBridge {
     if (options?.compact) args.push('--compact');
     let stdout: string;
     try {
-      stdout = this.run(args);
+      stdout = this.run(args, cmd.command === 'CaptureSnapshot');
     } catch (cause) {
       if (cause instanceof Error && (cause.message.includes('unknown subcommand `exec-scoped`')
         || cause.message.includes('omx-runtime requires team-mailbox-scope-v1'))) {
@@ -428,19 +429,31 @@ export class RuntimeBridge {
     }
   }
 
-  private run(args: string[]): string {
+  private run(args: string[], spoolStdout = false): string {
+    // Full dispatch snapshots can exceed execFileSync's pipe buffer.
+    const outputDir = spoolStdout ? mkdtempSync(join(tmpdir(), 'omx-runtime-output-')) : undefined;
+    const outputPath = outputDir ? join(outputDir, 'stdout') : undefined;
+    let outputFd: number | undefined;
     try {
-      const result = execFileSync(this.binaryPath, args, {
-        encoding: 'utf-8',
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      windowsHide: true,
-    });
-      return result;
-    } catch (err: unknown) {
-      const execErr = err as { stderr?: string; message?: string };
-      const stderr = execErr.stderr?.trim() ?? execErr.message ?? 'unknown error';
-      throw new Error(`omx-runtime ${args[0]} failed: ${stderr}`, { cause: err });
+      if (outputPath) outputFd = openSync(outputPath, 'wx', 0o600);
+      let result: string;
+      try {
+        result = execFileSync(this.binaryPath, args, {
+          encoding: 'utf-8',
+          timeout: 10_000,
+          maxBuffer: 1024 * 1024,
+          windowsHide: true,
+          stdio: ['pipe', outputFd ?? 'pipe', 'pipe'],
+        });
+      } catch (err: unknown) {
+        const execErr = err as { stderr?: string; message?: string };
+        const stderr = execErr.stderr?.trim() ?? execErr.message ?? 'unknown error';
+        throw new Error(`omx-runtime ${args[0]} failed: ${stderr}`, { cause: err });
+      }
+      return outputPath ? readFileSync(outputPath, 'utf-8') : result;
+    } finally {
+      if (outputFd !== undefined) closeSync(outputFd);
+      if (outputDir) rmSync(outputDir, { recursive: true, force: true });
     }
   }
 }

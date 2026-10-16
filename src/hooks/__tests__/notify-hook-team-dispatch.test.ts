@@ -1,6 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +15,7 @@ import {
   saveTeamConfig,
 } from '../../team/state.js';
 import { pathToFileURL } from 'node:url';
-import { getDefaultBridge } from '../../runtime/bridge.js';
+import { getDefaultBridge, RuntimeBridge } from '../../runtime/bridge.js';
 
 function buildFakeTmux(tmuxLogPath: string): string {
   return `#!/usr/bin/env bash
@@ -320,6 +321,129 @@ describe('notify-hook team dispatch consumer', () => {
       delete process.env.OMX_TEAM_STATE_ROOT;
     } else {
       process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
+    }
+  });
+
+  it('keeps repeated idle drains read-only and discovers event-only queued work', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-idle-refresh-'));
+    try {
+      for (const team of ['alpha', 'beta']) await initTeamState(team, 'task', 'executor', 1, cwd);
+      await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'authority', cwd);
+      const stateDir = join(cwd, '.omx/state');
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      const idle = () => drainPendingTeamDispatch({ cwd, injector: async () => { assert.fail('idle injection'); } });
+      await idle();
+      const paths = ['events.json', 'dispatch.json', 'mailbox.json', 'snapshot.json'].map(name => join(stateDir, name));
+      const before = await Promise.all(paths.map(async path => ({ body: await readFile(path, 'utf8'), mtime: (await stat(path, { bigint: true })).mtimeNs })));
+      for (let tick = 0; tick < 5; tick += 1) await idle();
+      assert.deepEqual(await Promise.all(paths.map(async path => ({ body: await readFile(path, 'utf8'), mtime: (await stat(path, { bigint: true })).mtimeNs }))), before);
+
+      const stale = await readFile(join(stateDir, 'dispatch.json'), 'utf8');
+      const queued = await enqueueDispatchRequest('beta', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'event-only' }, cwd);
+      await writeFile(join(stateDir, 'dispatch.json'), stale);
+      let injected = 0;
+      await drainPendingTeamDispatch({ cwd, injector: async request => {
+        assert.equal(request.request_id, queued.request.request_id);
+        injected += 1;
+        return { ok: true, reason: 'injected_for_test' };
+      } });
+      assert.equal(injected, 1);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes again when another Team gains a durable status during injection', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-cross-team-refresh-'));
+    try {
+      const ids = new Map<string, string>();
+      for (const team of ['alpha', 'beta']) {
+        await initTeamState(team, 'task', 'executor', 1, cwd);
+        const queued = await enqueueDispatchRequest(team, { kind: 'inbox', to_worker: 'worker-1', trigger_message: team }, cwd);
+        ids.set(team, queued.request.request_id);
+      }
+      const stateDir = join(cwd, '.omx/state');
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      let injected = 0;
+      await drainPendingTeamDispatch({ cwd, injector: async request => {
+        assert.equal(request.request_id, ids.get('alpha'));
+        injected += 1;
+        const path = join(stateDir, 'dispatch.json');
+        const stale = await readFile(path, 'utf8');
+        getDefaultBridge(stateDir).execCommand({ command: 'MarkNotified', request_id: ids.get('beta')!, channel: 'other process' });
+        await writeFile(path, stale);
+        return { ok: true, reason: 'injected_for_test' };
+      } });
+      assert.equal(injected, 1);
+      assert.equal((await readDispatchRequest('beta', ids.get('beta')!, cwd))?.status, 'notified');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses runtime-returned records when a stale projection is published after refresh', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-refresh-publish-race-'));
+    const stateDir = join(cwd, '.omx/state');
+    const bridge = getDefaultBridge(stateDir);
+    const originalExec = RuntimeBridge.prototype.execCommand;
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'already notified',
+      }, cwd);
+      const path = join(stateDir, 'dispatch.json');
+      const stale = await readFile(path, 'utf8');
+      bridge.execCommand({ command: 'MarkNotified', request_id: queued.request.request_id, channel: 'tmux' });
+      let captures = 0;
+      RuntimeBridge.prototype.execCommand = function(command, options) {
+        const event = originalExec.call(this, command, options);
+        if (command.command === 'CaptureSnapshot') {
+          assert.equal(event.event, 'SnapshotCaptured');
+          assert.ok('dispatch_records' in event && Array.isArray(event.dispatch_records));
+          captures += 1;
+          writeFileSync(path, stale);
+        }
+        return event;
+      };
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await drainPendingTeamDispatch({ cwd, injector: async () => {
+          assert.fail('stale pending projection must not reinject a notified request');
+        } });
+        assert.equal(result.processed, 0);
+      }
+      assert.equal(captures, 2, 'a stale replacement must not enter the verified projection cache');
+    } finally {
+      RuntimeBridge.prototype.execCommand = originalExec;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not cache snapshots from older runtimes without returned dispatch records', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-legacy-snapshot-'));
+    const bridge = getDefaultBridge(join(cwd, '.omx/state'));
+    const originalExec = RuntimeBridge.prototype.execCommand;
+    try {
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'notified' }, cwd);
+      bridge.execCommand({ command: 'MarkNotified', request_id: queued.request.request_id, channel: 'tmux' });
+      let captures = 0;
+      RuntimeBridge.prototype.execCommand = function(command, options) {
+        const event = originalExec.call(this, command, options);
+        if (event.event === 'SnapshotCaptured') {
+          captures += 1;
+          return { event: 'SnapshotCaptured' };
+        }
+        return event;
+      };
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        assert.equal((await drainPendingTeamDispatch({ cwd, injector: async () => { assert.fail('notified request reinjected'); } })).processed, 0);
+      }
+      assert.equal(captures, 2);
+    } finally {
+      RuntimeBridge.prototype.execCommand = originalExec;
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 
