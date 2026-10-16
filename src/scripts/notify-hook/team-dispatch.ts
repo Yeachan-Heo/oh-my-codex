@@ -5,8 +5,9 @@ import { execFileSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
-import { resolveBridgeStateDir, resolveRuntimeBinaryPath } from '../../runtime/bridge.js';
+import { getDefaultBridge, resolveBridgeStateDir, resolveRuntimeBinaryPath } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
+import { mailboxRecordBelongsToTeam, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -699,10 +700,7 @@ async function finalizeClaimedDispatchRequest({
         request.last_reason = result.reason;
         runtimeExec({ command: 'MarkNotified', request_id: request.request_id, channel: 'tmux' }, stateDir, teamName);
         if (request.kind === 'mailbox' && request.message_id) {
-          runtimeExec({ command: 'MarkMailboxNotified', message_id: request.message_id }, stateDir, teamName);
-          if (usingLegacyRequests) {
-            await updateMailboxNotified(stateDir, teamName, request.to_worker, request.message_id).catch(() => {});
-          }
+          await updateMailboxNotified(stateDir, teamName, request.to_worker, request.message_id).catch(() => {});
         }
         summary.processed += 1;
         mutated = true;
@@ -1103,8 +1101,14 @@ async function updateMailboxNotified(stateDir, teamName, workerName, messageId) 
   const mailboxPath = join(teamDirPath, 'mailbox', `${workerName}.json`);
   return await withMailboxLock(teamDirPath, workerName, async () => {
     const mailbox = await readJson(mailboxPath, { worker: workerName, messages: [] });
-    if (!mailbox || !Array.isArray(mailbox.messages)) return false;
-    const msg = mailbox.messages.find((candidate) => candidate?.message_id === messageId);
+    if (!mailbox || mailbox.worker !== workerName || !Array.isArray(mailbox.messages)) return false;
+    const msg = mailbox.messages.find((candidate) => candidate?.message_id === messageId && candidate.to_worker === workerName);
+    if (process.env.OMX_RUNTIME_BRIDGE !== '0') {
+      const record = getDefaultBridge(stateDir).readMailboxRecords().find((candidate) => candidate.message_id === messageId);
+      const legacyIds = await readLegacyMailboxMessageIds(teamName, workerName, mailbox, join(teamDirPath, 'events', 'events.ndjson'));
+      if (!record || !mailboxRecordBelongsToTeam(record, teamName, workerName, legacyIds)) return false;
+      runtimeExec({ command: 'MarkMailboxNotified', team_name: teamName, message_id: messageId }, stateDir, teamName);
+    }
     if (!msg) return false;
     if (!msg.notified_at) msg.notified_at = new Date().toISOString();
     await writeJsonAtomic(mailboxPath, mailbox);

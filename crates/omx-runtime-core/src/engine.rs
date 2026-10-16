@@ -218,25 +218,40 @@ impl RuntimeEngine {
             }
             RuntimeCommand::CaptureSnapshot => RuntimeEvent::SnapshotCaptured,
             RuntimeCommand::CreateMailboxMessage {
+                team_name,
                 message_id,
                 from_worker,
                 to_worker,
                 body,
             } => {
-                self.mailbox
-                    .create(&message_id, &from_worker, &to_worker, &body);
+                self.mailbox.create(
+                    team_name.clone(),
+                    &message_id,
+                    &from_worker,
+                    &to_worker,
+                    &body,
+                );
                 RuntimeEvent::MailboxMessageCreated {
+                    team_name,
                     message_id,
                     from_worker,
                     to_worker,
                     body: Some(body),
                 }
             }
-            RuntimeCommand::MarkMailboxNotified { message_id } => {
+            RuntimeCommand::MarkMailboxNotified {
+                message_id,
+                team_name,
+            } => {
+                self.mailbox.check_team(&message_id, team_name.as_deref())?;
                 self.mailbox.mark_notified(&message_id)?;
                 RuntimeEvent::MailboxNotified { message_id }
             }
-            RuntimeCommand::MarkMailboxDelivered { message_id } => {
+            RuntimeCommand::MarkMailboxDelivered {
+                message_id,
+                team_name,
+            } => {
+                self.mailbox.check_team(&message_id, team_name.as_deref())?;
                 self.mailbox.mark_delivered(&message_id)?;
                 RuntimeEvent::MailboxDelivered { message_id }
             }
@@ -611,12 +626,14 @@ fn replay_event(engine: &mut RuntimeEngine, event: &RuntimeEvent) -> Result<(), 
             engine.replay.request_replay(cursor.clone());
         }
         RuntimeEvent::MailboxMessageCreated {
+            team_name,
             message_id,
             from_worker,
             to_worker,
             body,
         } => {
             engine.mailbox.create(
+                team_name.clone(),
                 message_id,
                 from_worker,
                 to_worker,
@@ -780,6 +797,105 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_team_check_guards_the_record_mutated_when_ids_repeat() {
+        let mut engine = RuntimeEngine::new();
+        for team in ["alpha", "beta"] {
+            engine
+                .process(RuntimeCommand::CreateMailboxMessage {
+                    team_name: Some(team.into()),
+                    message_id: "repeated".into(),
+                    from_worker: "leader-fixed".into(),
+                    to_worker: "worker-1".into(),
+                    body: team.into(),
+                })
+                .unwrap();
+        }
+        assert!(engine
+            .process(RuntimeCommand::MarkMailboxNotified {
+                team_name: Some("beta".into()),
+                message_id: "repeated".into(),
+            })
+            .is_err());
+        assert!(engine
+            .process(RuntimeCommand::MarkMailboxDelivered {
+                team_name: Some("beta".into()),
+                message_id: "repeated".into(),
+            })
+            .is_err());
+        assert!(engine
+            .mailbox
+            .records()
+            .iter()
+            .all(|record| record.notified_at.is_none() && record.delivered_at.is_none()));
+        engine
+            .process(RuntimeCommand::MarkMailboxDelivered {
+                team_name: Some("alpha".into()),
+                message_id: "repeated".into(),
+            })
+            .unwrap();
+        assert!(engine.mailbox.records()[0].delivered_at.is_some());
+        assert!(engine.mailbox.records()[1].delivered_at.is_none());
+    }
+
+    #[test]
+    fn mailbox_team_scope_survives_reload_and_replay_and_guards_mutations() {
+        let dir =
+            std::env::temp_dir().join(format!("omx-mailbox-team-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut engine = RuntimeEngine::new().with_state_dir(&dir);
+        engine
+            .process(RuntimeCommand::CreateMailboxMessage {
+                team_name: Some("alpha".into()),
+                message_id: "scoped".into(),
+                from_worker: "leader-fixed".into(),
+                to_worker: "worker-1".into(),
+                body: "alpha only".into(),
+            })
+            .unwrap();
+        engine.persist().unwrap();
+        let mut loaded = RuntimeEngine::load(&dir).unwrap();
+        assert_eq!(
+            loaded.mailbox.records()[0].team_name.as_deref(),
+            Some("alpha")
+        );
+        for team_name in [None, Some("beta".to_string())] {
+            assert!(loaded
+                .process(RuntimeCommand::MarkMailboxNotified {
+                    team_name: team_name.clone(),
+                    message_id: "scoped".into(),
+                })
+                .is_err());
+            assert!(loaded
+                .process(RuntimeCommand::MarkMailboxDelivered {
+                    team_name,
+                    message_id: "scoped".into(),
+                })
+                .is_err());
+        }
+        assert!(loaded.mailbox.records()[0].notified_at.is_none());
+        assert!(loaded.mailbox.records()[0].delivered_at.is_none());
+        std::fs::remove_file(dir.join("mailbox.json")).unwrap();
+        let mut replayed = RuntimeEngine::load(&dir).unwrap();
+        assert_eq!(
+            replayed.mailbox.records()[0].team_name.as_deref(),
+            Some("alpha")
+        );
+        replayed
+            .process(RuntimeCommand::MarkMailboxNotified {
+                team_name: Some("alpha".into()),
+                message_id: "scoped".into(),
+            })
+            .unwrap();
+        replayed
+            .process(RuntimeCommand::MarkMailboxDelivered {
+                team_name: Some("alpha".into()),
+                message_id: "scoped".into(),
+            })
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn persist_and_load_round_trip_preserves_mailbox_body() {
         let dir = std::env::temp_dir().join("omx-runtime-test-mailbox-body");
         let _ = std::fs::remove_dir_all(&dir);
@@ -787,6 +903,7 @@ mod tests {
         let mut engine = RuntimeEngine::new().with_state_dir(&dir);
         engine
             .process(RuntimeCommand::CreateMailboxMessage {
+                team_name: Some("alpha".into()),
                 message_id: "msg-1".into(),
                 from_worker: "worker-1".into(),
                 to_worker: "leader-fixed".into(),
@@ -817,6 +934,7 @@ mod tests {
         std::fs::write(
             dir.join("events.json"),
             serde_json::to_string_pretty(&vec![RuntimeEvent::MailboxMessageCreated {
+                team_name: None,
                 message_id: "msg-legacy".into(),
                 from_worker: "worker-1".into(),
                 to_worker: "leader-fixed".into(),

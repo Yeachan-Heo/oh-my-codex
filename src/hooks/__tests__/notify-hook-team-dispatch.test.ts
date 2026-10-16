@@ -207,7 +207,7 @@ function writeJson(file, value) {
 }
 function nowIso() { return new Date().toISOString(); }
 if (argv[0] === 'schema') {
-  process.stdout.write(JSON.stringify({ schema_version: 1, commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
+  process.stdout.write(JSON.stringify({ schema_version: 1, commands: ['acquire-authority','renew-authority','queue-dispatch','mark-notified','mark-delivered','mark-failed','remove-dispatch-records','request-replay','capture-snapshot'], events: [], transport: 'tmux' }) + '\\n');
   process.exit(0);
 }
 if (argv[0] !== 'exec') process.exit(1);
@@ -236,7 +236,7 @@ switch (command.command) {
     process.exit(0);
   }
   case 'CreateMailboxMessage':
-    mailbox.records.push({ message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker, body: command.body, created_at: timestamp, notified_at: null, delivered_at: null });
+    mailbox.records.push({ team_name: command.team_name, message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker, body: command.body, created_at: timestamp, notified_at: null, delivered_at: null });
     writeJson(mailboxPath, mailbox);
     process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
     process.exit(0);
@@ -536,6 +536,7 @@ exit 1
 
       const mailbox = await listMailboxMessages('alpha', 'worker-1', cwd);
       assert.ok(mailbox.some((message) => message.message_id === msg.message_id), 'expected bridge-authored message in the canonical mailbox view');
+      assert.ok(mailbox.find((message) => message.message_id === msg.message_id)?.notified_at);
       assert.ok(request?.notified_at, 'expected dispatch state to expose the notification timestamp');
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
@@ -545,6 +546,53 @@ exit 1
       if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
       else delete process.env.OMX_RUNTIME_BRIDGE;
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not notify another Team mailbox ID even through a polluted shadow and dispatch request', async () => {
+    const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      for (const legacy of [false, true]) {
+        const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-mailbox-isolation-'));
+        try {
+          const runtimePath = join(cwd, 'omx-runtime');
+          await writeCompatRuntimeFixture(runtimePath);
+          process.env.OMX_RUNTIME_BINARY = runtimePath;
+          process.env.OMX_RUNTIME_BRIDGE = '1';
+          await initTeamState('alpha', 'task', 'executor', 1, cwd);
+          await initTeamState('beta', 'task', 'executor', 1, cwd);
+          const foreign = await sendDirectMessage('alpha', 'leader-fixed', 'worker-1', 'alpha only', cwd);
+          const own = await sendDirectMessage('beta', 'leader-fixed', 'worker-1', 'beta only', cwd);
+          await writeFile(join(cwd, '.omx', 'state', 'team', 'beta', 'mailbox', 'worker-1.json'),
+            JSON.stringify({ worker: 'worker-1', messages: [foreign, own] }));
+          const compatPath = join(cwd, '.omx', 'state', 'mailbox.json');
+          if (legacy) {
+            const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<Record<string, unknown>> };
+            for (const record of compat.records) delete record.team_name;
+            await writeFile(compatPath, JSON.stringify(compat));
+          }
+          for (const message of [foreign, own]) {
+            await enqueueDispatchRequest('beta', {
+              kind: 'mailbox', to_worker: 'worker-1', worker_index: 1,
+              message_id: message.message_id, trigger_message: `check ${message.message_id}`,
+            }, cwd);
+          }
+          const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+          await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+            injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
+          const compat = JSON.parse(await readFile(compatPath, 'utf8')) as { records: Array<{ message_id: string; notified_at: string | null }> };
+          assert.equal(compat.records.find((record) => record.message_id === foreign.message_id)?.notified_at, null);
+          assert.equal(typeof compat.records.find((record) => record.message_id === own.message_id)?.notified_at, 'string');
+        } finally {
+          await rm(cwd, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      if (previousRuntimeBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousRuntimeBinary;
+      if (previousRuntimeBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
     }
   });
 

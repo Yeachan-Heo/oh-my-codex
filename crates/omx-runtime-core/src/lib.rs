@@ -226,15 +226,21 @@ pub enum RuntimeCommand {
     },
     CaptureSnapshot,
     CreateMailboxMessage {
+        #[serde(default)]
+        team_name: Option<String>,
         message_id: String,
         from_worker: String,
         to_worker: String,
         body: String,
     },
     MarkMailboxNotified {
+        #[serde(default)]
+        team_name: Option<String>,
         message_id: String,
     },
     MarkMailboxDelivered {
+        #[serde(default)]
+        team_name: Option<String>,
         message_id: String,
     },
 }
@@ -276,6 +282,8 @@ pub enum RuntimeEvent {
     },
     SnapshotCaptured,
     MailboxMessageCreated {
+        #[serde(default)]
+        team_name: Option<String>,
         message_id: String,
         from_worker: String,
         to_worker: String,
@@ -651,6 +659,7 @@ mod tests {
         assert_eq!(
             deserialized,
             RuntimeEvent::MailboxMessageCreated {
+                team_name: None,
                 message_id: "msg-1".into(),
                 from_worker: "worker-1".into(),
                 to_worker: "leader-fixed".into(),

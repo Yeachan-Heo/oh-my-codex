@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
 import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
@@ -15,6 +17,39 @@ export interface TeamMailboxMessage {
 export interface TeamMailbox {
   worker: string;
   messages: TeamMailboxMessage[];
+}
+
+/** Old shadows may contain foreign IDs written by the pre-isolation bridge reader. */
+export async function readLegacyMailboxMessageIds(
+  teamName: string,
+  workerName: string,
+  mailbox: TeamMailbox,
+  eventPath: string,
+): Promise<Set<string>> {
+  const shadowIds = new Set(mailbox.worker === workerName
+    ? mailbox.messages.filter((message) => message?.to_worker === workerName && typeof message.message_id === 'string').map((message) => message.message_id)
+    : []);
+  const ids = new Set<string>();
+  const events = await readFile(eventPath, 'utf8').catch(() => '');
+  for (const line of events.split('\n')) {
+    try {
+      const event = JSON.parse(line);
+      if (event.team === teamName && event.type === 'message_received' && event.worker === workerName
+        && shadowIds.has(event.message_id)) ids.add(event.message_id);
+    } catch { /* A partial journal line cannot prove ownership. */ }
+  }
+  return ids;
+}
+
+export function mailboxRecordBelongsToTeam(
+  record: MailboxRecord,
+  teamName: string,
+  workerName: string,
+  legacyMessageIds: ReadonlySet<string>,
+): boolean {
+  return record.to_worker === workerName && (record.team_name == null
+    ? legacyMessageIds.has(record.message_id)
+    : record.team_name === teamName);
 }
 
 interface MailboxDeps {
@@ -78,8 +113,12 @@ export async function sendDirectMessage(
     const dedupeCandidates = [...mailbox.messages];
     if (deps.readLegacyMailbox) {
       const seenMessageIds = new Set(dedupeCandidates.map((candidate) => candidate.message_id));
+      const legacyIds = isBridgeEnabled()
+        ? await readLegacyMailboxMessageIds(deps.teamName, toWorker, legacyMailbox,
+          join(resolveBridgeStateDir(deps.cwd), 'team', deps.teamName, 'events', 'events.ndjson'))
+        : new Set(legacyMailbox.messages.map((candidate) => candidate.message_id));
       for (const legacyMessage of legacyMailbox.messages) {
-        if (!seenMessageIds.has(legacyMessage.message_id)) {
+        if (legacyIds.has(legacyMessage.message_id) && !seenMessageIds.has(legacyMessage.message_id)) {
           dedupeCandidates.push(legacyMessage);
           seenMessageIds.add(legacyMessage.message_id);
         }
@@ -125,6 +164,7 @@ export async function sendDirectMessage(
     created = true;
     if (executeBridgeCommand(deps.cwd, {
       command: 'CreateMailboxMessage',
+      team_name: deps.teamName,
       message_id: msgId,
       from_worker: fromWorker,
       to_worker: toWorker,
@@ -200,7 +240,7 @@ export async function markMessageDelivered(
   if (!existingMessage) return false;
   if (existingMessage.delivered_at) return true;
 
-  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', message_id: messageId })) {
+  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxDelivered', team_name: deps.teamName, message_id: messageId })) {
     const updated = await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
       const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
       const msg = mailbox.messages.find((message) => message.message_id === messageId);
@@ -255,7 +295,10 @@ export async function markMessageNotified(
   messageId: string,
   deps: MailboxDeps,
 ): Promise<boolean> {
-  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxNotified', message_id: messageId })) {
+  const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
+  if (!mailbox.messages.some((message) => message.message_id === messageId)) return false;
+
+  if (executeBridgeCommand(deps.cwd, { command: 'MarkMailboxNotified', team_name: deps.teamName, message_id: messageId })) {
     return await deps.withMailboxLock(deps.teamName, workerName, deps.cwd, async () => {
       const mailbox = await deps.readMailbox(deps.teamName, workerName, deps.cwd);
       const msg = mailbox.messages.find((message) => message.message_id === messageId);

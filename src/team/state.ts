@@ -21,6 +21,8 @@ import {
   markMessageNotified as markMessageNotifiedImpl,
   listMailboxMessages as listMailboxMessagesImpl,
   normalizeBridgeMailboxMessage,
+  readLegacyMailboxMessageIds,
+  mailboxRecordBelongsToTeam,
 } from './state/mailbox.js';
 import {
   enqueueDispatchRequest as enqueueDispatchRequestImpl,
@@ -1999,13 +2001,14 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
       const bridge = getDefaultBridge(resolveBridgeStateDir(cwd));
       const compat = bridge.readCompatFile<{ records?: unknown[] }>('mailbox.json');
       if (compat) {
+        const legacyMessageIds = await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd));
         const legacyById = new Map(
           legacyMailbox.messages
             .filter((message) => typeof message.message_id === 'string' && message.message_id !== '')
             .map((message) => [message.message_id, message]),
         );
         const bridgeMessages = bridge.readMailboxRecords()
-          .filter((record) => record.to_worker === workerName)
+          .filter((record) => mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds))
           .map((record) => {
             const normalized = normalizeBridgeMailboxMessage(record);
             if (!normalized.body) {
@@ -2021,6 +2024,10 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
     }
   }
 
+  if (isBridgeEnabled()) {
+    const ids = await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd));
+    return { worker: workerName, messages: legacyMailbox.messages.filter((message) => ids.has(message?.message_id)) };
+  }
   return legacyMailbox;
 }
 
@@ -2041,7 +2048,11 @@ async function readLegacyMailbox(teamName: string, workerName: string, cwd: stri
 
 async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string): Promise<void> {
   const p = mailboxPath(teamName, mailbox.worker, cwd);
-  await writeAtomic(p, JSON.stringify(mailbox, null, 2));
+  const existing = await readLegacyMailbox(teamName, mailbox.worker, cwd);
+  const updatedIds = new Set(mailbox.messages.map((message) => message.message_id));
+  // Filtered bridge views must not delete unproven shadows needed for recovery.
+  const preserved = existing.messages.filter((message) => !updatedIds.has(message?.message_id));
+  await writeAtomic(p, JSON.stringify({ ...mailbox, messages: [...preserved, ...mailbox.messages] }, null, 2));
 }
 
 async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
@@ -2462,17 +2473,17 @@ export async function retireTeamMailboxMessages(
   for (const workerName of targets) {
     await withMailboxLock(teamName, workerName, cwd, async () => {
       const mailbox = await readLegacyMailbox(teamName, workerName, cwd);
-      if (mailbox.messages.length === 0) return;
-
       if (isBridgeEnabled()) {
         const stateDir = resolveBridgeStateDir(cwd);
         const bridge = getDefaultBridge(stateDir);
         const compatPath = join(stateDir, 'mailbox.json');
         const compat = bridge.readCompatFile<{ records?: unknown[] }>('mailbox.json');
+        if (!existsSync(compatPath) && mailbox.messages.length === 0) return;
         if (!existsSync(compatPath) || !Array.isArray(compat?.records)) {
           throw new Error('authoritative_mailbox_retirement_discovery_failed');
         }
         const bridgeRecords = bridge.readMailboxRecords();
+        const legacyMessageIds = await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd));
         if (bridgeRecords.some((record) => !record
           || typeof record.message_id !== 'string'
           || typeof record.from_worker !== 'string'
@@ -2490,14 +2501,16 @@ export async function retireTeamMailboxMessages(
         }
         let changed = false;
         let retiredFromAuthoritative = 0;
-        for (const message of mailbox.messages) {
-          const authoritative = bridgeRecords.find((record) => record.message_id === message.message_id);
-          if (!authoritative) continue;
-          if (authoritative.to_worker !== workerName) {
-            throw new Error(`authoritative_mailbox_retirement_discovery_failed:${message.message_id}`);
+        for (const authoritative of bridgeRecords) {
+          if (!mailboxRecordBelongsToTeam(authoritative, teamName, workerName, legacyMessageIds)) continue;
+          let message = mailbox.messages.find((entry) => entry.message_id === authoritative.message_id);
+          if (!message) {
+            message = normalizeBridgeMailboxMessage(authoritative);
+            mailbox.messages.push(message);
+            changed = true;
           }
           if (!authoritative.delivered_at) {
-            const event = bridge.execCommand({ command: 'MarkMailboxDelivered', message_id: message.message_id });
+            const event = bridge.execCommand({ command: 'MarkMailboxDelivered', team_name: teamName, message_id: message.message_id });
             if (event.event !== 'MailboxDelivered' || event.message_id !== message.message_id) {
               throw new Error(`authoritative_mailbox_retirement_failed:${message.message_id}`);
             }

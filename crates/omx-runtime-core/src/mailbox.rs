@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailboxRecord {
+    #[serde(default)]
+    pub team_name: Option<String>,
     pub message_id: String,
     pub from_worker: String,
     pub to_worker: String,
@@ -48,12 +50,14 @@ impl MailboxLog {
 
     pub fn create(
         &mut self,
+        team_name: Option<String>,
         message_id: impl Into<String>,
         from_worker: impl Into<String>,
         to_worker: impl Into<String>,
         body: impl Into<String>,
     ) {
         self.records.push(MailboxRecord {
+            team_name,
             message_id: message_id.into(),
             from_worker: from_worker.into(),
             to_worker: to_worker.into(),
@@ -84,6 +88,21 @@ impl MailboxLog {
         }
         record.delivered_at = Some(now_iso());
         Ok(())
+    }
+
+    pub fn check_team(
+        &self,
+        message_id: &str,
+        team_name: Option<&str>,
+    ) -> Result<(), MailboxError> {
+        self.records
+            .iter()
+            .find(|record| record.message_id == message_id)
+            .filter(|record| record.team_name.is_none() || record.team_name.as_deref() == team_name)
+            .map(|_| ())
+            .ok_or_else(|| MailboxError::NotFound {
+                message_id: message_id.to_string(),
+            })
     }
 
     pub fn records(&self) -> &[MailboxRecord] {
@@ -165,7 +184,7 @@ mod tests {
     #[test]
     fn create_adds_record_with_timestamp() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "worker-a", "worker-b", "hello");
+        log.create(None, "msg-1", "worker-a", "worker-b", "hello");
         assert_eq!(log.records().len(), 1);
         let r = &log.records()[0];
         assert_eq!(r.message_id, "msg-1");
@@ -180,7 +199,7 @@ mod tests {
     #[test]
     fn mark_notified_sets_timestamp() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "a", "b", "body");
+        log.create(None, "msg-1", "a", "b", "body");
         log.mark_notified("msg-1").unwrap();
         assert!(log.records()[0].notified_at.is_some());
     }
@@ -188,7 +207,7 @@ mod tests {
     #[test]
     fn mark_delivered_sets_timestamp() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "a", "b", "body");
+        log.create(None, "msg-1", "a", "b", "body");
         log.mark_delivered("msg-1").unwrap();
         assert!(log.records()[0].delivered_at.is_some());
     }
@@ -210,7 +229,7 @@ mod tests {
     #[test]
     fn mark_notified_already_delivered_errors() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "a", "b", "body");
+        log.create(None, "msg-1", "a", "b", "body");
         log.mark_delivered("msg-1").unwrap();
         let err = log.mark_notified("msg-1").unwrap_err();
         assert!(matches!(err, MailboxError::AlreadyDelivered { .. }));
@@ -219,7 +238,7 @@ mod tests {
     #[test]
     fn mark_delivered_twice_errors() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "a", "b", "body");
+        log.create(None, "msg-1", "a", "b", "body");
         log.mark_delivered("msg-1").unwrap();
         let err = log.mark_delivered("msg-1").unwrap_err();
         assert!(matches!(err, MailboxError::AlreadyDelivered { .. }));
@@ -228,7 +247,7 @@ mod tests {
     #[test]
     fn full_lifecycle() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "worker-a", "worker-b", "task payload");
+        log.create(None, "msg-1", "worker-a", "worker-b", "task payload");
         log.mark_notified("msg-1").unwrap();
         log.mark_delivered("msg-1").unwrap();
 
@@ -240,8 +259,8 @@ mod tests {
     #[test]
     fn multiple_messages() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "a", "b", "first");
-        log.create("msg-2", "b", "a", "second");
+        log.create(None, "msg-1", "a", "b", "first");
+        log.create(None, "msg-2", "b", "a", "second");
         assert_eq!(log.records().len(), 2);
         log.mark_delivered("msg-2").unwrap();
         assert!(log.records()[1].delivered_at.is_some());
@@ -251,7 +270,7 @@ mod tests {
     #[test]
     fn serialization_round_trip() {
         let mut log = MailboxLog::new();
-        log.create("msg-1", "a", "b", "payload");
+        log.create(None, "msg-1", "a", "b", "payload");
         log.mark_notified("msg-1").unwrap();
         let json = serde_json::to_string(&log).unwrap();
         let deserialized: MailboxLog = serde_json::from_str(&json).unwrap();

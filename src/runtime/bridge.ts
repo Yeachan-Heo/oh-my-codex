@@ -84,9 +84,9 @@ export type RuntimeCommand =
   | { command: 'RemoveDispatchRecords'; request_ids: string[] }
   | { command: 'RequestReplay'; cursor?: string }
   | { command: 'CaptureSnapshot' }
-  | { command: 'CreateMailboxMessage'; message_id: string; from_worker: string; to_worker: string; body: string }
-  | { command: 'MarkMailboxNotified'; message_id: string }
-  | { command: 'MarkMailboxDelivered'; message_id: string };
+  | { command: 'CreateMailboxMessage'; team_name?: string; message_id: string; from_worker: string; to_worker: string; body: string }
+  | { command: 'MarkMailboxNotified'; team_name?: string; message_id: string }
+  | { command: 'MarkMailboxDelivered'; team_name?: string; message_id: string };
 
 // Rust RuntimeEvent variants (serde tag="event")
 export type RuntimeEvent =
@@ -99,7 +99,7 @@ export type RuntimeEvent =
   | { event: 'DispatchRecordsRemoved'; request_ids: string[] }
   | { event: 'ReplayRequested'; cursor?: string }
   | { event: 'SnapshotCaptured' }
-  | { event: 'MailboxMessageCreated'; message_id: string; from_worker: string; to_worker: string; body?: string }
+  | { event: 'MailboxMessageCreated'; team_name?: string; message_id: string; from_worker: string; to_worker: string; body?: string }
   | { event: 'MailboxNotified'; message_id: string }
   | { event: 'MailboxDelivered'; message_id: string };
 
@@ -116,6 +116,7 @@ export interface DispatchRecord {
 }
 
 export interface MailboxRecord {
+  team_name?: string | null;
   message_id: string;
   from_worker: string;
   to_worker: string;

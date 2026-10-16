@@ -11,6 +11,26 @@ called out in issue #1243.
 
 ## Authoritative owners
 
+### Team mailbox isolation
+
+Teams may share a runtime state directory and reuse names such as `worker-1`
+and `leader-fixed`. New mailbox creation commands, creation events, and records
+carry the canonical `team_name`; mailbox reads and mutations require that Team
+and the addressed worker. Rust rejects a missing or different Team on mutations
+of scoped records. Notification hooks and shutdown retirement follow the same
+ownership rule.
+
+Older records without `team_name` remain readable only when both the Team's
+per-worker shadow and its `message_received` creation journal prove ownership.
+Shadows alone are insufficient: older readers could copy another Team's records
+into them. Unproven old records are retained on disk but hidden from bridge-backed
+mailbox operations, including the JSON fallback. In particular, an old send that
+crashed before appending its creation event requires manual recovery rather than
+guessing ownership. Explicitly disabling the bridge keeps the legacy JSON lane.
+
+Scoped records remain readable and can be retired if their shadow is missing;
+their Team ownership survives persistence and event replay.
+
 ### `pending` / `notified` / `delivered` / `failed`
 
 Durable owner:

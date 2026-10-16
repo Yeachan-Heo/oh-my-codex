@@ -191,7 +191,7 @@ switch (command.command) {
     process.exit(0);
   }
   case 'CreateMailboxMessage':
-    mailbox.records.push({ message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker, body: command.body, created_at: timestamp, notified_at: null, delivered_at: null });
+    mailbox.records.push({ team_name: command.team_name, message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker, body: command.body, created_at: timestamp, notified_at: null, delivered_at: null });
     writeJson(mailboxPath, mailbox);
     process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
     process.exit(0);
