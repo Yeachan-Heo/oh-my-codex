@@ -104,12 +104,28 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
   if (!isBridgeEnabled()) return false;
   const stateDir = resolveBridgeStateDir(cwd);
   if (command.command === 'MarkMailboxNotified' || command.command === 'MarkMailboxDelivered') {
-    const compat = getDefaultBridge(stateDir).readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json');
-    const absentFromCompat = Array.isArray(compat?.records)
+    const bridge = getDefaultBridge(stateDir);
+    let compat = bridge.readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json');
+    const mailboxCompatPath = join(stateDir, 'mailbox.json');
+    const hasRuntimeAuthority = ['events.json', 'snapshot.json', 'mailbox.json']
+      .some((name) => existsSync(join(stateDir, name)));
+    const isAbsentFromCompat = (): boolean => Array.isArray(compat?.records)
       && compat.records.every((record) => record && typeof record.message_id === 'string')
       && !compat.records.some((record) => record.message_id === command.message_id);
-    if (absentFromCompat || !['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)))) {
-      // Callers proved shadow+journal ownership; no runtime record may share this ID.
+    if (hasRuntimeAuthority && (!existsSync(mailboxCompatPath) || isAbsentFromCompat())) {
+      // Refresh a missing or stale projection before deciding that a proven
+      // shadow message has no authoritative runtime record.
+      try {
+        bridge.execCommand({ command: 'CaptureSnapshot' });
+      } catch (error) {
+        if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
+        if (isRuntimeTransportError(error)) return false;
+        throw error;
+      }
+      compat = bridge.readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json');
+    }
+    if (isAbsentFromCompat() || !hasRuntimeAuthority) {
+      // Callers proved shadow+journal ownership and no compatible runtime row was found.
       preflightRuntimeBridge(stateDir);
       return false;
     }
