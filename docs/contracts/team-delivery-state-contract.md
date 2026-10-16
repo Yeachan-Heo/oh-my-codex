@@ -14,7 +14,10 @@ called out in issue #1243.
 ### Team mailbox isolation
 
 The JS bridge requires the `team-mailbox-scope-v1` runtime capability before
-mutating runtime state, including notification hooks. Older runtimes are rejected;
+mutating runtime state, including notification hooks. Sends validate before writing
+provisional shadows, and dispatch validates before pane injection. A runtime
+rejected after provisional creation removes only that send's provisional row.
+Older runtimes are rejected;
 rebuild or upgrade the runtime rather than allowing it to discard Team scope.
 
 Teams may share a runtime state directory and reuse names such as `worker-1`

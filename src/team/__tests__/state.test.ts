@@ -2091,6 +2091,83 @@ exit 1
     }
   });
 
+  it('rejects an incompatible runtime before writing a provisional mailbox row', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-send-preflight-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('send-preflight', 't', 'executor', 1, cwd);
+      await sendDirectMessage('send-preflight', 'leader-fixed', 'worker-1', 'existing', cwd);
+      const root = join(cwd, '.omx', 'state');
+      const teamDir = join(root, 'team', 'send-preflight');
+      const shadowPath = join(teamDir, 'mailbox', 'worker-1.json');
+      const eventPath = join(teamDir, 'events', 'events.ndjson');
+      const before = await Promise.all([shadowPath, eventPath, join(root, 'mailbox.json')].map((path) => readFile(path, 'utf8')));
+      const supported = await readFile(runtimePath, 'utf8');
+      await writeFile(runtimePath, supported.replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []'));
+      for (const recipient of ['worker-1', 'leader-fixed']) {
+        for (let retry = 0; retry < 2; retry += 1) {
+          await assert.rejects(() => sendDirectMessage('send-preflight', 'leader-fixed', recipient, 'new', cwd), /team-mailbox-scope-v1/);
+          assert.deepEqual(await Promise.all([shadowPath, eventPath, join(root, 'mailbox.json')].map((path) => readFile(path, 'utf8'))), before);
+          assert.equal(existsSync(join(teamDir, 'mailbox', 'leader-fixed.json')), false);
+        }
+      }
+      await writeFile(runtimePath, supported);
+      await sendDirectMessage('send-preflight', 'leader-fixed', 'worker-1', 'new', cwd);
+      assert.equal(await retireTeamMailboxMessages('send-preflight', ['worker-1'], cwd), 2);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes only its provisional row if the runtime changes after send preflight', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-send-preflight-race-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('preflight-race', 't', 'executor', 1, cwd);
+      const existing = await sendDirectMessage('preflight-race', 'leader-fixed', 'worker-1', 'existing', cwd);
+      const shadowPath = join(cwd, '.omx', 'state', 'team', 'preflight-race', 'mailbox', 'worker-1.json');
+      const recovery = { ...existing, body: 'keep this recovery payload' };
+      await writeFile(shadowPath, JSON.stringify({ worker: 'worker-1', messages: [recovery, existing] }, null, 2));
+      const before = await readFile(shadowPath, 'utf8');
+      const supported = await readFile(runtimePath, 'utf8');
+      let replaced = false;
+      setWriteAtomicRenameForTests(async (source, destination) => {
+        if (!replaced && destination === shadowPath) {
+          replaced = true;
+          await writeFile(runtimePath, supported.replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []'));
+        }
+        await rename(source, destination);
+      });
+      await assert.rejects(() => sendDirectMessage('preflight-race', 'leader-fixed', 'worker-1', 'new', cwd), /team-mailbox-scope-v1/);
+      assert.equal(replaced, true);
+      assert.equal(await readFile(shadowPath, 'utf8'), before);
+      resetWriteAtomicRenameForTests();
+      await writeFile(runtimePath, supported);
+      assert.equal(await retireTeamMailboxMessages('preflight-race', ['worker-1'], cwd), 1);
+    } finally {
+      resetWriteAtomicRenameForTests();
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('propagates rejected mailbox acknowledgements without changing shadow data', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-mailbox-rejected-ack-'));
     const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;

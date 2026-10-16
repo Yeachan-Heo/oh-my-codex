@@ -257,7 +257,7 @@ export class RuntimeBridge {
 
   /** Execute a RuntimeCommand and return the resulting RuntimeEvent. */
   execCommand(cmd: RuntimeCommand, options?: { compact?: boolean }): RuntimeEvent {
-    this.validateSchema();
+    this.assertCompatible();
     const json = JSON.stringify(cmd);
     const args = ['exec', json];
     if (this.stateDir) args.push(`--state-dir=${this.stateDir}`);
@@ -308,7 +308,7 @@ export class RuntimeBridge {
 
   /** Initialize a fresh state directory. */
   initStateDir(dir: string): void {
-    this.validateSchema();
+    this.assertCompatible();
     this.run(['init', dir]);
     this.stateDir = dir;
   }
@@ -387,10 +387,11 @@ export class RuntimeBridge {
   }
 
   // -------------------------------------------------------------------------
-  // Private helpers
+  // Runtime validation and process execution
   // -------------------------------------------------------------------------
 
-  private validateSchema(): void {
+  /** Validate the runtime before callers perform non-runtime side effects. */
+  assertCompatible(): void {
     const stdout = this.run(['schema', '--json']);
     let schema;
     try {
@@ -443,6 +444,20 @@ export function getDefaultBridge(stateDir?: string): RuntimeBridge {
     _defaultBridge = new RuntimeBridge({ stateDir });
   }
   return _defaultBridge;
+}
+
+export function isRuntimeTransportError(error: unknown): boolean {
+  const cause = error instanceof Error ? error.cause as (NodeJS.ErrnoException & { status?: number | null }) | undefined : undefined;
+  return typeof cause?.code === 'string' && cause.status == null;
+}
+
+export function preflightRuntimeBridge(stateDir: string): void {
+  if (!isBridgeEnabled()) return;
+  try {
+    getDefaultBridge(stateDir).assertCompatible();
+  } catch (error) {
+    if (!isRuntimeTransportError(error)) throw error;
+  }
 }
 
 export function isBridgeEnabled(): boolean {

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
 export interface TeamMailboxMessage {
@@ -100,10 +100,7 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
     return true;
   } catch (error) {
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-    if (command.command !== 'CreateMailboxMessage') {
-      const cause = error instanceof Error ? error.cause as (NodeJS.ErrnoException & { status?: number | null }) | undefined : undefined;
-      if (typeof cause?.code !== 'string' || cause.status != null) throw error;
-    }
+    if (command.command !== 'CreateMailboxMessage' && !isRuntimeTransportError(error)) throw error;
     return false;
   }
 }
@@ -184,6 +181,7 @@ export async function sendDirectMessage(
       return;
     }
 
+    preflightRuntimeBridge(resolveBridgeStateDir(deps.cwd));
     const msgId = randomUUID();
     const provisionalMessage: TeamMailboxMessage = {
       message_id: msgId,
@@ -202,14 +200,21 @@ export async function sendDirectMessage(
     await deps.writeMailbox(deps.teamName, shadowMailbox, deps.cwd);
     msg = provisionalMessage;
     created = true;
-    if (executeBridgeCommand(deps.cwd, {
-      command: 'CreateMailboxMessage',
-      team_name: deps.teamName,
-      message_id: msgId,
-      from_worker: fromWorker,
-      to_worker: toWorker,
-      body,
-    })) {
+    let bridgeCreated: boolean;
+    try {
+      bridgeCreated = executeBridgeCommand(deps.cwd, {
+        command: 'CreateMailboxMessage',
+        team_name: deps.teamName,
+        message_id: msgId,
+        from_worker: fromWorker,
+        to_worker: toWorker,
+        body,
+      });
+    } catch (error) {
+      await deps.writeMailbox(deps.teamName, legacyMailbox, deps.cwd, provisionalMessage);
+      throw error;
+    }
+    if (bridgeCreated) {
       const bridgeMailbox = await deps.readMailbox(deps.teamName, toWorker, deps.cwd);
       const bridgeMessage = bridgeMailbox.messages.find((candidate) => candidate.message_id === msgId);
       if (bridgeMessage) {

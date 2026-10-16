@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
-import { getDefaultBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
+import { getDefaultBridge, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { mailboxMessageContentMatches, mailboxMessageIdentity, mailboxRecordBelongsToTeam, normalizeBridgeMailboxMessage, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
@@ -40,8 +40,7 @@ function runtimeExec(command, stateDir, team) {
     getDefaultBridge(stateDir).execCommand(command);
   } catch (error) {
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-    const cause = error instanceof Error ? error.cause : undefined;
-    if (command.command === 'MarkMailboxNotified' && (typeof cause?.code !== 'string' || cause?.status != null)) throw error;
+    if (command.command === 'MarkMailboxNotified' && !isRuntimeTransportError(error)) throw error;
     recordBridgeFallback({
       stateDir,
       team,
@@ -1333,6 +1332,7 @@ export async function drainPendingTeamDispatch({
     try {
       for (const claim of claims) {
         try {
+          preflightRuntimeBridge(stateDir);
           const result = await injector(claim.request, config, resolve(cwd), stateDir);
           const delta = await finalizeClaimedDispatchRequest({
             claim,

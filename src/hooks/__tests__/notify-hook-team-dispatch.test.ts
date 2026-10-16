@@ -599,6 +599,49 @@ exit 1
     }
   });
 
+  it('rejects an incompatible runtime before injecting pending requests on repeated ticks', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-runtime-preflight-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath);
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const requests = [];
+      for (const trigger of ['perform the next task', 'check the next task']) {
+        const queued = await enqueueDispatchRequest('alpha', {
+          kind: 'inbox', to_worker: 'worker-1', worker_index: 1, trigger_message: trigger,
+        }, cwd);
+        requests.push(queued.request.request_id);
+      }
+      const supported = await readFile(runtimePath, 'utf8');
+      await writeFile(runtimePath, supported.replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []'));
+      let injections = 0;
+      const mod = await import('../../scripts/notify-hook/team-dispatch.js');
+      const drain = () => mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5,
+        injector: async () => { injections += 1; return { ok: true, reason: 'injected_for_test' }; } });
+      for (let tick = 0; tick < 2; tick += 1) {
+        await assert.rejects(drain, /team-mailbox-scope-v1/);
+        assert.equal(injections, 0);
+        assert.deepEqual(await listDispatchProcessingLeases(cwd, 'alpha'), []);
+        for (const requestId of requests) assert.equal((await readDispatchRequest('alpha', requestId, cwd))?.status, 'pending');
+      }
+      await writeFile(runtimePath, supported);
+      assert.equal((await drain()).processed, 2);
+      assert.equal(injections, 2);
+      assert.equal((await drain()).processed, 0);
+      assert.equal(injections, 2);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps hook shadow updates safe on runtime rejection, recovery collisions, and clock drift', async () => {
     const previousRuntimeBinary = process.env.OMX_RUNTIME_BINARY;
     const previousRuntimeBridge = process.env.OMX_RUNTIME_BRIDGE;
