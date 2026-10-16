@@ -45,8 +45,10 @@ export async function readLegacyMailboxMessageIds(
       if (message?.to_worker !== workerName) shadowIds.delete(message?.message_id);
     }
   }
+  const relevantBridgeRecords = bridgeRecords.filter((record) => record.to_worker === workerName
+    && (record.team_name == null || record.team_name === teamName));
   const bridgeIds = new Set<string>();
-  for (const record of bridgeRecords) {
+  for (const record of relevantBridgeRecords) {
     if (bridgeIds.has(record.message_id)) duplicateIds.add(record.message_id);
     bridgeIds.add(record.message_id);
     const shadow = shadowsById.get(record.message_id);
@@ -111,7 +113,8 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
       .some((name) => existsSync(join(stateDir, name)));
     const isAbsentFromCompat = (): boolean => Array.isArray(compat?.records)
       && compat.records.every((record) => record && typeof record.message_id === 'string')
-      && !compat.records.some((record) => record.message_id === command.message_id);
+      && !compat.records.some((record) => record.message_id === command.message_id
+        && (record.team_name == null || record.team_name === command.team_name));
     if (hasRuntimeAuthority && (!existsSync(mailboxCompatPath) || isAbsentFromCompat())) {
       // Refresh a missing or stale projection before deciding that a proven
       // shadow message has no authoritative runtime record.
@@ -119,7 +122,10 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
         bridge.execCommand({ command: 'CaptureSnapshot' });
       } catch (error) {
         if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-        if (isRuntimeTransportError(error)) return false;
+        if (isRuntimeTransportError(error)) {
+          if (existsSync(mailboxCompatPath) && isAbsentFromCompat()) return false;
+          throw error;
+        }
         throw error;
       }
       compat = bridge.readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json');
@@ -135,8 +141,8 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
     return true;
   } catch (error) {
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-    if (command.command !== 'CreateMailboxMessage' && !isRuntimeTransportError(error)) throw error;
-    return false;
+    if (command.command === 'CreateMailboxMessage') return false;
+    throw error;
   }
 }
 

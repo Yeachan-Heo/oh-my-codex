@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'child_process';
-import { mkdtemp, rm, unlink, writeFile, readFile, mkdir, chmod, readdir } from 'fs/promises';
+import { appendFile, mkdtemp, rm, unlink, writeFile, readFile, mkdir, chmod, readdir } from 'fs/promises';
 import { join, relative, dirname } from 'path';
 import { tmpdir } from 'os';
 import { existsSync } from 'fs';
@@ -13314,6 +13314,16 @@ esac
           },
         ],
       }));
+      await appendFile(join(cwd, '.omx', 'state', 'team', 'team-no-spam', 'events', 'events.ndjson'), `${JSON.stringify({
+        event_id: 'legacy-message-already-notified',
+        created_at: notifiedAt,
+        team: 'team-no-spam',
+        type: 'message_received',
+        worker: 'worker-1',
+        from_worker: 'leader-fixed',
+        to_worker: 'worker-1',
+        message_id: 'msg-already-notified',
+      })}\n`);
 
       // First monitorTeam call — should see the message as already-notified (unnotified=[]).
       const result1 = await monitorTeam('team-no-spam', cwd);
@@ -13365,6 +13375,16 @@ esac
           },
         ],
       }));
+      await appendFile(join(cwd, '.omx', 'state', 'team', 'team-new-msg', 'events', 'events.ndjson'), `${JSON.stringify({
+        event_id: 'legacy-message-unnotified',
+        created_at: createdAt,
+        team: 'team-new-msg',
+        type: 'message_received',
+        worker: 'worker-1',
+        from_worker: 'leader-fixed',
+        to_worker: 'worker-1',
+        message_id: 'msg-unnotified',
+      })}\n`);
 
       // First poll — unnotified=[msg-unnotified]. notifyWorker will fail (no tmux in tests)
       // so markMessageNotified is not called and the snapshot has no entry for this message.

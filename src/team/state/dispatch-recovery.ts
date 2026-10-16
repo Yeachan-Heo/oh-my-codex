@@ -7,18 +7,29 @@ function hasRuntimeAuthority(stateDir: string): boolean {
   return ['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)));
 }
 
+function readRuntimeDispatchRequestIds(stateDir: string): string[] | null {
+  let ledger: unknown;
+  try { ledger = JSON.parse(readFileSync(join(stateDir, 'dispatch-seen.json'), 'utf8')); } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!ledger || typeof ledger !== 'object') throw new Error('invalid runtime dispatch identity ledger');
+  const value = ledger as { schema_version?: unknown; ledger_epoch?: unknown; request_ids?: unknown };
+  if (!(value.schema_version === 1 || (value.schema_version === 2 && value.ledger_epoch === 1))
+    || !Array.isArray(value.request_ids) || value.request_ids.some((id) => typeof id !== 'string' || !id)
+    || new Set(value.request_ids).size !== value.request_ids.length) throw new Error('invalid runtime dispatch identity ledger');
+  return value.request_ids as string[];
+}
+
+export function hasRuntimeDispatchIdentity(stateDir: string, requestId: string): boolean {
+  return readRuntimeDispatchRequestIds(stateDir)?.includes(requestId) ?? false;
+}
+
 // Callers select the team's request and hold its dispatch lock across journal and projection updates.
 export function recordRuntimeFinalization(stateDir: string, teamName: string, command: Extract<RuntimeCommand, { command: 'MarkNotified' | 'MarkDelivered' | 'MarkFailed' }>): void {
   // The identity ledger is atomically published; events and projections can be mid-write.
-  let ledger;
-  try { ledger = JSON.parse(readFileSync(join(stateDir, 'dispatch-seen.json'), 'utf8')); } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
-    throw error;
-  }
-  if (!ledger || !(ledger.schema_version === 1 || (ledger.schema_version === 2 && ledger.ledger_epoch === 1))
-    || !Array.isArray(ledger.request_ids) || ledger.request_ids.some((id: unknown) => typeof id !== 'string' || !id)
-    || new Set(ledger.request_ids).size !== ledger.request_ids.length) throw new Error('invalid runtime dispatch identity ledger');
-  if (!ledger.request_ids.includes(command.request_id)) return;
+  const requestIds = readRuntimeDispatchRequestIds(stateDir);
+  if (!requestIds?.includes(command.request_id)) return;
   const journal = join(stateDir, 'team', teamName, 'dispatch', 'runtime-finalizations.jsonl');
   mkdirSync(dirname(journal), { recursive: true });
   appendFileSync(journal, `${JSON.stringify(command)}\n`);

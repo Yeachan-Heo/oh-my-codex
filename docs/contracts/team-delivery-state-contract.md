@@ -43,17 +43,21 @@ permitting reuse across Teams. Notification hooks and shutdown retirement follow
 the same ownership rule.
 Proven JSON-only messages can still be acknowledged after enabling a compatible
 runtime if no persisted runtime authority exists yet, or a valid mailbox projection
-contains no matching ID. Proven fallback rows remain visible alongside runtime
-records and can be retired without a runtime mutation. Colliding IDs and malformed
-compatibility state continue through strict runtime acknowledgement checks.
+contains no record that could belong to the selected Team. Proven fallback rows
+remain visible alongside runtime records and can be retired without a runtime
+mutation. Same-Team or unscoped ID collisions and malformed compatibility state
+continue through strict runtime acknowledgement checks; an ID scoped to another
+Team does not shadow a proven fallback row.
 Acknowledgement events retain the selected record's Team for replay. Older
 acknowledgement events without a Team are replayed only for globally unique IDs.
 
 Older records without `team_name` remain readable only when both the Team's
 per-worker shadow and its `message_received` creation journal prove ownership.
-Duplicate IDs or conflicting sender, recipient, or nonempty body across shadow
-and runtime records cannot prove legacy ownership;
-those records remain hidden and require manual recovery.
+Duplicate IDs among candidate unscoped or same-Team records, or conflicting
+sender, recipient, or nonempty body across those shadow and runtime records,
+cannot prove legacy ownership; those records remain hidden and require manual
+recovery. A row scoped to another Team cannot invalidate the selected Team's
+creation-journal proof.
 Shadows alone are insufficient: older readers could copy another Team's records
 into them. Unproven old records are retained on disk but hidden from mailbox
 operations, including when the bridge is disabled. Disabling the bridge selects
@@ -67,10 +71,13 @@ mailbox creations and acknowledgements absent from a stale compatibility snapsho
 and an unreadable existing mailbox snapshot fails closed rather than discarding
 recoverable message bodies.
 
-Runtime acknowledgement rejections propagate to the caller; only transport
-failures may use the JSON fallback. Acknowledgements hold the mailbox lock across
-their read and mutation. Concurrent delivery repeats and notification of an already
-delivered message succeed without another runtime mutation.
+Runtime acknowledgement rejections propagate to the caller. Transport failure
+while mutating a visible authoritative row also propagates, so the caller cannot
+report a shadow-only acknowledgement as success; a proven JSON-only row may use
+the fallback when no selected-Team or unscoped record represents it. Acknowledgements
+hold the mailbox lock across their read and mutation. Concurrent delivery repeats
+and notification of an already delivered message succeed without another runtime
+mutation.
 Shadow updates preserve colliding recovery rows; any pending shadow left after
 retirement blocks Team cleanup until it is recovered. A proven, unique legacy ID
 can reconcile runtime timestamp changes without creating duplicate shadows. Old body-less creation events recover content only

@@ -227,6 +227,10 @@ switch (command.command) {
     process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target }) + '\\n');
     process.exit(0);
   case 'MarkNotified': {
+    if (process.env.OMX_TEST_REJECT_MARK_NOTIFIED === '1') {
+      process.stderr.write('invalid notification transition\\n');
+      process.exit(1);
+    }
     const record = dispatch.records.find((entry) => entry.request_id === command.request_id);
     if (record) {
       record.status = 'notified';
@@ -235,6 +239,17 @@ switch (command.command) {
       writeJson(dispatchPath, dispatch);
     }
     process.stdout.write(JSON.stringify({ event: 'DispatchNotified', request_id: command.request_id, channel: command.channel }) + '\\n');
+    process.exit(0);
+  }
+  case 'MarkDelivered': {
+    const record = dispatch.records.find((entry) => entry.request_id === command.request_id);
+    if (record) {
+      if (record.status !== 'notified') process.exit(1);
+      record.status = 'delivered';
+      record.delivered_at = timestamp;
+      writeJson(dispatchPath, dispatch);
+    }
+    process.stdout.write(JSON.stringify({ event: 'DispatchDelivered', request_id: command.request_id }) + '\\n');
     process.exit(0);
   }
   case 'MarkFailed': {
@@ -789,6 +804,43 @@ exit 1
     }
   });
 
+  it('propagates semantic runtime finalization failures without writing success to JSON', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-semantic-finalization-failure-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    const previousRejectNotified = process.env.OMX_TEST_REJECT_MARK_NOTIFIED;
+    try {
+      const runtimePath = join(cwd, 'omx-runtime');
+      await writeCompatRuntimeFixture(runtimePath);
+      process.env.OMX_RUNTIME_BINARY = runtimePath;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'semantic finalization failure',
+      }, cwd);
+      process.env.OMX_TEST_REJECT_MARK_NOTIFIED = '1';
+
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      await assert.rejects(
+        () => drainPendingTeamDispatch({ cwd, injector: async () => ({ ok: true, reason: 'injected_for_test' }) }),
+        /exec-scoped failed/,
+      );
+      assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'pending');
+      await assert.rejects(
+        readFile(join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl')),
+        { code: 'ENOENT' },
+      );
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      if (previousRejectNotified === undefined) delete process.env.OMX_TEST_REJECT_MARK_NOTIFIED;
+      else process.env.OMX_TEST_REJECT_MARK_NOTIFIED = previousRejectNotified;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps pure JSON requests visible after a runtime swap', async () => {
     const previousBinary = process.env.OMX_RUNTIME_BINARY;
     const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
@@ -892,7 +944,7 @@ exit 1
           }
           const drain = () => mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, ...options });
           assert.equal((await drain()).processed, 1);
-          const expectedStatus = mode === 'failed' ? 'failed' : 'notified';
+          const expectedStatus = mode === 'failed' ? 'failed' : mode === 'default-injector' ? 'delivered' : 'notified';
           assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, expectedStatus);
           assert.deepEqual(await listDispatchProcessingLeases(cwd, 'alpha'), []);
           assert.equal((await listMailboxMessages('alpha', 'worker-1', cwd))[0].notified_at, undefined);
@@ -900,6 +952,10 @@ exit 1
           await writeFile(compatPath, pending);
           const journalPath = join(stateDir, 'team', 'alpha', 'dispatch', 'runtime-finalizations.jsonl');
           const journal = await readFile(journalPath, 'utf8');
+          const journalCommands = journal.trim().split('\n').map((line) => JSON.parse(line).command);
+          assert.deepEqual(journalCommands, mode === 'default-injector'
+            ? ['MarkNotified', 'MarkDelivered']
+            : [mode === 'failed' ? 'MarkFailed' : 'MarkNotified']);
           await assert.rejects(drain, /team-mailbox-scope-v1/);
           assert.equal(await readFile(journalPath, 'utf8'), journal);
           process.env.OMX_RUNTIME_BRIDGE = '0';

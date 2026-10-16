@@ -2016,9 +2016,11 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
           .filter((record) => mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds))
           .map((record) => normalizeBridgeMailboxMessage(record,
             legacyMessageIds.has(record.message_id) ? legacyById.get(record.message_id) : undefined));
-        const bridgeIds = new Set(bridgeRecords.map((record) => record.message_id));
+        const bridgeTeamIds = new Set(bridgeRecords
+          .filter((record) => mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds))
+          .map((record) => record.message_id));
         const fallbackMessages = legacyMailbox.messages.filter((message) => legacyMessageIds.has(message.message_id)
-          && !bridgeIds.has(message.message_id));
+          && !bridgeTeamIds.has(message.message_id));
         return { worker: workerName, messages: [...bridgeMessages, ...fallbackMessages] };
       }
     } catch {
@@ -2521,8 +2523,10 @@ export async function retireTeamMailboxMessages(
         const legacyMessageIds = mailbox.messages.length > 0
           ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
-        const bridgeIds = new Set(bridgeRecords.map((record) => record.message_id));
-        const unproven = mailbox.messages.filter((message) => !message.delivered_at && !bridgeIds.has(message.message_id) && !legacyMessageIds.has(message.message_id));
+        const bridgeTeamIds = new Set(bridgeRecords
+          .filter((record) => mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds))
+          .map((record) => record.message_id));
+        const unproven = mailbox.messages.filter((message) => !message.delivered_at && !bridgeTeamIds.has(message.message_id) && !legacyMessageIds.has(message.message_id));
         if (unproven.length > 0) {
           throw new Error(`authoritative_mailbox_retirement_discovery_failed:${unproven.map((message) => message.message_id).join(',')}`);
         }
@@ -2557,7 +2561,7 @@ export async function retireTeamMailboxMessages(
           }
         }
         for (const message of mailbox.messages) {
-          if (!message.delivered_at && !bridgeIds.has(message.message_id) && legacyMessageIds.has(message.message_id)) {
+          if (!message.delivered_at && !bridgeTeamIds.has(message.message_id) && legacyMessageIds.has(message.message_id)) {
             message.delivered_at = new Date().toISOString();
             changed = true;
             retiredFromMailbox += 1;

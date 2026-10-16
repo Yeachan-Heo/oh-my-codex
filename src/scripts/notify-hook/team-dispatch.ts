@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
 import { getDefaultBridge, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
-import { recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
+import { hasRuntimeDispatchIdentity, recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { mailboxMessageContentMatches, mailboxMessageIdentity, mailboxRecordBelongsToTeam, normalizeBridgeMailboxMessage, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
@@ -40,12 +40,19 @@ function runtimeExec(command, stateDir, team) {
   try {
     getDefaultBridge(stateDir).execCommand(command);
   } catch (error) {
-    if (command.command === 'MarkMailboxNotified' && !isRuntimeTransportError(error)) throw error;
-    if (((error instanceof RuntimeBridgeError && error.context.command === 'schema') || isRuntimeTransportError(error))
-      && (command.command === 'MarkNotified' || command.command === 'MarkFailed')) {
+    const isSchemaFailure = error instanceof RuntimeBridgeError && error.context.command === 'schema';
+    const isTransportFailure = isRuntimeTransportError(error);
+    const isFinalization = command.command === 'MarkNotified'
+      || command.command === 'MarkDelivered'
+      || command.command === 'MarkFailed';
+    if (isFinalization && !isSchemaFailure && !isTransportFailure
+      && hasRuntimeDispatchIdentity(stateDir, command.request_id)) throw error;
+    if (isFinalization && (isSchemaFailure || isTransportFailure)) {
       // Compatibility JSON alone is overwritten by runtime event replay.
       recordRuntimeFinalization(stateDir, team, command);
     }
+    if (!isFinalization && command.command === 'MarkMailboxNotified' && !isTransportFailure) throw error;
+    if (!isFinalization && command.command !== 'MarkMailboxNotified' && !isTransportFailure) throw error;
     recordBridgeFallback({
       stateDir,
       team,
@@ -704,10 +711,15 @@ async function finalizeClaimedDispatchRequest({
         if (request.kind === 'mailbox' && request.message_id) {
           await updateMailboxNotified(stateDir, teamName, request.to_worker, request.message_id).catch(() => {});
         }
+        if (result.delivery_confirmed === true) {
+          runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, teamName);
+          request.status = 'delivered';
+          request.delivered_at = nowIso;
+        }
         summary.processed += 1;
         mutated = true;
         await appendDispatchLog(logsDir, {
-          type: 'dispatch_notified',
+          type: result.delivery_confirmed === true ? 'dispatch_delivered' : 'dispatch_notified',
           team: teamName,
           request_id: request.request_id,
           worker: request.to_worker,
@@ -722,7 +734,7 @@ async function finalizeClaimedDispatchRequest({
           message_id: request.message_id || null,
           to_worker: request.to_worker,
           transport: 'send-keys',
-          result: 'notified',
+          result: result.delivery_confirmed === true ? 'delivered' : 'notified',
           reason: result.reason,
         });
       }
@@ -996,8 +1008,13 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
     if (narrowCap) {
       const wideProof = await verifyExplicitPane();
       if (!wideProof.ok) return exactPaneFailure(wideProof, true);
+      let wideCap;
       try {
-        const wideCap = await runProcess('tmux', verifyWideArgv, 2000);
+        wideCap = await runProcess('tmux', verifyWideArgv, 2000);
+      } catch {
+        // Capture failed; fall through to retry Enter.
+      }
+      if (wideCap) {
         const triggerInNarrow = capturedPaneContainsTrigger(narrowCap.stdout, request.trigger_message);
         const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
         if (triggerInNarrow || triggerNearTail) {
@@ -1022,10 +1039,10 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
         }
         // Worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
         if (paneHasActiveTask(wideCap.stdout)) {
-          runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, request.team_name);
           return {
             ok: true,
             reason: 'tmux_send_keys_confirmed_active_task',
+            delivery_confirmed: true,
             pane: resolution.paneTarget,
             pane_source: resolution.source || null,
             readiness_evidence: paneGuard.readinessEvidence || null,
@@ -1044,10 +1061,10 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
           continue;
         }
         if (!triggerInNarrow && !triggerNearTail) {
-          runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir, request.team_name);
           return {
             ok: true,
             reason: 'tmux_send_keys_confirmed',
+            delivery_confirmed: true,
             pane: resolution.paneTarget,
             pane_source: resolution.source || null,
             readiness_evidence: paneGuard.readinessEvidence || null,
@@ -1056,8 +1073,6 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
             tmux_injection_attempted: true,
           };
         }
-      } catch {
-        // Capture failed; fall through to retry Enter.
       }
     }
     // Draft still visible and no active task — retry Enter
