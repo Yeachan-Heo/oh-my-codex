@@ -1,12 +1,8 @@
-import { createReadStream } from 'node:fs';
-import { join } from 'node:path';
-import { createInterface } from 'node:readline';
-import { listRolloutFiles, resolveSessionSearchCodexHomeDirs, type SessionSearchOptions } from './search.js';
+import { readResolvedSessionTranscriptLines, resolveSessionTranscript, type SessionTranscriptOptions } from './transcript.js';
 
 type JsonRecord = Record<string, unknown>;
 
-export interface SessionExportOptions extends Pick<SessionSearchOptions, 'cwd' | 'codexHomeDir' | 'codexHomeDirs'> {
-  session: string;
+export interface SessionExportOptions extends SessionTranscriptOptions {
   includeTools?: boolean;
 }
 
@@ -31,14 +27,6 @@ export interface SessionExportDocument {
   entries: SessionExportEntry[];
 }
 
-interface Transcript {
-  path: string;
-  id: string;
-  startedAt: string | null;
-  cwd: string | null;
-  archived: boolean;
-}
-
 function asObject(value: unknown): JsonRecord | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as JsonRecord : null;
@@ -54,61 +42,6 @@ function parseRecord(line: string): JsonRecord | null {
   } catch {
     return null;
   }
-}
-
-async function* readLines(path: string): AsyncGenerator<string> {
-  const stream = createReadStream(path, 'utf-8');
-  const reader = createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of reader) yield line;
-  } finally {
-    reader.close();
-    stream.destroy();
-  }
-}
-
-async function readTranscriptMeta(path: string, archived: boolean): Promise<Transcript | null> {
-  try {
-    for await (const line of readLines(path)) {
-      const record = parseRecord(line);
-      const payload = asObject(record?.payload);
-      const id = asString(payload?.id);
-      if (record?.type !== 'session_meta' || !id) return null;
-      return {
-        path, id, archived,
-        startedAt: asString(payload?.timestamp) ?? asString(record.timestamp),
-        cwd: asString(payload?.cwd),
-      };
-    }
-  } catch (error) {
-    // A running Codex instance can move a transcript into the archive during discovery.
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  return null;
-}
-
-async function resolveTranscript(options: SessionExportOptions): Promise<Transcript> {
-  const selector = options.session.trim();
-  if (!selector) throw new Error('Missing session id. Use an exact id or a unique prefix.');
-  const matches: Transcript[] = [];
-  const homes = await resolveSessionSearchCodexHomeDirs(options);
-  for (const home of homes) {
-    for (const archived of [false, true]) {
-      const files = await listRolloutFiles(join(home, archived ? 'archived_sessions' : 'sessions'));
-      for (const file of files) {
-        const meta = await readTranscriptMeta(file, archived);
-        if (meta?.id.startsWith(selector)) matches.push(meta);
-      }
-    }
-  }
-  const exact = matches.filter((match) => match.id === selector);
-  const candidates = exact.length > 0 ? exact : matches;
-  if (candidates.length === 0) throw new Error(`No local session matches "${selector}".`);
-  if (candidates.length > 1) {
-    const ids = [...new Set(candidates.map((match) => match.id))].sort().join(', ');
-    throw new Error(`Multiple transcripts match "${selector}" (${ids}). Use a full session id and --codex-home to narrow the source.`);
-  }
-  return candidates[0];
 }
 
 function messageText(content: unknown): string {
@@ -133,7 +66,7 @@ function toolText(value: unknown): string {
 }
 
 export async function exportSessionHistory(options: SessionExportOptions): Promise<SessionExportDocument> {
-  const transcript = await resolveTranscript(options);
+  let transcript = await resolveSessionTranscript(options);
   const messages: SessionExportEntry[] = [];
   const eventMessages: SessionExportEntry[] = [];
   const tools: SessionExportEntry[] = [];
@@ -141,7 +74,9 @@ export async function exportSessionHistory(options: SessionExportOptions): Promi
   let lineNumber = 0;
   let skippedRecords = 0;
 
-  for await (const line of readLines(transcript.path)) {
+  for await (const line of readResolvedSessionTranscriptLines(options, transcript, (resolved) => {
+    transcript = resolved;
+  })) {
     lineNumber += 1;
     if (line.trim() === '') continue;
     const record = parseRecord(line);

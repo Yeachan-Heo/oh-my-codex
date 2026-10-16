@@ -576,6 +576,11 @@ jobs:
           node --test
           --test-name-pattern="runs project resume integration on Windows"
           dist/cli/__tests__/resume.test.js
+      - name: Run Windows HUD watchdog regressions
+        run: >-
+          node --test
+          --test-name-pattern="registers hook-spawned reconcile commands with a portable parent watchdog|bounds Windows Node startup with the PowerShell supervisor"
+          dist/hud/__tests__/tmux.test.js
 
   coverage-team-critical:
     name: Coverage Gate (Team Critical)

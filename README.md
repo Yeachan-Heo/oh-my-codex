@@ -377,6 +377,23 @@ include earlier work, so this is not a period consumption or billing report.
 Cached input and reasoning output are subsets of input and output. See
 [session usage](./docs/session-usage.md) for snapshot and coverage semantics.
 
+### Diagnose a session's execution timeline
+
+Run `omx session timeline <session-id>` to inspect tool calls, turn boundaries,
+and context compactions without exporting conversation text. Calls are paired
+with their results by call ID, including parallel calls, and the report shows
+explicit failures, unmatched calls, observed durations, and namespace-aware
+per-tool totals.
+Use `--kind tools --sort duration --limit 10` to find slow calls, `--status failed`
+to inspect failures, or `--tool <name>` to focus on one tool. Filters and pagination
+affect the event list; summary counts always cover the whole session.
+
+The command supports exact IDs or unique prefixes, active and archived sessions,
+`--codex-home <path>`, and JSON reports with `--json --output timeline.json`.
+Unknown durations remain unknown, and a recorded result without an explicit error
+does not prove success. See [session timeline](./docs/session-timeline.md) for
+supported records, status meanings, and examples.
+
 ### Team runtime
 
 Use the team runtime when you specifically need durable tmux/worktree coordination, not as the default way to begin using OMX. In Codex App or plain outside-tmux sessions, treat `omx team` as a tmux-runtime shell surface rather than a directly available in-app workflow; launch OMX CLI from shell first if you actually want team execution.

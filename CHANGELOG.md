@@ -4,6 +4,57 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.14] - 2026-10-15
+
+Patch release for the frozen range `v0.21.13..7fd6e95a839c0c0c14de67a7bc976c4d9134b923` (3 commits, 9 files, +1,480/−71; PRs #3793 and #3803).
+
+### Added
+
+- Add `omx session timeline <session-id>` to reconstruct tool execution, turn boundaries, and context compactions from active or archived transcripts, with tool diagnostics including observed durations, exit codes, failures, and incomplete calls (#3793, authored by @hiSandog).
+
+### Integration
+
+- Back-merge the v0.21.13 release into dev (#3803, authored by @Yeachan-Heo).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.14.md) and [release readiness](docs/qa/release-readiness-0.21.14.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.13...v0.21.14
+
+## [0.21.13] - 2026-10-15
+
+Patch release for the frozen range `v0.21.12..51fa7eed6877b91706629174a2deeff83d1ce08f` (6 commits, 10 files, +576/−52; PRs #3787, #3795, #3796).
+
+### Fixed
+
+- Bound HUD reconciliation processes spawned by hooks with a timeout, so hung children cannot block later reconciliation (#3787, fixes #3785; authored by @Yeachan-Heo).
+
+### Maintenance
+
+- Update `serde_json` from 1.0.151 to 1.0.154 (#3795, @dependabot).
+- Update `@types/node` from 26.6.4 to 26.6.5 (#3796, @dependabot).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.13.md) and [release readiness](docs/qa/release-readiness-0.21.13.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.12...v0.21.13
+
+## [0.21.12] - 2026-10-15
+
+Patch release for the frozen range `v0.21.11..6937884f4d09a485d5b4f16498517bcd05384e06` (6 commits, 15 files, +998/−19; PRs #3786, #3788, #3789, #3791, #3794, #3797).
+
+### Highlights
+
+- Require claim-bound completion evidence before implementation tasks marked `requires_code_change: true` can complete (#3797, authored by @shenyankm). Existing clients completing these tasks must provide a report and structured verification summary.
+- Keep HUD branch labels cached until HEAD, refs, or git config changes, and bound watcher repair children so a hung reconcile cannot block later repairs (#3791, #3786; authored by @spicysharkco).
+
+### Maintenance
+
+- Update `@modelcontextprotocol/sdk` from 1.32.0 to 1.32.1 (#3794, @dependabot).
+- Make the HUD watcher resize and real-tmux test fixtures hermetic (#3788, #3789; authored by @spicysharkco).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.12.md) and [release readiness](docs/qa/release-readiness-0.21.12.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.11...v0.21.12
+
 ## [0.21.11] - 2026-10-13
 
 Patch release for `v0.21.10..7e0b5f2330b9d85c5fdb9709ec0104e099836f4c` (3 commits, 2 files, +68/−5, PR #3781, fixes #3779).

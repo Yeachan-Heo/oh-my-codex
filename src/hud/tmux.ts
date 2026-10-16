@@ -2,9 +2,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'node:path';
-import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MAX_HEIGHT_LINES } from './constants.js';
+import {
+  HUD_RESIZE_RECONCILE_DELAY_SECONDS,
+  HUD_TMUX_HEIGHT_LINES,
+  HUD_TMUX_MAX_HEIGHT_LINES,
+  HUD_WATCH_REPAIR_TIMEOUT_MS,
+} from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
+
+const HUD_HOOK_NODE_STARTUP_GRACE_MS = 5_000;
 
 export interface TmuxPaneSnapshot {
   paneId: string;
@@ -1182,6 +1189,7 @@ export function buildHudLayoutReconcileHookCommand(
     OMX_TMUX_HUD_OWNER: '1',
     OMX_HUD_WATCH_REPAIR: '1',
     OMX_HUD_WATCH_LEADER_PID: context.leaderPanePid,
+    OMX_ENTRY_PATH: omxBin,
     OMX_SESSION_ID: env.OMX_SESSION_ID,
     OMX_ROOT: env.OMX_ROOT,
     OMX_STATE_ROOT: env.OMX_STATE_ROOT,
@@ -1192,23 +1200,50 @@ export function buildHudLayoutReconcileHookCommand(
     'cd',
     shellEscapeSingle(cwd),
     '&&',
-    `${reconcileEnv}${shellEscapeSingle(process.execPath)}`,
+    `exec ${reconcileEnv}${shellEscapeSingle(process.execPath)}`,
     shellEscapeSingle(omxBin),
     'hud',
     '--reconcile-tmux',
+    `--reconcile-timeout-ms=${HUD_WATCH_REPAIR_TIMEOUT_MS}`,
   ].join(' ');
   const layoutContext = { ...context, hookSlot };
   if (platform === 'win32') {
     const powerShellEnv = Object.entries(reconcileRuntimeEnv)
       .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim() !== '')
-      .map(([key, value]) => `$env:${key} = '${value.replace(/'/g, "''")}'`)
+      .map(([key, value]) => `$env:${key} = '${value.replace(/'/g, "''")}' `)
       .join('; ');
-    const nativeReconcile = `${powerShellEnv}; Set-Location -LiteralPath '${cwd.replace(/'/g, "''")}'; & '${process.execPath.replace(/'/g, "''")}' '${omxBin.replace(/'/g, "''")}' hud --reconcile-tmux | Out-Null`;
+    const nativeReconcile = `${powerShellEnv}; Set-Location -LiteralPath '${cwd.replace(/'/g, "''")}'; ${buildWindowsHudReconcileSupervisorCommand(process.execPath, omxBin, cwd, HUD_WATCH_REPAIR_TIMEOUT_MS + HUD_HOOK_NODE_STARTUP_GRACE_MS)}`;
     const success = `${buildHudHookSelfUnregister(layoutContext)} ; run-shell -b ${quoteHudHookShellArgument(nativeReconcile)}`;
     return buildAtomicHudHookCommand(tmuxBin, layoutContext, success, env.TMUX);
   }
-  const success = `${buildHudHookSelfUnregister(layoutContext)} ; run-shell -b ${quoteHudHookShellArgument(`${reconcile} >/dev/null 2>&1 || true`)}`;
+  const supervisor = buildPosixHudReconcileSupervisorCommand(
+    reconcile,
+    HUD_WATCH_REPAIR_TIMEOUT_MS + HUD_HOOK_NODE_STARTUP_GRACE_MS,
+  );
+  const success = `${buildHudHookSelfUnregister(layoutContext)} ; run-shell -b ${quoteHudHookShellArgument(`(${supervisor}) >/dev/null 2>&1 || true`)}`;
   return buildAtomicHudHookCommand(tmuxBin, layoutContext, success, env.TMUX);
+}
+
+export function buildPosixHudReconcileSupervisorCommand(command: string, timeoutMs: number): string {
+  const shutdownGraceSeconds = 2;
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1_000) - shutdownGraceSeconds);
+  return `watchdog_dir=$(mktemp -d "\${TMPDIR:-/tmp}/omx-hud-watchdog.XXXXXX") || exit 0; ready_fifo=$watchdog_dir/ready; mkfifo "$ready_fifo" || { rmdir "$watchdog_dir"; exit 0; }; ${command} & child=$!; (trap 'kill "$s" 2>/dev/null || :; wait "$s" 2>/dev/null || :; exit' TERM; sleep ${timeoutSeconds} & s=$!; printf 'ready\\n' > "$ready_fifo"; wait "$s" && { kill -TERM "$child" 2>/dev/null || :; sleep ${shutdownGraceSeconds} & s=$!; wait "$s" || :; kill -KILL "$child" 2>/dev/null || :; } || :) & watchdog=$!; IFS= read -r _ < "$ready_fifo"; wait "$child"; status=$?; kill -TERM "$watchdog" 2>/dev/null || :; wait "$watchdog" 2>/dev/null || :; rm -f "$ready_fifo"; rmdir "$watchdog_dir" 2>/dev/null || :; exit "$status"`;
+}
+
+export function buildWindowsHudReconcileSupervisorCommand(
+  nodePath: string,
+  omxBinary: string,
+  cwd: string,
+  timeoutMs: number,
+): string {
+  const quotePowerShellLiteral = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+  const childArguments = `"${omxBinary}" hud --reconcile-tmux --reconcile-timeout-ms=${HUD_WATCH_REPAIR_TIMEOUT_MS}`;
+  return [
+    `try { $child = Start-Process -FilePath ${quotePowerShellLiteral(nodePath)} -ArgumentList ${quotePowerShellLiteral(childArguments)} -WorkingDirectory ${quotePowerShellLiteral(cwd)} -PassThru -WindowStyle Hidden -ErrorAction Stop } catch { exit 0 }`,
+    `if ($child.WaitForExit(${timeoutMs})) { exit 0 }`,
+    'try { & taskkill.exe /PID $child.Id /T /F | Out-Null } catch { try { $child.Kill() } catch {} }',
+    'exit 0',
+  ].join('; ');
 }
 
 export function readHudHookHealth(

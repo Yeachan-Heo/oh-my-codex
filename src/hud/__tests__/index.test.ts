@@ -156,6 +156,63 @@ describe('hudCommand reconcile entrypoint', () => {
 
     assert.equal(process.exitCode, 1);
   });
+
+  it('runs bounded reconciliation in a parent process and reports timeout failure', async () => {
+    let received: {
+      omxBinary: string;
+      cwd: string;
+      env: NodeJS.ProcessEnv;
+      timeoutMs: number;
+      leaderPaneId?: string;
+      leaderPanePid?: string;
+      keepAlive?: boolean;
+    } | undefined;
+
+    await hudCommand(['--reconcile-tmux', '--reconcile-timeout-ms=750'], {
+      cwd: '/repo',
+      env: { TMUX_PANE: '%1', OMX_HUD_WATCH_LEADER_PID: '101' },
+      omxEntryPath: '/repo/dist/cli/omx.js',
+      spawnReconcileWithTimeoutFn: async (options) => {
+        received = options;
+        return false;
+      },
+      reconcileHudForPromptSubmit: async () => {
+        throw new Error('bounded reconciliation must run through the parent');
+      },
+    });
+
+    assert.deepEqual(received, {
+      omxBinary: '/repo/dist/cli/omx.js',
+      cwd: '/repo',
+      env: { TMUX_PANE: '%1', OMX_HUD_WATCH_LEADER_PID: '101' },
+      timeoutMs: 750,
+      leaderPaneId: '%1',
+      leaderPanePid: '101',
+      keepAlive: true,
+    });
+    assert.equal(process.exitCode, 1);
+  });
+
+  it('rejects invalid reconciliation watchdog timeouts without running reconciliation', async () => {
+    let reconciled = false;
+    let spawned = false;
+
+    await hudCommand(['--reconcile-tmux', '--reconcile-timeout-ms=0'], {
+      cwd: '/repo',
+      reconcileHudForPromptSubmit: async () => {
+        reconciled = true;
+        return { status: 'recreated', paneId: '%9', desiredHeight: 3, duplicateCount: 0 };
+      },
+      spawnReconcileWithTimeoutFn: async () => {
+        spawned = true;
+        return true;
+      },
+    });
+
+    assert.equal(reconciled, false);
+    assert.equal(spawned, false);
+    assert.equal(process.exitCode, 1);
+  });
 });
 
 describe('runWatchMode', () => {
