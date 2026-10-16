@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { randomUUID } from 'crypto';
 import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, RuntimeBridgeError, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { recordRuntimeFinalization } from './dispatch-recovery.js';
@@ -182,12 +180,11 @@ function executeBridgeCommand(deps: DispatchDeps, command: RuntimeCommand): bool
     getDefaultBridge(resolveBridgeStateDir(deps.cwd)).execCommand(command);
     return true;
   } catch (error) {
+    if (error instanceof RuntimeBridgeError && error.context.command === 'schema' && command.command === 'QueueDispatch') throw error;
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema'
       && (command.command === 'MarkNotified' || command.command === 'MarkDelivered' || command.command === 'MarkFailed')) {
       const stateDir = resolveBridgeStateDir(deps.cwd);
-      const owned = existsSync(join(stateDir, 'dispatch.json')) && getDefaultBridge(stateDir).readDispatchRecordsStrict()
-        .some((record) => record.request_id === command.request_id && record.metadata?.team_name === deps.teamName);
-      if (owned) recordRuntimeFinalization(stateDir, deps.teamName, command);
+      recordRuntimeFinalization(stateDir, deps.teamName, command);
     }
     return false;
   }
@@ -446,6 +443,7 @@ export async function markDispatchRequestFailed(
   deps: DispatchDeps,
 ): Promise<void> {
   return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
+    if (!await readDispatchRequest(requestId, deps)) return;
     if (executeBridgeCommand(deps, { command: 'MarkFailed', request_id: requestId, reason })) {
       return;
     }

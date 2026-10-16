@@ -17,11 +17,16 @@ The JS bridge requires the `team-mailbox-scope-v1` runtime capability before
 mutating runtime state, including notification hooks. Sends validate before writing
 provisional shadows, and dispatch validates before reserving cooldowns or injecting
 into a pane. A runtime rejected after provisional creation removes only that
-send's provisional row.
+send's provisional row. Each mutation validates and executes a private copy of the
+selected runtime, so replacing its configured path cannot change the executable
+between the capability check and mutation. Queue creation propagates executable
+snapshot and schema validation failures without adding JSON-only IDs to runtime projections.
 If the runtime becomes incompatible after pane input (hook, direct, or broadcast), runtime-backed dispatch saves its outcome
 and a pending runtime-finalization journal, including delivered receipts. Before claiming more work, the hook
 replays those outcomes against event-derived runtime state and clears the journal;
 an incompatible or disabled bridge leaves recovery blocked without re-injection.
+Journal creation uses the atomically published dispatch identity ledger, avoiding
+partially rewritten event/projection files; replay checks the request's Team before mutation.
 Pure JSON queues keep their completion in JSON without creating runtime authority.
 Older runtimes are rejected;
 rebuild or upgrade the runtime rather than allowing it to discard Team scope.
@@ -42,7 +47,8 @@ acknowledgement events without a Team are replayed only for globally unique IDs.
 
 Older records without `team_name` remain readable only when both the Team's
 per-worker shadow and its `message_received` creation journal prove ownership.
-Duplicate IDs in the shadow or shared runtime cannot prove legacy ownership;
+Duplicate IDs or conflicting sender, recipient, or nonempty body across shadow
+and runtime records cannot prove legacy ownership;
 those records remain hidden and require manual recovery.
 Shadows alone are insufficient: older readers could copy another Team's records
 into them. Unproven old records are retained on disk but hidden from bridge-backed

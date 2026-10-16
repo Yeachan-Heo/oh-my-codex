@@ -7,17 +7,18 @@ function hasRuntimeAuthority(stateDir: string): boolean {
   return ['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)));
 }
 
-// Callers hold the team dispatch lock across journal and projection updates.
+// Callers select the team's request and hold its dispatch lock across journal and projection updates.
 export function recordRuntimeFinalization(stateDir: string, teamName: string, command: Extract<RuntimeCommand, { command: 'MarkNotified' | 'MarkDelivered' | 'MarkFailed' }>): void {
-  // Compatibility rows can be JSON fallback even alongside existing runtime state.
-  let events: unknown;
-  try { events = JSON.parse(readFileSync(join(stateDir, 'events.json'), 'utf8')); } catch (error) {
+  // The identity ledger is atomically published; events and projections can be mid-write.
+  let ledger;
+  try { ledger = JSON.parse(readFileSync(join(stateDir, 'dispatch-seen.json'), 'utf8')); } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
     throw error;
   }
-  if (!Array.isArray(events)) throw new Error('invalid runtime event history');
-  if (!events.some((event) => event?.event === 'DispatchQueued'
-    && event.request_id === command.request_id && event.metadata?.team_name === teamName)) return;
+  if (!ledger || !(ledger.schema_version === 1 || (ledger.schema_version === 2 && ledger.ledger_epoch === 1))
+    || !Array.isArray(ledger.request_ids) || ledger.request_ids.some((id: unknown) => typeof id !== 'string' || !id)
+    || new Set(ledger.request_ids).size !== ledger.request_ids.length) throw new Error('invalid runtime dispatch identity ledger');
+  if (!ledger.request_ids.includes(command.request_id)) return;
   const journal = join(stateDir, 'team', teamName, 'dispatch', 'runtime-finalizations.jsonl');
   mkdirSync(dirname(journal), { recursive: true });
   appendFileSync(journal, `${JSON.stringify(command)}\n`);

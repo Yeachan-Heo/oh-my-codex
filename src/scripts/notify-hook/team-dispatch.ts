@@ -35,13 +35,13 @@ import {
  * owned path.
  * Disable entirely with OMX_RUNTIME_BRIDGE=0.
  */
-function runtimeExec(command, stateDir, team, runtimeOwned = true) {
+function runtimeExec(command, stateDir, team) {
   if (process.env.OMX_RUNTIME_BRIDGE === '0') return;
   try {
     getDefaultBridge(stateDir).execCommand(command);
   } catch (error) {
     if (command.command === 'MarkMailboxNotified' && !isRuntimeTransportError(error)) throw error;
-    if (runtimeOwned && error instanceof RuntimeBridgeError && error.context.command === 'schema'
+    if (error instanceof RuntimeBridgeError && error.context.command === 'schema'
       && (command.command === 'MarkNotified' || command.command === 'MarkFailed')) {
       // Compatibility JSON alone is overwritten by runtime event replay.
       recordRuntimeFinalization(stateDir, team, command);
@@ -663,7 +663,7 @@ async function finalizeClaimedDispatchRequest({
         request.status = 'failed';
         request.failed_at = nowIso;
         request.last_reason = 'unconfirmed_after_max_retries';
-        runtimeExec({ command: 'MarkFailed', request_id: request.request_id, reason: 'unconfirmed_after_max_retries' }, stateDir, teamName, !usingLegacyRequests);
+        runtimeExec({ command: 'MarkFailed', request_id: request.request_id, reason: 'unconfirmed_after_max_retries' }, stateDir, teamName);
         summary.processed += 1;
         summary.failed += 1;
         mutated = true;
@@ -700,7 +700,7 @@ async function finalizeClaimedDispatchRequest({
         request.status = 'notified';
         request.notified_at = nowIso;
         request.last_reason = result.reason;
-        runtimeExec({ command: 'MarkNotified', request_id: request.request_id, channel: 'tmux' }, stateDir, teamName, !usingLegacyRequests);
+        runtimeExec({ command: 'MarkNotified', request_id: request.request_id, channel: 'tmux' }, stateDir, teamName);
         if (request.kind === 'mailbox' && request.message_id) {
           await updateMailboxNotified(stateDir, teamName, request.to_worker, request.message_id).catch(() => {});
         }
@@ -730,7 +730,7 @@ async function finalizeClaimedDispatchRequest({
       request.status = 'failed';
       request.failed_at = nowIso;
       request.last_reason = result.reason;
-      runtimeExec({ command: 'MarkFailed', request_id: request.request_id, reason: result.reason }, stateDir, teamName, !usingLegacyRequests);
+      runtimeExec({ command: 'MarkFailed', request_id: request.request_id, reason: result.reason }, stateDir, teamName);
       summary.processed += 1;
       summary.failed += 1;
       mutated = true;

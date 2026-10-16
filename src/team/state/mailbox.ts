@@ -32,12 +32,14 @@ export async function readLegacyMailboxMessageIds(
     return new Set<string>();
   }
   const shadowIds = new Set<string>();
+  const shadowsById = new Map<string, TeamMailboxMessage>();
   const duplicateIds = new Set<string>();
   if (mailbox.worker === workerName) {
     for (const message of mailbox.messages) {
       if (typeof message?.message_id !== 'string') continue;
       if (shadowIds.has(message.message_id)) duplicateIds.add(message.message_id);
       shadowIds.add(message.message_id);
+      shadowsById.set(message.message_id, message);
     }
     for (const message of mailbox.messages) {
       if (message?.to_worker !== workerName) shadowIds.delete(message?.message_id);
@@ -47,6 +49,10 @@ export async function readLegacyMailboxMessageIds(
   for (const record of bridgeRecords) {
     if (bridgeIds.has(record.message_id)) duplicateIds.add(record.message_id);
     bridgeIds.add(record.message_id);
+    const shadow = shadowsById.get(record.message_id);
+    if (shadow && !mailboxMessageContentMatches(shadow, normalizeBridgeMailboxMessage(record, shadow))) {
+      duplicateIds.add(record.message_id);
+    }
   }
   for (const id of duplicateIds) shadowIds.delete(id);
   const ids = new Set<string>();

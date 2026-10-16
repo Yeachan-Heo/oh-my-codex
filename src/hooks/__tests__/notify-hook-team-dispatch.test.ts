@@ -221,6 +221,7 @@ const timestamp = nowIso();
 switch (command.command) {
   case 'QueueDispatch':
     writeJson(path.join(dir, 'events.json'), [...readJson(path.join(dir, 'events.json'), []), { event: 'DispatchQueued', request_id: command.request_id, metadata: command.metadata }]);
+    writeJson(path.join(dir, 'dispatch-seen.json'), { schema_version: 2, ledger_epoch: 1, request_ids: [...readJson(path.join(dir, 'dispatch-seen.json'), { request_ids: [] }).request_ids, command.request_id] });
     dispatch.records.push({ request_id: command.request_id, target: command.target, status: 'pending', created_at: timestamp, notified_at: null, delivered_at: null, failed_at: null, reason: null, metadata: command.metadata ?? null });
     writeJson(dispatchPath, dispatch);
     process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target }) + '\\n');
@@ -670,20 +671,25 @@ exit 1
         kind: 'inbox', to_worker: 'worker-1', worker_index: 1, trigger_message: 'investigate ABC-123',
       }, cwd);
       const supported = await readFile(runtimePath, 'utf8');
+      const projectionPath = join(cwd, '.omx/state/dispatch.json');
+      const pendingProjection = await readFile(projectionPath, 'utf8');
       let injections = 0;
       const mod = await import('../../scripts/notify-hook/team-dispatch.js');
       const drain = () => mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5,
         injector: async () => {
           injections += 1;
           await writeFile(runtimePath, supported.replace("capabilities: ['team-mailbox-scope-v1']", 'capabilities: []'));
+          await writeFile(projectionPath, '{"records":');
           return { ok: true, reason: 'injected_for_test' };
         } });
 
       assert.equal((await drain()).processed, 1);
       assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'notified');
       assert.equal(injections, 1);
+      assert.equal(JSON.parse((await readFile(join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl'), 'utf8')).trim()).command, 'MarkNotified');
       await assert.rejects(drain, /team-mailbox-scope-v1/);
       await writeFile(runtimePath, supported);
+      await writeFile(projectionPath, pendingProjection);
       assert.equal((await drain()).processed, 0);
       assert.equal(injections, 1, 'post-injection schema drift must not leave the request eligible for replay');
     } finally {

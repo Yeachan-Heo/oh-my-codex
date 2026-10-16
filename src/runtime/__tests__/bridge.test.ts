@@ -342,6 +342,20 @@ printf '%s' '{"commands":[],"capabilities":[]}'
     });
   });
 
+  it('uses the validated executable when its original path changes during schema', () => {
+    withFakeBinary('{"event":"SnapshotCaptured"}', (bridge, binaryPath) => {
+      const old = `#!/usr/bin/env node\nconsole.log(JSON.stringify({event:'UnsafeMutation'}));\n`;
+      writeFileSync(binaryPath, `#!/usr/bin/env node
+const fs = require('fs');
+if (process.argv[2] === 'schema') {
+  fs.writeFileSync(${JSON.stringify(binaryPath)}, ${JSON.stringify(old)});
+  console.log(${JSON.stringify(validSchema)});
+} else console.log(JSON.stringify({event:'SnapshotCaptured'}));
+`);
+      assert.deepEqual(bridge.execCommand({ command: 'CaptureSnapshot' }), { event: 'SnapshotCaptured' });
+    });
+  });
+
   it('execCommand surfaces RuntimeBridgeError when stdout is non-JSON', () => {
     withFakeBinary('not-json-at-all', (bridge) => {
       assert.throws(

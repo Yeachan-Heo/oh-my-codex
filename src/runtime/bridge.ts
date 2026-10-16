@@ -8,12 +8,14 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, copyFileSync, mkdtempSync, rmSync, constants } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
 import { getPackageRoot } from '../utils/package.js';
+import { resolveCommandPathForPlatform } from '../utils/platform-command.js';
 import { safeJsonParse } from '../utils/safe-json.js';
 
 const __bridge_dirname = dirname(fileURLToPath(import.meta.url));
@@ -257,12 +259,34 @@ export class RuntimeBridge {
 
   /** Execute a RuntimeCommand and return the resulting RuntimeEvent. */
   execCommand(cmd: RuntimeCommand, options?: { compact?: boolean }): RuntimeEvent {
-    this.assertCompatible();
-    const json = JSON.stringify(cmd);
-    const args = ['exec', json];
-    if (this.stateDir) args.push(`--state-dir=${this.stateDir}`);
-    if (options?.compact) args.push('--compact');
-    const stdout = this.run(args);
+    const source = resolveCommandPathForPlatform(this.binaryPath);
+    if (!source) {
+      throw new Error('omx-runtime executable is unavailable', {
+        cause: Object.assign(new Error(this.binaryPath), { code: 'ENOENT' }),
+      });
+    }
+    let directory: string | undefined;
+    let stdout: string;
+    try {
+      let pinned: RuntimeBridge;
+      try {
+        directory = mkdtempSync(join(tmpdir(), 'omx-runtime-command-'));
+        const executable = join(directory, binaryNameForPlatform(process.platform));
+        copyFileSync(source, executable, constants.COPYFILE_FICLONE);
+        // Updaters can replace the configured path between schema and exec.
+        pinned = new RuntimeBridge({ binaryPath: executable, stateDir: this.stateDir });
+        pinned.assertCompatible();
+      } catch (cause) {
+        if (cause instanceof RuntimeBridgeError) throw cause;
+        throw new RuntimeBridgeError('omx-runtime executable snapshot failed', { command: 'schema', cause });
+      }
+      const args = ['exec', JSON.stringify(cmd)];
+      if (this.stateDir) args.push(`--state-dir=${this.stateDir}`);
+      if (options?.compact) args.push('--compact');
+      stdout = pinned.run(args);
+    } finally {
+      try { if (directory) rmSync(directory, { recursive: true, force: true }); } catch { /* Cleanup must not turn a committed mutation into a failure. */ }
+    }
     // Non-JSON stdout means the runtime contract was violated (truncated pipe,
     // schema drift, panic before flush). Surface a typed error so dispatch
     // callers can mark the command failed instead of bubbling SyntaxError up
@@ -392,7 +416,13 @@ export class RuntimeBridge {
 
   /** Validate the runtime before callers perform non-runtime side effects. */
   assertCompatible(): void {
-    const stdout = this.run(['schema', '--json']);
+    let stdout: string;
+    try {
+      stdout = this.run(['schema', '--json']);
+    } catch (cause) {
+      if (isRuntimeTransportError(cause)) throw cause;
+      throw new RuntimeBridgeError(cause instanceof Error ? cause.message : 'omx-runtime schema failed', { command: 'schema', cause });
+    }
     let schema;
     try {
       schema = JSON.parse(stdout);
