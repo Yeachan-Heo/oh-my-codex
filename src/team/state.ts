@@ -2004,9 +2004,7 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
       const compat = bridge.readCompatFile<{ records?: unknown[] }>('mailbox.json');
       if (compat) {
         const bridgeRecords = bridge.readMailboxRecords();
-        const needsLegacyOwnership = legacyMailbox.messages.length > 0
-          && bridgeRecords.some((record) => record.to_worker === workerName && (record.team_name == null || record.body === ''));
-        const legacyMessageIds = needsLegacyOwnership
+        const legacyMessageIds = legacyMailbox.messages.length > 0
           ? await readLegacyMailboxMessageIds(teamName, workerName, legacyMailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
         const legacyById = new Map(
@@ -2018,7 +2016,10 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
           .filter((record) => mailboxRecordBelongsToTeam(record, teamName, workerName, legacyMessageIds))
           .map((record) => normalizeBridgeMailboxMessage(record,
             legacyMessageIds.has(record.message_id) ? legacyById.get(record.message_id) : undefined));
-        return { worker: workerName, messages: bridgeMessages };
+        const bridgeIds = new Set(bridgeRecords.map((record) => record.message_id));
+        const fallbackMessages = legacyMailbox.messages.filter((message) => legacyMessageIds.has(message.message_id)
+          && !bridgeIds.has(message.message_id));
+        return { worker: workerName, messages: [...bridgeMessages, ...fallbackMessages] };
       }
     } catch {
       // fall through to legacy file fallback
@@ -2520,19 +2521,16 @@ export async function retireTeamMailboxMessages(
           || (record.delivered_at !== null && typeof record.delivered_at !== 'string'))) {
           throw new Error('authoritative_mailbox_retirement_discovery_failed');
         }
-        const needsLegacyOwnership = mailbox.messages.length > 0
-          && bridgeRecords.some((record) => record.to_worker === workerName && (record.team_name == null || record.body === ''
-            || mailbox.messages.some((message) => message?.message_id === record.message_id && message.created_at !== record.created_at)));
-        const legacyMessageIds = needsLegacyOwnership
+        const legacyMessageIds = mailbox.messages.length > 0
           ? await readLegacyMailboxMessageIds(teamName, workerName, mailbox, teamEventLogPath(teamName, cwd), bridgeRecords)
           : new Set<string>();
         const bridgeIds = new Set(bridgeRecords.map((record) => record.message_id));
-        const unproven = mailbox.messages.filter((message) => !message.delivered_at && !bridgeIds.has(message.message_id));
+        const unproven = mailbox.messages.filter((message) => !message.delivered_at && !bridgeIds.has(message.message_id) && !legacyMessageIds.has(message.message_id));
         if (unproven.length > 0) {
           throw new Error(`authoritative_mailbox_retirement_discovery_failed:${unproven.map((message) => message.message_id).join(',')}`);
         }
         let changed = false;
-        let retiredFromAuthoritative = 0;
+        let retiredFromMailbox = 0;
         for (const authoritative of bridgeRecords) {
           if (!mailboxRecordBelongsToTeam(authoritative, teamName, workerName, legacyMessageIds)) continue;
           const normalized = normalizeBridgeMailboxMessage(authoritative, legacyMessageIds.has(authoritative.message_id)
@@ -2558,12 +2556,19 @@ export async function retireTeamMailboxMessages(
           if (!message.delivered_at) {
             message.delivered_at = new Date().toISOString();
             changed = true;
-            retiredFromAuthoritative += 1;
+            retiredFromMailbox += 1;
+          }
+        }
+        for (const message of mailbox.messages) {
+          if (!message.delivered_at && !bridgeIds.has(message.message_id) && legacyMessageIds.has(message.message_id)) {
+            message.delivered_at = new Date().toISOString();
+            changed = true;
+            retiredFromMailbox += 1;
           }
         }
         if (changed) {
           await writeMailbox(teamName, mailbox, cwd);
-          retired += retiredFromAuthoritative;
+          retired += retiredFromMailbox;
         }
         const unresolved = mailbox.messages.filter((message) => !message.delivered_at);
         if (unresolved.length > 0) {

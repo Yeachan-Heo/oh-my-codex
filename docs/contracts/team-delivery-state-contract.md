@@ -19,7 +19,7 @@ provisional shadows, and dispatch validates before reserving cooldowns or inject
 into a pane. A runtime rejected after provisional creation removes only that
 send's provisional row.
 If the runtime becomes incompatible after pane input (hook, direct, or broadcast), runtime-backed dispatch saves its outcome
-and a pending runtime-finalization journal. Before claiming more work, the hook
+and a pending runtime-finalization journal, including delivered receipts. Before claiming more work, the hook
 replays those outcomes against event-derived runtime state and clears the journal;
 an incompatible or disabled bridge leaves recovery blocked without re-injection.
 Pure JSON queues keep their completion in JSON without creating runtime authority.
@@ -33,8 +33,10 @@ and the addressed worker. Rust rejects a missing or different Team on mutations
 of scoped records. Notification hooks and shutdown retirement follow the same
 ownership rule.
 Proven JSON-only messages can still be acknowledged after enabling a compatible
-runtime if no persisted runtime authority exists yet. Existing or damaged runtime
-state continues through strict runtime acknowledgement checks.
+runtime if no persisted runtime authority exists yet, or a valid mailbox projection
+contains no matching ID. Proven fallback rows remain visible alongside runtime
+records and can be retired without a runtime mutation. Colliding IDs and malformed
+compatibility state continue through strict runtime acknowledgement checks.
 Acknowledgement events retain the selected record's Team for replay. Older
 acknowledgement events without a Team are replayed only for globally unique IDs.
 

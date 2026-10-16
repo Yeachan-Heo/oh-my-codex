@@ -8,7 +8,7 @@ function hasRuntimeAuthority(stateDir: string): boolean {
 }
 
 // Callers hold the team dispatch lock across journal and projection updates.
-export function recordRuntimeFinalization(stateDir: string, teamName: string, command: Extract<RuntimeCommand, { command: 'MarkNotified' | 'MarkFailed' }>): void {
+export function recordRuntimeFinalization(stateDir: string, teamName: string, command: Extract<RuntimeCommand, { command: 'MarkNotified' | 'MarkDelivered' | 'MarkFailed' }>): void {
   // Compatibility rows can be JSON fallback even alongside existing runtime state.
   let events: unknown;
   try { events = JSON.parse(readFileSync(join(stateDir, 'events.json'), 'utf8')); } catch (error) {
@@ -35,6 +35,7 @@ export async function reconcileRuntimeFinalizations(stateDir: string, teamName: 
     if (process.env.OMX_RUNTIME_BRIDGE === '0') throw new Error('runtime finalizations require the runtime bridge');
     if (commands.some((command) => !command || typeof command.request_id !== 'string'
       || !((command.command === 'MarkNotified' && typeof command.channel === 'string')
+        || command.command === 'MarkDelivered'
         || (command.command === 'MarkFailed' && typeof command.reason === 'string')))) {
       throw new Error('invalid runtime finalization journal');
     }
@@ -48,9 +49,13 @@ export async function reconcileRuntimeFinalizations(stateDir: string, teamName: 
       if (record.metadata?.team_name !== teamName) throw new Error('runtime finalization team mismatch');
       if (record.status === 'delivered' || record.status === 'failed'
         || (command.command === 'MarkNotified' && record.status === 'notified')) continue;
+      if (command.command === 'MarkDelivered' && record.status === 'pending') {
+        bridge.execCommand({ command: 'MarkNotified', request_id: command.request_id, channel: 'recovered_delivery' });
+      }
       bridge.execCommand(command);
       const updated = bridge.readDispatchRecordsStrict().find((entry) => entry.request_id === command.request_id);
-      const expected = command.command === 'MarkNotified' ? 'notified' : 'failed';
+      const expected = command.command === 'MarkNotified' ? 'notified'
+        : command.command === 'MarkDelivered' ? 'delivered' : 'failed';
       if (updated?.status !== expected) throw new Error('runtime finalization verification failed');
     }
   }

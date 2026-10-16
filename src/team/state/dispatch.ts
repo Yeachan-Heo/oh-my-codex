@@ -183,7 +183,7 @@ function executeBridgeCommand(deps: DispatchDeps, command: RuntimeCommand): bool
     return true;
   } catch (error) {
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema'
-      && (command.command === 'MarkNotified' || command.command === 'MarkFailed')) {
+      && (command.command === 'MarkNotified' || command.command === 'MarkDelivered' || command.command === 'MarkFailed')) {
       const stateDir = resolveBridgeStateDir(deps.cwd);
       const owned = existsSync(join(stateDir, 'dispatch.json')) && getDefaultBridge(stateDir).readDispatchRecordsStrict()
         .some((record) => record.request_id === command.request_id && record.metadata?.team_name === deps.teamName);
@@ -428,14 +428,16 @@ export async function markDispatchRequestDelivered(
   patch: Partial<TeamDispatchRequest> = {},
   deps: DispatchDeps,
 ): Promise<TeamDispatchRequest | null> {
-  const current = await readDispatchRequest(requestId, deps);
-  if (!current) return null;
-  if (current.status === 'delivered') return current;
-  if (current.status === 'failed') return null;
-  if (executeBridgeCommand(deps, { command: 'MarkDelivered', request_id: requestId })) {
-    return await readDispatchRequest(requestId, deps) ?? current;
-  }
-  return await transitionDispatchRequest(requestId, current.status, 'delivered', patch, deps);
+  return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
+    const current = await readDispatchRequest(requestId, deps);
+    if (!current) return null;
+    if (current.status === 'delivered') return current;
+    if (!canTransitionDispatchStatus(current.status, 'delivered')) return null;
+    if (executeBridgeCommand(deps, { command: 'MarkDelivered', request_id: requestId })) {
+      return await readDispatchRequest(requestId, deps) ?? current;
+    }
+    return await transitionDispatchRequestLocked(requestId, current.status, 'delivered', patch, deps);
+  });
 }
 
 export async function markDispatchRequestFailed(

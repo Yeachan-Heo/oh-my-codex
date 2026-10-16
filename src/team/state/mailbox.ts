@@ -97,11 +97,16 @@ interface MailboxDeps {
 function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
   if (!isBridgeEnabled()) return false;
   const stateDir = resolveBridgeStateDir(cwd);
-  if ((command.command === 'MarkMailboxNotified' || command.command === 'MarkMailboxDelivered')
-    && !['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)))) {
-    // Match the runtime's fresh-engine test; callers already proved JSON ownership.
-    preflightRuntimeBridge(stateDir);
-    return false;
+  if (command.command === 'MarkMailboxNotified' || command.command === 'MarkMailboxDelivered') {
+    const compat = getDefaultBridge(stateDir).readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json');
+    const absentFromCompat = Array.isArray(compat?.records)
+      && compat.records.every((record) => record && typeof record.message_id === 'string')
+      && !compat.records.some((record) => record.message_id === command.message_id);
+    if (absentFromCompat || !['events.json', 'snapshot.json', 'mailbox.json'].some((name) => existsSync(join(stateDir, name)))) {
+      // Callers proved shadow+journal ownership; no runtime record may share this ID.
+      preflightRuntimeBridge(stateDir);
+      return false;
+    }
   }
   try {
     getDefaultBridge(stateDir).execCommand(command);
