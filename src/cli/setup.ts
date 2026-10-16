@@ -144,7 +144,6 @@ import {
 } from "./setup-preferences.js";
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
-	OMX_LOCAL_PLUGIN_CONFIG_KEY,
 	OMX_PLUGIN_NAME,
 	discoverOmxPluginCacheDirs,
 	materializePackagedOmxPluginCache,
@@ -196,6 +195,8 @@ interface SetupOptions {
 	codexVersionProbe?: () => string | null;
 	disableHooks?: boolean;
 	force?: boolean;
+	/** Repair stale managed caches and verified claims from exited publishers. */
+	repairPluginCache?: boolean;
 	mergeAgents?: boolean;
 	mergeAgentsPolicy?: { kind: "set"; value: boolean } | { kind: "clear" };
 	dryRun?: boolean;
@@ -4112,6 +4113,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const {
 		disableHooks = false,
 		force = false,
+		repairPluginCache = false,
 		dryRun = false,
 		installMode: requestedInstallMode,
 		mcpMode: requestedMcpMode,
@@ -4319,6 +4321,9 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
+	if (repairPluginCache && !isPluginInstallMode) {
+		throw new Error("--repair-plugin-cache requires plugin setup mode; add --plugin.");
+	}
 	const pluginAgentsMdDst =
 		resolvedScope.scope === "project"
 			? join(projectRoot, "AGENTS.md")
@@ -4777,7 +4782,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		const pluginCacheMaterialize = await materializePackagedOmxPluginCache(
 			scopeDirs.codexHomeDir,
 			preflightMarketplace,
-			{ dryRun, teamMode: resolvedTeamMode },
+			{ dryRun, repairCache: force || repairPluginCache, teamMode: resolvedTeamMode },
 		);
 		if (pluginCacheMaterialize.status === "materialized") {
 			console.log(
@@ -4787,10 +4792,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			console.log("  Local Codex plugin cache already exposes packaged OMX skills.");
 		} else if (pluginCacheMaterialize.status === "stale-launcher") {
 			console.log(
-				`  warning: local Codex plugin cache at ${pluginCacheMaterialize.cacheDir} has incompatible launcher provenance (${pluginCacheMaterialize.reason}); not reporting as current.`,
-			);
-			console.log(
-				`  Run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to rebuild the snapshot for ${preflightMarketplace?.packageRoot ?? pkgRoot}.`,
+				`  warning: local Codex plugin cache at ${pluginCacheMaterialize.cacheDir} is not safe to use as current (${pluginCacheMaterialize.reason}); not reporting as current.`,
 			);
 		}
 		if (

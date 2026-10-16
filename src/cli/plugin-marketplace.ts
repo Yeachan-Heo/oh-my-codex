@@ -1,9 +1,10 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
 import { createHash, randomUUID } from "crypto";
-import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
+import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, type FileHandle } from "fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
+import { hashProcessStartIdentity, readProcessStartIdentity } from "../state/process-identity.js";
 import {
 	emitDegradedDurabilityWarning,
 	recordDirectorySyncOutcome,
@@ -12,6 +13,7 @@ import {
 	syncRegularFile,
 	type RegularFileDurabilityTracker,
 } from "../utils/file-durability.js";
+import { codexHome } from "../utils/paths.js";
 
 export const OMX_LOCAL_MARKETPLACE_NAME = "oh-my-codex-local";
 export const OMX_PLUGIN_NAME = "oh-my-codex";
@@ -43,6 +45,17 @@ interface PluginManifest {
 
 const OMX_PLUGIN_HOOK_LAUNCHER_FILE = "omx-command.json";
 const OMX_PLUGIN_MANAGED_MARKER = ".omx-managed";
+const OMX_PLUGIN_LIVE_PIN_MARKER = ".omx-live-pin";
+const OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER = ".omx-retiring";
+const OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX = ".pending-";
+const OMX_PLUGIN_LIVE_PIN_INTENT_PREFIX = ".omx-live-pin-intent-";
+const OMX_PLUGIN_LIVE_PIN_INTENT_STAGE_PREFIX = ".stage-omx-live-pin-intent-";
+const OMX_PLUGIN_LIVE_PIN_INTENT_LOCK_PREFIX = ".omx-live-pin-intent-";
+const OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES = 4096;
+// Empty pin directories can be initialization races, but abandoned ones must not pin forever.
+const OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS = 5 * 60 * 1000;
+// A pin owner holds this lock while reading the owner's process-start identity (up to 3s on Windows).
+const OMX_PLUGIN_LIVE_PIN_MUTATION_LOCK_PIN_WAIT_MS = 5_000;
 const OMX_PLUGIN_CACHE_STAGING_PREFIX = ".omx-plugin-";
 const TEAM_MODE_PLUGIN_SKILL_NAMES = new Set(["team", "worker"]);
 
@@ -149,6 +162,7 @@ interface PluginCacheMutationTestHooks {
 	beforeStaleLockReclaim?: (lockPath: string, stats: Stats) => void | Promise<void>;
 	beforeRemove?: (path: string, stats: Stats) => void | Promise<void>;
 	beforeRemoveSyscall?: (path: string, stats: Stats) => void | Promise<void>;
+	afterDestructiveCheck?: (path: string, stats: Stats) => void | Promise<void>;
 }
 
 let pluginCacheMutationTestHooks: PluginCacheMutationTestHooks | undefined;
@@ -499,7 +513,9 @@ async function createExclusiveFileChild(
 
 interface RemoveChildOptions {
 	recursive?: boolean;
+	emptyDirectory?: boolean;
 	force?: boolean;
+	allowInvalidClaimDigest?: boolean;
 	preserveRecursive?: boolean;
 	expectedManagedVersion?: string;
 	preservedPaths?: string[];
@@ -544,8 +560,16 @@ async function removeChild(parent: DirectoryRef, name: string, options: RemoveCh
 			throw new Error(`identity-bound removal target changed before removal syscall: ${mutationPath}`);
 		}
 		if (options.beforeDestructiveRemove && !await options.beforeDestructiveRemove()) return false;
+		await pluginCacheMutationTestHooks?.afterDestructiveCheck?.(mutationPath, final);
 	}
-	await rm(mutationPath, options);
+	if (options.emptyDirectory) {
+		if (before && !before.isDirectory()) throw new Error(`expected an empty directory at ${mutationPath}`);
+		await rmdir(mutationPath).catch((error) => {
+			if (!options.force || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		});
+	} else {
+		await rm(mutationPath, options);
+	}
 	if (before) {
 		try {
 			await lstat(mutationPath);
@@ -605,17 +629,11 @@ async function renameChild(sourceParent: DirectoryRef, sourceName: string, desti
  * so pre/post inode checks around a rename can never be atomic no-replace.
  * Publication therefore never renames onto `<version>`: the destination is
  * claimed with an atomic exclusive mkdir (the one portable no-replace
- * primitive). EEXIST — whether the destination is empty, foreign, incomplete,
- * or a completed snapshot — always fails closed without touching it. The
- * claim is self-described with an O_EXCL `.omx-incomplete` marker, the staged
- * snapshot entries are renamed into the empty claim (destination names cannot
- * pre-exist), and `.omx-complete` is committed last. Every trust path requires
- * `.omx-complete` and rejects `.omx-incomplete`, so no intermediate state is
- * trusted, and no pre-existing directory is ever replaced or removed.
- *
- * A claim abandoned by a crashed publisher keeps `.omx-incomplete` and no
- * `.omx-complete`; the next publication fails closed on it (stale-launcher
- * with the removal recovery hint) rather than deleting foreign content.
+ * primitive). The claim receives an O_EXCL `.omx-incomplete` ownership record
+ * that remains in place while staged entries are copied. A durable `.omx-managed`
+ * owner record bridges removal of `.omx-incomplete` to the final `.omx-complete`
+ * commit. Repair reclaims recognized claims only after their publisher is
+ * proven exited; legacy or malformed markers remain preserved.
  */
 async function claimPublicationDestination(
 	destinationParent: DirectoryRef,
@@ -626,7 +644,10 @@ async function claimPublicationDestination(
 	const claimRef = await openDirectoryChild(destinationParent, destinationName);
 	try {
 		await assertDirectoryRef(claimRef, "publication claim");
-		await createExclusiveFileChild(claimRef, ".omx-incomplete", `${process.pid}\n`, tracker);
+		const incompleteRecord = await buildPublicationOwnershipRecord(destinationName);
+		await createExclusiveFileChild(claimRef, ".omx-incomplete", `${JSON.stringify(incompleteRecord)}\n`, tracker);
+		const claimDirectorySyncOutcome = await syncDirectory(claimRef.handle);
+		if (tracker) recordDirectorySyncOutcome(tracker, claimDirectorySyncOutcome);
 		return claimRef;
 	} catch (error) {
 		await claimRef.handle.close();
@@ -749,13 +770,1129 @@ async function readRegularFileTextNoFollow(path: string, options: { anchorDir?: 
 	return bytes?.toString("utf-8") ?? null;
 }
 
+interface OmxPluginCacheLivePinRecord {
+	version: 1;
+	pid: number;
+	processStartHash: string | null;
+	sessionHash: string;
+}
+
+interface OmxPluginCacheLivePinMutationLockRecord {
+	version: 1;
+	pid: number;
+	operation: "pin" | "retire";
+	token: string;
+}
+
+// Pending records represent retry intent only. Retirement applies their bounded
+// mtime lease; they must not inherit a Codex PID lifetime.
+interface OmxPluginCachePendingPinRecord {
+	version: 1;
+	sessionHash: string;
+}
+
+function parseOmxPluginCacheLivePinRecord(value: unknown): OmxPluginCacheLivePinRecord | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (
+		record.version !== 1
+		|| typeof record.pid !== "number"
+		|| !Number.isSafeInteger(record.pid)
+		|| record.pid <= 0
+		|| (record.processStartHash !== null && (typeof record.processStartHash !== "string" || !/^[0-9a-f]{24}$/.test(record.processStartHash)))
+		|| typeof record.sessionHash !== "string"
+		|| !/^[0-9a-f]{64}$/.test(record.sessionHash)
+	) return null;
+	return record as unknown as OmxPluginCacheLivePinRecord;
+}
+
+function parseOmxPluginCacheLivePinMutationLockRecord(value: unknown): OmxPluginCacheLivePinMutationLockRecord | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (
+		record.version !== 1 ||
+		typeof record.pid !== "number" ||
+		!Number.isSafeInteger(record.pid) ||
+		record.pid <= 0 ||
+		(record.operation !== "pin" && record.operation !== "retire") ||
+		typeof record.token !== "string" ||
+		!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(record.token)
+	)
+		return null;
+	return record as unknown as OmxPluginCacheLivePinMutationLockRecord;
+}
+
+function parseOmxPluginCachePendingPinRecord(value: unknown): OmxPluginCachePendingPinRecord | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (record.version !== 1 || typeof record.sessionHash !== "string" || !/^[0-9a-f]{64}$/.test(record.sessionHash))
+		return null;
+	if (Object.keys(record).some((key) => key !== "version" && key !== "sessionHash")) return null;
+	return record as unknown as OmxPluginCachePendingPinRecord;
+}
+
+function parseOmxPluginCacheLivePinIntentRecord(value: unknown, expectedVersion: string): OmxPluginCachePendingPinRecord | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (
+		record.version !== 1 ||
+		record.cacheVersion !== expectedVersion ||
+		typeof record.sessionHash !== "string" ||
+		!/^[0-9a-f]{64}$/.test(record.sessionHash)
+	)
+		return null;
+	if (Object.keys(record).some((key) => key !== "version" && key !== "cacheVersion" && key !== "sessionHash")) return null;
+	return { version: 1, sessionHash: record.sessionHash };
+}
+
+function omxPluginCacheLivePinVersionHash(version: string): string {
+	return createHash("sha256").update(version).digest("hex").slice(0, 24);
+}
+
+function omxPluginCacheLivePinIntentName(version: string, sessionHash: string): string {
+	return `${OMX_PLUGIN_LIVE_PIN_INTENT_PREFIX}${omxPluginCacheLivePinVersionHash(version)}-${sessionHash}.json`;
+}
+
+function omxPluginCacheLivePinMutationLockName(version: string): string {
+	const versionHash = omxPluginCacheLivePinVersionHash(version);
+	return `.omx-live-pin-${versionHash}.lock`;
+}
+
+function omxPluginCacheLivePinIntentLockName(version: string): string {
+	return `${OMX_PLUGIN_LIVE_PIN_INTENT_LOCK_PREFIX}${omxPluginCacheLivePinVersionHash(version)}.lock`;
+}
+
+interface OmxPluginCacheLivePinMutationLockState {
+	name: string;
+	version: string;
+	stats: Stats;
+	content: string | null;
+	record: OmxPluginCacheLivePinMutationLockRecord | null;
+	regular: boolean;
+}
+
+async function readOmxPluginCacheLivePinMutationLock(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	name = omxPluginCacheLivePinMutationLockName(version),
+): Promise<OmxPluginCacheLivePinMutationLockState | null> {
+	const lockPath = childOperationPath(cacheBaseRef, name);
+	let stats: Stats;
+	try {
+		stats = await lstat(lockPath);
+	} catch (error) {
+		if (isMissingPathError(error)) return null;
+		throw error;
+	}
+	const regular =
+		stats.isFile() &&
+		!stats.isSymbolicLink() &&
+		(stats.nlink === 1 || stats.nlink === 2) &&
+		stats.size > 0 &&
+		stats.size <= 256;
+	if (!regular)
+		return {
+			name,
+			version,
+			stats,
+			content: null,
+			record: null,
+			regular: false,
+		};
+	const bytes = await readOmxPluginCacheFileNoFollow(lockPath, {
+		requireSingleLink: false,
+		anchorDir: cacheBaseRef.operationPath,
+	});
+	const content = bytes?.toString("utf-8") ?? null;
+	const afterReadStats = await lstat(lockPath).catch((error) => {
+		if (isMissingPathError(error)) return null;
+		throw error;
+	});
+	if (!afterReadStats || !sameFileIdentity(stats, afterReadStats) || afterReadStats.nlink !== stats.nlink) {
+		return { name, version, stats, content, record: null, regular: false };
+	}
+	stats = afterReadStats;
+	if (content === null) return { name, version, stats, content: null, record: null, regular: true };
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content) as unknown;
+	} catch {
+		return { name, version, stats, content, record: null, regular: true };
+	}
+	const record = parseOmxPluginCacheLivePinMutationLockRecord(parsed);
+	if (stats.nlink === 2 && record) {
+		const stageName = `${name}.stage-${record.pid}-${record.token}`;
+		const stageStats = await lstat(childOperationPath(cacheBaseRef, stageName)).catch((error) => {
+			if (isMissingPathError(error)) return null;
+			throw error;
+		});
+		if (!stageStats || !sameFileIdentity(stats, stageStats)) {
+			return { name, version, stats, content, record: null, regular: false };
+		}
+	}
+	return { name, version, stats, content, record, regular: true };
+}
+
+async function removeOmxPluginCacheLivePinMutationLockStageLink(
+	cacheBaseRef: DirectoryRef,
+	state: OmxPluginCacheLivePinMutationLockState,
+): Promise<boolean> {
+	if (state.stats.nlink === 1) return true;
+	if (state.stats.nlink !== 2 || !state.record) return false;
+	const stageName = `${state.name}.stage-${state.record.pid}-${state.record.token}`;
+	const stageStats = await lstat(childOperationPath(cacheBaseRef, stageName)).catch((error) => {
+		if (isMissingPathError(error)) return null;
+		throw error;
+	});
+	if (!stageStats || !sameFileIdentity(stageStats, state.stats)) return false;
+	if (
+		!(await removeChildIfIdentity(cacheBaseRef, stageName, stageStats, {
+			force: true,
+		}))
+	)
+		return false;
+	const refreshed = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, state.version, state.name);
+	return (
+		refreshed?.content === state.content &&
+		sameFileIdentity(refreshed.stats, state.stats) &&
+		refreshed.stats.nlink === 1 &&
+		refreshed.record?.pid === state.record.pid
+	);
+}
+
+async function removeStaleOmxPluginCacheLivePinMutationLock(
+	cacheBaseRef: DirectoryRef,
+	state: OmxPluginCacheLivePinMutationLockState,
+): Promise<boolean> {
+	// Never steal a live PID by age: a paused filesystem operation still owns its
+	// lock. If PID reuse makes an abandoned owner look live, fail closed.
+	if (!state.regular || !state.record || isProcessAlive(state.record.pid)) return false;
+	if (!(await removeOmxPluginCacheLivePinMutationLockStageLink(cacheBaseRef, state))) return false;
+	const refreshed = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, state.version, state.name);
+	if (
+		refreshed?.content !== state.content ||
+		!sameFileIdentity(refreshed.stats, state.stats) ||
+		refreshed.stats.nlink !== 1 ||
+		!refreshed.record ||
+		isProcessAlive(refreshed.record.pid)
+	)
+		return false;
+	return removeChildIfIdentity(cacheBaseRef, refreshed.name, refreshed.stats, {
+		force: true,
+	});
+}
+
+async function acquireOmxPluginCacheLivePinMutationLock(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	operation: "pin" | "retire",
+	waitForPinContention = false,
+	name = omxPluginCacheLivePinMutationLockName(version),
+): Promise<string | null> {
+	const token = randomUUID();
+	const content = `${JSON.stringify({ version: 1, pid: process.pid, operation, token })}\n`;
+	const retryUntil = waitForPinContention
+		? Date.now() + OMX_PLUGIN_LIVE_PIN_MUTATION_LOCK_PIN_WAIT_MS
+		: 0;
+	for (;;) {
+		const existing = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, name);
+		if (existing) {
+			if (await removeStaleOmxPluginCacheLivePinMutationLock(cacheBaseRef, existing)) continue;
+			if (waitForPinContention && existing.record?.operation === "pin" && Date.now() < retryUntil) {
+				await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+				continue;
+			}
+			return null;
+		}
+		const stageName = `${name}.stage-${process.pid}-${token}`;
+		// Publish a complete record without exposing a partially written lock. The
+		// record-derived stage name makes the post-link crash state recoverable.
+		await createExclusiveFileChild(cacheBaseRef, stageName, content);
+		const stageStats = await lstat(childOperationPath(cacheBaseRef, stageName));
+		let linked = false;
+		try {
+			await link(childOperationPath(cacheBaseRef, stageName), childOperationPath(cacheBaseRef, name));
+			linked = true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		} finally {
+			await removeChildIfIdentity(cacheBaseRef, stageName, stageStats, {
+				force: true,
+			}).catch(() => false);
+		}
+		if (!linked) continue;
+		const acquired = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, name);
+		if (acquired?.content === content && acquired.record?.pid === process.pid) return content;
+		if (acquired?.content === content) {
+			await removeChildIfIdentity(cacheBaseRef, name, acquired.stats, {
+				force: true,
+			}).catch(() => false);
+		}
+		return null;
+	}
+}
+
+async function omxPluginCacheLivePinMutationLockIsOwned(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	content: string,
+	name = omxPluginCacheLivePinMutationLockName(version),
+): Promise<boolean> {
+	const state = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, name);
+	return state?.content === content && state.record?.pid === process.pid;
+}
+
+async function releaseOmxPluginCacheLivePinMutationLock(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	content: string,
+	name = omxPluginCacheLivePinMutationLockName(version),
+): Promise<void> {
+	const state = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, name);
+	if (state?.content !== content || state.record?.pid !== process.pid) return;
+	if (!(await removeOmxPluginCacheLivePinMutationLockStageLink(cacheBaseRef, state))) return;
+	const refreshed = await readOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, name);
+	if (refreshed?.content !== content || refreshed.record?.pid !== process.pid || refreshed.stats.nlink !== 1) return;
+	await removeChildIfIdentity(cacheBaseRef, refreshed.name, refreshed.stats, {
+		force: true,
+	});
+}
+
+async function writePendingOmxPluginCacheLivePinRegistration(
+	pinDirectoryRef: DirectoryRef,
+	sessionHash: string,
+): Promise<void> {
+	const name = `${OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX}${sessionHash}.json`;
+	const path = childOperationPath(pinDirectoryRef, name);
+	const content = `${JSON.stringify({ version: 1, sessionHash })}\n`;
+	let existingStats: Stats | null = null;
+	try {
+		existingStats = await lstat(path);
+	} catch (error) {
+		if (!isMissingPathError(error)) throw error;
+	}
+	if (existingStats) {
+		if (
+			!existingStats.isFile() ||
+			existingStats.isSymbolicLink() ||
+			(existingStats.nlink !== 1 && existingStats.nlink !== 2) ||
+			existingStats.size <= 0 ||
+			existingStats.size > 256
+		) {
+			throw new Error(`pending plugin cache pin marker is untrusted at ${path}`);
+		}
+		const bytes = await readOmxPluginCacheFileNoFollow(path, {
+			requireSingleLink: false,
+			anchorDir: pinDirectoryRef.operationPath,
+		});
+		let parsed: unknown;
+		try {
+			parsed = bytes ? (JSON.parse(bytes.toString("utf-8")) as unknown) : null;
+		} catch {
+			throw new Error(`pending plugin cache pin marker is malformed at ${path}`);
+		}
+		if (parseOmxPluginCachePendingPinRecord(parsed)?.sessionHash !== sessionHash) {
+			throw new Error(`pending plugin cache pin marker belongs to another session at ${path}`);
+		}
+		return;
+	}
+	const stageName = `.stage-pending-${sessionHash}-${randomUUID()}`;
+	await createExclusiveFileChild(pinDirectoryRef, stageName, content);
+	const stageStats = await lstat(childOperationPath(pinDirectoryRef, stageName));
+	let published = false;
+	try {
+		await link(childOperationPath(pinDirectoryRef, stageName), childOperationPath(pinDirectoryRef, name));
+		published = true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	} finally {
+		await removeChildIfIdentity(pinDirectoryRef, stageName, stageStats, {
+			force: true,
+		}).catch(() => false);
+	}
+	if (!published) {
+		const existing = await readOmxPluginCacheFileNoFollow(path, {
+			requireSingleLink: false,
+			anchorDir: pinDirectoryRef.operationPath,
+		});
+		let parsed: unknown;
+		try {
+			parsed = existing ? (JSON.parse(existing.toString("utf-8")) as unknown) : null;
+		} catch {
+			parsed = null;
+		}
+		if (parseOmxPluginCachePendingPinRecord(parsed)?.sessionHash !== sessionHash) {
+			throw new Error(`pending plugin cache pin marker changed before publication at ${path}`);
+		}
+	}
+}
+
+async function removePendingOmxPluginCacheLivePinRegistration(
+	pinDirectoryRef: DirectoryRef,
+	sessionHash: string,
+): Promise<void> {
+	const name = `${OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX}${sessionHash}.json`;
+	const path = childOperationPath(pinDirectoryRef, name);
+	let stats: Stats;
+	try {
+		stats = await lstat(path);
+	} catch (error) {
+		if (isMissingPathError(error)) return;
+		throw error;
+	}
+	if (
+		!stats.isFile() ||
+		stats.isSymbolicLink() ||
+		(stats.nlink !== 1 && stats.nlink !== 2) ||
+		stats.size <= 0 ||
+		stats.size > 256
+	)
+		return;
+	const bytes = await readOmxPluginCacheFileNoFollow(path, {
+		requireSingleLink: false,
+		anchorDir: pinDirectoryRef.operationPath,
+	});
+	let parsed: unknown;
+	try {
+		parsed = bytes ? (JSON.parse(bytes.toString("utf-8")) as unknown) : null;
+	} catch {
+		return;
+	}
+	if (parseOmxPluginCachePendingPinRecord(parsed)?.sessionHash !== sessionHash) return;
+	await removeChildIfIdentity(pinDirectoryRef, name, stats, { force: true });
+}
+
+async function refreshOmxPluginCacheLivePinRecordMtime(
+	pinDirectoryRef: DirectoryRef,
+	recordName: string,
+	recordContent: string,
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	mutationLockContent: string,
+): Promise<boolean> {
+	const path = childOperationPath(pinDirectoryRef, recordName);
+	let handle: FileHandle | undefined;
+	try {
+		const before = await lstat(path);
+		if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size <= 0 || before.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES)
+			return false;
+		handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+		const opened = await handle.stat();
+		if (!opened.isFile() || opened.isSymbolicLink() || !sameFileIdentity(opened, before) || opened.nlink !== 1)
+			return false;
+		if ((await handle.readFile("utf-8")) !== recordContent) return false;
+		if (
+			(await livePinRetirementGateExists(pinDirectoryRef)) ||
+			!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))
+		)
+			return false;
+		const now = new Date();
+		await handle.utimes(now, now);
+		const after = await handle.stat();
+		const namedAfter = await lstat(path);
+		return (
+			after.isFile() &&
+			!after.isSymbolicLink() &&
+			after.nlink === 1 &&
+			sameFileIdentity(after, before) &&
+			namedAfter.isFile() &&
+			!namedAfter.isSymbolicLink() &&
+			namedAfter.nlink === 1 &&
+			sameFileIdentity(namedAfter, before) &&
+			!(await livePinRetirementGateExists(pinDirectoryRef)) &&
+			(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))
+		);
+	} catch {
+		return false;
+	} finally {
+		await handle?.close().catch(() => undefined);
+	}
+}
+
+async function removePendingOmxPluginCacheLivePinIntent(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	sessionHash: string,
+): Promise<void> {
+	const name = omxPluginCacheLivePinIntentName(version, sessionHash);
+	const path = childOperationPath(cacheBaseRef, name);
+	let stats: Stats;
+	try {
+		stats = await lstat(path);
+	} catch (error) {
+		if (isMissingPathError(error)) return;
+		throw error;
+	}
+	if (!stats.isFile() || stats.isSymbolicLink() || (stats.nlink !== 1 && stats.nlink !== 2) || stats.size <= 0 || stats.size > 256)
+		return;
+	const bytes = await readOmxPluginCacheFileNoFollow(path, {
+		requireSingleLink: false,
+		anchorDir: cacheBaseRef.operationPath,
+	});
+	let parsed: unknown;
+	try {
+		parsed = bytes ? (JSON.parse(bytes.toString("utf-8")) as unknown) : null;
+	} catch {
+		return;
+	}
+	const intent = parseOmxPluginCacheLivePinIntentRecord(parsed, version);
+	if (intent?.sessionHash !== sessionHash) return;
+	await removeChildIfIdentity(cacheBaseRef, name, stats, { force: true });
+}
+
+async function isLivePinOwnerAlive(record: OmxPluginCacheLivePinRecord): Promise<boolean> {
+	return isProcessOwnerAlive(record.pid, record.processStartHash);
+}
+
+async function hasLiveSessionPinRecord(
+	snapshotRef: DirectoryRef,
+	ownerPid: number,
+	sessionHash: string,
+): Promise<boolean> {
+	let pinDirectoryRef: DirectoryRef | undefined;
+	try {
+		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		if (await livePinRetirementGateExists(pinDirectoryRef)) return false;
+		for (const entry of await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true })) {
+			if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith("pin-")) continue;
+			const path = join(pinDirectoryRef.operationPath, entry.name);
+			const stats = await lstat(path);
+			if (
+				!stats.isFile() ||
+				stats.isSymbolicLink() ||
+				stats.nlink !== 1 ||
+				stats.size <= 0 ||
+				stats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
+			)
+				continue;
+			const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: pinDirectoryRef.operationPath });
+			if (bytes === null) continue;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
+			} catch {
+				continue;
+			}
+			const record = parseOmxPluginCacheLivePinRecord(parsed);
+			if (
+				record?.pid === ownerPid &&
+				record.sessionHash === sessionHash &&
+				entry.name === `pin-${record.pid}-${sessionHash.slice(0, 24)}-${record.processStartHash ?? "unknown"}.json` &&
+				(await isLivePinOwnerAlive(record))
+			)
+				return true;
+		}
+		return false;
+	} catch {
+		return false;
+	} finally {
+		if (pinDirectoryRef) await pinDirectoryRef.handle.close().catch(() => undefined);
+	}
+}
+
+async function hasLivePinIntent(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	mutationLockContent?: string,
+	intentLockContent?: string,
+): Promise<boolean> {
+	const versionHash = omxPluginCacheLivePinVersionHash(version);
+	const intentPrefix = `${OMX_PLUGIN_LIVE_PIN_INTENT_PREFIX}${versionHash}-`;
+	const stagePrefix = `${OMX_PLUGIN_LIVE_PIN_INTENT_STAGE_PREFIX}${versionHash}-`;
+	let entries;
+	try {
+		entries = await readdir(cacheBaseRef.scanOperationPath, { withFileTypes: true });
+	} catch {
+		return true;
+	}
+	for (const entry of entries) {
+		const isStage = entry.name.startsWith(stagePrefix);
+		if (!isStage && !entry.name.startsWith(intentPrefix)) continue;
+		const path = childOperationPath(cacheBaseRef, entry.name);
+		let stats: Stats;
+		try {
+			stats = await lstat(path);
+		} catch (error) {
+			if (isMissingPathError(error)) continue;
+			return true;
+		}
+		if (!stats.isFile() || stats.isSymbolicLink() || (stats.nlink !== 1 && stats.nlink !== 2)) return true;
+		const ageMs = Date.now() - stats.mtimeMs;
+		if (!Number.isFinite(ageMs) || ageMs < 0) return true;
+		if (ageMs > OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS) {
+			if (!mutationLockContent || !intentLockContent) continue;
+			if (!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))) return true;
+			if (!(await omxPluginCacheLivePinMutationLockIsOwned(
+				cacheBaseRef,
+				version,
+				intentLockContent,
+				omxPluginCacheLivePinIntentLockName(version),
+			))) return true;
+			let currentStats: Stats;
+			try {
+				currentStats = await lstat(path);
+			} catch (error) {
+				if (isMissingPathError(error)) continue;
+				return true;
+			}
+			if (!sameFileIdentity(currentStats, stats)) return true;
+			const currentAgeMs = Date.now() - currentStats.mtimeMs;
+			if (!Number.isFinite(currentAgeMs) || currentAgeMs < 0) return true;
+			if (currentAgeMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS) return true;
+			if (!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))) return true;
+			if (!(await omxPluginCacheLivePinMutationLockIsOwned(
+				cacheBaseRef,
+				version,
+				intentLockContent,
+				omxPluginCacheLivePinIntentLockName(version),
+			))) return true;
+			try {
+				if (!(await removeChildIfIdentity(cacheBaseRef, entry.name, currentStats, { force: true }))) return true;
+			} catch {
+				return true;
+			}
+			continue;
+		}
+		if (isStage) return true;
+		if (stats.size <= 0 || stats.size > 256) return true;
+		const bytes = await readOmxPluginCacheFileNoFollow(path, {
+			requireSingleLink: false,
+			anchorDir: cacheBaseRef.operationPath,
+		});
+		let parsed: unknown;
+		try {
+			parsed = bytes ? (JSON.parse(bytes.toString("utf-8")) as unknown) : null;
+		} catch {
+			return true;
+		}
+		const intent = parseOmxPluginCacheLivePinIntentRecord(parsed, version);
+		if (!intent || entry.name !== `${intentPrefix}${intent.sessionHash}.json`) return true;
+		return true;
+	}
+	return false;
+}
+
+async function sweepExpiredOmxPluginCacheLivePinIntents(
+	snapshotRef: DirectoryRef,
+	cacheBaseRef: DirectoryRef,
+	version: string,
+): Promise<void> {
+	let mutationLockContent: string | null = null;
+	let intentLockContent: string | null = null;
+	try {
+		mutationLockContent = await acquireOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, "retire");
+		if (!mutationLockContent) return;
+		intentLockContent = await acquireOmxPluginCacheLivePinMutationLock(
+			cacheBaseRef,
+			version,
+			"retire",
+			false,
+			omxPluginCacheLivePinIntentLockName(version),
+		);
+		if (!intentLockContent) return;
+		await hasLivePinIntent(cacheBaseRef, version, mutationLockContent, intentLockContent);
+		let pinDirectoryRef: DirectoryRef | undefined;
+		try {
+			pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		} catch {
+			return;
+		}
+		if (!pinDirectoryRef) return;
+		try {
+			let removedExpiredMarker = false;
+			const entries = await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true });
+			for (const entry of entries) {
+				if (!entry.name.startsWith(OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX) && !entry.name.startsWith(".stage-")) continue;
+				const path = childOperationPath(pinDirectoryRef, entry.name);
+				const stats = await lstat(path).catch((error) => {
+					if (isMissingPathError(error)) return null;
+					throw error;
+				});
+				if (!stats || !stats.isFile() || stats.isSymbolicLink() || (stats.nlink !== 1 && stats.nlink !== 2)) continue;
+				const ageMs = Date.now() - stats.mtimeMs;
+				if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS) continue;
+				if (entry.name.startsWith(OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX)) {
+					if (stats.size <= 0 || stats.size > 256) continue;
+					const bytes = await readOmxPluginCacheFileNoFollow(path, {
+						requireSingleLink: false,
+						anchorDir: pinDirectoryRef.operationPath,
+					});
+					let parsed: unknown;
+					try {
+						parsed = bytes ? (JSON.parse(bytes.toString("utf-8")) as unknown) : null;
+					} catch {
+						continue;
+					}
+					const pending = parseOmxPluginCachePendingPinRecord(parsed);
+					if (!pending || entry.name !== `${OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX}${pending.sessionHash}.json`) continue;
+				}
+				if (!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))) return;
+				const currentStats = await lstat(path).catch((error) => {
+					if (isMissingPathError(error)) return null;
+					throw error;
+				});
+				if (!currentStats || !sameFileIdentity(currentStats, stats)) continue;
+				const currentAgeMs = Date.now() - currentStats.mtimeMs;
+				if (!Number.isFinite(currentAgeMs) || currentAgeMs < 0 || currentAgeMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS) continue;
+				if (!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))) return;
+				const removed = await removeChildIfIdentity(pinDirectoryRef, entry.name, currentStats, { force: true });
+				if (removed) removedExpiredMarker = true;
+			}
+			if (removedExpiredMarker && (await readdir(pinDirectoryRef.scanOperationPath)).length === 0) {
+				const pinDirectoryStats = await pinDirectoryRef.handle.stat();
+				await pinDirectoryRef.handle.close();
+				pinDirectoryRef = undefined;
+				if (
+					!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent)) ||
+					!(await omxPluginCacheLivePinMutationLockIsOwned(
+						cacheBaseRef,
+						version,
+						intentLockContent,
+						omxPluginCacheLivePinIntentLockName(version),
+					))
+				) return;
+				await removeChildIfIdentity(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER, pinDirectoryStats, {
+					force: true,
+					emptyDirectory: true,
+				});
+			}
+		} finally {
+			if (pinDirectoryRef) await pinDirectoryRef.handle.close();
+		}
+	} finally {
+		if (intentLockContent) {
+			await releaseOmxPluginCacheLivePinMutationLock(
+				cacheBaseRef,
+				version,
+				intentLockContent,
+				omxPluginCacheLivePinIntentLockName(version),
+			);
+		}
+		if (mutationLockContent) {
+			await releaseOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, mutationLockContent);
+		}
+	}
+}
+
+async function isPrePinManagedSnapshot(snapshotRef: DirectoryRef, version: string): Promise<boolean> {
+	if (!(await hasRegularPublicationMarker(snapshotRef.operationPath, ".omx-complete"))) return false;
+	const markerPath = join(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER);
+	let markerStats: Stats;
+	try {
+		markerStats = await lstat(markerPath);
+	} catch (error) {
+		if (isMissingPathError(error)) return false;
+		return true;
+	}
+	if (!markerStats.isFile() || markerStats.isSymbolicLink() || markerStats.nlink !== 1 || markerStats.size <= 0 || markerStats.size > 256)
+		return false;
+	const bytes = await readOmxPluginCacheFileNoFollow(markerPath, { anchorDir: snapshotRef.operationPath });
+	if (bytes === null) return false;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
+	} catch {}
+	const ownershipRecord = parsePublicationOwnershipRecord(parsed, version);
+	// Pre-pin publishers have no capability marker, so active and abandoned snapshots are indistinguishable.
+	if (ownershipRecord) return ownershipRecord.livePinSupportVersion !== 1;
+	const legacyOwnerPid = bytes.toString("utf-8").trim();
+	if (!/^[1-9]\d*$/.test(legacyOwnerPid) || !Number.isSafeInteger(Number(legacyOwnerPid))) return false;
+	return hasManagedSnapshotOwnershipRecord(snapshotRef.operationPath, version);
+}
+
+async function isLivePinnedSnapshot(
+	snapshotRef: DirectoryRef,
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	retirementGateContent?: string,
+	mutationLockContent?: string,
+	intentLockContent?: string,
+): Promise<boolean> {
+	if (await hasLivePinIntent(cacheBaseRef, version, mutationLockContent, intentLockContent)) return true;
+	if (await isPrePinManagedSnapshot(snapshotRef, version)) return true;
+	const markerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
+	let markerStats: Stats;
+	try {
+		markerStats = await lstat(markerPath);
+	} catch (error) {
+		if (isMissingPathError(error)) return false;
+		return true;
+	}
+	if (markerStats.isSymbolicLink()) return true;
+	if (markerStats.isFile()) return true;
+	if (!markerStats.isDirectory()) return true;
+
+	let pinDirectoryRef: DirectoryRef;
+	try {
+		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+	} catch {
+		return true;
+	}
+	try {
+		const entries = await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true });
+		if (entries.length === 0) {
+			const currentStats = await pinDirectoryRef.handle.stat();
+			const ageMs = Date.now() - currentStats.mtimeMs;
+			return !Number.isFinite(ageMs) || ageMs < 0 || ageMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS;
+		}
+		for (const entry of entries) {
+			const pinPath = join(pinDirectoryRef.operationPath, entry.name);
+			if (entry.name.startsWith(OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX)) {
+				const stats = await lstat(pinPath);
+				if (
+					!stats.isFile() ||
+					stats.isSymbolicLink() ||
+					(stats.nlink !== 1 && stats.nlink !== 2) ||
+					stats.size <= 0 ||
+					stats.size > 256
+				)
+					return true;
+				const bytes = await readOmxPluginCacheFileNoFollow(pinPath, {
+					requireSingleLink: false,
+					anchorDir: pinDirectoryRef.operationPath,
+				});
+				let parsed: unknown;
+				try {
+					parsed = bytes ? (JSON.parse(bytes.toString("utf-8")) as unknown) : null;
+				} catch {
+					return true;
+				}
+				const pending = parseOmxPluginCachePendingPinRecord(parsed);
+				if (!pending || entry.name !== `${OMX_PLUGIN_LIVE_PIN_PENDING_PREFIX}${pending.sessionHash}.json`) return true;
+				const ageMs = Date.now() - stats.mtimeMs;
+				if (!Number.isFinite(ageMs) || ageMs < 0) return true;
+				if (ageMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS) return true;
+				continue;
+			}
+			if (entry.name.startsWith(".stage-")) {
+				const stats = await lstat(pinPath);
+				if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink < 1) return true;
+				const ageMs = Date.now() - stats.mtimeMs;
+				if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS) return true;
+				continue;
+			}
+			if (entry.name === OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER) {
+				if (!retirementGateContent) return true;
+				const stats = await lstat(pinPath);
+				if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size <= 0 || stats.size > 256)
+					return true;
+				const bytes = await readOmxPluginCacheFileNoFollow(pinPath, { anchorDir: pinDirectoryRef.operationPath });
+				if (bytes?.toString("utf-8") !== retirementGateContent) return true;
+				continue;
+			}
+			if (!entry.isFile() || entry.isSymbolicLink()) return true;
+			const stats = await lstat(pinPath);
+			if (
+				!stats.isFile() ||
+				stats.isSymbolicLink() ||
+				stats.nlink !== 1 ||
+				stats.size <= 0 ||
+				stats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
+			)
+				return true;
+			const bytes = await readOmxPluginCacheFileNoFollow(pinPath, { anchorDir: pinDirectoryRef.operationPath });
+			if (bytes === null) return true;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
+			} catch {
+				return true;
+			}
+			const record = parseOmxPluginCacheLivePinRecord(parsed);
+			if (!record || (await isLivePinOwnerAlive(record))) return true;
+		}
+		return false;
+	} catch {
+		return true;
+	} finally {
+		await pinDirectoryRef.handle.close();
+	}
+}
+
+async function livePinRetirementGateExists(pinDirectoryRef: DirectoryRef): Promise<boolean> {
+	try {
+		await lstat(join(pinDirectoryRef.operationPath, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER));
+		return true;
+	} catch (error) {
+		return !isMissingPathError(error);
+	}
+}
+
+async function createLivePinRetirementGate(snapshotPath: string, snapshotStats: Stats): Promise<string | null> {
+	let snapshotRef: DirectoryRef | undefined;
+	let pinDirectoryRef: DirectoryRef | undefined;
+	try {
+		snapshotRef = await openDirectoryRef(snapshotPath);
+		if (!sameFileIdentity(await snapshotRef.handle.stat(), snapshotStats)) return null;
+		const markerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
+		let markerStats: Stats | null = null;
+		try {
+			markerStats = await lstat(markerPath);
+		} catch (error) {
+			if (!isMissingPathError(error)) return null;
+		}
+		if (markerStats?.isSymbolicLink() || (markerStats && !markerStats.isDirectory())) return null;
+		if (!markerStats) {
+			try {
+				await mkdirDirectoryChildExclusive(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null;
+			}
+		}
+		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		const gateContent = `${JSON.stringify({ version: 1, pid: process.pid, token: randomUUID() })}\n`;
+		await createExclusiveFileChild(pinDirectoryRef, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER, gateContent);
+		return gateContent;
+	} catch {
+		return null;
+	} finally {
+		if (pinDirectoryRef) await pinDirectoryRef.handle.close().catch(() => undefined);
+		if (snapshotRef) await snapshotRef.handle.close().catch(() => undefined);
+	}
+}
+
+async function removeLivePinRetirementGate(snapshotPath: string, snapshotStats: Stats, gateContent: string): Promise<boolean> {
+	let snapshotRef: DirectoryRef | undefined;
+	let pinDirectoryRef: DirectoryRef | undefined;
+	try {
+		snapshotRef = await openDirectoryRef(snapshotPath);
+		if (!sameFileIdentity(await snapshotRef.handle.stat(), snapshotStats)) return false;
+		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		const gatePath = join(pinDirectoryRef.operationPath, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER);
+		const bytes = await readOmxPluginCacheFileNoFollow(gatePath, { anchorDir: pinDirectoryRef.operationPath });
+		if (bytes?.toString("utf-8") !== gateContent) return false;
+		await removeChild(pinDirectoryRef, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER, { force: true });
+		return true;
+	} catch {
+		return false;
+	} finally {
+		if (pinDirectoryRef) await pinDirectoryRef.handle.close().catch(() => undefined);
+		if (snapshotRef) await snapshotRef.handle.close().catch(() => undefined);
+	}
+}
+
+export async function registerOmxPluginCacheLivePin(
+	pluginRoot: string,
+	sessionId: string,
+	ownerPid: number,
+): Promise<boolean> {
+	const normalizedSessionId = sessionId.trim();
+	if (
+		!normalizedSessionId ||
+		normalizedSessionId.length > 256 ||
+		!Number.isSafeInteger(ownerPid) ||
+		ownerPid <= 0 ||
+		!isProcessAlive(ownerPid)
+	)
+		return false;
+	const sessionHash = createHash("sha256").update(normalizedSessionId).digest("hex");
+	const rootPath = resolve(pluginRoot);
+	const codexHomeDir = codexHome();
+	const cacheBase = omxPluginCacheBase(codexHomeDir);
+	const relativeRoot = relative(resolve(cacheBase), rootPath);
+	if (!isSafeCacheVersion(relativeRoot) || relativeRoot.includes(sep) || isAbsolute(relativeRoot)) return false;
+	const version = relativeRoot;
+	const expectedCacheDir = join(cacheBase, version);
+
+	const namespace = await openManagedCacheNamespace(cacheBase, codexHomeDir, { create: false });
+	if (!namespace) return false;
+	const cacheBaseRef: DirectoryRef = {
+		handle: namespace.handle,
+		path: namespace.path,
+		operationPath: namespace.fdPath,
+		scanOperationPath: namespace.fdPath,
+		mutationPath: namespace.fdPath,
+	};
+	const durability: RegularFileDurabilityTracker = { degraded: false };
+	let snapshotRef: DirectoryRef | undefined;
+	let pinDirectoryRef: DirectoryRef | undefined;
+	let mutationLockContent: string | null = null;
+	let stageName: string | undefined;
+	let stageCreated = false;
+	let result = false;
+	try {
+		mutationLockContent = await acquireOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, "pin", true);
+		if (!mutationLockContent) {
+			const [canonicalRoot, canonicalExpected] = await Promise.all([
+				canonicalRealpath(rootPath),
+				canonicalRealpath(expectedCacheDir),
+			]);
+			const sameRoot =
+				canonicalRoot !== null &&
+				canonicalExpected !== null &&
+				(process.platform === "win32"
+					? canonicalRoot.toLowerCase() === canonicalExpected.toLowerCase()
+					: canonicalRoot === canonicalExpected);
+			if (!sameRoot) return false;
+			snapshotRef = await openDirectoryChild(cacheBaseRef, version);
+			const snapshotManifest = await readRegularOmxPluginCacheManifest(
+				snapshotRef.operationPath,
+				snapshotRef.operationPath,
+			);
+			if (
+				snapshotManifest?.name !== OMX_PLUGIN_NAME ||
+				snapshotManifest.version !== version ||
+				!(await hasManagedCompletionMarker(snapshotRef.operationPath, version)) ||
+				(await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-incomplete")) ||
+				!(await hasRegularPublicationMarker(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))
+			)
+				return false;
+			return await hasLiveSessionPinRecord(snapshotRef, ownerPid, sessionHash);
+		}
+		const [canonicalRoot, canonicalExpected] = await Promise.all([
+			canonicalRealpath(rootPath),
+			canonicalRealpath(expectedCacheDir),
+		]);
+		const sameRoot =
+			canonicalRoot !== null &&
+			canonicalExpected !== null &&
+			(process.platform === "win32"
+				? canonicalRoot.toLowerCase() === canonicalExpected.toLowerCase()
+				: canonicalRoot === canonicalExpected);
+		if (!sameRoot || !(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent)))
+			return false;
+		snapshotRef = await openDirectoryChild(cacheBaseRef, version);
+		const snapshotManifest = await readRegularOmxPluginCacheManifest(
+			snapshotRef.operationPath,
+			snapshotRef.operationPath,
+		);
+		if (
+			snapshotManifest?.name !== OMX_PLUGIN_NAME ||
+			snapshotManifest.version !== version ||
+			!(await hasManagedCompletionMarker(snapshotRef.operationPath, version)) ||
+			(await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-incomplete")) ||
+			!(await hasRegularPublicationMarker(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))
+		)
+			return false;
+		const markerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
+		let markerStats: Stats | null = null;
+		try {
+			markerStats = await lstat(markerPath);
+		} catch (error) {
+			if (!isMissingPathError(error)) throw error;
+		}
+		if (markerStats?.isFile() && !markerStats.isSymbolicLink()) {
+			await removePendingOmxPluginCacheLivePinIntent(cacheBaseRef, version, sessionHash);
+			return true;
+		}
+		if (markerStats && (markerStats.isSymbolicLink() || !markerStats.isDirectory())) return false;
+		if (!markerStats) {
+			try {
+				await mkdirDirectoryChildExclusive(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			}
+		}
+		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		await writePendingOmxPluginCacheLivePinRegistration(pinDirectoryRef, sessionHash);
+		const processStartIdentity = await readProcessStartIdentity(ownerPid);
+		const processStartHash = processStartIdentity ? hashProcessStartIdentity(processStartIdentity) : null;
+		if (
+			(await livePinRetirementGateExists(pinDirectoryRef)) ||
+			!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))
+		)
+			return false;
+		const record: OmxPluginCacheLivePinRecord = {
+			version: 1,
+			pid: ownerPid,
+			processStartHash,
+			sessionHash,
+		};
+		const recordContent = `${JSON.stringify(record)}\n`;
+		const recordName = `pin-${ownerPid}-${sessionHash.slice(0, 24)}-${processStartHash ?? "unknown"}.json`;
+		const existingPin = await readOmxPluginCacheFileNoFollow(join(pinDirectoryRef.operationPath, recordName), {
+			anchorDir: pinDirectoryRef.operationPath,
+		});
+		if (existingPin?.toString("utf-8") === recordContent) {
+			if (
+				!(await refreshOmxPluginCacheLivePinRecordMtime(
+					pinDirectoryRef,
+					recordName,
+					recordContent,
+					cacheBaseRef,
+					version,
+					mutationLockContent,
+				))
+			)
+				return false;
+			await removePendingOmxPluginCacheLivePinRegistration(pinDirectoryRef, sessionHash);
+			await removePendingOmxPluginCacheLivePinIntent(cacheBaseRef, version, sessionHash);
+			return true;
+		}
+		stageName = `.stage-${ownerPid}-${randomUUID()}`;
+		await createExclusiveFileChild(pinDirectoryRef, stageName, recordContent, durability);
+		stageCreated = true;
+		if (
+			(await livePinRetirementGateExists(pinDirectoryRef)) ||
+			!(await omxPluginCacheLivePinMutationLockIsOwned(cacheBaseRef, version, mutationLockContent))
+		)
+			return false;
+		try {
+			await createExclusiveFileChild(pinDirectoryRef, recordName, recordContent, durability);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			const existing = await readOmxPluginCacheFileNoFollow(join(pinDirectoryRef.operationPath, recordName), {
+				anchorDir: pinDirectoryRef.operationPath,
+			});
+			if (existing?.toString("utf-8") !== recordContent) return false;
+		}
+		const pinDirectorySyncOutcome = await syncDirectory(pinDirectoryRef.handle);
+		recordDirectorySyncOutcome(durability, pinDirectorySyncOutcome);
+		const snapshotSyncOutcome = await syncDirectory(snapshotRef.handle);
+		recordDirectorySyncOutcome(durability, snapshotSyncOutcome);
+		await removePendingOmxPluginCacheLivePinRegistration(pinDirectoryRef, sessionHash);
+		await removePendingOmxPluginCacheLivePinIntent(cacheBaseRef, version, sessionHash);
+		result = true;
+	} finally {
+		let cleanupError: unknown = null;
+		if (stageCreated && stageName && pinDirectoryRef) {
+			try {
+				await removeChild(pinDirectoryRef, stageName, { force: true });
+			} catch {
+				/* preserve the primary outcome */
+			}
+		}
+		if (pinDirectoryRef) {
+			try {
+				await pinDirectoryRef.handle.close();
+			} catch (error) {
+				cleanupError ??= error;
+			}
+		}
+		if (snapshotRef) {
+			try {
+				await snapshotRef.handle.close();
+			} catch (error) {
+				cleanupError ??= error;
+			}
+		}
+		if (mutationLockContent) {
+			try {
+				await releaseOmxPluginCacheLivePinMutationLock(cacheBaseRef, version, mutationLockContent);
+			} catch (error) {
+				cleanupError ??= error;
+			}
+		}
+		emitDegradedDurabilityWarning("plugin cache publication", durability);
+		for (const handle of namespace.handles.reverse()) {
+			try {
+				await handle.close();
+			} catch (error) {
+				cleanupError ??= error;
+			}
+		}
+		if (cleanupError) throw cleanupError;
+	}
+	return result;
+}
+
 export async function computeOmxPluginCacheClaimDigest(root: string): Promise<string> {
 	const hash = createHash("sha256");
 	const visit = async (directory: string, isRoot: boolean): Promise<void> => {
 		const entries = await readdir(directory, { withFileTypes: true });
 		entries.sort((left, right) => left.name.localeCompare(right.name));
 		for (const entry of entries) {
-			if (isRoot && (entry.name === ".omx-complete" || entry.name === ".omx-live-pin")) continue;
+			if (isRoot && (entry.name === ".omx-complete" || entry.name === OMX_PLUGIN_LIVE_PIN_MARKER)) continue;
 			const path = join(directory, entry.name);
 			const stats = await lstat(path);
 			if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile()) || (stats.isFile() && stats.nlink !== 1)) {
@@ -785,6 +1922,203 @@ async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complet
 		return record.claimDigest === await computeOmxPluginCacheClaimDigest(cacheDir);
 	} catch {
 		return false;
+	}
+}
+
+async function hasPublicationMarkerEntry(
+	cacheDir: string,
+	name: ".omx-incomplete" | ".omx-managed" | ".omx-complete",
+): Promise<boolean> {
+	try {
+		await lstat(join(cacheDir, name));
+		return true;
+	} catch (error) {
+		return !isMissingPathError(error);
+	}
+}
+
+async function hasManagedCompletionMarker(cacheDir: string, expectedVersion: string): Promise<boolean> {
+	const bytes = await readOmxPluginCacheFileNoFollow(join(cacheDir, ".omx-complete"), { anchorDir: cacheDir });
+	if (bytes === null) return false;
+	try {
+		const record = JSON.parse(bytes.toString("utf-8")) as { version?: unknown; claimDigest?: unknown };
+		return (record.version === undefined || record.version === expectedVersion)
+			&& typeof record.claimDigest === "string";
+	} catch {
+		return false;
+	}
+}
+
+interface PublicationOwnershipRecord {
+	version: 1;
+	cacheVersion: string;
+	pid: number;
+	processStartHash: string | null;
+	livePinSupportVersion?: 1;
+}
+
+async function buildPublicationOwnershipRecord(cacheVersion: string): Promise<PublicationOwnershipRecord> {
+	const processStartIdentity = await readProcessStartIdentity(process.pid);
+	return {
+		version: 1,
+		cacheVersion,
+		pid: process.pid,
+		processStartHash: processStartIdentity ? hashProcessStartIdentity(processStartIdentity) : null,
+		livePinSupportVersion: 1,
+	};
+}
+
+function parsePublicationOwnershipRecord(
+	value: unknown,
+	expectedVersion: string,
+): PublicationOwnershipRecord | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (
+		record.version !== 1
+		|| record.cacheVersion !== expectedVersion
+		|| typeof record.pid !== "number"
+		|| !Number.isSafeInteger(record.pid)
+		|| record.pid <= 0
+		|| (record.processStartHash !== null && (typeof record.processStartHash !== "string" || !/^[0-9a-f]{24}$/.test(record.processStartHash)))
+		|| (record.livePinSupportVersion !== undefined && record.livePinSupportVersion !== 1)
+	) return null;
+	return record as unknown as PublicationOwnershipRecord;
+}
+
+async function hasManagedSnapshotOwnershipRecord(cacheDir: string, expectedVersion: string): Promise<boolean> {
+	const markerPath = join(cacheDir, OMX_PLUGIN_MANAGED_MARKER);
+	const markerStats = await lstat(markerPath).catch(() => null);
+	if (
+		!markerStats
+		|| !markerStats.isFile()
+		|| markerStats.isSymbolicLink()
+		|| markerStats.nlink !== 1
+		|| markerStats.size <= 0
+		|| markerStats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
+	) return false;
+	const bytes = await readOmxPluginCacheFileNoFollow(markerPath, { anchorDir: cacheDir });
+	if (bytes === null) return false;
+	let markerRecord: unknown;
+	try {
+		markerRecord = JSON.parse(bytes.toString("utf-8")) as unknown;
+	} catch {}
+	if (parsePublicationOwnershipRecord(markerRecord, expectedVersion)) return true;
+	const legacyPidText = bytes.toString("utf-8").trim();
+	if (!/^[1-9]\d*$/.test(legacyPidText) || !Number.isSafeInteger(Number(legacyPidText))) return false;
+	const completionBytes = await readOmxPluginCacheFileNoFollow(join(cacheDir, ".omx-complete"), { anchorDir: cacheDir });
+	if (completionBytes === null) return false;
+	try {
+		const completion = JSON.parse(completionBytes.toString("utf-8")) as { version?: unknown; claimDigest?: unknown };
+		return completion.version === expectedVersion
+			&& typeof completion.claimDigest === "string"
+			&& /^[0-9a-f]{64}$/.test(completion.claimDigest);
+	} catch {
+		return false;
+	}
+}
+
+async function inspectIncompletePublicationClaim(
+	snapshotRef: DirectoryRef,
+	expectedVersion: string,
+): Promise<{ reclaimable: boolean; reason: string }> {
+	if (await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-complete")) {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} also contains a completion marker; preserving it`,
+		};
+	}
+	const markerName = await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-incomplete")
+		? ".omx-incomplete"
+		: ".omx-managed";
+	const markerPath = join(snapshotRef.operationPath, markerName);
+	let markerStats: Stats;
+	try {
+		markerStats = await lstat(markerPath);
+	} catch {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} has no readable OMX ownership marker; preserving it`,
+		};
+	}
+	if (!markerStats.isFile() || markerStats.isSymbolicLink() || markerStats.nlink !== 1 || markerStats.size <= 0 || markerStats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES) {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} has an unverified ownership marker; preserving it`,
+		};
+	}
+	const bytes = await readOmxPluginCacheFileNoFollow(markerPath, { anchorDir: snapshotRef.operationPath });
+	if (bytes === null) {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} has an unreadable ownership marker; preserving it`,
+		};
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
+	} catch {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} has an unrecognized ownership marker; preserving it`,
+		};
+	}
+	const record = parsePublicationOwnershipRecord(parsed, expectedVersion);
+	if (!record) {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} has an unrecognized ownership marker; preserving it`,
+		};
+	}
+	if (markerName === ".omx-managed") {
+		const manifest = await readRegularOmxPluginCacheManifest(snapshotRef.operationPath, snapshotRef.operationPath);
+		if (manifest?.name !== OMX_PLUGIN_NAME || manifest.version !== expectedVersion) {
+			return {
+				reclaimable: false,
+				reason: `incomplete cache claim at ${snapshotRef.path} lacks a verified managed OMX manifest; preserving it`,
+			};
+		}
+	}
+	if (await isProcessOwnerAlive(record.pid, record.processStartHash)) {
+		return {
+			reclaimable: false,
+			reason: `incomplete cache claim at ${snapshotRef.path} is still owned by live publisher PID ${record.pid}; preserving it because the publication marker is incomplete`,
+		};
+	}
+	return {
+		reclaimable: true,
+		reason: `incomplete cache claim at ${snapshotRef.path} belongs to an exited publisher and can be safely reclaimed`,
+	};
+}
+
+async function inspectSnapshotRepairEligibility(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+): Promise<{ eligible: boolean; reason: string }> {
+	let snapshotRef: DirectoryRef;
+	try {
+		snapshotRef = await openDirectoryChild(cacheBaseRef, version);
+	} catch (error) {
+		if (isMissingPathError(error)) {
+			return { eligible: true, reason: `same-version cache at ${join(cacheBaseRef.path, version)} is already absent` };
+		}
+		return { eligible: false, reason: `cannot safely inspect same-version cache at ${join(cacheBaseRef.path, version)}: ${(error as Error).message}` };
+	}
+	try {
+		const hasIncompleteMarker = await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-incomplete");
+		const hasCompletionMarker = await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-complete");
+		const hasManagedMarker = await hasPublicationMarkerEntry(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER);
+		if (hasIncompleteMarker || (!hasCompletionMarker && hasManagedMarker)) {
+			const incomplete = await inspectIncompletePublicationClaim(snapshotRef, version);
+			return { eligible: incomplete.reclaimable, reason: incomplete.reason };
+		}
+		const managed = await inspectManagedSnapshotForRepair(snapshotRef, version, cacheBaseRef);
+		return {
+			eligible: managed.reason === undefined,
+			reason: managed.reason ?? `same-version cache at ${snapshotRef.path} is a verified, unpinned managed OMX snapshot`,
+		};
+	} finally {
+		await snapshotRef.handle.close();
 	}
 }
 
@@ -859,6 +2193,14 @@ function isProcessAlive(pid: number): boolean {
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code !== "ESRCH";
 	}
+}
+
+async function isProcessOwnerAlive(pid: number, processStartHash: string | null): Promise<boolean> {
+	if (!isProcessAlive(pid)) return false;
+	if (processStartHash === null) return true;
+	const identity = await readProcessStartIdentity(pid);
+	if (identity === null) return true;
+	return hashProcessStartIdentity(identity) === processStartHash;
 }
 
 /**
@@ -1011,64 +2353,296 @@ export async function removeChildIfIdentity(
 	options: RemoveChildOptions,
 ): Promise<boolean> {
 	const quarantineName = `.${childName}.reclaim-${process.pid}-${randomUUID()}`;
-	await renameChild(cacheBaseRef, childName, cacheBaseRef, quarantineName);
-	const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
-	let quarantineStats: Stats;
-	try {
-		quarantineStats = await lstat(quarantinePath);
-	} catch (error) {
-		throw new Error(`identity-bound removal target disappeared during reclamation: ${(error as Error).message}`);
-	}
-	if (quarantineStats.dev !== childStats.dev || quarantineStats.ino !== childStats.ino) {
-		// Quarantined the wrong inode (replacement after validation). There is no
-		// portable atomic no-replace directory restore: rename(quarantine, name)
-		// can overwrite a successor inserted after any lstat(name). Preserve the
-		// quarantined inode instead of risking overwrite or deletion. Regular
-		// files can be linked back with no-clobber semantics, but the quarantine
-		// link is intentionally retained so cleanup never follows a raced path.
+	if (!options.expectedManagedVersion) {
+		const sourcePath = childOperationPath(cacheBaseRef, childName);
+		const sourceStats = await lstat(sourcePath).catch((error) => {
+			if (isMissingPathError(error)) return null;
+			throw error;
+		});
+		if (!sourceStats || !sameFileIdentity(sourceStats, childStats)) return false;
 		try {
-			if (!quarantineStats.isDirectory()) {
-				await link(quarantinePath, childOperationPath(cacheBaseRef, childName));
-			}
-		} catch {
-			// Preserve replacement without overwriting a successor that appeared
-			// between the quarantine and the restore attempt; quarantine remains.
+			await renameChild(cacheBaseRef, childName, cacheBaseRef, quarantineName);
+		} catch (error) {
+			if (isMissingPathError(error)) return false;
+			throw error;
 		}
-		throw new Error(`identity-bound removal target changed during reclamation; preserved quarantine ${quarantinePath}`);
+		const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
+		const quarantineStats = await lstat(quarantinePath).catch((error) => {
+			if (isMissingPathError(error)) return null;
+			throw error;
+		});
+		if (!quarantineStats || !sameFileIdentity(quarantineStats, childStats)) {
+			if (quarantineStats && !quarantineStats.isDirectory() && !quarantineStats.isSymbolicLink()) {
+				const sourceAfterRename = await lstat(sourcePath).catch((error) =>
+					isMissingPathError(error) ? null : Promise.reject(error),
+				);
+				if (!sourceAfterRename) await link(quarantinePath, sourcePath).catch(() => undefined);
+			}
+			options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
+			throw new Error(
+				`identity-bound removal target changed during reclamation; preserved quarantine ${childOperationPath(cacheBaseRef, quarantineName)}`,
+			);
+		}
+		const removed = await removeChild(cacheBaseRef, quarantineName, {
+			...options,
+			preserveRecursive: options.preserveRecursive ?? options.recursive === true,
+		});
+		if (!removed) options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
+		return removed;
 	}
 	if (options.expectedManagedVersion) {
-		const verifyQuarantineOwnership = async (): Promise<boolean> => {
-		const manifest = await readRegularOmxPluginCacheManifest(quarantinePath, quarantinePath);
-		const owned = manifest?.name === OMX_PLUGIN_NAME
-			&& manifest.version === options.expectedManagedVersion
-			&& await hasRegularPublicationMarker(quarantinePath, ".omx-complete")
-			&& !(await hasRegularPublicationMarker(quarantinePath, ".omx-incomplete"))
-			&& await hasRegularPublicationMarker(quarantinePath, OMX_PLUGIN_MANAGED_MARKER);
-		const livePin = await readOmxPluginCacheFileNoFollow(join(quarantinePath, ".omx-live-pin"), { anchorDir: quarantinePath }) !== null;
-		if (!owned || livePin) {
+		let mutationLockContent: string | null = null;
+		let intentLockContent: string | null = null;
+		try {
+			mutationLockContent = await acquireOmxPluginCacheLivePinMutationLock(
+				cacheBaseRef,
+				options.expectedManagedVersion,
+				"retire",
+			);
+		} catch {
+			mutationLockContent = null;
+		}
+		if (!mutationLockContent) {
+			options.preservedPaths?.push(join(cacheBaseRef.path, childName));
 			return false;
 		}
-		return true;
-		};
-		await pluginCacheMutationTestHooks?.beforeRemove?.(quarantinePath, quarantineStats);
-		if (!await verifyQuarantineOwnership()) {
-			options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
-			return false;
+		try {
+			let sourceRef: DirectoryRef;
+			try {
+				sourceRef = await openDirectoryChild(cacheBaseRef, childName);
+			} catch {
+				return false;
+			}
+			try {
+				const sourceStats = await sourceRef.handle.stat();
+				const manifest = await readRegularOmxPluginCacheManifest(sourceRef.operationPath, sourceRef.operationPath);
+				const completionValid = options.allowInvalidClaimDigest
+					? await hasManagedCompletionMarker(sourceRef.operationPath, options.expectedManagedVersion)
+					: await hasRegularPublicationMarker(sourceRef.operationPath, ".omx-complete");
+				const managedMarkerValid = options.allowInvalidClaimDigest
+					? await hasManagedSnapshotOwnershipRecord(sourceRef.operationPath, options.expectedManagedVersion!)
+					: await hasRegularPublicationMarker(sourceRef.operationPath, OMX_PLUGIN_MANAGED_MARKER);
+				const versionOwnershipValid = options.allowInvalidClaimDigest
+					? managedMarkerValid
+					: manifest?.name === OMX_PLUGIN_NAME && manifest.version === options.expectedManagedVersion;
+				const owned =
+					sourceStats.dev === childStats.dev &&
+					sourceStats.ino === childStats.ino &&
+					versionOwnershipValid &&
+					completionValid &&
+					!(await hasPublicationMarkerEntry(sourceRef.operationPath, ".omx-incomplete"));
+				if (
+					!owned ||
+					(await isLivePinnedSnapshot(
+						sourceRef,
+						cacheBaseRef,
+						options.expectedManagedVersion!,
+						undefined,
+						mutationLockContent,
+					))
+				) {
+					options.preservedPaths?.push(join(cacheBaseRef.path, childName));
+					return false;
+				}
+			} finally {
+				await sourceRef.handle.close();
+			}
+			if (
+				!(await omxPluginCacheLivePinMutationLockIsOwned(
+					cacheBaseRef,
+					options.expectedManagedVersion,
+					mutationLockContent,
+				))
+			) {
+				options.preservedPaths?.push(join(cacheBaseRef.path, childName));
+				return false;
+			}
+			await renameChild(cacheBaseRef, childName, cacheBaseRef, quarantineName);
+			const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
+			let quarantineStats: Stats;
+			try {
+				quarantineStats = await lstat(quarantinePath);
+			} catch (error) {
+				throw new Error(`identity-bound removal target disappeared during reclamation: ${(error as Error).message}`);
+			}
+			if (quarantineStats.dev !== childStats.dev || quarantineStats.ino !== childStats.ino) {
+				// Quarantined the wrong inode (replacement after validation). There is no
+				// portable atomic no-replace directory restore: rename(quarantine, name)
+				// can overwrite a successor inserted after any lstat(name). Preserve the
+				// quarantined inode instead of risking overwrite or deletion. Regular
+				// files can be linked back with no-clobber semantics, but the quarantine
+				// link is intentionally retained so cleanup never follows a raced path.
+				try {
+					if (!quarantineStats.isDirectory()) {
+						await link(quarantinePath, childOperationPath(cacheBaseRef, childName));
+					}
+				} catch {
+					// Preserve replacement without overwriting a successor that appeared
+					// between the quarantine and the restore attempt; quarantine remains.
+				}
+				throw new Error(
+					`identity-bound removal target changed during reclamation; preserved quarantine ${quarantinePath}`,
+				);
+			}
+			if (options.expectedManagedVersion) {
+				const restoreQuarantinedSnapshot = async (retirementGateContent?: string): Promise<boolean> => {
+					if (!quarantineStats.isDirectory() || quarantineStats.isSymbolicLink()) return false;
+					const sourcePath = childOperationPath(cacheBaseRef, childName);
+					const sourceStats = await lstat(sourcePath).catch((error) => {
+						if (isMissingPathError(error)) return null;
+						throw error;
+					});
+					if (sourceStats) return false;
+					const currentQuarantineStats = await lstat(quarantinePath).catch(() => null);
+					if (!currentQuarantineStats || !sameFileIdentity(currentQuarantineStats, quarantineStats)) return false;
+					if (
+						retirementGateContent &&
+						!(await removeLivePinRetirementGate(quarantinePath, quarantineStats, retirementGateContent))
+					)
+						return false;
+					try {
+						await renameChild(cacheBaseRef, quarantineName, cacheBaseRef, childName);
+					} catch {
+						return false;
+					}
+					const restoredStats = await lstat(sourcePath).catch(() => null);
+					return restoredStats !== null && sameFileIdentity(restoredStats, quarantineStats);
+				};
+				const verifyQuarantineOwnership = async (
+					retirementGateContent?: string,
+				): Promise<{ owned: boolean; livePin: boolean }> => {
+					if (
+						!(await omxPluginCacheLivePinMutationLockIsOwned(
+							cacheBaseRef,
+							options.expectedManagedVersion!,
+							mutationLockContent!,
+						))
+					) {
+						return { owned: false, livePin: true };
+					}
+					const manifest = await readRegularOmxPluginCacheManifest(quarantinePath, quarantinePath);
+					const completionValid = options.allowInvalidClaimDigest
+						? await hasManagedCompletionMarker(quarantinePath, options.expectedManagedVersion!)
+						: await hasRegularPublicationMarker(quarantinePath, ".omx-complete");
+					const managedMarkerValid = options.allowInvalidClaimDigest
+						? await hasManagedSnapshotOwnershipRecord(quarantinePath, options.expectedManagedVersion!)
+						: await hasRegularPublicationMarker(quarantinePath, OMX_PLUGIN_MANAGED_MARKER);
+					const versionOwnershipValid = options.allowInvalidClaimDigest
+						? managedMarkerValid
+						: manifest?.name === OMX_PLUGIN_NAME && manifest.version === options.expectedManagedVersion;
+					const owned =
+						versionOwnershipValid &&
+						completionValid &&
+						!(await hasPublicationMarkerEntry(quarantinePath, ".omx-incomplete"));
+					let quarantineRef: DirectoryRef | undefined;
+					let livePin = true;
+					try {
+						quarantineRef = await openDirectoryRef(quarantinePath);
+						livePin = await isLivePinnedSnapshot(
+							quarantineRef,
+							cacheBaseRef,
+							options.expectedManagedVersion!,
+							retirementGateContent,
+							mutationLockContent,
+							intentLockContent!,
+						);
+					} catch {
+						livePin = true;
+					} finally {
+						if (quarantineRef) await quarantineRef.handle.close();
+					}
+					return { owned, livePin };
+				};
+				await pluginCacheMutationTestHooks?.beforeRemove?.(quarantinePath, quarantineStats);
+				try {
+					intentLockContent = await acquireOmxPluginCacheLivePinMutationLock(
+						cacheBaseRef,
+						options.expectedManagedVersion!,
+						"retire",
+						false,
+						omxPluginCacheLivePinIntentLockName(options.expectedManagedVersion!),
+					);
+				} catch {
+					intentLockContent = null;
+				}
+				if (!intentLockContent) {
+					const restored = await restoreQuarantinedSnapshot();
+					options.preservedPaths?.push(join(cacheBaseRef.path, restored ? childName : quarantineName));
+					return false;
+				}
+				const initialQuarantineState = await verifyQuarantineOwnership();
+				if (!initialQuarantineState.owned || initialQuarantineState.livePin) {
+					const restored = initialQuarantineState.livePin && (await restoreQuarantinedSnapshot());
+					options.preservedPaths?.push(join(cacheBaseRef.path, restored ? childName : quarantineName));
+					return false;
+				}
+				const retirementGateContent = await createLivePinRetirementGate(quarantinePath, quarantineStats);
+				if (!retirementGateContent) {
+					options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
+					return false;
+				}
+				const quarantineState = await verifyQuarantineOwnership(retirementGateContent);
+				if (!quarantineState.owned || quarantineState.livePin) {
+					const restored = quarantineState.livePin && (await restoreQuarantinedSnapshot(retirementGateContent));
+					if (!quarantineState.livePin) {
+						await removeLivePinRetirementGate(quarantinePath, quarantineStats, retirementGateContent);
+					}
+					options.preservedPaths?.push(join(cacheBaseRef.path, restored ? childName : quarantineName));
+					return false;
+				}
+				let preservationNeeded = false;
+				let livePinAtDestructiveCheck = false;
+				const removed = await removeChild(cacheBaseRef, quarantineName, {
+					...options,
+					preserveRecursive: false,
+					beforeDestructiveRemove: async () => {
+						if (
+							!(await omxPluginCacheLivePinMutationLockIsOwned(
+								cacheBaseRef,
+								options.expectedManagedVersion!,
+								mutationLockContent!,
+							)) ||
+							!(await omxPluginCacheLivePinMutationLockIsOwned(
+								cacheBaseRef,
+								options.expectedManagedVersion!,
+								intentLockContent!,
+								omxPluginCacheLivePinIntentLockName(options.expectedManagedVersion!),
+							))
+						) {
+							preservationNeeded = true;
+							livePinAtDestructiveCheck = true;
+							return false;
+						}
+						const state = await verifyQuarantineOwnership(retirementGateContent);
+						if (!state.owned || state.livePin) {
+							preservationNeeded = true;
+							livePinAtDestructiveCheck ||= state.livePin;
+						}
+						return state.owned && !state.livePin;
+					},
+				});
+				if (!removed && preservationNeeded) {
+					const restored = livePinAtDestructiveCheck && (await restoreQuarantinedSnapshot(retirementGateContent));
+					if (!livePinAtDestructiveCheck) {
+						await removeLivePinRetirementGate(quarantinePath, quarantineStats, retirementGateContent);
+					}
+					options.preservedPaths?.push(join(cacheBaseRef.path, restored ? childName : quarantineName));
+				}
+				return removed;
+			}
+		} finally {
+			if (intentLockContent) {
+				await releaseOmxPluginCacheLivePinMutationLock(
+					cacheBaseRef,
+					options.expectedManagedVersion,
+					intentLockContent,
+					omxPluginCacheLivePinIntentLockName(options.expectedManagedVersion),
+				);
+			}
+			await releaseOmxPluginCacheLivePinMutationLock(cacheBaseRef, options.expectedManagedVersion, mutationLockContent);
 		}
-		return removeChild(cacheBaseRef, quarantineName, {
-			...options,
-			preserveRecursive: false,
-			beforeDestructiveRemove: async () => {
-				const owned = await verifyQuarantineOwnership();
-				if (!owned) options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
-				return owned;
-			},
-		});
 	}
-	return removeChild(cacheBaseRef, quarantineName, {
-		...options,
-		preserveRecursive: options.preserveRecursive ?? options.recursive === true,
-	});
+	return false;
 }
 
 async function reclaimStalePublicationLock(
@@ -1514,13 +3088,19 @@ async function openManagedCacheNamespace(
 	}
 }
 
-async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "directory" | "foreign" | "untrusted"> {
+async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "directory" | "incomplete" | "foreign" | "untrusted"> {
 		try {
 			const stats = await lstat(cacheDir);
 			if (!stats.isDirectory() || stats.isSymbolicLink()) {
 				return "untrusted";
 			}
-			if (await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) return "untrusted";
+			if (await hasPublicationMarkerEntry(cacheDir, ".omx-incomplete")) return "incomplete";
+			const hasCompleteEntry = await hasPublicationMarkerEntry(cacheDir, ".omx-complete");
+			if (!hasCompleteEntry) {
+				return await hasPublicationMarkerEntry(cacheDir, OMX_PLUGIN_MANAGED_MARKER)
+					? "incomplete"
+					: "directory";
+			}
 			if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete"))) return "directory";
 			const manifest = await readRegularOmxPluginCacheManifest(cacheDir);
 			if (!manifest) {
@@ -1648,7 +3228,7 @@ export async function discoverOmxPluginCacheDirs(
 		const current = queue.shift();
 		if (!current) break;
 		if (current.depth >= 2) {
-			if (await hasRegularPublicationMarker(current.path, ".omx-incomplete")) continue;
+			if (await hasPublicationMarkerEntry(current.path, ".omx-incomplete")) continue;
 			const manifest = await readRegularOmxPluginCacheManifest(current.path, cacheRoot);
 			if (manifest?.name === OMX_PLUGIN_NAME) {
 				if (!(await hasRegularPublicationMarker(current.path, ".omx-complete"))) continue;
@@ -1741,7 +3321,7 @@ export async function readOmxPluginCacheState(
 	// A missing pinned launcher is reported by the dedicated launcher checks, not here.
 	const executedAssetReason = await omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
 	if (executedAssetReason) return null;
-	if (await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) return null;
+	if (await hasPublicationMarkerEntry(cacheDir, ".omx-incomplete")) return null;
 	if (await omxPluginCacheManifestProvenanceReason(cacheDir, expectedVersion)) return null;
 	const manifest = await readRegularOmxPluginCacheManifest(cacheDir);
 	if (manifest?.name !== OMX_PLUGIN_NAME) return null;
@@ -1916,7 +3496,11 @@ export interface OmxPluginCacheMaterializeResult {
 	launcherTarget?: string;
 }
 
-export const PLUGIN_LAUNCHER_RECOVERY_HINT = "codex plugin remove oh-my-codex@oh-my-codex-local --json";
+export const PLUGIN_LAUNCHER_RECOVERY_HINT = "omx setup --plugin --repair-plugin-cache";
+
+export function getUntrustedOmxPluginCacheRecoveryHint(cacheDir: string): string {
+	return `remove only the cache entry at ${cacheDir} itself without following symlinks, then rerun omx setup --plugin`;
+}
 
 async function canonicalRealpath(path: string): Promise<string | null> {
 	try {
@@ -1953,64 +3537,65 @@ export async function getPinnedLauncherIncompatibilityReason(
 	cacheDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<{ reason: string; target?: string } | null> {
+	const recoveryHint = `run ${PLUGIN_LAUNCHER_RECOVERY_HINT}`;
 	const hooksDir = join(cacheDir, "hooks");
 	try {
 		const hooksStats = await lstat(hooksDir);
 		if (!hooksStats.isDirectory() || hooksStats.isSymbolicLink()) {
-			return { reason: `hooks directory at ${hooksDir} is a symlink or not a directory; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+			return { reason: `hooks directory at ${hooksDir} is a symlink or not a directory; ${recoveryHint}` };
 		}
 	} catch (e) {
-		if (isMissingPathError(e)) return { reason: `hooks directory missing at ${hooksDir}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
-		return { reason: `cannot read hooks directory at ${hooksDir}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		if (isMissingPathError(e)) return { reason: `hooks directory missing at ${hooksDir}; ${recoveryHint}` };
+		return { reason: `cannot read hooks directory at ${hooksDir}: ${(e as Error).message}; ${recoveryHint}` };
 	}
 	const launcherPath = join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE);
 	try {
 		const launcherStats = await lstat(launcherPath);
 		if (!launcherStats.isFile() || launcherStats.isSymbolicLink() || launcherStats.nlink !== 1) {
-			return { reason: `pinned launcher at ${launcherPath} is a symlink or not a regular file; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+			return { reason: `pinned launcher at ${launcherPath} is a symlink or not a regular file; ${recoveryHint}` };
 		}
 	} catch (e) {
-		if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
-		return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; ${recoveryHint}` };
+		return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; ${recoveryHint}` };
 	}
 	const raw = await readRegularFileTextNoFollow(launcherPath, { anchorDir: cacheDir });
 	if (raw === null) {
 		try {
 			await lstat(launcherPath);
-			return { reason: `cannot read pinned launcher at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+			return { reason: `cannot read pinned launcher at ${launcherPath}; ${recoveryHint}` };
 		} catch (e) {
-			if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
-			return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+			if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; ${recoveryHint}` };
+			return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; ${recoveryHint}` };
 		}
 	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw) as unknown;
 	} catch (e) {
-		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (${(e as Error).message}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (${(e as Error).message}); ${recoveryHint}` };
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}); ${recoveryHint}` };
 	}
 	const obj = parsed as { command?: unknown; argsPrefix?: unknown };
 	const extraKeys = Object.keys(obj).filter((key) => key !== "command" && key !== "argsPrefix");
 	if (extraKeys.length > 0) {
-		return { reason: `pinned launcher at ${launcherPath} has extra keys (${extraKeys.sort().join(", ")}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `pinned launcher at ${launcherPath} has extra keys (${extraKeys.sort().join(", ")}); ${recoveryHint}` };
 	}
 	if (typeof obj.command !== "string" || obj.command.trim() === "") {
-		return { reason: `pinned launcher at ${launcherPath} has invalid command; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `pinned launcher at ${launcherPath} has invalid command; ${recoveryHint}` };
 	}
 	if (!Array.isArray(obj.argsPrefix) || obj.argsPrefix.length !== 1 || typeof obj.argsPrefix[0] !== "string" || obj.argsPrefix[0].trim() === "") {
-		return { reason: `pinned launcher at ${launcherPath} has invalid argsPrefix (expected exactly one packaged omx.js target); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `pinned launcher at ${launcherPath} has invalid argsPrefix (expected exactly one packaged omx.js target); ${recoveryHint}` };
 	}
 	const command = obj.command.trim();
 	const target = (obj.argsPrefix as string[])[0]!;
 	// Validate command field (generated launcher contract) — fail-closed on dead/mismatched executable
 	if (!isAbsolute(command)) {
-		return { reason: `pinned launcher command is not absolute: ${command}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+		return { reason: `pinned launcher command is not absolute: ${command}; ${recoveryHint}`, target };
 	}
 	if (!existsSync(command)) {
-		return { reason: `pinned launcher command does not exist: ${command}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+		return { reason: `pinned launcher command does not exist: ${command}; ${recoveryHint}`, target };
 	}
 	const expectedCommand = process.execPath;
 	const [canonicalActualCommand, canonicalExpectedCommand] = await Promise.all([
@@ -2018,13 +3603,13 @@ export async function getPinnedLauncherIncompatibilityReason(
 		canonicalRealpath(expectedCommand),
 	]);
 	if (canonicalActualCommand === null || canonicalExpectedCommand === null || canonicalActualCommand !== canonicalExpectedCommand) {
-		return { reason: `pinned launcher command provenance mismatch: expected ${expectedCommand} but found ${command} (different Node executable); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+		return { reason: `pinned launcher command provenance mismatch: expected ${expectedCommand} but found ${command} (different Node executable); ${recoveryHint}`, target };
 	}
 	if (!isAbsolute(target)) {
-		return { reason: `pinned launcher target is not absolute: ${target}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+		return { reason: `pinned launcher target is not absolute: ${target}; ${recoveryHint}`, target };
 	}
 	if (!existsSync(target)) {
-		return { reason: `pinned launcher target does not exist: ${target} (package root removed?); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+		return { reason: `pinned launcher target does not exist: ${target} (package root removed?); ${recoveryHint}`, target };
 	}
 	const expectedTarget = join(packagedMarketplace.packageRoot, "dist", "cli", "omx.js");
 	const [canonicalActual, canonicalExpected] = await Promise.all([
@@ -2032,7 +3617,7 @@ export async function getPinnedLauncherIncompatibilityReason(
 		canonicalRealpath(expectedTarget),
 	]);
 	if (canonicalActual === null || canonicalExpected === null || canonicalActual !== canonicalExpected) {
-		return { reason: `pinned launcher provenance mismatch: expected ${expectedTarget} but found ${target} (different package root); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+		return { reason: `pinned launcher provenance mismatch: expected ${expectedTarget} but found ${target} (different package root); ${recoveryHint}`, target };
 	}
 	return null;
 }
@@ -2076,7 +3661,7 @@ export async function retireUnpinnedManagedSnapshots(
 		const entries = await readdir(baseRef.operationPath, { withFileTypes: true });
 		const managed: Array<{ path: string; version: string; mtimeMs: number; ref: DirectoryRef; stats: Stats }> = [];
 		for (const entry of entries) {
-			if (!entry.isDirectory() || entry.name === currentVersion) continue;
+			if (!entry.isDirectory()) continue;
 			let candidateRef: DirectoryRef;
 			try {
 				candidateRef = await openDirectoryChild(baseRef, entry.name);
@@ -2091,9 +3676,11 @@ export async function retireUnpinnedManagedSnapshots(
 			candidateRefs.push(candidateRef);
 			const manifest = await readRegularOmxPluginCacheManifest(candidateRef.operationPath, candidateRef.operationPath);
 			if (manifest?.name !== OMX_PLUGIN_NAME || manifest.version !== entry.name) continue;
-			if (!(await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-complete")) || await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-incomplete")) continue;
+			if (!(await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-complete")) || await hasPublicationMarkerEntry(candidateRef.operationPath, ".omx-incomplete")) continue;
 			if (!(await hasRegularPublicationMarker(candidateRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))) continue;
-			if (await readOmxPluginCacheFileNoFollow(join(candidateRef.operationPath, ".omx-live-pin"), { anchorDir: candidateRef.operationPath }) !== null) continue;
+			await sweepExpiredOmxPluginCacheLivePinIntents(candidateRef, baseRef, entry.name);
+			if (entry.name === currentVersion) continue;
+			if (await isLivePinnedSnapshot(candidateRef, baseRef, entry.name)) continue;
 			managed.push({ path: join(cacheBase, entry.name), version: entry.name, mtimeMs: candidateStats.mtimeMs, ref: candidateRef, stats: candidateStats });
 		}
 		managed.sort((left, right) =>
@@ -2108,7 +3695,7 @@ export async function retireUnpinnedManagedSnapshots(
 			if (!currentStats.isDirectory() || currentStats.isSymbolicLink() || currentStats.dev !== candidate.stats.dev || currentStats.ino !== candidate.stats.ino) {
 				throw new Error(`managed cache retirement target changed before removal: ${candidate.path}`);
 			}
-			if (await readOmxPluginCacheFileNoFollow(join(candidate.ref.operationPath, ".omx-live-pin"), { anchorDir: candidate.ref.operationPath }) !== null) {
+			if (await isLivePinnedSnapshot(candidate.ref, baseRef, candidate.version)) {
 				continue;
 			}
 			if (await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true, expectedManagedVersion: candidate.version, preservedPaths: preservedDirs })) {
@@ -2146,8 +3733,92 @@ export async function retireUnpinnedManagedSnapshots(
 	}
 }
 
+
+async function inspectManagedSnapshotForRepair(
+	snapshotRef: DirectoryRef,
+	version: string,
+	cacheBaseRef: DirectoryRef,
+): Promise<{ stats: Stats; reason?: string }> {
+	const stats = await snapshotRef.handle.stat();
+	const owned = stats.isDirectory()
+		&& !stats.isSymbolicLink()
+		&& await hasManagedSnapshotOwnershipRecord(snapshotRef.operationPath, version)
+		&& await hasManagedCompletionMarker(snapshotRef.operationPath, version)
+		&& !(await hasPublicationMarkerEntry(snapshotRef.operationPath, ".omx-incomplete"));
+	if (!owned) {
+		return { stats, reason: `same-version cache at ${snapshotRef.path} is not a verified managed OMX snapshot` };
+	}
+	if (await isLivePinnedSnapshot(snapshotRef, cacheBaseRef, version)) {
+		return { stats, reason: `same-version cache at ${snapshotRef.path} is pinned by a live Codex session; close that session before repairing it` };
+	}
+	return { stats };
+}
+
+async function removeManagedSnapshotForRepair(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	publicationLockGuard: PublicationLockGuard,
+): Promise<{ removed: boolean; reason?: string }> {
+	await publicationLockGuard.assertOwned();
+	let snapshotRef: DirectoryRef;
+	try {
+		snapshotRef = await openDirectoryChild(cacheBaseRef, version);
+	} catch (error) {
+		if (isMissingPathError(error)) return { removed: true };
+		throw error;
+	}
+	try {
+		const eligibility = await inspectManagedSnapshotForRepair(snapshotRef, version, cacheBaseRef);
+		if (eligibility.reason) return { removed: false, reason: eligibility.reason };
+		await publicationLockGuard.assertOwned();
+		const removed = await removeChildIfIdentity(cacheBaseRef, version, eligibility.stats, {
+			recursive: true,
+			force: true,
+			allowInvalidClaimDigest: true,
+			expectedManagedVersion: version,
+		});
+		return removed
+			? { removed: true }
+			: { removed: false, reason: `same-version cache at ${snapshotRef.path} became pinned or changed during repair` };
+	} finally {
+		await snapshotRef.handle.close();
+	}
+}
+
+async function removeAbandonedIncompleteSnapshot(
+	cacheBaseRef: DirectoryRef,
+	version: string,
+	publicationLockGuard: PublicationLockGuard,
+): Promise<{ removed: boolean; reason?: string }> {
+	await publicationLockGuard.assertOwned();
+	let snapshotRef: DirectoryRef;
+	try {
+		snapshotRef = await openDirectoryChild(cacheBaseRef, version);
+	} catch (error) {
+		if (isMissingPathError(error)) return { removed: true };
+		throw error;
+	}
+	try {
+		const stats = await snapshotRef.handle.stat();
+		const ownership = await inspectIncompletePublicationClaim(snapshotRef, version);
+		if (!ownership.reclaimable) return { removed: false, reason: ownership.reason };
+		await publicationLockGuard.assertOwned();
+		const removed = await removeChildIfIdentity(cacheBaseRef, version, stats, {
+			recursive: true,
+			force: true,
+			preserveRecursive: false,
+		});
+		return removed
+			? { removed: true }
+			: { removed: false, reason: `incomplete cache claim at ${snapshotRef.path} changed during repair; preserving it` };
+	} finally {
+		await snapshotRef.handle.close();
+	}
+}
+
 interface MaterializePackagedOmxPluginCacheOptions {
 	dryRun?: boolean;
+	repairCache?: boolean;
 	teamMode?: SetupTeamMode;
 	onCacheDirPrepared?: (cacheDir: string) => void | Promise<void>;
 	anchoredCacheBaseRef?: DirectoryRef;
@@ -2186,12 +3857,30 @@ async function materializePackagedOmxPluginCacheImpl(
 			status: "stale-launcher",
 			cacheDir,
 			version,
-			reason: `OMX plugin cache root at ${cacheDir} is a symlink or non-directory entry; managed snapshots must be regular immutable directories; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+			reason: `OMX plugin cache root at ${cacheDir} is a symlink or non-directory entry; refusing to replace unverified cache content; ${getUntrustedOmxPluginCacheRecoveryHint(cacheDir)}`,
 			launcherTarget: undefined,
 			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 		};
 	}
-	if (rootState === "directory") {
+	if (rootState === "incomplete" && (!options.repairCache || options.dryRun)) {
+		const eligibility = options.anchoredCacheBaseRef
+			? await inspectSnapshotRepairEligibility(options.anchoredCacheBaseRef, version)
+			: { eligible: false, reason: `incomplete cache claim at ${cacheDir} cannot be safely inspected without an anchored cache namespace; preserving it` };
+		if (options.dryRun && options.repairCache && eligibility.eligible) {
+			return { status: "materialized", cacheDir, version, retiredDirs: [] };
+		}
+		return {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: eligibility.eligible
+				? `${eligibility.reason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT}`
+				: eligibility.reason,
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
+	}
+	if (rootState === "directory" && !options.repairCache) {
 		const incompat = await getPinnedLauncherIncompatibilityReason(inspectedCacheDir, packagedMarketplace);
 		if (incompat) {
 			return {
@@ -2217,7 +3906,7 @@ async function materializePackagedOmxPluginCacheImpl(
 				status: "stale-launcher",
 				cacheDir,
 				version,
-				reason: `${teamModeSkillReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				reason: `${teamModeSkillReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT}`,
 				launcherTarget: undefined,
 				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
@@ -2233,7 +3922,7 @@ async function materializePackagedOmxPluginCacheImpl(
 				status: "stale-launcher",
 				cacheDir,
 				version,
-				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT}`,
 				launcherTarget: undefined,
 				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
@@ -2244,7 +3933,7 @@ async function materializePackagedOmxPluginCacheImpl(
 				status: "stale-launcher",
 				cacheDir,
 				version,
-				reason: `${assetProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				reason: `${assetProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT}`,
 				launcherTarget: undefined,
 				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
@@ -2258,6 +3947,14 @@ async function materializePackagedOmxPluginCacheImpl(
 	}
 	if (rootState === "foreign") {
 		return { status: "unavailable", cacheDir, version };
+	}
+	if (rootState === "directory" && options.repairCache && options.dryRun) {
+		const eligibility = options.anchoredCacheBaseRef
+			? await inspectSnapshotRepairEligibility(options.anchoredCacheBaseRef, version)
+			: { eligible: false, reason: `same-version cache at ${cacheDir} cannot be safely inspected without an anchored cache namespace; preserving it` };
+		return eligibility.eligible
+			? { status: "materialized", cacheDir, version, retiredDirs: [] }
+			: { status: "stale-launcher", cacheDir, version, reason: eligibility.reason, launcherTarget: undefined, retiredDirs: [] };
 	}
 	if (!options.dryRun) {
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
@@ -2332,46 +4029,89 @@ async function materializePackagedOmxPluginCacheImpl(
 				// `<version>` (rename silently replaces an empty destination and
 				// pre/post inode checks cannot make it atomic). The destination is
 				// claimed with an atomic exclusive mkdir self-described by
-				// `.omx-incomplete`; the staged snapshot entries are then renamed
-				// into that empty claim (destination names cannot pre-exist), and
-				// `.omx-complete` is committed last inside the claim. Every trust
-				// path requires `.omx-complete`, so no intermediate state is
-				// trusted, and no pre-existing directory is ever replaced.
+				// `.omx-incomplete`; staged entries are copied with exclusive creates
+				// while that owner record remains. A durable `.omx-managed` record
+				// bridges its removal to the final `.omx-complete` commit. Every trust
+				// path requires `.omx-complete`, so intermediate states are not trusted,
+				// and no pre-existing directory is ever replaced.
 				try {
 					claimRef = await claimPublicationDestination(cacheBaseRef, version, durability);
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-						outcome = {
-							status: "stale-launcher",
-							cacheDir,
-							version,
-							reason: `same-version OMX plugin cache already exists at ${cacheDir}; refusing to replace or remove an existing directory; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
-							launcherTarget: undefined,
-							retiredDirs: [],
-						};
+						if (options.repairCache) {
+							if (!publicationLockGuard) throw new Error("publication lock guard unavailable during cache repair");
+							let repair = await removeManagedSnapshotForRepair(
+								cacheBaseRef,
+								version,
+								publicationLockGuard,
+							);
+							if (!repair.removed && rootState === "incomplete") {
+								repair = await removeAbandonedIncompleteSnapshot(
+									cacheBaseRef,
+									version,
+									publicationLockGuard,
+								);
+							}
+							if (repair.removed) {
+								try {
+									claimRef = await claimPublicationDestination(cacheBaseRef, version, durability);
+								} catch (retryError) {
+									outcome = {
+										status: "stale-launcher",
+										cacheDir,
+										version,
+										reason: `same-version OMX plugin cache could not be reclaimed after repair at ${cacheDir}: ${(retryError as Error).message}`,
+										launcherTarget: undefined,
+										retiredDirs: [],
+									};
+								}
+							} else {
+								outcome = {
+									status: "stale-launcher",
+									cacheDir,
+									version,
+									reason: repair.reason ?? `same-version OMX plugin cache cannot be repaired at ${cacheDir}`,
+									launcherTarget: undefined,
+									retiredDirs: [],
+								};
+							}
+						} else {
+							outcome = {
+								status: "stale-launcher",
+								cacheDir,
+								version,
+								reason: `same-version OMX plugin cache already exists at ${cacheDir}; refusing to replace or remove an existing directory; run ${PLUGIN_LAUNCHER_RECOVERY_HINT}`,
+								launcherTarget: undefined,
+								retiredDirs: [],
+							};
+						}
 					} else {
 						throw error;
 					}
 				}
 				if (claimRef) {
-					// Drop the snapshot's staging marker and the claim's placeholder;
-					// the claim is then populated only through exclusive creates and
-					// the final marker is the trust switch.
+					// Drop only the private staging marker. Keep the claim's ownership
+					// marker until copied content and a durable managed-owner record exist.
 					await removeChild(snapshotRef, ".omx-incomplete", { force: true });
-					await removeChild(claimRef, ".omx-incomplete", { force: true });
 					await assertDirectoryRef(claimRef, "publication claim");
 					const claimEntries = await readdir(claimRef.scanOperationPath, { withFileTypes: true });
-					if (claimEntries.length > 0) {
-						throw new Error(`publication claim is not empty at ${join(cacheBaseRef.path, version)}`);
+					if (claimEntries.length !== 1 || claimEntries[0]?.name !== ".omx-incomplete") {
+						throw new Error(`publication claim contains unexpected entries at ${join(cacheBaseRef.path, version)}`);
 					}
 					// The portable no-replace primitive is exclusive create, not rename.
-					// Copy the private staged tree into the empty claim with exclusive
+					// Copy the private staged tree into the claim with exclusive
 					// mkdir/O_EXCL file creation so a destination inserted between any
 					// checks is rejected instead of overwritten.
 					await copyStagedTreeNoReplace(snapshotRef, claimRef, durability);
 					await snapshotRef.handle.close();
 					snapshotRef = undefined;
-					await createExclusiveFileChild(claimRef, OMX_PLUGIN_MANAGED_MARKER, `${process.pid}\n`, durability);
+					const managedRecord = await buildPublicationOwnershipRecord(version);
+					await createExclusiveFileChild(claimRef, OMX_PLUGIN_MANAGED_MARKER, `${JSON.stringify(managedRecord)}\n`, durability);
+					const managedMarkerSyncOutcome = await syncDirectory(claimRef.handle);
+					recordDirectorySyncOutcome(durability, managedMarkerSyncOutcome);
+					await removeChild(claimRef, ".omx-incomplete", { force: true });
+					const incompleteMarkerSyncOutcome = await syncDirectory(claimRef.handle);
+					recordDirectorySyncOutcome(durability, incompleteMarkerSyncOutcome);
 					await pluginCacheMutationTestHooks?.beforeFinalClaimValidation?.(claimRef.path);
 					await publicationLockGuard.assertOwned();
 					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);

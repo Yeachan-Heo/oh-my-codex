@@ -39,6 +39,7 @@ import {
 } from "../../config/generator.js";
 import {
 	materializePackagedOmxPluginCache,
+	registerOmxPluginCacheLivePin,
 	resolvePackagedOmxMarketplace,
 	computeOmxPluginCacheClaimDigest,
 } from "../plugin-marketplace.js";
@@ -1476,8 +1477,8 @@ describe("omx setup install mode behavior", () => {
 					assert.deepEqual(launcher.argsPrefix, ["/stale/omx.js"]);
 					assert.doesNotMatch(output, /Invalidated .* stale Codex plugin discovery cache/);
 					assert.doesNotMatch(output, /Local Codex plugin cache already exposes packaged OMX skills/);
-					assert.match(output, /incompatible launcher provenance/);
-					assert.match(output, /codex plugin remove oh-my-codex@oh-my-codex-local --json/);
+					assert.match(output, /not safe to use as current/);
+					assert.match(output, /omx setup --plugin --repair-plugin-cache/);
 					const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
 					assert.ok(packagedMarketplace);
 					const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
@@ -1489,6 +1490,104 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("scoped cache repair preserves live pins and avoids force-mode maintenance", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-cache-repair-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await mkdir(join(wd, ".omx"), { recursive: true });
+					const hudConfigPath = join(wd, ".omx", "hud-config.json");
+					const userHudConfig = '{"preset":"custom"}\n';
+					await writeFile(hudConfigPath, userHudConfig);
+					const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
+					assert.ok(packagedMarketplace);
+					const initial = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+					assert.equal(initial.status, "materialized");
+					const cacheDir = initial.cacheDir!;
+					const launcherPath = join(cacheDir, "hooks", "omx-command.json");
+					await writeFile(launcherPath, `${JSON.stringify({ command: "/stale/node", argsPrefix: ["/stale/omx.js"] })}\n`);
+					await writeBoundCompletionMarker(cacheDir);
+					assert.equal(await registerOmxPluginCacheLivePin(cacheDir, "scoped-repair-live-session", process.pid), true);
+					const pinnedDryRun = await materializePackagedOmxPluginCache(
+						codexHomeDir,
+						packagedMarketplace,
+						{ dryRun: true, repairCache: true },
+					);
+					assert.equal(pinnedDryRun.status, "stale-launcher");
+					assert.match(pinnedDryRun.reason ?? "", /pinned by a live Codex session/);
+
+					const pinnedOutput = await captureConsoleOutput(async () => {
+						await setup({
+							scope: "user",
+							installMode: "plugin",
+							repairPluginCache: true,
+							pluginAgentsMdPrompt: async () => false,
+							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\ngoals experimental true\n",
+							codexVersionProbe: () => "codex-cli 0.999.0",
+						});
+					});
+					assert.match(pinnedOutput, /pinned by a live Codex session/);
+					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, "/stale/node");
+
+					await rm(join(cacheDir, ".omx-live-pin"), { recursive: true, force: true });
+					const repairedOutput = await captureConsoleOutput(async () => {
+						await setup({
+							scope: "user",
+							installMode: "plugin",
+							repairPluginCache: true,
+							pluginAgentsMdPrompt: async () => false,
+							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\ngoals experimental true\n",
+							codexVersionProbe: () => "codex-cli 0.999.0",
+						});
+					});
+					assert.match(repairedOutput, /Installed local Codex plugin cache/);
+					assert.doesNotMatch(repairedOutput, /Force mode: enabled additional destructive maintenance/);
+					assert.equal(await readFile(hudConfigPath, "utf-8"), userHudConfig);
+					const repaired = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+					assert.equal(repaired.status, "unchanged");
+					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, process.execPath);
+					await assert.rejects(lstat(join(cacheDir, ".omx-live-pin")), { code: "ENOENT" });
+
+					await rm(join(cacheDir, ".omx-managed"), { force: true });
+					const unverifiedDryRun = await materializePackagedOmxPluginCache(
+						codexHomeDir,
+						packagedMarketplace,
+						{ dryRun: true, repairCache: true },
+					);
+					assert.equal(unverifiedDryRun.status, "stale-launcher");
+					assert.match(unverifiedDryRun.reason ?? "", /not a verified managed OMX snapshot/);
+					assert.equal(existsSync(join(cacheDir, ".omx-managed")), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects scoped plugin-cache repair outside plugin setup mode", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-cache-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async () => {
+				await withTempCwd(wd, async () => {
+					await assert.rejects(
+						setup({
+							scope: "user",
+							installMode: "legacy",
+							repairPluginCache: true,
+							dryRun: true,
+							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\ngoals experimental true\n",
+							codexVersionProbe: () => "codex-cli 0.999.0",
+						}),
+						/--repair-plugin-cache requires plugin setup mode/,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("refuses to replace an already published plugin cache root", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

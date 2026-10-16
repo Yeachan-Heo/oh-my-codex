@@ -7079,6 +7079,26 @@ export function onHookEvent(event) {
     assert.equal(resolved, 1100);
   });
 
+  it("does not pin an ephemeral hook owner when no Codex ancestor is present", () => {
+    const commands = new Map<number, string>([
+      [2100, "node /repo/plugins/oh-my-codex/hooks/codex-native-hook.mjs"],
+      [1100, "sh -c node codex-native-hook"],
+      [900, "bash"],
+    ]);
+    const parents = new Map<number, number | null>([
+      [2100, 1100],
+      [1100, 900],
+      [900, 1],
+    ]);
+    const resolved = resolveSessionOwnerPidFromAncestry(2100, {
+      requireCodexAncestor: true,
+      readParentPid: (pid) => parents.get(pid) ?? null,
+      readProcessCommand: (pid) => commands.get(pid) ?? "",
+    });
+
+    assert.equal(resolved, null);
+  });
+
   it("resolves the Codex owner from Windows process lineage without Unix ps", () => {
     const resolved = resolveSessionOwnerPidFromAncestry(1700, {
       platform: "win32",

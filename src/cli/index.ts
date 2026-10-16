@@ -257,6 +257,8 @@ Usage:
                 Queue a Stop-hook continuation for built-in image generation turns
   omx setup     Install skills, prompts, CLI-first config, and scope-specific AGENTS.md
                 (user scope prompts for legacy vs plugin skill delivery when needed)
+  omx setup --plugin --repair-plugin-cache
+                Repair stale managed caches or verified dead-publisher claims without global force mode
   omx update    Install the stable channel now, then refresh setup
   omx update --stable
                 Install/rollback to npm stable (oh-my-codex@latest), then refresh setup
@@ -620,6 +622,18 @@ export function resolveSetupInstallModeArg(args: string[]): SetupInstallMode | u
   }
 
   return value;
+}
+
+export function resolveSetupRepairPluginCacheArg(args: string[]): boolean {
+  let requested = false;
+  for (const arg of args) {
+    if (arg === "--repair-plugin-cache") {
+      requested = true;
+    } else if (arg.startsWith("--repair-plugin-cache=")) {
+      throw new Error("--repair-plugin-cache does not accept a value.");
+    }
+  }
+  return requested;
 }
 
 
@@ -5102,6 +5116,7 @@ if (command !== "launch" && command !== "resume") {
         await setup({
           disableHooks: flags.has("--disable-hooks"),
           force: options.force,
+          repairPluginCache: resolveSetupRepairPluginCacheArg(args.slice(1)),
           mergeAgents: options.mergeAgents,
           mergeAgentsPolicy: resolveSetupAgentsMergePolicyArg(args.slice(1)),
           dryRun: options.dryRun,

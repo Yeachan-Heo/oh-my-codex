@@ -251,7 +251,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
         const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
         assert.equal(result.status, "stale-launcher");
-        assert.match(result.reason ?? "", /managed snapshots|publication marker|codex plugin remove/);
+        assert.match(result.reason ?? "", /managed snapshots|publication marker|omx setup --plugin --repair-plugin-cache/);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -433,7 +433,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
-  it("symlinked current-version cache root is rejected: no unchanged, no external mutation, stale-launcher with recovery hint", async () => {
+  it("symlinked current-version cache root is rejected with scoped manual recovery", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-root-symlink-"));
     try {
       await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -468,10 +468,9 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
         assert.equal(r.status, "stale-launcher", JSON.stringify(r));
         assert.match(r.reason!, /symlink or non-directory/);
-        assert.match(
-          r.reason!,
-          new RegExp(PLUGIN_LAUNCHER_RECOVERY_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-        );
+        assert.match(r.reason!, /refusing to replace unverified cache content/);
+        assert.match(r.reason!, /remove only the cache entry at .* itself without following symlinks, then rerun omx setup --plugin/);
+        assert.doesNotMatch(r.reason!, /codex plugin remove|--repair-plugin-cache/);
 
         // Non-mutation proof: the external target stays exactly where the attacker
         // put it (setup neither followed nor rewrote it), and the external copy is
@@ -1029,11 +1028,96 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         await mkdir(cacheDir, { recursive: true });
         await writeFile(join(cacheDir, "foreign-sentinel"), "preserve\n");
         await writeFile(join(cacheDir, ".omx-incomplete"), "crashed publisher\n");
-        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, { repairCache: true });
         assert.equal(result.status, "stale-launcher", JSON.stringify(result));
-        assert.match(result.reason ?? "", /already exists|refusing to replace|symlink or non-directory/);
+        assert.match(result.reason ?? "", /unrecognized ownership marker|unverified ownership marker|preserving it/);
         assert.equal(await readFile(join(cacheDir, "foreign-sentinel"), "utf-8"), "preserve\n");
         assert.equal(existsSync(join(cacheDir, ".omx-incomplete")), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims an incomplete cache claim only after its recorded publisher exited", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-dead-incomplete-claim-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        await mkdir(cacheDir, { recursive: true });
+        await writeFile(join(cacheDir, ".omx-incomplete"), `${JSON.stringify({
+          version: 1,
+          cacheVersion: version,
+          pid: 99_999_999,
+          processStartHash: null,
+        })}\n`);
+        await writeFile(join(cacheDir, "partial-publisher-data"), "interrupted\n");
+
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, { repairCache: true });
+
+        assert.equal(result.status, "materialized", JSON.stringify(result));
+        assert.equal(existsSync(join(cacheDir, ".omx-incomplete")), false);
+        assert.equal(existsSync(join(cacheDir, "partial-publisher-data")), false);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims an exited publisher claim after the incomplete marker was removed but before completion", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-managed-before-complete-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        await mkdir(dirname(cacheDir), { recursive: true });
+        await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, { recursive: true });
+        await writeFile(join(cacheDir, ".omx-managed"), `${JSON.stringify({
+          version: 1,
+          cacheVersion: version,
+          pid: 99_999_999,
+          processStartHash: null,
+        })}\n`);
+        await writeFile(join(cacheDir, "partial-publisher-data"), "commit not reached\n");
+
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, { repairCache: true });
+
+        assert.equal(result.status, "materialized", JSON.stringify(result));
+        assert.equal(existsSync(join(cacheDir, "partial-publisher-data")), false);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("dry-run repair validates managed ownership and live pins before reporting a replacement", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-repair-dry-run-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        await mkdir(cacheDir, { recursive: true });
+        await writeFile(join(cacheDir, ".omx-incomplete"), "unverified\n");
+        await writeFile(join(cacheDir, "sentinel"), "preserve\n");
+
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          dryRun: true,
+          repairCache: true,
+        });
+
+        assert.equal(result.status, "stale-launcher");
+        assert.match(result.reason ?? "", /unrecognized ownership marker|unverified ownership marker/);
+        assert.equal(await readFile(join(cacheDir, "sentinel"), "utf-8"), "preserve\n");
+        assert.equal(await readFile(join(cacheDir, ".omx-incomplete"), "utf-8"), "unverified\n");
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1654,7 +1738,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         let interposed = false;
         const resetHooks = setPluginCacheMutationHooksForTest({
           beforeRemoveSyscall: async (path) => {
-            if (interposed || !path.includes(".reclaim-")) return;
+            if (interposed || !path.includes(".0.20.0.reclaim-")) return;
             interposed = true;
             await rename(path, preservedPath);
             await mkdir(path, { recursive: true });
@@ -1905,9 +1989,14 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         let interposed = false;
         const resetHooks = setPluginCacheMutationHooksForTest({
           beforeRemoveSyscall: async (path) => {
-            if (interposed || !path.includes(".reclaim-")) return;
+            if (interposed || !path.includes(".0.20.0.reclaim-")) return;
             interposed = true;
-            await writeFile(join(path, ".omx-live-pin"), "late pin\n");
+            const pinDirectory = join(path, ".omx-live-pin");
+            await mkdir(pinDirectory, { recursive: true });
+            await writeFile(
+              join(pinDirectory, "late-pin.json"),
+              `${JSON.stringify({ version: 1, pid: process.pid, processStartHash: null, sessionHash: "0".repeat(64) })}\n`,
+            );
           },
         });
         try {

@@ -1,10 +1,11 @@
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "fs";
 import { appendFile, lstat, mkdir, open, readFile, readdir, realpath, stat, unlink, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { createHash } from "crypto";
 
 import { fileURLToPath, pathToFileURL } from "url";
+import { promisify } from "util";
 import { readModeStateForActiveDecision, readModeStateForSession, updateModeState } from "../modes/base.js";
 import { redactAuthSecrets } from "../auth/redact.js";
 import {
@@ -51,6 +52,7 @@ import {
   resolveConductorPolicyRoot,
 } from "../team/worker-provenance.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
+import { registerOmxPluginCacheLivePin } from "../cli/plugin-marketplace.js";
 import { syncRegularFile } from "../utils/file-durability.js";
 import {
   appendPromptSessionProvenanceRejection,
@@ -1559,6 +1561,36 @@ interface WindowsProcessRecord {
 
 const WINDOWS_PROCESS_TABLE_TIMEOUT_MS = 5_000;
 const WINDOWS_PROCESS_TABLE_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+const WINDOWS_PROCESS_TABLE_QUERY = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,Name | ConvertTo-Json -Compress";
+const execFileAsync = promisify(execFile);
+
+function parseWindowsProcessLineage(output: string, startPid: number): ProcessLineageEntry[] | null {
+	const parsed = JSON.parse(output) as unknown;
+	const records = Array.isArray(parsed) ? parsed : [parsed];
+	const processTable = new Map<number, { parentPid: number | null; command: string; name: string }>();
+
+	for (const record of records) {
+		if (!record || typeof record !== "object") continue;
+		const processRecord = record as WindowsProcessRecord;
+		const pid = safePositiveInteger(processRecord.ProcessId);
+		const parentPid = safePositiveInteger(processRecord.ParentProcessId);
+		const command = safeString(processRecord.CommandLine).trim() || safeString(processRecord.Name).trim();
+		const name = safeString(processRecord.Name).trim();
+		if (pid === null || !command) continue;
+		processTable.set(pid, { parentPid, command, name });
+	}
+
+	const lineage: ProcessLineageEntry[] = [];
+	let currentPid = startPid;
+	for (let i = 0; i < 6 && currentPid > 1; i += 1) {
+		const current = processTable.get(currentPid);
+		if (!current) break;
+		lineage.push({ pid: currentPid, command: current.command, name: current.name });
+		if (!current.parentPid || current.parentPid === currentPid) break;
+		currentPid = current.parentPid;
+	}
+	return lineage.length > 0 ? lineage : null;
+}
 
 function readWindowsProcessLineage(startPid: number): ProcessLineageEntry[] | null {
   if (!Number.isInteger(startPid) || startPid <= 1) return null;
@@ -1572,7 +1604,7 @@ function readWindowsProcessLineage(startPid: number): ProcessLineageEntry[] | nu
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine,Name | ConvertTo-Json -Compress",
+        WINDOWS_PROCESS_TABLE_QUERY,
       ],
       {
         encoding: "utf-8",
@@ -1581,35 +1613,37 @@ function readWindowsProcessLineage(startPid: number): ProcessLineageEntry[] | nu
         maxBuffer: WINDOWS_PROCESS_TABLE_MAX_BUFFER_BYTES,
       },
     );
-    const parsed = JSON.parse(output) as unknown;
-    const records = Array.isArray(parsed) ? parsed : [parsed];
-    const processTable = new Map<number, { parentPid: number | null; command: string; name: string }>();
-
-    for (const record of records) {
-      if (!record || typeof record !== "object") continue;
-      const processRecord = record as WindowsProcessRecord;
-      const pid = safePositiveInteger(processRecord.ProcessId);
-      const parentPid = safePositiveInteger(processRecord.ParentProcessId);
-      const command = safeString(processRecord.CommandLine).trim()
-        || safeString(processRecord.Name).trim();
-      const name = safeString(processRecord.Name).trim();
-      if (pid === null || !command) continue;
-      processTable.set(pid, { parentPid, command, name });
-    }
-
-    const lineage: ProcessLineageEntry[] = [];
-    let currentPid = startPid;
-    for (let i = 0; i < 6 && currentPid > 1; i += 1) {
-      const current = processTable.get(currentPid);
-      if (!current) break;
-      lineage.push({ pid: currentPid, command: current.command, name: current.name });
-      if (!current.parentPid || current.parentPid === currentPid) break;
-      currentPid = current.parentPid;
-    }
-    return lineage.length > 0 ? lineage : null;
+    return parseWindowsProcessLineage(output, startPid);
   } catch {
     return null;
   }
+}
+
+async function readWindowsProcessLineageAsync(startPid: number): Promise<ProcessLineageEntry[] | null> {
+	if (!Number.isInteger(startPid) || startPid <= 1) return null;
+
+	try {
+		const { stdout } = await execFileAsync(
+			"powershell.exe",
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				WINDOWS_PROCESS_TABLE_QUERY,
+			],
+			{
+				encoding: "utf-8",
+				windowsHide: true,
+				timeout: WINDOWS_PROCESS_TABLE_TIMEOUT_MS,
+				maxBuffer: WINDOWS_PROCESS_TABLE_MAX_BUFFER_BYTES,
+			},
+		);
+		return parseWindowsProcessLineage(String(stdout), startPid);
+	} catch {
+		return null;
+	}
 }
 
 function looksLikeShellCommand(command: string): boolean {
@@ -1631,6 +1665,7 @@ function looksLikeCodexProcess(entry: ProcessLineageEntry): boolean {
 export function resolveSessionOwnerPidFromAncestry(
   startPid: number,
   options: {
+    requireCodexAncestor?: boolean;
     readParentPid?: (pid: number) => number | null;
     readProcessCommand?: (pid: number) => string;
     readProcessLineage?: (pid: number) => ProcessLineageEntry[] | null;
@@ -1659,6 +1694,7 @@ export function resolveSessionOwnerPidFromAncestry(
 
   const codexAncestor = lineage.find(looksLikeCodexProcess);
   if (codexAncestor) return codexAncestor.pid;
+  if (options.requireCodexAncestor) return null;
 
   if (lineage.length >= 2 && looksLikeShellCommand(lineage[0]?.command || "")) {
     return lineage[1].pid;
@@ -1668,7 +1704,15 @@ export function resolveSessionOwnerPidFromAncestry(
   return null;
 }
 
-function resolveSessionOwnerPid(payload: CodexHookPayload): number {
+function resolveSessionOwnerPid(payload: CodexHookPayload): number;
+function resolveSessionOwnerPid(
+  payload: CodexHookPayload,
+  options: { requireCodexAncestor: true },
+): number | null;
+function resolveSessionOwnerPid(
+  payload: CodexHookPayload,
+  options: { requireCodexAncestor?: boolean } = {},
+): number | null {
   const explicitPid = [
     payload.session_pid,
     payload.sessionPid,
@@ -1681,9 +1725,29 @@ function resolveSessionOwnerPid(payload: CodexHookPayload): number {
     .find((value): value is number => value !== null);
   if (explicitPid) return explicitPid;
 
-  const resolved = resolveSessionOwnerPidFromAncestry(process.ppid);
+  const resolved = resolveSessionOwnerPidFromAncestry(process.ppid, options);
   if (resolved) return resolved;
-  return process.pid;
+  return options.requireCodexAncestor ? null : process.pid;
+}
+
+async function resolveSessionOwnerPidForPin(payload: CodexHookPayload): Promise<number | null> {
+  const explicitPid = [
+    payload.session_pid,
+    payload.sessionPid,
+    payload.codex_pid,
+    payload.codexPid,
+    payload.parent_pid,
+    payload.parentPid,
+  ]
+    .map(safePositiveInteger)
+    .find((value): value is number => value !== null);
+  if (explicitPid) return explicitPid;
+
+  if (process.platform === "win32") {
+    const lineage = await readWindowsProcessLineageAsync(process.ppid);
+    return lineage?.find(looksLikeCodexProcess)?.pid ?? null;
+  }
+  return resolveSessionOwnerPidFromAncestry(process.ppid, { requireCodexAncestor: true });
 }
 
 function tryReadGitValue(cwd: string, args: string[]): string | null {
@@ -23113,6 +23177,35 @@ export async function runCodexNativeHookCli(): Promise<void> {
       buildRawInputLogFields(rawInput),
     );
     writeNativeHookJsonStdout(buildMalformedStdinHookOutput(parseError, rawInput, process.cwd(), rawHookEventName));
+    return;
+  }
+
+  const pluginCachePinOnly = process.argv.includes("--plugin-cache-pin-only");
+  const pluginRoot = safeString(process.env.OMX_PLUGIN_ROOT).trim();
+  const sessionId = readPayloadSessionId(payload);
+  const pluginCachePinPending = process.env.OMX_PLUGIN_CACHE_PIN_PENDING === "1";
+  const pluginCachePinRequired = process.env.OMX_PLUGIN_CACHE_PIN_REQUIRED === "1";
+  let pluginCachePinRegistered = false;
+  if (pluginRoot && sessionId && (pluginCachePinOnly || pluginCachePinPending)) {
+    const ownerPid = await resolveSessionOwnerPidForPin(payload);
+    if (ownerPid) {
+      try {
+        pluginCachePinRegistered = await registerOmxPluginCacheLivePin(pluginRoot, sessionId, ownerPid);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[oh-my-codex] unable to record live plugin cache pin: ${detail}`);
+      }
+    }
+  }
+  if (pluginCachePinOnly) {
+    writeNativeHookJsonStdout({});
+    if (!pluginCachePinRegistered) process.exitCode = 1;
+    return;
+  }
+  if (pluginCachePinRequired && !pluginCachePinRegistered) {
+    console.error("[oh-my-codex] refusing hook delegation because the active plugin cache session could not be pinned");
+    writeNativeHookJsonStdout({});
+    process.exitCode = 1;
     return;
   }
 

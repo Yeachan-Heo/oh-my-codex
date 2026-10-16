@@ -494,7 +494,7 @@ describe('official Codex plugin layout', () => {
   it('keeps the Windows plugin hook launcher on direct node.exe spawn instead of shell wrapping', async () => {
     const launcher = await readFile(pluginHookLauncherPath, 'utf-8');
 
-    assert.match(launcher, /function buildSpawnOptions\(command\)/);
+    assert.match(launcher, /function buildSpawnOptions\(command, extraEnv = \{\}\)/);
     assert.match(launcher, /extname\(command\)\.toLowerCase\(\)/);
     assert.match(launcher, /extension === '\.exe' \|\| extension === '\.com'/);
     assert.match(launcher, /return \{ \.\.\.options, windowsHide: true \};/);

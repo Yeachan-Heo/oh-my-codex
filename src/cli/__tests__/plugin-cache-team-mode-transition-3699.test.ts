@@ -53,7 +53,7 @@ describe("#3699 Team-mode transition on an existing same-version plugin cache", 
         const reason = disabled.reason ?? "";
         assert.match(reason, /still exposes team, worker/);
         assert.match(reason, /immutable/);
-        assert.match(reason, /codex plugin remove/);
+        assert.match(reason, /omx setup --plugin --repair-plugin-cache/);
       }
 
       // The immutable snapshot itself stays intact; nothing is silently rewritten.
