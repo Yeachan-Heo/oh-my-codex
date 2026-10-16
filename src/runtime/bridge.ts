@@ -99,7 +99,7 @@ export type RuntimeEvent =
   | { event: 'DispatchRecordsRemoved'; request_ids: string[] }
   | { event: 'ReplayRequested'; cursor?: string }
   | { event: 'SnapshotCaptured' }
-  | { event: 'MailboxMessageCreated'; team_name?: string; message_id: string; from_worker: string; to_worker: string; body?: string }
+  | { event: 'MailboxMessageCreated'; team_name?: string | null; message_id: string; from_worker: string; to_worker: string; body?: string }
   | { event: 'MailboxNotified'; team_name?: string | null; message_id: string }
   | { event: 'MailboxDelivered'; team_name?: string | null; message_id: string };
 

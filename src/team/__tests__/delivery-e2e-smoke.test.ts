@@ -196,7 +196,14 @@ switch (command.command) {
     process.stdout.write(JSON.stringify({ event: 'MailboxMessageCreated', message_id: command.message_id, from_worker: command.from_worker, to_worker: command.to_worker }) + '\\n');
     process.exit(0);
   case 'MarkMailboxNotified': {
-    const record = mailbox.records.find((entry) => entry.message_id === command.message_id);
+    const candidates = mailbox.records.filter((entry) => entry.message_id === command.message_id);
+    const scoped = candidates.filter((entry) => command.team_name != null && entry.team_name === command.team_name);
+    const record = scoped.length === 1
+      ? scoped[0]
+      : scoped.length === 0 && candidates.length === 1 && candidates[0]?.team_name == null
+        ? candidates[0]
+        : null;
+    if (!record) process.exit(1);
     if (record) {
       record.notified_at = timestamp;
       writeJson(mailboxPath, mailbox);
@@ -205,7 +212,14 @@ switch (command.command) {
     process.exit(0);
   }
   case 'MarkMailboxDelivered': {
-    const record = mailbox.records.find((entry) => entry.message_id === command.message_id);
+    const candidates = mailbox.records.filter((entry) => entry.message_id === command.message_id);
+    const scoped = candidates.filter((entry) => command.team_name != null && entry.team_name === command.team_name);
+    const record = scoped.length === 1
+      ? scoped[0]
+      : scoped.length === 0 && candidates.length === 1 && candidates[0]?.team_name == null
+        ? candidates[0]
+        : null;
+    if (!record) process.exit(1);
     if (record) {
       record.delivered_at = timestamp;
       writeJson(mailboxPath, mailbox);
