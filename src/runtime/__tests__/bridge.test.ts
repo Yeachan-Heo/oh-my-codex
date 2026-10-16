@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveCachedNativeBinaryPath } from '../../cli/native-assets.js';
 import { getPackageRoot } from '../../utils/package.js';
-import { RuntimeBridge, RuntimeBridgeError, resolveRuntimeBinaryPath } from '../bridge.js';
+import { isRuntimeTransportError, RuntimeBridge, RuntimeBridgeError, resolveRuntimeBinaryPath } from '../bridge.js';
 
 describe('resolveRuntimeBinaryPath', () => {
   it('prefers explicit OMX_RUNTIME_BINARY override', () => {
@@ -411,5 +411,19 @@ printf '%s' '{"commands":[],"capabilities":[]}'
         },
       );
     });
+  });
+});
+
+describe('isRuntimeTransportError', () => {
+  it('allows fallback only when the runtime executable cannot be spawned', () => {
+    const wrap = (cause: { code: string; status?: number | null; signal?: string | null }) =>
+      new Error('runtime process failed', { cause });
+    for (const code of ['EACCES', 'ENOENT', 'ENOTDIR', 'ENOEXEC', 'EPERM']) {
+      assert.equal(isRuntimeTransportError(wrap({ code })), true);
+    }
+    assert.equal(isRuntimeTransportError(wrap({ code: 'ENOENT', status: 1 })), false);
+    assert.equal(isRuntimeTransportError(wrap({ code: 'ETIMEDOUT' })), false);
+    assert.equal(isRuntimeTransportError(wrap({ code: 'ENOENT', signal: 'SIGTERM' })), false);
+    assert.equal(isRuntimeTransportError(new Error('untyped failure')), false);
   });
 });

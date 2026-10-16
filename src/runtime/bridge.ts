@@ -447,8 +447,13 @@ export function getDefaultBridge(stateDir?: string): RuntimeBridge {
 }
 
 export function isRuntimeTransportError(error: unknown): boolean {
-  const cause = error instanceof Error ? error.cause as (NodeJS.ErrnoException & { status?: number | null }) | undefined : undefined;
-  return typeof cause?.code === 'string' && cause.status == null;
+  const cause = error instanceof Error
+    ? error.cause as (NodeJS.ErrnoException & { signal?: string | null; status?: number | null }) | undefined
+    : undefined;
+  return typeof cause?.code === 'string'
+    && cause.status == null
+    && cause.signal == null
+    && ['EACCES', 'ENOENT', 'ENOTDIR', 'ENOEXEC', 'EPERM'].includes(cause.code);
 }
 
 export function preflightRuntimeBridge(stateDir: string): void {
