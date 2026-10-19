@@ -16,6 +16,31 @@ describe('worker completion evidence', () => {
       await initTeamState('proof', 'review', 'executor', 4, cwd);
       for (const [prompt, required] of [
         ['Analyze request latency and write findings to docs/latency-report.md', true],
+        ['Write a report for the team in docs/latency.md', true],
+        ['Write a report for the owners of this project in docs/latency.md', true],
+        ['Write a report about retry support for requests in src/api.ts without changing files', false],
+        ['Do not make any code changes', false],
+        ['Do not touch any files; only summarize the current behavior', false],
+        ['Analyze latency and touch docs/report.md to record findings', true],
+        ['Do not implement anything', false],
+        ['Never apply a patch', false],
+        ['Do not apply the patch; only summarize the current behavior', false],
+        ['Write a report about latency for the team in docs/latency.md', true],
+        ['Write a report for the team about the API in src/api.ts', false],
+        ['Write findings for reviewers at `docs/latency and findings.md`', true],
+        ['Please do not change any files; only summarize the current behavior', false],
+        ["Don't modify files; just summarize the current behavior", false],
+        ['Do not change any files', false],
+        ['Just summarize the current behavior', false],
+        ['Only please summarize the current behavior', false],
+        ['Write a report of retry support for requests in src/api.ts without changing files', false],
+        ['Write a report of retry support for requests in src/api.ts without changing the files', false],
+        ['Only analyze latency; then apply the approved patch', true],
+        ['How does caching work, just apply the approved patch', true],
+        ['How does caching work, only apply the approved patch', true],
+        ['Analyze these subsystems:\n- API latency\n- cache latency', false],
+        ['Analyze these subsystems:\n1. API latency\n2. cache latency', false],
+        ['Analyze these subsystems:\n- API latency\n- cache latency\nThen implement the approved cache fix', true],
         ['Write findings to README.', true],
         ['Task: Write findings to README.', true],
         ['Write a report to "latency and findings.md"', true],
@@ -50,6 +75,9 @@ describe('worker completion evidence', () => {
         ['Write findings to a file', true],
         ['Analyze request latency and save the findings to docs/latency-report.md', true],
         ['Write a report about the API in src/api.ts without changing files', false],
+        ['Write a report about the API in the file src/api.ts without changing any files', false],
+        ['Write a report about retry support for requests in src/api.ts without changing the file', false],
+        ['Write a report for the team in the file docs/latency.md', true],
         ['Evaluate package options:\n- replace package A\n- modify the adapter\n- retain the current package', false],
         ['Evaluate package options: 1. replace package A 2. modify the adapter 3. retain the current package', false],
         ['Evaluate package options:\n- replace package A\n- retain the current package\nThen implement the approved option', true],
@@ -140,16 +168,16 @@ describe('worker completion evidence', () => {
         [4, false, 'Explain how to fix the cache, then implement the approved fix with regression tests', true],
         [4, false, 'Investigate how to resolve authentication failures before implementing a fix with regression tests', true],
         [4, false, 'Explain how authentication is wired', false],
-        [4, false, 'Explain these steps:\n- add retries\n- update tests', false],
-        [4, false, 'Explain how to: 1. add retries 2. update tests', false],
-        [4, false, 'Explain these steps: 1. Implement a cache; 2. Add regression tests', false],
-        [4, false, 'Explain these steps: 1. add retries 2. upgrade to Node 22. Then implement the approved fix', true],
-        [4, false, 'Explain these steps: 1. add retries 2. upgrade to Node 22. Implement the approved fix', true],
+        [4, false, 'Explain these steps:\n- add retries\n- update tests', false, 2, [false, false]],
+        [4, false, 'Explain how to: 1. add retries 2. update tests', false, 2, [false, false]],
+        [4, false, 'Explain these steps: 1. Implement a cache; 2. Add regression tests', false, 2, [false, false]],
+        [4, false, 'Explain these steps: 1. add retries 2. upgrade to Node 22. Then implement the approved fix', true, 2, [false, true]],
+        [4, false, 'Explain these steps: 1. add retries 2. upgrade to Node 22. Implement the approved fix', true, 2, [false, true]],
         [4, false, 'Explain this step: 1. Inspect HTTP/2. Implement the approved fix', true],
-        [4, false, 'Explain these steps:\n1. upgrade to version 2. Implement the approved fix\n2. update the docs', true],
-        [4, false, 'Explain these steps: 1. add retries 2. update tests, and then implement the approved fix', true],
-        [4, false, 'Explain these steps: 1. add retries 2. update tests. Then implement the approved fix', true],
-        [4, false, 'Explain these steps:\n- add retries\n- update tests; then implement the approved fix', true],
+        [4, false, 'Explain these steps:\n1. upgrade to version 2. Implement the approved fix\n2. update the docs', true, 2, [true, false]],
+        [4, false, 'Explain these steps: 1. add retries 2. update tests, and then implement the approved fix', true, 2, [false, true]],
+        [4, false, 'Explain these steps: 1. add retries 2. update tests. Then implement the approved fix', true, 2, [false, true]],
+        [4, false, 'Explain these steps:\n- add retries\n- update tests; then implement the approved fix', true, 2, [false, true]],
         [4, false, 'Investigate how to fix the cache and update the tests', false],
         [4, false, 'Investigate whether to implement retries and update the tests', false],
         [4, false, 'Investigate authentication failures before implementing a fix with regression tests', true],
@@ -163,11 +191,11 @@ describe('worker completion evidence', () => {
         [4, false, 'Investigate compilation errors and recommend a fix', false],
         [4, false, 'Create a dependency comparison report', false],
       ] as const;
-      for (const [scenario, [count, explicitRole, prompt, coding, expectedTaskCount = count]] of scenarios.entries()) {
+      for (const [scenario, [count, explicitRole, prompt, coding, expectedTaskCount = count, expectedFlags]] of scenarios.entries()) {
         const team = `proof-${scenario}`;
         await initTeamState(team, prompt, 'debugger', count, cwd);
         const plan = buildTeamExecutionPlan(prompt, count, explicitRole ? 'debugger' : 'executor', explicitRole, true);
-        const required = coding ? [true, true, false, true, true].slice(0, count) : Array(expectedTaskCount).fill(false);
+        const required = expectedFlags ?? (coding ? [true, true, false, true, true].slice(0, count) : Array(expectedTaskCount).fill(false));
         assert.equal(plan.tasks.length, expectedTaskCount);
         assert.deepEqual(plan.tasks.map(task => task.requires_code_change), required);
         for (const [index, planned] of plan.tasks.entries()) {

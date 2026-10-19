@@ -106,7 +106,9 @@ in temporal/purpose clauses also require evidence. Explanations, questions, and
 negated purpose clauses retain their read-only context. List splitting preserves
 analysis headers and later independent implementation instructions. Explicit report
 output files require evidence; analysis labels and candidate options retain their
-read-only context.
+read-only context. Explicit no-change directives and analysis requests prefixed
+with "only" or "just" remain read-only. Analysis list items retain their header
+and individual assignments, including any later implementation request.
 Auto-generated implementation, test-writing, and additional implementation aspects
 inherit the original task's evidence requirement regardless of heuristic role
 routing. Analysis-only tasks and explicitly selected analysis/read-only roles

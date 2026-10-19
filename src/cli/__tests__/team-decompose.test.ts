@@ -3,6 +3,32 @@ import assert from 'node:assert/strict';
 import { buildTeamExecutionPlan, decomposeTaskString } from '../team.js';
 
 describe('decomposeTaskString', () => {
+  it('preserves analysis list items and carries their header into each task', () => {
+    for (const header of ['Analyze these subsystems:', 'Analyze API latency and cache latency:', 'Analyze release', 'Analyze Node']) {
+      for (const items of ['- API latency\n- cache latency', '1. API latency\n2. cache latency']) {
+        for (const count of [1, 4]) {
+          const plan = buildTeamExecutionPlan(`${header}\n${items}`, count, 'executor', false, true);
+          assert.deepEqual(plan.tasks.map(task => task.subject), ['API latency', 'cache latency']);
+          assert.ok(plan.tasks.every(task => task.description.startsWith(`${header}\n`)));
+          assert.ok(plan.tasks.every(task => task.requires_code_change === false));
+        }
+      }
+    }
+  });
+
+  it('preserves a follow-up implementation request after the final analysis list item', () => {
+    for (const items of ['- API latency\n- cache latency', '1. API latency\n2. cache latency']) {
+      for (const count of [1, 4]) {
+        const prompt = `Analyze these subsystems:\n${items}\nThen implement the approved cache fix`;
+        const plan = buildTeamExecutionPlan(prompt, count, 'executor', false, true);
+        assert.equal(plan.tasks.length, 2);
+        assert.deepEqual(plan.tasks.map(task => task.requires_code_change), [false, true]);
+        assert.ok(plan.tasks.every(task => task.description.startsWith('Analyze these subsystems:\n')));
+        assert.equal(plan.tasks.filter(task => task.description.includes('Then implement the approved cache fix')).length, 1);
+      }
+    }
+  });
+
   it('keeps quoted report destinations intact during task splitting', () => {
     const prompt = 'Write a report to "latency and update findings.md"';
     for (const count of [1, 4]) {
@@ -64,33 +90,33 @@ describe('decomposeTaskString', () => {
   });
 
   it('classifies localized mutations, explanatory questions, and subordinate coding requests', () => {
-    for (const [prompt, required] of [
+    for (const [prompt, required, expectedFlags] of [
       ['빌드 오류 수정', true],
       ['Investigate how to resolve authentication failures before implementing a fix with regression tests', true],
       ['Explain how to fix the cache, then implement the approved fix with regression tests', true],
       ['컴파일 오류 해결', true],
       ['Explain how authentication is wired', false],
-      ['Explain these steps:\n- add retries\n- update tests', false],
-      ['Explain how to: 1. add retries 2. update tests', false],
-      ['Explain these steps: 1. Implement a cache; 2. Add regression tests', false],
-      ['Explain these steps: 1) Implement a cache; 2) Add regression tests', false],
-      ['Explain these steps: 1. add retries 2. upgrade to Node 22. Then implement the approved fix', true],
-      ['Explain these steps: 1. add retries 2. upgrade to Node 22. Implement the approved fix', true],
+      ['Explain these steps:\n- add retries\n- update tests', false, [false, false]],
+      ['Explain how to: 1. add retries 2. update tests', false, [false, false]],
+      ['Explain these steps: 1. Implement a cache; 2. Add regression tests', false, [false, false]],
+      ['Explain these steps: 1) Implement a cache; 2) Add regression tests', false, [false, false]],
+      ['Explain these steps: 1. add retries 2. upgrade to Node 22. Then implement the approved fix', true, [false, true]],
+      ['Explain these steps: 1. add retries 2. upgrade to Node 22. Implement the approved fix', true, [false, true]],
       ['Explain this step: 1. Inspect HTTP/2. Implement the approved fix', true],
-      ['Explain these steps:\n1. upgrade to version 2. Implement the approved fix\n2. update the docs', true],
-      ['Explain these steps: 1. add retries 2. update tests, and then implement the approved fix', true],
-      ['Analyze failures:\n- implement a fix\n- add regression tests', true],
-      ['Explain these steps:\n- add retries\n- update tests\nThen implement the approved fix', true],
-      ['Explain these steps: 1. add retries 2. update tests. Then implement the approved fix', true],
-      ['Explain these steps:\n- add retries\n- update tests; then implement the approved fix', true],
+      ['Explain these steps:\n1. upgrade to version 2. Implement the approved fix\n2. update the docs', true, [true, false]],
+      ['Explain these steps: 1. add retries 2. update tests, and then implement the approved fix', true, [false, true]],
+      ['Analyze failures:\n- implement a fix\n- add regression tests', true, [true, true]],
+      ['Explain these steps:\n- add retries\n- update tests\nThen implement the approved fix', true, [false, true]],
+      ['Explain these steps: 1. add retries 2. update tests. Then implement the approved fix', true, [false, true]],
+      ['Explain these steps:\n- add retries\n- update tests; then implement the approved fix', true, [false, true]],
       ['Investigate how to fix the cache and update the tests', false],
       ['Investigate whether to implement retries and update the tests', false],
       ['Analyze how to fix the cache and update regression tests', false],
       ['How does authentication work?', false],
       ['Investigate authentication failures before implementing a fix with regression tests', true],
     ] as const) {
-      assert.equal(buildTeamExecutionPlan(prompt, 1, 'executor', false).tasks[0].requires_code_change, required, prompt);
-      assert.deepEqual(buildTeamExecutionPlan(prompt, 4, 'executor', false, true).tasks.map(task => task.requires_code_change), required ? [true, true, false, true] : [false, false, false, false], prompt);
+      assert.equal(buildTeamExecutionPlan(prompt, 1, 'executor', false).tasks.some(task => task.requires_code_change), required, prompt);
+      assert.deepEqual(buildTeamExecutionPlan(prompt, 4, 'executor', false, true).tasks.map(task => task.requires_code_change), expectedFlags ?? (required ? [true, true, false, true] : [false, false, false, false]), prompt);
       assert.ok(buildTeamExecutionPlan(prompt, 4, 'debugger', true, true).tasks.every(task => task.requires_code_change === false), prompt);
     }
   });

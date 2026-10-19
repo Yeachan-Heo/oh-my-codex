@@ -1040,11 +1040,8 @@ export function buildTeamExecutionPlan(
   explicitWorkerCount = false,
 ): TeamExecutionPlan {
   let plan = splitTaskString(task);
-  const preamble = plan.strategy === 'numbered' || plan.strategy === 'bulleted'
-    ? task.slice(0, task.indexOf(plan.subtasks[0].description)) : '';
-  // Keep analysis scope and any unlisted follow-up instructions when splitting loses context.
-  if (inferTaskEvidenceIntent(preamble).analysisOnly
-    || (inferTaskEvidenceIntent(task).analysisOnly && plan.subtasks.some(part => inferTaskEvidenceIntent(part.description).codeChangeRequested))) {
+  // Keep the original request when splitting changes a described action into a command.
+  if (inferTaskEvidenceIntent(task).analysisOnly && plan.subtasks.some(part => inferTaskEvidenceIntent(part.description).codeChangeRequested)) {
     plan = { strategy: 'atomic', subtasks: [{ subject: task.slice(0, 80), description: task }] };
   }
   const taskSize = classifyTaskSize(task).size;
@@ -1121,7 +1118,7 @@ const TASK_LABEL_PREFIX = /^(?:task|step|phase|part)\s+[\w-]+(?:\s+[\w-]+)?$/i;
 const ANALYSIS_TASK_PREFIX = /^(?:analy(?:se|ze)|audit|assess|evaluate|explore|investigate|research|review|study|summari(?:s|z)e)\b/i;
 const ANALYSIS_DELIVERABLE_SIGNAL = /\b(?:actionable recommendations?|evidence(?: pointers?)?|findings?|issue|operator|report|root cause|summary|user impact|write-?up)\b/i;
 const CONTEXTUAL_DECOMPOSITION_CLAUSE = /\b(?:focusing on|focus on|including|covers?|covering|with|while|without|ensuring|suitable for|root cause|user impact|evidence pointers|actionable recommendations)\b/i;
-const BULLET_LINE_PATTERN = /^(?:[-*•]|(?:\[\s?[xX]?\]))\s+(.+)$/;
+const BULLET_LINE_PATTERN = /^[\t ]*(?:[-*•]|(?:\[[\t ]?[xX]?\]))[\t ]+(.+)$/gm;
 const FILE_REFERENCE_PATTERN = /(?:^|[\s`'"])([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)(?=$|[\s`'",;:])/g;
 const CODE_SYMBOL_PATTERN = /[`'][A-Za-z_][A-Za-z0-9_.-]*[`']/g;
 const PARALLELIZATION_SIGNAL = /\b(?:acceptance criteria|cross[\s-]cutting|independent|in parallel|separately|verification|verify|tests?|docs?|documentation|benchmarks?|migration|rollout)\b/i;
@@ -1168,8 +1165,11 @@ function splitTaskString(task: string): DecompositionPlan {
 
   // Try numbered list: "1. foo 2. bar 3. baz" or "1) foo 2) bar"
   const numberedPattern = /(?:^|\s)(\d+)[.)]\s+/g;
-  const numberedMatches = [...task.matchAll(numberedPattern)];
+  const numberedMatches = [...task.matchAll(numberedPattern)]
+    .filter(match => /^[\r\n]/.test(match[0]) || !/\b(?:version|release|revision|node|v)[\t ]*$/i.test(task.slice(0, match.index)));
   if (numberedMatches.length >= 2) {
+    const header = task.slice(0, numberedMatches[0].index).trim();
+    const analysisHeader = inferTaskEvidenceIntent(header).analysisOnly ? header : '';
     const parts: Array<{ subject: string; description: string }> = [];
     for (let i = 0; i < numberedMatches.length; i++) {
       const prefixLen = numberedMatches[i][0].length;
@@ -1177,21 +1177,25 @@ function splitTaskString(task: string): DecompositionPlan {
       const end = i + 1 < numberedMatches.length ? numberedMatches[i + 1].index! : task.length;
       const text = task.slice(contentStart, end).trim();
       if (text) {
-        parts.push({ subject: text.slice(0, 80), description: text });
+        parts.push({ subject: text.slice(0, 80), description: analysisHeader
+          ? `${analysisHeader}\n${numberedMatches[i][0].trim()} ${text}` : text });
       }
     }
     if (parts.length >= 2) return { strategy: 'numbered', subtasks: parts };
   }
 
-  const bulletParts = task
-    .split(/\r?\n+/)
-    .map((line) => line.trim())
-    .map((line) => line.match(BULLET_LINE_PATTERN)?.[1]?.trim() ?? '')
-    .filter((line) => line.length > 0);
-  if (bulletParts.length >= 2) {
+  const bulletMatches = [...task.matchAll(BULLET_LINE_PATTERN)];
+  if (bulletMatches.length >= 2) {
+    const header = task.slice(0, bulletMatches[0].index).trim();
+    const analysisHeader = inferTaskEvidenceIntent(header).analysisOnly ? header : '';
     return {
       strategy: 'bulleted',
-      subtasks: bulletParts.map((part) => ({ subject: part.slice(0, 80), description: part })),
+      subtasks: bulletMatches.map((match, index) => {
+        const end = bulletMatches[index + 1]?.index ?? task.length;
+        const contentStart = match.index! + match[0].length - match[1].length;
+        return { subject: match[1].trim().slice(0, 80), description: analysisHeader
+          ? `${analysisHeader}\n${task.slice(match.index, end).trim()}` : task.slice(contentStart, end).trim() };
+      }),
     };
   }
 

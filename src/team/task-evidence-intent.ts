@@ -1,11 +1,12 @@
-const COURTESY_PREFIX = /^(?:(?:please|can you|could you|would you|help me)\s+)*/i;
+const COURTESY_PREFIX = /^(?:(?:please|can you|could you|would you|help me|only|just)\s+)*/i;
 const EXPLANATION_PREFIX = /^(?:explain|describe|what|why|how|where|which|when|who)\b/i;
-const MUTATION_PREFIX = /^(?:add(?:ing)?|apply(?:ing)?|adjust(?:ing)?|build(?:ing)?|chang(?:e|ing)|convert(?:ing)?|correct(?:ing)?|creat(?:e|ing)|delet(?:e|ing)|edit(?:ing)?|enhanc(?:e|ing)|extend(?:ing)?|fix(?:ing)?|implement(?:ing)?|improv(?:e|ing)|integrat(?:e|ing)|mak(?:e|ing)|migrat(?:e|ing)|modify(?:ing)?|optimi[sz](?:e|ing)|patch(?:ing)?|port(?:ing)?|refactor(?:ing)?|remov(?:e|ing)|renam(?:e|ing)|repair(?:ing)?|replac(?:e|ing)|resolv(?:e|ing)|rewrit(?:e|ing)|ship(?:ping)?|simplify(?:ing)?|support(?:ing)?|tun(?:e|ing)|updat(?:e|ing)|upgrad(?:e|ing)|wir(?:e|ing)|writ(?:e|ing))\b/i;
+const MUTATION_PREFIX = /^(?:add(?:ing)?|apply(?:ing)?|adjust(?:ing)?|build(?:ing)?|chang(?:e|ing)|convert(?:ing)?|correct(?:ing)?|creat(?:e|ing)|delet(?:e|ing)|edit(?:ing)?|enhanc(?:e|ing)|extend(?:ing)?|fix(?:ing)?|implement(?:ing)?|improv(?:e|ing)|integrat(?:e|ing)|mak(?:e|ing)|migrat(?:e|ing)|modify(?:ing)?|optimi[sz](?:e|ing)|patch(?:ing)?|port(?:ing)?|refactor(?:ing)?|remov(?:e|ing)|renam(?:e|ing)|repair(?:ing)?|replac(?:e|ing)|resolv(?:e|ing)|rewrit(?:e|ing)|ship(?:ping)?|simplify(?:ing)?|support(?:ing)?|touch(?:ing)?|tun(?:e|ing)|updat(?:e|ing)|upgrad(?:e|ing)|wir(?:e|ing)|writ(?:e|ing))\b/i;
 const LOCALIZED_MUTATION = /(?:구현|추가|수정|업데이트|지원|해결)(?!(?:하는|할|한|된)?\s*(?:방법|여부|이력|내역|계획|없이|안\s)|하지\s*(?:말|않))(?=$|[\s.!?]|해|하)/;
+const NO_CHANGE_PREFIX = /^(?:do\s+not|don't|never)\s+/i;
 const ANALYSIS_PREFIX = /^(?:analy(?:se|ze)|audit|assess|evaluate|explore|investigate|research|review|study|explain|describe|compare|outline|what|why|how|where|which|when|who|summari(?:s|z)e)\b/i;
 
 export const QUOTED_LITERAL = /(["`])([\s\S]*?)\1|(?<!\w)'([^']*)'(?!\w)/g;
-const COMMAND_BOUNDARY = /[;\r\n]|[.!?](?=\s)|,\s*(?:(?:and|but)\s+)?(?:then|also)\s+|(?:,\s*(?:(?:and|but)\s+)?|\b(?:and|but)\s+)(?=(?:please|can you|could you|would you|help me)\s)/i;
+const COMMAND_BOUNDARY = /[;\r\n]|[.!?](?=\s)|,\s*(?:(?:and|but)\s+)?(?:then|also)\s+|(?:,\s*(?:(?:and|but)\s+)?|\b(?:and|but)\s+)(?=(?:please|can you|could you|would you|help me|only|just)\s)/i;
 
 function normalizeClause(text: string): string {
   return text.trim().replace(COURTESY_PREFIX, '')
@@ -42,8 +43,12 @@ function namesOutputFile(clause: string): boolean {
     .some(match => {
       const [, preposition, file, doubleQuoted, singleQuoted, backtickQuoted, token] = match;
       const explicitFile = Boolean(file);
-      if (!explicitFile && /^(?:in|at)$/i.test(preposition)
-        && /\b(?:about|on|of|for)\b/i.test(clause.slice(0, match.index))) return false;
+      const context = clause.slice(0, match.index);
+      const noFileChanges = /\bwithout\s+(?:changing|modifying|editing|touching)\s+(?:(?:any|the)\s+)?files?\b/i.test(clause);
+      const sourceContext = noFileChanges ? context : context.split(/\bfor\b/i).at(-1) ?? '';
+      if ((!explicitFile || noFileChanges) && /^(?:in|at)$/i.test(preposition)
+        && (/\b(?:about|on)\b/i.test(sourceContext)
+          || ((noFileChanges || !/\bfor\b/i.test(context)) && /\bof\b/i.test(context)))) return false;
       const quoted = doubleQuoted ?? singleQuoted ?? backtickQuoted;
       const path = quoted === undefined ? token ?? '' : Buffer.from(quoted, 'hex').toString('utf8');
       return explicitFile || (!/^[a-z]+:\/\//i.test(path) && (/[\\/]/.test(path)
@@ -101,6 +106,6 @@ export function inferTaskEvidenceIntent(...fields: string[]): { codeChangeReques
       || (/^(?:sav(?:e|ing)|persist(?:ing)?|record(?:ing)?|stor(?:e|ing)|export(?:ing)?|append(?:ing)?)\b/i.test(clause) && namesOutputFile(clause))));
   return {
     codeChangeRequested,
-    analysisOnly: !codeChangeRequested && (texts.some(text => ANALYSIS_PREFIX.test(text)) || clauses.some(clause => ANALYSIS_PREFIX.test(clause) || isAnalysisDeliverable(clause))),
+    analysisOnly: !codeChangeRequested && (texts.some(text => ANALYSIS_PREFIX.test(text)) || clauses.some(clause => ANALYSIS_PREFIX.test(clause) || (NO_CHANGE_PREFIX.test(clause) && MUTATION_PREFIX.test(clause.replace(NO_CHANGE_PREFIX, ''))) || isAnalysisDeliverable(clause))),
   };
 }
