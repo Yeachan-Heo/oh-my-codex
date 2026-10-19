@@ -1072,13 +1072,11 @@ export function buildTeamExecutionPlan(
       const analysisDeliverable = /^(?:add|build|create|make|update)\b/i.test(clause)
         && /\b(?:reports?|summar(?:y|ies)|findings|recommendations)[.!?]?\s*$/i.test(clause.split(/\b(?:with|without|of|on|for|in|to|that)\b/i)[0]);
       return !analysisDeliverable
-        && /^(?:add|build|create|fix|implement|make|migrate|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
+        && /^(?:add|build|create|fix|implement|make|migrate|modify|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
     });
-    const implicitCodeChange = !explicitAgentType && role === 'debugger'
-      && codeChangeRequested;
     const implicitAnalysis = !explicitAgentType && !codeChangeRequested && looksLikeLowConfidenceAnalysisTask(taskText);
     return { ...st, role, requires_code_change: !explicitAgentType && st.requires_code_change !== undefined
-      ? st.requires_code_change : implicitCodeChange || (!implicitAnalysis && (getAgent(role)?.tools ?? 'execution') === 'execution') };
+      ? st.requires_code_change : codeChangeRequested || (!implicitAnalysis && (getAgent(role)?.tools ?? 'execution') === 'execution') };
   };
 
   let subtasks = plan.subtasks;

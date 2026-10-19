@@ -5,6 +5,36 @@ import { allocateTasksToWorkers } from './allocation-policy.js';
 import type { ApprovedRepositoryContextSummary } from '../planning/artifacts.js';
 import { readTeamDagHandoffForLatestPlan, type TeamDagHandoff, type TeamDagNode, type TeamDagResolution, type TeamDagWorkerCountSource } from './dag-schema.js';
 
+// Patterns for recognizing analysis tasks (must match team.ts definitions)
+const ANALYSIS_TASK_PREFIX = /^(?:analy(?:se|ze)|audit|assess|evaluate|explore|investigate|research|review|study|summari(?:s|z)e)\b/i;
+const ANALYSIS_DELIVERABLE_SIGNAL = /\b(?:actionable recommendations?|evidence(?: pointers?)?|findings?|issue|operator|report|root cause|summary|user impact|write-?up)\b/i;
+const CONTEXTUAL_DECOMPOSITION_CLAUSE = /\b(?:focusing on|focus on|including|covers?|covering|with|while|without|ensuring|suitable for|root cause|user impact|evidence pointers|actionable recommendations)\b/i;
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function looksLikeLowConfidenceAnalysisTask(task: string): boolean {
+  const normalized = task.trim();
+  return ANALYSIS_TASK_PREFIX.test(normalized)
+    && (ANALYSIS_DELIVERABLE_SIGNAL.test(normalized)
+      || countWords(normalized) > 18
+      || CONTEXTUAL_DECOMPOSITION_CLAUSE.test(normalized));
+}
+
+const courtesyPrefix = /^(?:(?:please|can you|could you|would you|help me)\s+)*/i;
+
+function checkIfCodeChangeRequested(description: string): boolean {
+  const taskText = description.trim().replace(courtesyPrefix, '');
+  return taskText.split(/[,;:]|\b(?:and|then|also)\b/i).some((part) => {
+    const clause = part.trim().replace(courtesyPrefix, '');
+    const analysisDeliverable = /^(?:add|build|create|make|update)\b/i.test(clause)
+      && /\b(?:reports?|summar(?:y|ies)|findings|recommendations)[.!?]?\s*$/i.test(clause.split(/\b(?:with|without|of|on|for|in|to|that)\b/i)[0]);
+    return !analysisDeliverable
+      && /^(?:add|build|create|fix|implement|make|migrate|modify|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
+  });
+}
+
 export interface LegacyTeamExecutionPlanInput {
   task: string;
   workerCount: number;
@@ -210,19 +240,26 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
     role: input.explicitAgentType ? input.agentType : undefined,
   }));
 
-  const allocationInput = sorted.map((node) => ({
-    subject: node.subject,
-    description: enrichNodeDescription(node, input.cwd),
-    role: input.explicitAgentType ? input.agentType : node.role,
-    blocked_by: node.depends_on ?? [],
-    symbolic_depends_on: node.depends_on ?? [],
-    requires_code_change: node.requires_code_change
-      ?? (getAgent(input.explicitAgentType ? input.agentType : node.role ?? input.agentType)?.tools ?? 'execution') === 'execution',
-    filePaths: node.filePaths,
-    domains: inferDomains(node),
-    lane: node.lane,
-    symbolic_id: node.id,
-  }));
+  const allocationInput = sorted.map((node) => {
+    const enrichedDescription = enrichNodeDescription(node, input.cwd);
+    const resolvedRole = input.explicitAgentType ? input.agentType : node.role ?? input.agentType;
+    const fullNodeText = node.subject + ' ' + enrichedDescription;
+    const codeChangeRequested = checkIfCodeChangeRequested(fullNodeText);
+    const implicitAnalysis = !input.explicitAgentType && !codeChangeRequested && looksLikeLowConfidenceAnalysisTask(fullNodeText);
+    return {
+      subject: node.subject,
+      description: enrichedDescription,
+      role: resolvedRole,
+      blocked_by: node.depends_on ?? [],
+      symbolic_depends_on: node.depends_on ?? [],
+      requires_code_change: node.requires_code_change
+        ?? (implicitAnalysis ? false : (getAgent(resolvedRole)?.tools ?? 'execution') === 'execution'),
+      filePaths: node.filePaths,
+      domains: inferDomains(node),
+      lane: node.lane,
+      symbolic_id: node.id,
+    };
+  });
   const allocated = allocateTasksToWorkers(allocationInput, workers);
   const allocationReasons: Record<string, string> = {};
   const tasks = allocated.map((task): RepoAwareTask => {
