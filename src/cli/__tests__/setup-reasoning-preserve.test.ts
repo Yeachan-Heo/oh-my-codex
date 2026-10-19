@@ -245,4 +245,27 @@ describe("omx setup preserves user reasoning effort (issue #3630)", () => {
 		) as { model_reasoning_effort?: string };
 		assert.equal(parsed.model_reasoning_effort, "low");
 	});
+
+	it("does not create stray files starting with backslash in cwd after setup on POSIX", async () => {
+		if (process.platform === "win32") return; // Skip on Windows
+		const home = await createIsolatedHome("omx3630-regression-");
+		homes.push(home);
+		const { readdirSync } = await import("node:fs");
+		const cwdBefore = readdirSync(process.cwd(), { encoding: "utf-8" });
+		try {
+			await setup({ scope: "user", mergeAgents: true, installMode: "legacy" });
+		} finally {
+			// cleanup happens in `after`
+		}
+		const cwdAfter = readdirSync(process.cwd(), { encoding: "utf-8" });
+		const newFiles = cwdAfter.filter((f) => !cwdBefore.includes(f));
+		const strayBackslashFiles = newFiles.filter(
+			(f) => f.startsWith("\\") || f.includes("\\"),
+		);
+		assert.equal(
+			strayBackslashFiles.length,
+			0,
+			`setup created stray files with backslashes: ${strayBackslashFiles.join(", ")}`,
+		);
+	});
 });

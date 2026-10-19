@@ -39,7 +39,6 @@ import {
 } from "../../config/generator.js";
 import {
 	materializePackagedOmxPluginCache,
-	registerOmxPluginCacheLivePin,
 	resolvePackagedOmxMarketplace,
 	computeOmxPluginCacheClaimDigest,
 } from "../plugin-marketplace.js";
@@ -48,6 +47,7 @@ import {
 	buildManagedCodexHooksConfig,
 	buildManagedCodexNativeHookWindowsShimContent,
 	buildManagedCodexNativeHookWindowsShimPath,
+	buildManagedCodexNativeHookWindowsShimPathForFilesystem,
 } from "../../config/codex-hooks.js";
 
 
@@ -1477,8 +1477,8 @@ describe("omx setup install mode behavior", () => {
 					assert.deepEqual(launcher.argsPrefix, ["/stale/omx.js"]);
 					assert.doesNotMatch(output, /Invalidated .* stale Codex plugin discovery cache/);
 					assert.doesNotMatch(output, /Local Codex plugin cache already exposes packaged OMX skills/);
-					assert.match(output, /not safe to use as current/);
-					assert.match(output, /omx setup --plugin --repair-plugin-cache/);
+					assert.match(output, /incompatible launcher provenance/);
+					assert.match(output, /codex plugin remove oh-my-codex@oh-my-codex-local --json/);
 					const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
 					assert.ok(packagedMarketplace);
 					const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
@@ -1490,104 +1490,6 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
-
-	it("scoped cache repair preserves live pins and avoids force-mode maintenance", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-cache-repair-"));
-		try {
-			await withIsolatedUserHome(wd, async (codexHomeDir) => {
-				await withTempCwd(wd, async () => {
-					await mkdir(join(wd, ".omx"), { recursive: true });
-					const hudConfigPath = join(wd, ".omx", "hud-config.json");
-					const userHudConfig = '{"preset":"custom"}\n';
-					await writeFile(hudConfigPath, userHudConfig);
-					const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
-					assert.ok(packagedMarketplace);
-					const initial = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
-					assert.equal(initial.status, "materialized");
-					const cacheDir = initial.cacheDir!;
-					const launcherPath = join(cacheDir, "hooks", "omx-command.json");
-					await writeFile(launcherPath, `${JSON.stringify({ command: "/stale/node", argsPrefix: ["/stale/omx.js"] })}\n`);
-					await writeBoundCompletionMarker(cacheDir);
-					assert.equal(await registerOmxPluginCacheLivePin(cacheDir, "scoped-repair-live-session", process.pid), true);
-					const pinnedDryRun = await materializePackagedOmxPluginCache(
-						codexHomeDir,
-						packagedMarketplace,
-						{ dryRun: true, repairCache: true },
-					);
-					assert.equal(pinnedDryRun.status, "stale-launcher");
-					assert.match(pinnedDryRun.reason ?? "", /pinned by a live Codex session/);
-
-					const pinnedOutput = await captureConsoleOutput(async () => {
-						await setup({
-							scope: "user",
-							installMode: "plugin",
-							repairPluginCache: true,
-							pluginAgentsMdPrompt: async () => false,
-							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\ngoals experimental true\n",
-							codexVersionProbe: () => "codex-cli 0.999.0",
-						});
-					});
-					assert.match(pinnedOutput, /pinned by a live Codex session/);
-					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, "/stale/node");
-
-					await rm(join(cacheDir, ".omx-live-pin"), { recursive: true, force: true });
-					const repairedOutput = await captureConsoleOutput(async () => {
-						await setup({
-							scope: "user",
-							installMode: "plugin",
-							repairPluginCache: true,
-							pluginAgentsMdPrompt: async () => false,
-							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\ngoals experimental true\n",
-							codexVersionProbe: () => "codex-cli 0.999.0",
-						});
-					});
-					assert.match(repairedOutput, /Installed local Codex plugin cache/);
-					assert.doesNotMatch(repairedOutput, /Force mode: enabled additional destructive maintenance/);
-					assert.equal(await readFile(hudConfigPath, "utf-8"), userHudConfig);
-					const repaired = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
-					assert.equal(repaired.status, "unchanged");
-					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, process.execPath);
-					await assert.rejects(lstat(join(cacheDir, ".omx-live-pin")), { code: "ENOENT" });
-
-					await rm(join(cacheDir, ".omx-managed"), { force: true });
-					const unverifiedDryRun = await materializePackagedOmxPluginCache(
-						codexHomeDir,
-						packagedMarketplace,
-						{ dryRun: true, repairCache: true },
-					);
-					assert.equal(unverifiedDryRun.status, "stale-launcher");
-					assert.match(unverifiedDryRun.reason ?? "", /not a verified managed OMX snapshot/);
-					assert.equal(existsSync(join(cacheDir, ".omx-managed")), false);
-				});
-			});
-		} finally {
-			await rm(wd, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects scoped plugin-cache repair outside plugin setup mode", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-cache-mode-"));
-		try {
-			await withIsolatedUserHome(wd, async () => {
-				await withTempCwd(wd, async () => {
-					await assert.rejects(
-						setup({
-							scope: "user",
-							installMode: "legacy",
-							repairPluginCache: true,
-							dryRun: true,
-							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\ngoals experimental true\n",
-							codexVersionProbe: () => "codex-cli 0.999.0",
-						}),
-						/--repair-plugin-cache requires plugin setup mode/,
-					);
-				});
-			});
-		} finally {
-			await rm(wd, { recursive: true, force: true });
-		}
-	});
-
 	it("refuses to replace an already published plugin cache root", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
@@ -2807,7 +2709,7 @@ describe("omx setup install mode behavior", () => {
 						await withTempCwd(wd, async () => {
 							const configPath = join(codexHomeDir, "config.toml");
 							const hooksPath = join(codexHomeDir, "hooks.json");
-							const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+							const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 							const metadataPath = join(codexHomeDir, ".omx", "notify-dispatch.json");
 							const hooks = `${JSON.stringify(
 								buildManagedCodexHooksConfig(packageRoot, {
@@ -2846,6 +2748,7 @@ describe("omx setup install mode behavior", () => {
 								"utf-8",
 							);
 							await mkdir(dirname(metadataPath), { recursive: true });
+							await mkdir(dirname(shimPath), { recursive: true });
 							await writeFile(configPath, config);
 							await writeFile(hooksPath, hooks);
 							await writeFile(shimPath, shim);
@@ -2908,7 +2811,7 @@ describe("omx setup install mode behavior", () => {
 						await withTempCwd(wd, async () => {
 							const configPath = join(codexHomeDir, "config.toml");
 							const hooksPath = join(codexHomeDir, "hooks.json");
-							const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+							const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 							const metadataPath = join(codexHomeDir, ".omx", "notify-dispatch.json");
 							const config = [
 								'model = "foreign"',
@@ -2931,6 +2834,7 @@ describe("omx setup install mode behavior", () => {
 							);
 							const metadata = Buffer.from('{"managedBy":"foreign"}\n', "utf-8");
 							await mkdir(dirname(metadataPath), { recursive: true });
+							await mkdir(dirname(shimPath), { recursive: true });
 							await writeFile(configPath, config);
 							if (fixture.hooks !== null) await writeFile(hooksPath, fixture.hooks);
 							await writeFile(shimPath, shim);
@@ -3115,7 +3019,7 @@ describe("omx setup install mode behavior", () => {
 						await withTempCwd(wd, async () => {
 							const hooksPath = join(codexHomeDir, "hooks.json");
 							const configPath = join(codexHomeDir, "config.toml");
-							const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+							const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 							const managed = buildManagedCodexHooksConfig(packageRoot, {
 								platform: "win32",
 								codexHomeDir,
@@ -3137,6 +3041,7 @@ describe("omx setup install mode behavior", () => {
 								"utf-8",
 							);
 							await writeFile(hooksPath, hooksBefore);
+							await mkdir(dirname(shimPath), { recursive: true });
 							await writeFile(
 								shimPath,
 								buildManagedCodexNativeHookWindowsShimContent(packageRoot),
@@ -3190,7 +3095,7 @@ describe("omx setup install mode behavior", () => {
 				await withTempCwd(wd, async () => {
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const managed = buildManagedCodexHooksConfig(packageRoot, {
 						platform: "win32",
 						codexHomeDir,
@@ -3209,6 +3114,7 @@ describe("omx setup install mode behavior", () => {
 					);
 					const foreignShim = Buffer.from("# concurrent finalization shim replacement\n", "utf-8");
 					await writeFile(hooksPath, hooksBefore);
+					await mkdir(dirname(shimPath), { recursive: true });
 					await writeFile(
 						shimPath,
 						buildManagedCodexNativeHookWindowsShimContent(packageRoot),
@@ -3253,7 +3159,7 @@ describe("omx setup install mode behavior", () => {
 			await withDriveQualifiedWindowsCodexHome(wd, async (codexHomeDir) => {
 				const hooksPath = join(codexHomeDir, "hooks.json");
 				const configPath = join(codexHomeDir, "config.toml");
-				const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+				const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 				const managed = buildManagedCodexHooksConfig(packageRoot, {
 					platform: "win32",
 					codexHomeDir,
@@ -3280,6 +3186,7 @@ describe("omx setup install mode behavior", () => {
 						"hooks stable true\nplugin_hooks experimental true\n",
 				});
 				await writeFile(hooksPath, futureHooks);
+				await mkdir(dirname(shimPath), { recursive: true });
 				await writeFile(
 					shimPath,
 					buildManagedCodexNativeHookWindowsShimContent(packageRoot),
@@ -3322,7 +3229,7 @@ describe("omx setup install mode behavior", () => {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const managed = buildManagedCodexHooksConfig(packageRoot, {
 						platform: "win32",
 						codexHomeDir,
@@ -3345,6 +3252,7 @@ describe("omx setup install mode behavior", () => {
 						).replace(/\\\\/g, "\\u005c"),
 					) + "\n";
 					await writeFile(hooksPath, futureHooks);
+					await mkdir(dirname(shimPath), { recursive: true });
 					await writeFile(
 						shimPath,
 						buildManagedCodexNativeHookWindowsShimContent(packageRoot),
@@ -3376,31 +3284,33 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
-					const shimAlias = shimPath
-						.replace(/[\\/]+hooks[\\/]+/i, "\\hooks\\\\.\\")
-						.replace(/omx-native-hook-windows-shim\.ps1$/i, "OMX-NATIVE-HOOK-WINDOWS-SHIM.PS1")
-						.replace(/\\/g, "/");
-					const managed = buildManagedCodexHooksConfig(packageRoot, {
-						platform: "win32",
-						codexHomeDir,
-					});
-					await writeFile(
-						hooksPath,
-						JSON.stringify({
-							...managed,
-							hooks: {
-								...managed.hooks,
-								FutureEvent: [{
-									hooks: [{
-										type: "command",
-										command: `& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File '${shimAlias}'`,
-									}],
+			const hooksPath = join(codexHomeDir, "hooks.json");
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
+				const shimPathWindows = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+				const shimAlias = shimPathWindows
+					.replace(/[\\\\/]+hooks[\\\\/]+/i, "\\hooks\\\\.\\")
+					.replace(/omx-native-hook-windows-shim\\.ps1$/i, "OMX-NATIVE-HOOK-WINDOWS-SHIM.PS1")
+					.replace(/\\\\/g, "/");
+				const managed = buildManagedCodexHooksConfig(packageRoot, {
+					platform: "win32",
+					codexHomeDir,
+				});
+				await writeFile(
+					hooksPath,
+					JSON.stringify({
+						...managed,
+						hooks: {
+							...managed.hooks,
+							FutureEvent: [{
+								hooks: [{
+									type: "command",
+									command: `& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File '${shimAlias}'`,
 								}],
-							},
-						}, null, 2) + "\n",
-					);
+							}],
+						},
+					}, null, 2) + "\n",
+				);
+					await mkdir(dirname(shimPath), { recursive: true });
 					await writeFile(
 						shimPath,
 						buildManagedCodexNativeHookWindowsShimContent(packageRoot),
@@ -3430,7 +3340,7 @@ describe("omx setup install mode behavior", () => {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const managed = buildManagedCodexHooksConfig(packageRoot, {
 						platform: "win32",
 						codexHomeDir,
@@ -3449,8 +3359,9 @@ describe("omx setup install mode behavior", () => {
 									}],
 								}],
 							},
-						}, null, 2) + "\n",
-					);
+					}, null, 2) + "\n",
+				);
+					await mkdir(dirname(shimPath), { recursive: true });
 					await writeFile(
 						shimPath,
 						buildManagedCodexNativeHookWindowsShimContent(packageRoot),
@@ -3466,21 +3377,21 @@ describe("omx setup install mode behavior", () => {
 					});
 					assert.equal(existsSync(shimPath), true);
 					assert.match(await readFile(hooksPath, "utf-8"), /FutureEvent/);
-				});
 			});
-		} finally {
-			resetPlatform();
-			await rm(wd, { recursive: true, force: true });
-		}
-	});
-	it("does not retain a shim for inert future-event metadata", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-plugin-future-shim-metadata-"));
+		});
+	} finally {
+		resetPlatform();
+		await rm(wd, { recursive: true, force: true });
+	}
+});
+it("does not retain a shim for inert future-event metadata", async () => {
+	const wd = await mkdtemp(join(tmpdir(), "omx-plugin-future-shim-metadata-"));
 		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const managed = buildManagedCodexHooksConfig(packageRoot, {
 						platform: "win32",
 						codexHomeDir,
@@ -3502,22 +3413,23 @@ describe("omx setup install mode behavior", () => {
 							},
 							null,
 							2,
-						) + "\n",
-					);
-					await writeFile(
-						shimPath,
-						buildManagedCodexNativeHookWindowsShimContent(packageRoot),
-					);
+										) + "\n",
+							);
+							await mkdir(dirname(shimPath), { recursive: true });
+							await writeFile(
+								shimPath,
+								buildManagedCodexNativeHookWindowsShimContent(packageRoot),
+							);
 
-					await setup({
-						scope: "user",
-						installMode: "plugin",
-						pluginAgentsMdPrompt: async () => false,
-						skipNativeAgentRefresh: true,
-						codexFeaturesProbe: () =>
-							"hooks stable true\nplugin_hooks experimental true\n",
-					});
-					assert.equal(existsSync(shimPath), false);
+							await setup({
+								scope: "user",
+								installMode: "plugin",
+								pluginAgentsMdPrompt: async () => false,
+								skipNativeAgentRefresh: true,
+								codexFeaturesProbe: () =>
+									"hooks stable true\nplugin_hooks experimental true\n",
+							});
+							assert.equal(existsSync(shimPath), false);
 					assert.match(await readFile(hooksPath, "utf-8"), /FutureEvent/);
 				});
 			});
@@ -3551,7 +3463,7 @@ describe("omx setup install mode behavior", () => {
 					});
 					assert.ok(syncCalls > 0);
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
-					assert.equal(existsSync(buildManagedCodexNativeHookWindowsShimPath(codexHomeDir)), true);
+					assert.equal(existsSync(buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir)), true);
 					assert.equal(existsSync(join(codexHomeDir, "config.toml")), true);
 				});
 				assert.equal(
@@ -3597,7 +3509,7 @@ describe("omx setup install mode behavior", () => {
 					assert.ok(directorySyncCalls > 0);
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
 					assert.equal(
-						existsSync(buildManagedCodexNativeHookWindowsShimPath(codexHomeDir)),
+						existsSync(buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir)),
 						true,
 					);
 					assert.equal(existsSync(join(codexHomeDir, "config.toml")), true);
@@ -3769,7 +3681,7 @@ describe("omx setup install mode behavior", () => {
 						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					assert.equal(existsSync(hooksPath), true);
 					assert.equal(existsSync(shimPath), true);
 					resetFailureInjector = setNativeHookTransactionFailureInjectorForTest(
@@ -3819,7 +3731,7 @@ describe("omx setup install mode behavior", () => {
 						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					assert.equal(existsSync(shimPath), true);
 					assert.equal(existsSync(hooksPath), true);
 
@@ -3862,7 +3774,7 @@ describe("omx setup install mode behavior", () => {
 						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const hooksBefore = await readFile(hooksPath);
 					const shimBefore = await readFile(shimPath);
 					const configBefore = await readFile(join(codexHomeDir, "config.toml"));
@@ -4883,8 +4795,9 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const modifiedShim = "# modified by user\n";
+					await mkdir(dirname(shimPath), { recursive: true });
 					await writeFile(shimPath, modifiedShim);
 
 					await assert.rejects(
@@ -4974,7 +4887,7 @@ describe("omx setup install mode behavior", () => {
 						join(codexHomeDir, "config.toml"),
 						'notify = ["node", "/tmp/user-notify.js"]\n',
 					);
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					await assert.rejects(
 						() =>
 							setup({
@@ -5158,7 +5071,7 @@ describe("omx setup install mode behavior", () => {
 						codexFeaturesProbe: () => null,
 						codexVersionProbe: () => null,
 					});
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
 					const configBefore = await readFile(configPath);
@@ -5293,7 +5206,7 @@ describe("omx setup install mode behavior", () => {
 			try {
 				await withIsolatedUserHome(wd, async (codexHomeDir) => {
 					await withTempCwd(wd, async () => {
-						const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+						const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 						const hooksPath = join(codexHomeDir, "hooks.json");
 						const configPath = join(codexHomeDir, "config.toml");
 						const shimBefore = Buffer.from(
@@ -5617,7 +5530,7 @@ describe("omx setup install mode behavior", () => {
 							installMode: "legacy",
 							skipNativeAgentRefresh: true,
 						});
-						const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+						const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 						const hooksPath = join(codexHomeDir, "hooks.json");
 						const configPath = join(codexHomeDir, "config.toml");
 						const stagedDeletionPath = join(codexHomeDir, ".hooks-delete-owned");
@@ -5846,7 +5759,7 @@ describe("omx setup install mode behavior", () => {
 						installMode: "legacy",
 						skipNativeAgentRefresh: true,
 					});
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
 					const stagedDeletionPath = (path: string, purpose: "write" | "delete") =>
@@ -5932,7 +5845,7 @@ describe("omx setup install mode behavior", () => {
 							installMode: "legacy",
 							skipNativeAgentRefresh: true,
 						});
-						const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+						const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 						const hooksPath = join(codexHomeDir, "hooks.json");
 						const configPath = join(codexHomeDir, "config.toml");
 						const before = {
@@ -6055,7 +5968,7 @@ describe("omx setup install mode behavior", () => {
 				await withTempCwd(wd, async () => {
 					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const configPath = join(codexHomeDir, "config.toml");
 					const configBefore = await readFile(configPath);
 					const stagedHooksPath = join(codexHomeDir, ".hooks-preflight-recovery");
@@ -6104,7 +6017,7 @@ describe("omx setup install mode behavior", () => {
 				await withTempCwd(wd, async () => {
 					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
 					const hooksPath = join(codexHomeDir, "hooks.json");
-					const shimPath = buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const configPath = join(codexHomeDir, "config.toml");
 					const configBefore = await readFile(configPath);
 					let injectedFailure = false;

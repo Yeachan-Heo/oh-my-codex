@@ -83,7 +83,7 @@ import {
 import type { CodexHookFeatureFlag, CodexPluginHookFeatureFlag } from "../config/codex-feature-flags.js";
 import {
 	buildManagedCodexNativeHookWindowsShimContent,
-	buildManagedCodexNativeHookWindowsShimPath,
+	buildManagedCodexNativeHookWindowsShimPathForFilesystem,
 	escapeTomlBasicString,
 	planManagedCodexHooksMerge,
 	planManagedCodexHooksRemoval,
@@ -4018,7 +4018,7 @@ async function planNativeHookSetupTransaction(
 	let shimArtifact: NativeHookTransactionArtifact | null = null;
 	let shimPrecondition: NativeHookTransactionPrecondition | null = null;
 	if (options.platform === "win32") {
-		const shimPath = buildManagedCodexNativeHookWindowsShimPath(options.codexHomeDir);
+		const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(options.codexHomeDir);
 		const shimSnapshot = await captureNativeHookTransactionArtifact(
 			shimPath,
 			`native hook Windows shim ${shimPath}`,
@@ -4253,7 +4253,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				getNotifyMetadataPath(scopeDirs.codexHomeDir),
 				...(nativeHookTransactionPlatform === "win32"
 					? [
-							buildManagedCodexNativeHookWindowsShimPath(
+							buildManagedCodexNativeHookWindowsShimPathForFilesystem(
 								scopeDirs.codexHomeDir,
 							),
 						]
@@ -4792,7 +4792,10 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			console.log("  Local Codex plugin cache already exposes packaged OMX skills.");
 		} else if (pluginCacheMaterialize.status === "stale-launcher") {
 			console.log(
-				`  warning: local Codex plugin cache at ${pluginCacheMaterialize.cacheDir} is not safe to use as current (${pluginCacheMaterialize.reason}); not reporting as current.`,
+				`  warning: local Codex plugin cache at ${pluginCacheMaterialize.cacheDir} has incompatible launcher provenance (${pluginCacheMaterialize.reason}); not reporting as current.`,
+			);
+			console.log(
+				`  Run \`codex plugin remove ${OMX_PLUGIN_NAME}@${OMX_LOCAL_MARKETPLACE_NAME} --json\` then rerun \`omx setup --plugin\` to rebuild the snapshot for ${preflightMarketplace?.packageRoot ?? pkgRoot}.`,
 			);
 		}
 		if (

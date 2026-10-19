@@ -231,6 +231,22 @@ export function buildManagedCodexNativeHookWindowsShimPath(
   return win32.join(codexHomeDir, ...WINDOWS_NATIVE_HOOK_SHIM_RELATIVE_PATH);
 }
 
+/**
+ * Build a filesystem-compatible shim path for the current OS.
+ * Used when the shimPath needs to be written to or read from disk on non-Windows systems.
+ * On Windows, this is identical to buildManagedCodexNativeHookWindowsShimPath().
+ * On POSIX, this converts the Windows-formatted path to a POSIX path.
+ */
+export function buildManagedCodexNativeHookWindowsShimPathForFilesystem(
+  codexHomeDir: string,
+): string {
+  if (process.platform === "win32") {
+    return buildManagedCodexNativeHookWindowsShimPath(codexHomeDir);
+  }
+  // On POSIX, use the host OS path module to build a proper POSIX path
+  return join(codexHomeDir, ...WINDOWS_NATIVE_HOOK_SHIM_RELATIVE_PATH);
+}
+
 export type ManagedCodexNativeHookWindowsShimOwnership =
   | "current"
   | "historical"
