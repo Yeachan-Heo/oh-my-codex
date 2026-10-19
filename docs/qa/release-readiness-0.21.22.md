@@ -4,7 +4,7 @@
 
 - Previous tag: `v0.21.21` (`577ef6b0`)
 - Frozen candidate: `012672fa9d4995319d424c2ba9286e593d169047` (dev CI candidate)
-- Compare range: `v0.21.21..012672fa9d4995319d424c2ba9286e593d169047`, 3 commits, 5 files, +66/−6
+- Compare range: `v0.21.21..012672fa9d4995319d424c2ba9286e593d169047`, 3 commits, 13 files, +178/−28
 - PRs: #3842 (fail-closed cache recovery guidance)
 
 ## Version choice
@@ -15,12 +15,14 @@
 
 `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock` (omx-api, omx-explore-harness, omx-mux, omx-runtime, omx-runtime-core, omx-sparkshell), and `plugins/oh-my-codex/.codex-plugin/plugin.json` are set to `0.21.22`. `cargo metadata --locked --format-version 1 --no-deps` confirms all six Rust workspace crates resolve to `0.21.22`; `npm run sync:plugin:check` verifies plugin metadata and the canonical skill directories.
 
+**Release data:** GitHub Release run 39232500921, npm gitHead b5410bf8, published v0.21.22.
+
 ## Dev CI on the candidate
 
 - Candidate SHA: `012672fa9d4995319d424c2ba9286e593d169047`
 - Check runs: 17 success, 8 skipped
 - Conclusion: success; all latest-per-name checks completed with no failures. Build dist artifact, CI Status, Lint, Typecheck, Coverage Gate, and Node/platform lanes passed. Conditional Rust/Publish/Docs jobs were skipped.
-- Timestamp: 2026-10-19T11:15:00Z (gate verified at 16:15Z, none failing)
+- Timestamp: 2026-10-19T15:11:42Z (gate verified at 16:15Z, none failing)
 
 ## Local gates (Linux x64, gate verified 2026-10-19 16:17Z)
 

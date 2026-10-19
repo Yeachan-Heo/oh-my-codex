@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.23] - 2026-10-19
+
+Patch release for evidence requirements in generated team tasks and non-directory plugin cache recovery guidance (5 commits, 14 files, +914/−58; PRs #3840, #3846).
+
+### Fixed
+
+- Require evidence for generated coding tasks in team decomposition, respecting explicit role DAG flags and treating unknown roles conservatively. Task decomposition now preserves analysis context while enforcing completion gates for implementation requests (#3840, @shenyankm).
+- Extend `omx setup --plugin --repair-plugin-cache` guidance to cover non-directory entries (symlinks and other non-directory types) alongside pinned snapshots, emitting fail-closed recommendations when safe recovery cannot be determined (#3846, @Yeachan-Heo).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.23.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.22...v0.21.23
+
 ## [0.21.22] - 2026-10-19
 
 Patch release for fail-closed cache recovery guidance in setup repair (3 commits, 13 files, +178/−28; PR #3842). Also includes doc corrections for v0.21.21 release stats.
