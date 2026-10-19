@@ -227,7 +227,7 @@ describe("issue 3558 launcher provenance", () => {
             output,
             /Local Codex plugin cache already exposes packaged OMX skills/,
           );
-          assert.match(output, /incompatible launcher provenance/);
+          assert.match(output, /not safe to use as current/);
           assert.match(output, /does not exist/);
           assert.match(
             output,
@@ -478,7 +478,7 @@ describe("issue 3558 launcher provenance", () => {
             await setup({ scope: "user", installMode: "plugin" });
           });
           assert.doesNotMatch(output, /already exposes/);
-          assert.match(output, /incompatible launcher provenance/);
+          assert.match(output, /not safe to use as current/);
         });
       });
     } finally {
