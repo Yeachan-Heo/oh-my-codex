@@ -238,4 +238,27 @@ describe('decomposeTaskString', () => {
     const tasks = decomposeTaskString('1. add team brain overlay 2. add team-executor prompt 3. add tests', 3, 'executor', false);
     assert.equal(tasks.length, 3);
   });
+
+  it('treats short analysis prompts as evidence-optional', () => {
+    const shortAnalysisTasks = [
+      'Analyze request latency',
+      'Investigate compilation errors',
+      'Research cache behavior',
+      'Audit security vulnerability',
+      'Review authentication flow',
+      'Summarize findings',
+    ];
+    for (const task of shortAnalysisTasks) {
+      assert.equal(buildTeamExecutionPlan(task, 1, 'executor', false).tasks[0].requires_code_change, false, task);
+      assert.equal(buildTeamExecutionPlan(task, 1, 'debugger', true).tasks[0].requires_code_change, false, `explicit debugger: ${task}`);
+    }
+  });
+
+  it('requires evidence for common mutation verbs', () => {
+    const mutationVerbs = ['change', 'edit', 'remove', 'modify', 'create', 'build', 'fix', 'implement'];
+    for (const verb of mutationVerbs) {
+      const task = `${verb} src/index.ts to fix the error`;
+      assert.equal(buildTeamExecutionPlan(task, 1, 'executor', false).tasks[0].requires_code_change, true, task);
+    }
+  });
 });
