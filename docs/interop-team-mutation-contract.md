@@ -98,6 +98,9 @@ prefixes such as "please" or "could you" and combinations such as "could you ple
 Recognized analysis deliverables remain optional even when heuristic routing falls
 back to an execution role; mixed requests with explicit implementation or test-writing
 actions still require evidence. Explicit analysis roles remain optional.
+Short analysis requests are also evidence-optional. CLI and DAG generation share
+the same intent rules for mutation verbs, and DAG subjects and descriptions are
+classified independently so either field can establish a coding requirement.
 Auto-generated implementation, test-writing, and additional implementation aspects
 inherit the original task's evidence requirement regardless of heuristic role
 routing. Analysis-only tasks and explicitly selected analysis/read-only roles

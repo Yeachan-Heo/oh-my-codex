@@ -1,4 +1,5 @@
 import { getAgent } from '../agents/definitions.js';
+import { inferTaskEvidenceIntent } from '../team/task-evidence-intent.js';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
@@ -991,14 +992,7 @@ function resolveImplicitTeamFallbackRole(agentType: string, explicitAgentType: b
 
 function looksLikeLowConfidenceAnalysisTask(task: string): boolean {
   const normalized = task.trim();
-  // Recognize pure analysis prefix even for short prompts (e.g., 'Analyze request latency')
-  const hasAnalysisPrefix = ANALYSIS_TASK_PREFIX.test(normalized);
-  if (hasAnalysisPrefix && normalized.length < 50) {
-    // Short analysis prompt without any code-change signals
-    const hasCodeSignals = /\b(?:fix|implement|build|create|add|update|modify|change|edit|remove|write)\b/i.test(normalized);
-    if (!hasCodeSignals) return true;
-  }
-  return hasAnalysisPrefix
+  return ANALYSIS_TASK_PREFIX.test(normalized)
     && (ANALYSIS_DELIVERABLE_SIGNAL.test(normalized)
       || countWords(normalized) > 18
       || CONTEXTUAL_DECOMPOSITION_CLAUSE.test(normalized));
@@ -1069,21 +1063,14 @@ export function buildTeamExecutionPlan(
         : undefined
     : undefined;
 
-  const courtesyPrefix = /^(?:(?:please|can you|could you|would you|help me)\s+)*/i;
   const assignRole = (st: DecompositionCandidate) => {
     const role = explicitAgentType ? agentType
       : routeTaskToRole(st.subject, st.description, 'team-exec', fallbackRole).role;
-    const taskText = st.description.trim().replace(courtesyPrefix, '');
-    const codeChangeRequested = taskText.split(/[,;:]|\b(?:and|then|also)\b/i).some((part) => {
-      const clause = part.trim().replace(courtesyPrefix, '');
-      const analysisDeliverable = /^(?:add|build|create|make|update)\b/i.test(clause)
-        && /\b(?:reports?|summar(?:y|ies)|findings|recommendations)[.!?]?\s*$/i.test(clause.split(/\b(?:with|without|of|on|for|in|to|that)\b/i)[0]);
-      return !analysisDeliverable
-        && /^(?:add|build|change|create|edit|fix|implement|make|migrate|modify|remove|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
-    });
-    const implicitAnalysis = !explicitAgentType && !codeChangeRequested && looksLikeLowConfidenceAnalysisTask(taskText);
+    // CLI subjects are truncated for display; descriptions retain the full request.
+    const { codeChangeRequested, analysisOnly } = inferTaskEvidenceIntent(st.description);
+    const implicitAnalysis = !explicitAgentType && analysisOnly;
     return { ...st, role, requires_code_change: !explicitAgentType && st.requires_code_change !== undefined
-      ? st.requires_code_change : (!implicitAnalysis && ((!explicitAgentType && codeChangeRequested) || (getAgent(role)?.tools ?? 'execution') === 'execution')) };
+      ? st.requires_code_change : (!explicitAgentType && codeChangeRequested) || (!implicitAnalysis && (getAgent(role)?.tools ?? 'execution') === 'execution') };
   };
 
   let subtasks = plan.subtasks;

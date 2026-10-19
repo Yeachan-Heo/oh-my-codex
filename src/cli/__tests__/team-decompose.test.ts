@@ -3,6 +3,37 @@ import assert from 'node:assert/strict';
 import { buildTeamExecutionPlan, decomposeTaskString } from '../team.js';
 
 describe('decomposeTaskString', () => {
+  it('keeps short analysis optional and honors explicit analysis roles for mutation prompts', () => {
+    for (const prompt of ['Analyze request latency', 'Could you please analyze request latency', 'Review the authentication flow']) {
+      for (const count of [1, 4]) {
+        assert.ok(buildTeamExecutionPlan(prompt, count, 'executor', false, true).tasks.every(task => task.requires_code_change === false), prompt);
+      }
+    }
+    for (const role of ['debugger', 'verifier', 'code-reviewer']) {
+      assert.ok(buildTeamExecutionPlan('Fix TypeScript build errors', 4, role, true, true).tasks.every(task => task.requires_code_change === false), role);
+    }
+  });
+
+  it('requires evidence for common mutation verbs across implicit role routes', () => {
+    for (const prompt of [
+      'Change src/index.ts to fix TypeScript compilation errors',
+      'Analyze request latency and edit src/cache.ts, then report the findings',
+      'Analyze request latency and remove the broken cache with regression tests',
+      'Review the authentication flow and implement the necessary fixes with regression tests',
+      'Analyze request latency and replace the cache implementation with a report of findings',
+      'Review the authentication flow. Fix the discovered defects with tests',
+      'Analyze request latency\nFix the cache',
+      'Analyze request latency with current production measurements and optimize the cache implementation in src/cache.ts with regression tests',
+      'Analyze request latency and improve the cache implementation in src/cache.ts with regression tests',
+      'Analyze request latency and write a new cache module in src/cache.ts with regression tests',
+      'Analyze request latency and add /api/reports with regression tests',
+      'Analyze request latency and create src/reports with regression tests',
+    ]) {
+      assert.ok(buildTeamExecutionPlan(prompt, 1, 'executor', false).tasks.every(task => task.requires_code_change === true), prompt);
+      assert.deepEqual(buildTeamExecutionPlan(prompt, 4, 'executor', false, true).tasks.map(task => task.requires_code_change), [true, true, false, true], prompt);
+    }
+  });
+
   it('requires evidence for repair requests with stacked courtesy prefixes', () => {
     for (const prefix of ['Could you please', 'Would you please', 'Please help me', 'Can you please help me']) {
       const task = `${prefix} fix TypeScript compilation errors`;
@@ -17,11 +48,14 @@ describe('decomposeTaskString', () => {
       'Analyze request latency and report the findings',
       'Could you please analyze request latency and report the findings',
       'Summarize request latency evidence in a report',
+      'Analyze latency and create a concise report of findings',
+      'Analyze latency and write a detailed summary with findings',
       'Analyze request latency and report how to fix regressions with evidence',
       'Investigate compilation errors and recommend a fix without changing implementation',
       'Analyze request latency without changing implementation and create a concise report of findings',
       'Analyze request latency without changing implementation and make a report of findings',
       'Analyze request latency without changing implementation and update the detailed summary with findings',
+      'Analyze request latency without changing implementation and write a detailed report with findings',
       'Analyze the current request latency across all production-facing services and their dependencies without changing implementation and report the findings',
     ]) {
       assert.ok(buildTeamExecutionPlan(task, 1, 'executor', false).tasks.every(task => task.requires_code_change === false), task);

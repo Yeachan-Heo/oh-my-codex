@@ -28,6 +28,12 @@ describe('worker completion evidence', () => {
         ['executor', 'Analyze request latency and report the findings', false, false],
         ['executor', 'Could you please analyze request latency and report the findings', false, false],
         ['executor', 'Analyze request latency and implement a fix with regression tests', false, true],
+        ['executor', 'Analyze request latency', false, false],
+        ['executor', 'Change src/index.ts to fix TypeScript compilation errors', false, true],
+        ['executor', 'Review the authentication flow and implement the necessary fixes with regression tests', false, true],
+        ['executor', 'Analyze request latency\nFix the cache', false, true],
+        ['executor', 'Analyze request latency and write a new cache module in src/cache.ts with regression tests', false, true],
+        ['executor', 'Analyze request latency and create src/reports with regression tests', false, true],
         ['executor', 'Analyze request latency without changing implementation and create a concise report of findings', false, false],
         ['executor', 'Investigate compilation errors and recommend a fix', false, false],
         ['executor', 'Review the proposed fix for compilation errors', false, false],
@@ -61,18 +67,23 @@ describe('worker completion evidence', () => {
         [4, false, 'Analyze request latency and report the findings', false],
         [4, false, 'Could you please analyze request latency and report the findings', false],
         [4, false, 'Analyze request latency and implement a fix with regression tests', true],
+        [4, false, 'Analyze request latency', false],
+        [4, false, 'Analyze latency and create a concise report of findings', false, 2],
+        [4, false, 'Change src/index.ts to fix TypeScript compilation errors', true],
+        [4, false, 'Analyze request latency\nFix the cache', true],
+        [4, false, 'Analyze request latency and create src/reports with regression tests', true],
         [4, false, 'Analyze request latency without changing implementation and create a concise report of findings', false],
         [4, true, 'Fix TypeScript build errors', false],
         [4, false, 'Review limiter behavior', false],
         [4, false, 'Investigate compilation errors and recommend a fix', false],
         [4, false, 'Create a dependency comparison report', false],
       ] as const;
-      for (const [scenario, [count, explicitRole, prompt, coding]] of scenarios.entries()) {
+      for (const [scenario, [count, explicitRole, prompt, coding, expectedTaskCount = count]] of scenarios.entries()) {
         const team = `proof-${scenario}`;
         await initTeamState(team, prompt, 'debugger', count, cwd);
         const plan = buildTeamExecutionPlan(prompt, count, explicitRole ? 'debugger' : 'executor', explicitRole, true);
-        const required = coding ? [true, true, false, true, true].slice(0, count) : Array(count).fill(false);
-        assert.equal(plan.tasks.length, count);
+        const required = coding ? [true, true, false, true, true].slice(0, count) : Array(expectedTaskCount).fill(false);
+        assert.equal(plan.tasks.length, expectedTaskCount);
         assert.deepEqual(plan.tasks.map(task => task.requires_code_change), required);
         for (const [index, planned] of plan.tasks.entries()) {
           const task = await createTask(team, { ...planned, status: 'pending' }, cwd);

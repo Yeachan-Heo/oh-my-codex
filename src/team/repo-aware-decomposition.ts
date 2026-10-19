@@ -1,46 +1,10 @@
 import { getAgent } from '../agents/definitions.js';
+import { inferTaskEvidenceIntent } from './task-evidence-intent.js';
 import { existsSync } from 'node:fs';
 import { relative } from 'node:path';
 import { allocateTasksToWorkers } from './allocation-policy.js';
 import type { ApprovedRepositoryContextSummary } from '../planning/artifacts.js';
 import { readTeamDagHandoffForLatestPlan, type TeamDagHandoff, type TeamDagNode, type TeamDagResolution, type TeamDagWorkerCountSource } from './dag-schema.js';
-
-// Patterns for recognizing analysis tasks (must match team.ts definitions)
-const ANALYSIS_TASK_PREFIX = /^(?:analy(?:se|ze)|audit|assess|evaluate|explore|investigate|research|review|study|summari(?:s|z)e)\b/i;
-const ANALYSIS_DELIVERABLE_SIGNAL = /\b(?:actionable recommendations?|evidence(?: pointers?)?|findings?|issue|operator|report|root cause|summary|user impact|write-?up)\b/i;
-const CONTEXTUAL_DECOMPOSITION_CLAUSE = /\b(?:focusing on|focus on|including|covers?|covering|with|while|without|ensuring|suitable for|root cause|user impact|evidence pointers|actionable recommendations)\b/i;
-
-function countWords(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length;
-}
-
-function looksLikeLowConfidenceAnalysisTask(task: string): boolean {
-  const normalized = task.trim();
-  // Recognize pure analysis prefix even for short prompts (e.g., 'Analyze request latency')
-  const hasAnalysisPrefix = ANALYSIS_TASK_PREFIX.test(normalized);
-  if (hasAnalysisPrefix && normalized.length < 50) {
-    // Short analysis prompt without any code-change signals
-    const hasCodeSignals = /\b(?:fix|implement|build|create|add|update|modify|change|edit|remove|write)\b/i.test(normalized);
-    if (!hasCodeSignals) return true;
-  }
-  return hasAnalysisPrefix
-    && (ANALYSIS_DELIVERABLE_SIGNAL.test(normalized)
-      || countWords(normalized) > 18
-      || CONTEXTUAL_DECOMPOSITION_CLAUSE.test(normalized));
-}
-
-const courtesyPrefix = /^(?:(?:please|can you|could you|would you|help me)\s+)*/i;
-
-function checkIfCodeChangeRequested(description: string): boolean {
-  const taskText = description.trim().replace(courtesyPrefix, '');
-  return taskText.split(/[,;:]|\b(?:and|then|also)\b/i).some((part) => {
-    const clause = part.trim().replace(courtesyPrefix, '');
-    const analysisDeliverable = /^(?:add|build|create|make|update)\b/i.test(clause)
-      && /\b(?:reports?|summar(?:y|ies)|findings|recommendations)[.!?]?\s*$/i.test(clause.split(/\b(?:with|without|of|on|for|in|to|that)\b/i)[0]);
-    return !analysisDeliverable
-      && /^(?:add|build|change|create|edit|fix|implement|make|migrate|modify|remove|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
-  });
-}
 
 export interface LegacyTeamExecutionPlanInput {
   task: string;
@@ -250,12 +214,8 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
   const allocationInput = sorted.map((node) => {
     const enrichedDescription = enrichNodeDescription(node, input.cwd);
     const resolvedRole = input.explicitAgentType ? input.agentType : node.role ?? input.agentType;
-    const subjectCodeChange = checkIfCodeChangeRequested(node.subject);
-    const descriptionCodeChange = checkIfCodeChangeRequested(enrichedDescription);
-    const codeChangeRequested = subjectCodeChange || descriptionCodeChange;
-    const subjectAnalysis = looksLikeLowConfidenceAnalysisTask(node.subject);
-    const descriptionAnalysis = looksLikeLowConfidenceAnalysisTask(enrichedDescription);
-    const implicitAnalysis = !input.explicitAgentType && !codeChangeRequested && (subjectAnalysis || descriptionAnalysis);
+    const { analysisOnly } = inferTaskEvidenceIntent(node.subject, node.description);
+    const implicitAnalysis = !input.explicitAgentType && analysisOnly;
     return {
       subject: node.subject,
       description: enrichedDescription,
