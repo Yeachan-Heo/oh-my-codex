@@ -10,6 +10,71 @@ import { monitorTeam } from '../runtime.js';
 import { buildTeamExecutionPlan } from '../../cli/team.js';
 
 describe('worker completion evidence', () => {
+  it('enforces report output evidence while allowing labeled analysis and evaluated options', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-review-evidence-'));
+    try {
+      await initTeamState('proof', 'review', 'executor', 4, cwd);
+      for (const [prompt, required] of [
+        ['Analyze request latency and write findings to docs/latency-report.md', true],
+        ['Write findings to README.', true],
+        ['Task: Write findings to README.', true],
+        ['Write a report to "latency and findings.md"', true],
+        ['Write a report to "Latency Report. Final.md"', true],
+        ['Write a report to "latency and update findings.md"', true],
+        ['Explain how caching works, but please apply the approved fix', true],
+        ['Explain how caching works, but apply the approved fix', true],
+        ['Explain how caching works but apply the approved fix', true],
+        ['How does caching work but fix the broken cache with regression tests', false],
+        ['Explain why we add retries but remove failed jobs', false],
+        ['How does caching work, but fix the broken cache with regression tests', true],
+        ['Explain these steps: 1. add retries 2. update tests, but apply the approved fix', true],
+        ['How does caching work, but why does it fail?', false],
+        ['Explain why caching improves latency but updating tests does not improve runtime performance', false],
+        ['Explain why refactoring improves maintainability, but adding caches increases memory usage', false],
+        ['Why do we add retries but remove failed jobs?', false],
+        ['Why does the server add retries but remove failed jobs?', false],
+        ['Why does it add retries but remove failed jobs?', false],
+        ['How does the server add retries but remove failed jobs?', false],
+        ['When does the server add retries but remove failed jobs?', false],
+        ['Evaluate options: retain the package but modify the adapter', false],
+        ['Evaluate options: 1. retain the package but modify the adapter', false],
+        ['Explain these steps: 1. add retries 2. update tests, but please apply the approved fix', true],
+        ['Investigate the TypeScript build failure and apply the approved patch', true],
+        ['How does the TypeScript build work, and can you please fix the compilation error?', true],
+        ['Write findings to README', true],
+        ['Write findings to: docs/report.md', true],
+        ['Write findings to:\ndocs/report.md', true],
+        ['Write a report to "latency report.md"', true],
+        ['Write a report to `latency report.md`', true],
+        ['Write findings to a Markdown file named report.md', true],
+        ['Write findings to a file', true],
+        ['Analyze request latency and save the findings to docs/latency-report.md', true],
+        ['Write a report about the API in src/api.ts without changing files', false],
+        ['Evaluate package options:\n- replace package A\n- modify the adapter\n- retain the current package', false],
+        ['Evaluate package options: 1. replace package A 2. modify the adapter 3. retain the current package', false],
+        ['Evaluate package options:\n- replace package A\n- retain the current package\nThen implement the approved option', true],
+        ['Task: Analyze request latency', false],
+        ['Evaluate package options: replace package A, modify the adapter, or retain the current package', false],
+        ['Evaluate package options: replace package A or retain it, then implement the approved option', true],
+      ] as const) {
+        for (const count of [1, 4]) {
+          const plan = buildTeamExecutionPlan(prompt, count, 'executor', false, true);
+          assert.equal(plan.tasks.some(task => task.requires_code_change), required, prompt);
+          for (const planned of plan.tasks) {
+            const task = await createTask('proof', { ...planned, status: 'pending' }, cwd);
+            const claim = await claimTask('proof', task.id, planned.owner, null, cwd);
+            assert.ok(claim.ok);
+            const result = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd);
+            assert.equal(result.ok, !planned.requires_code_change, planned.description);
+            if (!result.ok) assert.equal(result.error, 'invalid_completion_evidence');
+          }
+        }
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('requires evidence for generated implementation and test tasks while preserving read-only plans', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-generated-evidence-'));
     try {

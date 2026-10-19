@@ -104,7 +104,9 @@ classified independently so either field can establish a coding requirement.
 Localized mutation vocabulary supported by role routing and implementation actions
 in temporal/purpose clauses also require evidence. Explanations, questions, and
 negated purpose clauses retain their read-only context. List splitting preserves
-analysis headers and later independent implementation instructions.
+analysis headers and later independent implementation instructions. Explicit report
+output files require evidence; analysis labels and candidate options retain their
+read-only context.
 Auto-generated implementation, test-writing, and additional implementation aspects
 inherit the original task's evidence requirement regardless of heuristic role
 routing. Analysis-only tasks and explicitly selected analysis/read-only roles

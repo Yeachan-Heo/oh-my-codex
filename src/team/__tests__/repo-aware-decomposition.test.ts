@@ -21,6 +21,23 @@ const legacy = () => ({
 });
 
 describe('buildRepoAwareTeamExecutionPlan', () => {
+  it('distinguishes report file outputs from labeled analysis and evaluated alternatives', () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, '.omx/plans/team-dag-demo.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [
+        { id: 'report', role: 'executor', subject: 'Analyze request latency', description: 'Write findings to docs/latency-report.md' },
+        { id: 'label', role: 'executor', subject: 'Task: Analyze request latency', description: 'Read existing measurements' },
+        { id: 'options', role: 'executor', subject: 'Evaluate package options: replace package A, modify the adapter, or retain the current package', description: 'Report recommendations' },
+        { id: 'implement', role: 'executor', subject: 'Evaluate package options: replace package A or retain it', description: 'Implement the approved option' },
+        { id: 'apply', role: 'executor', subject: 'Investigate the TypeScript build failure', description: 'Apply the approved patch' },
+        { id: 'question', role: 'executor', subject: 'How does the TypeScript build work, and can you please fix the compilation error?', description: 'Read measurements' },
+      ],
+    }));
+    const plan = buildRepoAwareTeamExecutionPlan({ task: 'review', workerCount: 4, agentType: 'executor', explicitAgentType: false, explicitWorkerCount: true, cwd, buildLegacyPlan: legacy, allowDagHandoff: true });
+    assert.deepEqual(plan.tasks.map(task => task.requires_code_change), [true, false, false, true, true, true]);
+  });
+
   it('classifies DAG field boundaries and preserves explicit evidence overrides', () => {
     const cwd = repo();
     writeFileSync(join(cwd, '.omx/plans/team-dag-demo.json'), JSON.stringify({

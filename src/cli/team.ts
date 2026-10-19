@@ -1,5 +1,5 @@
 import { getAgent } from '../agents/definitions.js';
-import { inferTaskEvidenceIntent } from '../team/task-evidence-intent.js';
+import { inferTaskEvidenceIntent, QUOTED_LITERAL } from '../team/task-evidence-intent.js';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
@@ -1162,6 +1162,10 @@ function canSafelySplitWeakTaskList(task: string, parts: string[]): boolean {
 
 /** Split a task string into sub-tasks using numbered lists or conservative delimiters. */
 function splitTaskString(task: string): DecompositionPlan {
+  if ([...task.matchAll(QUOTED_LITERAL)].some(([literal]) => /[,;\r\n]|\band\b|\d+[.)]\s/i.test(literal))) {
+    return { strategy: 'atomic', subtasks: [{ subject: task.slice(0, 80), description: task }] };
+  }
+
   // Try numbered list: "1. foo 2. bar 3. baz" or "1) foo 2) bar"
   const numberedPattern = /(?:^|\s)(\d+)[.)]\s+/g;
   const numberedMatches = [...task.matchAll(numberedPattern)];
