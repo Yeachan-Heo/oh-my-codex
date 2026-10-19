@@ -1062,13 +1062,23 @@ export function buildTeamExecutionPlan(
         : undefined
     : undefined;
 
+  const courtesyPrefix = /^(?:(?:please|can you|could you|would you|help me)\s+)*/i;
   const assignRole = (st: DecompositionCandidate) => {
     const role = explicitAgentType ? agentType
       : routeTaskToRole(st.subject, st.description, 'team-exec', fallbackRole).role;
+    const taskText = st.description.trim().replace(courtesyPrefix, '');
+    const codeChangeRequested = taskText.split(/[,;:]|\b(?:and|then|also)\b/i).some((part) => {
+      const clause = part.trim().replace(courtesyPrefix, '');
+      const analysisDeliverable = /^(?:add|build|create|make|update)\b/i.test(clause)
+        && /\b(?:reports?|summar(?:y|ies)|findings|recommendations)[.!?]?\s*$/i.test(clause.split(/\b(?:with|without|of|on|for|in|to|that)\b/i)[0]);
+      return !analysisDeliverable
+        && /^(?:add|build|create|fix|implement|make|migrate|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
+    });
     const implicitCodeChange = !explicitAgentType && role === 'debugger'
-      && /^(?:(?:please|can you|could you|would you|help me)\s+)?(?:add|build|create|fix|implement|make|migrate|refactor|repair|resolve|ship|support|update|wire)\b/i.test(st.subject.trim());
+      && codeChangeRequested;
+    const implicitAnalysis = !explicitAgentType && !codeChangeRequested && looksLikeLowConfidenceAnalysisTask(taskText);
     return { ...st, role, requires_code_change: !explicitAgentType && st.requires_code_change !== undefined
-      ? st.requires_code_change : implicitCodeChange || (getAgent(role)?.tools ?? 'execution') === 'execution' };
+      ? st.requires_code_change : implicitCodeChange || (!implicitAnalysis && (getAgent(role)?.tools ?? 'execution') === 'execution') };
   };
 
   let subtasks = plan.subtasks;
@@ -1214,7 +1224,7 @@ function createAspectSubtasks(
   const aspects = [
     { subject: `Implement: ${task}`.slice(0, 80), description: `Implement the core functionality for: ${task}`, requires_code_change: requiresCodeChange },
     { subject: `Test: ${task}`.slice(0, 80), description: `Write tests and verify: ${task}`, requires_code_change: requiresCodeChange },
-    { subject: `Review and document: ${task}`.slice(0, 80), description: `Review code quality and update documentation for: ${task}` },
+    { subject: `Review and document: ${task}`.slice(0, 80), description: `Review code quality and update documentation for: ${task}`, requires_code_change: false },
   ];
 
   // Return up to workerCount aspects, repeating implementation for extra workers

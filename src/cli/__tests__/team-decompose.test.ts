@@ -3,6 +3,50 @@ import assert from 'node:assert/strict';
 import { buildTeamExecutionPlan, decomposeTaskString } from '../team.js';
 
 describe('decomposeTaskString', () => {
+  it('requires evidence for repair requests with stacked courtesy prefixes', () => {
+    for (const prefix of ['Could you please', 'Would you please', 'Please help me', 'Can you please help me']) {
+      const task = `${prefix} fix TypeScript compilation errors`;
+      assert.equal(buildTeamExecutionPlan(task, 1, 'executor', false).tasks[0].requires_code_change, true, task);
+      assert.deepEqual(buildTeamExecutionPlan(task, 4, 'executor', false, true).tasks.map(task => task.requires_code_change), [true, true, false, true]);
+      assert.equal(buildTeamExecutionPlan(task, 1, 'debugger', true).tasks[0].requires_code_change, false);
+    }
+  });
+
+  it('keeps recognized analysis deliverables optional despite execution fallback routing', () => {
+    for (const task of [
+      'Analyze request latency and report the findings',
+      'Could you please analyze request latency and report the findings',
+      'Summarize request latency evidence in a report',
+      'Analyze request latency and report how to fix regressions with evidence',
+      'Investigate compilation errors and recommend a fix without changing implementation',
+      'Analyze request latency without changing implementation and create a concise report of findings',
+      'Analyze request latency without changing implementation and make a report of findings',
+      'Analyze request latency without changing implementation and update the detailed summary with findings',
+      'Analyze the current request latency across all production-facing services and their dependencies without changing implementation and report the findings',
+    ]) {
+      assert.ok(buildTeamExecutionPlan(task, 1, 'executor', false).tasks.every(task => task.requires_code_change === false), task);
+      assert.ok(buildTeamExecutionPlan(task, 4, 'executor', false, true).tasks.every(task => task.requires_code_change === false), task);
+      assert.ok(buildTeamExecutionPlan(task, 1, 'executor', true).tasks.every(task => task.requires_code_change === true), task);
+    }
+  });
+
+  it('keeps implementation evidence required for mixed analysis and coding requests', () => {
+    for (const task of [
+      'Analyze request latency and implement a fix with regression tests',
+      'Analyze request latency with current measurements and then implement a cache',
+      'Analyze compilation errors and then please fix the errors with regression tests',
+      'Analyze request latency and write regression tests with coverage',
+      'Analyze request latency and create a cache with a report of findings',
+      'Analyze request latency and build a report generator with regression tests',
+      'Analyze request latency and update code to produce a report with findings',
+    ]) {
+      assert.equal(buildTeamExecutionPlan(task, 1, 'executor', false).tasks[0].requires_code_change, true, task);
+      const plan = buildTeamExecutionPlan(task, 4, 'executor', false, true);
+      assert.equal(plan.tasks.length, 4);
+      assert.deepEqual(plan.tasks.map(task => task.requires_code_change), [true, true, false, true], task);
+    }
+  });
+
   it('splits conjunction-separated tasks', () => {
     const tasks = decomposeTaskString('fix tests, build UI, and write docs', 3, 'executor', false);
     assert.equal(tasks.length, 3);

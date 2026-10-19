@@ -94,7 +94,10 @@ rejection leaves the task, completion events and completion monitor marker uncha
 CLI-generated tasks default completion evidence on for execution-capable roles,
 including implementation and test-writing roles. Implicit implementation or repair
 requests routed to `debugger` also require evidence, including polite request
-prefixes such as "please" or "could you". Explicit analysis roles remain optional.
+prefixes such as "please" or "could you" and combinations such as "could you please".
+Recognized analysis deliverables remain optional even when heuristic routing falls
+back to an execution role; mixed requests with explicit implementation or test-writing
+actions still require evidence. Explicit analysis roles remain optional.
 Auto-generated implementation, test-writing, and additional implementation aspects
 inherit the original task's evidence requirement regardless of heuristic role
 routing. Analysis-only tasks and explicitly selected analysis/read-only roles
