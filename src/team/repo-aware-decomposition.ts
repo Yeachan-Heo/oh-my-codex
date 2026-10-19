@@ -16,7 +16,14 @@ function countWords(text: string): number {
 
 function looksLikeLowConfidenceAnalysisTask(task: string): boolean {
   const normalized = task.trim();
-  return ANALYSIS_TASK_PREFIX.test(normalized)
+  // Recognize pure analysis prefix even for short prompts (e.g., 'Analyze request latency')
+  const hasAnalysisPrefix = ANALYSIS_TASK_PREFIX.test(normalized);
+  if (hasAnalysisPrefix && normalized.length < 50) {
+    // Short analysis prompt without any code-change signals
+    const hasCodeSignals = /\b(?:fix|implement|build|create|add|update|modify|change|edit|remove|write)\b/i.test(normalized);
+    if (!hasCodeSignals) return true;
+  }
+  return hasAnalysisPrefix
     && (ANALYSIS_DELIVERABLE_SIGNAL.test(normalized)
       || countWords(normalized) > 18
       || CONTEXTUAL_DECOMPOSITION_CLAUSE.test(normalized));
@@ -31,7 +38,7 @@ function checkIfCodeChangeRequested(description: string): boolean {
     const analysisDeliverable = /^(?:add|build|create|make|update)\b/i.test(clause)
       && /\b(?:reports?|summar(?:y|ies)|findings|recommendations)[.!?]?\s*$/i.test(clause.split(/\b(?:with|without|of|on|for|in|to|that)\b/i)[0]);
     return !analysisDeliverable
-      && /^(?:add|build|create|fix|implement|make|migrate|modify|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
+      && /^(?:add|build|change|create|edit|fix|implement|make|migrate|modify|remove|refactor|repair|resolve|ship|support|update|wire|write\s+(?:(?:new|regression|unit|integration)\s+)*tests?)\b/i.test(clause);
   });
 }
 
@@ -243,9 +250,12 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
   const allocationInput = sorted.map((node) => {
     const enrichedDescription = enrichNodeDescription(node, input.cwd);
     const resolvedRole = input.explicitAgentType ? input.agentType : node.role ?? input.agentType;
-    const fullNodeText = node.subject + ' ' + enrichedDescription;
-    const codeChangeRequested = checkIfCodeChangeRequested(fullNodeText);
-    const implicitAnalysis = !input.explicitAgentType && !codeChangeRequested && looksLikeLowConfidenceAnalysisTask(fullNodeText);
+    const subjectCodeChange = checkIfCodeChangeRequested(node.subject);
+    const descriptionCodeChange = checkIfCodeChangeRequested(enrichedDescription);
+    const codeChangeRequested = subjectCodeChange || descriptionCodeChange;
+    const subjectAnalysis = looksLikeLowConfidenceAnalysisTask(node.subject);
+    const descriptionAnalysis = looksLikeLowConfidenceAnalysisTask(enrichedDescription);
+    const implicitAnalysis = !input.explicitAgentType && !codeChangeRequested && (subjectAnalysis || descriptionAnalysis);
     return {
       subject: node.subject,
       description: enrichedDescription,
