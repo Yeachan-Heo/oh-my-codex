@@ -1,3 +1,4 @@
+import { getAgent } from '../agents/definitions.js';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateModeState, startMode, readModeState } from '../modes/base.js';
@@ -967,6 +968,7 @@ type DecompositionStrategy = 'numbered' | 'bulleted' | 'conjunction' | 'atomic';
 interface DecompositionCandidate {
   subject: string;
   description: string;
+  requires_code_change?: boolean;
 }
 
 interface DecompositionPlan {
@@ -976,7 +978,7 @@ interface DecompositionPlan {
 
 export interface TeamExecutionPlan {
   workerCount: number;
-  tasks: Array<{ subject: string; description: string; owner: string; role?: string }>;
+  tasks: Array<{ subject: string; description: string; owner: string; role?: string; requires_code_change?: boolean }>;
   overOrchestrationNotice?: {
     code: 'team_over_orchestration_warning' | 'explicit_team_override_acknowledged';
     message: string;
@@ -1060,19 +1062,21 @@ export function buildTeamExecutionPlan(
         : undefined
     : undefined;
 
+  const assignRole = (st: DecompositionCandidate) => {
+    const role = explicitAgentType ? agentType
+      : routeTaskToRole(st.subject, st.description, 'team-exec', fallbackRole).role;
+    const implicitCodeChange = !explicitAgentType && role === 'debugger'
+      && /^(?:(?:please|can you|could you|would you|help me)\s+)?(?:add|build|create|fix|implement|make|migrate|refactor|repair|resolve|ship|support|update|wire)\b/i.test(st.subject.trim());
+    return { ...st, role, requires_code_change: !explicitAgentType && st.requires_code_change !== undefined
+      ? st.requires_code_change : implicitCodeChange || (getAgent(role)?.tools ?? 'execution') === 'execution' };
+  };
+
   let subtasks = plan.subtasks;
   const usedAspectSubtasks = subtasks.length <= 1 && effectiveWorkerCount > 1;
-  if (subtasks.length <= 1 && effectiveWorkerCount > 1) {
-    subtasks = createAspectSubtasks(task, effectiveWorkerCount);
+  if (usedAspectSubtasks) {
+    subtasks = createAspectSubtasks(task, effectiveWorkerCount, assignRole(subtasks[0]).requires_code_change);
   }
-
-  const tasksWithRoles = subtasks.map((st) => {
-    if (explicitAgentType) {
-      return { ...st, role: agentType };
-    }
-    const result = routeTaskToRole(st.subject, st.description, 'team-exec', fallbackRole);
-    return { ...st, role: result.role };
-  });
+  const tasksWithRoles = subtasks.map(assignRole);
 
   const normalizedRoles = new Set(tasksWithRoles.map((task) => (task.role ?? '').trim()));
   const tasks = usedAspectSubtasks && tasksWithRoles.length > 1 && normalizedRoles.size <= 1
@@ -1099,7 +1103,7 @@ export function decomposeTaskString(
   agentType: string,
   explicitAgentType: boolean,
   explicitWorkerCount = false,
-): Array<{ subject: string; description: string; owner: string; role?: string }> {
+): TeamExecutionPlan['tasks'] {
   return buildTeamExecutionPlan(task, workerCount, agentType, explicitAgentType, explicitWorkerCount).tasks;
 }
 
@@ -1205,10 +1209,11 @@ function splitTaskString(task: string): DecompositionPlan {
 function createAspectSubtasks(
   task: string,
   workerCount: number,
-): Array<{ subject: string; description: string }> {
+  requiresCodeChange: boolean,
+): DecompositionCandidate[] {
   const aspects = [
-    { subject: `Implement: ${task}`.slice(0, 80), description: `Implement the core functionality for: ${task}` },
-    { subject: `Test: ${task}`.slice(0, 80), description: `Write tests and verify: ${task}` },
+    { subject: `Implement: ${task}`.slice(0, 80), description: `Implement the core functionality for: ${task}`, requires_code_change: requiresCodeChange },
+    { subject: `Test: ${task}`.slice(0, 80), description: `Write tests and verify: ${task}`, requires_code_change: requiresCodeChange },
     { subject: `Review and document: ${task}`.slice(0, 80), description: `Review code quality and update documentation for: ${task}` },
   ];
 
@@ -1219,6 +1224,7 @@ function createAspectSubtasks(
     result.push({
       subject: `Additional work (${idx + 1}): ${task}`.slice(0, 80),
       description: `Continue implementation work on: ${task}`,
+      requires_code_change: requiresCodeChange,
     });
   }
   return result;
@@ -1226,10 +1232,10 @@ function createAspectSubtasks(
 
 /** Distribute tasks across workers using an inspectable allocation policy. */
 function distributeTasksToWorkers(
-  tasks: Array<{ subject: string; description: string; role?: string; blocked_by?: string[] }>,
+  tasks: Array<{ subject: string; description: string; role?: string; blocked_by?: string[]; requires_code_change?: boolean }>,
   workerCount: number,
   workerRole?: string,
-): Array<{ subject: string; description: string; owner: string; role?: string }> {
+): TeamExecutionPlan['tasks'] {
   const workers = Array.from({ length: workerCount }, (_, index) => ({
     name: `worker-${index + 1}`,
     role: workerRole,

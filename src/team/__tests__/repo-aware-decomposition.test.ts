@@ -21,6 +21,24 @@ const legacy = () => ({
 });
 
 describe('buildRepoAwareTeamExecutionPlan', () => {
+  it('defaults code-capable DAG roles to evidence and preserves explicit read-only overrides', () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, '.omx/plans/team-dag-demo.json'), JSON.stringify({
+      schema_version: 1,
+      nodes: [
+        { id: 'impl', role: 'executor', subject: 'Implement limiter', description: 'Change runtime' },
+        { id: 'tests', role: 'test-engineer', subject: 'Write tests', description: 'Add regression tests' },
+        { id: 'review', role: 'verifier', subject: 'Review', description: 'Read-only verification' },
+        { id: 'explicit', role: 'executor', subject: 'Inspect', description: 'Explicit read-only task', requires_code_change: false },
+      ],
+    }));
+    const plan = buildRepoAwareTeamExecutionPlan({
+      task: 'implement', workerCount: 4, agentType: 'executor', explicitAgentType: false, explicitWorkerCount: true,
+      cwd, buildLegacyPlan: legacy, allowDagHandoff: true,
+    });
+    assert.deepEqual(plan.tasks.map((task) => task.requires_code_change), [true, true, false, false]);
+  });
+
   it('falls back to legacy text decomposition when no DAG exists', () => {
     const cwd = repo();
     const plan = buildRepoAwareTeamExecutionPlan({

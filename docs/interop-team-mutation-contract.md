@@ -89,6 +89,22 @@ and a human-readable `data.reason`. The outer envelope may still have `ok: true`
 clients must inspect `data.ok`, not just the process exit status or envelope. A
 rejection leaves the task, completion events and completion monitor marker unchanged.
 
+### Generated plans
+
+CLI-generated tasks default completion evidence on for execution-capable roles,
+including implementation and test-writing roles. Implicit implementation or repair
+requests routed to `debugger` also require evidence, including polite request
+prefixes such as "please" or "could you". Explicit analysis roles remain optional.
+Auto-generated implementation, test-writing, and additional implementation aspects
+inherit the original task's evidence requirement regardless of heuristic role
+routing. Analysis-only tasks and explicitly selected analysis/read-only roles
+remain optional after splitting.
+DAG imports use the effective
+role's tool access when `requires_code_change` is absent; an explicit boolean
+still wins. Known analysis/read-only roles stay optional. Unknown roles default
+to requiring evidence. Existing task records and direct API clients retain the
+compatibility rules below.
+
 ### Compatibility
 
 - Tasks with `requires_code_change: false` or an absent flag retain their existing

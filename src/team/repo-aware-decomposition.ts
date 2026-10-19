@@ -1,3 +1,4 @@
+import { getAgent } from '../agents/definitions.js';
 import { existsSync } from 'node:fs';
 import { relative } from 'node:path';
 import { allocateTasksToWorkers } from './allocation-policy.js';
@@ -215,7 +216,8 @@ function buildFromDag(input: LegacyTeamExecutionPlanInput, resolution: TeamDagRe
     role: input.explicitAgentType ? input.agentType : node.role,
     blocked_by: node.depends_on ?? [],
     symbolic_depends_on: node.depends_on ?? [],
-    requires_code_change: node.requires_code_change,
+    requires_code_change: node.requires_code_change
+      ?? (getAgent(input.explicitAgentType ? input.agentType : node.role ?? input.agentType)?.tools ?? 'execution') === 'execution',
     filePaths: node.filePaths,
     domains: inferDomains(node),
     lane: node.lane,

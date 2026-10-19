@@ -7,8 +7,77 @@ import { join } from 'node:path';
 import { claimTask, createTask, initTeamState, readMonitorSnapshot, readTask, releaseTaskClaim, saveTeamConfig, transitionTaskStatus, updateTask, teamEventLogPath } from '../state.js';
 import { executeTeamApiOperation } from '../api-interop.js';
 import { monitorTeam } from '../runtime.js';
+import { buildTeamExecutionPlan } from '../../cli/team.js';
 
 describe('worker completion evidence', () => {
+  it('requires evidence for generated implementation and test tasks while preserving read-only plans', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-generated-evidence-'));
+    try {
+      await initTeamState('proof', 'implement', 'executor', 1, cwd);
+      for (const [role, prompt, explicitRole, required] of [
+        ['executor', 'Implement login limiter', true, true],
+        ['test-engineer', 'Write limiter regression tests', true, true],
+        ['executor', 'Fix TypeScript build errors', false, true],
+        ['executor', 'Repair compilation errors', false, true],
+        ['executor', 'Fix the login regression', false, true],
+        ['executor', 'Implement a fix for compilation errors', false, true],
+        ['executor', 'Please fix TypeScript compile errors in src/index.ts by changing the return type', false, true],
+        ['executor', 'Could you repair compilation errors', false, true],
+        ['executor', 'Investigate compilation errors and recommend a fix', false, false],
+        ['executor', 'Review the proposed fix for compilation errors', false, false],
+        ['executor', 'Create a dependency comparison report', false, false],
+        ['debugger', 'Fix TypeScript build errors', true, false],
+        ['verifier', 'Review limiter behavior', true, false],
+      ] as const) {
+        const planned = buildTeamExecutionPlan(prompt, 1, role, explicitRole, true).tasks[0];
+        assert.equal(planned.requires_code_change, required, prompt);
+        const task = await createTask('proof', { ...planned, status: 'pending' }, cwd);
+        const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
+        assert.ok(claim.ok);
+        const result = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd);
+        assert.equal(result.ok, !required);
+        if (!result.ok) assert.equal(result.error, 'invalid_completion_evidence');
+        assert.equal((await readTask('proof', task.id, cwd))?.status, required ? 'in_progress' : 'completed');
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('requires evidence for generated implementation and test aspects across worker counts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-fanout-evidence-'));
+    try {
+      const scenarios = [
+        [2, false, 'Fix TypeScript build errors', true],
+        [4, false, 'Fix TypeScript build errors', true],
+        [5, false, 'Fix TypeScript build errors', true],
+        [4, true, 'Fix TypeScript build errors', false],
+        [4, false, 'Review limiter behavior', false],
+        [4, false, 'Investigate compilation errors and recommend a fix', false],
+        [4, false, 'Create a dependency comparison report', false],
+      ] as const;
+      for (const [scenario, [count, explicitRole, prompt, coding]] of scenarios.entries()) {
+        const team = `proof-${scenario}`;
+        await initTeamState(team, prompt, 'debugger', count, cwd);
+        const plan = buildTeamExecutionPlan(prompt, count, explicitRole ? 'debugger' : 'executor', explicitRole, true);
+        const required = coding ? [true, true, false, true, true].slice(0, count) : Array(count).fill(false);
+        assert.equal(plan.tasks.length, count);
+        assert.deepEqual(plan.tasks.map(task => task.requires_code_change), required);
+        for (const [index, planned] of plan.tasks.entries()) {
+          const task = await createTask(team, { ...planned, status: 'pending' }, cwd);
+          const claim = await claimTask(team, task.id, planned.owner, null, cwd);
+          assert.ok(claim.ok);
+          const result = await transitionTaskStatus(team, task.id, 'in_progress', 'completed', claim.claimToken, cwd);
+          assert.equal(result.ok, !required[index], planned.subject);
+          if (!result.ok) assert.equal(result.error, 'invalid_completion_evidence');
+          assert.equal((await readTask(team, task.id, cwd))?.status, required[index] ? 'in_progress' : 'completed');
+        }
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects enabling evidence on terminal tasks through the public API without reclassifying them', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
     try {
