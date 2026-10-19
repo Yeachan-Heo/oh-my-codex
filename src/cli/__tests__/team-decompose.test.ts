@@ -3,6 +3,38 @@ import assert from 'node:assert/strict';
 import { buildTeamExecutionPlan, decomposeTaskString } from '../team.js';
 
 describe('decomposeTaskString', () => {
+  it('classifies localized mutations, explanatory questions, and subordinate coding requests', () => {
+    for (const [prompt, required] of [
+      ['빌드 오류 수정', true],
+      ['Investigate how to resolve authentication failures before implementing a fix with regression tests', true],
+      ['Explain how to fix the cache, then implement the approved fix with regression tests', true],
+      ['컴파일 오류 해결', true],
+      ['Explain how authentication is wired', false],
+      ['Explain these steps:\n- add retries\n- update tests', false],
+      ['Explain how to: 1. add retries 2. update tests', false],
+      ['Explain these steps: 1. Implement a cache; 2. Add regression tests', false],
+      ['Explain these steps: 1) Implement a cache; 2) Add regression tests', false],
+      ['Explain these steps: 1. add retries 2. upgrade to Node 22. Then implement the approved fix', true],
+      ['Explain these steps: 1. add retries 2. upgrade to Node 22. Implement the approved fix', true],
+      ['Explain this step: 1. Inspect HTTP/2. Implement the approved fix', true],
+      ['Explain these steps:\n1. upgrade to version 2. Implement the approved fix\n2. update the docs', true],
+      ['Explain these steps: 1. add retries 2. update tests, and then implement the approved fix', true],
+      ['Analyze failures:\n- implement a fix\n- add regression tests', true],
+      ['Explain these steps:\n- add retries\n- update tests\nThen implement the approved fix', true],
+      ['Explain these steps: 1. add retries 2. update tests. Then implement the approved fix', true],
+      ['Explain these steps:\n- add retries\n- update tests; then implement the approved fix', true],
+      ['Investigate how to fix the cache and update the tests', false],
+      ['Investigate whether to implement retries and update the tests', false],
+      ['Analyze how to fix the cache and update regression tests', false],
+      ['How does authentication work?', false],
+      ['Investigate authentication failures before implementing a fix with regression tests', true],
+    ] as const) {
+      assert.equal(buildTeamExecutionPlan(prompt, 1, 'executor', false).tasks[0].requires_code_change, required, prompt);
+      assert.deepEqual(buildTeamExecutionPlan(prompt, 4, 'executor', false, true).tasks.map(task => task.requires_code_change), required ? [true, true, false, true] : [false, false, false, false], prompt);
+      assert.ok(buildTeamExecutionPlan(prompt, 4, 'debugger', true, true).tasks.every(task => task.requires_code_change === false), prompt);
+    }
+  });
+
   it('keeps short analysis optional and honors explicit analysis roles for mutation prompts', () => {
     for (const prompt of ['Analyze request latency', 'Could you please analyze request latency', 'Review the authentication flow']) {
       for (const count of [1, 4]) {

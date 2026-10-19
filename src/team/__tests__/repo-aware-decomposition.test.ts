@@ -28,6 +28,9 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
       nodes: [
         { id: 'subject-code', role: 'executor', subject: 'Implement a cache fix', description: 'Analyze request latency and report findings' },
         { id: 'description-code', role: 'executor', subject: 'Analyze request latency', description: 'Implement the approved cache fix and report findings' },
+        { id: 'explanation', role: 'executor', subject: 'Explain how authentication is wired', description: 'Read existing code' },
+        { id: 'subordinate', role: 'executor', subject: 'Investigate authentication failures', description: 'Investigate authentication failures before implementing a fix with regression tests' },
+        { id: 'localized', role: 'executor', subject: '빌드 오류 수정', description: '컴파일 오류 해결' },
         { id: 'short-analysis', role: 'executor', subject: 'Analyze request latency', description: 'Inspect measurements' },
         { id: 'mutation', role: 'executor', subject: 'Analyze request latency', description: 'Edit src/cache.ts and report findings' },
         { id: 'explicit-false', role: 'executor', subject: 'Implement the cache', description: 'Change runtime', requires_code_change: false },
@@ -39,10 +42,10 @@ describe('buildRepoAwareTeamExecutionPlan', () => {
     const input = { task: 'latency', workerCount: 4, agentType: 'executor', explicitAgentType: false, explicitWorkerCount: true, cwd, buildLegacyPlan: legacy, allowDagHandoff: true };
     const plan = buildRepoAwareTeamExecutionPlan(input);
     assert.deepEqual(plan.tasks.map(task => [task.symbolic_id, task.requires_code_change]), [
-      ['subject-code', true], ['description-code', true], ['short-analysis', false], ['mutation', true], ['explicit-false', false], ['explicit-true', true], ['metadata-analysis', false], ['sentence-code', true],
+      ['subject-code', true], ['description-code', true], ['explanation', false], ['subordinate', true], ['localized', true], ['short-analysis', false], ['mutation', true], ['explicit-false', false], ['explicit-true', true], ['metadata-analysis', false], ['sentence-code', true],
     ]);
     const explicit = buildRepoAwareTeamExecutionPlan({ ...input, agentType: 'debugger', explicitAgentType: true });
-    assert.deepEqual(explicit.tasks.map(task => task.requires_code_change), [false, false, false, false, false, true, false, false]);
+    assert.deepEqual(explicit.tasks.map(task => task.requires_code_change), [false, false, false, false, false, false, false, false, true, false, false]);
   });
 
   it('defaults code-capable DAG roles to evidence and preserves explicit read-only overrides', () => {

@@ -1039,7 +1039,14 @@ export function buildTeamExecutionPlan(
   explicitAgentType: boolean,
   explicitWorkerCount = false,
 ): TeamExecutionPlan {
-  const plan = splitTaskString(task);
+  let plan = splitTaskString(task);
+  const preamble = plan.strategy === 'numbered' || plan.strategy === 'bulleted'
+    ? task.slice(0, task.indexOf(plan.subtasks[0].description)) : '';
+  // Keep analysis scope and any unlisted follow-up instructions when splitting loses context.
+  if (inferTaskEvidenceIntent(preamble).analysisOnly
+    || (inferTaskEvidenceIntent(task).analysisOnly && plan.subtasks.some(part => inferTaskEvidenceIntent(part.description).codeChangeRequested))) {
+    plan = { strategy: 'atomic', subtasks: [{ subject: task.slice(0, 80), description: task }] };
+  }
   const taskSize = classifyTaskSize(task).size;
   const effectiveWorkerCount = resolveTeamFanoutLimit(
     task,

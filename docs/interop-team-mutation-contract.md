@@ -101,6 +101,10 @@ actions still require evidence. Explicit analysis roles remain optional.
 Short analysis requests are also evidence-optional. CLI and DAG generation share
 the same intent rules for mutation verbs, and DAG subjects and descriptions are
 classified independently so either field can establish a coding requirement.
+Localized mutation vocabulary supported by role routing and implementation actions
+in temporal/purpose clauses also require evidence. Explanations, questions, and
+negated purpose clauses retain their read-only context. List splitting preserves
+analysis headers and later independent implementation instructions.
 Auto-generated implementation, test-writing, and additional implementation aspects
 inherit the original task's evidence requirement regardless of heuristic role
 routing. Analysis-only tasks and explicitly selected analysis/read-only roles
