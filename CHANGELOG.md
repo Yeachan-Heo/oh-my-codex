@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.20] - 2026-10-19
+
+Patch release for team worker readiness deadline enforcement during final poll (2 commits, 8 files, +110/−18; PR #3835).
+
+### Fixed
+
+- Enforce the configured readiness deadline (`OMX_TEAM_READY_TIMEOUT_MS`) on the final readiness poll, preventing team worker readiness from reporting ready after the timeout expires. Incompatibility markers remain fail-closed (#3835, follow-up to #3829/#3832; @Yeachan-Heo).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.20.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.19...v0.21.20
+
 ## [0.21.19] - 2026-10-19
 
 Patch release for agent model configuration and third-party provider fixes with correctness improvements for profile-scoped model resolution and provider classification (19 commits, 16 files, +925/−41; PRs #3824, #3825, #3827, #3828, #3829, #3831, #3832).

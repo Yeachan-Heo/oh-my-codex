@@ -366,7 +366,7 @@ describe("issue 3790 live plugin cache pins", () => {
 				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
 				assert.ok(packaged);
 				const pluginManifest = JSON.parse(await readFile(packaged.pluginManifestPath, "utf-8")) as { version: string };
-				assert.equal(pluginManifest.version, "0.21.19");
+				assert.equal(pluginManifest.version, "0.21.20");
 
 				const published = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
 				assert.equal(published.status, "materialized");
