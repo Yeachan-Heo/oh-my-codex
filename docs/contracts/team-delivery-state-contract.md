@@ -74,6 +74,20 @@ mailbox creations and acknowledgements absent from a stale compatibility snapsho
 and an unreadable existing mailbox snapshot fails closed rather than discarding
 recoverable message bodies.
 
+Mailbox creation only falls back for recognized runtime process-launch failures.
+State-load, persistence, semantic, timeout, and malformed-response failures propagate;
+the sender removes only its provisional shadow and does not emit a successful creation event.
+Creation acknowledgements must identify the expected event, message and participants;
+optional Team and body fields must match when present. Syntactically valid JSON
+without that acknowledgement is a protocol failure, not successful creation.
+Before creating a new ID, a retry checks matching Team-scoped creation events and
+replays the runtime when necessary. It verifies that those IDs reached the mailbox
+projection before deduplicating or creating another message. A failed or unverifiable
+recovery remains an error, including when the runtime executable is unavailable;
+partial persistence cannot silently become a second JSON-only or runtime message.
+Deduplication uses the same verified projection, including when another process
+completed recovery after the sender's initial mailbox read.
+
 Runtime acknowledgement rejections propagate to the caller. Transport failure
 while mutating a visible authoritative row also propagates, so the caller cannot
 report a shadow-only acknowledgement as success; a proven JSON-only row may use
