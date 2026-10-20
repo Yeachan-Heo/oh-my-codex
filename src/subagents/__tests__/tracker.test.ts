@@ -881,11 +881,57 @@ describe('subagents/tracker', () => {
       writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { root: { session_id: 'root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
         child: { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
       } } } }));
-      // Without resume_agent in availableTools, guidance warns and does not instruct the call
-      const contextWithoutTool = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: ['Read', 'Edit'] }) ?? '';
-      assert.match(contextWithoutTool, /resume_agent tool is not advertised/);
-      assert.doesNotMatch(contextWithoutTool, /resume_agent\("child"\)/);
-      assert.match(contextWithoutTool, /Do not spawn a same-role\/same-lane replacement solely because persisted reopen was unavailable/);
+      // With partial availableTools not including resume_agent, availability is unknown:
+      // guidance lists targets and explicitly checks availability before requiring invocation (issue #3866)
+      const contextUnknown = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: ['Read', 'Edit'] }) ?? '';
+      assert.match(contextUnknown, /Unknown: resume_agent tool availability could not be determined/);
+      assert.match(contextUnknown, /"child"/);
+      assert.match(contextUnknown, /If resume_agent is callable, use resume_agent\(<id>\)/);
+      assert.match(contextUnknown, /If resume_agent is not callable, continue in the root/);
+      
+      // Without availableTools provided, availability is also unknown (no inventory to check)
+      const contextNoInventory = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      assert.match(contextNoInventory, /Unknown: resume_agent tool availability could not be determined/);
+      assert.match(contextNoInventory, /"child"/);
+      
+      // With resume_agent explicitly in availableTools, guidance instructs the call
+      const contextWithTool = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: ['read', 'resume_agent', 'edit'] }) ?? '';
+      assert.match(contextWithTool, /Reopen these persisted subagents/);
+      assert.match(contextWithTool, /resume_agent\("child"\)/);
+      assert.doesNotMatch(contextWithTool, /Unknown/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('handles tool inventory with object entry shapes (name/tool_name/toolName fields)', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3866-tracker-tool-objects-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { root: { session_id: 'root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        child: { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      
+      // Object entry with 'name' field
+      const contextNameField = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: [{ name: 'Read' }, { name: 'resume_agent' }, { name: 'Edit' }] }) ?? '';
+      assert.match(contextNameField, /Reopen these persisted subagents/);
+      assert.match(contextNameField, /resume_agent\("child"\)/);
+      
+      // Object entry with 'tool_name' field
+      const contextToolName = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: [{ tool_name: 'Read' }, { tool_name: 'resume_agent' }] }) ?? '';
+      assert.match(contextToolName, /Reopen these persisted subagents/);
+      assert.match(contextToolName, /resume_agent\("child"\)/);
+      
+      // Object entry with 'toolName' field
+      const contextToolNameCamel = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: [{ toolName: 'Read' }, { toolName: 'resume_agent' }] }) ?? '';
+      assert.match(contextToolNameCamel, /Reopen these persisted subagents/);
+      assert.match(contextToolNameCamel, /resume_agent\("child"\)/);
+      
+      // Object entry without matching fields (unknown)
+      const contextEmptyObject = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: [{ name: undefined, tool_name: undefined, toolName: undefined }] }) ?? '';
+      assert.match(contextEmptyObject, /Unknown: resume_agent tool availability could not be determined/);
+      assert.match(contextEmptyObject, /If resume_agent is callable/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

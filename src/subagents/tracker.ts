@@ -1355,7 +1355,7 @@ export interface DirectChildReopenContext {
   sessionId: string;
   rootNativeSessionId: string;
   source: string;
-  availableTools?: readonly string[] | readonly { name: string }[] | null;
+  availableTools?: readonly string[] | readonly { name?: string; tool_name?: string; toolName?: string }[] | null;
 }
 
 function formatReopenMetadata(entry: SubagentLedgerEntry): string {
@@ -1387,15 +1387,36 @@ function persistedReopenLegacyNotice(excludedCount: number, source: string): str
   ].join('\n');
 }
 
-function hasResumeAgentTool(tools: readonly string[] | readonly { name?: string; tool_name?: string; toolName?: string }[] | null | undefined): boolean {
-  // When tools list is not provided, assume the tool is available (can't determine).
-  // Only report unavailability when we have explicit evidence that it's absent.
-  if (!tools || tools.length === 0) return true;
-  return tools.some((tool) => {
+/**
+ * Tri-state availability of resume_agent tool:
+ * - 'available': explicitly advertised in tool inventory
+ * - 'unavailable': explicit negative capability evidence (currently unused, reserved for future)
+ * - 'unknown': tool inventory missing or incomplete (resume_agent absent from partial list)
+ *
+ * Per src/leader/contract.ts availableToolsEvidence: "A present-but-incomplete tool inventory
+ * is NOT explicit negative evidence: collaboration/deferred tools can be absent from this hook
+ * payload while a spawn surface remains callable. Report `unknown` rather than persisting an
+ * `unsupported` false negative."
+ */
+type ResumeAgentAvailability = 'available' | 'unavailable' | 'unknown';
+
+function getResumeAgentAvailability(tools: readonly string[] | readonly { name?: string; tool_name?: string; toolName?: string }[] | null | undefined): ResumeAgentAvailability {
+  // When tools list is not provided, we have no inventory: unknown.
+  if (!tools) return 'unknown';
+  
+  // Check if resume_agent is explicitly advertised in the inventory
+  const found = tools.some((tool) => {
     const name = typeof tool === 'string' ? tool : (tool.name ?? tool.tool_name ?? tool.toolName ?? '');
     // Match both fully qualified and flattened forms
     return name === 'resume_agent' || name === 'collaborationresume_agent' || name.endsWith('.resume_agent');
   });
+  
+  if (found) return 'available';
+  
+  // Tool not found in inventory. However, a present-but-incomplete inventory is not
+  // negative evidence. Only explicit negative capability evidence (from a capabilities
+  // block or support blocker) would make it unavailable. Absent from a partial list is unknown.
+  return 'unknown';
 }
 
 /**
@@ -1698,14 +1719,14 @@ export function consumeDirectChildReopenContext(
     const unavailableTargets = savedSubagents.filter((entry) => entry.status === 'unavailable');
     const failedTargets = savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
     const now = new Date().toISOString();
-    const hasResumeAgent = hasResumeAgentTool(context.availableTools);
-    // Only record resume requests when the tool is actually available and will be called
-    if (hasResumeAgent && reopenTargets.length) {
+    const resumeAgentAvailability = getResumeAgentAvailability(context.availableTools);
+    // Only record resume requests when the tool is provably available; unknown does not warrant recording intent to call
+    if (resumeAgentAvailability === 'available' && reopenTargets.length) {
       for (const target of reopenTargets) {
         session.threads[target.threadId] = { ...session.threads[target.threadId]!, resume_requested_at: now };
       }
     }
-    if ((hasResumeAgent && reopenTargets.length) || changed) {
+    if ((resumeAgentAvailability === 'available' && reopenTargets.length) || changed) {
       session.updated_at = now;
       lock.assertOwnership();
       writeSubagentTrackingStateSync(cwd, state, lock.publish);
@@ -1715,20 +1736,28 @@ export function consumeDirectChildReopenContext(
       `- SessionStart source: ${context.source}; saved subagent ids found: ${savedSubagents.length}.`,
     ];
     if (reopenTargets.length) {
-      if (hasResumeAgent) {
+      if (resumeAgentAvailability === 'available') {
         lines.push('- Reopen these persisted subagents by id before continuing work or spawning any same-role/same-lane replacement:');
         lines.push(...reopenTargets.slice(0, 12).map((entry) => `  - resume_agent(${JSON.stringify(entry.agentId)})${formatReopenMetadata(entry)}`));
         if (reopenTargets.length > 12) lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json before spawning replacements.`);
-      } else {
-        lines.push('- Warning: resume_agent tool is not advertised by this host; persisted reopen is unavailable.');
+      } else if (resumeAgentAvailability === 'unavailable') {
+        lines.push('- Warning: resume_agent tool is not available on this host; persisted reopen is unavailable.');
         lines.push('- Persisted subagent ids are available: consult .omx/state/subagent-tracking.json for eligible resume targets.');
         lines.push('- Do not spawn a same-role/same-lane replacement solely because persisted reopen was unavailable; continue in the root or another compatible existing lane.');
+      } else {
+        // unknown: guidance explicitly checks availability before requiring invocation
+        lines.push('- Unknown: resume_agent tool availability could not be determined from this host.');
+        lines.push('- Saved persisted subagent ids available for reopen:');
+        lines.push(...reopenTargets.slice(0, 12).map((entry) => `  - ${JSON.stringify(entry.agentId)}${formatReopenMetadata(entry)}`));
+        if (reopenTargets.length > 12) lines.push(`  - ... ${reopenTargets.length - 12} more saved subagent id(s) omitted from this compact SessionStart context; consult .omx/state/subagent-tracking.json.`);
+        lines.push('- If resume_agent is callable, use resume_agent(<id>) to reopen by id before continuing work or spawning replacements.');
+        lines.push('- If resume_agent is not callable, continue in the root or another compatible existing lane; do not spawn a same-role/same-lane replacement solely because reopen was unavailable.');
       }
     } else {
       lines.push('- No compatible saved subagent id is currently marked reopenable; do not spawn a replacement merely because reopen was unavailable.');
     }
     lines.push('- Silver rule: when follow-up work targets an existing role/lane, reuse the matching reopened id; avoid duplicate same-type subagent spawns.');
-    if (hasResumeAgent) {
+    if (resumeAgentAvailability === 'available') {
       lines.push('- If resume_agent fails, surface a clear warning with the id and reason, then continue in the root or another compatible existing lane; do not spawn a new agent solely because reopen failed.');
     }
     const warnings = [...new Map([...unavailableTargets, ...failedTargets].map((entry) => [entry.agentId, entry])).values()];
