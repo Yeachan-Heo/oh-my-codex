@@ -61,10 +61,11 @@ import {
   withScalingLock,
 
 } from '../state.js';
-import { normalizeDispatchRequest } from '../state/dispatch.js';
+import { normalizeDispatchRequest, normalizeBridgeDispatchRecord } from '../state/dispatch.js';
 import { queueDirectMailboxMessage, queueBroadcastMailboxMessage, type TeamNotifier } from '../mcp-comm.js';
 import { claimTask as claimTaskWithDeps } from '../state/tasks.js';
 import { sendDirectMessage as sendDirectMessageWithDeps, markMessageDelivered as markMessageDeliveredWithDeps, needsLegacyMailboxEvidence, normalizeBridgeMailboxMessage, type TeamMailbox } from '../state/mailbox.js';
+import { isStrictDispatchRecord } from '../../runtime/bridge.js';
 import { withScalingLock as withScalingLeaseLock, withTeamLock } from '../state/locks.js';
 import type { TeamTaskV2 } from '../state/types.js';
 import type { TeamReminderIntent } from '../reminder-intents.js';
@@ -5018,6 +5019,81 @@ exit 1
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('rejects dispatch records with padded request_id or target', () => {
+    const paddedRequestId = {
+      request_id: ' req-123 ',
+      target: 'worker-1',
+      status: 'pending',
+      created_at: '2026-01-01T00:00:00.000Z',
+      notified_at: null,
+      delivered_at: null,
+      failed_at: null,
+      reason: null,
+      metadata: null,
+    };
+    assert.equal(isStrictDispatchRecord(paddedRequestId), false, 'padded request_id should be rejected');
+
+    const paddedTarget = {
+      request_id: 'req-123',
+      target: ' worker-1 ',
+      status: 'pending',
+      created_at: '2026-01-01T00:00:00.000Z',
+      notified_at: null,
+      delivered_at: null,
+      failed_at: null,
+      reason: null,
+      metadata: null,
+    };
+    assert.equal(isStrictDispatchRecord(paddedTarget), false, 'padded target should be rejected');
+
+    const bothPadded = {
+      request_id: ' req-123 ',
+      target: ' worker-1 ',
+      status: 'pending',
+      created_at: '2026-01-01T00:00:00.000Z',
+      notified_at: null,
+      delivered_at: null,
+      failed_at: null,
+      reason: null,
+      metadata: null,
+    };
+    assert.equal(isStrictDispatchRecord(bothPadded), false, 'both padded should be rejected');
+
+    const cleanRecord = {
+      request_id: 'req-123',
+      target: 'worker-1',
+      status: 'pending',
+      created_at: '2026-01-01T00:00:00.000Z',
+      notified_at: null,
+      delivered_at: null,
+      failed_at: null,
+      reason: null,
+      metadata: null,
+    };
+    assert.equal(isStrictDispatchRecord(cleanRecord), true, 'clean record should pass');
+
+    // Test that normalizeBridgeDispatchRecord would also reject padded values via isStrictDispatchRecord
+    // (it doesn't call isStrictDispatchRecord directly, but the caller does before calling normalizeBridgeDispatchRecord)
+  });
+
+  it('normalizes bridge dispatch records and preserves request_id and target for comparison', () => {
+    const record = {
+      request_id: 'bridge-req-123',
+      target: 'worker-1',
+      status: 'pending' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+      notified_at: null,
+      delivered_at: null,
+      failed_at: null,
+      reason: null,
+      metadata: { team_name: 'test-team', kind: 'inbox' },
+    };
+    const normalized = normalizeBridgeDispatchRecord('test-team', record);
+    assert.ok(normalized !== null);
+    assert.equal(normalized?.request_id, 'bridge-req-123');
+    assert.equal(normalized?.to_worker, 'worker-1');
   });
 
   it('treats dispatch status as authoritative over incompatible timestamps', () => {

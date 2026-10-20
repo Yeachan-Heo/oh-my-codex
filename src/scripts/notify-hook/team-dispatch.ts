@@ -523,7 +523,7 @@ async function finalizeClaimedDispatchRequest({
       Array.isArray(records) && records.every(isStrictDispatchRecord) ? records : claim.authoritativeRecords);
     if (!Array.isArray(requests)) return;
 
-    const index = requests.findIndex((entry) => safeString(entry?.request_id).trim() === claim.request.request_id);
+    const index = requests.findIndex((entry) => safeString(entry?.request_id).trim() === safeString(claim.request.request_id).trim());
     if (index < 0) return;
 
     const request = requests[index];

@@ -286,6 +286,73 @@ describe('RuntimeBridge.readDispatchRecordsStrict', () => {
       rmSync(stateDir, { recursive: true, force: true });
     }
   });
+
+  it('rejects padded request_id and target (fail closed)', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'omx-bridge-dispatch-padded-'));
+    const bridge = new RuntimeBridge({ stateDir, binaryPath: '/nonexistent-binary' });
+    try {
+      // Padded request_id should be rejected
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [{
+        request_id: ' req-123 ',
+        target: 'worker-1',
+        status: 'pending',
+        created_at: '2026-01-01T00:00:00.000Z',
+        notified_at: null,
+        delivered_at: null,
+        failed_at: null,
+        reason: null,
+        metadata: null,
+      }] }));
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+
+      // Padded target should be rejected
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [{
+        request_id: 'req-123',
+        target: ' worker-1 ',
+        status: 'pending',
+        created_at: '2026-01-01T00:00:00.000Z',
+        notified_at: null,
+        delivered_at: null,
+        failed_at: null,
+        reason: null,
+        metadata: null,
+      }] }));
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+
+      // Both padded should be rejected
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [{
+        request_id: ' req-123 ',
+        target: ' worker-1 ',
+        status: 'pending',
+        created_at: '2026-01-01T00:00:00.000Z',
+        notified_at: null,
+        delivered_at: null,
+        failed_at: null,
+        reason: null,
+        metadata: null,
+      }] }));
+      assert.throws(() => bridge.readDispatchRecordsStrict(), RuntimeBridgeError);
+
+      // Clean (non-padded) values should pass
+      writeFileSync(join(stateDir, 'dispatch.json'), JSON.stringify({ records: [{
+        request_id: 'req-123',
+        target: 'worker-1',
+        status: 'pending',
+        created_at: '2026-01-01T00:00:00.000Z',
+        notified_at: null,
+        delivered_at: null,
+        failed_at: null,
+        reason: null,
+        metadata: null,
+      }] }));
+      const records = bridge.readDispatchRecordsStrict();
+      assert.equal(records.length, 1);
+      assert.equal(records[0].request_id, 'req-123');
+      assert.equal(records[0].target, 'worker-1');
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('RuntimeBridge.execCommand / readSnapshot (parse guard)', () => {
