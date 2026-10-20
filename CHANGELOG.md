@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.27] - 2026-10-21
+
+Patch release for subagents tri-state resume_agent availability (3 commits, 10 files, +317/−30; PRs #3867, #3868).
+
+### Fixed
+
+- Cover hosts without `resume_agent` in SessionStart reopen guidance, providing accurate fallback instructions when the tool is absent instead of treating absence as unknown tool state (#3867).
+- Implement tri-state `resume_agent` availability (available / absent / unknown) and wire it through the native hook contract, enabling recovery guidance to distinguish between unsupported hosts and transient unavailability (#3868, follows #3866).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.27.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.26...v0.21.27
+
 ## [0.21.26] - 2026-10-20
 
 Patch release for team dispatch state isolation and dependency updates (7 commits, 19 files, +722/−269; PRs #3859, #3862, #3863).
