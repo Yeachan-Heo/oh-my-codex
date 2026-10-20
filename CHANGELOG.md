@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.24] - 2026-10-20
+
+Patch release for setup plugin-cache repair hardening (9 commits, 5 files, +365/−28; PRs #3851, #3852, #3853, #3854).
+
+### Fixed
+
+- Require `removalSafe` field validation in dry-run repair and fail closed when safety cannot be verified. The repair command no longer recommends removal when eligibility cannot be determined (#3851, @Yeachan-Heo).
+- Derive `removalSafe` only from verified managed+unpinned repair eligibility, preventing false-safe recommendations for live-pinned or unverified caches (#3853, @Yeachan-Heo).
+- Keep identical caches unchanged in repair dry-runs, returning `unchanged` status to mirror actual repair behavior and improve test predictability (#3854, @Yeachan-Heo).
+
+### Tests
+
+- Add comprehensive removalSafe field tests for late-pin scenarios, validating hardening logic against edge cases in pinned-cache handling (#3849, @Yeachan-Heo).
+
+### Maintenance
+
+- Ignore gjc runtime session state in .gitignore to reduce noise in untracked-file listings (#3852, @Yeachan-Heo).
+
+Full inventory, contributors, compatibility notes, and verification: [release notes](docs/release-notes-0.21.24.md).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.23...v0.21.24
+
 ## [0.21.23] - 2026-10-19
 
 Patch release for evidence requirements in generated team tasks and non-directory plugin cache recovery guidance (5 commits, 14 files, +914/−58; PRs #3840, #3846).
