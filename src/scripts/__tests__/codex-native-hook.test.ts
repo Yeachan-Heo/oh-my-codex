@@ -3787,6 +3787,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           cwd,
           session_id: "codex-leader-reopen",
           source: "resume",
+          available_tools: ["resume_agent"],
         },
         { cwd, sessionOwnerPid: process.pid },
       );
@@ -3841,7 +3842,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           },
         });
         const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd,
-          session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+          session_id: rootNativeSessionId, source: "resume", available_tools: ["resume_agent"] }, { cwd, sessionOwnerPid: process.pid });
         const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
         assert.equal(context.includes(`resume_agent(${JSON.stringify(rootNativeSessionId)})`), false);
         assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), true);
@@ -3890,7 +3891,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
         },
       });
       const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd,
-        session_id: rootNativeSessionId, source: "resume", transcript_path: transcriptPath }, { cwd, sessionOwnerPid: process.pid });
+        session_id: rootNativeSessionId, source: "resume", transcript_path: transcriptPath, available_tools: ["resume_agent"] }, { cwd, sessionOwnerPid: process.pid });
       const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
       assert.equal(context.includes(`resume_agent(${JSON.stringify(rootNativeSessionId)})`), false);
       assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), true);
@@ -4306,7 +4307,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           [childId]: { thread_id: childId, kind: "subagent", provenance_kind: "native_subagent", direct_child_root_id: rootNativeSessionId, direct_child_parent_id: rootNativeSessionId, status: "available", first_seen_at: "2026-07-23T00:00:00.000Z", last_seen_at: "2026-07-23T00:00:00.000Z", turn_count: 1 },
         } },
       } });
-      const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume" }, { cwd, sessionOwnerPid: process.pid });
+      const result = await dispatchCodexNativeHook({ hook_event_name: "SessionStart", cwd, session_id: rootNativeSessionId, source: "resume", available_tools: ["resume_agent"] }, { cwd, sessionOwnerPid: process.pid });
       const context = String((result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
       assert.equal(context.includes(`resume_agent(${JSON.stringify(childId)})`), true);
     } finally {
@@ -4359,6 +4360,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           cwd,
           session_id: "codex-leader-reuse",
           source: "startup",
+          available_tools: ["resume_agent"],
         },
         { cwd, sessionOwnerPid: process.pid },
       );
@@ -5065,6 +5067,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
           cwd,
           session_id: childNativeSessionId,
           transcript_path: transcriptPath,
+          available_tools: ["resume_agent"],
         },
         { cwd, sessionOwnerPid: process.pid },
       );
@@ -5108,7 +5111,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
       assert.equal(tracking.sessions?.[leaderNativeSessionId]?.threads?.[childNativeSessionId]?.mode, "critic");
       const rootResume = await dispatchCodexNativeHook(
-        { hook_event_name: "SessionStart", cwd, session_id: leaderNativeSessionId, source: "resume" },
+        { hook_event_name: "SessionStart", cwd, session_id: leaderNativeSessionId, source: "resume", available_tools: ["resume_agent"] },
         { cwd, sessionOwnerPid: process.pid },
       );
       const rootResumeContext = String((rootResume.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "");
@@ -5136,6 +5139,86 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       } else {
         process.env.CODEX_HOME = originalCodexHome;
       }
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("yields Unknown tool availability guidance when SessionStart lacks available_tools", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-unknown-tool-availability-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "omx-unknown-tools-session";
+      await writeSessionStart(cwd, sessionId, { nativeSessionId: "codex-leader-unknown-tools", pid: process.pid });
+      await writeJson(join(stateDir, "subagent-tracking.json"), {
+        schemaVersion: 1,
+        sessions: {
+          [sessionId]: {
+            session_id: sessionId,
+            leader_thread_id: "codex-leader-unknown-tools",
+            updated_at: "2026-07-09T00:00:00.000Z",
+            threads: {
+              "codex-leader-unknown-tools": {
+                thread_id: "codex-leader-unknown-tools",
+                kind: "leader",
+                first_seen_at: "2026-07-09T00:00:00.000Z",
+                last_seen_at: "2026-07-09T00:00:00.000Z",
+                turn_count: 1,
+              },
+              "thread-executor-unknown-tools": {
+                thread_id: "thread-executor-unknown-tools",
+                kind: "subagent",
+                first_seen_at: "2026-07-09T00:01:00.000Z",
+                last_seen_at: "2026-07-09T00:01:00.000Z",
+                turn_count: 1,
+                role: "executor",
+                lane_id: "work-item",
+                status: "available",
+                provenance_kind: "native_subagent",
+                direct_child_root_id: "codex-leader-unknown-tools",
+                direct_child_parent_id: "codex-leader-unknown-tools",
+              },
+            },
+          },
+        },
+      });
+
+      // SessionStart without available_tools yields Unknown guidance
+      const resultWithoutTools = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "codex-leader-unknown-tools",
+          source: "resume",
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const contextWithoutTools = String(
+        (resultWithoutTools.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(contextWithoutTools, /Unknown: resume_agent tool availability could not be determined/);
+      assert.match(contextWithoutTools, /"thread-executor-unknown-tools"/);
+      assert.match(contextWithoutTools, /If resume_agent is callable, use resume_agent/);
+      assert.match(contextWithoutTools, /If resume_agent is not callable, continue in the root/);
+
+      // SessionStart with partial available_tools (not including resume_agent) also yields Unknown guidance
+      const resultWithPartialTools = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "SessionStart",
+          cwd,
+          session_id: "codex-leader-unknown-tools",
+          source: "resume",
+          available_tools: ["read", "edit"],
+        },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const contextWithPartialTools = String(
+        (resultWithPartialTools.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(contextWithPartialTools, /Unknown: resume_agent tool availability could not be determined/);
+      assert.match(contextWithPartialTools, /"thread-executor-unknown-tools"/);
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
