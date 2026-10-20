@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { safeString } from './utils.js';
-import { getDefaultBridge, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
+import { getDefaultBridge, isRuntimeTransportError, isStrictDispatchRecord, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
 import { readDispatchRequests } from '../../team/state.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
@@ -520,7 +520,7 @@ async function finalizeClaimedDispatchRequest({
     const records = getDefaultBridge(stateDir).readCompatFile('dispatch.json')?.records;
     // A live lease may finalize its preflight snapshot when injection damages the projection.
     const requests = await readBridgeDispatchRequests(stateDir, teamName, cwd,
-      Array.isArray(records) ? records : claim.authoritativeRecords);
+      Array.isArray(records) && records.every(isStrictDispatchRecord) ? records : claim.authoritativeRecords);
     if (!Array.isArray(requests)) return;
 
     const index = requests.findIndex((entry) => safeString(entry?.request_id).trim() === claim.request.request_id);
