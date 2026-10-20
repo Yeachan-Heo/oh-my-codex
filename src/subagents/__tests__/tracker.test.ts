@@ -199,7 +199,7 @@ describe('subagents/tracker', () => {
         nested: { thread_id: 'nested', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'direct', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
         revoked: { thread_id: 'revoked', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', reopen_authority_revoked: true, status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
       } } } }));
-      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '';
       assert.match(context, /resume_agent\("direct"\)/);
       assert.doesNotMatch(context, /resume_agent\("root"\)|resume_agent\("nested"\)|resume_agent\("revoked"\)/);
       const persisted = JSON.parse(readFileSync(path, 'utf8'));
@@ -224,7 +224,7 @@ describe('subagents/tracker', () => {
       const repaired = JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8'));
       assert.equal(repaired.sessions.canonical.threads.child.reopen_authority_revoked, undefined);
       assert.equal(repaired.sessions['root-a'].threads.child.reopen_authority_revoked, undefined);
-      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root-a', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root-a', source: 'resume', availableTools: ['resume_agent'] }) ?? '', /resume_agent\("child"\)/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -332,7 +332,7 @@ describe('subagents/tracker', () => {
       recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root' });
       const state = JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8'));
       assert.equal(state.sessions.canonical.threads.child.reopen_authority_revoked, undefined);
-      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '', /resume_agent\("child"\)/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -361,7 +361,7 @@ describe('subagents/tracker', () => {
         legacy: { thread_id: 'legacy', kind: 'subagent', provenance_kind: 'adapted', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
       } } } }));
       recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
-      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '';
       assert.match(context, /resume_agent\("child"\)/);
       assert.doesNotMatch(context, /resume_agent\("legacy"\)/);
     } finally {
@@ -380,7 +380,7 @@ describe('subagents/tracker', () => {
         } },
       } }));
       recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
-      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      const context = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '';
       assert.match(context, /resume_agent\("child"\)/);
       const persisted = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(persisted.sessions.correlation.threads.child.provenance_kind, DESCRIPTIVE_ADAPTED_PROVENANCE);
@@ -548,7 +548,7 @@ describe('subagents/tracker', () => {
       const snapshot = await readSubagentTrackingState(cwd);
       const descriptive = recordSubagentTurn(snapshot, { sessionId: 'canonical', threadId: 'child', kind: 'subagent' });
       await writeSubagentTrackingState(cwd, descriptive);
-      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '', /resume_agent\("child"\)/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -604,7 +604,7 @@ describe('subagents/tracker', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-authority-fence-'));
     try {
       recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
-      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '', /resume_agent\("child"\)/);
       // Simulate a revocation whose transaction failed: the tracker still shows
       // valid authority, but the fence records the unpublished denial.
       fenceNativeSubagentAuthorities(cwd, ['child'], 'identity_untrusted_revocation_failed');
@@ -698,7 +698,7 @@ describe('subagents/tracker', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-global-denial-'));
     try {
       recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root', authorityEvidence: 'valid' });
-      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '', /resume_agent\("child"\)/);
+      assert.match(consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '', /resume_agent\("child"\)/);
       // Simulates both the tracker revocation AND the locked fence failing.
       assert.equal(forceGlobalAuthorityDenial(cwd, 'identity_untrusted_denial_escalated'), true);
       assert.match(
@@ -959,7 +959,7 @@ describe('subagents/tracker', () => {
       // Should emit warning about unavailable resume_agent
       assert.match(contextUnavailable, /Warning: resume_agent tool is not available/);
       assert.doesNotMatch(contextUnavailable, /resume_agent\(/);
-      assert.match(contextUnavailable, /do not spawn a same-role\/same-lane replacement/);
+      assert.match(contextUnavailable, /Do not spawn a same-role\/same-lane replacement/);
       
       // With unsupported evidence but without availableTools, still unavailable (not unknown)
       const contextUnavailableNoTools = consumeDirectChildReopenContext(cwd, {
@@ -1011,7 +1011,7 @@ describe('subagents/tracker', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-reopen-first-'));
     try {
       recordNativeSubagentAuthorityObservation(cwd, { sessionIds: ['canonical', 'root'], childThreadId: 'child', parentThreadId: 'root', rootNativeSessionId: 'root' });
-      const first = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      const first = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '';
       assert.match(first, /resume_agent\("child"\)/);
       const requestedAt = JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8')).sessions.canonical.threads.child.resume_requested_at;
       assert.match(requestedAt, /^\d{4}-\d{2}-\d{2}T/);
@@ -1064,7 +1064,7 @@ describe('subagents/tracker', () => {
         competitor = spawnAuthorityCompetitor(cwd, 'revoke', readyPath, resultPath);
         waitForFileSync(readyPath, 10_000);
       });
-      const first = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      const first = consumeDirectChildReopenContext(cwd, { sessionId: 'canonical', rootNativeSessionId: 'root', source: 'resume', availableTools: ['resume_agent'] }) ?? '';
       __setCrossProcessPublishBarrierForTest(null);
       assert.match(first, /resume_agent\("child"\)/);
       const requestedAt = JSON.parse(readFileSync(subagentTrackingPath(cwd), 'utf8')).sessions.canonical.threads.child.resume_requested_at;

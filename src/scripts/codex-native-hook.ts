@@ -2324,10 +2324,10 @@ async function buildPersistedSubagentReopenContext(
       persistedSupportBlocker: readJsonSyncIfExists(nativeSubagentSupportBlockerPath(stateDir)),
       persistedRoleRoutingMarker: readRoleRoutingMarker(stateDir, {
         cwd,
-        sessionId: rootContext.sessionId,
+        sessionId: rootContext.rootNativeSessionId,
       }),
       cwd,
-      sessionId: rootContext.sessionId,
+      sessionId: rootContext.rootNativeSessionId,
     });
     
     // Pass unsupported evidence only when the status is 'unsupported'
