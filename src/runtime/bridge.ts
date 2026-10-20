@@ -230,7 +230,9 @@ export function isStrictDispatchRecord(record: unknown): record is DispatchRecor
   ];
   if (requiredFields.some((field) => !Object.prototype.hasOwnProperty.call(value, field))) return false;
   return typeof value.request_id === 'string'
+    && value.request_id.trim().length > 0
     && typeof value.target === 'string'
+    && value.target.trim().length > 0
     && ['pending', 'notified', 'delivered', 'failed'].includes(String(value.status))
     && typeof value.created_at === 'string'
     && (value.notified_at === null || typeof value.notified_at === 'string')
