@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { getDefaultBridge, isBridgeEnabled, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError, type MailboxRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 
 export interface TeamMailboxMessage {
@@ -155,11 +155,18 @@ function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
     }
   }
   try {
-    getDefaultBridge(stateDir).execCommand(command);
+    const event = getDefaultBridge(stateDir).execCommand(command);
+    if (command.command === 'CreateMailboxMessage' && (!event || event.event !== 'MailboxMessageCreated'
+      || event.message_id !== command.message_id || event.from_worker !== command.from_worker
+      || event.to_worker !== command.to_worker
+      || (event.team_name != null && event.team_name !== command.team_name)
+      || (event.body != null && event.body !== command.body))) {
+      throw new RuntimeBridgeError('omx-runtime returned invalid mailbox creation acknowledgement', { command: command.command });
+    }
     return true;
   } catch (error) {
     if (error instanceof RuntimeBridgeError && error.context.command === 'schema') throw error;
-    if (command.command === 'CreateMailboxMessage') return false;
+    if (command.command === 'CreateMailboxMessage' && isRuntimeTransportError(error)) return false;
     throw error;
   }
 }
@@ -237,13 +244,42 @@ export async function sendDirectMessage(
       return Number.isFinite(candidateCreatedAt) && candidateCreatedAt >= teamCreatedAt;
     };
 
-    const existing = dedupeCandidates.find((candidate) =>
+    const findExisting = (messages: TeamMailboxMessage[]) => messages.find((candidate) =>
       candidate.from_worker === fromWorker
       && candidate.to_worker === toWorker
       && candidate.body === body
       && !candidate.delivered_at
       && isCurrentTeamMessage(candidate),
     );
+    let existing = findExisting(dedupeCandidates);
+    const stateDir = resolveBridgeStateDir(deps.cwd);
+    const eventsPath = join(stateDir, 'events.json');
+    if (!existing && isBridgeEnabled() && existsSync(eventsPath)) {
+      const events = JSON.parse(await readFile(eventsPath, 'utf8'));
+      if (!Array.isArray(events)) throw new RuntimeBridgeError('invalid runtime mailbox event log');
+      const creations = events.filter(event => event?.event === 'MailboxMessageCreated'
+        && event.team_name === deps.teamName && event.from_worker === fromWorker && event.to_worker === toWorker
+        && (event.body == null || event.body === body));
+      if (creations.length > 0) {
+        const bridge = getDefaultBridge(stateDir);
+        const containsCreations = (records: MailboxRecord[] | undefined): boolean => Array.isArray(records)
+          && creations.every(event => records.some(record => record?.team_name === deps.teamName
+            && record.message_id === event.message_id && record.from_worker === fromWorker && record.to_worker === toWorker
+            && (event.body == null || record.body === event.body)));
+        let records = bridge.readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json')?.records;
+        if (!containsCreations(records)) {
+          // Events commit before mailbox.json; replay before assigning a new message ID.
+          const snapshot = bridge.execCommand({ command: 'CaptureSnapshot' });
+          records = bridge.readCompatFile<{ records?: MailboxRecord[] }>('mailbox.json')?.records;
+          if (snapshot?.event !== 'SnapshotCaptured'
+            || !containsCreations(records)) {
+            throw new RuntimeBridgeError('mailbox creation recovery could not verify authoritative messages');
+          }
+        }
+        existing = findExisting((records ?? []).filter(record => record.team_name === deps.teamName)
+          .map(record => normalizeBridgeMailboxMessage(record)));
+      }
+    }
     if (existing) {
       msg = existing;
       return;
