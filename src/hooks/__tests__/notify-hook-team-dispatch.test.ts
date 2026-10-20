@@ -324,6 +324,37 @@ describe('notify-hook team dispatch consumer', () => {
     }
   });
 
+  it('reads and finalizes requests in the explicitly selected state directory', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-selected-root-'));
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '0';
+      const stateDir = join(cwd, 'selected-state');
+      const selected = join(stateDir, 'team/alpha/dispatch/requests.json');
+      const decoy = join(cwd, '.omx/state/team/alpha/dispatch/requests.json');
+      const request = { kind: 'inbox', team_name: 'alpha', to_worker: 'worker-1', trigger_message: 'ping', status: 'pending' };
+      for (const root of [stateDir, join(cwd, '.omx/state')]) await mkdir(join(root, 'team/alpha/dispatch'), { recursive: true });
+      await writeFile(selected, JSON.stringify([{ ...request, request_id: 'selected' }]));
+      await writeFile(decoy, JSON.stringify([{ ...request, request_id: 'decoy' }]));
+      const before = await readFile(decoy, 'utf8');
+      const injected: string[] = [];
+      const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
+      const drain = () => drainPendingTeamDispatch({ cwd, stateDir, injector: async request => {
+        injected.push(request.request_id);
+        return { ok: true, reason: 'selected-root-test' };
+      } });
+      assert.equal((await drain()).processed, 1);
+      assert.deepEqual(injected, ['selected']);
+      assert.equal(JSON.parse(await readFile(selected, 'utf8'))[0].status, 'notified');
+      assert.equal((await drain()).processed, 0);
+      assert.equal(await readFile(decoy, 'utf8'), before);
+    } finally {
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('keeps repeated idle drains read-only and discovers event-only queued work', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-idle-refresh-'));
     try {
@@ -973,7 +1004,10 @@ exit 1
         } });
 
       assert.equal((await drain()).processed, 1);
-      assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'notified');
+      assert.equal(await readDispatchRequest('alpha', queued.request.request_id, cwd), null,
+        'an unavailable projection must not expose runtime-owned shadows');
+      const shadows = JSON.parse(await readFile(join(cwd, '.omx/state/team/alpha/dispatch/requests.json'), 'utf8'));
+      assert.equal(shadows.find((request: { request_id: string; status: string }) => request.request_id === queued.request.request_id)?.status, 'notified');
       assert.equal(injections, 1);
       assert.equal(JSON.parse((await readFile(join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl'), 'utf8')).trim()).command, 'MarkNotified');
       await assert.rejects(drain, /team-mailbox-scope-v1/);

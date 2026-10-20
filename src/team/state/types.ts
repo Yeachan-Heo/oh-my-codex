@@ -189,6 +189,7 @@ export interface TeamDispatchRequest {
   inbox_correlation_key?: string;
   transport_preference: TeamDispatchTransportPreference;
   fallback_allowed: boolean;
+  creation_transport?: 'legacy-json';
   status: TeamDispatchRequestStatus;
   attempt_count: number;
   created_at: string;

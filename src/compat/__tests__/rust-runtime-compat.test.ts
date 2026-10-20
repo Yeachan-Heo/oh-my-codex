@@ -80,6 +80,8 @@ const mailbox = readJson(mailboxPath, { records: [] });
 const timestamp = nowIso();
 switch (command.command) {
   case 'QueueDispatch':
+    writeJson(path.join(dir, 'events.json'), [...readJson(path.join(dir, 'events.json'), []), { event: 'DispatchQueued', request_id: command.request_id, metadata: command.metadata }]);
+    writeJson(path.join(dir, 'dispatch-seen.json'), { schema_version: 2, ledger_epoch: 1, request_ids: [...readJson(path.join(dir, 'dispatch-seen.json'), { request_ids: [] }).request_ids, command.request_id] });
     dispatch.records.push({ request_id: command.request_id, target: command.target, status: 'pending', created_at: timestamp, notified_at: null, delivered_at: null, failed_at: null, reason: null, metadata: command.metadata ?? null });
     writeJson(dispatchPath, dispatch);
     process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target }) + '\\n');

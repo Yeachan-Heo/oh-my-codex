@@ -111,6 +111,20 @@ Durable owner:
   - `src/team/state/dispatch.ts`
   - `src/team/state.ts`
 
+The shared `dispatch.json` is Rust-written only. Degraded requests, retry metadata,
+and finalization receipts stay in each Team's dispatch directory. Team APIs and
+notification hooks merge those local observations on read. Only requests marked
+`creation_transport: legacy-json` may supplement an authoritative view; unmarked
+legacy-only rows remain hidden. Authoritative terminal
+states win, and IDs retained in the runtime ledger cannot be resurrected after
+removal. Lifecycle mutations still route through the runtime or its existing
+finalization journal.
+Matching local terminal observations retain retry metadata and same-status reasons;
+the runtime still owns terminal status and lifecycle timestamps.
+Missing or invalid authoritative projections do not expose unmarked or retired
+local requests. Notification hooks read shadows, receipts and identity ledgers
+from the state root already selected by their caller.
+
 Observed code paths:
 
 - queue: `DispatchLog::queue()` ↔ `enqueueDispatchRequest()`

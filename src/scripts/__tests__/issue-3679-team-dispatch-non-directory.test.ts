@@ -66,6 +66,9 @@ describe("issue #3679 team dispatch skips non-directory state entries", () => {
         JSON.stringify([
           {
             request_id: "req-1",
+            kind: "mailbox",
+            team_name: "alpha",
+            trigger_message: "check mailbox",
             to_worker: "worker-1",
             status: "pending",
             message_id: "msg-1",

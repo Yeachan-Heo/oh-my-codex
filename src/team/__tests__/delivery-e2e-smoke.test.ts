@@ -166,6 +166,8 @@ const timestamp = nowIso();
 switch (command.command) {
   case 'QueueDispatch':
     dispatch.records.push({ request_id: command.request_id, target: command.target, status: 'pending', created_at: timestamp, notified_at: null, delivered_at: null, failed_at: null, reason: null, metadata: command.metadata ?? null });
+    writeJson(path.join(dir, 'events.json'), []);
+    writeJson(path.join(dir, 'dispatch-seen.json'), { schema_version: 2, ledger_epoch: 1, request_ids: dispatch.records.map((record) => record.request_id) });
     writeJson(dispatchPath, dispatch);
     process.stdout.write(JSON.stringify({ event: 'DispatchQueued', request_id: command.request_id, target: command.target }) + '\\n');
     process.exit(0);

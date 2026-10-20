@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { safeString } from './utils.js';
 import { getDefaultBridge, isRuntimeTransportError, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
+import { readDispatchRequests } from '../../team/state.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { hasUniqueScopedMailboxMatch, mailboxMessageContentMatches, mailboxMessageIdentity, mailboxRecordBelongsToTeam, normalizeBridgeMailboxMessage, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
@@ -135,66 +136,18 @@ function readJson(path, fallback) {
     .catch(() => fallback);
 }
 
-async function readBridgeDispatchRequests(stateDir, teamName, authoritativeRecords) {
-  const candidate = join(stateDir, 'dispatch.json');
-  if (!authoritativeRecords && !existsSync(candidate)) return null;
-  let parsed;
-  try {
-    parsed = authoritativeRecords ? { records: authoritativeRecords } : JSON.parse(await readFile(candidate, 'utf8'));
-  } catch (error) {
-    recordBridgeFallback({
-      stateDir,
-      team: teamName,
-      operation: 'readBridgeDispatchRequests',
-      fallbackTarget: 'legacy_dispatch_requests',
-      reason: `parse_failed:${bridgeErrorReason(error)}`,
-    });
-    return null;
+async function readBridgeDispatchRequests(stateDir, teamName, cwd, authoritativeRecords) {
+  if (!authoritativeRecords && existsSync(join(stateDir, 'dispatch.json'))) {
+    const compat = getDefaultBridge(stateDir).readCompatFile('dispatch.json');
+    if (!compat || !Array.isArray(compat.records)) {
+      recordBridgeFallback({
+        stateDir, team: teamName, operation: 'readBridgeDispatchRequests',
+        fallbackTarget: 'legacy_dispatch_requests',
+        reason: compat ? 'invalid_dispatch_compat_schema' : 'parse_failed:invalid_dispatch_compat_json',
+      });
+    }
   }
-  if (!parsed || !Array.isArray(parsed.records)) {
-    recordBridgeFallback({
-      stateDir,
-      team: teamName,
-      operation: 'readBridgeDispatchRequests',
-      fallbackTarget: 'legacy_dispatch_requests',
-      reason: 'invalid_dispatch_compat_schema',
-    });
-    return null;
-  }
-  return parsed.records
-    .map((record) => {
-      if (!record || typeof record !== 'object') return null;
-      const metadata = record.metadata && typeof record.metadata === 'object' ? record.metadata : {};
-      const metadataTeam = safeString(metadata.team_name).trim();
-      if (!metadataTeam || metadataTeam !== teamName) return null;
-      return {
-        request_id: safeString(record.request_id).trim(),
-        kind: safeString(metadata.kind).trim() || 'inbox',
-        team_name: teamName,
-        to_worker: safeString(record.target).trim(),
-        worker_index: typeof metadata.worker_index === 'number' ? metadata.worker_index : undefined,
-        pane_id: safeString(metadata.pane_id).trim() || undefined,
-        trigger_message: safeString(metadata.trigger_message).trim() || safeString(record.reason).trim() || safeString(record.request_id).trim(),
-        message_id: safeString(metadata.message_id).trim() || undefined,
-        inbox_correlation_key: safeString(metadata.inbox_correlation_key).trim() || undefined,
-        transport_preference: safeString(metadata.transport_preference).trim() || 'hook_preferred_with_fallback',
-        fallback_allowed: typeof metadata.fallback_allowed === 'boolean' ? metadata.fallback_allowed : true,
-        status: safeString(record.status).trim() || 'pending',
-        attempt_count: Number.isFinite(metadata.attempt_count) ? Number(metadata.attempt_count) : 0,
-        created_at: safeString(record.created_at).trim() || new Date().toISOString(),
-        updated_at:
-          safeString(record.delivered_at).trim()
-          || safeString(record.failed_at).trim()
-          || safeString(record.notified_at).trim()
-          || safeString(record.created_at).trim()
-          || new Date().toISOString(),
-        notified_at: safeString(record.notified_at).trim() || undefined,
-        delivered_at: safeString(record.delivered_at).trim() || undefined,
-        failed_at: safeString(record.failed_at).trim() || undefined,
-        last_reason: safeString(record.reason).trim() || undefined,
-      };
-    })
-    .filter((record) => record && record.request_id && record.to_worker && record.trigger_message);
+  return await readDispatchRequests(teamName, resolve(cwd), authoritativeRecords, stateDir);
 }
 
 async function writeJsonAtomic(path, value) {
@@ -436,43 +389,6 @@ function resolveLeaderPaneId(config) {
   return safeString(config?.leader_pane_id).trim();
 }
 
-function serializeDispatchRequestRecord(request) {
-  return {
-    request_id: safeString(request.request_id).trim(),
-    target: safeString(request.to_worker).trim(),
-    status: safeString(request.status).trim() || 'pending',
-    created_at: safeString(request.created_at).trim() || new Date().toISOString(),
-    notified_at: safeString(request.notified_at).trim() || null,
-    delivered_at: safeString(request.delivered_at).trim() || null,
-    failed_at: safeString(request.failed_at).trim() || null,
-    reason: safeString(request.last_reason).trim() || null,
-    metadata: {
-      kind: safeString(request.kind).trim() || 'inbox',
-      team_name: safeString(request.team_name).trim(),
-      worker_index: Number.isFinite(request.worker_index) ? Number(request.worker_index) : undefined,
-      pane_id: safeString(request.pane_id).trim() || undefined,
-      trigger_message: safeString(request.trigger_message).trim(),
-      message_id: safeString(request.message_id).trim() || undefined,
-      inbox_correlation_key: safeString(request.inbox_correlation_key).trim() || undefined,
-      transport_preference: safeString(request.transport_preference).trim() || 'hook_preferred_with_fallback',
-      fallback_allowed: typeof request.fallback_allowed === 'boolean' ? request.fallback_allowed : true,
-      attempt_count: Number.isFinite(request.attempt_count) ? Number(request.attempt_count) : 0,
-    },
-  };
-}
-
-async function writeBridgeDispatchCompat(stateDir, teamName, requests) {
-  const compatPath = join(stateDir, 'dispatch.json');
-  const current = await readJson(compatPath, { records: [] });
-  const existing = Array.isArray(current?.records) ? current.records : [];
-  const otherTeams = existing.filter((record) => {
-    const metadata = record?.metadata && typeof record.metadata === 'object' ? record.metadata : {};
-    return safeString(metadata.team_name).trim() !== teamName;
-  });
-  const records = [...otherTeams, ...requests.map(serializeDispatchRequestRecord)];
-  await writeJsonAtomic(compatPath, { records });
-}
-
 function explicitPaneIdentity(value) {
   const rawPaneId = safeString(value).trim();
   return { provided: rawPaneId !== '', paneId: normalizeExactPaneId(rawPaneId), rawPaneId };
@@ -601,9 +517,10 @@ async function finalizeClaimedDispatchRequest({
   let summary = { processed: 0, skipped: 0, failed: 0 };
 
   await withDispatchLock(teamDirPath, async () => {
-    const bridgeRequests = await readBridgeDispatchRequests(stateDir, teamName);
-    const usingLegacyRequests = bridgeRequests === null;
-    const requests = usingLegacyRequests ? await readJson(requestsPath, []) : bridgeRequests;
+    const records = getDefaultBridge(stateDir).readCompatFile('dispatch.json')?.records;
+    // A live lease may finalize its preflight snapshot when injection damages the projection.
+    const requests = await readBridgeDispatchRequests(stateDir, teamName, cwd,
+      Array.isArray(records) ? records : claim.authoritativeRecords);
     if (!Array.isArray(requests)) return;
 
     const index = requests.findIndex((entry) => safeString(entry?.request_id).trim() === claim.request.request_id);
@@ -794,9 +711,6 @@ async function finalizeClaimedDispatchRequest({
     triggerCooldownState.by_trigger = triggerCooldownByKey;
     await writeJsonAtomic(triggerCooldownStatePath(teamDirPath), triggerCooldownState);
     await writeJsonAtomic(requestsPath, requests);
-    if (!usingLegacyRequests) {
-      await writeBridgeDispatchCompat(stateDir, teamName, requests);
-    }
   });
 
   return summary;
@@ -1280,10 +1194,12 @@ export async function drainPendingTeamDispatch({
       if (hasRuntimeAuthority(stateDir)) {
         if (process.env.OMX_RUNTIME_BRIDGE === '0') throw new Error('runtime dispatch authority requires an enabled bridge');
         authoritativeRecords = await refreshDispatchProjection(stateDir);
+        if (!authoritativeRecords) {
+          const records = getDefaultBridge(stateDir).readCompatFile('dispatch.json')?.records;
+          if (Array.isArray(records)) authoritativeRecords = records;
+        }
       }
-      const bridgeRequests = await readBridgeDispatchRequests(stateDir, teamName, authoritativeRecords);
-      const usingLegacyRequests = bridgeRequests === null;
-      const requests = usingLegacyRequests ? await readJson(requestsPath, []) : bridgeRequests;
+      const requests = await readBridgeDispatchRequests(stateDir, teamName, cwd, authoritativeRecords);
       if (!Array.isArray(requests)) return;
       if (requests.some((request) => request && typeof request === 'object' && !shouldSkipRequest(request))) {
         preflightRuntimeBridge(stateDir);
@@ -1389,6 +1305,7 @@ export async function drainPendingTeamDispatch({
         }) || mutated;
         claims.push({
           request: { ...request },
+          authoritativeRecords,
           lease,
         });
       }
@@ -1399,9 +1316,6 @@ export async function drainPendingTeamDispatch({
         triggerCooldownState.by_trigger = triggerCooldownByKey;
         await writeJsonAtomic(triggerCooldownStatePath(teamDirPath), triggerCooldownState);
         await writeJsonAtomic(requestsPath, requests);
-        if (!usingLegacyRequests) {
-          await writeBridgeDispatchCompat(stateDir, teamName, requests);
-        }
       }
     });
 

@@ -60,6 +60,7 @@ import {
   withTaskClaimLock as withTaskClaimLockImpl,
   withMailboxLock as withMailboxLockImpl,
 } from './state/locks.js';
+import { hasRuntimeAuthority, hasRuntimeDispatchIdentity } from './state/dispatch-recovery.js';
 import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord } from '../runtime/bridge.js';
 import {
   type TeamDispatchRequestStatus,
@@ -285,6 +286,7 @@ export interface TeamDispatchRequest {
   inbox_correlation_key?: string;
   transport_preference: TeamDispatchTransportPreference;
   fallback_allowed: boolean;
+  creation_transport?: 'legacy-json';
   status: TeamDispatchRequestStatus;
   attempt_count: number;
   created_at: string;
@@ -722,8 +724,9 @@ function mailboxLockDir(teamName: string, workerName: string, cwd: string): stri
   return p;
 }
 
-function dispatchRequestsPath(teamName: string, cwd: string): string {
-  return join(teamDir(teamName, cwd), 'dispatch', 'requests.json');
+function dispatchRequestsPath(teamName: string, cwd: string, stateDir = resolveTeamStateRoot(cwd)): string {
+  assertSafeTeamName(teamName);
+  return join(stateDir, 'team', teamName, 'dispatch', 'requests.json');
 }
 
 function dispatchLockDir(teamName: string, cwd: string): string {
@@ -2085,35 +2088,71 @@ async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string,
   await writeAtomic(p, JSON.stringify({ ...mailbox, messages }, null, 2));
 }
 
-async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
-  if (isBridgeEnabled()) {
-    try {
-      const bridge = getDefaultBridge(resolveBridgeStateDir(cwd));
-      const compat = bridge.readCompatFile<{ records?: unknown[] }>('dispatch.json');
-      if (compat) {
-        const nowIso = new Date().toISOString();
-        return bridge.readDispatchRecords()
-          .map((record) => normalizeBridgeDispatchRecord(teamName, record, nowIso))
-          .filter((record): record is TeamDispatchRequest => record !== null);
-      }
-    } catch {
-      // fall through to legacy file fallback
+export async function readDispatchRequests(
+  teamName: string, cwd: string, authoritativeRecords?: readonly DispatchRecord[],
+  stateDir = resolveBridgeStateDir(cwd),
+): Promise<TeamDispatchRequest[]> {
+  const nowIso = new Date().toISOString();
+  const path = dispatchRequestsPath(teamName, cwd, stateDir);
+  let local: TeamDispatchRequest[] = [];
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+    if (Array.isArray(parsed)) {
+      local = parsed.map((entry) => normalizeDispatchRequestImpl(teamName, entry ?? {}, nowIso))
+        .filter((entry): entry is TeamDispatchRequest => entry !== null);
+    }
+  } catch { /* Missing legacy state has no requests. */ }
+  if (!isBridgeEnabled()) return local;
+  if (!hasRuntimeAuthority(stateDir)) return local;
+  const records = authoritativeRecords ?? getDefaultBridge(stateDir).readCompatFile<{ records?: DispatchRecord[] }>('dispatch.json')?.records;
+  const authoritative = (Array.isArray(records) ? records : []).map((record) => normalizeBridgeDispatchRecord(teamName, record, nowIso))
+    .filter((entry): entry is TeamDispatchRequest => entry !== null);
+  const localById = new Map(local.map((request) => [request.request_id, request]));
+  const receipts = new Map<string, Set<TeamDispatchRequestStatus>>();
+  const journal = join(stateDir, 'team', teamName, 'dispatch', 'runtime-finalizations.jsonl');
+  const finalizations = await readFile(journal, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  for (const line of finalizations.split('\n').filter(Boolean)) {
+    const command = JSON.parse(line);
+    const status = command.command === 'MarkNotified' ? 'notified'
+      : command.command === 'MarkDelivered' ? 'delivered' : command.command === 'MarkFailed' ? 'failed' : null;
+    if (status && typeof command.request_id === 'string') {
+      const states = receipts.get(command.request_id) ?? new Set<TeamDispatchRequestStatus>();
+      states.add(status);
+      receipts.set(command.request_id, states);
     }
   }
-
-  const path = dispatchRequestsPath(teamName, cwd);
-  try {
-    if (!existsSync(path)) return [];
-    const raw = await readFile(path, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const nowIso = new Date().toISOString();
-    return parsed
-      .map((entry) => normalizeDispatchRequestImpl(teamName, (entry ?? {}) as Partial<TeamDispatchRequest>, nowIso))
-      .filter((entry): entry is TeamDispatchRequest => entry !== null);
-  } catch {
-    return [];
-  }
+  const merged = authoritative.map((request) => {
+    const shadow = localById.get(request.request_id);
+    if (!shadow || shadow.to_worker !== request.to_worker || shadow.kind !== request.kind
+      || shadow.trigger_message !== request.trigger_message) return request;
+    const localMetadata = {
+      attempt_count: Math.max(request.attempt_count, shadow.attempt_count),
+      ...(request.status === shadow.status ? { last_reason: shadow.last_reason ?? request.last_reason, updated_at: shadow.updated_at } : {}),
+    };
+    if (request.status === 'delivered' || request.status === 'failed') return { ...request, ...localMetadata };
+    // Only durable runtime receipts may overlay lifecycle state; retry metadata stays Team-local.
+    if (receipts.get(request.request_id)?.has(shadow.status)) return {
+      ...request,
+      status: shadow.status,
+      attempt_count: Math.max(request.attempt_count, shadow.attempt_count),
+      updated_at: shadow.updated_at,
+      notified_at: shadow.notified_at,
+      delivered_at: shadow.delivered_at,
+      failed_at: shadow.failed_at,
+      last_reason: shadow.last_reason,
+    };
+    return {
+      ...request,
+      ...localMetadata,
+    };
+  });
+  const authoritativeIds = new Set(authoritative.map((request) => request.request_id));
+  return [...merged, ...local.filter((request) => request.creation_transport === 'legacy-json'
+    && !authoritativeIds.has(request.request_id)
+    && !hasRuntimeDispatchIdentity(stateDir, request.request_id))];
 }
 
 /** Read only strictly recognized target-team legacy request records for rollback scoping. */
@@ -2161,53 +2200,7 @@ async function readLegacyDispatchRequestsForRollback(teamName: string, cwd: stri
 
 async function writeDispatchRequests(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
   await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
-  await writeBridgeDispatchCompat(teamName, requests, cwd);
 }
-
-function serializeDispatchRequestToBridgeRecord(request: TeamDispatchRequest): DispatchRecord {
-  return {
-    request_id: request.request_id,
-    target: request.to_worker,
-    status: request.status,
-    created_at: request.created_at,
-    notified_at: request.notified_at ?? null,
-    delivered_at: request.delivered_at ?? null,
-    failed_at: request.failed_at ?? null,
-    reason: request.last_reason ?? null,
-    metadata: {
-      kind: request.kind,
-      team_name: request.team_name,
-      worker_index: request.worker_index,
-      pane_id: request.pane_id,
-      trigger_message: request.trigger_message,
-      intent: request.intent,
-      message_id: request.message_id,
-      inbox_correlation_key: request.inbox_correlation_key,
-      transport_preference: request.transport_preference,
-      fallback_allowed: request.fallback_allowed,
-      attempt_count: request.attempt_count,
-    },
-  };
-}
-
-async function writeBridgeDispatchCompat(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
-  if (!isBridgeEnabled()) return;
-  const stateDir = resolveBridgeStateDir(cwd);
-  const path = join(stateDir, 'dispatch.json');
-  const existing = getDefaultBridge(stateDir).readCompatFile<{ records?: DispatchRecord[] }>('dispatch.json');
-  const otherRecords = Array.isArray(existing?.records)
-    ? existing.records.filter((record) => {
-      const metadata = record?.metadata && typeof record.metadata === 'object'
-        ? record.metadata as Record<string, unknown>
-        : {};
-      const metadataTeam = typeof metadata.team_name === 'string' ? metadata.team_name.trim() : '';
-      return metadataTeam !== teamName;
-    })
-    : [];
-  const records = [...otherRecords, ...requests.map(serializeDispatchRequestToBridgeRecord)];
-  await writeAtomic(path, JSON.stringify({ records }, null, 2));
-}
-
 
 export function resolveDispatchLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return resolveDispatchLockTimeoutMsImpl(env);

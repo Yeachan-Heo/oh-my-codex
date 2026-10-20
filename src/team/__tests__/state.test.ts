@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, rm, unlink, writeFile, readFile, mkdir, open, rename, utimes, symlink } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { existsSync, readFileSync } from 'fs';
+import fs, { existsSync, readFileSync } from 'fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   ABSOLUTE_MAX_WORKERS,
   DEFAULT_MAX_WORKERS,
@@ -48,8 +49,10 @@ import {
   listDispatchRequests,
   markDispatchRequestNotified,
   markDispatchRequestDelivered,
+  markDispatchRequestFailed,
   transitionDispatchRequest,
   readDispatchRequest,
+  readDispatchRequests,
   readMonitorSnapshot,
   resolveDispatchLockTimeoutMs,
   writeTeamManifestV2,
@@ -744,6 +747,7 @@ exit 1
       process.env.OMX_RUNTIME_BRIDGE = '1';
       await initTeamState('dispatch-scope-alpha', 't', 'executor', 1, cwd);
       await initTeamState('dispatch-scope-beta', 't', 'executor', 1, cwd);
+      await writeFile(join(cwd, '.omx', 'state', 'events.json'), '[]');
       const compatPath = join(cwd, '.omx', 'state', 'dispatch.json');
       await writeFile(compatPath, JSON.stringify({ records: [
         {
@@ -1070,6 +1074,121 @@ exit 1
     } finally {
       if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
       else delete process.env.OMX_RUNTIME_BRIDGE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('retains terminal dispatch metadata without changing authoritative lifecycle', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-terminal-metadata-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtime = join(cwd, 'runtime');
+      await writeCompatRuntimeFixture(runtime, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('terminal-metadata', 'dispatch', 'executor', 1, cwd);
+      for (const status of ['failed', 'delivered'] as const) {
+        const { request } = await enqueueDispatchRequest('terminal-metadata', {
+          kind: 'inbox', to_worker: 'worker-1', trigger_message: status,
+        }, cwd);
+        if (status === 'failed') await markDispatchRequestFailed('terminal-metadata', request.request_id, 'hook_failed', cwd);
+        else {
+          await markDispatchRequestNotified('terminal-metadata', request.request_id, {}, cwd);
+          await markDispatchRequestDelivered('terminal-metadata', request.request_id, {}, cwd);
+        }
+        const original = await readDispatchRequest('terminal-metadata', request.request_id, cwd);
+        const projection = await readFile(join(cwd, '.omx/state/dispatch.json'), 'utf8');
+        const patched = await transitionDispatchRequest('terminal-metadata', request.request_id, status, status, {
+          last_reason: 'fallback_confirmed_after_failed_receipt:tmux', attempt_count: 9,
+          failed_at: 'untrusted', delivered_at: 'untrusted',
+        }, cwd);
+        const reread = await readDispatchRequest('terminal-metadata', request.request_id, cwd);
+        assert.deepEqual(patched, reread);
+        assert.equal(reread?.last_reason, 'fallback_confirmed_after_failed_receipt:tmux');
+        assert.equal(reread?.attempt_count, 9);
+        assert.equal(reread?.status, status);
+        assert.equal(reread?.failed_at, original?.failed_at);
+        assert.equal(reread?.delivered_at, original?.delivered_at);
+        assert.equal((await listDispatchRequests('terminal-metadata', cwd)).find(row => row.request_id === request.request_id)?.attempt_count, 9);
+        assert.equal(await readFile(join(cwd, '.omx/state/dispatch.json'), 'utf8'), projection);
+      }
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('retains retry metadata after authoritative dispatch transitions', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-transition-metadata-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      const runtime = join(cwd, 'runtime');
+      await writeCompatRuntimeFixture(runtime, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('transition-metadata', 'dispatch', 'executor', 1, cwd);
+      const { request } = await enqueueDispatchRequest('transition-metadata', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'transition',
+      }, cwd);
+      const notified = await transitionDispatchRequest('transition-metadata', request.request_id, 'pending', 'notified', {
+        attempt_count: 4, last_reason: 'notified locally', notified_at: 'untrusted',
+      }, cwd);
+      assert.equal(notified?.attempt_count, 4);
+      assert.notEqual(notified?.notified_at, 'untrusted');
+      const delivered = await transitionDispatchRequest('transition-metadata', request.request_id, 'notified', 'delivered', {
+        attempt_count: 7, last_reason: 'delivery confirmed locally', delivered_at: 'untrusted',
+      }, cwd);
+      assert.equal(delivered?.attempt_count, 7);
+      assert.equal(delivered?.last_reason, 'delivery confirmed locally');
+      assert.equal(delivered?.status, 'delivered');
+      assert.notEqual(delivered?.delivered_at, 'untrusted');
+      assert.deepEqual(await readDispatchRequest('transition-metadata', request.request_id, cwd), delivered);
+      const projection = JSON.parse(await readFile(join(cwd, '.omx/state/dispatch.json'), 'utf8'));
+      assert.notEqual(projection.records[0].reason, 'delivery confirmed locally');
+      const second = await enqueueDispatchRequest('transition-metadata', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'default retry count',
+      }, cwd);
+      assert.equal((await transitionDispatchRequest('transition-metadata', second.request.request_id, 'pending', 'failed', {}, cwd))?.attempt_count, 1);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('tolerates a finalization journal removed between its existence check and read', async (t) => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-journal-race-'));
+    const stateDir = join(cwd, '.omx/state');
+    const journal = join(stateDir, 'team/alpha/dispatch/runtime-finalizations.jsonl');
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    const originalExistsSync = fs.existsSync;
+    try {
+      await mkdir(join(stateDir, 'team/alpha/dispatch'), { recursive: true });
+      await writeFile(join(stateDir, 'team/alpha/dispatch/requests.json'), '[]');
+      await writeFile(join(stateDir, 'events.json'), '[]');
+      await writeFile(journal, '{"command":"MarkDelivered","request_id":"gone"}\n');
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      t.mock.method(fs, 'existsSync', (path: fs.PathLike) => {
+        const exists = originalExistsSync(path);
+        if (path === journal && exists) fs.unlinkSync(journal);
+        return exists;
+      });
+      syncBuiltinESMExports();
+      assert.deepEqual(await readDispatchRequests('alpha', cwd, [], stateDir), []);
+      await rm(journal, { force: true });
+      assert.deepEqual(await readDispatchRequests('alpha', cwd, [], stateDir), []);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -2985,6 +3104,87 @@ exit 1
     } finally {
       if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
       else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps concurrent degraded Team dispatches isolated without writing the Rust projection', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-isolated-fallback-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BINARY = join(cwd, 'missing-runtime');
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      for (const team of ['alpha', 'beta']) await initTeamState(team, 'dispatch', 'executor', 1, cwd);
+      const queued = await Promise.all(['alpha', 'beta'].map((team) => enqueueDispatchRequest(team, {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: team,
+      }, cwd)));
+      for (const [index, team] of ['alpha', 'beta'].entries()) {
+        assert.deepEqual((await listDispatchRequests(team, cwd)).map((request) => request.request_id), [queued[index].request.request_id]);
+        assert.equal(queued[index].request.creation_transport, 'legacy-json');
+        assert.equal((await enqueueDispatchRequest(team, { kind: 'inbox', to_worker: 'worker-1', trigger_message: team }, cwd)).deduped, true);
+      }
+      assert.equal(existsSync(join(cwd, '.omx/state/dispatch.json')), false);
+      const oldProjection = join(cwd, '.omx/state/dispatch.json');
+      await writeFile(oldProjection, JSON.stringify({ records: [{
+        request_id: queued[0].request.request_id, target: 'worker-1', status: 'pending',
+        created_at: queued[0].request.created_at, metadata: { ...queued[0].request, team_name: 'alpha' },
+      }] }));
+      assert.equal((await markDispatchRequestNotified('alpha', queued[0].request.request_id, {}, cwd))?.status, 'notified');
+      assert.equal((await readDispatchRequest('alpha', queued[0].request.request_id, cwd))?.status, 'notified');
+      assert.equal((await listDispatchRequests('beta', cwd)).length, 1);
+      await unlink(oldProjection);
+      const runtime = join(cwd, 'runtime');
+      await writeCompatRuntimeFixture(runtime, join(cwd, 'runtime.log'));
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      const native = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'native request',
+      }, cwd);
+      const projection = await readFile(join(cwd, '.omx/state/dispatch.json'), 'utf8');
+      assert.equal((await listDispatchRequests('alpha', cwd)).length, 2);
+      assert.equal((await listDispatchRequests('beta', cwd)).length, 1);
+      for (const [index, team] of ['alpha', 'beta'].entries()) {
+        const id = queued[index].request.request_id;
+        assert.equal((await markDispatchRequestNotified(team, id, {}, cwd))?.status, 'notified');
+        assert.equal((await markDispatchRequestDelivered(team, id, {}, cwd))?.status, 'delivered');
+      }
+      assert.equal(await readFile(join(cwd, '.omx/state/dispatch.json'), 'utf8'), projection);
+      assert.equal((await readDispatchRequest('alpha', native.request.request_id, cwd))?.status, 'pending');
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('filters removed and unproven dispatch shadows when the authoritative projection is unavailable', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-projection-gap-'));
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'dispatch', 'executor', 1, cwd);
+      const stateDir = join(cwd, '.omx/state');
+      const request = { kind: 'inbox', team_name: 'alpha', to_worker: 'worker-1', trigger_message: 'ping', status: 'pending' };
+      const requestsPath = join(stateDir, 'team/alpha/dispatch/requests.json');
+      await writeFile(requestsPath, JSON.stringify([
+        { ...request, request_id: 'removed', creation_transport: 'legacy-json' },
+        { ...request, request_id: 'unmarked' },
+        { ...request, request_id: 'safe', creation_transport: 'legacy-json' },
+      ]));
+      await writeFile(join(stateDir, 'dispatch-seen.json'), JSON.stringify({ schema_version: 2, ledger_epoch: 1, request_ids: ['removed'] }));
+      const before = await readFile(requestsPath, 'utf8');
+      for (const projection of [undefined, 'broken', '{}', '{"records":[]}']) {
+        if (projection === undefined) await rm(join(stateDir, 'dispatch.json'), { force: true });
+        else await writeFile(join(stateDir, 'dispatch.json'), projection);
+        assert.deepEqual((await listDispatchRequests('alpha', cwd)).map(request => request.request_id), ['safe']);
+        assert.equal(await readDispatchRequest('alpha', 'removed', cwd), null);
+        assert.equal(await readFile(requestsPath, 'utf8'), before);
+      }
+    } finally {
       if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
       else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
       await rm(cwd, { recursive: true, force: true });
