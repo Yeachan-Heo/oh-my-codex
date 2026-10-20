@@ -5,6 +5,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import { getBaseStateDir } from '../state/paths.js';
+import { isUnsupportedNativeSubagentEvidenceForScope } from '../leader/contract.js';
 
 
 import { codexAgentsDir, projectCodexAgentsDir } from '../utils/paths.js';
@@ -1356,6 +1357,8 @@ export interface DirectChildReopenContext {
   rootNativeSessionId: string;
   source: string;
   availableTools?: readonly string[] | readonly { name?: string; tool_name?: string; toolName?: string }[] | null;
+  /** Explicit unsupported evidence for native subagent capabilities (e.g., from hook payload or persisted blockers). */
+  unsupportedNativeSubagentEvidence?: unknown;
 }
 
 function formatReopenMetadata(entry: SubagentLedgerEntry): string {
@@ -1390,7 +1393,7 @@ function persistedReopenLegacyNotice(excludedCount: number, source: string): str
 /**
  * Tri-state availability of resume_agent tool:
  * - 'available': explicitly advertised in tool inventory
- * - 'unavailable': explicit negative capability evidence (currently unused, reserved for future)
+ * - 'unavailable': explicit negative capability evidence from hook payload or persisted support blockers
  * - 'unknown': tool inventory missing or incomplete (resume_agent absent from partial list)
  *
  * Per src/leader/contract.ts availableToolsEvidence: "A present-but-incomplete tool inventory
@@ -1400,7 +1403,16 @@ function persistedReopenLegacyNotice(excludedCount: number, source: string): str
  */
 type ResumeAgentAvailability = 'available' | 'unavailable' | 'unknown';
 
-function getResumeAgentAvailability(tools: readonly string[] | readonly { name?: string; tool_name?: string; toolName?: string }[] | null | undefined): ResumeAgentAvailability {
+function getResumeAgentAvailability(
+  tools: readonly string[] | readonly { name?: string; tool_name?: string; toolName?: string }[] | null | undefined,
+  unsupportedNativeSubagentEvidence?: unknown,
+): ResumeAgentAvailability {
+  // Explicit negative evidence (e.g., native_subagents_unsupported or multi_agent_v1_unavailable)
+  // makes resume_agent unavailable since it's part of the native subagent infrastructure.
+  if (isUnsupportedNativeSubagentEvidenceForScope(unsupportedNativeSubagentEvidence)) {
+    return 'unavailable';
+  }
+
   // When tools list is not provided, we have no inventory: unknown.
   if (!tools) return 'unknown';
   
@@ -1719,7 +1731,7 @@ export function consumeDirectChildReopenContext(
     const unavailableTargets = savedSubagents.filter((entry) => entry.status === 'unavailable');
     const failedTargets = savedSubagents.filter((entry) => entry.resumeFailedAt || entry.resumeFailureReason);
     const now = new Date().toISOString();
-    const resumeAgentAvailability = getResumeAgentAvailability(context.availableTools);
+    const resumeAgentAvailability = getResumeAgentAvailability(context.availableTools, context.unsupportedNativeSubagentEvidence);
     // Only record resume requests when the tool is provably available; unknown does not warrant recording intent to call
     if (resumeAgentAvailability === 'available' && reopenTargets.length) {
       for (const target of reopenTargets) {

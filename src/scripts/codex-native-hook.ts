@@ -2315,11 +2315,30 @@ async function buildPersistedSubagentReopenContext(
     const payload = safeObject(options.payload);
     const toolsValue = payload.available_tools ?? payload.availableTools ?? payload.tools;
     const availableTools = Array.isArray(toolsValue) ? toolsValue : null;
+    
+    // Compute explicit unsupported evidence for native subagent capabilities.
+    // This is used by getResumeAgentAvailability to determine if resume_agent tool is unavailable.
+    const stateDir = getBaseStateDir(cwd);
+    const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
+      payload: options.payload,
+      persistedSupportBlocker: readJsonSyncIfExists(nativeSubagentSupportBlockerPath(stateDir)),
+      persistedRoleRoutingMarker: readRoleRoutingMarker(stateDir, {
+        cwd,
+        sessionId: rootContext.sessionId,
+      }),
+      cwd,
+      sessionId: rootContext.sessionId,
+    });
+    
+    // Pass unsupported evidence only when the status is 'unsupported'
+    const unsupportedEvidence = nativeSubagentSupport.status === 'unsupported' ? nativeSubagentSupport : undefined;
+    
     return consumeDirectChildReopenContext(cwd, {
       sessionId: rootContext.sessionId,
       rootNativeSessionId: rootContext.rootNativeSessionId,
       source: readSessionStartSource(options.payload),
       availableTools,
+      unsupportedNativeSubagentEvidence: unsupportedEvidence,
     });
   } catch {
     return [

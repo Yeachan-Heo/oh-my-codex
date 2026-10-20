@@ -937,6 +937,48 @@ describe('subagents/tracker', () => {
     }
   });
 
+  it('emits unavailable warning when explicit unsupported native subagent evidence is provided', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-3866-tracker-unsupported-evidence-'));
+    try {
+      const path = subagentTrackingPath(cwd);
+      mkdirSync(join(cwd, '.omx', 'state'), { recursive: true });
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { root: { session_id: 'root', updated_at: '2026-07-23T00:00:00.000Z', threads: {
+        child: { thread_id: 'child', kind: 'subagent', provenance_kind: NATIVE_SUBAGENT_PROVENANCE, direct_child_root_id: 'root', direct_child_parent_id: 'root', status: 'available', first_seen_at: '2026-07-23T00:00:00.000Z', last_seen_at: '2026-07-23T00:00:00.000Z', turn_count: 1 },
+      } } } }));
+      
+      // With explicit unsupported evidence, resume_agent is unavailable even with tool in inventory
+      const unsupportedEvidence = { status: 'unsupported', reason: 'native_subagents_unsupported' as const, source: 'hook_payload_capability' as const, evidenceSummary: 'test evidence' };
+      const contextUnavailable = consumeDirectChildReopenContext(cwd, {
+        sessionId: 'root',
+        rootNativeSessionId: 'root',
+        source: 'resume',
+        availableTools: ['read', 'resume_agent', 'edit'],
+        unsupportedNativeSubagentEvidence: unsupportedEvidence,
+      }) ?? '';
+      
+      // Should emit warning about unavailable resume_agent
+      assert.match(contextUnavailable, /Warning: resume_agent tool is not available/);
+      assert.doesNotMatch(contextUnavailable, /resume_agent\(/);
+      assert.match(contextUnavailable, /do not spawn a same-role\/same-lane replacement/);
+      
+      // With unsupported evidence but without availableTools, still unavailable (not unknown)
+      const contextUnavailableNoTools = consumeDirectChildReopenContext(cwd, {
+        sessionId: 'root',
+        rootNativeSessionId: 'root',
+        source: 'resume',
+        unsupportedNativeSubagentEvidence: unsupportedEvidence,
+      }) ?? '';
+      assert.match(contextUnavailableNoTools, /Warning: resume_agent tool is not available/);
+      assert.doesNotMatch(contextUnavailableNoTools, /Unknown:/);
+      
+      // Without unsupported evidence, back to unknown state (no tools in inventory)
+      const contextUnknown = consumeDirectChildReopenContext(cwd, { sessionId: 'root', rootNativeSessionId: 'root', source: 'resume' }) ?? '';
+      assert.match(contextUnknown, /Unknown: resume_agent tool availability could not be determined/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('revokes direct-child authority when an authoritative observation moves it under a nested parent', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-3284-tracker-direct-to-nested-'));
     try {
