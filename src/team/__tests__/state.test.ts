@@ -217,6 +217,10 @@ switch (command.command) {
   }
   case 'RemoveDispatchRecords': {
     const ids = new Set(command.request_ids || []);
+    if ([...ids].some((id) => !dispatch.records.some((entry) => entry.request_id === id))) {
+      process.stderr.write('unknown dispatch request\\n');
+      process.exit(1);
+    }
     if (process.env.OMX_TEST_ACK_RETAIN_DISPATCH !== '1') {
       dispatch.records = dispatch.records.filter((entry) => !ids.has(entry.request_id));
       writeJson(dispatchPath, dispatch);
@@ -946,6 +950,51 @@ exit 1
       else delete process.env.OMX_RUNTIME_BINARY;
       if (typeof previousRuntimeBridge === 'string') process.env.OMX_RUNTIME_BRIDGE = previousRuntimeBridge;
       else delete process.env.OMX_RUNTIME_BRIDGE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes mixed fallback and runtime dispatches without sending local-only IDs to Rust', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-dispatch-mixed-removal-'));
+    const previousBinary = process.env.OMX_RUNTIME_BINARY;
+    const previousBridge = process.env.OMX_RUNTIME_BRIDGE;
+    try {
+      process.env.OMX_RUNTIME_BINARY = join(cwd, 'missing-runtime');
+      process.env.OMX_RUNTIME_BRIDGE = '1';
+      await initTeamState('alpha', 'dispatch', 'executor', 2, cwd);
+      await initTeamState('beta', 'dispatch', 'executor', 1, cwd);
+      const local = [];
+      for (const worker of ['worker-1', 'worker-2']) {
+        local.push((await enqueueDispatchRequest('alpha', {
+          kind: 'inbox', to_worker: worker, trigger_message: 'degraded ' + worker,
+        }, cwd)).request.request_id);
+      }
+      const runtime = join(cwd, 'runtime');
+      const log = join(cwd, 'runtime.log');
+      await writeCompatRuntimeFixture(runtime, log);
+      process.env.OMX_RUNTIME_BINARY = runtime;
+      const native = await enqueueDispatchRequest('alpha', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'runtime owned',
+      }, cwd);
+      const foreign = await enqueueDispatchRequest('beta', {
+        kind: 'inbox', to_worker: 'worker-1', trigger_message: 'foreign runtime request',
+      }, cwd);
+      assert.equal((await listDispatchRequests('alpha', cwd)).length, 3);
+      await removeDispatchRequestsForWorkers('alpha', ['worker-1'], cwd);
+      assert.deepEqual((await listDispatchRequests('alpha', cwd)).map(row => row.request_id), [local[1]]);
+      await removeDispatchRequestsForWorkers('alpha', ['worker-2'], cwd);
+      assert.deepEqual(await listDispatchRequests('alpha', cwd), []);
+      assert.deepEqual(JSON.parse(await readFile(join(cwd, '.omx/state/team/alpha/dispatch/requests.json'), 'utf8')), []);
+      assert.equal((await readDispatchRequest('beta', foreign.request.request_id, cwd))?.status, 'pending');
+      const removals = (await readFile(log, 'utf8')).split('\n')
+        .filter(line => line.startsWith('exec-scoped {"command":"RemoveDispatchRecords"'))
+        .map(line => JSON.parse(line.slice(line.indexOf('{'), line.lastIndexOf(' --state-dir='))).request_ids);
+      assert.deepEqual(removals, [[native.request.request_id]]);
+    } finally {
+      if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
+      else process.env.OMX_RUNTIME_BINARY = previousBinary;
+      if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
+      else process.env.OMX_RUNTIME_BRIDGE = previousBridge;
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -3177,13 +3226,22 @@ exit 1
       ]));
       await writeFile(join(stateDir, 'dispatch-seen.json'), JSON.stringify({ schema_version: 2, ledger_epoch: 1, request_ids: ['removed'] }));
       const before = await readFile(requestsPath, 'utf8');
-      for (const projection of [undefined, 'broken', '{}', '{"records":[]}']) {
+      const malformedRow = {
+        request_id: 'invalid-status', target: 'worker-1', status: 'unknown',
+        created_at: '2026-01-01T00:00:00.000Z', notified_at: null, delivered_at: null,
+        failed_at: null, reason: null, metadata: { team_name: 'alpha', trigger_message: 'invalid' },
+      };
+      for (const projection of [undefined, 'broken', '{}', '{"records":[]}',
+        '{"records":[null]}', '{"records":[{}]}', JSON.stringify({ records: [malformedRow] }),
+        JSON.stringify({ records: [{ ...malformedRow, status: 'pending' }, null] }),
+      ]) {
         if (projection === undefined) await rm(join(stateDir, 'dispatch.json'), { force: true });
         else await writeFile(join(stateDir, 'dispatch.json'), projection);
         assert.deepEqual((await listDispatchRequests('alpha', cwd)).map(request => request.request_id), ['safe']);
         assert.equal(await readDispatchRequest('alpha', 'removed', cwd), null);
         assert.equal(await readFile(requestsPath, 'utf8'), before);
       }
+      assert.deepEqual((await readDispatchRequests('alpha', cwd, JSON.parse('[null]'))).map(row => row.request_id), ['safe']);
     } finally {
       if (previousBridge === undefined) delete process.env.OMX_RUNTIME_BRIDGE;
       else process.env.OMX_RUNTIME_BRIDGE = previousBridge;

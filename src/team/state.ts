@@ -61,7 +61,7 @@ import {
   withMailboxLock as withMailboxLockImpl,
 } from './state/locks.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity } from './state/dispatch-recovery.js';
-import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord } from '../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, isStrictDispatchRecord, resolveBridgeStateDir, type DispatchRecord } from '../runtime/bridge.js';
 import {
   type TeamDispatchRequestStatus,
   TEAM_NAME_SAFE_PATTERN,
@@ -2105,7 +2105,8 @@ export async function readDispatchRequests(
   if (!isBridgeEnabled()) return local;
   if (!hasRuntimeAuthority(stateDir)) return local;
   const records = authoritativeRecords ?? getDefaultBridge(stateDir).readCompatFile<{ records?: DispatchRecord[] }>('dispatch.json')?.records;
-  const authoritative = (Array.isArray(records) ? records : []).map((record) => normalizeBridgeDispatchRecord(teamName, record, nowIso))
+  const authoritative = (Array.isArray(records) && records.every(isStrictDispatchRecord) ? records : [])
+    .map((record) => normalizeBridgeDispatchRecord(teamName, record, nowIso))
     .filter((entry): entry is TeamDispatchRequest => entry !== null);
   const localById = new Map(local.map((request) => [request.request_id, request]));
   const receipts = new Map<string, Set<TeamDispatchRequestStatus>>();
@@ -2222,6 +2223,7 @@ export async function removeDispatchRequestsForWorkers(
     // and other-team records can share a target worker name. This team's legacy
     // file is the canonical rollback scope.
     const requests = await readLegacyDispatchRequestsForRollback(teamName, cwd);
+    const retained = requests.filter((request) => !names.has(request.to_worker));
     const legacyRequestIds = requests
       .filter((request) => names.has(request.to_worker))
       .map((request) => request.request_id);
@@ -2240,15 +2242,20 @@ export async function removeDispatchRequestsForWorkers(
       if (snapshot.event !== 'SnapshotCaptured') {
         throw new Error(`authoritative_dispatch_rollback_discovery_failed:${[...names].join(',')}`);
       }
-      const scopedAuthoritativeIds = bridge.readDispatchRecordsStrict()
+      const authoritativeRecords = bridge.readDispatchRecordsStrict();
+      const authoritativeIds = new Set(authoritativeRecords.map((record) => record.request_id));
+      const scopedAuthoritativeIds = authoritativeRecords
         .filter((record) => {
           const metadataTeam = typeof record.metadata?.team_name === 'string' ? record.metadata.team_name : '';
           return metadataTeam === teamName && names.has(record.target);
         })
         .map((record) => record.request_id);
-      removedRequestIds = [...new Set([...legacyRequestIds, ...scopedAuthoritativeIds])];
+      removedRequestIds = [...new Set([
+        ...legacyRequestIds.filter((id) => authoritativeIds.has(id)),
+        ...scopedAuthoritativeIds,
+      ])];
       if (removedRequestIds.length === 0) {
-        await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
+        await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(retained, null, 2));
         return;
       }
       const removal = bridge.removeDispatchRecords(removedRequestIds);
@@ -2274,7 +2281,6 @@ export async function removeDispatchRequestsForWorkers(
     // The legacy per-team request file is compatibility output only. Update it
     // only after the authoritative runtime confirms removal; never regenerate
     // the shared bridge dispatch.json from a local snapshot during rollback.
-    const retained = requests.filter((request) => !names.has(request.to_worker));
     await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(retained, null, 2));
   });
 }

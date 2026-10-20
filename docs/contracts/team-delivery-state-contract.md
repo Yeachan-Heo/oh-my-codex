@@ -124,6 +124,9 @@ the runtime still owns terminal status and lifecycle timestamps.
 Missing or invalid authoritative projections do not expose unmarked or retired
 local requests. Notification hooks read shadows, receipts and identity ledgers
 from the state root already selected by their caller.
+Projections with malformed rows are invalid as a whole. Worker retirement removes
+local-only requests locally and sends only IDs present in the refreshed runtime
+projection to Rust, preserving authoritative removal verification.
 
 Observed code paths:
 

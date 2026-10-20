@@ -221,7 +221,7 @@ export function resolveBridgeStateDir(cwd: string, env: NodeJS.ProcessEnv = proc
   return resolveCanonicalTeamStateRoot(cwd, env);
 }
 
-function isStrictDispatchRecord(record: unknown): record is DispatchRecord {
+export function isStrictDispatchRecord(record: unknown): record is DispatchRecord {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
   const value = record as Record<string, unknown>;
   const requiredFields = [
