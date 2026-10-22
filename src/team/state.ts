@@ -2042,15 +2042,15 @@ async function readMailbox(teamName: string, workerName: string, cwd: string): P
 async function readLegacyMailbox(teamName: string, workerName: string, cwd: string): Promise<TeamMailbox> {
   const p = mailboxPath(teamName, workerName, cwd);
   try {
-    if (!existsSync(p)) return { worker: workerName, messages: [] };
     const raw = await readFile(p, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== 'object') return { worker: workerName, messages: [] };
+    if (!parsed || typeof parsed !== 'object') throw new Error(`Invalid team mailbox: ${p}`);
     const v = parsed as { worker?: unknown; messages?: unknown };
-    if (v.worker !== workerName || !Array.isArray(v.messages)) return { worker: workerName, messages: [] };
+    if (v.worker !== workerName || !Array.isArray(v.messages)) throw new Error(`Invalid team mailbox: ${p}`);
     return { worker: workerName, messages: v.messages as TeamMailboxMessage[] };
-  } catch {
-    return { worker: workerName, messages: [] };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { worker: workerName, messages: [] };
+    throw error;
   }
 }
 
@@ -2237,6 +2237,7 @@ export async function removeDispatchRequestsForWorkers(
       const compat = bridge.readCompatFile<{ records?: unknown[] }>('dispatch.json');
       const compatPath = join(stateDir, 'dispatch.json');
       if (legacyRequestIds.length === 0
+        && !hasRuntimeAuthority(stateDir)
         && (!existsSync(compatPath) || (Array.isArray(compat?.records) && compat.records.length === 0))) {
         await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
         return;
@@ -2245,7 +2246,10 @@ export async function removeDispatchRequestsForWorkers(
       if (snapshot.event !== 'SnapshotCaptured') {
         throw new Error(`authoritative_dispatch_rollback_discovery_failed:${[...names].join(',')}`);
       }
-      const authoritativeRecords = bridge.readDispatchRecordsStrict();
+      const authoritativeRecords = snapshot.dispatch_records === undefined ? bridge.readDispatchRecordsStrict() : snapshot.dispatch_records;
+      if (!Array.isArray(authoritativeRecords) || !authoritativeRecords.every(isStrictDispatchRecord)) {
+        throw new Error(`authoritative_dispatch_rollback_discovery_failed:${[...names].join(',')}`);
+      }
       const authoritativeIds = new Set(authoritativeRecords.map((record) => record.request_id));
       const scopedAuthoritativeIds = authoritativeRecords
         .filter((record) => {
@@ -2275,9 +2279,9 @@ export async function removeDispatchRequestsForWorkers(
       if (verificationSnapshot.event !== 'SnapshotCaptured') {
         throw new Error(`authoritative_dispatch_rollback_verification_failed:${[...names].join(',')}`);
       }
-      const remainingRemovedRecord = bridge.readDispatchRecordsStrict()
-        .some((record) => removedRequestIds.includes(record.request_id));
-      if (remainingRemovedRecord) {
+      const remaining = verificationSnapshot.dispatch_records === undefined ? bridge.readDispatchRecordsStrict() : verificationSnapshot.dispatch_records;
+      if (!Array.isArray(remaining) || !remaining.every(isStrictDispatchRecord)
+        || remaining.some((record) => removedRequestIds.includes(record.request_id))) {
         throw new Error(`authoritative_dispatch_rollback_verification_failed:${[...names].join(',')}`);
       }
     }

@@ -20,6 +20,7 @@ import {
   normalizeTmuxCapture as sharedNormalizeTmuxCapture,
   paneHasActiveTask as sharedPaneHasActiveTask,
   paneIsBootstrapping as sharedPaneIsBootstrapping,
+  paneHasTrustPrompt,
   paneShowsCodexViewport as sharedPaneShowsCodexViewport,
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
@@ -3245,24 +3246,6 @@ function paneTarget(sessionName: string, workerIndex: number): string {
 
 export const paneIsBootstrapping = sharedPaneIsBootstrapping;
 export const paneLooksReady = sharedPaneLooksReady;
-
-function paneHasTrustPrompt(captured: string): boolean {
-  const lines = captured
-    .split('\n')
-    .map((line) => line.replace(/\r/g, '').trim())
-    .filter((line) => line.length > 0);
-  const tail = lines.slice(-12);
-  // Codex (and pre-2.1 Claude): "Do you trust the contents of this directory?"
-  // Claude Code 2.1.x: "Quick safety check: Is this a project you created or one you trust?"
-  const hasQuestion = tail.some((line) => /Do you trust the contents of this directory\?/i.test(line))
-    || tail.some((line) => /Quick safety check:.*(?:created or one you trust)/i.test(line));
-  // Codex choices: "Yes, continue|No, quit|Press enter to continue".
-  // Claude Code 2.1.x numbered choices: "1. Yes, I trust this folder" / "2. No, exit".
-  const hasActiveChoices = tail.some((line) => /Yes,\s*continue|No,\s*quit|Press enter to continue/i.test(line))
-    || (tail.some((line) => /1\.\s*Yes,\s*I\s*trust\s*this\s*folder/i.test(line))
-      && tail.some((line) => /2\.\s*No,\s*exit/i.test(line)));
-  return hasQuestion && hasActiveChoices;
-}
 
 function paneHasClaudeBypassPermissionsPrompt(captured: string): boolean {
   const lines = captured

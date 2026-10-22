@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, resolveBridgeStateDir, RuntimeBridgeError, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, isRuntimeTransportError, isStrictDispatchRecord, resolveBridgeStateDir, RuntimeBridgeError, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization } from './dispatch-recovery.js';
 import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
 import { isTeamReminderIntent, type TeamReminderIntent } from '../reminder-intents.js';
@@ -56,7 +56,7 @@ interface DispatchDeps {
   cwd: string;
   validateWorkerName: (name: string) => void;
   withDispatchLock: <T>(teamName: string, cwd: string, fn: () => Promise<T>) => Promise<T>;
-  readDispatchRequests: (teamName: string, cwd: string) => Promise<TeamDispatchRequest[]>;
+  readDispatchRequests: (teamName: string, cwd: string, authoritativeRecords?: readonly DispatchRecord[]) => Promise<TeamDispatchRequest[]>;
   writeDispatchRequests: (teamName: string, requests: TeamDispatchRequest[], cwd: string) => Promise<void>;
 }
 
@@ -272,7 +272,19 @@ export async function enqueueDispatchRequest(
   deps.validateWorkerName(requestInput.to_worker);
 
   const queued = await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
-    const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
+    let records: DispatchRecord[] | undefined;
+    const stateDir = resolveBridgeStateDir(deps.cwd);
+    if (isBridgeEnabled() && hasRuntimeAuthority(stateDir)) {
+      // A failed persist can commit the queue event before publishing its projection.
+      const bridge = getDefaultBridge(stateDir);
+      const snapshot = bridge.execCommand({ command: 'CaptureSnapshot' });
+      if (snapshot?.event !== 'SnapshotCaptured') throw new RuntimeBridgeError('invalid dispatch recovery acknowledgement');
+      records = snapshot.dispatch_records === undefined ? bridge.readDispatchRecordsStrict() : snapshot.dispatch_records;
+      if (!Array.isArray(records) || !records.every(isStrictDispatchRecord)) {
+        throw new RuntimeBridgeError('invalid recovered dispatch records');
+      }
+    }
+    const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd, records);
     const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
     if (existing) {
       return { request: existing, deduped: true };

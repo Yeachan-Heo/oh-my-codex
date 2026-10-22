@@ -800,7 +800,8 @@ exit 1
       );
       assert.deepEqual(await listDispatchRequests(teamName, cwd), []);
       const compatPath = join(cwd, '.omx', 'state', 'dispatch.json');
-      await assert.rejects(readFile(compatPath), { code: 'ENOENT' });
+      assert.deepEqual(JSON.parse(await readFile(compatPath, 'utf8')).records, []);
+      assert.deepEqual(JSON.parse(await readFile(join(cwd, '.omx', 'state', 'events.json'), 'utf8')), []);
     } finally {
       if (previousBinary === undefined) delete process.env.OMX_RUNTIME_BINARY;
       else process.env.OMX_RUNTIME_BINARY = previousBinary;

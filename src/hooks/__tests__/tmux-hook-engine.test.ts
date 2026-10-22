@@ -7,6 +7,7 @@ import {
   normalizeTmuxHookConfig,
   pickActiveMode,
   paneHasActiveTask,
+  paneHasTrustPrompt,
   paneIsBootstrapping,
   paneShowsCodexViewport,
   paneLooksReady,
@@ -331,10 +332,48 @@ describe('paneIsBootstrapping', () => {
     assert.equal(paneIsBootstrapping(['model: loading']), true);
     assert.equal(paneIsBootstrapping(['Initializing workspace']), true);
     assert.equal(paneIsBootstrapping(['connecting to agent']), true);
+    assert.equal(paneIsBootstrapping('⠋ Loading workspace...'), true);
+    assert.equal(paneIsBootstrapping('│ model: loading │'), true);
   });
 
   it('returns false for ready prompt content', () => {
     assert.equal(paneIsBootstrapping(['› ready']), false);
+  });
+
+  it('does not treat ordinary output or draft text as startup status', () => {
+    for (const text of [
+      'Finished loading dependencies.',
+      'Done initializing workspace.',
+      'Notes on starting up the service.',
+      'Avoid connecting to the production server.',
+      '› Explain loading model weights',
+      '❯ Explain model: loading',
+    ]) {
+      const capture = `OpenAI Codex\n${text}\n› Ask Codex to do anything`;
+      assert.equal(paneIsBootstrapping(capture), false, text);
+      assert.equal(paneLooksReady(capture), true, text);
+    }
+  });
+});
+
+describe('paneHasTrustPrompt', () => {
+  it('recognizes wrapped questions and choices beyond the last twelve screen rows', () => {
+    const capture =
+      'Trust this\nfolder? Codex can read files here.\n' +
+      'Wrapped folder-access explanation.\n'.repeat(13) +
+      '› 1. Trust and\ncontinue\n  2. Quit\nenter continue · esc quit';
+    assert.equal(paneHasTrustPrompt(capture), true);
+    assert.equal(paneLooksReady(capture), false);
+    assert.equal(paneShowsCodexViewport(`OpenAI Codex\nmodel: gpt-6.1-sol\n${capture}`), false);
+  });
+
+  it('requires current trust choices rather than a historical question alone', () => {
+    assert.equal(paneHasTrustPrompt('Trust this folder?\n1. Something unrelated'), false);
+    const historical =
+      'Trust this folder?\n1. Trust and continue\n2. Quit\n' +
+      'Completed task output.\n'.repeat(13) +
+      '› Ask Codex to do anything';
+    assert.equal(paneHasTrustPrompt(historical), false);
   });
 });
 
@@ -347,6 +386,12 @@ describe('paneLooksReady', () => {
   it('rejects status-only and bootstrapping captures', () => {
     assert.equal(paneLooksReady('gpt-5 50% left'), false);
     assert.equal(paneLooksReady('model: loading\n› '), false);
+  });
+
+  it('rejects trust choices as both a ready prompt and a live Codex viewport', () => {
+    const capture = 'OpenAI Codex\nmodel: gpt-6.1-sol\nTrust this folder?\n› 1. Trust and continue\n2. Quit';
+    assert.equal(paneLooksReady(capture), false);
+    assert.equal(paneShowsCodexViewport(capture), false);
   });
 
   it('accepts Codex welcome-screen helper text', () => {

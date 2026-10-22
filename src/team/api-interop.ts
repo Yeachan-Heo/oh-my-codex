@@ -28,6 +28,7 @@ import {
   teamListDispatchRequests,
   teamMarkDispatchRequestNotified,
   teamMarkDispatchRequestDelivered,
+  teamWithTaskMembershipBarrier,
   teamCreateTask,
   teamReadTask,
   teamListTasks,
@@ -151,11 +152,14 @@ async function markLatestMailboxDispatchDelivered(
   // Dispatch persistence is append-only. Keep the newest exact-message receipt
   // when concurrent paths queued more than one wake in the same clock tick.
   const matching = active.filter((request) => request.message_id === messageId).at(-1);
-  if (!matching) return { matched_request_id: null, dispatch_updated: false };
+  if (active.length === 0) return { matched_request_id: null, dispatch_updated: false };
 
   const mailbox = await listMailboxMessages(teamName, worker, cwd);
+  if (!mailbox.some((message) => message.message_id === messageId && message.delivered_at)) {
+    return { matched_request_id: matching?.request_id ?? null, dispatch_updated: false };
+  }
   if (mailbox.some((message) => !message.delivered_at)) {
-    return { matched_request_id: matching.request_id, dispatch_updated: false };
+    return { matched_request_id: matching?.request_id ?? null, dispatch_updated: false };
   }
 
   const deliveredMessageIds = new Set(
@@ -174,7 +178,7 @@ async function markLatestMailboxDispatchDelivered(
     allDelivered &&= delivered?.status === 'delivered';
   }
   return {
-    matched_request_id: matching.request_id,
+    matched_request_id: matching?.request_id ?? null,
     dispatch_updated: allDelivered,
   };
 }
@@ -728,8 +732,11 @@ export async function executeTeamApiOperation(
         if (!teamName || !worker || !messageId) {
           return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name, worker, message_id are required' } };
         }
-        const updated = await markMessageDelivered(teamName, worker, messageId, cwd);
-        const dispatch = await markLatestMailboxDispatchDelivered(teamName, worker, messageId, cwd);
+        const { updated, dispatch } = await teamWithTaskMembershipBarrier(teamName, cwd, async () => {
+          const updated = await markMessageDelivered(teamName, worker, messageId, cwd);
+          const dispatch = await markLatestMailboxDispatchDelivered(teamName, worker, messageId, cwd);
+          return { updated, dispatch };
+        });
         await appendTeamDeliveryLogForCwd(cwd, {
           event: 'mark_delivered',
           source: 'team.api-interop',

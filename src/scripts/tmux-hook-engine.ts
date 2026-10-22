@@ -276,11 +276,37 @@ function normalizePaneLines(capturedOrLines: any): string[] {
 
 export function paneIsBootstrapping(capturedOrLines: any): boolean {
   const lines = normalizePaneLines(capturedOrLines);
-  return lines.some((line) =>
-    /\b(loading|initializing|starting up)\b/i.test(line)
-    || /\bmodel:\s*loading\b/i.test(line)
-    || /\bconnecting\s+to\b/i.test(line)
-  );
+  return lines.some((line) => {
+    // Strip TUI borders/spinners, but keep prompt glyphs so drafts are not status rows.
+    const status = line.replace(/^[^\p{L}\p{N}›>❯]*/u, '');
+    return (
+      /^(loading|initializing|starting up|waiting for startup|connecting\s+to)\b/i.test(status) ||
+      /^model:\s*loading\b/i.test(status)
+    );
+  });
+}
+
+export function paneHasTrustPrompt(captured: string): boolean {
+  const lines = captured
+    .split('\n')
+    .map((line) => line.replace(/\r/g, '').trim())
+    .filter((line) => line.length > 0);
+  // Narrow panes wrap the question above the recent choices; match logical text.
+  const content = lines.join(' ');
+  const tail = lines.slice(-12).join(' ');
+  // Codex (and pre-2.1 Claude): "Do you trust the contents of this directory?"
+  // Claude Code 2.1.x: "Quick safety check: Is this a project you created or one you trust?"
+  const hasQuestion =
+    /Do you trust the contents of this directory\?/i.test(content) ||
+    /Trust this folder\?/i.test(content) ||
+    /Quick safety check:.*(?:created or one you trust)/i.test(content);
+  // Codex choices: "Yes, continue|No, quit|Press enter to continue".
+  // Claude Code 2.1.x numbered choices: "1. Yes, I trust this folder" / "2. No, exit".
+  const hasActiveChoices =
+    /Yes,\s*continue|No,\s*quit|Press enter to continue/i.test(tail) ||
+    (/1\.\s*Trust and continue/i.test(tail) && /2\.\s*Quit\b/i.test(tail)) ||
+    (/1\.\s*Yes,\s*I\s*trust\s*this\s*folder/i.test(tail) && /2\.\s*No,\s*exit/i.test(tail));
+  return hasQuestion && hasActiveChoices;
 }
 
 export function paneLooksReady(captured: any): boolean {
@@ -289,7 +315,7 @@ export function paneLooksReady(captured: any): boolean {
 
   const lines = normalizePaneLines(content);
 
-  if (paneIsBootstrapping(lines)) return false;
+  if (paneIsBootstrapping(lines) || paneHasTrustPrompt(lines.join('\n'))) return false;
 
   const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
   if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
@@ -307,7 +333,7 @@ export function paneLooksReady(captured: any): boolean {
 export function paneShowsCodexViewport(captured: any): boolean {
   const lines = normalizePaneLines(captured);
   if (lines.length === 0) return false;
-  if (paneIsBootstrapping(lines)) return false;
+  if (paneIsBootstrapping(lines) || paneHasTrustPrompt(lines.join('\n'))) return false;
 
   const hasCodexBanner = lines.some((line) => /\bOpenAI Codex\b/i.test(line));
   if (!hasCodexBanner) return false;

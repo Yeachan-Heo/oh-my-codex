@@ -2,11 +2,14 @@ import { safeString } from './utils.js';
 import { runProcess } from './process-runner.js';
 import {
   buildCapturePaneArgv,
+  buildVisibleCapturePaneArgv,
   buildPaneInModeArgv,
   buildPaneCurrentCommandArgv,
   buildSendKeysArgv,
   isPaneRunningShell,
   paneHasActiveTask,
+  paneHasTrustPrompt,
+  paneIsBootstrapping,
   paneLooksReady,
 } from '../tmux-hook-engine.js';
 import { readExactPaneProof } from '../../team/exact-pane.js';
@@ -315,7 +318,9 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
   }
 
   {
-    const read = await readExplicitPane(buildCapturePaneArgv(target, captureLines));
+    const read = await readExplicitPane(requireReady
+      ? buildCapturePaneArgv(target, captureLines)
+      : buildVisibleCapturePaneArgv(target));
     if (!read.ok) {
       if (read.paneProof) return exactPaneFailure(read.paneProof);
       if (exactPaneIdentityProvided) {
@@ -332,6 +337,11 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
     const paneCapture = safeString(read.result?.stdout);
     const hasCaptureEvidence = paneCapture.trim() !== '';
     if (hasCaptureEvidence) {
+      // Busy-worker delivery may skip readiness, but never startup or trust UI.
+      if (paneHasTrustPrompt(paneCapture)
+        || (paneIsBootstrapping(paneCapture) && !paneHasActiveTask(paneCapture))) {
+        return buildReadinessResult(false, 'pane_not_ready', paneCapture, 'captured');
+      }
       const paneShowsLiveAgent = paneLooksReady(paneCapture) || paneHasActiveTask(paneCapture);
       if (paneRunningShell && !paneShowsLiveAgent) {
         return buildReadinessResult(false, 'pane_running_shell', paneCapture, 'captured');

@@ -61,6 +61,14 @@ conditions hold:
   manifest/config pane id, and dispatch request metadata.
 - It does not replace or bypass mailbox dispatch for follow-up worker messages.
 - It does not send through visible Codex trust prompts.
+- The Codex `Waiting for startup` viewport is bootstrapping even when its draft
+  prompt is visible. The folder-access dialog (`Trust this folder?`, `1. Trust
+  and continue`, `2. Quit`) must pass through the existing auto-trust readiness
+  path before any inbox text is typed; its choice marker is not a ready prompt.
+  Hook dispatch must enforce this startup/trust guard even when `requireReady`
+  and `requireIdle` are disabled to allow messages to busy workers. Narrow-pane
+  wrapping must not hide the trust question above the recent choices. Startup
+  detection matches status rows, not ordinary output or drafts mentioning loading.
 - It does not send through visible Claude bypass-permissions prompts unless the
   existing explicit auto-accept path has handled the prompt first.
 - It does not mark hook delivery as successful merely because a direct trigger

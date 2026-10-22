@@ -1625,7 +1625,7 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /display-message -p -t %93 #\{pane_in_mode\}/);
-      assert.match(tmuxLog, /capture-pane -t %93 -p -S -80/);
+      assert.match(tmuxLog, /capture-pane -t %93 -p\n/);
       assert.match(tmuxLog, /send-keys -t %93 -l \[omx:team-notice-ledger:[a-f0-9]{24}\] Review current Team notices\./);
       assert.match(tmuxLog, /send-keys -t %93 Tab/);
       assert.match(tmuxLog, /send-keys -t %93 Enter/);
@@ -2220,7 +2220,7 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /list-panes -a -F #\{pane_id\}\t#\{pane_dead\}\t#\{pane_pid\}/, 'should retain authoritative exact-pane live proof');
       assert.match(tmuxLog, /display-message -p -t %74 #\{pane_current_command\}/, 'should query the exact pane command before capture readiness');
-      assert.match(tmuxLog, /capture-pane -t %74 -p -S -80/);
+      assert.match(tmuxLog, /capture-pane -t %74 -p\n/);
       assert.doesNotMatch(tmuxLog, /(?:set-buffer|paste-buffer|send-keys)/, 'capture readiness failure must suppress all input-effect tmux commands');
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');
@@ -2355,7 +2355,7 @@ exit 0
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /capture-pane -t %75 -p -S -80/);
+      assert.match(tmuxLog, /capture-pane -t %75 -p\n/);
       assert.doesNotMatch(tmuxLog, /send-keys -t %75 -l Team same-classified-state: 1 msg\(s\) for leader\./, 'same visible classified state should not be reinjected');
 
       const eventsPath = join(teamDir, 'events', 'events.ndjson');

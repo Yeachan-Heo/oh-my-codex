@@ -88,6 +88,10 @@ partial persistence cannot silently become a second JSON-only or runtime message
 Deduplication uses the same verified projection, including when another process
 completed recovery after the sender's initial mailbox read.
 
+An existing per-worker mailbox is not an empty mailbox when reading or parsing
+it fails, or its worker/array shape is invalid. Reads and mutations propagate the
+error and preserve the original file; only a missing mailbox starts empty.
+
 Runtime acknowledgement rejections propagate to the caller. Transport failure
 while mutating a visible authoritative row also propagates, so the caller cannot
 report a shadow-only acknowledgement as success; a proven JSON-only row may use
@@ -130,6 +134,21 @@ current projection, preserving completion receipts and preventing reinjection.
 Worker retirement removes local-only requests locally and sends only IDs present
 in the refreshed runtime projection to Rust, preserving authoritative removal
 verification.
+
+Before deduplication or assigning a new dispatch ID, enqueue refreshes existing
+runtime authority and checks the returned records. A queue event committed
+before a failed projection write therefore keeps its original ID on retry;
+unavailable or invalid recovery blocks creation. Worker retirement also refreshes
+existing authority when its projection is empty or missing, before deciding there
+is nothing to remove. Discovery and removal verification use validated returned
+snapshot records, so a later compatibility projection replacement cannot hide a
+request or substitute for proof of removal.
+
+Mailbox wakes may cover several messages. Once all messages are acknowledged,
+delivery closes the active wakes backed by those delivered message IDs, regardless
+of acknowledgement order. Unknown IDs and unread messages do not close a wake.
+Acknowledgement and wake retirement share the send-side Team membership barrier,
+so a concurrent send cannot coalesce into a wake being retired.
 
 Observed code paths:
 

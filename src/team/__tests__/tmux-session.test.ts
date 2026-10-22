@@ -182,6 +182,18 @@ const CODEX_TRUST_PROMPT_CAPTURE = `Do you trust the contents of this directory?
 Yes, continue
 No, quit`;
 
+const CODEX_FOLDER_ACCESS_CAPTURE = `Folder access
+/tmp/team/worktrees/worker-2
+
+Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
+Folder settings can run code automatically, even without a model request.
+Continue only if you trust these files. Your trust decision will be saved.
+
+› 1. Trust and continue
+  2. Quit
+
+enter continue · esc quit`;
+
 const QUEUED_AFTER_TOOL_CALL_CAPTURE = `• Messages to be submitted after next tool call (press esc to interrupt and send immediately)
   ↳ Read $OMX_TEAM_STATE_ROOT/team/demo/workers/worker-1/inbox.md, work now, report progress
 
@@ -796,6 +808,30 @@ Press enter to continue`, 'codex'), {
 });
 
 describe('trust and Claude bypass prompt detection', () => {
+  it('blocks the Codex folder-access numbered-choice dialog', () => {
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(CODEX_FOLDER_ACCESS_CAPTURE, 'codex'), {
+      safe: false,
+      reason: 'trust_prompt',
+    });
+    assert.equal(classifyWorkerStartupInjectSafety(CODEX_FOLDER_ACCESS_CAPTURE), 'trust_prompt');
+    assert.notEqual(
+      evaluateStartupDirectTriggerSafetyCapture('Trust this folder?\n1. Something unrelated', 'codex').reason,
+      'trust_prompt',
+    );
+  });
+
+  it('blocks folder access when wrapped explanations push the question beyond twelve rows', () => {
+    const capture = CODEX_FOLDER_ACCESS_CAPTURE.replace(
+      'Folder settings',
+      'Wrapped folder-access explanation.\n'.repeat(13) + 'Folder settings',
+    );
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(capture, 'codex'), {
+      safe: false,
+      reason: 'trust_prompt',
+    });
+    assert.equal(classifyWorkerStartupInjectSafety(capture), 'trust_prompt');
+  });
+
   it('matches Codex and pre-2.1 Claude trust wording', () => {
     assert.equal(
       evaluateStartupDirectTriggerSafetyCapture('Do you trust the contents of this directory?\nPress enter to continue', 'codex').reason,
@@ -1317,6 +1353,19 @@ describe('shouldAttemptAdaptiveRetry', () => {
 });
 
 describe('paneIsBootstrapping (#391)', () => {
+  it('blocks the Codex waiting-for-startup viewport before folder access appears', () => {
+    const capture = `OpenAI Codex (v0.163.0)
+directory: /tmp/team
+› Ask Codex to do anything
+Waiting for startup · esc cancel`;
+    assert.equal(paneIsBootstrapping(capture), true);
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(capture, 'codex'), {
+      safe: false,
+      reason: 'bootstrapping',
+    });
+    assert.equal(classifyWorkerStartupInjectSafety(capture), 'bootstrapping');
+  });
+
   it('detects "loading" keyword', () => {
     assert.equal(paneIsBootstrapping(['loading model weights…']), true);
   });
@@ -1331,6 +1380,16 @@ describe('paneIsBootstrapping (#391)', () => {
 
   it('detects "connecting to" keyword', () => {
     assert.equal(paneIsBootstrapping(['connecting to server']), true);
+  });
+
+  it('keeps completed loading output safe for startup injection', () => {
+    const capture = 'OpenAI Codex\nFinished loading dependencies.\n› Ask Codex to do anything';
+    assert.equal(paneIsBootstrapping(capture), false);
+    assert.deepEqual(evaluateStartupDirectTriggerSafetyCapture(capture, 'codex'), {
+      safe: true,
+      reason: 'ready_prompt',
+    });
+    assert.equal(classifyWorkerStartupInjectSafety(capture), 'safe');
   });
 
   it('returns false for normal ready prompt', () => {
@@ -4547,13 +4606,17 @@ esac
     );
   });
 
-  it('auto-accepts trust prompts and then observes readiness', async () => {
-    const previousAutoTrust = process.env.OMX_TEAM_AUTO_TRUST;
-    delete process.env.OMX_TEAM_AUTO_TRUST;
-    try {
-      await withMockTmuxFixture(
-        'omx-tmux-worker-ready-async-trust-',
-        (logPath) => `#!/bin/sh
+  for (const [label, capture] of [
+    ['legacy', 'Do you trust the contents of this directory?\nPress enter to continue'],
+    ['folder access', CODEX_FOLDER_ACCESS_CAPTURE],
+  ]) {
+    it(`auto-accepts ${label} trust prompts and then observes readiness`, async () => {
+      const previousAutoTrust = process.env.OMX_TEAM_AUTO_TRUST;
+      delete process.env.OMX_TEAM_AUTO_TRUST;
+      try {
+        await withMockTmuxFixture(
+          'omx-tmux-worker-ready-async-trust-',
+          (logPath) => `#!/bin/sh
 set -eu
 state_dir="$(dirname "${logPath}")"
 accepted_file="$state_dir/accepted"
@@ -4566,8 +4629,7 @@ ${READY_HELPER_CAPTURE}
 EOF
     else
       cat <<'EOF'
-Do you trust the contents of this directory?
-Press enter to continue
+${capture}
 EOF
     fi
     exit 0
@@ -4582,18 +4644,20 @@ EOF
     exit 0
     ;;
 esac
-`,
-        async ({ logPath }) => {
-          assert.equal(await waitForWorkerReadyAsync('omx-team-x', 1, 5_000), true);
-          const log = await readFile(logPath, 'utf-8');
-          assert.match(log, /send-keys -t omx-team-x:1 Enter/);
-        },
-      );
-    } finally {
-      if (typeof previousAutoTrust === 'string') process.env.OMX_TEAM_AUTO_TRUST = previousAutoTrust;
-      else delete process.env.OMX_TEAM_AUTO_TRUST;
-    }
-  });
+  `,
+          async ({ logPath }) => {
+            assert.equal(await waitForWorkerReadyAsync('omx-team-x', 1, 5_000), true);
+            const log = await readFile(logPath, 'utf-8');
+            assert.match(log, /send-keys -t omx-team-x:1 Enter/);
+          },
+        );
+      } finally {
+        if (typeof previousAutoTrust === 'string') process.env.OMX_TEAM_AUTO_TRUST = previousAutoTrust;
+        else delete process.env.OMX_TEAM_AUTO_TRUST;
+      }
+    });
+  }
+
   it('auto-dismisses the Claude 2.1.x quick-safety-check trust prompt with named Enter', async () => {
     const previousAutoTrust = process.env.OMX_TEAM_AUTO_TRUST;
     delete process.env.OMX_TEAM_AUTO_TRUST;
