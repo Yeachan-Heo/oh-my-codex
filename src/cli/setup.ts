@@ -2187,12 +2187,30 @@ async function commitNativeHookTransaction(
 }
 
 
+/**
+ * A symlinked destination would redirect reads, backups and writes outside the
+ * managed tree, so refuse before touching it.
+ */
+async function assertNoSymlinkDestination(destinationPath: string): Promise<void> {
+	let destinationStat: Stats;
+	try {
+		destinationStat = await lstat(destinationPath);
+	} catch (error) {
+		if (isMissingPathError(error)) return;
+		throw error;
+	}
+	if (destinationStat.isSymbolicLink()) {
+		throw new Error(`Refusing to install through symlink ${destinationPath}.`);
+	}
+}
+
 async function ensureBackup(
 	destinationPath: string,
 	contentChanged: boolean,
 	backupContext: SetupBackupContext,
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<boolean> {
+	await assertNoSymlinkDestination(destinationPath);
 	if (!contentChanged || !existsSync(destinationPath)) return false;
 
 	const relativePath = relative(backupContext.baseRoot, destinationPath);
@@ -2478,6 +2496,7 @@ async function writeInstalledSkillReceipt(
   }
   try {
     await mkdir(dirname(receiptPath), { recursive: true });
+    await assertNoSymlinkDestination(receiptPath);
     await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   } catch {
     // A receipt we cannot persist simply means the next refresh retains conservatively.
@@ -3140,6 +3159,7 @@ async function ensureProjectGitignore(
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<"created" | "updated" | "unchanged"> {
 	const gitignorePath = join(projectRoot, ".gitignore");
+	await assertNoSymlinkDestination(gitignorePath);
 	const destinationExists = existsSync(gitignorePath);
 	const existing = destinationExists
 		? await readFile(gitignorePath, "utf-8")
@@ -5211,6 +5231,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const hudConfigPath = join(projectRoot, ".omx", "hud-config.json");
 	if (force || !existsSync(hudConfigPath)) {
 		if (!dryRun) {
+			await assertNoSymlinkDestination(hudConfigPath);
 			const defaultHudConfig = { preset: "focused" };
 			await writeFile(hudConfigPath, JSON.stringify(defaultHudConfig, null, 2));
 		}
@@ -5493,6 +5514,7 @@ async function writeNativeAgentInstallManifest(
 ): Promise<void> {
 	const manifestPath = nativeAgentInstallManifestPath(agentsDir);
 	await mkdir(dirname(manifestPath), { recursive: true });
+	await assertNoSymlinkDestination(manifestPath);
 	const sortedFiles = Object.fromEntries(
 		Object.entries(manifest.files).sort(([left], [right]) =>
 			left.localeCompare(right),
@@ -5515,6 +5537,7 @@ async function syncNativeAgentToml(
 ): Promise<void> {
 	const fileName = basename(dstPath);
 	const nextHash = hashContent(content);
+	await assertNoSymlinkDestination(dstPath);
 	const destinationExists = existsSync(dstPath);
 
 	if (!destinationExists) {
