@@ -41,9 +41,17 @@ describe('omx setup symlink destinations', () => {
       await writeFile(victim, 'ORIGINAL-SECRET-CONTENT\n');
       await symlink('../victim.txt', join(repo, '.gitignore'));
 
+      const gitignorePath = join(repo, '.gitignore');
       await assert.rejects(
         setup({ scope: 'project' }),
-        /Refusing to install through symlink .*\.gitignore/,
+        (err: any) => {
+          const msg = err?.message || '';
+          return (
+            msg.includes('Refusing to install through symlink') &&
+            msg.includes(gitignorePath) &&
+            msg.includes('Either remove the symlink')
+          );
+        },
       );
       assert.equal(await readFile(victim, 'utf8'), 'ORIGINAL-SECRET-CONTENT\n');
     });
@@ -54,11 +62,19 @@ describe('omx setup symlink destinations', () => {
       await mkdir(join(repo, '.codex', 'prompts'), { recursive: true });
       const victim = join(parent, 'victim-prompt.txt');
       await writeFile(victim, 'ORIGINAL-PROMPT-CONTENT\n');
-      await symlink('../../../victim-prompt.txt', join(repo, '.codex', 'prompts', 'analyst.md'));
+      const analystPath = join(repo, '.codex', 'prompts', 'analyst.md');
+      await symlink('../../../victim-prompt.txt', analystPath);
 
       await assert.rejects(
         setup({ scope: 'project' }),
-        /Refusing to install through symlink .*analyst\.md/,
+        (err: any) => {
+          const msg = err?.message || '';
+          return (
+            msg.includes('Refusing to install through symlink') &&
+            msg.includes(analystPath) &&
+            msg.includes('Either remove the symlink')
+          );
+        },
       );
       assert.equal(await readFile(victim, 'utf8'), 'ORIGINAL-PROMPT-CONTENT\n');
     });

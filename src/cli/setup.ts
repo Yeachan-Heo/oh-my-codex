@@ -2200,7 +2200,11 @@ async function assertNoSymlinkDestination(destinationPath: string): Promise<void
 		throw error;
 	}
 	if (destinationStat.isSymbolicLink()) {
-		throw new Error(`Refusing to install through symlink ${destinationPath}.`);
+		const msg =
+			`Refusing to install through symlink ${destinationPath}. ` +
+			`Either remove the symlink (rm ${destinationPath}), ` +
+			`or move the target to the expected location before running setup again.`;
+		throw new Error(msg);
 	}
 }
 
