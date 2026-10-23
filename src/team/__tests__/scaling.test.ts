@@ -4782,3 +4782,26 @@ case "$1" in list-panes) exit 0 ;; kill-pane) exit 99 ;; esac
     }
   });
 });
+
+describe('forced scale-down worktree rollback', () => {
+  it('removes a busy worker with dirty files after explicit force authorization', async () => {
+    const repo = await initRepo();
+    try {
+      await initTeamState('forced-dirty', 'task', 'executor', 2, repo);
+      const config = await readTeamConfig('forced-dirty', repo);
+      assert.ok(config);
+      const worktree = join(repo, '.omx', 'team', 'forced-dirty', 'worktrees', 'worker-2');
+      execFileSync('git', ['worktree', 'add', '--detach', worktree], { cwd: repo, stdio: 'ignore' });
+      Object.assign(config.workers[1]!, { worktree_path: worktree, worktree_repo_root: repo, worktree_created: true, worktree_detached: true, pane_id: undefined, pid: undefined });
+      await saveTeamConfig(config, repo);
+      await writeFile(join(worktree, 'unsaved.txt'), 'explicitly discarded');
+      await writeWorkerStatus('forced-dirty', 'worker-2', { state: 'working', current_task_id: 't-2', updated_at: new Date().toISOString() }, repo);
+      const result = await scaleDown('forced-dirty', repo, { workerNames: ['worker-2'], force: true }, { OMX_TEAM_SCALING_ENABLED: '1' });
+      assert.deepEqual(result, { ok: true, removedWorkers: ['worker-2'], newWorkerCount: 1 });
+      assert.equal(existsSync(worktree), false);
+      assert.equal(existsSync(join(repo, '.omx', 'state', 'team', 'forced-dirty', '.scale-down-cleanup-debt.json')), false);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});

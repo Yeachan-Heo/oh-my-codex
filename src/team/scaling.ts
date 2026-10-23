@@ -1657,7 +1657,7 @@ async function cleanupScaleDownResources(
       // branch rather than deleting one that may have predated this worker.
       createdBranch: false,
     }));
-  if (worktrees.length > 0) await rollbackProvisionedWorktrees(worktrees);
+  if (worktrees.length > 0) await rollbackProvisionedWorktrees(worktrees, { force: true });
   await Promise.all(workers.map(async (worker) => {
     await rm(join(teamStateRoot, 'team', teamName, 'workers', worker.name), { recursive: true, force: true });
   }));

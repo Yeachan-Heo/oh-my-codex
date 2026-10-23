@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile, readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import {
   planWorktreeTarget,
   ensureWorktree,
   rollbackProvisionedWorktrees,
+  removeWorktreeForce,
 } from '../worktree.js';
 
 async function initRepo(): Promise<string> {
@@ -336,6 +337,91 @@ describe('worktree ensure + rollback', () => {
       assert.equal(branchExists(repo, 'feature/ralph-keep'), true);
     } finally {
       await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shutdown removal versus authorized rollback', () => {
+  for (const cleanup of ['rollback', 'stale']) {
+    it(`keeps forced cleanup for ${cleanup} while guarded removal rejects dirty files`, async () => {
+      const repo = await initRepo();
+      try {
+        const plan = planWorktreeTarget({ cwd: repo, scope: 'launch', mode: { enabled: true, detached: true, name: null } });
+        assert.ok(plan.enabled);
+        const tree = ensureWorktree(plan);
+        assert.ok(tree.enabled);
+        await writeFile(join(tree.worktreePath, 'unsaved.txt'), 'unsaved');
+        await assert.rejects(rollbackProvisionedWorktrees([tree], { force: false }), /worktree_rollback_failed/);
+        assert.equal(await readFile(join(tree.worktreePath, 'unsaved.txt'), 'utf8'), 'unsaved');
+        if (cleanup === 'stale') await removeWorktreeForce(repo, tree.worktreePath);
+        else await rollbackProvisionedWorktrees([tree], { force: true });
+        assert.equal(existsSync(tree.worktreePath), false);
+      } finally {
+        await rm(repo, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('removes clean initialized submodules without force and keeps their Git objects', async () => {
+    const repo = await initRepo();
+    const sub = await initRepo();
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    try {
+      git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', sub, 'module');
+      git(repo, 'commit', '-am', 'add submodule');
+      const plan = planWorktreeTarget({ cwd: repo, scope: 'launch', mode: { enabled: true, detached: true, name: null } });
+      assert.ok(plan.enabled);
+      const tree = ensureWorktree(plan);
+      assert.ok(tree.enabled);
+      git(tree.worktreePath, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init');
+      const modulePath = join(tree.worktreePath, 'module');
+      git(modulePath, 'config', 'user.name', 'Module Test');
+      git(modulePath, 'config', 'user.email', 'module@example.invalid');
+      git(modulePath, 'config', 'commit.gpgsign', 'false');
+      await writeFile(join(modulePath, '.gitignore'), '.env\n');
+      git(modulePath, 'add', '.gitignore');
+      git(modulePath, 'commit', '-m', 'local-only submodule commit');
+      const localCommit = git(modulePath, 'rev-parse', 'HEAD');
+      git(tree.worktreePath, 'add', 'module');
+      git(tree.worktreePath, 'commit', '-m', 'save submodule head');
+      git(repo, 'merge', '--ff-only', git(tree.worktreePath, 'rev-parse', 'HEAD'));
+      await writeFile(join(modulePath, '.env'), 'module secret');
+      await assert.rejects(rollbackProvisionedWorktrees([tree], { force: false }), /worktree_rollback_failed/);
+      assert.equal(await readFile(join(modulePath, '.env'), 'utf8'), 'module secret');
+      await rm(join(modulePath, '.env'));
+      if (process.platform !== 'win32') {
+        const originalModules = git(tree.worktreePath, 'rev-parse', '--git-path', 'modules');
+        const bin = await mkdtemp(join(tmpdir(), 'omx-submodule-late-write-'));
+        const previousPath = process.env.PATH;
+        const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+        try {
+          await writeFile(join(bin, 'git'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] === 'worktree' && args[1] === 'remove') require('fs').writeFileSync(${JSON.stringify(join(tree.worktreePath, 'late.txt'))}, 'late write');
+const r = require('child_process').spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`, { mode: 0o755 });
+          process.env.PATH = `${bin}:${previousPath ?? ''}`;
+          await assert.rejects(rollbackProvisionedWorktrees([tree], { force: false }), /worktree_rollback_failed/);
+          assert.equal(await readFile(join(tree.worktreePath, 'late.txt'), 'utf8'), 'late write');
+          assert.equal(git(repo, '--git-dir', join(originalModules, 'module'), 'rev-parse', 'HEAD'), localCommit);
+        } finally {
+          if (previousPath === undefined) delete process.env.PATH;
+          else process.env.PATH = previousPath;
+          await rm(bin, { recursive: true, force: true });
+        }
+        await rm(join(tree.worktreePath, 'late.txt'));
+      }
+      await rollbackProvisionedWorktrees([tree], { force: false });
+      assert.equal(existsSync(tree.worktreePath), false);
+      const recoveryRoot = join(repo, '.git', 'omx-submodule-recovery');
+      const archives = await readdir(recoveryRoot);
+      assert.equal(archives.length, 1);
+      assert.equal(git(repo, '--git-dir', join(recoveryRoot, archives[0]!, 'modules', 'module'), 'rev-parse', 'HEAD'), localCommit);
+      assert.equal(git(repo, '--git-dir', join(recoveryRoot, archives[0]!, 'modules', 'module'), 'show', `${localCommit}:.gitignore`), '.env');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(sub, { recursive: true, force: true });
     }
   });
 });
