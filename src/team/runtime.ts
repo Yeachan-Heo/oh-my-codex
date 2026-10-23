@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { join, resolve, dirname } from 'path';
 import { existsSync, appendFileSync, mkdirSync, readFileSync } from 'fs';
 
-import { mkdir, readdir, readFile, rm, writeFile, lstat, link } from 'fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile, lstat, link, rename } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Writable } from 'stream';
@@ -200,6 +200,8 @@ import {
   planWorktreeTarget,
   removeWorktreeForce,
   rollbackProvisionedWorktrees,
+  replaySubmoduleRecovery,
+  recheckSubmodulePlaceholdersBeforeRemoval,
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
@@ -1726,7 +1728,16 @@ async function removeGeneratedShutdownReport(repoRoot: string, worktreePath: str
   const stat = contents && proof ? await lstat(paths.report) : null;
   const owned = !proof || (stat?.dev === proof.dev && stat?.ino === proof.ino);
   if (contents && owned && createHash('sha256').update(contents).digest('hex') === (proof?.hash ?? receipt.trim())) {
-    await rm(paths.report);
+    // Atomically move the report out of the worktree before deletion to prevent race conditions.
+    // If the file is replaced between validation and deletion, we want to delete the object
+    // that was actually validated, not a newly written file.
+    const quarantine = `${paths.report}.quarantine`;
+    await rename(paths.report, quarantine).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await rm(quarantine).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
   }
 }
 
@@ -1764,6 +1775,18 @@ async function prepareShutdownMergeReport(
   const worktreePath = resolve(worker.worktree_path);
   const repoRoot = resolve(worker.worktree_repo_root);
   await removeGeneratedShutdownReport(repoRoot, worktreePath);
+  
+  // Replay any pending submodule recovery journals before any git operations.
+  // If the process was killed after moving submodules but before creating placeholders,
+  // the recovery.json files persist and must be replayed to restore the checkouts.
+  await replaySubmoduleRecovery(worktreePath, repoRoot).catch((error) => {
+    process.stderr.write(`[team/runtime] submodule recovery failed: ${String(error)}\n`);
+  });
+  
+  // Clean up OMX evidence files that may have been left by the worker.
+  // These are runtime-owned files in .omx/evidence/ that should not block shutdown.
+  await rm(join(worktreePath, '.omx/evidence'), { recursive: true, force: true }).catch(() => {});
+  
   const statusBefore = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
   if (!statusBefore.ok) throw new Error(`worktree_status_failed:${worktreePath}:${statusBefore.stderr}`);
   const hadChanges = statusBefore.stdout.length > 0;
