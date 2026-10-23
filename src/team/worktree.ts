@@ -511,7 +511,7 @@ export async function rollbackProvisionedWorktrees(
 
   for (const result of created) {
     try {
-      await execFilePromise('git', ['worktree', 'remove', '--force', result.worktreePath], {
+      await execFilePromise('git', ['worktree', 'remove', result.worktreePath], {
         cwd: result.repoRoot,
         encoding: 'utf-8',
       });
@@ -549,7 +549,7 @@ export async function rollbackProvisionedWorktrees(
 }
 
 export async function removeWorktreeForce(repoRoot: string, worktreePath: string): Promise<void> {
-  await execFilePromise('git', ['worktree', 'remove', '--force', worktreePath], {
+  await execFilePromise('git', ['worktree', 'remove', worktreePath], {
     cwd: repoRoot,
     encoding: 'utf-8',
   });

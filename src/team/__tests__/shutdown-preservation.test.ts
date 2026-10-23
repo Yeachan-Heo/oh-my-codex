@@ -68,9 +68,9 @@ describe('shutdown worktree preservation', () => {
             tmux_session_id: '$1',
             tmux_session_created: '1700000000',
             leader_pane_id: '%1',
-            leader_pane_pid: 4241,
+            leader_pane_pid: 999999991,  // Non-live PID to avoid affecting unrelated processes
             hud_pane_id: hud ? '%2' : null,
-            hud_pane_pid: hud ? 4242 : undefined,
+            hud_pane_pid: hud ? 999999992 : undefined,  // Non-live PID to avoid affecting unrelated processes
             tmux_pane_owner_id: 'team:preserve',
           });
           config.workers[0]!.pane_id = '';
@@ -84,11 +84,11 @@ case "$1" in
     [ ! -f "${tmuxLogPath}.killed" ] || exit 0
     case "$*" in
       *'#{session_name}'*)
-        printf '%%1\\t0\\t4241\\tomx-team-preserve\\t$1\\t1700000000\\n'
-        if [ -n "${hud ? '1' : ''}" ] && [ ! -f "${tmuxLogPath}.hud-killed" ]; then printf '%%2\\t0\\t4242\\tomx-team-preserve\\t$1\\t1700000000\\n'; fi ;;
+        printf '%%1\\t0\\t999999991\\tomx-team-preserve\\t$1\\t1700000000\\n'
+        if [ -n "${hud ? '1' : ''}" ] && [ ! -f "${tmuxLogPath}.hud-killed" ]; then printf '%%2\\t0\\t999999992\\tomx-team-preserve\\t$1\\t1700000000\\n'; fi ;;
       *'-a -F #{pane_id}'*)
-        printf '%%1\\t0\\t4241\\n'
-        if [ -n "${hud ? '1' : ''}" ] && [ ! -f "${tmuxLogPath}.hud-killed" ]; then printf '%%2\\t0\\t4242\\n'; fi ;;
+        printf '%%1\\t0\\t999999991\\n'
+        if [ -n "${hud ? '1' : ''}" ] && [ ! -f "${tmuxLogPath}.hud-killed" ]; then printf '%%2\\t0\\t999999992\\n'; fi ;;
       *) exit 1 ;;
     esac ;;
   kill-pane)
@@ -385,7 +385,7 @@ describe('shutdown preservation review fixes', () => {
         worktree_repo_root: repo,
         worktree_created: true,
         worktree_detached: true,
-        pid: 9999,  // Set a worker PID that would be invalid on retry
+        pid: 999999993,  // Non-live PID to avoid affecting unrelated processes
       });
       await saveTeamConfig(config, repo);
       await writeFile(join(worker, 'work.txt'), 'unique unsaved work\n');

@@ -1,10 +1,10 @@
 import { createHash } from 'crypto';
 
 
-import { join, resolve, dirname } from 'path';
+import { join, resolve, dirname, sep } from 'path';
 import { existsSync, appendFileSync, mkdirSync, readFileSync } from 'fs';
 
-import { mkdir, readdir, readFile, rm, writeFile } from 'fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile, lstat, realpath } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Writable } from 'stream';
@@ -5699,6 +5699,39 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
   }
   if (provisionedWorktrees.length > 0) {
+    // Remove generated reports before non-forced worktree removal (P1 4360720638).
+    // Preserve tracked .omx/diff.md if intentionally committed.
+    for (const worktree of provisionedWorktrees) {
+      const reportPath = join(worktree.worktreePath, '.omx', 'diff.md');
+      const omxDir = join(worktree.worktreePath, '.omx');
+      
+      try {
+        // Safety check: ensure .omx is not a symlink (P1 4360534161).
+        // If .omx is a symlink, it could point outside the worktree.
+        const omxStats = await lstat(omxDir).catch(() => null);
+        if (omxStats?.isSymbolicLink()) {
+          // Skip removal if .omx is a symlink; cannot safely determine if target is under worktree.
+          continue;
+        }
+        
+        // Verify resolved report path is still under worktree to prevent directory traversal.
+        const realReportPath = await realpath(reportPath).catch(() => reportPath);
+        const realWorktreePath = await realpath(worktree.worktreePath).catch(() => worktree.worktreePath);
+        if (!realReportPath.startsWith(realWorktreePath + sep)) {
+          // Report path resolves outside worktree; skip removal for safety.
+          continue;
+        }
+      } catch {
+        // If we can't determine safety, skip removal to avoid data loss.
+        continue;
+      }
+      
+      const lsTreeResult = runGitCommand(worktree.repoRoot, ['ls-tree', 'HEAD', '.omx/diff.md'], worktree.worktreePath);
+      if (lsTreeResult.ok && !lsTreeResult.stdout) {
+        // File is not in HEAD; safe to remove as a runtime-generated artifact.
+        await rm(reportPath, { force: true }).catch(() => {});
+      }
+    }
     // Keep recovery state if removal itself fails, including after a partial cleanup.
     await rollbackProvisionedWorktrees(provisionedWorktrees, {
       skipBranchDeletion: false,
