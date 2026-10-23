@@ -5553,9 +5553,8 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (workerTeardown.kill.failed > 0) {
       throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
     }
-    // Clear pane IDs and PIDs from workers before any potential throw in subsequent steps,
-    // so retries cannot use stale pane IDs that are now unavailable.
-    // Also clear the HUD pane state, as it was torn down above and may be gone on retry.
+    // Clear resize hooks AND clear HUD/worker pane state together for interactive mode
+    // to ensure the clearing persists before any subsequent operations
     config = await mutateShutdownConfig(config, cwd, (current) => {
       current.resize_hook_name = null;
       current.resize_hook_target = null;
@@ -5567,6 +5566,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       }
     });
   } else {
+    // For prompt mode, clear worker PIDs and HUD pane state
     const promptTeardownFailures: string[] = [];
     for (const w of config.workers) {
       const teardown = await teardownPromptWorker(
@@ -5583,16 +5583,15 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (promptTeardownFailures.length > 0) {
       throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
-    // Clear worker PIDs and HUD pane state before any potential throw in subsequent steps.
-    // On retry, stale PIDs could be reused by unrelated processes, causing incorrect signals.
-    // HUD pane state was torn down above and may be gone on retry.
-    config = await mutateShutdownConfig(config, cwd, (current) => {
-      current.hud_pane_id = null;
-      current.hud_pane_pid = undefined;
-      for (const worker of current.workers) {
-        worker.pid = undefined;
-      }
-    });
+    
+    // For prompt mode, persist the cleared state
+    for (const worker of config.workers) {
+      worker.pane_id = undefined;
+      worker.pid = undefined;
+    }
+    config.hud_pane_id = null;
+    config.hud_pane_pid = undefined;
+    await saveTeamConfig(config, cwd);
   }
 
   const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
