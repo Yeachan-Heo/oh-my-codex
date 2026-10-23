@@ -6586,6 +6586,60 @@ process.on('SIGTERM', () => {});
     }
   });
 
+  it('shutdownTeam clears terminated prompt-worker PIDs before aborting on a partial teardown failure', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-partial-'));
+    const binDir = join(cwd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const originalProcessKill = process.kill;
+    let runtime: TeamRuntime | null = null;
+    await mkdir(binDir, { recursive: true });
+    await writeFakePromptWorkerBinary(
+      fakeCodexPath,
+      `
+process.stdin.resume();
+setInterval(() => {}, 1000);
+`,
+    );
+    try {
+      runtime = await withPromptModeCodexEnv(binDir, {}, () =>
+        withoutTeamWorkerEnv(() =>
+          startTeam(
+            'team-prompt-partial',
+            'partial prompt teardown test',
+            'executor',
+            2,
+            [{ subject: 's', description: 'd', owner: 'worker-1' }],
+            cwd,
+          )));
+      const stuckPid = runtime.config.workers[0]?.pid ?? 0;
+      const stoppedPid = runtime.config.workers[1]?.pid ?? 0;
+      assert.ok(stuckPid > 0 && stoppedPid > 0);
+
+      process.kill = ((pid: number, signal?: number | NodeJS.Signals) => {
+        if ((pid === -stuckPid || pid === stuckPid) && signal === 0) {
+          const error = new Error('permission denied') as NodeJS.ErrnoException;
+          error.code = 'EPERM';
+          throw error;
+        }
+        return originalProcessKill(pid, signal as NodeJS.Signals);
+      }) as typeof process.kill;
+
+      await assert.rejects(
+        () => shutdownTeam(runtime!.teamName, cwd, { force: true }),
+        /^Error: shutdown_prompt_teardown_failed:worker-1:still_alive_after_sigkill$/,
+      );
+      process.kill = originalProcessKill;
+      const retained = await readTeamConfig(runtime.teamName, cwd);
+      assert.ok(retained);
+      assert.equal(retained?.workers[0]?.pid, stuckPid, 'the worker that survived stays recorded for retry');
+      assert.equal(retained?.workers[1]?.pid, undefined, 'a terminated worker PID is never signalled again on retry');
+    } finally {
+      process.kill = originalProcessKill;
+      if (runtime) await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('shutdownTeam reaps detached prompt-worker descendants', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-prompt-descendants-'));
     const binDir = join(cwd, 'bin');
@@ -9944,6 +9998,94 @@ esac
           const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
           assert.match(tmuxLog, /kill-pane -t %13/);
           assert.doesNotMatch(tmuxLog, /split-window|resize-pane|select-pane|kill-session/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shutdownTeam persists killed worker panes before aborting on a partial pane-kill failure', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-partial-kill-'));
+    const teamName = 'team-shutdown-partial-kill';
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-partial-kill-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    ;;
+  list-panes)
+    case "$*" in
+      *"-t leader:0"*)
+        printf '%%10\\tzsh\\tzsh\\n'
+        if [ ! -f "${tmuxLogPath}.killed13" ]; then printf '%%13\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-shutdown-partial-kill/worker-1 codex\\n'; fi
+        printf '%%14\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-shutdown-partial-kill/worker-2 codex\\n%%15\\tcodex\\tenv OMX_TEAM_INTERNAL_WORKER=team-shutdown-partial-kill/worker-3 codex\\n'
+        ;;
+      *"-a -F #{pane_id}"*)
+        printf '%%10\t0\t2000000010\n'
+        if [ ! -f "${tmuxLogPath}.killed13" ]; then printf '%%13\t0\t2000000013\n'; fi
+        printf '%%14\t0\t2000000014\n%%15\t0\t2000000015\n'
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  show-option)
+    printf 'owner-1\\n'
+    ;;
+  kill-pane)
+    case "$*" in
+      *"-t %13"*) : > "${tmuxLogPath}.killed13" ;;
+      *) echo "kill pane failed" >&2; exit 1 ;;
+    esac
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState(teamName, 'shutdown partial kill test', 'executor', 3, cwd);
+          const config = await readTeamConfig(teamName, cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.leader_pane_id = '%10';
+          config.leader_pane_pid = 2000000010;
+          config.hud_pane_id = null;
+          config.tmux_pane_owner_id = 'owner-1';
+          config.workers[0]!.pane_id = '%13';
+          config.workers[0]!.pid = 2000000013;
+          config.workers[1]!.pane_id = '%14';
+          config.workers[1]!.pid = 2000000014;
+          config.workers[2]!.pane_id = '%15';
+          config.workers[2]!.pid = 2000000015;
+          await saveTeamConfig(config, cwd);
+
+          await assert.rejects(
+            () => shutdownTeam(teamName, cwd, { force: true }),
+            /shutdown_pane_teardown_failed:%14/,
+          );
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.match(tmuxLog, /kill-pane -t %14/);
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %15/, 'teardown stops at the first failed kill');
+          const retained = await readTeamConfig(teamName, cwd);
+          assert.ok(retained);
+          assert.equal(retained?.workers[0]?.pane_id, undefined, 'the killed pane is not re-authorized on retry');
+          assert.equal(retained?.workers[0]?.pid, undefined);
+          assert.equal(retained?.workers[1]?.pane_id, '%14', 'the pane whose kill failed stays authorized for retry');
+          assert.equal(retained?.workers[1]?.pid, 2000000014);
+          assert.equal(retained?.workers[2]?.pane_id, '%15', 'a pane never attempted stays authorized for retry');
+          assert.equal(retained?.workers[2]?.pid, 2000000015);
         },
       );
     } finally {
