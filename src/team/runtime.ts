@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { join, resolve, dirname } from 'path';
 import { existsSync, appendFileSync, mkdirSync, readFileSync } from 'fs';
 
-import { mkdir, readdir, readFile, writeFile } from 'fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Writable } from 'stream';
@@ -1682,8 +1682,18 @@ async function prepareShutdownMergeReport(
 
   const worktreePath = resolve(worker.worktree_path);
   const repoRoot = resolve(worker.worktree_repo_root);
+  // A failed shutdown leaves this generated report behind; never checkpoint it on retry.
+  // Only remove untracked files; preserve tracked .omx/diff.md if intentionally committed.
+  const reportPathToClean = join(worktreePath, '.omx', 'diff.md');
+  const lsFilesResult = runGitCommand(repoRoot, ['ls-files', '--', '.omx/diff.md'], worktreePath);
+  if (!lsFilesResult.ok) throw new Error(`worktree_ls_files_failed:${worktreePath}:${lsFilesResult.stderr}`);
+  if (!lsFilesResult.stdout) {
+    // File is not in the index; safe to remove as a runtime-generated artifact.
+    await rm(reportPathToClean, { force: true });
+  }
   const statusBefore = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
-  const hadChanges = statusBefore.ok && statusBefore.stdout.length > 0;
+  if (!statusBefore.ok) throw new Error(`worktree_status_failed:${worktreePath}:${statusBefore.stderr}`);
+  const hadChanges = statusBefore.stdout.length > 0;
 
   let syntheticCommit: string | null = null;
   if (hadChanges) {
@@ -1773,7 +1783,12 @@ async function prepareShutdownMergeReport(
   };
 
   await mkdir(join(worktreePath, '.omx'), { recursive: true });
-  await writeFile(reportPath, renderWorktreeMergeReport(report), 'utf-8');
+  // Only write the report to untracked files; preserve tracked .omx/diff.md if intentionally committed.
+  const lsFiles = runGitCommand(repoRoot, ['ls-files', '--', '.omx/diff.md'], worktreePath);
+  if (lsFiles.ok && !lsFiles.stdout) {
+    // File is untracked or absent; safe to write as a runtime-generated artifact.
+    await writeFile(reportPath, renderWorktreeMergeReport(report), 'utf-8');
+  }
   process.stdout.write(`${renderWorktreeMergeReport(report)}\n`);
   return report;
 }
@@ -1787,6 +1802,7 @@ async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCw
       if (report) reports.push(report);
     } catch (error) {
       const worktreePath = resolve(worker.worktree_path);
+      const repoRoot = resolve(worker.worktree_repo_root);
       const reportPath = join(worktreePath, '.omx', 'diff.md');
       const fallback = [
         `# Worker ${worker.name} shutdown report`,
@@ -1797,8 +1813,13 @@ async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCw
         `- merge_detail: ${String(error)}`,
         '',
       ].join('\n');
+      // Only write fallback report to untracked files; preserve tracked .omx/diff.md if intentionally committed.
       await mkdir(join(worktreePath, '.omx'), { recursive: true }).catch(() => {});
-      await writeFile(reportPath, fallback, 'utf-8').catch(() => {});
+      const lsFiles = runGitCommand(repoRoot, ['ls-files', '--', '.omx/diff.md'], worktreePath);
+      if (lsFiles.ok && !lsFiles.stdout) {
+        // File is untracked or absent; safe to write as a runtime-generated artifact.
+        await writeFile(reportPath, fallback, 'utf-8').catch(() => {});
+      }
       process.stdout.write(`${fallback}\n`);
     }
   }
@@ -5530,11 +5551,6 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       current.resize_hook_name = null;
       current.resize_hook_target = null;
     });
-
-    // 4. Destroy a detached session only after an authoritative leader proof.
-    if (!sessionName.includes(':')) {
-      await destroyConfiguredDetachedTeamSession(sanitized, cwd, config);
-    }
   } else {
     const promptTeardownFailures: string[] = [];
     for (const w of config.workers) {
@@ -5555,6 +5571,14 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   }
 
   const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
+  const provisionedWorktrees = collectProvisionedShutdownWorktrees(config);
+  // Force stops workers; it is not permission to discard work that failed to save.
+  for (const worktree of provisionedWorktrees) {
+    const report = shutdownReports.find((entry) => entry.worktreePath === worktree.worktreePath);
+    if (!report?.sourceRef || (report.mergeOutcome !== 'merged' && report.mergeOutcome !== 'noop')) {
+      throw new Error(`shutdown_worktree_preservation_failed:${worktree.worktreePath}:${report?.mergeDetail ?? 'shutdown report unavailable'}; worktree and team state retained`);
+    }
+  }
 
   const commitHygieneEntries: TeamOperationalCommitEntry[] = [];
   for (const report of shutdownReports) {
@@ -5632,15 +5656,25 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   restoreTeamModelInstructionsFile(sanitized);
 
   const cleanupErrors: string[] = [];
-  const provisionedWorktrees = collectProvisionedShutdownWorktrees(config);
-  if (provisionedWorktrees.length > 0) {
-    try {
-      await rollbackProvisionedWorktrees(provisionedWorktrees, {
-        skipBranchDeletion: false,
-      });
-    } catch (err) {
-      cleanupErrors.push(`rollbackProvisionedWorktrees: ${String(err)}`);
+  for (const worktree of provisionedWorktrees) {
+    const head = runGitCommand(worktree.repoRoot, ['rev-parse', 'HEAD'], worktree.worktreePath);
+    const saved = head.ok && runGitCommand(worktree.repoRoot, ['merge-base', '--is-ancestor', head.stdout, 'HEAD'], cwd).ok;
+    // The report is generated after checkpointing; every other dirty path must survive.
+    const status = runGitCommand(worktree.repoRoot, ['status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).omx/diff.md'], worktree.worktreePath);
+    if (!saved || !status.ok || status.stdout) {
+      throw new Error(`shutdown_worktree_preservation_failed:${worktree.worktreePath}:worktree changed or could not be verified; worktree and team state retained`);
     }
+  }
+  if (provisionedWorktrees.length > 0) {
+    // Keep recovery state if removal itself fails, including after a partial cleanup.
+    await rollbackProvisionedWorktrees(provisionedWorktrees, {
+      skipBranchDeletion: false,
+    });
+  }
+
+  // Preserve detached-session authority for retries until worktrees are saved and removed.
+  if (config.worker_launch_mode === 'interactive' && !sessionName.includes(':')) {
+    await destroyConfiguredDetachedTeamSession(sanitized, cwd, config);
   }
 
   // 7. Retire Team-scoped global projections before deleting the exact state
