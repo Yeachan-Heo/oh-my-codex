@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 
 
 import { join, resolve, dirname } from 'path';
@@ -1730,7 +1730,9 @@ async function removeGeneratedShutdownReport(repoRoot: string, worktreePath: str
     // Atomically move the report out of the worktree before deletion to prevent race conditions.
     // If the file is replaced between validation and deletion, we want to delete the object
     // that was actually validated, not a newly written file.
-    const quarantine = `${paths.report}.quarantine`;
+    // Use a unique path with high probability of no collision to avoid clobbering user files.
+    const uniqueId = randomBytes(8).toString('hex');
+    const quarantine = `${paths.report}.quarantine-${uniqueId}`;
     await rename(paths.report, quarantine).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;
     });
@@ -1781,10 +1783,6 @@ async function prepareShutdownMergeReport(
   await replaySubmoduleRecovery(worktreePath, repoRoot).catch((error) => {
     process.stderr.write(`[team/runtime] submodule recovery failed: ${String(error)}\n`);
   });
-  
-  // Clean up OMX evidence files that may have been left by the worker.
-  // These are runtime-owned files in .omx/evidence/ that should not block shutdown.
-  await rm(join(worktreePath, '.omx/evidence'), { recursive: true, force: true }).catch(() => {});
   
   const statusBefore = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
   if (!statusBefore.ok) throw new Error(`worktree_status_failed:${worktreePath}:${statusBefore.stderr}`);
