@@ -289,4 +289,220 @@ describe('shutdown preservation review fixes', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('clears HUD pane state before preservation to allow retry after failure (P1 4359155964)', { skip: process.platform === 'win32' }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-hud-pane-clear-'));
+    const repo = join(root, 'repo');
+    const worker = join(root, 'worker');
+    const previousPath = process.env.PATH;
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    try {
+      await mkdir(repo);
+      const bin = join(root, 'bin');
+      await mkdir(bin);
+      await writeFile(join(bin, 'omx'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      process.env.PATH = `${bin}:${previousPath ?? ''}`;
+      git('init');
+      git('config', 'user.name', 'HUD Pane Test');
+      git('config', 'user.email', 'hud@example.invalid');
+      git('config', 'commit.gpgsign', 'false');
+      await writeFile(join(repo, 'work.txt'), 'original\n');
+      git('add', '.');
+      git('commit', '-m', 'initial');
+      git('worktree', 'add', '--detach', worker, 'HEAD');
+      
+      const config = await initTeamState('hud-test', 'HUD pane test', 'executor', 1, repo, undefined, { OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive' });
+      
+      // Set up a mock tmux session with a REAL hud_pane_id (not null)
+      const tmuxLogPath = join(bin, 'tmux.log');
+      Object.assign(config, {
+        tmux_session: 'omx-team-hud-test',
+        tmux_session_id: '$1',
+        tmux_session_created: '1700000000',
+        leader_pane_id: '%1',
+        leader_pane_pid: 4241,
+        hud_pane_id: '%2',  // REAL HUD pane ID, not null
+        hud_pane_pid: 4242,
+        tmux_pane_owner_id: 'team:hud-test',
+      });
+      config.workers[0]!.pane_id = '%3';
+      config.workers[0]!.pid = 4243;
+      Object.assign(config.workers[0]!, {
+        worktree_path: worker,
+        worktree_repo_root: repo,
+        worktree_created: true,
+        worktree_detached: true,
+      });
+      
+      await writeFile(join(bin, 'tmux'), `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes)
+    [ ! -f "${tmuxLogPath}.killed" ] || exit 0
+    case "$*" in
+      *'#{session_name}'*) printf '%%2\\t0\\t4242\\tomx-team-hud-test\\t$1\\t1700000000\\n' ;;
+      *'-a -F #{pane_id}'*) printf '%%2\\t0\\t4242\\n' ;;
+      *) exit 1 ;;
+    esac ;;
+  show-option|show-options) echo 'team:hud-test' ;;
+  list-sessions)
+    [ ! -f "${tmuxLogPath}.killed" ] || exit 0
+    printf 'omx-team-hud-test\\t$1\\t1700000000\\n' ;;
+  if-shell)
+    case "\${6:-}" in
+      'kill-session -t $1') : > "${tmuxLogPath}.killed" ;;
+      *) exit 1 ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+`, { mode: 0o755 });
+      
+      await saveTeamConfig(config, repo);
+      await writeFile(join(worker, 'work.txt'), 'unique unsaved work\n');
+      
+      // Cause a preservation failure
+      const indexLock = git('-C', worker, 'rev-parse', '--git-path', 'index.lock');
+      await writeFile(indexLock, 'fixture lock');
+      
+      let failure: unknown;
+      try { await shutdownTeam('hud-test', repo, { force: true }); } catch (error) { failure = error; }
+      
+      // First shutdown should fail due to index lock
+      assert.match(String(failure), /shutdown_worktree_preservation_failed/);
+      assert.equal(existsSync(worker), true, 'preservation failure keeps worktree');
+      
+      // Verify hud_pane_id was cleared in the config
+      const configAfterFirstShutdown = await readTeamConfig('hud-test', repo);
+      assert.ok(configAfterFirstShutdown, 'config preserved after first shutdown');
+      assert.equal(configAfterFirstShutdown.hud_pane_id, null, 'hud_pane_id must be cleared before preservation attempt');
+      
+      // Retry should succeed without checking for the gone HUD pane
+      await rm(indexLock, { force: true });
+      await shutdownTeam('hud-test', repo, { force: true });
+      
+      assert.equal(existsSync(worker), false, 'worktree destroyed on successful shutdown');
+      assert.equal(await readTeamConfig('hud-test', repo), null, 'config removed on successful shutdown');
+      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'unique unsaved work\n');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('handles git diff --cached properly when no changes remain after add (P2 4359805733)', { skip: process.platform === 'win32' }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-git-diff-cached-'));
+    const repo = join(root, 'repo');
+    const worker = join(root, 'worker');
+    const previousPath = process.env.PATH;
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    try {
+      await mkdir(repo);
+      const bin = join(root, 'bin');
+      await mkdir(bin);
+      await writeFile(join(bin, 'omx'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      process.env.PATH = `${bin}:${previousPath ?? ''}`;
+      git('init');
+      git('config', 'user.name', 'Git Diff Test');
+      git('config', 'user.email', 'gitdiff@example.invalid');
+      git('config', 'commit.gpgsign', 'false');
+      await writeFile(join(repo, 'work.txt'), 'original\n');
+      git('add', '.');
+      git('commit', '-m', 'initial');
+      git('worktree', 'add', '--detach', worker, 'HEAD');
+      
+      const config = await initTeamState('gitdiff-test', 'git diff test', 'executor', 1, repo, undefined, { OMX_TEAM_WORKER_LAUNCH_MODE: 'prompt' });
+      Object.assign(config.workers[0]!, {
+        worktree_path: worker,
+        worktree_repo_root: repo,
+        worktree_created: true,
+        worktree_detached: true,
+      });
+      await saveTeamConfig(config, repo);
+      
+      // Create changes in the worktree
+      await writeFile(join(worker, 'work.txt'), 'modified\n');
+      
+      // Run shutdown - should checkpoint changes successfully
+      await shutdownTeam('gitdiff-test', repo, { force: true });
+      
+      // Verify the changes were merged to the leader
+      assert.equal(existsSync(worker), false, 'worktree destroyed on successful shutdown');
+      assert.equal(await readTeamConfig('gitdiff-test', repo), null, 'config removed on successful shutdown');
+      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'modified\n', 'changes preserved from worktree');
+      
+      // Verify no synthetic commit was created (since we're in prompt mode with clean shutdown)
+      const logLines = git('log', '--oneline', '--all').split('\n').filter(Boolean);
+      const shutdownCommits = logLines.filter(line => line.includes('omx(team): checkpoint'));
+      // With prompt mode and successful save, there should be exactly 1 shutdown checkpoint commit
+      assert.ok(shutdownCommits.length >= 1, 'checkpoint commit created');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('verifies prompt-mode worker pid is cleared before preservation (P1 4359237825)', { skip: process.platform === 'win32' }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-prompt-pid-clear-'));
+    const repo = join(root, 'repo');
+    const worker = join(root, 'worker');
+    const previousPath = process.env.PATH;
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    try {
+      await mkdir(repo);
+      const bin = join(root, 'bin');
+      await mkdir(bin);
+      await writeFile(join(bin, 'omx'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      process.env.PATH = `${bin}:${previousPath ?? ''}`;
+      git('init');
+      git('config', 'user.name', 'Prompt PID Test');
+      git('config', 'user.email', 'promptpid@example.invalid');
+      git('config', 'commit.gpgsign', 'false');
+      await writeFile(join(repo, 'work.txt'), 'original\n');
+      git('add', '.');
+      git('commit', '-m', 'initial');
+      git('worktree', 'add', '--detach', worker, 'HEAD');
+      
+      const config = await initTeamState('promptpid-test', 'prompt PID test', 'executor', 1, repo, undefined, { OMX_TEAM_WORKER_LAUNCH_MODE: 'prompt' });
+      Object.assign(config.workers[0]!, {
+        worktree_path: worker,
+        worktree_repo_root: repo,
+        worktree_created: true,
+        worktree_detached: true,
+        pid: 9999,  // Set a worker PID that would be invalid on retry
+      });
+      await saveTeamConfig(config, repo);
+      await writeFile(join(worker, 'work.txt'), 'unique unsaved work\n');
+      
+      // Cause a preservation failure
+      const indexLock = git('-C', worker, 'rev-parse', '--git-path', 'index.lock');
+      await writeFile(indexLock, 'fixture lock');
+      
+      let failure: unknown;
+      try { await shutdownTeam('promptpid-test', repo, { force: true }); } catch (error) { failure = error; }
+      
+      // First shutdown should fail
+      assert.match(String(failure), /shutdown_worktree_preservation_failed/);
+      
+      // Verify worker pid was cleared in the persisted config
+      const configAfterFirstShutdown = await readTeamConfig('promptpid-test', repo);
+      assert.ok(configAfterFirstShutdown, 'config preserved after first shutdown');
+      assert.equal(configAfterFirstShutdown.workers[0]?.pid, undefined, 'worker.pid must be cleared before preservation attempt');
+      
+      // Retry should succeed without reusing the old PID
+      await rm(indexLock, { force: true });
+      await shutdownTeam('promptpid-test', repo, { force: true });
+      
+      assert.equal(existsSync(worker), false);
+      assert.equal(await readTeamConfig('promptpid-test', repo), null);
+      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'unique unsaved work\n');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -1713,28 +1713,34 @@ async function prepareShutdownMergeReport(
         leaderHeadAfter: resolveLeaderHead(repoRoot, leaderCwd),
       };
     }
-    const commitResult = runGitCommand(
-      repoRoot,
-      ['commit', '--no-verify', '-m', `omx(team): checkpoint ${worker.name} shutdown changes`],
-      worktreePath,
-    );
-    if (commitResult.ok) {
-      const revParse = runGitCommand(repoRoot, ['rev-parse', 'HEAD'], worktreePath);
-      syntheticCommit = revParse.ok && revParse.stdout ? revParse.stdout : null;
-    } else if (!/nothing to commit/i.test(commitResult.stderr)) {
-      return {
-        workerName: worker.name,
+    // Check if there's anything to commit using git diff --cached --quiet
+    const diffCachedResult = runGitCommand(repoRoot, ['diff', '--cached', '--quiet'], worktreePath);
+    const hasChanges = !diffCachedResult.ok; // exit code 0 means no changes, 1 means changes exist
+    
+    if (hasChanges) {
+      const commitResult = runGitCommand(
+        repoRoot,
+        ['commit', '--no-verify', '-m', `omx(team): checkpoint ${worker.name} shutdown changes`],
         worktreePath,
-        reportPath: join(worktreePath, '.omx', 'diff.md'),
-        sourceRef: null,
-        syntheticCommit: null,
-        diffText: getWorktreeDiffText(worktreePath),
-        summaryText: null,
-        mergeOutcome: 'skipped',
-        mergeDetail: commitResult.stderr || 'git commit failed',
-        leaderHeadBefore: resolveLeaderHead(repoRoot, leaderCwd),
-        leaderHeadAfter: resolveLeaderHead(repoRoot, leaderCwd),
-      };
+      );
+      if (commitResult.ok) {
+        const revParse = runGitCommand(repoRoot, ['rev-parse', 'HEAD'], worktreePath);
+        syntheticCommit = revParse.ok && revParse.stdout ? revParse.stdout : null;
+      } else {
+        return {
+          workerName: worker.name,
+          worktreePath,
+          reportPath: join(worktreePath, '.omx', 'diff.md'),
+          sourceRef: null,
+          syntheticCommit: null,
+          diffText: getWorktreeDiffText(worktreePath),
+          summaryText: null,
+          mergeOutcome: 'skipped',
+          mergeDetail: commitResult.stderr || 'git commit failed',
+          leaderHeadBefore: resolveLeaderHead(repoRoot, leaderCwd),
+          leaderHeadAfter: resolveLeaderHead(repoRoot, leaderCwd),
+        };
+      }
     }
   }
 
@@ -5549,9 +5555,12 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
     // Clear pane IDs and PIDs from workers before any potential throw in subsequent steps,
     // so retries cannot use stale pane IDs that are now unavailable.
+    // Also clear the HUD pane state, as it was torn down above and may be gone on retry.
     config = await mutateShutdownConfig(config, cwd, (current) => {
       current.resize_hook_name = null;
       current.resize_hook_target = null;
+      current.hud_pane_id = null;
+      current.hud_pane_pid = undefined;
       for (const worker of current.workers) {
         worker.pane_id = undefined;
         worker.pid = undefined;
@@ -5574,9 +5583,12 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (promptTeardownFailures.length > 0) {
       throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
-    // Clear worker PIDs before any potential throw in subsequent steps.
+    // Clear worker PIDs and HUD pane state before any potential throw in subsequent steps.
     // On retry, stale PIDs could be reused by unrelated processes, causing incorrect signals.
+    // HUD pane state was torn down above and may be gone on retry.
     config = await mutateShutdownConfig(config, cwd, (current) => {
+      current.hud_pane_id = null;
+      current.hud_pane_pid = undefined;
       for (const worker of current.workers) {
         worker.pid = undefined;
       }
