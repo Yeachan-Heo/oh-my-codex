@@ -5553,26 +5553,30 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       },
     );
     assertPaneTeardownProofsAvailable('shutdown', workerTeardown.proofUnavailable);
-    if (workerTeardown.kill.failed > 0) {
-      throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
-    }
-    // The HUD and worker panes are proven gone. Persist that before worktree
-    // preservation can throw, so a retry never re-authorizes a dead pane id.
+    // Persist partial interactive pane teardown progress before aborting (P2 4361203096).
+    // This ensures a retry never re-authorizes already-killed panes.
     // A standalone HUD restored above stays recorded.
+    const failedPaneIds = new Set(workerTeardown.kill.failedPaneIds);
     config = await mutateShutdownConfig(config, cwd, (current) => {
       current.resize_hook_name = null;
       current.resize_hook_target = null;
-      if (!restoredHudPaneId) {
+      if (!restoredHudPaneId && !failedPaneIds.has(effectiveHudPaneId ?? '')) {
         current.hud_pane_id = null;
         current.hud_pane_pid = undefined;
       }
       for (const worker of current.workers) {
-        worker.pane_id = undefined;
-        worker.pid = undefined;
+        if (typeof worker.pane_id === 'string' && !failedPaneIds.has(worker.pane_id)) {
+          worker.pane_id = undefined;
+          worker.pid = undefined;
+        }
       }
     });
+    if (workerTeardown.kill.failed > 0) {
+      throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
+    }
   } else {
     const promptTeardownFailures: string[] = [];
+    const promptTeardownResults: Map<string, { terminated: boolean }> = new Map();
     for (const w of config.workers) {
       const teardown = await teardownPromptWorker(
         sanitized,
@@ -5581,20 +5585,24 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         cwd,
         'shutdown',
       );
+      promptTeardownResults.set(w.name, { terminated: teardown.terminated });
       if (!teardown.terminated) {
         promptTeardownFailures.push(`${w.name}:${teardown.error || 'unknown_error'}`);
       }
     }
+    // Persist successful prompt teardowns before aborting on failures (P1 4361203081).
+    // This ensures a retry never signals a reused PID for successfully terminated workers.
+    config = await mutateShutdownConfig(config, cwd, (current) => {
+      for (const worker of current.workers) {
+        const teardownResult = promptTeardownResults.get(worker.name);
+        if (teardownResult?.terminated) {
+          worker.pid = undefined;
+        }
+      }
+    });
     if (promptTeardownFailures.length > 0) {
       throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
-    // The prompt workers are terminated. Persist that before worktree
-    // preservation can throw, so a retry never signals a reused PID.
-    config = await mutateShutdownConfig(config, cwd, (current) => {
-      for (const worker of current.workers) {
-        worker.pid = undefined;
-      }
-    });
   }
 
   const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
