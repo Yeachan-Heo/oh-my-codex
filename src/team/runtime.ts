@@ -363,6 +363,9 @@ async function mutateShutdownConfig(
         oldBytes: currentManifestBytes,
         newBytes: currentManifest === null ? null : JSON.stringify({
           ...currentManifest,
+          // The v2 manifest is what readTeamConfig returns, so worker pane/pid
+          // changes made by a shutdown mutation must land there too.
+          workers: current.workers,
           hud_pane_id: current.hud_pane_id,
           hud_pane_pid: current.hud_pane_pid,
           resize_hook_name: current.resize_hook_name,
@@ -5553,20 +5556,22 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (workerTeardown.kill.failed > 0) {
       throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
     }
-    // Clear resize hooks AND clear HUD/worker pane state together for interactive mode
-    // to ensure the clearing persists before any subsequent operations
+    // The HUD and worker panes are proven gone. Persist that before worktree
+    // preservation can throw, so a retry never re-authorizes a dead pane id.
+    // A standalone HUD restored above stays recorded.
     config = await mutateShutdownConfig(config, cwd, (current) => {
       current.resize_hook_name = null;
       current.resize_hook_target = null;
-      current.hud_pane_id = null;
-      current.hud_pane_pid = undefined;
+      if (!restoredHudPaneId) {
+        current.hud_pane_id = null;
+        current.hud_pane_pid = undefined;
+      }
       for (const worker of current.workers) {
         worker.pane_id = undefined;
         worker.pid = undefined;
       }
     });
   } else {
-    // For prompt mode, clear worker PIDs and HUD pane state
     const promptTeardownFailures: string[] = [];
     for (const w of config.workers) {
       const teardown = await teardownPromptWorker(
@@ -5583,15 +5588,13 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (promptTeardownFailures.length > 0) {
       throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
-    
-    // For prompt mode, persist the cleared state
-    for (const worker of config.workers) {
-      worker.pane_id = undefined;
-      worker.pid = undefined;
-    }
-    config.hud_pane_id = null;
-    config.hud_pane_pid = undefined;
-    await saveTeamConfig(config, cwd);
+    // The prompt workers are terminated. Persist that before worktree
+    // preservation can throw, so a retry never signals a reused PID.
+    config = await mutateShutdownConfig(config, cwd, (current) => {
+      for (const worker of current.workers) {
+        worker.pid = undefined;
+      }
+    });
   }
 
   const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);

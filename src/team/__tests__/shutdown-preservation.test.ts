@@ -24,9 +24,10 @@ describe('shutdown worktree preservation', () => {
     { failure: 'signing', force: true, detached: true },
     { failure: 'merge-conflict', force: true, detached: true },
     { failure: 'late-write', force: true, detached: true },
+    { failure: 'signing', force: true, detached: true, hud: true },
   ];
-  for (const { failure: failureKind, force, ignoreOmx = true, trackedReport = false, detached = false } of scenarios) {
-    it(`preserves work after ${failureKind} failure (force=${force}, ignoreOmx=${ignoreOmx}, detached=${detached}) and supports retry`, { skip: process.platform === 'win32' }, async () => {
+  for (const { failure: failureKind, force, ignoreOmx = true, trackedReport = false, detached = false, hud = false } of scenarios) {
+    it(`preserves work after ${failureKind} failure (force=${force}, ignoreOmx=${ignoreOmx}, detached=${detached}, hud=${hud}) and supports retry`, { skip: process.platform === 'win32' }, async () => {
       const root = await mkdtemp(join(tmpdir(), 'omx-shutdown-preservation-'));
       const repo = join(root, 'repo');
       const worker = join(root, 'worker');
@@ -68,7 +69,8 @@ describe('shutdown worktree preservation', () => {
             tmux_session_created: '1700000000',
             leader_pane_id: '%1',
             leader_pane_pid: 4241,
-            hud_pane_id: null,
+            hud_pane_id: hud ? '%2' : null,
+            hud_pane_pid: hud ? 4242 : undefined,
             tmux_pane_owner_id: 'team:preserve',
           });
           config.workers[0]!.pane_id = '';
@@ -81,10 +83,17 @@ case "$1" in
   list-panes)
     [ ! -f "${tmuxLogPath}.killed" ] || exit 0
     case "$*" in
-      *'#{session_name}'*) printf '%%1\\t0\\t4241\\tomx-team-preserve\\t$1\\t1700000000\\n' ;;
-      *'-a -F #{pane_id}'*) printf '%%1\\t0\\t4241\\n' ;;
+      *'#{session_name}'*)
+        printf '%%1\\t0\\t4241\\tomx-team-preserve\\t$1\\t1700000000\\n'
+        if [ -n "${hud ? '1' : ''}" ] && [ ! -f "${tmuxLogPath}.hud-killed" ]; then printf '%%2\\t0\\t4242\\tomx-team-preserve\\t$1\\t1700000000\\n'; fi ;;
+      *'-a -F #{pane_id}'*)
+        printf '%%1\\t0\\t4241\\n'
+        if [ -n "${hud ? '1' : ''}" ] && [ ! -f "${tmuxLogPath}.hud-killed" ]; then printf '%%2\\t0\\t4242\\n'; fi ;;
       *) exit 1 ;;
     esac ;;
+  kill-pane)
+    [ "$*" = 'kill-pane -t %2' ] || exit 1
+    : > "${tmuxLogPath}.hud-killed" ;;
   show-option|show-options) echo 'team:preserve' ;;
   list-sessions)
     [ ! -f "${tmuxLogPath}.killed" ] || exit 0
@@ -127,6 +136,10 @@ esac
           assert.equal((await readTeamConfig('preserve', repo))?.tmux_session, 'omx-team-preserve');
           assert.equal(existsSync(`${tmuxLogPath}.killed`), false, 'preservation failure must precede detached-session destruction');
           assert.equal(existsSync(join(repo, '.omx', 'state', 'team', 'preserve', '.detached-session-destroy-receipt.json')), false);
+        }
+        if (hud) {
+          assert.equal(existsSync(`${tmuxLogPath}.hud-killed`), true, 'the HUD pane is torn down before preservation');
+          assert.equal((await readTeamConfig('preserve', repo))?.hud_pane_id, null, 'the gone HUD pane is not left in retained state');
         }
 
         if (!ignoreOmx && !trackedReport) assert.equal(existsSync(join(worker, '.omx', 'diff.md')), true, 'failed shutdown leaves a generated report for the retry');
@@ -283,76 +296,6 @@ describe('shutdown preservation review fixes', () => {
       assert.equal(existsSync(worker), false);
       assert.equal(await readTeamConfig('tracked-test', repo), null);
       assert.equal(await readFile(join(repo, '.omx', 'diff.md'), 'utf8'), 'tracked report v2\n', 'retry preserves the late write');
-    } finally {
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('clears HUD pane state before preservation to allow retry after failure (P1 4359155964)', { skip: process.platform === 'win32' }, async () => {
-    const root = await mkdtemp(join(tmpdir(), 'omx-hud-pane-clear-'));
-    const repo = join(root, 'repo');
-    const worker = join(root, 'worker');
-    const previousPath = process.env.PATH;
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-    try {
-      await mkdir(repo);
-      const bin = join(root, 'bin');
-      await mkdir(bin);
-      await writeFile(join(bin, 'omx'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-      process.env.PATH = `${bin}:${previousPath ?? ''}`;
-      git('init');
-      git('config', 'user.name', 'HUD Pane Test');
-      git('config', 'user.email', 'hud@example.invalid');
-      git('config', 'commit.gpgsign', 'false');
-      await writeFile(join(repo, 'work.txt'), 'original\n');
-      git('add', '.');
-      git('commit', '-m', 'initial');
-      git('worktree', 'add', '--detach', worker, 'HEAD');
-      
-      // Use prompt mode (simpler, no tmux needed) but still set hud_pane_id to test clearing
-      const config = await initTeamState('hud-test', 'HUD pane test', 'executor', 1, repo, undefined, { OMX_TEAM_WORKER_LAUNCH_MODE: 'prompt' });
-      
-      // Set a HUD pane ID that needs to be cleared (even though we're in prompt mode)
-      config.hud_pane_id = '%2';
-      config.hud_pane_pid = 4242;
-      config.workers[0]!.pane_id = '%3';
-      config.workers[0]!.pid = 4243;
-      Object.assign(config.workers[0]!, {
-        worktree_path: worker,
-        worktree_repo_root: repo,
-        worktree_created: true,
-        worktree_detached: true,
-      });
-      
-      await saveTeamConfig(config, repo);
-      await writeFile(join(worker, 'work.txt'), 'unique unsaved work\n');
-      
-      // Cause a preservation failure
-      const indexLock = git('-C', worker, 'rev-parse', '--git-path', 'index.lock');
-      await writeFile(indexLock, 'fixture lock');
-      
-      let failure: unknown;
-      try { await shutdownTeam('hud-test', repo, { force: true }); } catch (error) { failure = error; }
-      
-      // First shutdown should fail due to index lock
-      assert.ok(failure, 'shutdown should fail due to index lock');
-      assert.equal(existsSync(worker), true, 'preservation failure keeps worktree');
-      
-      // Verify hud_pane_id and worker pane_id were cleared in the config
-      const configAfterFirstShutdown = await readTeamConfig('hud-test', repo);
-      assert.ok(configAfterFirstShutdown, 'config preserved after first shutdown');
-      assert.equal(configAfterFirstShutdown.hud_pane_id, null, 'hud_pane_id must be cleared before preservation attempt');
-      assert.equal(configAfterFirstShutdown.workers[0]?.pane_id, undefined, 'worker pane_id must also be cleared');
-      
-      // Retry should succeed
-      await rm(indexLock, { force: true });
-      await shutdownTeam('hud-test', repo, { force: true });
-      
-      assert.equal(existsSync(worker), false, 'worktree destroyed on successful shutdown');
-      assert.equal(await readTeamConfig('hud-test', repo), null, 'config removed on successful shutdown');
-      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'unique unsaved work\n');
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
