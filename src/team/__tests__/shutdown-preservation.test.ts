@@ -469,6 +469,72 @@ async function withReviewFixture(run: (fixture: {
 }
 
 describe('remaining shutdown review regressions', { skip: process.platform === 'win32' }, () => {
+  for (const ignored of [false, true]) {
+    for (const phase of ['stage', 'receipt', 'publish', 'published', 'receipt-error']) {
+      it(`recovers report publication interruption (${phase}, ignored=${ignored})`, async () => {
+        await withReviewFixture(async ({ repo, worker, git }) => {
+          if (ignored) {
+            await writeFile(join(worker, '.gitignore'), '.env\n.omx/\n');
+          }
+          await writeFile(join(worker, 'work.txt'), 'preserved work\n');
+          const report = join(worker, '.omx', 'diff.md');
+          const receipt = git('-C', worker, 'rev-parse', '--git-path', 'omx-shutdown-report.sha256');
+          const script = `
+            import fs from 'node:fs';
+            import { syncBuiltinESMExports } from 'node:module';
+            const rename = fs.promises.rename;
+            const link = fs.promises.link;
+            const writeFile = fs.promises.writeFile;
+            fs.promises.writeFile = async (path, data, ...options) => {
+              if (${JSON.stringify(phase)} === 'stage' && String(path).startsWith(${JSON.stringify(`${receipt}.content.tmp.`)})) {
+                await writeFile(path, String(data).slice(0, 10), ...options);
+                process.exit(73);
+              }
+              return writeFile(path, data, ...options);
+            };
+            fs.promises.rename = async (src, dest) => {
+              if (dest === ${JSON.stringify(receipt)} && ${JSON.stringify(phase)}.startsWith('receipt')) {
+                if (${JSON.stringify(phase)} === 'receipt') process.exit(73);
+                fs.writeFileSync(${JSON.stringify(join(worker, 'late.txt'))}, 'late work');
+                throw Object.assign(new Error('receipt write failed'), { code: 'EIO' });
+              }
+              return rename(src, dest);
+            };
+            fs.promises.link = async (src, dest) => {
+              if (dest === ${JSON.stringify(report)}) {
+                if (${JSON.stringify(phase)} === 'publish') process.exit(73);
+                await link(src, dest);
+                if (${JSON.stringify(phase)} === 'published') process.exit(73);
+                return;
+              }
+              return link(src, dest);
+            };
+            syncBuiltinESMExports();
+            const { shutdownTeam } = await import(${JSON.stringify(new URL('../runtime.js', import.meta.url).href)});
+            await shutdownTeam('review', ${JSON.stringify(repo)}, { force: true });
+          `;
+          assert.throws(() => execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+            encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          }), (error: unknown) => (error as { status: number }).status === (phase === 'receipt-error' ? 1 : 73));
+          assert.equal(existsSync(report), phase === 'published');
+          assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'preserved work\n');
+          if (phase === 'published' && ignored) {
+            const bytes = await readFile(report);
+            await rm(report);
+            await writeFile(report, bytes);
+            await assert.rejects(shutdownTeam('review', repo, { force: true }), /shutdown_worktree_preservation_failed/);
+            assert.deepEqual(await readFile(report), bytes, 'a replacement inode is user-owned even with identical bytes');
+            await rm(report);
+          }
+          await shutdownTeam('review', repo, { force: true });
+          assert.equal(existsSync(worker), false);
+          assert.equal(git('log', '--all', '--oneline', '--', '.omx/diff.md'), '', 'generated reports never enter history');
+          if (phase === 'receipt-error') assert.equal(await readFile(join(repo, 'late.txt'), 'utf8'), 'late work');
+        });
+      });
+    }
+  }
+
   for (const staged of [false, true]) {
     it(`preserves a user-authored report through staging failure and retry (staged=${staged})`, async () => {
       await withReviewFixture(async ({ repo, worker, git }) => {

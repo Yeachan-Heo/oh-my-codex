@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { join, resolve, dirname } from 'path';
 import { existsSync, appendFileSync, mkdirSync, readFileSync } from 'fs';
 
-import { mkdir, readdir, readFile, rm, writeFile, lstat } from 'fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile, lstat, link } from 'fs/promises';
 import { performance } from 'perf_hooks';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'child_process';
 import type { Writable } from 'stream';
@@ -1704,8 +1704,11 @@ async function removeGeneratedShutdownReport(repoRoot: string, worktreePath: str
     if (error.code === 'ENOENT') return null;
     throw error;
   });
-  // Index membership is not ownership; changed or unreceipted bytes belong to the user.
-  if (contents && createHash('sha256').update(contents).digest('hex') === receipt.trim()) {
+  // Accept legacy hash receipts; new receipts also bind ownership to the published inode.
+  const proof = receipt.trim().startsWith('{') ? JSON.parse(receipt) as { hash: string; dev: number; ino: number } : null;
+  const stat = contents && proof ? await lstat(paths.report) : null;
+  const owned = !proof || (stat?.dev === proof.dev && stat?.ino === proof.ino);
+  if (contents && owned && createHash('sha256').update(contents).digest('hex') === (proof?.hash ?? receipt.trim())) {
     await rm(paths.report);
   }
 }
@@ -1716,14 +1719,22 @@ async function writeShutdownReport(repoRoot: string, worktreePath: string, conte
   const inIndex = runGitCommand(repoRoot, ['ls-files', '--', '.omx/diff.md'], worktreePath);
   if (!inHead.ok || !inIndex.ok) throw new Error(`shutdown_report_tracking_failed:${worktreePath}`);
   if (inHead.stdout || inIndex.stdout) return;
+  if (existsSync(paths.report)) return;
+  // Stage outside the checkout, then publish complete bytes only after durable provenance exists.
+  const staged = `${paths.receipt}.content`;
+  await writeAtomic(staged, content);
+  const stat = await lstat(staged);
+  await writeAtomic(paths.receipt, JSON.stringify({
+    hash: createHash('sha256').update(content).digest('hex'), dev: stat.dev, ino: stat.ino,
+  }));
   await mkdir(dirname(paths.report), { recursive: true });
   try {
-    await writeFile(paths.report, content, { encoding: 'utf8', flag: 'wx' });
+    // Cross-device links fail closed: the report remains available in Git metadata and stdout.
+    await link(staged, paths.report);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return;
     throw error;
   }
-  await writeAtomic(paths.receipt, createHash('sha256').update(content).digest('hex'));
 }
 
 async function prepareShutdownMergeReport(

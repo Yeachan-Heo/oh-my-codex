@@ -1,6 +1,6 @@
 import { execFile as execFileCb, execFileSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
-import { mkdtemp, mkdir, rename, rmdir } from 'fs/promises';
+import { mkdtemp, mkdir, rename, rm, rmdir, writeFile } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import { promisify } from 'util';
 import {
@@ -502,24 +502,54 @@ export interface RollbackWorktreeOptions {
   skipBranchDeletion?: boolean;
 }
 
-async function prepareSubmodulesForWorktreeRemoval(worktreePath: string): Promise<{ original: string; saved: string } | null> {
+interface SubmoduleRecovery {
+  directory?: string;
+  moved: Array<{ original: string; saved: string; checkout: boolean }>;
+}
+
+async function prepareSubmodulesForWorktreeRemoval(worktreePath: string, recovery: SubmoduleRecovery): Promise<void> {
   const git = async (args: string[]): Promise<string> => (await execFilePromise('git', args, {
     cwd: worktreePath, encoding: 'utf8',
-  })).stdout.trim();
+  })).stdout;
   const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
-  if (status) throw new Error(`worktree_has_unpreserved_files:${worktreePath}`);
+  if (status.trim()) throw new Error(`worktree_has_unpreserved_files:${worktreePath}`);
   await git(['submodule', 'foreach', '--recursive',
     'status=$(git status --porcelain --untracked-files=all --ignored --ignore-submodules=none) && test -z "$status" || exit 1']);
-  await git(['submodule', 'deinit', '--all']);
-  const modules = resolve(worktreePath, await git(['rev-parse', '--git-path', 'modules']));
-  if (!existsSync(modules)) return null;
-  // Git refuses non-forced removal while this directory exists; retain its local commits outside the worktree metadata.
-  const commonDir = resolve(worktreePath, await git(['rev-parse', '--git-common-dir']));
+  const checkouts = (await git(['submodule', 'foreach', '--quiet', 'printf "%s\\0" "$sm_path"'])).split('\0').filter(Boolean);
+  const modules = resolve(worktreePath, (await git(['rev-parse', '--git-path', 'modules'])).trim());
+  if (!existsSync(modules) && checkouts.length === 0) return;
+  const commonDir = resolve(worktreePath, (await git(['rev-parse', '--git-common-dir'])).trim());
   const recoveryRoot = join(commonDir, 'omx-submodule-recovery');
   await mkdir(recoveryRoot, { recursive: true });
-  const saved = join(await mkdtemp(join(recoveryRoot, 'worktree-')), 'modules');
-  await rename(modules, saved);
-  return { original: modules, saved };
+  recovery.directory = await mkdtemp(join(recoveryRoot, 'worktree-'));
+  // Moving whole checkouts retains local data without deinit's writes to shared repository config.
+  const moves = checkouts.map(path => ({ original: join(worktreePath, path), saved: join(recovery.directory!, 'checkouts', path), checkout: true }));
+  if (existsSync(modules)) moves.push({ original: modules, saved: join(recovery.directory, 'modules'), checkout: false });
+  await writeFile(join(recovery.directory, 'recovery.json'), JSON.stringify(moves));
+  for (const move of moves) {
+    await mkdir(dirname(move.saved), { recursive: true });
+    await rename(move.original, move.saved);
+    recovery.moved.push(move);
+    // Git treats a missing gitlink as a deletion, but an empty checkout as uninitialized.
+    if (move.checkout) await mkdir(move.original);
+  }
+}
+
+async function restoreSubmodules(recovery: SubmoduleRecovery): Promise<void> {
+  const errors: string[] = [];
+  for (const move of [...recovery.moved].reverse()) {
+    try {
+      if (move.checkout) await rmdir(move.original).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      if (existsSync(move.original)) throw new Error(`recovery_destination_exists:${move.original}`);
+      await rename(move.saved, move.original);
+    } catch (error) {
+      errors.push(`${move.saved}:${String(error)}`);
+    }
+  }
+  if (errors.length) throw new Error(errors.join(' | '));
+  if (recovery.directory) await rm(recovery.directory, { recursive: true });
 }
 
 export async function rollbackProvisionedWorktrees(
@@ -533,21 +563,20 @@ export async function rollbackProvisionedWorktrees(
   const errors: string[] = [];
 
   for (const result of created) {
-    let submodules: { original: string; saved: string } | null = null;
+    const submodules: SubmoduleRecovery = { moved: [] };
     try {
-      if (options.force === false) submodules = await prepareSubmodulesForWorktreeRemoval(result.worktreePath);
+      if (options.force === false) await prepareSubmodulesForWorktreeRemoval(result.worktreePath, submodules);
       await execFilePromise('git', ['worktree', 'remove', ...(options.force === false ? [] : ['--force']), result.worktreePath], {
         cwd: result.repoRoot,
         encoding: 'utf-8',
       });
-      if (submodules) console.warn(`[team worktree] Submodule Git data retained at ${submodules.saved}`);
+      if (submodules.directory) console.warn(`[team worktree] Submodule data retained at ${submodules.directory}`);
     } catch (err: unknown) {
-      if (submodules) {
+      if (submodules.directory) {
         try {
-          await rename(submodules.saved, submodules.original);
-          await rmdir(dirname(submodules.saved));
+          await restoreSubmodules(submodules);
         } catch (restoreError) {
-          errors.push(`submodule_recovery:${submodules.saved}:${String(restoreError)}`);
+          errors.push(`submodule_recovery:${submodules.directory}:${String(restoreError)}`);
         }
       }
       const stderr = ((err as Record<string, unknown>).stderr as string ?? '').trim();

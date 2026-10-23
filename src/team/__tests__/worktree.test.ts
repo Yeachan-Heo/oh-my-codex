@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, symlink, writeFile, readFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, promises as fsPromises } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -362,7 +363,7 @@ describe('shutdown removal versus authorized rollback', () => {
     });
   }
 
-  it('removes clean initialized submodules without force and keeps their Git objects', async () => {
+  it('removes clean initialized submodules without force and keeps their Git objects', async (t) => {
     const repo = await initRepo();
     const sub = await initRepo();
     const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -374,6 +375,8 @@ describe('shutdown removal versus authorized rollback', () => {
       const tree = ensureWorktree(plan);
       assert.ok(tree.enabled);
       git(tree.worktreePath, '-c', 'protocol.file.allow=always', 'submodule', 'update', '--init');
+      git(repo, 'config', 'submodule.module.url', 'https://example.invalid/leader-custom.git');
+      const sharedConfig = await readFile(join(repo, '.git', 'config'), 'utf8');
       const modulePath = join(tree.worktreePath, 'module');
       git(modulePath, 'config', 'user.name', 'Module Test');
       git(modulePath, 'config', 'user.email', 'module@example.invalid');
@@ -389,6 +392,22 @@ describe('shutdown removal versus authorized rollback', () => {
       await assert.rejects(rollbackProvisionedWorktrees([tree], { force: false }), /worktree_rollback_failed/);
       assert.equal(await readFile(join(modulePath, '.env'), 'utf8'), 'module secret');
       await rm(join(modulePath, '.env'));
+      const modulesPath = git(tree.worktreePath, 'rev-parse', '--git-path', 'modules');
+      const originalRename = fsPromises.rename;
+      t.mock.method(fsPromises, 'rename', async (...args: Parameters<typeof fsPromises.rename>) => {
+        if (args[0] === modulesPath) throw new Error('injected module archive failure');
+        return originalRename(...args);
+      });
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(rollbackProvisionedWorktrees([tree], { force: false }), /injected module archive failure/);
+      } finally {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+      assert.equal(git(modulePath, 'rev-parse', 'HEAD'), localCommit, 'partial preparation restores moved checkouts');
+      assert.equal(await readFile(join(modulePath, '.gitignore'), 'utf8'), '.env\n');
+      assert.equal(await readFile(join(repo, '.git', 'config'), 'utf8'), sharedConfig);
       if (process.platform !== 'win32') {
         const originalModules = git(tree.worktreePath, 'rev-parse', '--git-path', 'modules');
         const bin = await mkdtemp(join(tmpdir(), 'omx-submodule-late-write-'));
@@ -405,6 +424,10 @@ process.exit(r.status ?? 1);
           await assert.rejects(rollbackProvisionedWorktrees([tree], { force: false }), /worktree_rollback_failed/);
           assert.equal(await readFile(join(tree.worktreePath, 'late.txt'), 'utf8'), 'late write');
           assert.equal(git(repo, '--git-dir', join(originalModules, 'module'), 'rev-parse', 'HEAD'), localCommit);
+          assert.equal(git(modulePath, 'rev-parse', 'HEAD'), localCommit);
+          assert.equal(await readFile(join(modulePath, '.gitignore'), 'utf8'), '.env\n');
+          assert.equal(await readFile(join(repo, '.git', 'config'), 'utf8'), sharedConfig);
+          assert.ok(existsSync(join(repo, 'module', '.git')));
         } finally {
           if (previousPath === undefined) delete process.env.PATH;
           else process.env.PATH = previousPath;
@@ -414,11 +437,14 @@ process.exit(r.status ?? 1);
       }
       await rollbackProvisionedWorktrees([tree], { force: false });
       assert.equal(existsSync(tree.worktreePath), false);
+      assert.equal(await readFile(join(repo, '.git', 'config'), 'utf8'), sharedConfig);
+      assert.ok(existsSync(join(repo, 'module', '.git')));
       const recoveryRoot = join(repo, '.git', 'omx-submodule-recovery');
       const archives = await readdir(recoveryRoot);
       assert.equal(archives.length, 1);
-      assert.equal(git(repo, '--git-dir', join(recoveryRoot, archives[0]!, 'modules', 'module'), 'rev-parse', 'HEAD'), localCommit);
-      assert.equal(git(repo, '--git-dir', join(recoveryRoot, archives[0]!, 'modules', 'module'), 'show', `${localCommit}:.gitignore`), '.env');
+      assert.equal(await readFile(join(recoveryRoot, archives[0]!, 'checkouts', 'module', '.gitignore'), 'utf8'), '.env\n');
+      assert.equal(git(repo, '--git-dir', join(recoveryRoot, archives[0]!, 'modules', 'module'), '--work-tree', join(recoveryRoot, archives[0]!, 'checkouts', 'module'), 'rev-parse', 'HEAD'), localCommit);
+      assert.equal(git(repo, '--git-dir', join(recoveryRoot, archives[0]!, 'modules', 'module'), '--work-tree', join(recoveryRoot, archives[0]!, 'checkouts', 'module'), 'show', `${localCommit}:.gitignore`), '.env');
     } finally {
       await rm(repo, { recursive: true, force: true });
       await rm(sub, { recursive: true, force: true });
