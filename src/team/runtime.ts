@@ -1683,12 +1683,12 @@ async function prepareShutdownMergeReport(
   const worktreePath = resolve(worker.worktree_path);
   const repoRoot = resolve(worker.worktree_repo_root);
   // A failed shutdown leaves this generated report behind; never checkpoint it on retry.
-  // Only remove untracked files; preserve tracked .omx/diff.md if intentionally committed.
+  // Only remove reports that are not intentionally tracked in HEAD; preserve .omx/diff.md if explicitly committed.
   const reportPathToClean = join(worktreePath, '.omx', 'diff.md');
-  const lsFilesResult = runGitCommand(repoRoot, ['ls-files', '--', '.omx/diff.md'], worktreePath);
-  if (!lsFilesResult.ok) throw new Error(`worktree_ls_files_failed:${worktreePath}:${lsFilesResult.stderr}`);
-  if (!lsFilesResult.stdout) {
-    // File is not in the index; safe to remove as a runtime-generated artifact.
+  const lsTreeResult = runGitCommand(repoRoot, ['ls-tree', 'HEAD', '.omx/diff.md'], worktreePath);
+  if (!lsTreeResult.ok) throw new Error(`worktree_ls_tree_failed:${worktreePath}:${lsTreeResult.stderr}`);
+  if (!lsTreeResult.stdout) {
+    // File is not in HEAD; safe to remove as a runtime-generated artifact even if staged by git add -A.
     await rm(reportPathToClean, { force: true });
   }
   const statusBefore = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
@@ -5547,9 +5547,15 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (workerTeardown.kill.failed > 0) {
       throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
     }
+    // Clear pane IDs and PIDs from workers before any potential throw in subsequent steps,
+    // so retries cannot use stale pane IDs that are now unavailable.
     config = await mutateShutdownConfig(config, cwd, (current) => {
       current.resize_hook_name = null;
       current.resize_hook_target = null;
+      for (const worker of current.workers) {
+        worker.pane_id = undefined;
+        worker.pid = undefined;
+      }
     });
   } else {
     const promptTeardownFailures: string[] = [];
@@ -5568,6 +5574,13 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (promptTeardownFailures.length > 0) {
       throw new Error(`shutdown_prompt_teardown_failed:${promptTeardownFailures.join(',')}`);
     }
+    // Clear worker PIDs before any potential throw in subsequent steps.
+    // On retry, stale PIDs could be reused by unrelated processes, causing incorrect signals.
+    config = await mutateShutdownConfig(config, cwd, (current) => {
+      for (const worker of current.workers) {
+        worker.pid = undefined;
+      }
+    });
   }
 
   const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
@@ -5659,8 +5672,14 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   for (const worktree of provisionedWorktrees) {
     const head = runGitCommand(worktree.repoRoot, ['rev-parse', 'HEAD'], worktree.worktreePath);
     const saved = head.ok && runGitCommand(worktree.repoRoot, ['merge-base', '--is-ancestor', head.stdout, 'HEAD'], cwd).ok;
-    // The report is generated after checkpointing; every other dirty path must survive.
-    const status = runGitCommand(worktree.repoRoot, ['status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).omx/diff.md'], worktree.worktreePath);
+    // Check if .omx/diff.md is intentionally tracked (exists in HEAD); only exclude generated reports.
+    const reportInHead = runGitCommand(worktree.repoRoot, ['ls-tree', 'HEAD', '.omx/diff.md'], worktree.worktreePath);
+    const statusArgs = ['status', '--porcelain', '--untracked-files=all', '--', '.'];
+    // Exclude the report only if it is a generated artifact (not in HEAD).
+    if (reportInHead.ok && !reportInHead.stdout) {
+      statusArgs.push(':(exclude).omx/diff.md');
+    }
+    const status = runGitCommand(worktree.repoRoot, statusArgs, worktree.worktreePath);
     if (!saved || !status.ok || status.stdout) {
       throw new Error(`shutdown_worktree_preservation_failed:${worktree.worktreePath}:worktree changed or could not be verified; worktree and team state retained`);
     }
