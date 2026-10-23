@@ -201,7 +201,6 @@ import {
   removeWorktreeForce,
   rollbackProvisionedWorktrees,
   replaySubmoduleRecovery,
-  recheckSubmodulePlaceholdersBeforeRemoval,
   type EnsureWorktreeResult,
   type WorktreeMode,
 } from './worktree.js';
