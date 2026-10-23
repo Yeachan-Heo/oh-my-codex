@@ -1690,11 +1690,28 @@ async function shutdownReportPaths(repoRoot: string, worktreePath: string): Prom
   return { report, receipt: resolve(worktreePath, gitPath.stdout) };
 }
 
+// Check if a report file is tracked in HEAD, handling case-variant paths on case-insensitive filesystems (P2 4359325739).
+async function isReportTrackedInHead(repoRoot: string, worktreePath: string): Promise<boolean> {
+  // Use ls-tree to list all tracked files and match case-insensitively.
+  const result = runGitCommand(repoRoot, ['ls-tree', '--name-only', '-r', 'HEAD', '.omx'], worktreePath);
+  if (!result.ok) throw new Error(`worktree_ls_tree_failed:${worktreePath}:${result.stderr}`);
+  if (!result.stdout) return false;
+  // Case-insensitive match for diff.md under .omx directory.
+  return result.stdout.split('\n').some(line => line.toLowerCase() === '.omx/diff.md');
+}
+
+// Check if a report file is tracked in the index, handling case-variant paths on case-insensitive filesystems.
+async function isReportTrackedInIndex(repoRoot: string, worktreePath: string): Promise<boolean> {
+  // Use :(icase) pathspec for case-insensitive matching in ls-files.
+  const result = runGitCommand(repoRoot, ['ls-files', '--', ':(icase).omx/diff.md'], worktreePath);
+  if (!result.ok) throw new Error(`worktree_ls_files_failed:${worktreePath}:${result.stderr}`);
+  return !!result.stdout;
+}
+
 async function removeGeneratedShutdownReport(repoRoot: string, worktreePath: string): Promise<void> {
   const paths = await shutdownReportPaths(repoRoot, worktreePath);
-  const inHead = runGitCommand(repoRoot, ['ls-tree', 'HEAD', '.omx/diff.md'], worktreePath);
-  if (!inHead.ok) throw new Error(`worktree_ls_tree_failed:${worktreePath}:${inHead.stderr}`);
-  if (inHead.stdout) return;
+  const inHead = await isReportTrackedInHead(repoRoot, worktreePath);
+  if (inHead) return;
   const receipt = await readFile(paths.receipt, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -1715,10 +1732,9 @@ async function removeGeneratedShutdownReport(repoRoot: string, worktreePath: str
 
 async function writeShutdownReport(repoRoot: string, worktreePath: string, content: string): Promise<void> {
   const paths = await shutdownReportPaths(repoRoot, worktreePath);
-  const inHead = runGitCommand(repoRoot, ['ls-tree', 'HEAD', '.omx/diff.md'], worktreePath);
-  const inIndex = runGitCommand(repoRoot, ['ls-files', '--', '.omx/diff.md'], worktreePath);
-  if (!inHead.ok || !inIndex.ok) throw new Error(`shutdown_report_tracking_failed:${worktreePath}`);
-  if (inHead.stdout || inIndex.stdout) return;
+  const inHead = await isReportTrackedInHead(repoRoot, worktreePath);
+  const inIndex = await isReportTrackedInIndex(repoRoot, worktreePath);
+  if (inHead || inIndex) return;
   if (existsSync(paths.report)) return;
   // Stage outside the checkout, then publish complete bytes only after durable provenance exists.
   const staged = `${paths.receipt}.content`;
