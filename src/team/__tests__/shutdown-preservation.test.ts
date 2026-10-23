@@ -167,7 +167,7 @@ esac
 
 // Regression tests for review issues #3896
 describe('shutdown preservation review fixes', () => {
-  it('distinguishes generated reports from intentionally tracked reports using provenance (P2 4359237839)', { skip: process.platform === 'win32' }, async () => {
+  it('removes a staged generated report from retry checkpoints', { skip: process.platform === 'win32' }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-report-provenance-'));
     const repo = join(root, 'repo');
     const worker = join(root, 'worker');
@@ -200,9 +200,12 @@ describe('shutdown preservation review fixes', () => {
       await mkdir(join(worker, '.omx'));
       await writeFile(join(worker, '.omx', 'diff.md'), 'generated report\n');
       await writeFile(join(worker, 'work.txt'), 'unique unsaved work\n');
-      // Simulate git add -A being called before report cleanup
       execFileSync('git', ['add', '-A'], { cwd: worker });
-      // First shutdown should fail before worktree removal (signing failure)
+      // .omx is ignored, so explicitly stage the report to exercise index-vs-HEAD detection.
+      git('-C', worker, 'add', '-f', '.omx/diff.md');
+      assert.equal(git('-C', worker, 'ls-files', '--', '.omx/diff.md'), '.omx/diff.md');
+      assert.equal(git('-C', worker, 'ls-tree', 'HEAD', '.omx/diff.md'), '');
+      // An index lock prevents checkpointing on the first shutdown.
       const indexLock = git('-C', worker, 'rev-parse', '--git-path', 'index.lock');
       await writeFile(indexLock, 'fixture lock');
       let failure: unknown;
@@ -218,6 +221,8 @@ describe('shutdown preservation review fixes', () => {
       await shutdownTeam('report-test', repo, { force: true });
       assert.equal(existsSync(worker), false);
       assert.equal(await readTeamConfig('report-test', repo), null);
+      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'unique unsaved work\n');
+      assert.equal(git('log', '--all', '--format=', '--name-only', '--', '.omx/diff.md'), '', 'staged generated reports must not enter Git history');
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
@@ -259,18 +264,25 @@ describe('shutdown preservation review fixes', () => {
       });
       await saveTeamConfig(config, repo);
       await writeFile(join(worker, 'work.txt'), 'unique unsaved work\n');
-      // Simulate concurrent modification to tracked report after synthetic commit
-      // This is done by mocking the final status check to see the excluded file
-      const mockGit = (gitPath: string) => `#!${process.execPath}\nconst fs = require('fs');\nconst realGit = require('child_process').spawnSync(${JSON.stringify('git')}, process.argv.slice(2), {stdio:'inherit'});\nif (process.argv[2] === 'status' && process.cwd() === fs.realpathSync(${JSON.stringify(worker)}) && process.argv.includes(':(exclude).omx/diff.md')) {\n  console.log('\\\\nM\\t.omx/diff.md');\n  process.exit(1);\n}\nprocess.exit(realGit.status ?? 1);\n`;
-      await writeFile(join(bin, 'git'), mockGit('/bin/git'), { mode: 0o755 });
-      // First shutdown should fail (simulated concurrent modification)
-      let failure: unknown;
-      try { await shutdownTeam('tracked-test', repo, { force: true }); } catch (error) { failure = error; }
-      // Due to the fix, the exclusion should NOT be applied to tracked reports,
-      // so this should be caught as an error (the mock throws exit code 1)
-      // Note: The actual error message depends on git command execution
+      // Summary generation runs after checkpointing; modify the real tracked file then.
+      await writeFile(join(bin, 'omx'), `#!${process.execPath}\nrequire('fs').writeFileSync('.omx/diff.md', 'tracked report v2\\n');\nprocess.exit(1);\n`, { mode: 0o755 });
+      await assert.rejects(
+        () => shutdownTeam('tracked-test', repo, { force: true }),
+        /shutdown_worktree_preservation_failed:.*:worktree changed or could not be verified/,
+      );
       assert.equal(existsSync(worker), true, 'preservation failure keeps worktree');
       assert.ok(await readTeamConfig('tracked-test', repo), 'preservation failure keeps config');
+      assert.equal(await readFile(join(worker, '.omx', 'diff.md'), 'utf8'), 'tracked report v2\n');
+      assert.equal(git('-C', worker, 'show', 'HEAD:.omx/diff.md'), 'tracked report v1', 'late write was not checkpointed');
+      assert.equal(git('-C', worker, 'status', '--porcelain', '--', '.omx/diff.md'), 'M .omx/diff.md');
+      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'unique unsaved work\n', 'checkpoint was merged before final verification');
+      assert.equal(await readFile(join(repo, '.omx', 'diff.md'), 'utf8'), 'tracked report v1\n');
+
+      await writeFile(join(bin, 'omx'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      await shutdownTeam('tracked-test', repo, { force: true });
+      assert.equal(existsSync(worker), false);
+      assert.equal(await readTeamConfig('tracked-test', repo), null);
+      assert.equal(await readFile(join(repo, '.omx', 'diff.md'), 'utf8'), 'tracked report v2\n', 'retry preserves the late write');
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
