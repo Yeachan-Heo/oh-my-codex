@@ -25,6 +25,30 @@ export function hasRuntimeDispatchIdentity(stateDir: string, requestId: string):
   return readRuntimeDispatchRequestIds(stateDir)?.includes(requestId) ?? false;
 }
 
+type RuntimeFinalizationCommand = Extract<RuntimeCommand, { command: 'MarkNotified' | 'MarkDelivered' | 'MarkFailed' }>;
+
+/**
+ * The journal is append-only, so a crash can leave a torn trailing line.
+ * Skip incomplete or non-object lines instead of letting one bad append block
+ * every later read and reconciliation.
+ */
+export function parseRuntimeFinalizationJournal(raw: string): RuntimeFinalizationCommand[] {
+  const commands: RuntimeFinalizationCommand[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      commands.push(parsed as RuntimeFinalizationCommand);
+    }
+  }
+  return commands;
+}
+
 /** Load the dispatch identity ledger once into a Set for efficient batch lookups. Returns null if the ledger doesn't exist. */
 export function loadRuntimeDispatchIdentitySet(stateDir: string): Set<string> | null {
   const ids = readRuntimeDispatchRequestIds(stateDir);
@@ -38,7 +62,8 @@ export function recordRuntimeFinalization(stateDir: string, teamName: string, co
   if (!requestIds?.includes(command.request_id)) return;
   const journal = join(stateDir, 'team', teamName, 'dispatch', 'runtime-finalizations.jsonl');
   mkdirSync(dirname(journal), { recursive: true });
-  appendFileSync(journal, `${JSON.stringify(command)}\n`);
+  // A leading newline isolates this receipt from any crash-truncated tail.
+  appendFileSync(journal, `\n${JSON.stringify(command)}\n`);
 }
 
 export async function reconcileRuntimeFinalizations(stateDir: string, teamName: string): Promise<void> {
@@ -48,7 +73,7 @@ export async function reconcileRuntimeFinalizations(stateDir: string, teamName: 
     if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
     throw error;
   }
-  const commands = raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const commands = parseRuntimeFinalizationJournal(raw);
   if (commands.length > 0) {
     if (process.env.OMX_RUNTIME_BRIDGE === '0') throw new Error('runtime finalizations require the runtime bridge');
     if (commands.some((command) => !command || typeof command.request_id !== 'string'

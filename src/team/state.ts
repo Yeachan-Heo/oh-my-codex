@@ -60,7 +60,7 @@ import {
   withTaskClaimLock as withTaskClaimLockImpl,
   withMailboxLock as withMailboxLockImpl,
 } from './state/locks.js';
-import { hasRuntimeAuthority, loadRuntimeDispatchIdentitySet } from './state/dispatch-recovery.js';
+import { hasRuntimeAuthority, loadRuntimeDispatchIdentitySet, parseRuntimeFinalizationJournal } from './state/dispatch-recovery.js';
 import { getDefaultBridge, isBridgeEnabled, isStrictDispatchRecord, resolveBridgeStateDir, type DispatchRecord } from '../runtime/bridge.js';
 import {
   type TeamDispatchRequestStatus,
@@ -2140,8 +2140,7 @@ export async function readDispatchRequests(
     if (isErrnoException(error) && error.code === 'ENOENT') return '';
     throw error;
   });
-  for (const line of finalizations.split('\n').filter(Boolean)) {
-    const command = JSON.parse(line);
+  for (const command of parseRuntimeFinalizationJournal(finalizations)) {
     const status = command.command === 'MarkNotified' ? 'notified'
       : command.command === 'MarkDelivered' ? 'delivered' : command.command === 'MarkFailed' ? 'failed' : null;
     if (status && typeof command.request_id === 'string') {
