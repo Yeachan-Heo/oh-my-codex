@@ -1,6 +1,6 @@
 import { execFile as execFileCb, execFileSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, promises as fsPromises } from 'fs';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, join, relative, resolve } from 'path';
 import { promisify } from 'util';
 import {
   assertCurrentTaskBranchAvailable,
@@ -585,6 +585,12 @@ export async function replaySubmoduleRecovery(worktreePath: string, repoRoot: st
   })).stdout.trim());
   const recoveryRoot = join(commonDir, 'omx-submodule-recovery');
   if (!existsSync(recoveryRoot)) return true; // No recovery needed
+  
+  // Get the expected modules path for this worktree to recognize modules-only journals
+  const worktreeModulesPath = resolve(worktreePath, (await execFilePromise('git', ['rev-parse', '--git-path', 'modules'], {
+    cwd: worktreePath, encoding: 'utf-8',
+  })).stdout.trim());
+  
   let anyRecoveryUnresolved = false;
   
   const archives = await fsPromises.readdir(recoveryRoot).catch(() => []);
@@ -618,7 +624,12 @@ export async function replaySubmoduleRecovery(worktreePath: string, repoRoot: st
         const resolvedWorktreePath = resolve(worktreePath);
         const destinationInWorktree = moves.some(move => {
           const originalPath = resolve(move.original);
-          return originalPath.startsWith(resolvedWorktreePath + '/');
+          // Use relative() for platform-aware path containment that rejects sibling-prefix paths
+          const relPath = relative(resolvedWorktreePath, originalPath);
+          const inCheckout = !relPath.startsWith('..');
+          // Also recognize modules paths that belong to this worktree
+          const inModules = originalPath === worktreeModulesPath;
+          return inCheckout || inModules;
         });
         if (!destinationInWorktree) {
           continue; // Legacy journal belongs to another worktree

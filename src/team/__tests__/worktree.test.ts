@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, symlink, writeFile, readFile, readdir } from 'node:fs/promises';
 import { existsSync, promises as fsPromises } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   parseWorktreeMode,
@@ -467,7 +467,8 @@ describe('legacy recovery journal scoping', { skip: process.platform === 'win32'
       
       // Get the common dir
       const commonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: worktreeA, encoding: 'utf-8' }).trim();
-      const recoveryRoot = join(repo, commonDir, 'omx-submodule-recovery');
+      const resolvedCommonDir = resolve(repo, commonDir);
+      const recoveryRoot = join(resolvedCommonDir, 'omx-submodule-recovery');
       
       // Ensure recovery root directory exists
       await fsPromises.mkdir(recoveryRoot, { recursive: true });
@@ -510,7 +511,8 @@ describe('legacy recovery journal scoping', { skip: process.platform === 'win32'
       
       // Get the common dir
       const commonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: worktree, encoding: 'utf-8' }).trim();
-      const recoveryRoot = join(repo, commonDir, 'omx-submodule-recovery');
+      const resolvedCommonDir = resolve(repo, commonDir);
+      const recoveryRoot = join(resolvedCommonDir, 'omx-submodule-recovery');
       
       // Ensure recovery root directory exists
       await fsPromises.mkdir(recoveryRoot, { recursive: true });
@@ -533,6 +535,12 @@ describe('legacy recovery journal scoping', { skip: process.platform === 'win32'
       // Replay recovery should succeed (return true, meaning no unresolved recovery)
       const result = await replaySubmoduleRecovery(worktree, repo);
       assert.equal(result, true, 'replaySubmoduleRecovery should succeed for legacy journal belonging to this worktree');
+      
+      // Mutation proof: verify that the saved file was actually restored
+      const submodulePath = join(worktree, 'submodule');
+      assert.equal(existsSync(submodulePath), true, 'submodule should be restored to its original location');
+      assert.equal(await readFile(join(submodulePath, 'test.txt'), 'utf-8'), 'test content', 'submodule content should be correctly restored');
+      assert.equal(existsSync(join(recoveryDir, 'checkouts', 'submodule')), false, 'saved submodule should be removed after restoration');
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
