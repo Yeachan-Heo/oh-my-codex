@@ -474,6 +474,10 @@ function lexicalLivePinTarget(pluginRoot) {
   return { pluginRoot: absoluteRoot, version, cacheBase, expectedRoot };
 }
 
+function externalLivePinDirectory(cacheBase, version) {
+  return join(cacheBase, '.omx-pins', version);
+}
+
 function livePinTarget(pluginRoot) {
   const target = lexicalLivePinTarget(pluginRoot);
   if (!target) return null;
@@ -530,20 +534,8 @@ function livePinDirectory(pluginRoot) {
         return null;
       }
     }
-    const pinDir = join(operationRoot, '.omx-live-pin');
-    try {
-      const pinDirStats = lstatSync(pinDir);
-      if (!pinDirStats.isDirectory() || pinDirStats.isSymbolicLink()) {
-        closeRoot();
-        return null;
-      }
-    } catch (error) {
-      if (error?.code !== 'ENOENT') {
-        closeRoot();
-        return null;
-      }
-    }
-    return { path: pinDir, pluginRoot: absoluteRoot, version, cacheBase, rootDev: rootStats.dev, rootIno: rootStats.ino, rootFd };
+    // Use external pin directory location instead of inside the plugin root
+    const pinDir = externalLivePinDirectory(cacheBase, version);
   } catch (error) {
     closeRoot();
     throw error;
@@ -1218,14 +1210,7 @@ function hasLivePinForDelegate(pluginRoot) {
   } catch (error) {
     return error?.code !== 'ENOENT';
   }
-  if (!pinState) {
-    try {
-      lstatSync(join(resolve(pluginRoot), '.omx-live-pin'));
-      return true;
-    } catch (error) {
-      return error?.code !== 'ENOENT';
-    }
-  }
+  if (!pinState) return false;
   try {
     for (const entry of readdirSync(pinState.path, { withFileTypes: true })) {
       if (!entry.name.startsWith('pin-')) continue;
@@ -1294,7 +1279,7 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     const pinName = `${LIVE_PIN_PENDING_PREFIX}${sessionHash}.json`;
     const stagePath = join(pinDir, stageName);
     const pinPath = join(pinDir, pinName);
-    const cleanupPath = join(pluginRoot, '.omx-live-pin', pinName);
+    const cleanupPath = join(pinDir, pinName);
     try {
       writeFileSync(stagePath, content, { flag: 'wx', mode: 0o600 });
       if (livePinRetirementGateExists(pinDir) || !livePinRootMatches(pinState) || !livePinMutationLockMatches(mutationLock)) {
@@ -1376,7 +1361,9 @@ function renewPendingSessionPinLease(pluginRoot, path, sessionHash, expectedStat
   let mutationLock = null;
   try {
     const target = livePinTarget(pluginRoot);
-    if (!target || !sameLexicalFilePath(path, join(pluginRoot, '.omx-live-pin', basename(path)))) return false;
+    if (!target) return false;
+    const expectedPath = join(externalLivePinDirectory(target.cacheBase, target.version), basename(path));
+    if (!sameLexicalFilePath(path, expectedPath)) return false;
     mutationLock = acquireLivePinMutationLock(target, 'pin');
     if (!mutationLock) return false;
     pinState = livePinDirectory(pluginRoot);

@@ -86,8 +86,10 @@ async function markAsPrePinManagedSnapshot(
 	await writeFile(join(cacheDir, ".omx-complete"), `${JSON.stringify({ version, claimDigest })}\n`);
 }
 
-async function writeDeadLivePin(cacheDir: string): Promise<void> {
-	const markerDir = join(cacheDir, ".omx-live-pin");
+async function writeDeadLivePin(cacheDir: string, version: string): Promise<void> {
+	// Write to the external pin directory location
+	const cacheBase = omxPluginCacheBase(process.env.CODEX_HOME!);
+	const markerDir = join(cacheBase, ".omx-pins", version);
 	await mkdir(markerDir, { recursive: true });
 	const record = {
 		version: 1,
@@ -96,6 +98,13 @@ async function writeDeadLivePin(cacheDir: string): Promise<void> {
 		sessionHash: createHash("sha256").update("dead-session").digest("hex"),
 	};
 	await writeFile(join(markerDir, "dead.json"), `${JSON.stringify(record)}\n`);
+}
+
+/**
+ * Helper to get the external pin directory path (outside the version directory)
+ */
+function getExternalLivePinDirectory(codexHomeDir: string, version: string): string {
+	return join(omxPluginCacheBase(codexHomeDir), ".omx-pins", version);
 }
 
 function livePinMutationLockPath(codexHomeDir: string, version: string): string {
@@ -138,7 +147,8 @@ async function assertDelegateSurvivesLostLeasesWithPin(
 	pinName: string,
 	pinContent: string,
 ): Promise<string> {
-	const pinDirectory = join(pluginRoot, ".omx-live-pin");
+	// Write to the external pin directory location
+	const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
 	await mkdir(pinDirectory, { recursive: true });
 	const pinPath = join(pinDirectory, pinName);
 	await writeFile(pinPath, pinContent);
@@ -503,7 +513,7 @@ setInterval(() => {}, 60_000);
 					["0.19.0", "0.20.0", "0.20.1"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
 				);
 				const pluginRoot = snapshots[1]!;
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
 				const expiredAt = new Date(Date.now() - 60 * 60 * 1000);
 				await utimes(pluginRoot, expiredAt, expiredAt);
 				const hook = spawn(
@@ -799,8 +809,8 @@ syncBuiltinESMExports();
 					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
 				);
 				const pluginRoot = snapshots[0]!;
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
-				await mkdir(pinDirectory);
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
+				await mkdir(pinDirectory, { recursive: true });
 				const expiredAt = new Date(Date.now() - 6 * 60 * 1000);
 				await utimes(pinDirectory, expiredAt, expiredAt);
 
@@ -1440,8 +1450,8 @@ syncBuiltinESMExports();
 				const sessionId = "reused-pid-fallback-session";
 				const sessionHash = createHash("sha256").update(sessionId).digest("hex");
 				const staleProcessStartHash = "0".repeat(24);
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
-				await mkdir(pinDirectory);
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
+				await mkdir(pinDirectory, { recursive: true });
 				await writeFile(
 					join(pinDirectory, `pin-${process.pid}-${sessionHash.slice(0, 24)}-${staleProcessStartHash}.json`),
 					`${JSON.stringify({ version: 1, pid: process.pid, processStartHash: staleProcessStartHash, sessionHash })}\n`,
@@ -1486,8 +1496,8 @@ syncBuiltinESMExports();
 				const sessionId = "aged-same-session-pin";
 				const sessionHash = createHash("sha256").update(sessionId).digest("hex");
 				const staleProcessStartHash = "a".repeat(24);
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
-				await mkdir(pinDirectory);
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
+				await mkdir(pinDirectory, { recursive: true });
 				const stalePinPath = join(pinDirectory, `pin-${process.pid}-${sessionHash.slice(0, 24)}-${staleProcessStartHash}.json`);
 				await writeFile(
 					stalePinPath,
@@ -1816,8 +1826,8 @@ setTimeout(waitForDelegate, 10);
 				const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
 				const sessionId = "unknown-owner-pin-session";
 				const sessionHash = createHash("sha256").update(sessionId).digest("hex");
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
-				await mkdir(pinDirectory);
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
+				await mkdir(pinDirectory, { recursive: true });
 				await writeFile(
 					join(pinDirectory, `pin-${process.pid}-${sessionHash.slice(0, 24)}-unknown.json`),
 					`${JSON.stringify({ version: 1, pid: process.pid, processStartHash: null, sessionHash })}\n`,
@@ -2156,7 +2166,7 @@ process.stdout.write("{}\\n");
 				assert.equal(hookResult.status, 0, hookResult.stderr || hookResult.stdout);
 				await assert.rejects(lstat(lock.path), { code: "ENOENT" });
 				await assert.rejects(lstat(lock.stagePath), { code: "ENOENT" });
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
 				const sessionHash = createHash("sha256").update(sessionId).digest("hex");
 				const records = await Promise.all(
 					(await readdir(pinDirectory)).map(
@@ -2250,7 +2260,7 @@ process.stdout.write("{}\\n");
 						seedManagedSnapshot(codexHomeDir, version),
 					),
 				);
-				await writeDeadLivePin(snapshots[0]!);
+				await writeDeadLivePin(snapshots[0]!, "0.20.0");
 				const retired = await retireUnpinnedManagedSnapshots(
 					codexHomeDir,
 					"0.20.3",
@@ -2305,8 +2315,8 @@ process.stdout.write("{}\\n");
 				const sessionId = "fresh-stale-session-pin";
 				const sessionHash = createHash("sha256").update(sessionId).digest("hex");
 				const staleProcessStartHash = "0".repeat(24);
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
-				await mkdir(pinDirectory);
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
+				await mkdir(pinDirectory, { recursive: true });
 				const stalePinPath = join(
 					pinDirectory,
 					`pin-${process.pid}-${sessionHash.slice(0, 24)}-${staleProcessStartHash}.json`,
@@ -2494,8 +2504,8 @@ process.stdout.write("{}\\n");
 				const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
 				const sessionId = "intent-lock-retry-session";
 				const sessionHash = createHash("sha256").update(sessionId).digest("hex");
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
-				await mkdir(pinDirectory);
+				const pinDirectory = getExternalLivePinDirectory(codexHomeDir, "0.20.0");
+				await mkdir(pinDirectory, { recursive: true });
 				const staleHash = "a".repeat(24);
 				await writeFile(
 					join(pinDirectory, "stale-reused-pid.json"),

@@ -43,6 +43,7 @@ import {
 	resolvePackagedOmxMarketplace,
 	computeOmxPluginCacheClaimDigest,
 	setPluginCacheMutationHooksForTest,
+	omxPluginCacheBase,
 } from "../plugin-marketplace.js";
 import {
 	buildManagedCodexHookTrustState,
@@ -1430,13 +1431,18 @@ describe("omx setup install mode behavior", () => {
 				await mkdir(join(dir, "skills"), { recursive: true });
 				await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version, skills: "./skills/", hooks: "./hooks/hooks.json" }));
 				await writeFile(join(dir, ".omx-managed"), "fixture\n");
-				if (pinned) await writeFile(join(dir, ".omx-live-pin"), "pinned\n");
+				if (pinned) {
+					// Create pin in external location instead of inside plugin dir
+					const externalPinDir = join(cacheBase, ".omx-pins", version);
+					await mkdir(externalPinDir, { recursive: true });
+					await writeFile(join(externalPinDir, "pinned.json"), JSON.stringify({ version: 1, pid: process.pid, sessionHash: "test" }) + "\n");
+				}
 				await writeBoundCompletionMarker(dir);
 				return dir;
 			};
-			const previous = await seed("0.20.4");
-			const older = await seed("0.20.3");
-			const pinned = await seed("0.20.2", true);
+		const previous = await seed("0.20.4");
+		const older = await seed("0.20.3");
+		const pinned = await seed("0.20.2", true);
 			const foreign = join(cacheBase, "foreign");
 			await mkdir(join(foreign, ".codex-plugin"), { recursive: true });
 			await writeFile(join(foreign, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "foreign-plugin", version: "foreign" }));
@@ -1555,7 +1561,11 @@ describe("omx setup install mode behavior", () => {
 					assert.match(pinnedOutput, /close that session before repairing it/);
 					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, "/stale/node");
 
-					await rm(join(cacheDir, ".omx-live-pin"), { recursive: true, force: true });
+					// Remove the external pin directory instead of the internal one
+					const cacheBase = omxPluginCacheBase(codexHomeDir);
+					const version = basename(cacheDir);
+					const externalPinDir = join(cacheBase, ".omx-pins", version);
+					await rm(externalPinDir, { recursive: true, force: true });
 					const repairedOutput = await captureConsoleOutput(async () => {
 						await setup({
 							scope: "user",
@@ -1572,7 +1582,8 @@ describe("omx setup install mode behavior", () => {
 					const repaired = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
 					assert.equal(repaired.status, "unchanged");
 					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, process.execPath);
-					await assert.rejects(lstat(join(cacheDir, ".omx-live-pin")), { code: "ENOENT" });
+					// External pin directory should no longer exist after removal
+					await assert.rejects(lstat(externalPinDir), { code: "ENOENT" });
 
 					await rm(join(cacheDir, ".omx-managed"), { force: true });
 					const unverifiedDryRun = await materializePackagedOmxPluginCache(
