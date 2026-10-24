@@ -1,7 +1,7 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
 import { createHash, randomUUID } from "crypto";
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, type FileHandle } from "fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
 import { hashProcessStartIdentity, readProcessStartIdentity } from "../state/process-identity.js";
@@ -13,7 +13,7 @@ import {
 	syncRegularFile,
 	type RegularFileDurabilityTracker,
 } from "../utils/file-durability.js";
-import { codexHome } from "../utils/paths.js";
+import { codexHome, omxPluginCacheLivePinDir } from "../utils/paths.js";
 
 export const OMX_LOCAL_MARKETPLACE_NAME = "oh-my-codex-local";
 export const OMX_PLUGIN_NAME = "oh-my-codex";
@@ -58,6 +58,64 @@ const OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS = 5 * 60 * 1000;
 const OMX_PLUGIN_LIVE_PIN_MUTATION_LOCK_PIN_WAIT_MS = 5_000;
 const OMX_PLUGIN_CACHE_STAGING_PREFIX = ".omx-plugin-";
 const TEAM_MODE_PLUGIN_SKILL_NAMES = new Set(["team", "worker"]);
+
+/**
+ * Compute the state path for a plugin version's live pin directory.
+ * This path is used consistently by both readers and writers.
+ * pluginRoot is the version-specific directory (e.g., ~/.codex/plugins/cache/.../0.21.33).
+ * We use the parent directory (plugin base) as the key, along with the version.
+ * The pluginRoot must be canonicalized (realpath) to ensure consistency across symlinks.
+ */
+/**
+ * Compute the state path for a plugin version's live pin directory.
+ * The key is derived from the STABLE cache base (plugin root) and version,
+ * not from the snapshot's current path, to handle quarantine/rename operations.
+ */
+function omxPluginCacheLivePinStatePath(canonicalCacheBase: string, version: string): string {
+	const rootHash = createHash("sha256").update(canonicalCacheBase).digest("hex").slice(0, 16);
+	const versionHash = createHash("sha256").update(version).digest("hex").slice(0, 24);
+	return join(omxPluginCacheLivePinDir(), `${rootHash}-${versionHash}`);
+}
+
+/**
+ * Open or create the OMX-owned live pin state directory.
+ * This directory is outside the plugin cache to avoid invalidating hook approvals.
+ * @param cacheBase The canonical plugin cache base directory (e.g., ~/.codex/.../marketplace/plugin)
+ */
+async function openOrCreateOmxPluginCacheLivePinStateDirectory(
+	cacheBase: string,
+	version: string,
+): Promise<DirectoryRef | null> {
+	try {
+		// Canonicalize the cache base to ensure consistent hashing across symlinks
+		const canonicalCacheBase = await realpath(cacheBase).catch(() => cacheBase);
+		const statePath = omxPluginCacheLivePinStatePath(canonicalCacheBase, version);
+		// Create parent directories and the pin directory
+		await mkdir(statePath, { recursive: true });
+		// Open and return the directory reference
+		return await openDirectoryRef(statePath);
+	} catch (error) {
+		return null;
+	}
+}
+
+/**
+ * Open the external state directory for reading live pin records.
+ * @param cacheBase The canonical plugin cache base directory (e.g., ~/.codex/.../marketplace/plugin)
+ */
+async function openOmxPluginCacheLivePinStateDirectory(
+	cacheBase: string,
+	version: string,
+): Promise<DirectoryRef | null> {
+	try {
+		// Canonicalize the cache base to ensure consistent hashing across symlinks
+		const canonicalCacheBase = await realpath(cacheBase).catch(() => cacheBase);
+		const statePath = omxPluginCacheLivePinStatePath(canonicalCacheBase, version);
+		return await openDirectoryRef(statePath);
+	} catch (error) {
+		return null;
+	}
+}
 
 export async function resolvePackagedOmxMarketplace(
 	packageRoot: string,
@@ -1245,13 +1303,18 @@ async function isLivePinOwnerAlive(record: OmxPluginCacheLivePinRecord): Promise
 }
 
 async function hasLiveSessionPinRecord(
-	snapshotRef: DirectoryRef,
+	versionDir: string,
+	version: string,
 	ownerPid: number,
 	sessionHash: string,
 ): Promise<boolean> {
-	let pinDirectoryRef: DirectoryRef | undefined;
+	let pinDirectoryRef: DirectoryRef | null = null;
 	try {
-		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		// versionDir is the version-specific cache directory (e.g., /plugin/v1.0)
+		// Get the cache base by taking the parent directory
+		const cacheBase = dirname(versionDir);
+		pinDirectoryRef = await openOmxPluginCacheLivePinStateDirectory(cacheBase, version);
+		if (!pinDirectoryRef) return false;
 		if (await livePinRetirementGateExists(pinDirectoryRef)) return false;
 		for (const entry of await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true })) {
 			if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith("pin-")) continue;
@@ -1510,6 +1573,17 @@ async function isLivePinnedSnapshot(
 ): Promise<boolean> {
 	if (await hasLivePinIntent(cacheBaseRef, version, mutationLockContent, intentLockContent)) return true;
 	if (await isPrePinManagedSnapshot(snapshotRef, version)) return true;
+	// Check for live pins in the external state directory
+	// Use cacheBaseRef (stable plugin cache base) instead of snapshotRef.path (which may change on quarantine)
+	try {
+		const externalPinDir = await openOmxPluginCacheLivePinStateDirectory(cacheBaseRef.path, version);
+		if (externalPinDir) {
+			await externalPinDir.handle.close().catch(() => undefined);
+			return true;
+		}
+	} catch {
+		// Ignore errors in external directory check - fallback to legacy location
+	}
 	const markerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
 	let markerStats: Stats;
 	try {
@@ -1686,15 +1760,19 @@ export async function registerOmxPluginCacheLivePin(
 	)
 		return false;
 	const sessionHash = createHash("sha256").update(normalizedSessionId).digest("hex");
-	const rootPath = resolve(pluginRoot);
 	const codexHomeDir = codexHome();
-	const cacheBase = omxPluginCacheBase(codexHomeDir);
+	// Canonicalize paths to ensure consistent hashing with symlinked directories
+	const canonicalHome = await canonicalRealpath(codexHomeDir);
+	const effectiveCodexHome = canonicalHome ?? codexHomeDir;
+	const cacheBase = omxPluginCacheBase(effectiveCodexHome);
+	const canonicalRoot = await canonicalRealpath(resolve(pluginRoot));
+	const rootPath = canonicalRoot ?? resolve(pluginRoot);
 	const relativeRoot = relative(resolve(cacheBase), rootPath);
 	if (!isSafeCacheVersion(relativeRoot) || relativeRoot.includes(sep) || isAbsolute(relativeRoot)) return false;
 	const version = relativeRoot;
 	const expectedCacheDir = join(cacheBase, version);
 
-	const namespace = await openManagedCacheNamespace(cacheBase, codexHomeDir, { create: false });
+	const namespace = await openManagedCacheNamespace(cacheBase, effectiveCodexHome, { create: false });
 	if (!namespace) return false;
 	const cacheBaseRef: DirectoryRef = {
 		handle: namespace.handle,
@@ -1705,7 +1783,7 @@ export async function registerOmxPluginCacheLivePin(
 	};
 	const durability: RegularFileDurabilityTracker = { degraded: false };
 	let snapshotRef: DirectoryRef | undefined;
-	let pinDirectoryRef: DirectoryRef | undefined;
+	let pinDirectoryRef: DirectoryRef | null = null;
 	let mutationLockContent: string | null = null;
 	let stageName: string | undefined;
 	let stageCreated = false;
@@ -1737,7 +1815,8 @@ export async function registerOmxPluginCacheLivePin(
 				!(await hasRegularPublicationMarker(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))
 			)
 				return false;
-			return await hasLiveSessionPinRecord(snapshotRef, ownerPid, sessionHash);
+			const canonicalRootPath = await canonicalRealpath(rootPath);
+			return await hasLiveSessionPinRecord(canonicalRootPath ?? rootPath, version, ownerPid, sessionHash);
 		}
 		const [canonicalRoot, canonicalExpected] = await Promise.all([
 			canonicalRealpath(rootPath),
@@ -1764,26 +1843,27 @@ export async function registerOmxPluginCacheLivePin(
 			!(await hasRegularPublicationMarker(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))
 		)
 			return false;
-		const markerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
-		let markerStats: Stats | null = null;
+		// Legacy cleanup: remove .omx-live-pin directory from plugin cache if it exists
+		// (it's now in OMX-owned state to avoid invalidating hook approvals)
+		const legacyMarkerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
+		let legacyMarkerStats: Stats | null = null;
 		try {
-			markerStats = await lstat(markerPath);
+			legacyMarkerStats = await lstat(legacyMarkerPath);
 		} catch (error) {
 			if (!isMissingPathError(error)) throw error;
 		}
-		if (markerStats?.isFile() && !markerStats.isSymbolicLink()) {
+		if (legacyMarkerStats?.isFile() && !legacyMarkerStats.isSymbolicLink()) {
+			// Legacy file marker - was used in earlier code, can be safely removed
 			await removePendingOmxPluginCacheLivePinIntent(cacheBaseRef, version, sessionHash);
 			return true;
 		}
-		if (markerStats && (markerStats.isSymbolicLink() || !markerStats.isDirectory())) return false;
-		if (!markerStats) {
-			try {
-				await mkdirDirectoryChildExclusive(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			}
+		if (legacyMarkerStats && (legacyMarkerStats.isSymbolicLink() || !legacyMarkerStats.isDirectory())) {
+			return false; // Invalid marker state
 		}
-		pinDirectoryRef = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
+		// If legacy marker directory exists, it will be cleaned up on next GC pass
+		// Open or create the pin directory in OMX-owned state, NOT inside plugin cache
+		pinDirectoryRef = await openOrCreateOmxPluginCacheLivePinStateDirectory(rootPath, version);
+		if (!pinDirectoryRef) return false;
 		await writePendingOmxPluginCacheLivePinRegistration(pinDirectoryRef, sessionHash);
 		const processStartIdentity = await readProcessStartIdentity(ownerPid);
 		const processStartHash = processStartIdentity ? hashProcessStartIdentity(processStartIdentity) : null;
