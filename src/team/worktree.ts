@@ -1,6 +1,6 @@
 import { execFile as execFileCb, execFileSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, promises as fsPromises } from 'fs';
-import { basename, dirname, join, relative, resolve } from 'path';
+import { basename, dirname, join, posix, resolve, win32 } from 'path';
 import { promisify } from 'util';
 import {
   assertCurrentTaskBranchAvailable,
@@ -570,6 +570,19 @@ async function restoreSubmodules(recovery: SubmoduleRecovery): Promise<void> {
 }
 
 /**
+ * True when `candidate` is `root` or a descendant of it. Uses the platform's
+ * path rules, so Windows separators, drive letters, and case are handled and a
+ * sibling such as `/repo/wt2` is not treated as inside `/repo/wt`.
+ */
+export function isPathWithin(candidate: string, root: string, platform: NodeJS.Platform = process.platform): boolean {
+  const paths = platform === 'win32' ? win32 : posix;
+  const relation = paths.relative(paths.resolve(root), paths.resolve(candidate));
+  if (relation === '') return true;
+  if (paths.isAbsolute(relation)) return false;
+  return relation !== '..' && !relation.startsWith(`..${paths.sep}`);
+}
+
+/**
  * Replay any pending submodule recovery journals at the start of shutdown.
  * If the process was killed after moving submodules but before creating placeholders,
  * the recovery.json file persists in the .git/omx-submodule-recovery directory.
@@ -586,11 +599,12 @@ export async function replaySubmoduleRecovery(worktreePath: string, repoRoot: st
   const recoveryRoot = join(commonDir, 'omx-submodule-recovery');
   if (!existsSync(recoveryRoot)) return true; // No recovery needed
   
-  // Get the expected modules path for this worktree to recognize modules-only journals
+  // Legacy journals also archive the worktree's private Git modules directory,
+  // which lives outside the checkout for linked worktrees.
   const worktreeModulesPath = resolve(worktreePath, (await execFilePromise('git', ['rev-parse', '--git-path', 'modules'], {
     cwd: worktreePath, encoding: 'utf-8',
   })).stdout.trim());
-  
+
   let anyRecoveryUnresolved = false;
   
   const archives = await fsPromises.readdir(recoveryRoot).catch(() => []);
@@ -621,16 +635,8 @@ export async function replaySubmoduleRecovery(worktreePath: string, repoRoot: st
       
       // For legacy journals (array format without worktreePath), infer ownership from move destinations
       if (!storedWorktreePath && Array.isArray(parsed)) {
-        const resolvedWorktreePath = resolve(worktreePath);
-        const destinationInWorktree = moves.some(move => {
-          const originalPath = resolve(move.original);
-          // Use relative() for platform-aware path containment that rejects sibling-prefix paths
-          const relPath = relative(resolvedWorktreePath, originalPath);
-          const inCheckout = !relPath.startsWith('..');
-          // Also recognize modules paths that belong to this worktree
-          const inModules = originalPath === worktreeModulesPath;
-          return inCheckout || inModules;
-        });
+        const destinationInWorktree = moves.some(move =>
+          isPathWithin(move.original, worktreePath) || isPathWithin(move.original, worktreeModulesPath));
         if (!destinationInWorktree) {
           continue; // Legacy journal belongs to another worktree
         }
