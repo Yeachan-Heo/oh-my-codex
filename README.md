@@ -394,6 +394,21 @@ Unknown durations remain unknown, and a recorded result without an explicit erro
 does not prove success. See [session timeline](./docs/session-timeline.md) for
 supported records, status meanings, and examples.
 
+### Compare two sessions
+
+Use `omx session compare <baseline-id> <candidate-id>` to compare execution counts,
+explicit failures, and namespace-aware tool timing after a workflow change.
+The report distinguishes added and removed tools, preserves unknown measurements,
+and reports absolute and percentage changes. Use `--sort duration` to find the
+largest mean-latency increases, or `--json --output comparison.json` to save a report.
+
+For automation, `--fail-on-regression` exits 2 on observed regressions and 3 on
+inconclusive evidence. `--max-duration-increase 10` changes the default 20% mean
+tool latency threshold; latency checks require complete timing coverage on both
+sides. Display filters never change the whole-session assessment. Compare
+similar workloads and see [session comparison](./docs/session-compare.md) for
+cross-home selection, evidence gaps, and exit-code semantics.
+
 ### Team runtime
 
 Use the team runtime when you specifically need durable tmux/worktree coordination, not as the default way to begin using OMX. In Codex App or plain outside-tmux sessions, treat `omx team` as a tmux-runtime shell surface rather than a directly available in-app workflow; launch OMX CLI from shell first if you actually want team execution.
