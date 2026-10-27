@@ -1906,6 +1906,32 @@ interface ManagedHookTrustStateSourceRepresentation {
   insideManagedMarkerBlock: boolean;
 }
 
+// Plugin trust hashes can refer to a previous versioned cache snapshot. Clear
+// only canonical OMX-namespace entries so Codex can re-evaluate current hooks;
+// malformed state and every other plugin namespace remain fail-closed.
+const OMX_PLUGIN_HOOK_TRUST_KEY_PREFIX =
+  "oh-my-codex@oh-my-codex-local:hooks/hooks.json:";
+
+function isOmxPluginHookTrustKey(key: string): boolean {
+  return key.startsWith(OMX_PLUGIN_HOOK_TRUST_KEY_PREFIX) &&
+    /^[a-z][a-z0-9_]*:\d+:\d+$/.test(key.slice(OMX_PLUGIN_HOOK_TRUST_KEY_PREFIX.length));
+}
+
+function isExactOmxPluginHookTrustRepresentation(
+  key: string,
+  representation: ManagedHookTrustStateSourceRepresentation,
+): boolean {
+  const value = representation.value;
+  return isOmxPluginHookTrustKey(key) &&
+    representation.stateEntryCount === 1 &&
+    !representation.hasComment &&
+    representation.hasExactSemanticScope &&
+    isPlainTomlRecord(value) &&
+    Object.keys(value).length === 1 &&
+    typeof value.trusted_hash === "string" &&
+    /^sha256:[a-f0-9]{64}$/.test(value.trusted_hash);
+}
+
 function managedHookTrustStateExpectations(
   ...states: Array<ManagedCodexHookTrustStateMap | undefined>
 ): ManagedHookTrustStateExpectations {
@@ -2671,7 +2697,12 @@ function managedMarkerTrustStateConflicts(
         !representation.hasComment &&
         representation.hasExactSemanticScope &&
         isExactlyManagedHookTrustStateValue(representation.value, expectedHashes);
-      if (!source.isUnambiguous || !isExactOwnedRepresentation) conflicts.add(key);
+      if (
+        !source.isUnambiguous ||
+        (!isExactOwnedRepresentation && !isExactOmxPluginHookTrustRepresentation(key, representation))
+      ) {
+        conflicts.add(key);
+      }
     }
   }
   return conflicts;
@@ -2769,18 +2800,20 @@ function stripProofManagedCodexHookTrustStateTables(
         key,
         representation.insideManagedMarkerBlock,
       );
-      return expectedHashes !== undefined &&
+      return (
+        expectedHashes !== undefined &&
         representation.stateEntryCount === 1 &&
         !representation.hasComment &&
         representation.hasExactSemanticScope &&
-        isExactlyManagedHookTrustStateValue(representation.value, expectedHashes);
+        isExactlyManagedHookTrustStateValue(representation.value, expectedHashes)
+      ) || isExactOmxPluginHookTrustRepresentation(key, representation);
     };
     if (!sourceRepresentations.some((representation) =>
       expectedManagedHookTrustHashes(
         expectations,
         key,
         representation.insideManagedMarkerBlock,
-      ) !== undefined
+      ) !== undefined || isExactOmxPluginHookTrustRepresentation(key, representation)
     )) continue;
     const mayRemoveAll = sourceRepresentations.length === 1
       ? isExactOwnedRepresentation(sourceRepresentations[0]!)

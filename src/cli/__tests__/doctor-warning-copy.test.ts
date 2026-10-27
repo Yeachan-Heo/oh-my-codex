@@ -2317,6 +2317,76 @@ command = "node"
 		}
 	});
 
+	it("doctor and its plugin-cache repair command handle stale OMX plugin hook trust (#3918)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-hook-trust-3918-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			const configPath = join(codexDir, "config.toml");
+			await mkdir(codexDir, { recursive: true });
+			const initialSetup = runOmx(wd, ["setup", "--scope", "user", "--plugin"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(initialSetup.error)) return;
+			assert.equal(initialSetup.status, 0, initialSetup.stderr || initialSetup.stdout);
+
+			const pluginManifest = JSON.parse(
+				await readFile(join(repoRoot(), "plugins", "oh-my-codex", ".codex-plugin", "plugin.json"), "utf-8"),
+			) as { version: string };
+			const pluginHooksPath = join(
+				codexDir,
+				"plugins",
+				"cache",
+				"oh-my-codex-local",
+				"oh-my-codex",
+				pluginManifest.version,
+				"hooks",
+				"hooks.json",
+			);
+			const initialPluginHooks = await readFile(pluginHooksPath, "utf-8");
+			const mutatedHooks = JSON.parse(initialPluginHooks) as {
+				hooks: { PostCompact: Array<{ hooks: Array<{ command: string }> }> };
+			};
+			mutatedHooks.hooks.PostCompact[0]!.hooks[0]!.command += " --cache-rebuild-probe";
+			await writeFile(pluginHooksPath, `${JSON.stringify(mutatedHooks, null, 2)}\n`);
+
+			const pluginKey = "oh-my-codex@oh-my-codex-local:hooks/hooks.json:post_compact:0:0";
+			const staleHash = `sha256:${"1".repeat(64)}`;
+			const configWithStalePluginTrust = [
+				(await readFile(configPath, "utf-8")).trimEnd(),
+				"",
+				"# OMX-owned Codex hook trust state",
+				`[hooks.state.${JSON.stringify(pluginKey)}]`,
+				`trusted_hash = ${JSON.stringify(staleHash)}`,
+				"# End OMX-owned Codex hook trust state",
+				"",
+			].join("\n");
+			await writeFile(configPath, configWithStalePluginTrust, "utf-8");
+
+			const doctorResult = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+			if (shouldSkipForSpawnPermissions(doctorResult.error)) return;
+			assert.equal(doctorResult.status, 0, doctorResult.stderr || doctorResult.stdout);
+			assert.match(
+				doctorResult.stdout,
+				/Native hooks: plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher/,
+			);
+			assert.match(doctorResult.stdout, /run `omx setup --plugin --repair-plugin-cache` to refresh the plugin cache/);
+			assert.doesNotMatch(doctorResult.stdout, /managed_trust_key_conflict/);
+
+			const setupResult = runOmx(wd, ["setup", "--scope", "user", "--plugin", "--repair-plugin-cache"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(setupResult.error)) return;
+			assert.equal(setupResult.status, 0, setupResult.stderr || setupResult.stdout);
+			assert.doesNotMatch(await readFile(configPath, "utf-8"), /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
+			assert.equal(await readFile(pluginHooksPath, "utf-8"), initialPluginHooks);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("still rejects stale foreign trust at a managed-first migration destination", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-hooks-stale-destination-trust-"));
 		try {

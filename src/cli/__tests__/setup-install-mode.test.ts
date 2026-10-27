@@ -6710,3 +6710,152 @@ describe("persisted merge policy lifecycle", () => {
 		}
 	});
 });
+
+describe("issue 3918 plugin hook trust self-heal", () => {
+	it("repairs stale and removes obsolete OMX plugin hook trust entries after cache rebuild", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-hook-trust-3918-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "plugin" });
+
+					const configPath = join(codexHomeDir, "config.toml");
+					const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
+					assert.ok(packagedMarketplace);
+					const cache = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+					assert.ok(cache.cacheDir);
+					const pluginHooksPath = join(cache.cacheDir, "hooks", "hooks.json");
+					const initialPluginHooks = await readFile(pluginHooksPath, "utf-8");
+					const staleKey = "oh-my-codex@oh-my-codex-local:hooks/hooks.json:post_compact:0:0";
+					const obsoleteKey = "oh-my-codex@oh-my-codex-local:hooks/hooks.json:removed_event:0:0";
+					const previousTrustedHash = `sha256:${createHash("sha256").update(initialPluginHooks).digest("hex")}`;
+					await writeFile(
+						configPath,
+						[
+							(await readFile(configPath, "utf-8")).trimEnd(),
+							"",
+							"# OMX-owned Codex hook trust state",
+							`[hooks.state.${JSON.stringify(staleKey)}]`,
+							`trusted_hash = ${JSON.stringify(previousTrustedHash)}`,
+							"# End OMX-owned Codex hook trust state",
+							"",
+							`[hooks.state.${JSON.stringify(obsoleteKey)}]`,
+							`trusted_hash = ${JSON.stringify(previousTrustedHash)}`,
+							"",
+						].join("\n"),
+					);
+
+					const mutatedHooks = JSON.parse(initialPluginHooks) as {
+						hooks: { PostCompact: Array<{ hooks: Array<{ command: string }> }> };
+					};
+					mutatedHooks.hooks.PostCompact[0]!.hooks[0]!.command += " --cache-rebuild-probe";
+					await writeFile(pluginHooksPath, `${JSON.stringify(mutatedHooks, null, 2)}\n`);
+
+					await setup({
+						scope: "user",
+						installMode: "plugin",
+						repairPluginCache: true,
+						pluginAgentsMdPrompt: async () => false,
+					});
+
+					const repairedConfig = await readFile(configPath, "utf-8");
+					assert.doesNotMatch(repairedConfig, /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
+					assert.equal(await readFile(pluginHooksPath, "utf-8"), initialPluginHooks);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps third-party and noncanonical plugin hook trust fail-closed", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-foreign-plugin-hook-trust-3918-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "plugin" });
+					const configPath = join(codexHomeDir, "config.toml");
+					const config = [
+						(await readFile(configPath, "utf-8")).trimEnd(),
+						"",
+						"# OMX-owned Codex hook trust state",
+						'[hooks.state."third-party@marketplace:hooks/hooks.json:post_compact:0:0"]',
+						'trusted_hash = "sha256:third-party"',
+						"# End OMX-owned Codex hook trust state",
+						"",
+					].join("\n");
+					await writeFile(configPath, config);
+
+					await assert.rejects(
+						setup({ scope: "user", installMode: "plugin" }),
+						(error: unknown) =>
+							typeof error === "object" &&
+							error !== null &&
+							"code" in error &&
+							(error as { code?: unknown }).code === "managed_trust_key_conflict",
+					);
+					assert.equal(await readFile(configPath, "utf-8"), config);
+
+					const malformedOmxConfig = (await readFile(configPath, "utf-8")).replace(
+						'[hooks.state."third-party@marketplace:hooks/hooks.json:post_compact:0:0"]\ntrusted_hash = "sha256:third-party"',
+						[
+							'[hooks.state."oh-my-codex@oh-my-codex-local:hooks/hooks.json:post_compact:0:0"]',
+							`trusted_hash = ${JSON.stringify(`sha256:${"2".repeat(64)}`)}`,
+							"enabled = false",
+						].join("\n"),
+					);
+					assert.doesNotMatch(malformedOmxConfig, /third-party@marketplace/);
+					assert.match(malformedOmxConfig, /enabled = false/);
+					await writeFile(configPath, malformedOmxConfig);
+					await assert.rejects(
+						setup({ scope: "user", installMode: "plugin" }),
+						(error: unknown) =>
+							typeof error === "object" &&
+							error !== null &&
+							"code" in error &&
+							(error as { code?: unknown }).code === "managed_trust_key_conflict",
+					);
+					assert.equal(await readFile(configPath, "utf-8"), malformedOmxConfig);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("switches between plugin and legacy setup with stale plugin trust present", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-plugin-hook-trust-switch-3918-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await setup({ scope: "user", installMode: "plugin" });
+					const configPath = join(codexHomeDir, "config.toml");
+					const key = "oh-my-codex@oh-my-codex-local:hooks/hooks.json:post_compact:0:0";
+					const staleHash = `sha256:${"1".repeat(64)}`;
+					await writeFile(
+						configPath,
+						[
+							(await readFile(configPath, "utf-8")).trimEnd(),
+							"",
+							"# OMX-owned Codex hook trust state",
+							`[hooks.state.${JSON.stringify(key)}]`,
+							`trusted_hash = ${JSON.stringify(staleHash)}`,
+							"# End OMX-owned Codex hook trust state",
+							"",
+						].join("\n"),
+					);
+
+					await setup({ scope: "user", installMode: "legacy" });
+					assert.doesNotMatch(await readFile(configPath, "utf-8"), /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
+
+					await setup({ scope: "user", installMode: "plugin" });
+					assert.doesNotMatch(await readFile(configPath, "utf-8"), /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+});
