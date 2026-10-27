@@ -218,7 +218,7 @@ function resolveInstalledNpmCommand(dependencies: Pick<PackageManagerOwnershipDe
       path.join(globalInstallRoot, 'npm', 'bin', 'npm-cli.js'),
       ...(dependencies.platform === 'win32'
         ? [path.join(path.dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js')]
-        : []),
+        : [path.join(path.dirname(path.dirname(node)), 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')]),
     ];
     for (const candidate of candidates) {
       try {
