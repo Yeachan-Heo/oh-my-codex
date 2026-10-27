@@ -2994,6 +2994,46 @@ async function omxPluginCacheTemplatesProvenanceReason(
 	return null;
 }
 
+async function omxPluginCacheCompletionMarkerProvenanceReason(
+	cacheDir: string,
+	expectedVersion?: string,
+): Promise<string | null> {
+	const markerPath = join(cacheDir, ".omx-complete");
+	const bytes = await readOmxPluginCacheFileNoFollow(markerPath, { anchorDir: cacheDir });
+	if (bytes === null) {
+		return `cache snapshot completion marker is missing, malformed, or unreadable at ${cacheDir}`;
+	}
+	let marker: unknown;
+	try {
+		marker = JSON.parse(bytes.toString("utf-8")) as unknown;
+	} catch {
+		return `cache snapshot completion marker is malformed at ${cacheDir}`;
+	}
+	if (marker === null || typeof marker !== "object" || Array.isArray(marker)) {
+		return `cache snapshot completion marker is malformed at ${cacheDir}`;
+	}
+	const record = marker as { version?: unknown; claimDigest?: unknown };
+	if (
+		typeof record.claimDigest !== "string" || !/^[0-9a-f]{64}$/.test(record.claimDigest) ||
+		(record.version !== undefined && typeof record.version !== "string")
+	) {
+		return `cache snapshot completion marker is malformed at ${cacheDir}`;
+	}
+	if (
+		expectedVersion !== undefined && record.version !== undefined && record.version !== expectedVersion
+	) {
+		return `cache snapshot completion marker version mismatch at ${cacheDir}: expected ${expectedVersion}, found ${record.version}`;
+	}
+	try {
+		if (record.claimDigest !== await computeOmxPluginCacheClaimDigest(cacheDir)) {
+			return `cache snapshot claim digest mismatch at ${cacheDir}`;
+		}
+	} catch {
+		return `cache snapshot claim digest could not be validated at ${cacheDir}`;
+	}
+	return null;
+}
+
 export async function omxPluginCacheProvenanceReason(
 	cacheDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
@@ -3012,10 +3052,7 @@ export async function omxPluginCacheProvenanceReason(
 	if (skillsReason) return skillsReason;
 	const assetReason = await omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
 	if (assetReason) return assetReason;
-	if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete"))) {
-		return `cache snapshot completion marker is malformed or does not match the immutable claim at ${cacheDir}`;
-	}
-	return null;
+	return omxPluginCacheCompletionMarkerProvenanceReason(cacheDir, expectedVersion);
 }
 
 async function openManagedCacheNamespace(

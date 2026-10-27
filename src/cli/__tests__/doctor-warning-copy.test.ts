@@ -805,6 +805,48 @@ command = "node"
 		}
 	});
 
+	it("reports claim-digest mismatches in setup and doctor", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-cache-claim-digest-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--force"],
+				{ HOME: home, CODEX_HOME: codexDir },
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+			const version = await packagedPluginVersion();
+			const cacheDir = join(codexDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version);
+			const completePath = join(cacheDir, ".omx-complete");
+			const completion = JSON.parse(await readFile(completePath, "utf-8")) as {
+				version: string;
+				claimDigest: string;
+			};
+			const wrongDigest = `${completion.claimDigest[0] === "0" ? "1" : "0"}${completion.claimDigest.slice(1)}`;
+			await writeFile(completePath, `${JSON.stringify({ ...completion, claimDigest: wrongDigest })}\n`);
+
+			const setupWithDrift = runOmx(wd, ["setup", "--scope", "user", "--plugin"], {
+				HOME: home,
+				CODEX_HOME: codexDir,
+			});
+			if (shouldSkipForSpawnPermissions(setupWithDrift.error)) return;
+			assert.equal(setupWithDrift.status, 0, setupWithDrift.stderr || setupWithDrift.stdout);
+			assert.match(setupWithDrift.stdout, /claim digest mismatch/);
+
+			const doctorRes = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+			if (shouldSkipForSpawnPermissions(doctorRes.error)) return;
+			assert.equal(doctorRes.status, 0, doctorRes.stderr || doctorRes.stdout);
+			assert.match(doctorRes.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: cache snapshot claim digest mismatch/);
+			assert.match(doctorRes.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: cache snapshot claim digest mismatch/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("warns with pointer-specific diagnostics when the cached manifest drifts", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-cache-pointer-drift-"));
 		try {
