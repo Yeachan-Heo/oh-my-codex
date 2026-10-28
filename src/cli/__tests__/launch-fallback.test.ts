@@ -343,6 +343,9 @@ function parseShimTmuxArgv(contents: string): string[][] {
   return contents
     .split('tmux argv:\n')
     .slice(1)
+    // The shim appends header, arguments and trailer separately. A snapshot
+    // can end mid-record; only completed commands belong in comparisons.
+    .filter((record) => record.includes('\nend tmux argv\n'))
     .map((record) => record.split('\nend tmux argv')[0]!.split('\n').filter(Boolean));
 }
 
@@ -447,6 +450,38 @@ function skipUnlessScriptAvailable(t: TestContext): boolean {
   t.skip('script(1) is not installed');
   return false;
 }
+
+describe('private tmux shim log framing', () => {
+  const record = (argv: string[]): string => `tmux argv:\n${argv.join('\n')}\nend tmux argv\n`;
+  const snapshot = ['list-panes', '-a', '-F', '#{pane_id}\t#{pane_dead}\t#{pane_pid}'];
+  const heartbeat = ['display-message', '-p', '-t', '%7', '#{session_attached}'];
+
+  it('ignores unfinished heartbeat records and completed attach probes', () => {
+    const baseline = record(snapshot);
+    for (const tail of [
+      'tmux argv:\n',
+      'tmux argv:\ndisplay-message\n-p\n',
+      'tmux argv:\ndisplay-message\n-p\n-t\n%7\n#{session_attached}\n',
+      'tmux argv:\ndisplay-message\n-p\n-t\n%7\n#{session_attached}\nend tmux arg',
+    ]) {
+      assert.deepEqual(parseShimTmuxArgv(baseline + tail), [snapshot]);
+      assert.equal(normalizeShimLogForQuiescence(baseline + tail), baseline);
+    }
+    assert.equal(normalizeShimLogForQuiescence(baseline + record(heartbeat)), baseline);
+  });
+
+  it('still detects complete pane snapshots and guarded resize commands', () => {
+    const baseline = record(snapshot);
+    for (const argv of [snapshot, ['if-shell', '-F', '-t', '%7', '1', 'resize-pane -t %8 -y 2', '']]) {
+      const complete = record(argv);
+      const unfinished = complete.slice(0, complete.indexOf('\nend tmux argv'));
+      assert.equal(normalizeShimLogForQuiescence(baseline + unfinished), baseline);
+      assert.notEqual(normalizeShimLogForQuiescence(baseline + complete), baseline);
+      assert.deepEqual(parseShimTmuxArgv(baseline + complete).at(-1), argv.filter(Boolean));
+    }
+    assert.deepEqual(parseShimTmuxArgv(normalizeShimLogForQuiescence(baseline + record(heartbeat) + baseline)), [snapshot, snapshot]);
+  });
+});
 
 describe('omx launch fallback when tmux is unavailable', () => {
   it('surfaces direct Codex startup stderr and preserves the child exit code', async () => {
