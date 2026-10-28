@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const DEFAULT_TEST_TIMEOUT_MS = 0;
@@ -13,6 +14,7 @@ const PRESERVED_TEST_ENV_KEYS = new Set([
   'OMX_NODE_TEST_CONCURRENCY',
   'OMX_NODE_TEST_FORCE_EXIT',
   'OMX_NODE_TEST_FORCE_EXIT_GRACE_MS',
+  'OMX_NODE_TEST_PRESERVE_HOME',
   'OMX_NODE_TEST_PRESERVE_RUNTIME_ENV',
   'OMX_NODE_TEST_RUNNER_TIMEOUT_MS',
   'OMX_NODE_TEST_TIMEOUT_MS',
@@ -123,6 +125,7 @@ const runnerTimeoutMs = parseTimeoutMs(process.env.OMX_NODE_TEST_RUNNER_TIMEOUT_
 const forceExitGraceMs = parseTimeoutMs(process.env.OMX_NODE_TEST_FORCE_EXIT_GRACE_MS, DEFAULT_FORCE_EXIT_GRACE_MS);
 const testConcurrency = parseTestConcurrency(process.env);
 const forceExit = parseBooleanEnv(process.env.OMX_NODE_TEST_FORCE_EXIT);
+const preserveHome = parseBooleanEnv(process.env.OMX_NODE_TEST_PRESERVE_HOME);
 const sharedTestArgs = ['--test'];
 if (testTimeoutMs > 0) {
   sharedTestArgs.push(`--test-timeout=${testTimeoutMs}`);
@@ -139,7 +142,7 @@ console.error(
     testTimeoutMs > 0 ? ` with per-test timeout ${testTimeoutMs}ms` : ' with per-test timeout disabled'
   }${testConcurrency ? `, test concurrency ${testConcurrency}` : ', default test concurrency'}${
     forceExit ? `, force exit enabled with ${forceExitGraceMs}ms completion grace` : ', force exit disabled'
-  }${runnerTimeoutMs > 0 ? `, and runner timeout ${runnerTimeoutMs}ms` : ', and runner timeout disabled'}, with per-file process isolation`,
+  }${runnerTimeoutMs > 0 ? `, and runner timeout ${runnerTimeoutMs}ms` : ', and runner timeout disabled'}, with per-file process isolation and ${preserveHome ? 'caller home preserved' : 'isolated homes'}`,
 );
 
 const childEnv = buildChildEnv(process.env);
@@ -179,7 +182,7 @@ function terminateChild(child: ChildProcess): void {
   signalChild(child, 'SIGKILL');
 }
 
-function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
+function runFileWithCompletionForceExit(file: string, env: NodeJS.ProcessEnv): Promise<TestRunResult> {
   return new Promise((resolveRun) => {
     let finished = false;
     let sawFailure = false;
@@ -196,7 +199,7 @@ function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
 
     const child = spawn(process.execPath, [...sharedTestArgs, file], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: childEnv,
+      env,
       detached: !isWindows(),
     });
 
@@ -206,18 +209,22 @@ function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
       if (completionTimer) clearTimeout(completionTimer);
       if (runnerTimer) clearTimeout(runnerTimer);
       console.error(`[run-test-files] ${file}: ${reason}; status ${status ?? 'unknown'}`);
+      // Signals start termination; close confirms this child and its stdio are
+      // finished before main removes the file's isolated home.
+      child.once('close', () => {
+        child.unref();
+        resolveRun({
+          status,
+          signal,
+          timedOut: reason.startsWith('runner timeout'),
+          abnormal: status === null || signal !== null || reason.startsWith('node --test failed to spawn'),
+        });
+      });
       if (terminate) {
         terminateChild(child);
       }
       child.stdout?.destroy();
       child.stderr?.destroy();
-      child.unref();
-      resolveRun({
-        status,
-        signal,
-        timedOut: reason.startsWith('runner timeout'),
-        abnormal: status === null || signal !== null || reason.startsWith('node --test failed to spawn'),
-      });
     }
 
     function markFailure(): void {
@@ -323,10 +330,10 @@ function runFileWithCompletionForceExit(file: string): Promise<TestRunResult> {
   });
 }
 
-function runFileSync(file: string): TestRunResult {
+function runFileSync(file: string, env: NodeJS.ProcessEnv): TestRunResult {
   const result = spawnSync(process.execPath, [...sharedTestArgs, file], {
     stdio: 'inherit',
-    env: childEnv,
+    env,
     timeout: runnerTimeoutMs > 0 ? runnerTimeoutMs : undefined,
     killSignal: 'SIGTERM',
   });
@@ -351,7 +358,17 @@ async function main(): Promise<void> {
   let runnerTimedOut = false;
 
   for (const file of files) {
-    const result = forceExit ? await runFileWithCompletionForceExit(file) : runFileSync(file);
+    // Runtime env scrubbing does not isolate personal config or plugin caches.
+    // Keep tool paths and temporary-directory settings, but start each file with
+    // an empty home unless the caller explicitly opts into home diagnostics.
+    const home = preserveHome ? undefined : mkdtempSync(join(tmpdir(), 'omx-node-test-home-'));
+    const env = home ? { ...childEnv, HOME: home, USERPROFILE: home } : childEnv;
+    let result: TestRunResult;
+    try {
+      result = forceExit ? await runFileWithCompletionForceExit(file, env) : runFileSync(file, env);
+    } finally {
+      if (home) rmSync(home, { recursive: true, force: true });
+    }
 
     if (result.status === 0) {
       continue;
