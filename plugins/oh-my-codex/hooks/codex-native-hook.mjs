@@ -467,7 +467,10 @@ function lexicalLivePinTarget(pluginRoot) {
   const absoluteRoot = resolve(pluginRoot);
   const version = basename(absoluteRoot);
   if (!version || version === '.' || version === '..' || version.includes('/') || version.includes('\\') || version.includes('\0')) return null;
-  const codexHome = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
+  // The publisher anchors the namespace at the real Codex home. Resolve only
+  // that configured anchor, including macOS /var aliases; keep the cache suffix
+  // lexical so a redirected cache/version symlink still fails the checks below.
+  const codexHome = canonicalPath(process.env.CODEX_HOME || join(homedir(), '.codex'));
   const cacheBase = join(codexHome, 'plugins', 'cache', 'oh-my-codex-local', 'oh-my-codex');
   const expectedRoot = join(cacheBase, version);
   if (!sameLexicalFilePath(absoluteRoot, expectedRoot)) return null;
