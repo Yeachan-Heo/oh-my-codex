@@ -125,7 +125,7 @@ export const BUILTIN_PROVIDER_IDS = new Set([
   'openai-chatgpt', // OpenAI subscription provider (set by `omx auth add`)
 ]) as ReadonlySet<string>;
 export const GPT_5_6_MODEL_ALIASES = ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol'] as const;
-export const KNOWN_CODEX_MODEL_ALIASES = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', ...GPT_5_6_MODEL_ALIASES] as const;
+export const KNOWN_CODEX_MODEL_ALIASES = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna', ...GPT_5_6_MODEL_ALIASES] as const;
 export type KnownCodexModelAlias = (typeof KNOWN_CODEX_MODEL_ALIASES)[number];
 
 export function isKnownCodexModelAlias(model: string): model is KnownCodexModelAlias {
