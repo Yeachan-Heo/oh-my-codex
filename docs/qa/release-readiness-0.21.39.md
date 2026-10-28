@@ -83,7 +83,14 @@ Pinned dev candidate: `4c98c4775b0d33f78bdee02bb15ce43aa0505470`.
 
 ## Release PR, publication, and back-merge
 
-Release PR review/CI, main CI, tag/release workflow, npm registry readback, publication evidence, back-merge PR/CI, dev 0.21.40 bump, and branch cleanup will be recorded in the publication-evidence update after each gate is complete. The back-merge to `dev` must be a merge commit; the subsequent dev version bump is a separate squash PR. The final invariant is `git merge-base --is-ancestor origin/main origin/dev`.
+Release PR [#3942](https://github.com/Yeachan-Heo/oh-my-codex/pull/3942) merged to `main` at `8ca56c0634e6abd90284d54978b35559a7ac39df`, the commit targeted by `v0.21.39`.
+
+- GitHub release [v0.21.39](https://github.com/Yeachan-Heo/oh-my-codex/releases/tag/v0.21.39) is published (not draft), at `2026-10-28T17:41:38Z`.
+- Release workflow [40734711722](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40734711722) for tag `v0.21.39` completed successfully.
+- npm publication workflow [40739996063](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40739996063) completed successfully.
+- Registry readback: `oh-my-codex@0.21.39` reports version `0.21.39` and `gitHead` `8ca56c0634e6abd90284d54978b35559a7ac39df`; `npm view oh-my-codex dist-tags` reports `latest: 0.21.39`. The package `gitHead`, `v0.21.39^{commit}`, and `main` all resolve to the same commit.
+
+The back-merge to `dev` must be a merge commit; the subsequent dev version bump is a separate squash PR. The final invariant is `git merge-base --is-ancestor origin/main origin/dev`.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
