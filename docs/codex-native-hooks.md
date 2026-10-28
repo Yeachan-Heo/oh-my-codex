@@ -22,6 +22,13 @@ installs and older Codex versions that do not report `plugin_hooks`:
 
 Compatibility note: Codex CLI 0.129/0.130 treats `hooks` as the canonical stable feature key and keeps `codex_hooks` only as a legacy alias. Some public hook examples may still show `[features].codex_hooks = true`; OMX-generated fallback config intentionally emits `[features].hooks = true` while setup/uninstall migration paths still accept and normalize older `codex_hooks` entries so existing user configs do not lose hook enablement.
 
+Plugin cache publication and live-pin registration resolve the configured Codex
+home to the same real directory. This supports home aliases such as macOS
+`/var/...` and `/private/var/...`, including an explicitly configured home
+symlink. Only the home anchor is resolved: cache namespace components and version
+directories still undergo the existing no-follow and identity checks. A symlink
+redirecting a cache version does not establish pin authority.
+
 For project scope, `.gitignore` keeps generated `.codex/hooks.json` out of source control.
 `omx uninstall` removes only the OMX-managed wrapper entries from `.codex/hooks.json`; if user hooks remain, the file stays in place.
 Project launches use a session-scoped `.omx/runtime/codex-home/<session>/` mirror for Codex runtime writes; hook review/discovery tools should treat that directory as runtime mirror state and ignore its `hooks.json` surfaces rather than loading them alongside the canonical `.codex/hooks.json`.

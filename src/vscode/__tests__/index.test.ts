@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import type { ChildProcess, SpawnOptions, SpawnSyncReturns } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { close, createWriteStream, open, write } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { describe, it } from 'node:test';
 import {
   buildDirectSessionArgs,
@@ -33,17 +35,24 @@ async function withTempDir(test: (cwd: string) => Promise<void>): Promise<void> 
   }
 }
 
-async function readFileEventually(path: string): Promise<string> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      return await readFile(path, 'utf8');
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  throw lastError;
+function captureSessionLog(createStream: typeof createWriteStream = createWriteStream) {
+  let completion: Promise<void> | undefined;
+  const waitForCompletion = async (): Promise<void> => {
+    assert.ok(completion, 'session log stream was created');
+    await completion;
+  };
+  return {
+    createWriteStream: ((path, options) => {
+      const stream = createStream(path, options);
+      completion = finished(stream);
+      return stream;
+    }) satisfies typeof createWriteStream,
+    waitForCompletion,
+    read: async (path: string): Promise<string> => {
+      await waitForCompletion();
+      return readFile(path, 'utf8');
+    },
+  };
 }
 
 describe('VSCode direct session API', () => {
@@ -78,6 +87,7 @@ describe('VSCode direct session API', () => {
       let capturedArgs: string[] = [];
       let capturedOptions: SpawnOptions | undefined;
       const child = fakeChildProcess();
+      const log = captureSessionLog();
       const spawn = (command: string, args: string[], options: SpawnOptions): ChildProcess => {
         capturedCommand = command;
         capturedArgs = [...args];
@@ -93,6 +103,7 @@ describe('VSCode direct session API', () => {
         env: { PATH: '/bin' },
       }, {
         spawn,
+        createWriteStream: log.createWriteStream,
         now: () => new Date('2026-06-13T00:00:00.000Z'),
       });
 
@@ -106,7 +117,7 @@ describe('VSCode direct session API', () => {
       assert.equal(handle.stop(), true);
 
       child.emit('exit', 0, null);
-      await new Promise((resolve) => setImmediate(resolve));
+      await log.waitForCompletion();
     });
   });
 
@@ -120,6 +131,7 @@ describe('VSCode direct session API', () => {
       let capturedArgs: string[] = [];
       let capturedOptions: SpawnOptions | undefined;
       const child = fakeChildProcess();
+      const log = captureSessionLog();
       const spawn = (command: string, args: string[], options: SpawnOptions): ChildProcess => {
         capturedCommand = command;
         capturedArgs = [...args];
@@ -137,7 +149,7 @@ describe('VSCode direct session API', () => {
           ComSpec: 'C:\\Windows\\System32\\cmd.exe',
         },
         platform: 'win32',
-      }, { spawn });
+      }, { spawn, createWriteStream: log.createWriteStream });
 
       assert.equal(capturedCommand, 'C:\\Windows\\System32\\cmd.exe');
       assert.deepEqual(capturedArgs.slice(0, 3), ['/d', '/s', '/c']);
@@ -148,7 +160,7 @@ describe('VSCode direct session API', () => {
       assert.equal(handle.command, capturedCommand);
 
       child.emit('exit', 0, null);
-      await new Promise((resolve) => setImmediate(resolve));
+      await log.waitForCompletion();
     });
   });
 
@@ -156,6 +168,7 @@ describe('VSCode direct session API', () => {
     await withTempDir(async (cwd) => {
       const child = fakeChildProcess();
       const logPath = join(cwd, 'vscode-session.log');
+      const log = captureSessionLog();
 
       launchDirectSession({
         cwd,
@@ -164,18 +177,71 @@ describe('VSCode direct session API', () => {
         logPath,
       }, {
         spawn: () => child,
+        createWriteStream: log.createWriteStream,
         now: () => new Date('2026-06-13T00:00:00.000Z'),
       });
 
       child.stdout?.emit('data', 'Authorization: Bearer sk-live-token\n');
       child.stderr?.emit('data', 'access_token=plain-secret\n');
       child.emit('exit', 0, null);
-      await new Promise((resolve) => setImmediate(resolve));
 
-      const log = await readFileEventually(logPath);
-      assert.doesNotMatch(log, /sk-live-token/);
-      assert.doesNotMatch(log, /plain-secret/);
-      assert.match(log, /\[REDACTED]/);
+      const contents = await log.read(logPath);
+      assert.doesNotMatch(contents, /sk-live-token/);
+      assert.doesNotMatch(contents, /plain-secret/);
+      assert.match(contents, /\[REDACTED]/);
+      assert.match(contents, /exited code=0 signal=null/);
+    });
+  });
+
+  it('waits for delayed log writes before reading redacted session output', { timeout: 5_000 }, async () => {
+    await withTempDir(async (cwd) => {
+      const child = fakeChildProcess();
+      const logPath = join(cwd, 'delayed-session.log');
+      let releaseWrite: (() => void) | undefined;
+      let writeStarted: () => void = () => {};
+      const pendingWrite = new Promise<void>((resolve) => { writeStarted = resolve; });
+      const log = captureSessionLog((path, options) => createWriteStream(path, {
+        ...(typeof options === 'string' ? { encoding: options } : options),
+        fs: {
+          open,
+          close,
+          write: (fd, buffer, offset, length, position, callback) => {
+            if (releaseWrite) {
+              write(fd, buffer, offset, length, position, callback);
+              return;
+            }
+            releaseWrite = () => { write(fd, buffer, offset, length, position, callback); };
+            writeStarted();
+          },
+        },
+      }));
+
+      launchDirectSession({ cwd, logPath, sessionId: 'delayed-log' }, {
+        spawn: () => child,
+        createWriteStream: log.createWriteStream,
+      });
+      child.stdout?.emit('data', 'Authorization: Bearer sk-delayed-token\n');
+      child.stderr?.emit('data', 'access_token=delayed-secret\n');
+      child.emit('exit', 0, null);
+
+      let readCompleted = false;
+      const pendingRead = log.read(logPath).then((contents) => {
+        readCompleted = true;
+        return contents;
+      });
+      await pendingWrite;
+      try {
+        assert.equal(await readFile(logPath, 'utf8'), '');
+        assert.equal(readCompleted, false, 'log read waits for the stream to finish');
+      } finally {
+        releaseWrite?.();
+        await log.waitForCompletion();
+      }
+
+      const contents = await pendingRead;
+      assert.doesNotMatch(contents, /sk-delayed-token|delayed-secret/);
+      assert.match(contents, /\[REDACTED]/);
+      assert.match(contents, /exited code=0 signal=null/);
     });
   });
 

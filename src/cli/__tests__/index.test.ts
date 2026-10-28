@@ -2,7 +2,7 @@ import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -317,7 +317,7 @@ describe("madmax state isolation", () => {
     const runs = await mkdtemp(join(tmpdir(), "omx-madmax-runs-"));
     try {
       const runDir = createMadmaxIsolatedRoot(wd, ["--madmax"], { OMX_RUNS_DIR: runs });
-      assert.equal(runDir.startsWith(runs), true);
+      assert.equal(runDir.startsWith(await realpath(runs)), true);
       assert.equal(existsSync(join(wd, ".omx")), false);
       const metadata = JSON.parse(await readFile(join(runDir, ".omxbox-run.json"), "utf-8"));
       assert.equal(metadata.source_cwd, wd);

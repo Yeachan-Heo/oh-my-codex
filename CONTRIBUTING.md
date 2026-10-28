@@ -14,6 +14,14 @@ npm run build
 npm test
 ```
 
+The Node test runner starts each test file with an empty temporary `HOME` and
+`USERPROFILE`, then removes that home when the file finishes. This prevents
+installed plugins and personal model overrides from changing test defaults.
+`PATH`, `TMPDIR`, and explicit runtime-binary overrides retain their existing
+behavior; tests can still select their own home fixtures. For a deliberate
+personal-home diagnostic, use `OMX_NODE_TEST_PRESERVE_HOME=1`. This is separate
+from `OMX_NODE_TEST_PRESERVE_RUNTIME_ENV=1` and is not needed for normal checks.
+
 For local CLI testing:
 
 ```bash

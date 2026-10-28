@@ -1,7 +1,7 @@
 import { describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -343,6 +343,9 @@ function parseShimTmuxArgv(contents: string): string[][] {
   return contents
     .split('tmux argv:\n')
     .slice(1)
+    // The shim appends header, arguments and trailer separately. A snapshot
+    // can end mid-record; only completed commands belong in comparisons.
+    .filter((record) => record.includes('\nend tmux argv\n'))
     .map((record) => record.split('\nend tmux argv')[0]!.split('\n').filter(Boolean));
 }
 
@@ -447,6 +450,38 @@ function skipUnlessScriptAvailable(t: TestContext): boolean {
   t.skip('script(1) is not installed');
   return false;
 }
+
+describe('private tmux shim log framing', () => {
+  const record = (argv: string[]): string => `tmux argv:\n${argv.join('\n')}\nend tmux argv\n`;
+  const snapshot = ['list-panes', '-a', '-F', '#{pane_id}\t#{pane_dead}\t#{pane_pid}'];
+  const heartbeat = ['display-message', '-p', '-t', '%7', '#{session_attached}'];
+
+  it('ignores unfinished heartbeat records and completed attach probes', () => {
+    const baseline = record(snapshot);
+    for (const tail of [
+      'tmux argv:\n',
+      'tmux argv:\ndisplay-message\n-p\n',
+      'tmux argv:\ndisplay-message\n-p\n-t\n%7\n#{session_attached}\n',
+      'tmux argv:\ndisplay-message\n-p\n-t\n%7\n#{session_attached}\nend tmux arg',
+    ]) {
+      assert.deepEqual(parseShimTmuxArgv(baseline + tail), [snapshot]);
+      assert.equal(normalizeShimLogForQuiescence(baseline + tail), baseline);
+    }
+    assert.equal(normalizeShimLogForQuiescence(baseline + record(heartbeat)), baseline);
+  });
+
+  it('still detects complete pane snapshots and guarded resize commands', () => {
+    const baseline = record(snapshot);
+    for (const argv of [snapshot, ['if-shell', '-F', '-t', '%7', '1', 'resize-pane -t %8 -y 2', '']]) {
+      const complete = record(argv);
+      const unfinished = complete.slice(0, complete.indexOf('\nend tmux argv'));
+      assert.equal(normalizeShimLogForQuiescence(baseline + unfinished), baseline);
+      assert.notEqual(normalizeShimLogForQuiescence(baseline + complete), baseline);
+      assert.deepEqual(parseShimTmuxArgv(baseline + complete).at(-1), argv.filter(Boolean));
+    }
+    assert.deepEqual(parseShimTmuxArgv(normalizeShimLogForQuiescence(baseline + record(heartbeat) + baseline)), [snapshot, snapshot]);
+  });
+});
 
 describe('omx launch fallback when tmux is unavailable', () => {
   it('surfaces direct Codex startup stderr and preserves the child exit code', async () => {
@@ -1375,7 +1410,7 @@ describe('omx launcher when tmux is available', () => {
 
   it('cleans a poisoned private tmux server before replaying a held child and Stop', async (t) => {
     if (!skipUnlessPrivateRealTmux(t)) return;
-    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-private-poisoned-server-'));
+    const wd = await realpath(await mkdtemp(join(tmpdir(), 'omx-launch-private-poisoned-server-')));
     try {
       await withTempTmuxSession(async (fixture) => {
         const home = join(wd, 'home');
@@ -1531,11 +1566,15 @@ while [ -f ${JSON.stringify(releasePath)} ]; do sleep 1; done
 
   it('does not let the outer launcher fabricate leader-owned active records', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-reuse-'));
+    const holdPath = join(wd, 'hold-child');
+    let leaderDone: string | undefined;
     try {
       const runs = join(wd, 'runs');
       const madmaxRoot = join(wd, 'madmax-root');
-      const madmaxContext = buildMadmaxDetachedLaunchContextKey(wd, ['--madmax', '--tmux'], madmaxRoot);
+      // Bind the context after the run directory exists, as the launcher does.
+      // Before creation its lexical path can differ from its real macOS path.
       await mkdir(madmaxRoot, { recursive: true });
+      const madmaxContext = buildMadmaxDetachedLaunchContextKey(wd, ['--madmax', '--tmux'], madmaxRoot);
       await writeFile(join(madmaxRoot, '.omxbox-run.json'), JSON.stringify({
         cwd: madmaxRoot,
         source_cwd: wd,
@@ -1543,7 +1582,7 @@ while [ -f ${JSON.stringify(releasePath)} ]; do sleep 1; done
       }));
       const activeMarker = join(wd, 'active-session');
       const instanceMarker = join(wd, 'active-instance');
-      const { env, tmuxLogPath } = await createLaunchFixture(
+      const { env, tmuxLogPath, leaderDonePath } = await createLaunchFixture(
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
@@ -1609,6 +1648,18 @@ exit 0
 `,
       );
 
+      // Reuse is meaningful only while the first detached leader is alive.
+      // A fixed one-second fake Codex lifetime can end during verification.
+      leaderDone = leaderDonePath;
+      await writeFile(holdPath, 'hold\n');
+      await writeExecutable(join(wd, 'bin', 'codex'), `#!${process.execPath}
+const { existsSync } = require('node:fs');
+const timer = setInterval(() => {
+  if (existsSync(${JSON.stringify(holdPath)})) return;
+  clearInterval(timer);
+}, 20);
+`);
+
       const baseEnv = {
         ...env,
         OMX_RUNS_DIR: runs,
@@ -1642,8 +1693,11 @@ exit 0
       assert.match(activeRecord, /"tmux_pane_id": "%12"/);
       assert.match(activeRecord, /"leader_pid"/);
       assert.match(activeRecord, /"base_state_root"/);
+      assert.equal(JSON.parse(activeRecord).base_state_root, await realpath(join(madmaxRoot, '.omx', 'state')));
       assert.match(activeRecord, /"lifecycle_phase": "ready"/);
     } finally {
+      await rm(holdPath, { force: true });
+      if (leaderDone && existsSync(join(wd, 'bin', 'tmux.detached-leader-pid'))) await waitForPath(leaderDone);
       await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });

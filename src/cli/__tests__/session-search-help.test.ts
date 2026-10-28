@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -72,7 +72,7 @@ describe('omx session help', () => {
   });
 
   it('recovers a verified-dead pointer with deterministic JSON and human output', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-cli-'));
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), 'omx-session-pointer-cli-')));
     try {
       const stateRoot = join(cwd, '.omx', 'state');
       const pointerPath = join(stateRoot, 'session.json');

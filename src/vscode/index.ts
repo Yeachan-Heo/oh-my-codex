@@ -94,6 +94,7 @@ export interface RunOmxCatalogCommandResult {
 
 interface LaunchDirectSessionDeps {
   spawn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+  createWriteStream?: typeof createWriteStream;
   now?: () => Date;
   randomId?: () => string;
 }
@@ -207,9 +208,9 @@ function defaultLogPath(cwd: string, sessionId: string): string {
   return join(cwd, '.omx', 'logs', 'vscode', `${sessionId}.log`);
 }
 
-function ensureLogStream(path: string): WriteStream {
+function ensureLogStream(path: string, createStream: typeof createWriteStream = createWriteStream): WriteStream {
   mkdirSync(dirname(path), { recursive: true });
-  return createWriteStream(path, { flags: 'a' });
+  return createStream(path, { flags: 'a' });
 }
 
 function writeLog(stream: WriteStream, text: string): void {
@@ -251,7 +252,7 @@ export function launchDirectSession(
   }
 
   const logPath = options.logPath ? resolve(options.logPath) : defaultLogPath(cwd, sessionId);
-  const logStream = ensureLogStream(logPath);
+  const logStream = ensureLogStream(logPath, deps.createWriteStream);
   const env = resolveLaunchEnv(options.env ?? process.env, sessionId, logPath);
   const platform = options.platform ?? process.platform;
   const spawnOptions: SpawnOptions = {

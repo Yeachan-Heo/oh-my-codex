@@ -3531,7 +3531,7 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('returns next canonical event for a team in JSON mode', async () => {
+  it('returns the next canonical event after an explicit cursor in JSON mode', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-await-'));
     const previousCwd = process.cwd();
     const logs: string[] = [];
@@ -3541,16 +3541,21 @@ process.on('SIGTERM', () => process.exit(0));
       await initTeamState('await-team', 'await test', 'executor', 1, wd);
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
 
-      const waitPromise = teamCommand(['await', 'await-team', '--json', '--timeout-ms', '500']);
-      setTimeout(() => {
-        void appendTeamEvent('await-team', {
-          type: 'worker_state_changed',
-          worker: 'worker-1',
-          state: 'blocked',
-          prev_state: 'working',
-          reason: 'needs_follow_up',
-        }, wd);
-      }, 50);
+      // An implicit cursor is captured during command startup. A timer can
+      // publish before that capture, making its event the baseline instead.
+      const baseline = await appendTeamEvent('await-team', {
+        type: 'worker_state_changed', worker: 'worker-1', state: 'working', prev_state: 'idle',
+      }, wd);
+      const waitPromise = teamCommand([
+        'await', 'await-team', '--json', '--timeout-ms', '500', '--after-event-id', baseline.event_id,
+      ]);
+      const nextEvent = await appendTeamEvent('await-team', {
+        type: 'worker_state_changed',
+        worker: 'worker-1',
+        state: 'blocked',
+        prev_state: 'working',
+        reason: 'needs_follow_up',
+      }, wd);
       await waitPromise;
 
       const payload = JSON.parse(logs.at(-1) ?? '{}') as {
@@ -3561,7 +3566,7 @@ process.on('SIGTERM', () => process.exit(0));
       };
       assert.equal(payload.team_name, 'await-team');
       assert.equal(payload.status, 'event');
-      assert.equal(typeof payload.cursor, 'string');
+      assert.equal(payload.cursor, nextEvent.event_id);
       assert.equal(payload.event?.type, 'worker_state_changed');
       assert.equal(payload.event?.state, 'blocked');
       assert.equal(payload.event?.prev_state, 'working');
