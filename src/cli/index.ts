@@ -9058,7 +9058,9 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       version: 1, context_key: contextKey ?? payload.sessionId!, created_at: new Date().toISOString(),
       source_cwd: payload.cwd, argv: [payload.codexCmd], run_dir: process.env.OMX_ROOT ?? payload.cwd,
       tmux_session_name: payload.sessionName, session_id: payload.sessionId, tmux_pane_id: pane,
-      launch_nonce: nonce, leader_pid: process.pid, base_state_root: binding.context.baseStateDir,
+      // Reuse requires the canonical directory identity captured by the binding,
+      // including when OMX_ROOT uses an alias such as macOS /var.
+      launch_nonce: nonce, leader_pid: process.pid, base_state_root: binding.canonicalRealpath,
       lifecycle_phase: "ready",
     };
     const runtimeBinding = queryMadmaxDetachedRuntimeBinding(record);

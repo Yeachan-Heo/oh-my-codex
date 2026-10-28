@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -397,8 +397,8 @@ describe('state-root', () => {
       };
       const verified = await resolveVerifiedDetachedTeamContext(worktree, env);
       assert.deepEqual(verified, {
-        stateRoot,
-        leaderCwd: leader,
+        stateRoot: await realpath(stateRoot),
+        leaderCwd: await realpath(leader),
         worker: 'display-team/worker-1',
         internalWorker: 'team-a/worker-1',
       });
@@ -426,8 +426,8 @@ describe('state-root', () => {
         { ...env, OMX_TEAM_WORKER: 'other-team/worker-1' },
       );
       assert.deepEqual(displayAlias, {
-        stateRoot,
-        leaderCwd: leader,
+        stateRoot: await realpath(stateRoot),
+        leaderCwd: await realpath(leader),
         worker: 'other-team/worker-1',
         internalWorker: 'team-a/worker-1',
       });
