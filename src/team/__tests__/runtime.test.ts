@@ -597,10 +597,13 @@ case "$1" in
     esac
     ;;
   capture-pane)
-    count=0
-    [ -f "${tmuxLogPath}.capture-count" ] && count=$(cat "${tmuxLogPath}.capture-count")
-    count=$((count + 1))
-    printf '%s' "$count" > "${tmuxLogPath}.capture-count"
+    # Scrollback and visible captures can run concurrently. Claim a unique
+    # ordinal atomically instead of racing a shared read/overwrite counter.
+    count=1
+    while ! mkdir "${tmuxLogPath}.capture-$count" 2>/dev/null; do
+      [ -d "${tmuxLogPath}.capture-$count" ] || exit 1
+      count=$((count + 1))
+    done
     if [ "${'$'}{OMX_MDM_CAPTURE_MODE:-direct}" = detailed ] && [ "$count" -lt 5 ]; then
       printf 'OpenAI Codex\\nmodel: test\\ndirectory: /tmp/demo\\n'
     else
@@ -3723,6 +3726,30 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('emits exactly four benign detailed-MDM captures before markers under concurrent probes', async () => {
+    const marker = 'MDM_POLICY_REJECTED: approval_policy=never forbids --dangerously-bypass-approvals-and-sandbox';
+    await withMockTmuxFixture({
+      dirPrefix: 'omx-runtime-codex-mdm-concurrent-bin-',
+      tmuxScript: codexMdmTmuxScript(marker),
+      env: { OMX_MDM_CAPTURE_MODE: 'detailed' },
+    }, async () => {
+      const captures = await Promise.all(Array.from({ length: 16 }, () => new Promise<string>((resolve, reject) => {
+        const child = spawn('tmux', ['capture-pane', '-t', '%2', '-p']);
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+        child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+        child.once('error', reject);
+        child.once('close', (code) => {
+          if (code === 0) resolve(stdout.trim());
+          else reject(new Error(`mock capture failed (${code}): ${stderr}`));
+        });
+      })));
+      assert.equal(captures.filter((capture) => capture.startsWith('OpenAI Codex\n')).length, 4);
+      assert.equal(captures.filter((capture) => capture === marker).length, 12);
+    });
   });
 
   it('terminates attached Codex startup on the first exact MDM bypass marker without dispatch or retry', async () => {
