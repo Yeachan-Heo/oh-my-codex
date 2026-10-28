@@ -343,9 +343,9 @@ function parseShimTmuxArgv(contents: string): string[][] {
   return contents
     .split('tmux argv:\n')
     .slice(1)
-    // The shim appends header, arguments and trailer separately. A snapshot
-    // can end mid-record; only completed commands belong in comparisons.
-    .filter((record) => record.includes('\nend tmux argv\n'))
+    // A later header proves an earlier segment was interrupted by an
+    // interleaving write; only an unfinished final segment is incomplete.
+    .filter((record, index, records) => index < records.length - 1 || record.includes('\nend tmux argv\n'))
     .map((record) => record.split('\nend tmux argv')[0]!.split('\n').filter(Boolean));
 }
 
@@ -468,6 +468,17 @@ describe('private tmux shim log framing', () => {
       assert.equal(normalizeShimLogForQuiescence(baseline + tail), baseline);
     }
     assert.equal(normalizeShimLogForQuiescence(baseline + record(heartbeat)), baseline);
+  });
+
+  it('preserves a completed snapshot when a heartbeat header interleaves its trailer', () => {
+    const interleaved = `tmux argv:\n${snapshot.join('\n')}\n${record(heartbeat)}end tmux argv\n`;
+
+    assert.deepEqual(parseShimTmuxArgv(interleaved), [snapshot, heartbeat]);
+    assert.equal(normalizeShimLogForQuiescence(interleaved), record(snapshot));
+
+    const unfinishedTail = 'tmux argv:\ndisplay-message\n-p\n';
+    assert.deepEqual(parseShimTmuxArgv(interleaved + unfinishedTail), [snapshot, heartbeat]);
+    assert.equal(normalizeShimLogForQuiescence(interleaved + unfinishedTail), record(snapshot));
   });
 
   it('still detects complete pane snapshots and guarded resize commands', () => {
