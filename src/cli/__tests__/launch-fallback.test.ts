@@ -340,13 +340,23 @@ async function waitForPath(path: string, expectedLines: number = 1, timeoutMs: n
 }
 
 function parseShimTmuxArgv(contents: string): string[][] {
-  return contents
-    .split('tmux argv:\n')
-    .slice(1)
-    // The shim appends header, arguments and trailer separately. A snapshot
-    // can end mid-record; only completed commands belong in comparisons.
-    .filter((record) => record.includes('\nend tmux argv\n'))
-    .map((record) => record.split('\nend tmux argv')[0]!.split('\n').filter(Boolean));
+  const records = contents.split('tmux argv:\n').slice(1);
+  const parsed: string[][] = [];
+
+  for (const [index, record] of records.entries()) {
+    const trailerIndex = record.indexOf('\nend tmux argv');
+    // Appends from concurrent shim processes can place a later header before
+    // this command's trailer. Only a trailerless final segment is still an
+    // in-progress tail; keep earlier segments so their commands are counted.
+    if (index === records.length - 1 && !record.includes('\nend tmux argv\n')) continue;
+
+    const argv = (trailerIndex === -1 ? record : record.slice(0, trailerIndex))
+      .split('\n')
+      .filter(Boolean);
+    if (argv.length > 0) parsed.push(argv);
+  }
+
+  return parsed;
 }
 
 // The detached HUD pane runs its own `omx hud --watch` loop, which probes
@@ -468,6 +478,21 @@ describe('private tmux shim log framing', () => {
       assert.equal(normalizeShimLogForQuiescence(baseline + tail), baseline);
     }
     assert.equal(normalizeShimLogForQuiescence(baseline + record(heartbeat)), baseline);
+  });
+
+  it('preserves completed commands when another shim record interleaves before the trailer', () => {
+    const interleaved = [
+      'tmux argv:',
+      ...snapshot,
+      'tmux argv:',
+      ...heartbeat,
+      'end tmux argv',
+      'end tmux argv',
+      '',
+    ].join('\n');
+
+    assert.deepEqual(parseShimTmuxArgv(interleaved), [snapshot, heartbeat]);
+    assert.equal(normalizeShimLogForQuiescence(interleaved), record(snapshot));
   });
 
   it('still detects complete pane snapshots and guarded resize commands', () => {
