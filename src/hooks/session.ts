@@ -48,9 +48,9 @@ export interface ProcessIdentity {
   cmdline_hash?: string;
 }
 
-/** Raw observation from a native process-identity provider. No comparison logic. */
+/** Raw process observation; Linux also supplies cmdline for managed-daemon classification. */
 export type ProcessObservation =
-  | { kind: 'identity'; identity: ProcessIdentity }
+  | { kind: 'identity'; identity: ProcessIdentity; cmdline?: string }
   | { kind: 'gone' }
   | { kind: 'denied' }
   | { kind: 'unsupported' }
@@ -757,6 +757,7 @@ function observeLinuxProcess(pid: number): ProcessObservation {
         birth: String(identity.startTicks),
         ...(cmdlineHash ? { cmdline_hash: cmdlineHash } : {}),
       },
+      ...(identity.cmdline ? { cmdline: identity.cmdline } : {}),
     };
   }
 
@@ -994,6 +995,28 @@ function isVerifiedManagedCodexDaemonOwner(state: SessionState, recorded: Proces
   return recordedCmdlineHash !== undefined
     && recordedCmdlineHash === recorded.cmdline_hash
     && isManagedCodexDaemonCommand(state.pid_cmdline);
+}
+
+function isVerifiedManagedCodexDaemonObservation(
+  pid: number,
+  platform: NodeJS.Platform,
+  observation: ProcessObservation | null,
+): boolean {
+  if (platform !== 'linux'
+    || observation?.kind !== 'identity'
+    || observation.identity.platform !== 'linux'
+    || !isValidProcessIdentity(observation.identity)
+    || !observation.cmdline) return false;
+  return isVerifiedManagedCodexDaemonOwner({
+    session_id: 'managed-codex-daemon-candidate',
+    started_at: '',
+    cwd: '',
+    pid,
+    platform,
+    identity_schema_version: 2,
+    process_identity: observation.identity,
+    pid_cmdline: observation.cmdline,
+  }, observation.identity);
 }
 
 /**
@@ -1309,6 +1332,28 @@ function preserveExistingLaunchLineageToken(existing: SessionState | undefined, 
     : state;
 }
 
+function preserveExistingProcessOwner(existing: SessionState, state: SessionState): SessionState {
+  const {
+    pid: _pid,
+    platform: nextPlatform,
+    identity_schema_version: _identitySchemaVersion,
+    process_identity: _processIdentity,
+    pid_start_ticks: _pidStartTicks,
+    pid_cmdline: _pidCmdline,
+    ...metadata
+  } = state;
+  const platform = existing.platform ?? nextPlatform;
+  return {
+    ...metadata,
+    pid: existing.pid,
+    ...(platform ? { platform } : {}),
+    ...(existing.identity_schema_version !== undefined ? { identity_schema_version: existing.identity_schema_version } : {}),
+    ...(existing.process_identity !== undefined ? { process_identity: existing.process_identity } : {}),
+    ...(existing.pid_start_ticks !== undefined ? { pid_start_ticks: existing.pid_start_ticks } : {}),
+    ...(existing.pid_cmdline !== undefined ? { pid_cmdline: existing.pid_cmdline } : {}),
+  };
+}
+
 function normalizeNonempty(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -1318,10 +1363,19 @@ function resolvePid(options: SessionStartOptions): number {
 }
 
 function sessionIdentityFor(pid: number, platform: NodeJS.Platform): ProcessIdentity | null {
+  return sessionProcessObservationFor(pid, platform)?.identity ?? null;
+}
+
+function sessionProcessObservationFor(
+  pid: number,
+  platform: NodeJS.Platform,
+): Extract<ProcessObservation, { kind: 'identity' }> | null {
   try {
     const observation = transactionDependencies.observeProcess(pid, platform);
-    return observation.kind === 'identity' && isValidProcessIdentity(observation.identity) && observation.identity.platform === platform
-      ? observation.identity
+    return observation.kind === 'identity'
+      && isValidProcessIdentity(observation.identity)
+      && observation.identity.platform === platform
+      ? observation
       : null;
   } catch {
     return null;
@@ -3597,27 +3651,25 @@ function reconcileNativeTransition(
     // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
     // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
     // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
-    // `non-runtime-owner` (managed daemon) pointers are never updated: they are treated as if no usable
-    // pointer exists, allowing SessionStart to establish a fresh OMX session without republishing daemon ownership.
-    const isManagedDaemonPointer = pointer.status === 'non-runtime-owner';
     if (
-      !isManagedDaemonPointer
-      && pointer.status !== 'absent'
+      pointer.status !== 'absent'
       && pointer.status !== 'stale-dead'
       && pointer.status !== 'usable'
       && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
     ) {
+      // A live managed daemon pointer is occupied evidence, not an absent slot. Only an explicit
+      // OMX launch may replace it; native SessionStart cannot claim it as canonical runtime state.
       throw unusablePointerAbort(context, nativeSessionId, pointer);
     }
 
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
-    const linuxIdentity = sessionIdentityFor(pid, platform);
+    const processObservation = sessionProcessObservationFor(pid, platform);
+    const linuxIdentity = processObservation?.identity ?? null;
+    const isManagedDaemonOwner = isVerifiedManagedCodexDaemonObservation(pid, platform, processObservation);
     const livenessProven = pointer.status === 'usable';
-    const existing = !isManagedDaemonPointer && (
-      livenessProven
+    const existing = livenessProven
       || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
-    )
       ? pointer.state
       : undefined;
 
@@ -3628,10 +3680,17 @@ function reconcileNativeTransition(
     if (!existing) {
       const ownerCandidate = verifiedOwnerCandidate(context, options);
       const ownerOmxSessionId = ownerCandidate;
-      return createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
+      const next = createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
         nativeSessionId,
         ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
       });
+      // A daemon hook without an established OMX runtime owner must remain sidecar-scoped.
+      if (isManagedDaemonOwner) throw ownerConflictAbort(context, nativeSessionId, next);
+      return next;
+    }
+
+    if (isManagedDaemonOwner && (!Number.isInteger(existing.pid) || existing.pid <= 0)) {
+      throw ownerConflictAbort(context, nativeSessionId, existing);
     }
 
     const existingNativeSessionId = normalizeSessionId(existing.native_session_id);
@@ -3640,6 +3699,12 @@ function reconcileNativeTransition(
     }
 
     const nowIso = new Date().toISOString();
+    let ownerIdentity = linuxIdentity;
+    if (isManagedDaemonOwner) {
+      const existingIdentity = recordedIdentityForState(existing, platform);
+      if (existingIdentity === 'invalid') throw ownerConflictAbort(context, nativeSessionId, existing);
+      ownerIdentity = existingIdentity;
+    }
 
     const ownerCandidate = verifiedOwnerCandidate(context, options);
     let ownerOmxSessionId: string | undefined;
@@ -3653,26 +3718,38 @@ function reconcileNativeTransition(
       throw ownerConflictAbort(context, nativeSessionId, existing, error);
     }
 
-    return preserveExistingLaunchLineageToken(existing, createSessionState(context.cwd, context.baseStateDir, existing.session_id, pid, platform, linuxIdentity, {
-      nowIso,
-      nativeSessionId,
-      previousNativeSessionId: existing.previous_native_session_id,
-      nativeSessionSwitchedAt: existing.native_session_switched_at,
-      ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
-      startedAt: existing.started_at,
-      tmuxSessionName: existing.tmux_session_name,
-      tmuxPaneId: existing.tmux_pane_id,
-      launchLineageToken: isValidToken(existing.launch_lineage_token)
-        ? existing.launch_lineage_token
-        : undefined,
-    }));
+    const next = createSessionState(
+      context.cwd,
+      context.baseStateDir,
+      existing.session_id,
+      isManagedDaemonOwner ? existing.pid : pid,
+      isManagedDaemonOwner ? existing.platform ?? platform : platform,
+      ownerIdentity,
+      {
+        nowIso,
+        nativeSessionId,
+        previousNativeSessionId: existing.previous_native_session_id,
+        nativeSessionSwitchedAt: existing.native_session_switched_at,
+        ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
+        startedAt: existing.started_at,
+        tmuxSessionName: existing.tmux_session_name,
+        tmuxPaneId: existing.tmux_pane_id,
+        launchLineageToken: isValidToken(existing.launch_lineage_token)
+          ? existing.launch_lineage_token
+          : undefined,
+      },
+    );
+    return preserveExistingLaunchLineageToken(
+      existing,
+      isManagedDaemonOwner ? preserveExistingProcessOwner(existing, next) : next,
+    );
   };
 }
 
 /**
  * Reconcile native SessionStart only when the selected pointer is absent, stale,
- * or already belongs to that native session. A different live native ID is
- * authoritative owner evidence and must never be replaced.
+ * or already belongs to that native session. A different live native ID or a live
+ * managed daemon is authoritative owner evidence and must never be replaced.
  */
 export async function reconcileNativeSessionStart(
   cwd: string,

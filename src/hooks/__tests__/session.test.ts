@@ -137,6 +137,7 @@ const MANAGED_CODEX_DAEMON_CMDLINE = '/home/test/.codex/packages/app-server/bin/
 function linuxProcessObservation(cmdline: string, birth: string): Extract<ProcessObservation, { kind: 'identity' }> {
   return {
     kind: 'identity',
+    cmdline,
     identity: {
       platform: 'linux',
       birth,
@@ -3663,7 +3664,7 @@ describe('session pointer transaction', () => {
     }
   });
 
-  it('keeps managed-daemon native owner sidecars usable for SessionStart reconciliation', async () => {
+  it('preserves managed-daemon owner sidecars without publishing them as canonical runtime owners', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-daemon-owner-sidecar-'));
     const nativeSessionId = 'native-daemon-sidecar';
     const observation = linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768');
@@ -3692,17 +3693,26 @@ describe('session pointer transaction', () => {
         observeProcess: () => observation,
       }, async () => {
         assert.equal((await readNativeSessionOwnerEvidence(cwd, nativeSessionId)).status, 'usable');
+        const sidecarBefore = await readFile(sidecarPath, 'utf-8');
         const owner = await writeNativeSessionOwner(cwd, nativeSessionId, {
           pid: 57617,
           platform: 'linux',
         });
         assert.equal(owner.session_id, nativeSessionId);
 
-        const reconciled = await reconcileNativeSessionStart(cwd, nativeSessionId, {
-          pid: 57617,
-          platform: 'linux',
-        });
-        assert.equal(reconciled.native_session_id, nativeSessionId);
+        const sidecarAfterOwnerWrite = await readFile(sidecarPath, 'utf-8');
+        assert.equal(JSON.parse(sidecarAfterOwnerWrite).session_id, nativeSessionId);
+        await assert.rejects(
+          reconcileNativeSessionStart(cwd, nativeSessionId, {
+            pid: 57617,
+            platform: 'linux',
+          }),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_owner_conflict',
+        );
+        assert.equal((await readSessionPointer(context)).status, 'absent');
+        assert.equal(await readFile(sidecarPath, 'utf-8'), sidecarAfterOwnerWrite);
+        assert.notEqual(sidecarAfterOwnerWrite, sidecarBefore);
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -3742,35 +3752,54 @@ describe('session pointer transaction', () => {
         const canonicalPointerStatus = (await readSessionPointer(context)).status;
         assert.equal(canonicalPointerStatus, 'non-runtime-owner', 'canonical pointer should be non-runtime-owner before SessionStart');
 
-        // Now call reconcileNativeSessionStart as if SessionStart is being called with the same managed daemon
-        // This should NOT republish the managed daemon to the canonical pointer
-        // Instead, it should create a fresh OMX session (treating the daemon pointer as if it were absent)
-        const reconciled = await reconcileNativeSessionStart(cwd, nativeSessionId, {
-          pid: 57617,
+        await assert.rejects(
+          reconcileNativeSessionStart(cwd, nativeSessionId, {
+            pid: 57617,
+            platform: 'linux',
+          }),
+          (error: unknown) => isSessionPointerLaunchAbort(error)
+            && error.code === 'session_pointer_unusable'
+            && error.pointerStatus === 'non-runtime-owner',
+        );
+        assert.equal(await readFile(pointerPath, 'utf-8'), JSON.stringify(initialDaemonState));
+        assert.equal((await readSessionPointer(context)).status, 'non-runtime-owner');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('retains the OMX owner when managed-daemon SessionStart reconciles a launched pointer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-daemon-reconcile-launch-owner-'));
+    const ownerPid = 57616;
+    const daemonPid = 57617;
+    const ownerObservation = linuxProcessObservation('/usr/local/bin/omx', '87767');
+    const daemonObservation = linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768');
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      await withPointerDependencies({
+        runtimePlatform: 'linux',
+        probePid: () => 'alive',
+        observeProcess: (pid) => pid === daemonPid ? daemonObservation : ownerObservation,
+      }, async () => {
+        const launched = await writeSessionStart(cwd, 'omx-launch-owner', {
+          pid: ownerPid,
+          platform: 'linux',
+        });
+        const reconciled = await reconcileNativeSessionStart(cwd, 'native-daemon-reconcile', {
+          pid: daemonPid,
           platform: 'linux',
         });
 
-        // The reconciled state should have a fresh session ID (not 'omx-session-from-daemon')
-        // and should NOT be republishing the daemon's process identity to the canonical pointer
-        assert.notEqual(
-          reconciled.session_id,
-          'omx-session-from-daemon',
-          'SessionStart should create a fresh session, not inherit the managed daemon session ID'
-        );
-        
-        // The reconciled state should have the native session ID
-        assert.equal(reconciled.native_session_id, nativeSessionId);
-        
-        // Verify the canonical pointer now points to the fresh OMX session, not the daemon
+        assert.equal(reconciled.session_id, launched.session_id);
+        assert.equal(reconciled.native_session_id, 'native-daemon-reconcile');
+        assert.equal(reconciled.pid, ownerPid);
+        assert.equal(reconciled.process_identity?.birth, ownerObservation.identity.birth);
+        assert.notEqual(reconciled.process_identity?.cmdline_hash, daemonObservation.identity.cmdline_hash);
         const pointerAfter = await readSessionPointer(context);
-        assert.equal(pointerAfter.status, 'usable', 'canonical pointer should be usable after SessionStart creates a fresh session');
-        assert.equal(pointerAfter.state?.session_id, reconciled.session_id, 'pointer should reference the fresh session');
-        // Verify that the new pointer does NOT have the daemon's cmdline
-        assert.notEqual(
-          pointerAfter.state?.pid_cmdline,
-          MANAGED_CODEX_DAEMON_CMDLINE,
-          'fresh session pointer should not have the managed daemon cmdline'
-        );
+        assert.equal(pointerAfter.status, 'usable');
+        assert.equal(pointerAfter.state?.pid, ownerPid);
+        assert.equal(pointerAfter.state?.native_session_id, 'native-daemon-reconcile');
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
