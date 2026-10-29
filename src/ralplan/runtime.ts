@@ -7,6 +7,7 @@ import {
 import { resolveWritableStateScope } from '../mcp/state-paths.js';
 import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
+import { codexHome } from '../utils/paths.js';
 import { getGatesForStage } from '../quality-gates/index.js';
 import {
   administrativelyAbandonRalplanAdvisory,
@@ -178,9 +179,10 @@ function buildRalplanConsensusGate(
     : null;
   const currentGateResults = (options.gateResults ?? []).filter((result) => result.iteration === authoritativeCycle);
   const blockingGate = currentGateResults.find((result) => {
-    // A gate blocks only if it has a reject verdict AND is in blocking mode (default)
+    // A blocking gate blocks if it does NOT approve (verdict !== 'approve')
+    // This includes 'reject', 'iterate', and 'unavailable'
     const mode = result.mode ?? 'blocking';
-    return result.verdict === 'reject' && mode === 'blocking';
+    return result.verdict !== 'approve' && mode === 'blocking';
   });
   const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete)
     ?? (blockingGate ? `quality_gate_not_approved:${blockingGate.skill}` : null)
@@ -501,7 +503,7 @@ export async function runRalplanConsensus(
       });
 
       if (criticReview.verdict === 'approve') {
-        const normalizedGates = getGatesForStage('ralplan', cwd);
+        const normalizedGates = getGatesForStage('ralplan', codexHome());
         for (const gate of normalizedGates) {
           let result: RalplanQualityGateResult;
           try {
@@ -509,6 +511,7 @@ export async function runRalplanConsensus(
             const review = await executor.qualityGateReview({
               ...iterationContext,
               gateName: gate.skill,
+              gateModel: gate.model,
               draft,
               architectReview,
               criticReview,

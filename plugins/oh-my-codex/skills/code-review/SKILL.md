@@ -59,7 +59,7 @@ Scope: [scope and artifacts]"
 
 ## Custom code-review quality gates
 
-After the built-in independent reviews, read `.omx-config.json` `qualityGates.codeReview` with `omx quality-gates list --stage codeReview --json`. Each gate specifies `skill`, `mode` (`advisory` or `blocking`), and optional `model`; for example `{"qualityGates":{"codeReview":[{"skill":"security-audit","mode":"blocking"}]}}`.
+After the built-in independent reviews, read `.omx-config.json` `qualityGates."code-review"` with `omx quality-gates list --stage code-review --json`. Each gate specifies `skill`, `mode` (`advisory` or `blocking`), and optional `model`; for example `{"qualityGates":{"code-review":[{"skill":"security-audit","mode":"blocking"}]}}`.
 
 Spawn each configured gate skill as a separate subagent with the same scoped diff, requirements, validation evidence, and completed built-in reviews. Honor an optional `model` only for that custom gate. Await results before final synthesis; record each skill, mode, verdict, findings, and evidence in the review receipt. Advisory findings, including unavailable advisory reviews, remain visible but do not independently block approval. A blocking gate that does not approve or cannot return evidence forces **REQUEST CHANGES** and prevents merge-ready status or downstream clean-review progression. Re-review the corrected scope and re-run gates before clearing that blocker; the standalone review remains read-only. Custom gates never replace the required `code-reviewer` and `architect` lanes. An empty gate list preserves the existing review flow.
 

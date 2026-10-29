@@ -93,6 +93,7 @@ export interface RalplanConsensusExecutor {
   /** Spawn the configured skill as a native subagent. */
   qualityGateReview?(ctx: RalplanConsensusIterationContext & {
     gateName: string;
+    gateModel?: string;
     draft: RalplanDraftResult;
     architectReview: RalplanReviewResult;
     criticReview: RalplanReviewResult;
