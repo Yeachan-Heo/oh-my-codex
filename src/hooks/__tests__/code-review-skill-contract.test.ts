@@ -56,8 +56,8 @@ describe('code-review skill contract', () => {
     assert.match(codeReviewSkill, /Else if `code-reviewer` recommendation is \*\*REQUEST CHANGES\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
     assert.match(codeReviewSkill, /Else if architect status is \*\*WATCH\*\*, final recommendation is \*\*COMMENT\*\*/i);
     assert.match(codeReviewSkill, /Else final recommendation follows the `code-reviewer` lane/i);
-    assert.match(codeReviewSkill, /\*\*APPROVE\*\* only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence/i);
-    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* for a blocker, unresolved high\/critical finding, or unavailable lane/i);
+    assert.match(codeReviewSkill, /\*\*APPROVE\*\* only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, both independent lanes returned evidence/i);
+    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* for a blocker, unresolved high\/critical finding, unavailable lane, or non-passing\/unavailable blocking quality gate/i);
   });
 
   it('bounds auto-fix wording to the supported omx ralph compatibility path only', () => {

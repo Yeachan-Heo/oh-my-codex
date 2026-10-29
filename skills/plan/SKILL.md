@@ -51,9 +51,6 @@ Plan creates concise, actionable work plans. Auto-detects interview vs direct, s
 2. Evaluate via Critic; verdict APPROVED/REVISE/REJECT
 3. If author == reviewer, hand off to `$code-review`
 
-### Consensus planning and quality gates
-Consensus planning belongs to `$ralplan`, not a separate `$plan` consensus runtime. Hand off consensus requests to `$ralplan` and preserve the Planner → Architect → Critic ordering. Quality gates are configured and managed by ralplan; see [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md) for details.
-
 ### Output
 Every plan includes: Requirements Summary, Acceptance Criteria (testable), Implementation Steps (with file refs, adaptive count), Risks/Mitigations, Verification. Saved to `.omx/plans/`.
 
