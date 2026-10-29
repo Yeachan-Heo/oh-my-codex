@@ -66,10 +66,12 @@ function parseQualityGatesArgs(args: string[]): QualityGatesCliOptions {
 /**
  * Execute the quality-gates CLI command
  * Pure function: returns JSON string, no console I/O or exit code changes
+ * Reads quality gates from both project (cwd) and CODEX_HOME config files with project taking precedence
  */
 export function qualityGatesCommand(
   args: string[],
   codexHomeOverride?: string,
+  cwd?: string,
 ): string {
   const options = parseQualityGatesArgs(args);
 
@@ -109,7 +111,7 @@ export function qualityGatesCommand(
     });
   }
 
-  const gates = getGatesForStage(options.stage, codexHomeOverride);
+  const gates = getGatesForStage(options.stage, codexHomeOverride, cwd);
 
   // Output normalized gate objects
   const normalizedGates = gates.map(gate => ({

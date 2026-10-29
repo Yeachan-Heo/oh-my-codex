@@ -402,4 +402,111 @@ describe('quality gates config', () => {
       assert.strictEqual(result.errors.length, 0);
     });
   });
+
+  describe('config resolution: project vs CODEX_HOME precedence', () => {
+    let projectDir: string;
+    let codexHomeDir: string;
+
+    beforeEach(async () => {
+      projectDir = await mkdtempAsync(join(tmpdir(), 'omx-project-'));
+      codexHomeDir = await mkdtempAsync(join(tmpdir(), 'omx-codex-home-'));
+    });
+
+    afterEach(() => {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(codexHomeDir, { recursive: true, force: true });
+    });
+
+    it('reads only project config when CODEX_HOME has no config', () => {
+      const projectConfig: QualityGatesConfig = {
+        'ralplan': ['project-gate'],
+      };
+      writeFileSync(
+        join(projectDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: projectConfig }, null, 2),
+      );
+      // codexHomeDir is empty, so no config there
+
+      const gates = getGatesForStage('ralplan', codexHomeDir, projectDir);
+      assert.deepStrictEqual(gates, [{ skill: 'project-gate', mode: 'blocking' }]);
+    });
+
+    it('reads only CODEX_HOME config when project has no config', () => {
+      const codexHomeConfig: QualityGatesConfig = {
+        'ralplan': ['codex-gate'],
+      };
+      writeFileSync(
+        join(codexHomeDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: codexHomeConfig }, null, 2),
+      );
+      // projectDir is empty, so no config there
+
+      const gates = getGatesForStage('ralplan', codexHomeDir, projectDir);
+      assert.deepStrictEqual(gates, [{ skill: 'codex-gate', mode: 'blocking' }]);
+    });
+
+    it('merges project and CODEX_HOME configs with project taking precedence for same stage', () => {
+      const projectConfig: QualityGatesConfig = {
+        'ralplan': ['project-gate'],
+        'deep-interview': ['project-interview-gate'],
+      };
+      const codexHomeConfig: QualityGatesConfig = {
+        'ralplan': ['codex-gate'],
+        'code-review': ['codex-review-gate'],
+      };
+
+      writeFileSync(
+        join(projectDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: projectConfig }, null, 2),
+      );
+      writeFileSync(
+        join(codexHomeDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: codexHomeConfig }, null, 2),
+      );
+
+      // Project ralplan should override CODEX_HOME ralplan
+      const ralplanGates = getGatesForStage('ralplan', codexHomeDir, projectDir);
+      assert.deepStrictEqual(ralplanGates, [{ skill: 'project-gate', mode: 'blocking' }]);
+
+      // Project deep-interview (from project only)
+      const interviewGates = getGatesForStage('deep-interview', codexHomeDir, projectDir);
+      assert.deepStrictEqual(interviewGates, [{ skill: 'project-interview-gate', mode: 'blocking' }]);
+
+      // Code-review (from CODEX_HOME only)
+      const reviewGates = getGatesForStage('code-review', codexHomeDir, projectDir);
+      assert.deepStrictEqual(reviewGates, [{ skill: 'codex-review-gate', mode: 'blocking' }]);
+    });
+
+    it('handles readQualityGatesConfig with both sources', () => {
+      const projectConfig: QualityGatesConfig = {
+        'ralplan': ['project-gate', { skill: 'project-model-gate', model: 'claude-opus' }],
+      };
+      const codexHomeConfig: QualityGatesConfig = {
+        'ralplan': ['codex-gate'],
+        'code-review': ['codex-review-gate'],
+      };
+
+      writeFileSync(
+        join(projectDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: projectConfig }, null, 2),
+      );
+      writeFileSync(
+        join(codexHomeDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: codexHomeConfig }, null, 2),
+      );
+
+      const config = readQualityGatesConfig(codexHomeDir, projectDir);
+      assert.ok(config, 'Config should not be null');
+      assert.deepStrictEqual(
+        config?.ralplan,
+        ['project-gate', { skill: 'project-model-gate', model: 'claude-opus' }],
+        'Project ralplan should override CODEX_HOME',
+      );
+      assert.deepStrictEqual(
+        config?.['code-review'],
+        ['codex-review-gate'],
+        'Code-review should come from CODEX_HOME',
+      );
+    });
+  });
 });
