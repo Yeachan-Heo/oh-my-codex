@@ -30,7 +30,7 @@ The release PR #3957 is an internal release-preparation merge and is intentional
 
 ## Version synchronization
 
-All coupled release surfaces are already at `0.21.41`; this release candidate does not double-bump.
+At tagged main commit `b8cd1dec4eaf5ed1769a20ca4d264f58a2dc3c7b`, all coupled release surfaces were `0.21.41`; the post-release dev bump is tracked separately below.
 
 | Surface | Verified value |
 |---|---|
@@ -42,7 +42,7 @@ All coupled release surfaces are already at `0.21.41`; this release candidate do
 | `omx-capabilities.lock.json` | Does not embed a package version |
 | Version constants/tests | No hard-coded `0.21.40` or `0.21.41` display-version constant; `src/cli/__tests__/version-sync-contract.test.ts` checks package/plugin/Cargo alignment and lockfile format |
 
-`node dist/scripts/check-version-sync.js --tag v0.21.41` passed. `cargo metadata --locked --format-version 1 --no-deps` reports all six OMX workspace crates at `0.21.41`. The remaining `0.21.40` occurrences are historical release collateral and references to the prior tag/PR, not current version surfaces.
+At tagged main commit `b8cd1dec4eaf5ed1769a20ca4d264f58a2dc3c7b`, `node dist/scripts/check-version-sync.js --tag v0.21.41` passed and `cargo metadata --locked --format-version 1 --no-deps` reported all six OMX workspace crates at `0.21.41`. The remaining `0.21.40` occurrences in that release tree are historical release collateral and references to the prior tag/PR, not active version surfaces.
 
 ## Local gates
 
@@ -79,7 +79,11 @@ The annotated tag `v0.21.41` points to `b8cd1dec4eaf5ed1769a20ca4d264f58a2dc3c7b
 
 Trusted npm publish was dispatched with `release_tag=v0.21.41` and full `release_sha=b8cd1dec4eaf5ed1769a20ca4d264f58a2dc3c7b`. CI workflow run [40941694577](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40941694577) completed successfully (25 success, 0 skipped or failed); publish job [123686461016](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40941694577/job/123686461016) passed. Registry readback: `npm view oh-my-codex dist-tags.latest` → `0.21.41`; `npm view oh-my-codex@0.21.41 version gitHead` → version `0.21.41`, gitHead `b8cd1dec4eaf5ed1769a20ca4d264f58a2dc3c7b`.
 
-Evidence PR [#3960](https://github.com/Yeachan-Heo/oh-my-codex/pull/3960) carries this publication proof to main. The single merge-commit back-merge main→dev and the dev base-version bump to `0.21.42` remain pending.
+Evidence PR [#3960](https://github.com/Yeachan-Heo/oh-my-codex/pull/3960) carried the publication proof to main and merged at `069fbd185a605df76a684028c6d4a7acf0abb156`. Main push CI after that merge, run [40948178945](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40948178945), passed with 24 success, 1 skipped, and 0 failures; both macOS Ralplan preflights (Node 20 job [123709035788](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40948178945/job/123709035788), Node 26.5.1 job [123709035808](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40948178945/job/123709035808)) and CI Status [123719007758](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40948178945/job/123719007758) passed.
+
+The main-to-dev back-merge PR [#3961](https://github.com/Yeachan-Heo/oh-my-codex/pull/3961) merged with one merge commit, `c062b3df163559253f9eb5a9e1e373ae0f39e24d`, and includes the #3960 publication evidence. Its exact-head Codex review completed with zero findings and the in-thread gate printed `[]`. PR CI run [40951411436](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40951411436) passed its active checks. Full-suite CI dispatched against the back-merge head, run [40951633865](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40951633865), passed (24 success, 1 skipped, 0 failures), including macOS Ralplan Node 20 job [123721071611](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40951633865/job/123721071611), Node 26.5.1 job [123721071637](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40951633865/job/123721071637), and CI Status [123730494701](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40951633865/job/123730494701). Post-merge dev push CI [40954820132](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40954820132) passed its active checks; full-suite CI on the exact dev merge commit, run [40954945155](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40954945155), passed (24 success, 1 skipped, 0 failures), including both macOS preflights [123732595150](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40954945155/job/123732595150) (Node 20) and [123732595081](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40954945155/job/123732595081) (Node 26.5.1), plus CI Status [123742579134](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40954945155/job/123742579134). `origin/main` is an ancestor of `origin/dev`.
+
+The dev-only version bump PR [#3962](https://github.com/Yeachan-Heo/oh-my-codex/pull/3962) updates `package.json`, both root package-lock versions, the Cargo workspace and six OMX lock entries, and the plugin manifest to `0.21.42`. It does not move or republish the `v0.21.41` tag.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
