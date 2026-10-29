@@ -6,14 +6,16 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import {
-  validateGateName,
-  validateCustomGate,
+  validateSkillName,
+  validateQualityGate,
   readQualityGatesConfig,
   readValidatedQualityGates,
   getGatesForStage,
   getAdvisoryGatesForStage,
   getBlockingGatesForStage,
-  type CustomQualityGate,
+  validateAllQualityGates,
+  type QualityGate,
+  type QualityGatesConfig,
 } from '../quality-gates.js';
 
 const mkdtempAsync = promisify(mkdtemp);
@@ -31,168 +33,143 @@ describe('quality gates config', () => {
     }
   });
 
-  describe('validateGateName', () => {
-    it('accepts valid kebab-case names', () => {
-      const validNames = ['my-gate', 'foo-bar-baz', 'test123', 'gate-2-check'];
-      for (const name of validNames) {
-        const result = validateGateName(name);
-        assert.strictEqual(result.valid, true, `Expected "${name}" to be valid`);
+  describe('validateSkillName', () => {
+    it('accepts valid kebab-case skill names', () => {
+      const validSkills = ['my-custom-gate', 'foo-bar-baz', 'test123', 'analysis-check', 'my-review-v2'];
+      for (const skill of validSkills) {
+        const result = validateSkillName(skill);
+        assert.strictEqual(result.valid, true, `Expected "${skill}" to be valid`);
       }
     });
 
-    it('rejects non-kebab-case names', () => {
-      const invalidNames = ['MyGate', 'my_gate', 'my gate', 'my.gate', '-my-gate', 'my-gate-'];
-      for (const name of invalidNames) {
-        const result = validateGateName(name);
-        assert.strictEqual(result.valid, false, `Expected "${name}" to be invalid`);
-        assert.ok(result.error, `Expected error message for "${name}"`);
+    it('accepts skill names with $ prefix', () => {
+      const validSkills = ['$my-custom-skill', '$analyze', '$ask'];
+      for (const skill of validSkills) {
+        const result = validateSkillName(skill);
+        assert.strictEqual(result.valid, true, `Expected "${skill}" to be valid`);
       }
     });
 
-    it('rejects reserved gate names', () => {
-      const reserved = ['ai-slop-cleaner', 'verification', 'code-review', 'architecture-invariant-gate'];
-      for (const name of reserved) {
-        const result = validateGateName(name);
-        assert.strictEqual(result.valid, false, `Expected "${name}" to be reserved`);
+    it('rejects non-kebab-case skill names', () => {
+      const invalidSkills = ['MySkill', 'my_skill', 'my skill', 'my.skill', '-my-skill', 'my-skill-'];
+      for (const skill of invalidSkills) {
+        const result = validateSkillName(skill);
+        assert.strictEqual(result.valid, false, `Expected "${skill}" to be invalid`);
+        assert.ok(result.error, `Expected error message for "${skill}"`);
+      }
+    });
+
+    it('rejects reserved skill names', () => {
+      const reserved = ['deep-interview', 'code-review', 'verification', 'ai-slop-cleaner'];
+      for (const skill of reserved) {
+        const result = validateSkillName(skill);
+        assert.strictEqual(result.valid, false, `Expected "${skill}" to be reserved`);
         assert.match(result.error!, /reserved/i);
       }
     });
 
-    it('rejects sunset/deprecated gate names', () => {
-      const sunset = ['legacy-review', 'deprecated-lint', 'obsolete-test'];
-      for (const name of sunset) {
-        const result = validateGateName(name);
-        assert.strictEqual(result.valid, false, `Expected "${name}" to be sunset`);
+    it('rejects sunset skill names from sunset-stub', () => {
+      // These are from REMOVED_SKILLS in sunset-stub.ts
+      const sunsetSkills = ['ask-claude', 'deepsearch', 'ecomode', 'ralph'];
+      for (const skill of sunsetSkills) {
+        const result = validateSkillName(skill);
+        assert.strictEqual(result.valid, false, `Expected "${skill}" to be sunset`);
         assert.match(result.error!, /deprecated|sunset/i);
       }
     });
 
-    it('rejects empty or non-string names', () => {
-      const result1 = validateGateName('');
+    it('rejects empty or non-string skill names', () => {
+      const result1 = validateSkillName('');
       assert.strictEqual(result1.valid, false);
 
-      const result2 = validateGateName(null as unknown as string);
+      const result2 = validateSkillName(null as unknown as string);
       assert.strictEqual(result2.valid, false);
     });
   });
 
-  describe('validateCustomGate', () => {
-    const validGate: CustomQualityGate = {
-      name: 'my-custom-gate',
-      label: 'My Custom Gate',
-      level: 'advisory',
-      stages: ['interview', 'plan'],
+  describe('validateQualityGate', () => {
+    const validGate: QualityGate = {
+      skill: 'my-custom-skill',
+      mode: 'advisory',
     };
 
-    it('accepts valid custom gate', () => {
-      const result = validateCustomGate(validGate);
+    it('accepts valid quality gate', () => {
+      const result = validateQualityGate(validGate);
       assert.strictEqual(result.valid, true);
       assert.strictEqual(result.errors.length, 0);
     });
 
-    it('accepts gate with all optional properties', () => {
-      const gate: CustomQualityGate = {
+    it('accepts gate with optional model', () => {
+      const gate: QualityGate = {
         ...validGate,
-        description: 'Gate for testing',
-        skill: 'my-skill',
+        model: 'gpt-6-astra',
       };
-      const result = validateCustomGate(gate);
+      const result = validateQualityGate(gate);
       assert.strictEqual(result.valid, true);
     });
 
-    it('requires name property', () => {
-      const gate = { ...validGate, name: undefined };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('name')));
+    it('accepts blocking gate', () => {
+      const gate: QualityGate = {
+        skill: 'my-blocking-gate',
+        mode: 'blocking',
+      };
+      const result = validateQualityGate(gate);
+      assert.strictEqual(result.valid, true);
     });
 
-    it('requires label property', () => {
-      const gate = { ...validGate, label: undefined };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('label')));
-    });
-
-    it('requires valid level (advisory or blocking)', () => {
-      const gate = { ...validGate, level: 'invalid' };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('level')));
-    });
-
-    it('requires non-empty stages array', () => {
-      const gate = { ...validGate, stages: [] };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('stages')));
-    });
-
-    it('validates stage names', () => {
-      const gate = { ...validGate, stages: ['invalid-stage'] };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('stage')));
-    });
-
-    it('accepts valid stage names', () => {
-      const validStages = ['interview', 'plan', 'codeReview'];
-      for (const stage of validStages) {
-        const gate = { ...validGate, stages: [stage as any] };
-        const result = validateCustomGate(gate);
-        // Only check stages if other fields are valid
-        assert.ok(!result.errors.some((e) => e.includes(`"${stage}"`)));
-      }
-    });
-
-    it('rejects reserved gate names', () => {
-      const gate = { ...validGate, name: 'ai-slop-cleaner' };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('reserved')));
-    });
-
-    it('rejects sunset gate names', () => {
-      const gate = { ...validGate, name: 'legacy-review' };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, false);
-      assert.ok(result.errors.some((e) => e.includes('deprecated')));
-    });
-
-    it('validates optional skill as string', () => {
-      const gate = { ...validGate, skill: 123 as unknown as string };
-      const result = validateCustomGate(gate);
+    it('requires skill property', () => {
+      const gate = { mode: 'advisory' } as unknown;
+      const result = validateQualityGate(gate);
       assert.strictEqual(result.valid, false);
       assert.ok(result.errors.some((e) => e.includes('skill')));
+    });
+
+    it('requires mode property', () => {
+      const gate = { skill: 'my-skill' } as unknown;
+      const result = validateQualityGate(gate);
+      assert.strictEqual(result.valid, false);
+      assert.ok(result.errors.some((e) => e.includes('mode')));
+    });
+
+    it('rejects invalid mode values', () => {
+      const gate = { skill: 'my-skill', mode: 'invalid' } as unknown;
+      const result = validateQualityGate(gate);
+      assert.strictEqual(result.valid, false);
+      assert.ok(result.errors.some((e) => e.includes('advisory') || e.includes('blocking')));
+    });
+
+    it('rejects invalid skill names', () => {
+      const gate = { skill: 'MySkill', mode: 'advisory' };
+      const result = validateQualityGate(gate);
+      assert.strictEqual(result.valid, false);
+      assert.ok(result.errors.some((e) => e.includes('skill')));
+    });
+
+    it('rejects non-object gates', () => {
+      const result = validateQualityGate('not an object');
+      assert.strictEqual(result.valid, false);
+      assert.ok(result.errors.length > 0);
     });
   });
 
   describe('readQualityGatesConfig', () => {
-    it('returns null when config file does not exist', () => {
+    it('returns null for missing config file', () => {
       const result = readQualityGatesConfig(testDir);
       assert.strictEqual(result, null);
     });
 
-    it('reads quality gates from .omx-config.json', () => {
-      const config = {
-        qualityGates: {
-          gates: [
-            {
-              name: 'test-gate',
-              label: 'Test Gate',
-              level: 'advisory',
-              stages: ['interview'],
-            },
-          ],
-        },
+    it('reads valid config file', () => {
+      const config: QualityGatesConfig = {
+        interview: [{ skill: 'my-interview-gate', mode: 'advisory' }],
+        plan: [{ skill: 'my-plan-gate', mode: 'blocking' }],
       };
-      writeFileSync(join(testDir, '.omx-config.json'), JSON.stringify(config));
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
 
       const result = readQualityGatesConfig(testDir);
-      assert.ok(result);
-      assert.ok(Array.isArray(result.gates));
-      assert.strictEqual(result.gates.length, 1);
-      assert.strictEqual(result.gates[0].name, 'test-gate');
+      assert.deepStrictEqual(result, config);
     });
 
     it('returns null for invalid config file', () => {
@@ -201,135 +178,151 @@ describe('quality gates config', () => {
       assert.strictEqual(result, null);
     });
 
-    it('returns null when qualityGates is not an object', () => {
-      const config = { qualityGates: 'not-an-object' };
-      writeFileSync(join(testDir, '.omx-config.json'), JSON.stringify(config));
-
+    it('returns null when qualityGates is missing', () => {
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ otherConfig: {} }, null, 2),
+      );
       const result = readQualityGatesConfig(testDir);
       assert.strictEqual(result, null);
     });
   });
 
   describe('readValidatedQualityGates', () => {
-    it('returns empty arrays when no config', () => {
-      const result = readValidatedQualityGates(testDir);
+    it('returns empty array for missing config', () => {
+      const result = readValidatedQualityGates('interview', testDir);
       assert.deepStrictEqual(result.gates, []);
       assert.deepStrictEqual(result.errors, []);
     });
 
-    it('validates all gates and reports errors', () => {
-      const config = {
-        qualityGates: {
-          gates: [
-            {
-              name: 'valid-gate',
-              label: 'Valid Gate',
-              level: 'blocking',
-              stages: ['plan'],
-            },
-            {
-              name: 'invalid-gate',
-              label: 'Invalid Gate',
-              // Missing required 'level'
-              stages: ['interview'],
-            },
-            {
-              name: 'ai-slop-cleaner', // Reserved name
-              label: 'Reserved Gate',
-              level: 'advisory',
-              stages: ['codeReview'],
-            },
-          ],
-        },
+    it('validates gates for specific stage', () => {
+      const config: QualityGatesConfig = {
+        interview: [
+          { skill: 'valid-gate', mode: 'advisory' },
+          { skill: 'invalid-mode', mode: 'invalid' } as unknown as QualityGate,
+        ],
       };
-      writeFileSync(join(testDir, '.omx-config.json'), JSON.stringify(config));
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
 
-      const result = readValidatedQualityGates(testDir);
+      const result = readValidatedQualityGates('interview', testDir);
       assert.strictEqual(result.gates.length, 1);
-      assert.strictEqual(result.gates[0].name, 'valid-gate');
-      assert.strictEqual(result.errors.length, 2);
+      assert.strictEqual(result.errors.length, 1);
+      assert.strictEqual(result.gates[0].skill, 'valid-gate');
+    });
+
+    it('returns empty array for non-existent stage', () => {
+      const config: QualityGatesConfig = {
+        interview: [{ skill: 'my-gate', mode: 'advisory' }],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = readValidatedQualityGates('codeReview', testDir);
+      assert.deepStrictEqual(result.gates, []);
+      assert.deepStrictEqual(result.errors, []);
     });
   });
 
-  describe('stage-based filtering', () => {
-    beforeEach(async () => {
-      const config = {
-        qualityGates: {
-          gates: [
-            {
-              name: 'interview-gate',
-              label: 'Interview Gate',
-              level: 'advisory',
-              stages: ['interview'],
-            },
-            {
-              name: 'blocking-gate',
-              label: 'Blocking Gate',
-              level: 'blocking',
-              stages: ['interview', 'plan'],
-            },
-            {
-              name: 'review-gate',
-              label: 'Review Gate',
-              level: 'advisory',
-              stages: ['codeReview'],
-            },
-          ],
-        },
+  describe('getGatesForStage', () => {
+    it('returns gates for the specified stage', () => {
+      const config: QualityGatesConfig = {
+        interview: [{ skill: 'interview-gate', mode: 'advisory' }],
+        plan: [{ skill: 'plan-gate', mode: 'blocking' }],
+        codeReview: [{ skill: 'review-gate', mode: 'advisory' }],
       };
-      writeFileSync(join(testDir, '.omx-config.json'), JSON.stringify(config));
-    });
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
 
-    it('getGatesForStage returns gates matching stage', () => {
       const interviewGates = getGatesForStage('interview', testDir);
-      assert.strictEqual(interviewGates.length, 2);
-      assert.ok(interviewGates.some((g) => g.name === 'interview-gate'));
-      assert.ok(interviewGates.some((g) => g.name === 'blocking-gate'));
+      assert.strictEqual(interviewGates.length, 1);
+      assert.strictEqual(interviewGates[0].skill, 'interview-gate');
 
       const planGates = getGatesForStage('plan', testDir);
       assert.strictEqual(planGates.length, 1);
-      assert.strictEqual(planGates[0].name, 'blocking-gate');
+      assert.strictEqual(planGates[0].skill, 'plan-gate');
 
       const reviewGates = getGatesForStage('codeReview', testDir);
       assert.strictEqual(reviewGates.length, 1);
-      assert.strictEqual(reviewGates[0].name, 'review-gate');
-    });
-
-    it('getAdvisoryGatesForStage filters by level', () => {
-      const advisoryGates = getAdvisoryGatesForStage('interview', testDir);
-      assert.strictEqual(advisoryGates.length, 1);
-      assert.strictEqual(advisoryGates[0].name, 'interview-gate');
-    });
-
-    it('getBlockingGatesForStage filters by level', () => {
-      const blockingGates = getBlockingGatesForStage('interview', testDir);
-      assert.strictEqual(blockingGates.length, 1);
-      assert.strictEqual(blockingGates[0].name, 'blocking-gate');
+      assert.strictEqual(reviewGates[0].skill, 'review-gate');
     });
   });
 
-  describe('missing skill validation', () => {
-    it('accepts gates with skill reference', () => {
-      const gate: CustomQualityGate = {
-        name: 'skill-gate',
-        label: 'Skill Gate',
-        level: 'blocking',
-        stages: ['interview'],
-        skill: 'my-skill',
+  describe('getAdvisoryGatesForStage', () => {
+    it('filters gates by advisory mode', () => {
+      const config: QualityGatesConfig = {
+        interview: [
+          { skill: 'advisory-gate', mode: 'advisory' },
+          { skill: 'blocking-gate', mode: 'blocking' },
+        ],
       };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, true);
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const advisoryGates = getAdvisoryGatesForStage('interview', testDir);
+      assert.strictEqual(advisoryGates.length, 1);
+      assert.strictEqual(advisoryGates[0].skill, 'advisory-gate');
+    });
+  });
+
+  describe('getBlockingGatesForStage', () => {
+    it('filters gates by blocking mode', () => {
+      const config: QualityGatesConfig = {
+        interview: [
+          { skill: 'advisory-gate', mode: 'advisory' },
+          { skill: 'blocking-gate', mode: 'blocking' },
+        ],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const blockingGates = getBlockingGatesForStage('interview', testDir);
+      assert.strictEqual(blockingGates.length, 1);
+      assert.strictEqual(blockingGates[0].skill, 'blocking-gate');
+    });
+  });
+
+  describe('validateAllQualityGates', () => {
+    it('validates gates across all stages', () => {
+      const config: QualityGatesConfig = {
+        interview: [{ skill: 'interview-gate', mode: 'advisory' }],
+        plan: [{ skill: 'plan-gate', mode: 'blocking' }],
+        codeReview: [{ skill: 'review-gate', mode: 'advisory' }],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = validateAllQualityGates(testDir);
+      assert.strictEqual(result.gates.length, 3);
+      assert.strictEqual(result.errors.length, 0);
     });
 
-    it('accepts gates without skill reference', () => {
-      const gate: CustomQualityGate = {
-        name: 'no-skill-gate',
-        label: 'No Skill Gate',
-        level: 'advisory',
-        stages: ['plan'],
+    it('collects validation errors across stages', () => {
+      const config: QualityGatesConfig = {
+        interview: [{ skill: 'valid-gate', mode: 'advisory' }],
+        plan: [{ skill: 'invalid-mode', mode: 'invalid' } as unknown as QualityGate],
+        codeReview: [{ skill: 'MyGate', mode: 'blocking' }],
       };
-      const result = validateCustomGate(gate);
-      assert.strictEqual(result.valid, true);
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = validateAllQualityGates(testDir);
+      assert.strictEqual(result.gates.length, 1);
+      assert.strictEqual(result.errors.length, 2);
     });
   });
 });

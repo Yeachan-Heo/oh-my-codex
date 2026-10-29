@@ -2,23 +2,34 @@
 
 ## Overview
 
-OMX supports configurable custom quality gates for workflow stages (interview, plan, code-review) via the `.omx-config.json` configuration file. Custom quality gates allow you to enforce additional checks and requirements at specific points in the workflow.
+OMX supports configurable custom quality gates for workflow stages (interview, plan, code-review) via the `.omx-config.json` configuration file. Quality gates allow you to invoke specialized skills at specific workflow stages to perform additional checks, validations, or reviews.
+
+Each gate spawns as a native subagent with the named skill, enabling real integration with OMX's skill system.
 
 ## Configuration Schema
 
-Quality gates are configured in the `.omx-config.json` file under the `qualityGates` section:
+Quality gates are configured in the `.omx-config.json` file under the `qualityGates` section, organized by stage:
 
 ```json
 {
   "qualityGates": {
-    "gates": [
+    "interview": [
       {
-        "name": "my-custom-gate",
-        "label": "My Custom Quality Gate",
-        "level": "advisory",
-        "stages": ["interview", "plan"],
-        "description": "Verifies custom requirements",
-        "skill": "my-custom-skill"
+        "skill": "$deep-interview",
+        "mode": "advisory",
+        "model": "gpt-6-astra"
+      }
+    ],
+    "plan": [
+      {
+        "skill": "$code-review",
+        "mode": "blocking"
+      }
+    ],
+    "codeReview": [
+      {
+        "skill": "$analyze",
+        "mode": "advisory"
       }
     ]
   }
@@ -31,148 +42,70 @@ Quality gates are configured in the `.omx-config.json` file under the `qualityGa
 
 | Property | Type | Description |
 | --- | --- | --- |
-| `name` | string | Unique gate identifier in kebab-case (e.g., `my-gate`, `custom-check-v2`). Must be lowercase alphanumeric with hyphens. Cannot be a reserved or sunset name. |
-| `label` | string | Human-readable label for the gate (e.g., `"My Custom Quality Gate"`). |
-| `level` | string | Gate enforcement level: `advisory` (warning/recommendation) or `blocking` (must pass to proceed). |
-| `stages` | string[] | Array of workflow stages where this gate applies. Valid values: `interview`, `plan`, `codeReview`. Must be non-empty. |
+| `skill` | string | Skill name to invoke for this gate (e.g., `$deep-interview`, `$code-review`, `$analyze`). Must be a valid, non-sunset skill name. Optionally prefixed with `$`. |
+| `mode` | string | Gate enforcement mode: `advisory` (warning/recommendation) or `blocking` (must pass to proceed). |
 
 ### Optional Properties
 
 | Property | Type | Description |
 | --- | --- | --- |
-| `description` | string | Detailed description of what this gate verifies. |
-| `skill` | string | Associated OMX skill name that can help resolve gate failures. |
+| `model` | string | Model override for this gate's skill execution (e.g., `gpt-6-astra`). If omitted, uses configured defaults. |
 
-## Gate Levels
+## Gate Modes
 
 ### Advisory Gates
-Advisory gates provide recommendations and warnings but do not block workflow progression. They are useful for:
-- Suggesting best practices
-- Highlighting potential issues for review
-- Informing stakeholders of quality metrics
+
+Advisory gates provide recommendations and findings without blocking workflow progression. They:
+- Record verdicts in the stage receipt
+- Inform stakeholders of findings
+- Allow iteration to continue even if findings exist
 
 ### Blocking Gates
-Blocking gates must be satisfied before proceeding. They are enforced for:
-- Critical requirements
-- Compliance and safety checks
-- Mandatory verification steps
+
+Blocking gates must pass or be resolved before proceeding. They:
+- Record verdicts in the stage receipt
+- Feed into the revise loop within the iteration cap
+- Halt progression until resolved (or iteration cap exceeded)
 
 ## Workflow Stages
 
-| Stage | Description |
-| --- | --- |
-| `interview` | Initial requirements and specification gathering |
-| `plan` | Planning and design phase |
-| `codeReview` | Code review and approval stage |
+| Stage | Skill Integration | Description |
+| --- | --- | --- |
+| `interview` | $deep-interview final-spec stage | Requirements gathering and specification phase |
+| `plan` | $plan/$ralplan Architect→Critic review | Planning and design phase |
+| `codeReview` | $code-review stage | Code review and approval |
 
-A gate can apply to multiple stages. For example, a gate can be configured to check both interview and plan stages.
+Each gate spawns as a subagent during its stage, running the specified skill alongside standard reviewers.
 
-## Reserved Gate Names
+## Reserved and Sunset Skill Names
 
-The following gate names are reserved for built-in OMX quality gates and cannot be customized:
+The following skill names are reserved for built-in OMX systems:
+- `deep-interview` — built-in interview skill
+- `code-review` — built-in review skill
+- `verification` — built-in test verification
+- `ai-slop-cleaner` — built-in quality verification
 
-- `ai-slop-cleaner` — AI content quality verification
-- `verification` — Test and verification checks
-- `code-review` — Code review approval
-- `architecture-invariant-gate` — Architecture/domain invariant verification
+Sunset skills from the removed skills list (e.g., `ask-claude`, `deepsearch`, `ralph`, `ecomode`) cannot be used and will be rejected with validation errors.
 
-Attempting to define custom gates with reserved names will result in a validation error.
+## Skill Name Format
 
-## Sunset/Deprecated Gate Names
-
-The following gate names are deprecated and no longer supported:
-
-- `legacy-review` — Replaced by code-review
-- `deprecated-lint` — Use verification instead
-- `obsolete-test` — Use verification instead
-
-Attempting to use sunset names will result in a validation error.
-
-## Gate Name Format
-
-Custom gate names must follow kebab-case convention:
+Custom skill names must follow kebab-case convention:
 - Only lowercase letters, digits, and hyphens
-- Must start with a letter or digit
-- Must end with a letter or digit
-- Examples: `my-gate`, `custom-check-v2`, `compliance-check`
+- Optional `$` prefix (e.g., `$my-skill` or `my-skill`)
+- Examples: `my-custom-gate`, `analysis-check-v2`, `compliance-review`
 
 Invalid formats (rejected):
-- `MyGate` (contains uppercase)
-- `my_gate` (contains underscore)
-- `my.gate` (contains period)
-- `-my-gate` (starts with hyphen)
-- `my-gate-` (ends with hyphen)
+- `MySkill` (contains uppercase)
+- `my_skill` (contains underscore)
+- `my.skill` (contains period)
+- `-my-skill` (starts with hyphen, sans $ prefix)
 
-## Configuration Examples
+## Missing Skill Handling
 
-### Single Advisory Gate
-
-```json
-{
-  "qualityGates": {
-    "gates": [
-      {
-        "name": "performance-check",
-        "label": "Performance Benchmark",
-        "level": "advisory",
-        "stages": ["interview"],
-        "description": "Validates performance assumptions are documented"
-      }
-    ]
-  }
-}
-```
-
-### Blocking Gate for Multiple Stages
-
-```json
-{
-  "qualityGates": {
-    "gates": [
-      {
-        "name": "security-scan",
-        "label": "Security Vulnerability Scan",
-        "level": "blocking",
-        "stages": ["plan", "codeReview"],
-        "description": "Ensures no known vulnerabilities in dependencies",
-        "skill": "security-audit"
-      }
-    ]
-  }
-}
-```
-
-### Multiple Gates
-
-```json
-{
-  "qualityGates": {
-    "gates": [
-      {
-        "name": "accessibility-audit",
-        "label": "Accessibility Compliance",
-        "level": "advisory",
-        "stages": ["codeReview"],
-        "skill": "a11y-audit"
-      },
-      {
-        "name": "documentation-check",
-        "label": "Documentation Coverage",
-        "level": "blocking",
-        "stages": ["interview", "plan"],
-        "description": "Verifies API documentation is complete"
-      },
-      {
-        "name": "test-coverage",
-        "label": "Test Coverage Threshold",
-        "level": "blocking",
-        "stages": ["codeReview"],
-        "skill": "coverage-analyzer"
-      }
-    ]
-  }
-}
-```
+If a configured skill cannot be found:
+- A visible warning is emitted
+- The gate receipt records `gate_unavailable`
+- The workflow continues (advisory gates) or offers remediation options (blocking gates)
 
 ## Validation
 
@@ -182,27 +115,100 @@ Quality gate configurations are validated when:
 3. Gate-related operations are executed
 
 Validation checks:
-- ✓ Gate name is valid kebab-case format
-- ✓ Gate name is not reserved
-- ✓ Gate name is not sunset/deprecated
-- ✓ All required properties are present
-- ✓ Level is `advisory` or `blocking`
-- ✓ Stages array is non-empty
-- ✓ Each stage is valid (`interview`, `plan`, or `codeReview`)
-- ✓ Optional skill property is a non-empty string if provided
+- ✓ Skill name is valid kebab-case format
+- ✓ Skill is not reserved
+- ✓ Skill is not sunset/deprecated
+- ✓ Mode is `advisory` or `blocking`
+- ✓ Optional model is a non-empty string
 
 Invalid gates are skipped with error reporting. Use `omx doctor` to diagnose configuration issues.
 
-## Implementation Status
+## Wiring Details
 
-This feature supports:
-- ✓ Reading custom quality gates from configuration
-- ✓ Validation of gate definitions
-- ✓ Stage-based gate filtering
-- ✓ Advisory and blocking levels
-- ✓ Optional skill references
+### Interview Stage (final-spec)
+
+Gates configured for `interview` are invoked during the `$deep-interview` skill's final-spec stage, after specification is complete and before handoff. Each gate:
+- Receives the final spec context
+- Spawns as a subagent with the configured skill
+- Records advisory findings or blocking verdicts in the stage receipt
+
+### Plan Stage (Architect→Critic)
+
+Gates configured for `plan` are invoked during `$plan` or `$ralplan` Architect→Critic review stage, after initial planning. Each gate:
+- Receives the plan context
+- Spawns as a subagent with the configured skill
+- Records verdicts in the plan receipt
+- Blocking gates feed into the revise loop within the iteration cap
+
+### Code Review Stage
+
+Gates configured for `codeReview` are invoked during the `$code-review` stage alongside standard reviewers. Each gate:
+- Spawns as a subagent with the configured skill
+- Records findings in the code review receipt
+- Blocking verdicts halt approval until resolved
+
+## Examples
+
+### Security Review Gate
+
+```json
+{
+  "qualityGates": {
+    "codeReview": [
+      {
+        "skill": "$code-review",
+        "mode": "blocking"
+      }
+    ]
+  }
+}
+```
+
+### Multi-Stage Verification
+
+```json
+{
+  "qualityGates": {
+    "interview": [
+      {
+        "skill": "$analyze",
+        "mode": "advisory"
+      }
+    ],
+    "plan": [
+      {
+        "skill": "$code-review",
+        "mode": "blocking"
+      }
+    ],
+    "codeReview": [
+      {
+        "skill": "$analyze",
+        "mode": "advisory"
+      }
+    ]
+  }
+}
+```
+
+### Custom Model Override
+
+```json
+{
+  "qualityGates": {
+    "plan": [
+      {
+        "skill": "$analyze",
+        "mode": "advisory",
+        "model": "gpt-6-astra"
+      }
+    ]
+  }
+}
+```
 
 ## See Also
 
 - [.omx-config.json Reference](./omx-config-schema-routing.md)
+- [Skills Reference](../skills/)
 - [Quality Gate System Architecture](../architecture/quality-gates.md)
