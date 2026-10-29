@@ -1,5 +1,4 @@
 import type { AdvisoryReviewLifecycle } from './advisory-evidence.js';
-import type { QualityGate } from '../config/quality-gates.js';
 export type { AdvisoryReviewLifecycle } from './advisory-evidence.js';
 
 export const RALPLAN_ACTIVE_PHASES = ['draft', 'architect-review', 'critic-review', 'complete'] as const;
@@ -49,7 +48,8 @@ export interface RalplanReviewResult {
   advisory_artifact_manifest_sha256?: string;
 }
 
-export interface RalplanQualityGateResult extends QualityGate {
+export interface RalplanQualityGateResult {
+  skill: string;
   iteration: number;
   verdict: RalplanReviewVerdict | 'unavailable';
   summary: string;
@@ -89,9 +89,9 @@ export interface RalplanConsensusExecutor {
     draft: RalplanDraftResult;
     architectReview: RalplanReviewResult;
   }): Promise<RalplanReviewResult>;
-  /** Spawn the configured skill as a native subagent, honoring gate.model and gate.mode. */
+  /** Spawn the configured skill as a native subagent. */
   qualityGateReview?(ctx: RalplanConsensusIterationContext & {
-    gate: QualityGate;
+    gateName: string;
     draft: RalplanDraftResult;
     architectReview: RalplanReviewResult;
     criticReview: RalplanReviewResult;

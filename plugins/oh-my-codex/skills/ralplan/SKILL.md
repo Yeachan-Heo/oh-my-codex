@@ -162,3 +162,7 @@ Once Ralplan is active, preserve the planning/execution and consensus handoff re
 **Good:** The user changes only the output shape or downstream delivery step (for example `make a PR`). Preserve earlier non-conflicting workflow constraints and apply the update locally.
 
 **Bad:** The user says `continue`, and the workflow restarts discovery or stops before the missing verification/evidence is gathered.
+
+## Quality Gates
+
+Custom quality gates can be configured for the ralplan Architect→Critic review stage via `.omx-config.json` under `qualityGates."ralplan"`. This is also used by `$plan` consensus mode. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md).

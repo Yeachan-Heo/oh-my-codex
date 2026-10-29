@@ -122,3 +122,7 @@ Stop when the scoped diff has two independent lane results and a deterministic f
 recommendation. Report `APPROVE` only under the approval criteria; otherwise leave a
 bounded `REQUEST CHANGES`, `COMMENT`, or unavailable-review result. Never claim
 merge-ready without the required evidence.
+
+## Quality Gates
+
+Custom quality gates can be configured for the code-review stage via `.omx-config.json` under `qualityGates."code-review"`. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md).

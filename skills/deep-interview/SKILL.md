@@ -574,4 +574,9 @@ autopilot -> deep-interview -> ralplan -> ultragoal
 - Stage 1 (deep-interview): ambiguity clearance and execution-ready requirements artifact
 - Stage 2 (ralplan): feasibility, architecture, and consensus gate
 - Stage 3 (ultragoal): durable execution, verification, and completion receipts
+
+## Quality Gates
+
+Custom quality gates can be configured for the deep-interview final-spec stage via `.omx-config.json` under `qualityGates."deep-interview"`. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md).
+
 </Advanced>

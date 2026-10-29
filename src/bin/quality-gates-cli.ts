@@ -1,16 +1,16 @@
 /**
  * Quality Gates CLI Command
  *
- * Provides CLI interface for managing and listing configured quality gates.
+ * Provides CLI interface for listing configured quality gates.
  * Usage:
- *   omx quality-gates list --stage interview|plan|codeReview
+ *   omx quality-gates list --stage deep-interview|ralplan|code-review
  *
- * Returns JSON string: {gates: [...], stage: "...", advisory: [...], blocking: [...]}
+ * Returns JSON string: {gates: [...], stage: "..."}
  * or {error: string} for errors.
  * No console output or exit code changes—dispatcher handles all I/O.
  */
 
-import { getGatesForStage, getAdvisoryGatesForStage, getBlockingGatesForStage } from '../config/quality-gates.js';
+import { getGatesForStage } from '../config/quality-gates.js';
 import type { QualityGateStage } from '../config/quality-gates.js';
 
 interface QualityGatesCliOptions {
@@ -39,7 +39,7 @@ function parseQualityGatesArgs(args: string[]): QualityGatesCliOptions {
       i++;
     } else if (arg === '--stage') {
       const stage = args[i + 1];
-      if (stage && ['interview', 'plan', 'codeReview'].includes(stage)) {
+      if (stage && ['deep-interview', 'ralplan', 'code-review'].includes(stage)) {
         options.stage = stage as QualityGateStage;
       }
       i += 2;
@@ -50,7 +50,7 @@ function parseQualityGatesArgs(args: string[]): QualityGatesCliOptions {
     } else if (arg === 'list') {
       options.subcommand = arg;
       i++;
-    } else if (arg === 'validate' || arg === 'run' || ['help', 'init', 'config'].includes(arg)) {
+    } else if (['validate', 'run', 'help', 'init', 'config'].includes(arg)) {
       // Unsupported subcommand
       options.subcommand = arg;
       i++;
@@ -77,9 +77,7 @@ export function qualityGatesCommand(
     // Help is shown by dispatcher; return empty success
     return JSON.stringify({
       gates: [],
-      stage: 'plan' as QualityGateStage,
-      advisory: [],
-      blocking: [],
+      stage: 'ralplan' as QualityGateStage,
     });
   }
 
@@ -112,25 +110,9 @@ export function qualityGatesCommand(
   }
 
   const gates = getGatesForStage(options.stage, codexHomeOverride);
-  const advisory = getAdvisoryGatesForStage(options.stage, codexHomeOverride);
-  const blocking = getBlockingGatesForStage(options.stage, codexHomeOverride);
 
   return JSON.stringify({
-    gates: gates.map((g) => ({
-      skill: g.skill,
-      mode: g.mode,
-      ...(g.model ? { model: g.model } : {}),
-    })),
+    gates,
     stage: options.stage,
-    advisory: advisory.map((g) => ({
-      skill: g.skill,
-      mode: g.mode,
-      ...(g.model ? { model: g.model } : {}),
-    })),
-    blocking: blocking.map((g) => ({
-      skill: g.skill,
-      mode: g.mode,
-      ...(g.model ? { model: g.model } : {}),
-    })),
   });
 }
