@@ -3709,6 +3709,74 @@ describe('session pointer transaction', () => {
     }
   });
 
+  it('P1: rejects SessionStart republishing a managed daemon to the canonical pointer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-daemon-canonical-republish-'));
+    const nativeSessionId = 'native-daemon-codex';
+    const daemonObservation = linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768');
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      // Setup: Create canonical pointer with managed daemon owner (non-runtime-owner status)
+      const pointerPath = join(context.baseStateDir, 'session.json');
+      await mkdir(dirname(pointerPath), { recursive: true });
+      const initialDaemonState = {
+        session_id: 'omx-session-from-daemon',
+        native_session_id: nativeSessionId,
+        started_at: '2026-10-28T23:00:00.000Z',
+        cwd,
+        state_root: context.baseStateDir,
+        pid: 57617,
+        platform: 'linux',
+        identity_schema_version: 2,
+        process_identity: daemonObservation.identity,
+        pid_start_ticks: 87768,
+        pid_cmdline: MANAGED_CODEX_DAEMON_CMDLINE,
+      };
+      await writeFile(pointerPath, JSON.stringify(initialDaemonState), 'utf-8');
+
+      await withPointerDependencies({
+        runtimePlatform: 'linux',
+        probePid: () => 'alive',
+        observeProcess: () => daemonObservation,
+      }, async () => {
+        // Verify the canonical pointer is classified as non-runtime-owner
+        const canonicalPointerStatus = (await readSessionPointer(context)).status;
+        assert.equal(canonicalPointerStatus, 'non-runtime-owner', 'canonical pointer should be non-runtime-owner before SessionStart');
+
+        // Now call reconcileNativeSessionStart as if SessionStart is being called with the same managed daemon
+        // This should NOT republish the managed daemon to the canonical pointer
+        // Instead, it should create a fresh OMX session (treating the daemon pointer as if it were absent)
+        const reconciled = await reconcileNativeSessionStart(cwd, nativeSessionId, {
+          pid: 57617,
+          platform: 'linux',
+        });
+
+        // The reconciled state should have a fresh session ID (not 'omx-session-from-daemon')
+        // and should NOT be republishing the daemon's process identity to the canonical pointer
+        assert.notEqual(
+          reconciled.session_id,
+          'omx-session-from-daemon',
+          'SessionStart should create a fresh session, not inherit the managed daemon session ID'
+        );
+        
+        // The reconciled state should have the native session ID
+        assert.equal(reconciled.native_session_id, nativeSessionId);
+        
+        // Verify the canonical pointer now points to the fresh OMX session, not the daemon
+        const pointerAfter = await readSessionPointer(context);
+        assert.equal(pointerAfter.status, 'usable', 'canonical pointer should be usable after SessionStart creates a fresh session');
+        assert.equal(pointerAfter.state?.session_id, reconciled.session_id, 'pointer should reference the fresh session');
+        // Verify that the new pointer does NOT have the daemon's cmdline
+        assert.notEqual(
+          pointerAfter.state?.pid_cmdline,
+          MANAGED_CODEX_DAEMON_CMDLINE,
+          'fresh session pointer should not have the managed daemon cmdline'
+        );
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a symlinked native owner state root', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-owner-root-symlink-'));
     try {

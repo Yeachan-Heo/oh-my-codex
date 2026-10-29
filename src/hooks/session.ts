@@ -3597,8 +3597,12 @@ function reconcileNativeTransition(
     // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
     // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
     // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    // `non-runtime-owner` (managed daemon) pointers are never updated: they are treated as if no usable
+    // pointer exists, allowing SessionStart to establish a fresh OMX session without republishing daemon ownership.
+    const isManagedDaemonPointer = pointer.status === 'non-runtime-owner';
     if (
-      pointer.status !== 'absent'
+      !isManagedDaemonPointer
+      && pointer.status !== 'absent'
       && pointer.status !== 'stale-dead'
       && pointer.status !== 'usable'
       && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
@@ -3610,8 +3614,10 @@ function reconcileNativeTransition(
     const platform = options.platform ?? process.platform;
     const linuxIdentity = sessionIdentityFor(pid, platform);
     const livenessProven = pointer.status === 'usable';
-    const existing = livenessProven
+    const existing = !isManagedDaemonPointer && (
+      livenessProven
       || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    )
       ? pointer.state
       : undefined;
 
