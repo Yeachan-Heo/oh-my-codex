@@ -577,6 +577,6 @@ autopilot -> deep-interview -> ralplan -> ultragoal
 
 ## Quality Gates
 
-Custom quality gates can be configured for the deep-interview final-spec stage via `.omx-config.json` under `qualityGates."deep-interview"`. Gate entries support both plain strings (blocking mode) and objects with explicit `mode` and optional `model` override. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md) for complete details, mode behavior, and configuration examples.
+Custom quality gates can be configured for the deep-interview final-spec stage via `.omx-config.json` under `qualityGates."deep-interview"`. Gate entries support both plain strings (blocking mode) and objects with explicit `mode` and optional `model` override. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md) for complete details, mode behavior, and configuration examples.
 
 </Advanced>

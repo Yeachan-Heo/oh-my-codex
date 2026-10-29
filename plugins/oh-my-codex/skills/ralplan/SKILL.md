@@ -166,4 +166,4 @@ Once Ralplan is active, preserve the planning/execution and consensus handoff re
 
 ## Quality Gates
 
-Custom quality gates can be configured for the ralplan Architect→Critic review stage via `.omx-config.json` under `qualityGates.ralplan`. Gate entries can be plain skill-name strings (blocking mode) or objects with explicit `mode` and optional `model` override: `{"skill": "name", "mode": "blocking|advisory", "model": "claude-opus"}`. This is also used by `$plan` consensus mode. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md) for complete details and examples.
+Custom quality gates can be configured for the ralplan Architect→Critic review stage via `.omx-config.json` under `qualityGates.ralplan`. Gate entries can be plain skill-name strings (blocking mode) or objects with explicit `mode` and optional `model` override: `{"skill": "name", "mode": "blocking|advisory", "model": "claude-opus"}`. This is also used by `$plan` consensus mode. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md) for complete details and examples.

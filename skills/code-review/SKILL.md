@@ -125,4 +125,4 @@ merge-ready without the required evidence.
 
 ## Quality Gates
 
-Custom quality gates can be configured for the code-review stage via `.omx-config.json` under `qualityGates."code-review"`. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md).
+Custom quality gates can be configured for the code-review stage via `.omx-config.json` under `qualityGates."code-review"`. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md).
