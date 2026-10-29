@@ -309,10 +309,6 @@ export async function runRalplanConsensus(
     ?? (await resolveWritableStateScope(cwd)).sessionId;
   const maxIterations = Math.min(options.maxIterations ?? 5, 5);
   const gateResults: RalplanQualityGateResult[] = [];
-  // Cache gate configurations for blocking decision
-  const gateConfigBySkill = new Map(
-    getGatesForStage('ralplan', cwd).map(gate => [gate.skill, gate])
-  );
   const gateOptions = {
     cwd,
     sessionId: runtimeSessionId,
@@ -506,10 +502,6 @@ export async function runRalplanConsensus(
 
       if (criticReview.verdict === 'approve') {
         const normalizedGates = getGatesForStage('ralplan', cwd);
-        // Pre-populate mode for gates that might not be set in result
-        for (const gate of normalizedGates) {
-          gateConfigBySkill.set(gate.skill, gate);
-        }
         for (const gate of normalizedGates) {
           let result: RalplanQualityGateResult;
           try {
