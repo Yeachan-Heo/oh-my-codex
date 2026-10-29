@@ -7,7 +7,6 @@ import {
 import { resolveWritableStateScope } from '../mcp/state-paths.js';
 import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
-import { codexHome } from '../utils/paths.js';
 import { getGatesForStage } from '../quality-gates/index.js';
 import {
   administrativelyAbandonRalplanAdvisory,
@@ -503,7 +502,7 @@ export async function runRalplanConsensus(
       });
 
       if (criticReview.verdict === 'approve') {
-        const normalizedGates = getGatesForStage('ralplan', codexHome());
+        const normalizedGates = getGatesForStage('ralplan');
         for (const gate of normalizedGates) {
           let result: RalplanQualityGateResult;
           try {
