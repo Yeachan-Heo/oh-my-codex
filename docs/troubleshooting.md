@@ -88,18 +88,18 @@ Do not force-shutdown a team that may still have useful live panes or worker sta
 
 ## Stale session pointer blocks state writes (`session.json is present but unusable`)
 
-State writes fail closed with `Cannot resolve writable state scope: session.json is present but unusable.` when a stale-dead selected pointer lacks a valid `OMX_SESSION_ID` binding, or when the pointer is malformed, belongs to a different working directory, or has indeterminate identity without the bounded exact-session reconciliation described below. Malformed and foreign-working-directory pointers always fail closed; identity-indeterminate pointers have only the narrow exact-session recovery path described below. Durable Ultragoal mutations (`goals.json` story/goal transitions) perform point-in-time writable-authority checks at mutation entry and after lock acquisition; a later SessionStart publication can still interleave before filesystem writes.
+State writes fail closed with `Cannot resolve writable state scope: session.json is present but unusable.` when a stale-dead selected pointer lacks a valid `OMX_SESSION_ID` binding, when a live managed Codex daemon owns the pointer but is not an OMX runtime, or when the pointer is malformed, belongs to a different working directory, or has indeterminate identity without the bounded exact-session reconciliation described below. Malformed and foreign-working-directory pointers always fail closed; identity-indeterminate pointers have only the narrow exact-session recovery path described below. Durable Ultragoal mutations (`goals.json` story/goal transitions) perform point-in-time writable-authority checks at mutation entry and after lock acquisition; a later SessionStart publication can still interleave before filesystem writes.
 
 
-### Exact-session reconciliation (stale-dead pointer)
+### Session pointer recovery (stale-dead or managed-daemon owner)
 
-To remove a verified-dead selected pointer and preserve its exact forensic bytes, use the official recovery command:
+To remove a verified-dead selected pointer or a pointer owned by a verified live managed Codex app-server daemon, preserving its exact forensic bytes, use the official recovery command:
 
 ```bash
 omx session pointer recover --cwd /path/to/project
 ```
 
-The command serializes with the canonical pointer lock and moves only an authoritative, positively dead `session.json` to an adjacent no-clobber quarantine path. It refuses live or usable owners, uncertain or reused identities, malformed or foreign pointers, root/lineage mismatches, concurrent changes, I/O failures, and existing quarantine destinations. A successful recovery leaves the canonical pointer absent so an ordinary relaunch can publish a fresh pointer. No native runtime is required: when the atomic no-replace rename provider is unavailable (for example an unhydrated `omx-runtime` on macOS arm64), recovery falls back to a portable `link()` + `unlink()` quarantine with the same no-clobber guarantee, so the documented command works on every platform the docs address.
+The command serializes with the canonical pointer lock and moves only an authoritative `session.json` whose owner is positively dead or whose matching Linux process identity proves it is a managed Codex `app-server --managed-daemon`, not an OMX runtime. It refuses ordinary live or usable owners, uncertain or reused identities, malformed or foreign pointers, root/lineage mismatches, concurrent changes, I/O failures, and existing quarantine destinations. A successful recovery leaves the canonical pointer absent so an ordinary relaunch can publish a fresh pointer. No native runtime is required: when the atomic no-replace rename provider is unavailable (for example an unhydrated `omx-runtime` on macOS arm64), recovery falls back to a portable `link()` + `unlink()` quarantine with the same no-clobber guarantee.
 
 When the pointer's recorded PID is definitively dead, bind the exact current session explicitly and retry the same command — no manual file surgery:
 
@@ -108,7 +108,7 @@ export OMX_SESSION_ID=<current-session-id>
 omx state write --input '{"mode":"ultragoal","active":true,"current_phase":"reviewing"}' --json
 ```
 
-A stale-dead pointer holds no owner authority, so the validated `OMX_SESSION_ID` binding becomes the writable session scope (state lands under `.omx/state/sessions/<current-session-id>/`). The binding is operator-asserted: the code proves the pointer is definitively dead and authoritative, not that the env value names your live session — set it to the exact current session id. Recovery additionally requires the dead pointer itself to be authoritative for this project: its recorded `cwd` must contain the working directory, and its recorded `state_root` — when present — must canonical-match the selected state root (legacy pointers without `state_root` are accepted only when the cwd-derived `.omx/state` root matches exactly). A pointer with missing or foreign authority metadata stays fail-closed even with an env binding. Scope resolution never rewrites `session.json` itself; only a SessionStart hook reconciles the pointer through the normal pointer-lock protocol. Note that a plain OMX relaunch with a stale-dead pointer aborts with `session_pointer_unusable`/`stale-dead` and preserves the pointer, so setting `OMX_SESSION_ID` explicitly is the reliable recovery path.
+Note that a plain OMX relaunch with a stale-dead pointer aborts with `session_pointer_unusable`/`stale-dead` and preserves the pointer, so setting `OMX_SESSION_ID` explicitly is the reliable recovery path for that case. A verified managed-daemon pointer is not considered an OMX owner; OMX launch can replace it, or the recovery command above can quarantine it without stopping the daemon.
 
 ### Exact-session reconciliation (identity-indeterminate pointer)
 
@@ -122,7 +122,7 @@ Pre-commit scope revalidation is a point-in-time check: it reduces but does not 
 
 - Malformed and foreign-working-directory pointers always fail closed. An identity-indeterminate pointer also fails closed unless `OMX_SESSION_ID` exactly matches the pointer's own `session_id` and cwd/state_root authority already holds; see **Exact-session reconciliation (identity-indeterminate pointer)**.
 - Without an env binding, a stale-dead pointer still blocks writes — set `OMX_SESSION_ID` (a plain relaunch aborts instead of reconciling; only a SessionStart hook reconciles the pointer).
-- A live pointer with an unmatched `OMX_SESSION_ID` fails closed as `OMX_SESSION_ID does not match the live session recorded in session.json`.
+- A live interactive OMX pointer with an unmatched `OMX_SESSION_ID` fails closed as `OMX_SESSION_ID does not match the live session recorded in session.json`; a positively identified managed Codex daemon is not treated as an OMX owner and can be quarantined with the command above.
 - Durable Ultragoal mutations (including the legacy aggregate-objective migration that used to run on plain reads) require successful writable-scope resolution: with no selected pointer they keep prior root/unbound behavior, but allowlist violations, conflicting roots, and live-owner mismatches now propagate instead of being ignored.
 
 ## Shift+Enter submits instead of inserting a newline in tmux-backed OMX sessions

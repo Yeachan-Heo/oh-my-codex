@@ -85,7 +85,7 @@ describe('doctor state-root/session binding diagnostics', () => {
         syntheticSnapshot('absent', { rootSource: 'cwd-default' }), env,
       ).status, 'fail');
     }
-    for (const status of ['foreign-cwd', 'malformed', 'identity-indeterminate', 'usable'] as const) {
+    for (const status of ['foreign-cwd', 'malformed', 'identity-indeterminate', 'non-runtime-owner', 'usable'] as const) {
       assert.equal(checkStateRootSessionBinding(
         syntheticSnapshot(status, { rootSource: 'cwd-default' }),
         { CODEX_SESSION_ID: 'unverified-codex' },
@@ -94,6 +94,28 @@ describe('doctor state-root/session binding diagnostics', () => {
     assert.equal(checkStateRootSessionBinding(
       syntheticSnapshot('absent'), { CODEX_SESSION_ID: 'codex-session' },
     ).status, 'fail');
+  });
+
+  it('recommends the working pointer recovery action for a live managed Codex daemon', () => {
+    const check = checkStateRootSessionBinding(
+      syntheticSnapshot('non-runtime-owner', {
+        liveness: 'non-runtime-owner',
+        state: {
+          session_id: 'native-daemon-session',
+          started_at: '2026-10-28T23:03:37.205Z',
+          cwd: '/tmp/workspace',
+          pid: 57617,
+        },
+      }),
+      { OMX_SESSION_ID: 'omx-inherited-stale' },
+    );
+
+    assert.equal(check.status, 'fail');
+    assert.match(check.message, /ptr=non-runtime-owner/);
+    assert.match(check.message, /fix=clear\/correct/);
+    assert.match(check.message, /omx session pointer recover/);
+    assert.match(check.message, /managed Codex daemon/);
+    assert.doesNotMatch(check.message, /terminate only verified owner/);
   });
 
   it('prefers the winning env root over OMX_SESSION_ID during resolution failure', async () => {

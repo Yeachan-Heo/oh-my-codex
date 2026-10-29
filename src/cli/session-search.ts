@@ -41,7 +41,7 @@ Options for lock:
   -h, --help           Show this help
 
 Options for pointer:
-  --cwd <path>         Recover the verified-dead selected pointer for this directory
+  --cwd <path>         Recover a verified-dead or managed-daemon selected pointer
   --json               Emit structured JSON
   -h, --help           Show this help
 

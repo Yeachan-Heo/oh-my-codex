@@ -27,6 +27,7 @@ export type CanonicalSessionBindingStatus =
   | 'root-mismatch'
   | 'foreign-cwd'
   | 'usable'
+  | 'non-runtime-owner'
   | 'stale-dead'
   | 'identity-indeterminate';
 
@@ -39,7 +40,7 @@ export interface CanonicalSessionBindingSnapshot {
   recordedCwd?: string;
   state?: SessionState;
   raw?: string;
-  liveness?: 'usable' | 'stale-dead' | 'identity-indeterminate';
+  liveness?: 'usable' | 'non-runtime-owner' | 'stale-dead' | 'identity-indeterminate';
   verifiedAliases: Partial<Record<VerifiedSessionBindingField, string>>;
 }
 
@@ -663,7 +664,7 @@ export async function readCanonicalSessionBindingSnapshot(
     };
   }
 
-  let liveness: 'usable' | 'stale-dead' | 'identity-indeterminate';
+  let liveness: 'usable' | 'non-runtime-owner' | 'stale-dead' | 'identity-indeterminate';
   try {
     liveness = classifySessionStateLiveness(state);
   } catch {

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, rmdir, symlink, writeFile } from 'node:fs/promises';
@@ -113,6 +114,35 @@ async function withOwnerEnvironment(sessionId: string | undefined, run: () => Pr
     if (previous === undefined) delete process.env.OMX_SESSION_ID;
     else process.env.OMX_SESSION_ID = previous;
   }
+}
+
+async function withEnvironment(values: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
+  const previous = new Map(Object.keys(values).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+const MANAGED_CODEX_DAEMON_CMDLINE = '/home/test/.codex/packages/app-server/bin/codex app-server --remote-control --listen unix:// --managed-daemon';
+
+function linuxProcessObservation(cmdline: string, birth: string): Extract<ProcessObservation, { kind: 'identity' }> {
+  return {
+    kind: 'identity',
+    identity: {
+      platform: 'linux',
+      birth,
+      cmdline_hash: createHash('sha256').update(cmdline).digest('hex'),
+    },
+  };
 }
 
 /**
@@ -899,7 +929,7 @@ describe('isSessionStale', () => {
   });
 });
 
-describe('verified-dead selected session pointer recovery', { concurrency: false }, () => {
+describe('selected session pointer recovery', { concurrency: false }, () => {
   async function writePointer(cwd: string, overrides: Record<string, unknown> = {}): Promise<{ path: string; body: string }> {
     const context = resolveSessionPointerContext(cwd);
     await mkdir(context.baseStateDir, { recursive: true });
@@ -914,6 +944,154 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     await writeFile(context.sessionPath, body, 'utf-8');
     return { path: context.sessionPath, body };
   }
+
+  async function writeManagedDaemonPointer(cwd: string): Promise<{ path: string; body: string }> {
+    const context = resolveSessionPointerContext(cwd);
+    await mkdir(context.baseStateDir, { recursive: true });
+    const body = JSON.stringify({
+      session_id: '01a18453-9e49-7c21-9c51-cf411286e627',
+      native_session_id: '01a18453-9e49-7c21-9c51-cf411286e627',
+      started_at: '2026-10-28T23:03:37.205Z',
+      cwd,
+      state_root: context.baseStateDir,
+      pid: 57617,
+      platform: 'linux',
+      identity_schema_version: 2,
+      process_identity: linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768').identity,
+      pid_start_ticks: 87768,
+      pid_cmdline: MANAGED_CODEX_DAEMON_CMDLINE,
+    });
+    await writeFile(context.sessionPath, body, 'utf-8');
+    return { path: context.sessionPath, body };
+  }
+
+  it('lets resume replace a live managed-daemon owner without inheriting a stale OMX selector', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-session-pointer-daemon-resume-'));
+    const cwd = join(root, 'workspace');
+    const home = join(root, 'home');
+    const codexHome = join(root, 'codex-home');
+    const omxRoot = join(root, 'omx-root');
+    await mkdir(cwd, { recursive: true });
+    try {
+      await withEnvironment({
+        HOME: home,
+        CODEX_HOME: codexHome,
+        OMX_ROOT: omxRoot,
+        OMX_SESSION_ID: 'omx-inherited-stale',
+      }, async () => {
+        const pointer = await writeManagedDaemonPointer(cwd);
+        await withPointerDependencies({
+          runtimePlatform: 'linux',
+          probePid: () => 'alive',
+          observeProcess: () => linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768'),
+        }, async () => {
+          const context = resolveSessionPointerContext(cwd);
+          assert.equal((await readSessionPointer(context)).status, 'non-runtime-owner');
+          const established = await establishLaunchSessionBinding(cwd, 'omx-resume-after-daemon');
+          assert.equal(established.kind, 'committed-released');
+          if (established.kind !== 'committed-released') return;
+
+          const resumedState = await readSessionState(cwd);
+          assert.equal(resumedState?.session_id, 'omx-resume-after-daemon');
+          assert.equal(resumedState?.owner_omx_session_id, undefined, 'unverified inherited OMX_SESSION_ID must not become owner authority');
+          assert.equal(await closeLaunchSessionBindingOnce(established.binding).then((result) => result.status), 'closed');
+        });
+        assert.notEqual(await readFile(pointer.path, 'utf-8'), pointer.body);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('quarantines a live managed-daemon pointer and permits a subsequent launch without stopping the daemon', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-session-pointer-daemon-recover-'));
+    const cwd = join(root, 'workspace');
+    await mkdir(cwd, { recursive: true });
+    try {
+      await withEnvironment({
+        HOME: join(root, 'home'),
+        CODEX_HOME: join(root, 'codex-home'),
+        OMX_ROOT: join(root, 'omx-root'),
+        OMX_SESSION_ID: 'omx-inherited-stale',
+      }, async () => {
+        const pointer = await writeManagedDaemonPointer(cwd);
+        await withPointerDependencies({
+          runtimePlatform: 'linux',
+          probePid: () => 'alive',
+          observeProcess: () => linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768'),
+          token: () => SUCCESSOR_TOKEN,
+        }, async () => {
+          const recovered = await recoverDeadSessionPointer(cwd);
+          assert.equal(recovered.status, 'recovered', recovered.reason);
+          assert.equal(recovered.recovered, true);
+          assert.match(recovered.reason, /managed Codex daemon/);
+          assert.ok(recovered.quarantinePath);
+          assert.equal(await readFile(recovered.quarantinePath!, 'utf-8'), pointer.body);
+          assert.equal((await readSessionPointer(resolveSessionPointerContext(cwd))).status, 'absent');
+
+          const established = await establishLaunchSessionBinding(cwd, 'omx-resume-after-recovery');
+          assert.equal(established.kind, 'committed-released');
+          if (established.kind === 'committed-released') {
+            assert.equal(await closeLaunchSessionBindingOnce(established.binding).then((result) => result.status), 'closed');
+          }
+        });
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('continues refusing recovery and a fresh launch for a live interactive OMX owner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-session-pointer-interactive-owner-'));
+    const cwd = join(root, 'workspace');
+    const interactiveCmdline = '/home/test/.local/bin/codex resume active-conversation';
+    const interactiveObservation = linuxProcessObservation(interactiveCmdline, '99123');
+    await mkdir(cwd, { recursive: true });
+    try {
+      await withEnvironment({
+        HOME: join(root, 'home'),
+        CODEX_HOME: join(root, 'codex-home'),
+        OMX_ROOT: join(root, 'omx-root'),
+        OMX_SESSION_ID: undefined,
+      }, async () => {
+        const context = resolveSessionPointerContext(cwd);
+        await mkdir(context.baseStateDir, { recursive: true });
+        const pointerBody = JSON.stringify({
+          session_id: 'omx-live-interactive',
+          owner_omx_session_id: 'omx-live-interactive',
+          launch_lineage_token: TEST_TOKEN,
+          started_at: '2026-10-28T23:03:37.205Z',
+          cwd,
+          state_root: context.baseStateDir,
+          pid: 57618,
+          platform: 'linux',
+          identity_schema_version: 2,
+          process_identity: interactiveObservation.identity,
+          pid_start_ticks: 99123,
+          pid_cmdline: interactiveCmdline,
+        });
+        await writeFile(context.sessionPath, pointerBody, 'utf-8');
+        await withPointerDependencies({
+          runtimePlatform: 'linux',
+          probePid: () => 'alive',
+          observeProcess: () => interactiveObservation,
+        }, async () => {
+          const established = await establishLaunchSessionBinding(cwd, 'omx-competing-launch');
+          assert.equal(established.kind, 'precommit-aborted');
+          if (established.kind === 'precommit-aborted') assert.equal(established.abort.code, 'session_pointer_owner_conflict');
+
+          const refused = await recoverDeadSessionPointer(cwd);
+          assert.equal(refused.status, 'usable');
+          assert.equal(refused.recovered, false);
+          assert.equal(refused.action, 'none');
+          assert.match(refused.reason, /usable or live/);
+        });
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), pointerBody);
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it('quarantines exact dead evidence, is idempotent, and permits relaunch', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-dead-'));
@@ -3479,6 +3657,52 @@ describe('session pointer transaction', () => {
           (error: unknown) => isSessionPointerLaunchAbort(error)
             && error.code === 'session_pointer_owner_conflict',
         );
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps managed-daemon native owner sidecars usable for SessionStart reconciliation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-daemon-owner-sidecar-'));
+    const nativeSessionId = 'native-daemon-sidecar';
+    const observation = linuxProcessObservation(MANAGED_CODEX_DAEMON_CMDLINE, '87768');
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      const sidecarDir = join(context.baseStateDir, 'sessions', nativeSessionId);
+      const sidecarPath = join(sidecarDir, 'session-owner.json');
+      await mkdir(sidecarDir, { recursive: true });
+      await writeFile(sidecarPath, JSON.stringify({
+        session_id: nativeSessionId,
+        native_session_id: nativeSessionId,
+        started_at: '2026-10-28T23:03:37.205Z',
+        cwd,
+        state_root: context.baseStateDir,
+        pid: 57617,
+        platform: 'linux',
+        identity_schema_version: 2,
+        process_identity: observation.identity,
+        pid_start_ticks: 87768,
+        pid_cmdline: MANAGED_CODEX_DAEMON_CMDLINE,
+      }), 'utf-8');
+
+      await withPointerDependencies({
+        runtimePlatform: 'linux',
+        probePid: () => 'alive',
+        observeProcess: () => observation,
+      }, async () => {
+        assert.equal((await readNativeSessionOwnerEvidence(cwd, nativeSessionId)).status, 'usable');
+        const owner = await writeNativeSessionOwner(cwd, nativeSessionId, {
+          pid: 57617,
+          platform: 'linux',
+        });
+        assert.equal(owner.session_id, nativeSessionId);
+
+        const reconciled = await reconcileNativeSessionStart(cwd, nativeSessionId, {
+          pid: 57617,
+          platform: 'linux',
+        });
+        assert.equal(reconciled.native_session_id, nativeSessionId);
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });
