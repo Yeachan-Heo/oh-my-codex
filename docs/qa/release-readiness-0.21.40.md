@@ -66,7 +66,13 @@ Pinned dev candidate: `87ace943784fa5873e5f8b39edc6686d8bbadde8`.
 
 ## Release PR, publication, and back-merge
 
-Release PR, main CI, Codex review-thread gate, annotated tag, Release workflow, npm registry readback, publication-evidence PR, and merge-commit back-merge results are appended after each gate completes. No release or publication is claimed before both npm and GitHub Release readbacks succeed.
+Release PR [#3950](https://github.com/Yeachan-Heo/oh-my-codex/pull/3950) merged to `main` at `82cd0825f5fff6bfc3814e339d847c28af86bdb6`, the commit targeted by `v0.21.40`.
+
+- GitHub Release [v0.21.40](https://github.com/Yeachan-Heo/oh-my-codex/releases/tag/v0.21.40) is published, not draft, with the v0.21.40 release body (published `2026-10-29T08:02:58Z`).
+- Release workflow [40837914405](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40837914405) completed successfully, including native assets and smoke checks.
+- npm publication CI dispatch [40841127103](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/40841127103) completed successfully; the trusted-publishing job succeeded.
+- Registry readback: `npm view oh-my-codex dist-tags.latest` reports `0.21.40`; `npm view oh-my-codex@0.21.40 version gitHead` reports version `0.21.40` and `gitHead` `82cd0825f5fff6bfc3814e339d847c28af86bdb6`.
+- The annotated `v0.21.40` tag, npm package `gitHead`, and `main` all resolve to `82cd0825f5fff6bfc3814e339d847c28af86bdb6`.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
