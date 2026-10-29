@@ -250,7 +250,7 @@ Team worker launches add another layer (for each worker role, in order):
 2. Inheritable leader launch model args can be passed through to workers.
 3. If no explicit/inherited model is present, resolve the role-specific default:
    - `.omx-config.json` `agentModels[role]` override (if configured)
-   - Role ending in `-low` → spark chain (getSparkDefaultModel: `OMX_DEFAULT_SPARK_MODEL` > config.toml model > `gpt-6-astra`)
+   - Role ending in `-low` → spark chain (see the spark precedence above; it never falls back to the `config.toml` model)
    - Built-in exactModel pin (`planner`, `architect`, `researcher` → `gpt-6-astra`)
    - `executor` special case → main/frontier chain
    - Otherwise by `modelClass`: `fast` → spark chain; `frontier` → main/frontier chain; `standard` → standard chain (OMX_DEFAULT_STANDARD_MODEL > main chain)
