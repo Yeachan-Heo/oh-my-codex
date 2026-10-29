@@ -61,6 +61,7 @@ interface OmxConfigFile {
   agentModels?: Record<string, unknown>;
   env?: OmxConfigEnv;
   models?: ModelsConfig;
+  qualityGates?: Record<string, unknown>;
 }
 
 interface CodexConfigFile {
