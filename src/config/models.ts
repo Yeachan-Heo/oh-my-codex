@@ -3,6 +3,11 @@
  *
  * Reads per-mode model overrides and default-env overrides from .omx-config.json.
  *
+ * IMPORTANT: OMX_DEFAULT_FRONTIER_MODEL, OMX_DEFAULT_STANDARD_MODEL, and OMX_DEFAULT_SPARK_MODEL
+ * apply ONLY to Team worker fallback model selection and mode-specific resolution (e.g., Autopilot).
+ * They do NOT change native Codex subagent models. Native Codex subagents inherit config.toml model,
+ * except for pinned roles (planner/architect/researcher with built-in providers) and agentModels overrides.
+ *
  * Config format:
  * {
  *   "env": {
@@ -22,7 +27,9 @@
  *   }
  * }
  *
- * Resolution: mode-specific > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
+ * Resolution:
+ * - Mode-specific > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
+ * - Per-agent agentModels > exactModel pins (built-in providers only) > modelClass defaults
  */
 
 import { parse as parseToml } from '@iarna/toml';

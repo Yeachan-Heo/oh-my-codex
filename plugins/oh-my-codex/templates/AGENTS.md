@@ -133,7 +133,15 @@ Team mode is the structured multi-agent surface. Use it when durable staged coor
 </team_pipeline>
 
 <team_model_resolution>
-Team/Swarm worker model precedence: explicit `OMX_TEAM_WORKER_LAUNCH_ARGS`, inherited leader `--model`, then low-complexity default from `OMX_DEFAULT_SPARK_MODEL` (legacy alias: `OMX_SPARK_MODEL`). Normalize model flags to one canonical `--model <value>` entry and use `OMX_DEFAULT_FRONTIER_MODEL` / `OMX_DEFAULT_SPARK_MODEL` rather than guessing defaults.
+Team/Swarm worker model precedence (for worker roles only, NOT native Codex subagents):
+1. Explicit `OMX_TEAM_WORKER_LAUNCH_ARGS` `--model`
+2. Inherited leader `--model`
+3. Role-specific default: `.omx-config.json` `agentModels[role]`, then `modelClass` tier (frontier/standard/fast)
+4. Low-complexity fallback from `OMX_DEFAULT_SPARK_MODEL` (legacy alias: `OMX_SPARK_MODEL`) for fast roles
+
+For native Codex subagents, model selection is different: they inherit `config.toml` model except for pinned roles (`planner`/`architect`/`researcher` with built-in providers) and per-agent `agentModels` overrides. Environment variables like `OMX_DEFAULT_FRONTIER_MODEL` do NOT affect native subagent model selection; they apply only to Team worker fallback selection.
+
+Normalize model flags to one canonical `--model <value>` entry. Use `OMX_DEFAULT_FRONTIER_MODEL` / `OMX_DEFAULT_STANDARD_MODEL` / `OMX_DEFAULT_SPARK_MODEL` for Team worker defaults, not for native subagent configuration.
 </team_model_resolution>
 
 <!-- OMX:MODELS:START -->
