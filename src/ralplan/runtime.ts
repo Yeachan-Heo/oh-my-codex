@@ -529,6 +529,10 @@ export async function runRalplanConsensus(
             if (!['approve', 'iterate', 'reject'].includes(review.verdict)) {
               throw new Error('Quality gate returned an invalid verdict');
             }
+            // Reject gate thread IDs that alias built-in reviewers
+            if (review.thread_id === architectReview.thread_id || review.thread_id === criticReview.thread_id) {
+              throw new Error('Quality gate thread ID conflicts with built-in reviewer');
+            }
             result = {
               skill: gate.skill,
               iteration,
