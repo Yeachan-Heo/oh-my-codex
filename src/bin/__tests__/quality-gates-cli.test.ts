@@ -22,10 +22,13 @@ describe('quality-gates CLI', () => {
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
-  it('lists gates for a specified stage', () => {
+  it('lists normalized gates for a specified stage', () => {
     const result = JSON.parse(qualityGatesCommand(['list', '--stage', 'ralplan'], home));
     assert.deepEqual(result, {
-      gates: ['plan-check', 'design-review'],
+      gates: [
+        { skill: 'plan-check', mode: 'blocking' },
+        { skill: 'design-review', mode: 'blocking' },
+      ],
       stage: 'ralplan',
     });
   });
@@ -33,7 +36,7 @@ describe('quality-gates CLI', () => {
   it('returns an empty list for an unconfigured stage', () => {
     const result = JSON.parse(qualityGatesCommand(['list', '--stage', 'code-review'], home));
     assert.deepEqual(result, {
-      gates: ['code-check'],
+      gates: [{ skill: 'code-check', mode: 'blocking' }],
       stage: 'code-review',
     });
 
@@ -44,6 +47,32 @@ describe('quality-gates CLI', () => {
     const emptyResult = JSON.parse(qualityGatesCommand(['list', '--stage', 'ralplan'], home));
     assert.deepEqual(emptyResult, {
       gates: [],
+      stage: 'ralplan',
+    });
+  });
+
+  it('normalizes object entries with mode and model', () => {
+    writeFileSync(
+      join(home, '.omx-config.json'),
+      JSON.stringify({
+        qualityGates: {
+          'ralplan': [
+            { skill: 'blocking-gate', mode: 'blocking' },
+            { skill: 'advisory-gate', mode: 'advisory' },
+            { skill: 'model-gate', model: 'claude-opus' },
+            { skill: 'full-config', mode: 'advisory', model: 'claude-sonnet' },
+          ],
+        },
+      }),
+    );
+    const result = JSON.parse(qualityGatesCommand(['list', '--stage', 'ralplan'], home));
+    assert.deepEqual(result, {
+      gates: [
+        { skill: 'blocking-gate', mode: 'blocking' },
+        { skill: 'advisory-gate', mode: 'advisory' },
+        { skill: 'model-gate', mode: 'blocking', model: 'claude-opus' },
+        { skill: 'full-config', mode: 'advisory', model: 'claude-sonnet' },
+      ],
       stage: 'ralplan',
     });
   });
@@ -74,7 +103,30 @@ describe('quality-gates CLI', () => {
       }),
     );
     const result = JSON.parse(qualityGatesCommand(['list', '--stage', 'ralplan'], home));
-    // Only valid-gate should be returned
-    assert.deepEqual(result.gates, ['valid-gate']);
+    // Only valid-gate should be returned, normalized with mode
+    assert.deepEqual(result.gates, [{ skill: 'valid-gate', mode: 'blocking' }]);
+  });
+
+  it('filters out invalid object entries', () => {
+    writeFileSync(
+      join(home, '.omx-config.json'),
+      JSON.stringify({
+        qualityGates: {
+          'ralplan': [
+            'valid-gate',
+            { skill: 'MyInvalidGate' },
+            { skill: 'valid-obj', mode: 'advisory' },
+            { mode: 'blocking' }, // Missing skill
+            { skill: 'valid-final' },
+          ],
+        },
+      }),
+    );
+    const result = JSON.parse(qualityGatesCommand(['list', '--stage', 'ralplan'], home));
+    assert.deepEqual(result.gates, [
+      { skill: 'valid-gate', mode: 'blocking' },
+      { skill: 'valid-obj', mode: 'advisory' },
+      { skill: 'valid-final', mode: 'blocking' },
+    ]);
   });
 });

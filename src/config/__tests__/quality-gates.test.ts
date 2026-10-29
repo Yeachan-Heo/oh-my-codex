@@ -10,7 +10,9 @@ import {
   readQualityGatesConfig,
   getGatesForStage,
   validateAllQualityGates,
+  normalizeGateEntry,
   type QualityGatesConfig,
+  type NormalizedGate,
 } from '../quality-gates.js';
 
 const mkdtempAsync = promisify(mkdtemp);
@@ -82,17 +84,92 @@ describe('quality gates config', () => {
     });
   });
 
+  describe('normalizeGateEntry', () => {
+    it('normalizes string gate entries', () => {
+      const result = normalizeGateEntry('my-gate');
+      assert.deepStrictEqual(result, { skill: 'my-gate', mode: 'blocking' });
+    });
+
+    it('normalizes object gate entries with defaults', () => {
+      const result = normalizeGateEntry({ skill: 'my-gate' });
+      assert.deepStrictEqual(result, { skill: 'my-gate', mode: 'blocking' });
+    });
+
+    it('normalizes object gate entries with explicit blocking mode', () => {
+      const result = normalizeGateEntry({ skill: 'my-gate', mode: 'blocking' });
+      assert.deepStrictEqual(result, { skill: 'my-gate', mode: 'blocking' });
+    });
+
+    it('normalizes object gate entries with advisory mode', () => {
+      const result = normalizeGateEntry({ skill: 'my-gate', mode: 'advisory' });
+      assert.deepStrictEqual(result, { skill: 'my-gate', mode: 'advisory' });
+    });
+
+    it('preserves optional model in object entries', () => {
+      const result = normalizeGateEntry({ skill: 'my-gate', model: 'claude-opus' });
+      assert.deepStrictEqual(result, { skill: 'my-gate', mode: 'blocking', model: 'claude-opus' });
+    });
+
+    it('preserves mode and model together', () => {
+      const result = normalizeGateEntry({ skill: 'my-gate', mode: 'advisory', model: 'claude-opus' });
+      assert.deepStrictEqual(result, { skill: 'my-gate', mode: 'advisory', model: 'claude-opus' });
+    });
+
+    it('rejects invalid mode', () => {
+      const result = normalizeGateEntry({ skill: 'my-gate', mode: 'invalid' as any });
+      assert.strictEqual(result, null);
+    });
+
+    it('rejects invalid skill names', () => {
+      const result = normalizeGateEntry('MyInvalidGate');
+      assert.strictEqual(result, null);
+    });
+
+    it('rejects reserved skill names', () => {
+      const result = normalizeGateEntry('deep-interview');
+      assert.strictEqual(result, null);
+    });
+
+    it('rejects non-string, non-object entries', () => {
+      assert.strictEqual(normalizeGateEntry(123 as any), null);
+      assert.strictEqual(normalizeGateEntry(null as any), null);
+      assert.strictEqual(normalizeGateEntry([] as any), null);
+    });
+
+    it('rejects object without skill property', () => {
+      const result = normalizeGateEntry({ mode: 'blocking' } as any);
+      assert.strictEqual(result, null);
+    });
+  });
+
   describe('readQualityGatesConfig', () => {
     it('returns null for missing config file', () => {
       const result = readQualityGatesConfig(testDir);
       assert.strictEqual(result, null);
     });
 
-    it('reads valid config file with minimal schema', () => {
+    it('reads valid config file with string entries', () => {
       const config: QualityGatesConfig = {
         'deep-interview': ['my-interview-gate'],
         'ralplan': ['my-plan-gate'],
         'code-review': ['my-review-gate'],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = readQualityGatesConfig(testDir);
+      assert.deepStrictEqual(result, config);
+    });
+
+    it('reads valid config file with object entries', () => {
+      const config: QualityGatesConfig = {
+        'ralplan': [
+          'simple-gate',
+          { skill: 'my-gate', mode: 'advisory' },
+          { skill: 'another-gate', model: 'claude-opus' },
+        ],
       };
       writeFileSync(
         join(testDir, '.omx-config.json'),
@@ -120,7 +197,7 @@ describe('quality gates config', () => {
   });
 
   describe('getGatesForStage', () => {
-    it('returns gates for the specified stage', () => {
+    it('returns normalized gates for string entries', () => {
       const config: QualityGatesConfig = {
         'deep-interview': ['interview-gate'],
         'ralplan': ['plan-gate'],
@@ -132,13 +209,33 @@ describe('quality gates config', () => {
       );
 
       const interviewGates = getGatesForStage('deep-interview', testDir);
-      assert.deepStrictEqual(interviewGates, ['interview-gate']);
+      assert.deepStrictEqual(interviewGates, [{ skill: 'interview-gate', mode: 'blocking' }]);
 
       const planGates = getGatesForStage('ralplan', testDir);
-      assert.deepStrictEqual(planGates, ['plan-gate']);
+      assert.deepStrictEqual(planGates, [{ skill: 'plan-gate', mode: 'blocking' }]);
 
       const reviewGates = getGatesForStage('code-review', testDir);
-      assert.deepStrictEqual(reviewGates, ['review-gate']);
+      assert.deepStrictEqual(reviewGates, [{ skill: 'review-gate', mode: 'blocking' }]);
+    });
+
+    it('returns normalized gates for object entries', () => {
+      const config: QualityGatesConfig = {
+        'ralplan': [
+          { skill: 'blocking-gate', mode: 'blocking' },
+          { skill: 'advisory-gate', mode: 'advisory' },
+          { skill: 'model-gate', model: 'claude-opus' },
+        ],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const gates = getGatesForStage('ralplan', testDir);
+      assert.strictEqual(gates.length, 3);
+      assert.deepStrictEqual(gates[0], { skill: 'blocking-gate', mode: 'blocking' });
+      assert.deepStrictEqual(gates[1], { skill: 'advisory-gate', mode: 'advisory' });
+      assert.deepStrictEqual(gates[2], { skill: 'model-gate', mode: 'blocking', model: 'claude-opus' });
     });
 
     it('returns empty array for missing stage', () => {
@@ -165,15 +262,39 @@ describe('quality gates config', () => {
 
       const gates = getGatesForStage('ralplan', testDir);
       // Only valid-gate should be returned; MyInvalidGate is not kebab-case; deep-interview is reserved
-      assert.deepStrictEqual(gates, ['valid-gate']);
+      assert.deepStrictEqual(gates, [{ skill: 'valid-gate', mode: 'blocking' }]);
+    });
+
+    it('filters out invalid object entries', () => {
+      const config = {
+        'ralplan': [
+          'valid-gate',
+          { skill: 'MyInvalidGate' },
+          { skill: 'valid-advisory', mode: 'advisory' },
+          { mode: 'blocking' }, // Missing skill
+        ],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const gates = getGatesForStage('ralplan', testDir);
+      // Should include only valid entries
+      assert.strictEqual(gates.length, 2);
+      assert.deepStrictEqual(gates[0], { skill: 'valid-gate', mode: 'blocking' });
+      assert.deepStrictEqual(gates[1], { skill: 'valid-advisory', mode: 'advisory' });
     });
   });
 
   describe('validateAllQualityGates', () => {
-    it('validates gates across all stages', () => {
+    it('validates string and object gates across all stages', () => {
       const config: QualityGatesConfig = {
         'deep-interview': ['interview-gate'],
-        'ralplan': ['plan-gate'],
+        'ralplan': [
+          'plan-gate',
+          { skill: 'advisory-plan', mode: 'advisory' },
+        ],
         'code-review': ['review-gate'],
       };
       writeFileSync(
@@ -182,14 +303,18 @@ describe('quality gates config', () => {
       );
 
       const result = validateAllQualityGates(testDir);
-      assert.strictEqual(result.gates.length, 3);
+      assert.strictEqual(result.gates.length, 4);
       assert.strictEqual(result.errors.length, 0);
+      assert.deepStrictEqual(result.gates[0], { skill: 'interview-gate', mode: 'blocking' });
+      assert.deepStrictEqual(result.gates[1], { skill: 'plan-gate', mode: 'blocking' });
+      assert.deepStrictEqual(result.gates[2], { skill: 'advisory-plan', mode: 'advisory' });
+      assert.deepStrictEqual(result.gates[3], { skill: 'review-gate', mode: 'blocking' });
     });
 
     it('collects validation errors across stages', () => {
       const config: QualityGatesConfig = {
         'deep-interview': ['valid-gate'],
-        'ralplan': ['MyInvalidGate', 'deep-interview'],
+        'ralplan': ['MyInvalidGate', 'deep-interview', { skill: 'valid-obj' }],
         'code-review': ['another-valid-gate'],
       };
       writeFileSync(
@@ -198,15 +323,18 @@ describe('quality gates config', () => {
       );
 
       const result = validateAllQualityGates(testDir);
-      assert.strictEqual(result.gates.length, 2);
+      assert.strictEqual(result.gates.length, 3);
       assert.strictEqual(result.errors.length, 2);
-      assert.ok(result.errors.some(e => e.skill === 'MyInvalidGate'));
-      assert.ok(result.errors.some(e => e.skill === 'deep-interview'));
+      assert.ok(result.errors.some(e => e.entry === 'MyInvalidGate'));
+      assert.ok(result.errors.some(e => e.entry === 'deep-interview'));
     });
 
-    it('handles non-string gate entries', () => {
+    it('validates object mode property', () => {
       const config = {
-        'ralplan': ['valid-gate', 123, null, { skill: 'object-gate' }],
+        'ralplan': [
+          { skill: 'valid-gate', mode: 'blocking' },
+          { skill: 'another-gate', mode: 'invalid' as any },
+        ],
       };
       writeFileSync(
         join(testDir, '.omx-config.json'),
@@ -215,8 +343,63 @@ describe('quality gates config', () => {
 
       const result = validateAllQualityGates(testDir);
       assert.strictEqual(result.gates.length, 1);
-      assert.strictEqual(result.gates[0], 'valid-gate');
-      assert.strictEqual(result.errors.length, 3);
+      assert.strictEqual(result.errors.length, 1);
+      assert.match(result.errors[0].error, /Invalid mode/);
+    });
+
+    it('handles non-string and non-object gate entries', () => {
+      const config = {
+        'ralplan': ['valid-gate', 123, null, { skill: 'valid-obj' }],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = validateAllQualityGates(testDir);
+      assert.strictEqual(result.gates.length, 2);
+      assert.deepStrictEqual(result.gates[0], { skill: 'valid-gate', mode: 'blocking' });
+      assert.deepStrictEqual(result.gates[1], { skill: 'valid-obj', mode: 'blocking' });
+      assert.strictEqual(result.errors.length, 2);
+    });
+
+    it('handles object without skill property', () => {
+      const config = {
+        'ralplan': [
+          'valid-gate',
+          { mode: 'blocking' } as any,
+        ],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = validateAllQualityGates(testDir);
+      assert.strictEqual(result.gates.length, 1);
+      assert.strictEqual(result.errors.length, 1);
+      assert.match(result.errors[0].error, /must have a "skill" property/);
+    });
+
+    it('preserves model in validated gates', () => {
+      const config: QualityGatesConfig = {
+        'ralplan': [
+          { skill: 'model-gate', model: 'claude-opus', mode: 'advisory' },
+        ],
+      };
+      writeFileSync(
+        join(testDir, '.omx-config.json'),
+        JSON.stringify({ qualityGates: config }, null, 2),
+      );
+
+      const result = validateAllQualityGates(testDir);
+      assert.strictEqual(result.gates.length, 1);
+      assert.deepStrictEqual(result.gates[0], {
+        skill: 'model-gate',
+        mode: 'advisory',
+        model: 'claude-opus',
+      });
+      assert.strictEqual(result.errors.length, 0);
     });
   });
 });

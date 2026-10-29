@@ -111,8 +111,16 @@ export function qualityGatesCommand(
 
   const gates = getGatesForStage(options.stage, codexHomeOverride);
 
+  // Output normalized gate objects
+  const normalizedGates = gates.map(gate => ({
+    skill: gate.skill,
+    mode: gate.mode,
+    ...(gate.model && { model: gate.model }),
+  }));
+
   return JSON.stringify({
-    gates,
+    gates: normalizedGates,
     stage: options.stage,
   });
+
 }

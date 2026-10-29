@@ -53,6 +53,7 @@ export interface RalplanQualityGateResult {
   iteration: number;
   verdict: RalplanReviewVerdict | 'unavailable';
   summary: string;
+  mode?: 'blocking' | 'advisory';
   thread_id?: string;
   provenance_kind?: 'native_subagent';
 }

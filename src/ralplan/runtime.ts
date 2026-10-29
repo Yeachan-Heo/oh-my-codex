@@ -177,7 +177,11 @@ function buildRalplanConsensusGate(
     ? { ...latestCritic, agent_role: 'critic' as const, session_id: options.sessionId, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 2 }
     : null;
   const currentGateResults = (options.gateResults ?? []).filter((result) => result.iteration === authoritativeCycle);
-  const blockingGate = currentGateResults.find((result) => result.verdict === 'reject');
+  const blockingGate = currentGateResults.find((result) => {
+    // A gate blocks only if it has a reject verdict AND is in blocking mode (default)
+    const mode = result.mode ?? 'blocking';
+    return result.verdict === 'reject' && mode === 'blocking';
+  });
   const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete)
     ?? (blockingGate ? `quality_gate_not_approved:${blockingGate.skill}` : null)
     ?? (options.qualityGatesComplete === false ? 'quality_gate_reviews_pending' : null);
@@ -305,6 +309,10 @@ export async function runRalplanConsensus(
     ?? (await resolveWritableStateScope(cwd)).sessionId;
   const maxIterations = Math.min(options.maxIterations ?? 5, 5);
   const gateResults: RalplanQualityGateResult[] = [];
+  // Cache gate configurations for blocking decision
+  const gateConfigBySkill = new Map(
+    getGatesForStage('ralplan', cwd).map(gate => [gate.skill, gate])
+  );
   const gateOptions = {
     cwd,
     sessionId: runtimeSessionId,
@@ -497,14 +505,18 @@ export async function runRalplanConsensus(
       });
 
       if (criticReview.verdict === 'approve') {
-        const gateNames = getGatesForStage('ralplan', cwd);
-        for (const gateName of gateNames) {
+        const normalizedGates = getGatesForStage('ralplan', cwd);
+        // Pre-populate mode for gates that might not be set in result
+        for (const gate of normalizedGates) {
+          gateConfigBySkill.set(gate.skill, gate);
+        }
+        for (const gate of normalizedGates) {
           let result: RalplanQualityGateResult;
           try {
             if (!executor.qualityGateReview) throw new Error('Native quality gate executor is unavailable');
             const review = await executor.qualityGateReview({
               ...iterationContext,
-              gateName,
+              gateName: gate.skill,
               draft,
               architectReview,
               criticReview,
@@ -516,16 +528,17 @@ export async function runRalplanConsensus(
               throw new Error('Quality gate returned an invalid verdict');
             }
             result = {
-              skill: gateName,
+              skill: gate.skill,
               iteration,
               verdict: review.verdict,
               summary: review.summary ?? '',
+              mode: gate.mode ?? 'blocking',
               provenance_kind: review.provenance_kind,
               thread_id: review.thread_id,
             };
             await recordRalplanSubagentTurn(cwd, runtimeSessionId, {
               threadId: review.thread_id,
-              laneId: `quality-gate:${gateName}`,
+              laneId: `quality-gate:${gate.skill}`,
               scope: options.task,
               summary: review.summary,
               completed: true,
@@ -533,10 +546,11 @@ export async function runRalplanConsensus(
             });
           } catch (error) {
             result = {
-              skill: gateName,
+              skill: gate.skill,
               iteration,
               verdict: 'unavailable',
               summary: error instanceof Error ? error.message : String(error),
+              mode: gate.mode ?? 'blocking',
             };
           }
           gateResults.push(result);

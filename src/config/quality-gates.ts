@@ -6,9 +6,9 @@
  * Schema:
  * {
  *   "qualityGates": {
- *     "deep-interview": ["skill-name", ...],
- *     "ralplan": ["skill-name", ...],
- *     "code-review": ["skill-name", ...]
+ *     "deep-interview": ["skill-name" | {skill, mode?, model?}, ...],
+ *     "ralplan": ["skill-name" | {skill, mode?, model?}, ...],
+ *     "code-review": ["skill-name" | {skill, mode?, model?}, ...]
  *   }
  * }
  *
@@ -30,16 +30,42 @@ import { REMOVED_SKILLS } from '../hooks/sunset-stub.js';
 export type QualityGateStage = 'deep-interview' | 'ralplan' | 'code-review';
 
 /**
+ * Gate entry: either a skill name string or a gate configuration object
+ */
+export type QualityGateEntry = string | QualityGateObject;
+
+/**
+ * Gate configuration object
+ */
+export interface QualityGateObject {
+  /** Skill name (kebab-case) */
+  skill: string;
+  /** Gate mode: 'blocking' (default) or 'advisory' */
+  mode?: 'blocking' | 'advisory';
+  /** Optional subagent model override */
+  model?: string;
+}
+
+/**
+ * Normalized gate entry (internal representation)
+ */
+export type NormalizedGate = {
+  skill: string;
+  mode: 'blocking' | 'advisory';
+  model?: string;
+};
+
+/**
  * Quality gates configuration from .omx-config.json
- * Maps stage names to arrays of skill names (strings)
+ * Maps stage names to arrays of gate entries (strings or objects)
  */
 export interface QualityGatesConfig {
   /** Quality gates for the deep-interview final-spec stage */
-  'deep-interview'?: string[];
+  'deep-interview'?: QualityGateEntry[];
   /** Quality gates for the ralplan Architect→Critic review stage */
-  'ralplan'?: string[];
+  'ralplan'?: QualityGateEntry[];
   /** Quality gates for the code-review stage */
-  'code-review'?: string[];
+  'code-review'?: QualityGateEntry[];
 }
 
 /**
@@ -89,6 +115,49 @@ export function validateSkillName(skill: string): { valid: boolean; error?: stri
 }
 
 /**
+ * Normalize a gate entry (string or object) to the standard internal representation
+ */
+export function normalizeGateEntry(entry: unknown): NormalizedGate | null {
+  let skill: string;
+  let mode: 'blocking' | 'advisory' = 'blocking';
+  let model: string | undefined;
+
+  if (typeof entry === 'string') {
+    skill = entry;
+  } else if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    const obj = entry as Record<string, unknown>;
+    if (!obj.skill || typeof obj.skill !== 'string') {
+      return null;
+    }
+    skill = obj.skill;
+    if (obj.mode && typeof obj.mode === 'string') {
+      if (!['blocking', 'advisory'].includes(obj.mode)) {
+        return null; // Invalid mode
+      }
+      mode = obj.mode as 'blocking' | 'advisory';
+    }
+    if (obj.model && typeof obj.model === 'string') {
+      model = obj.model;
+    }
+  } else {
+    return null; // Invalid entry format
+  }
+
+  // Validate skill name
+  const validation = validateSkillName(skill);
+  if (!validation.valid) {
+    return null;
+  }
+
+  // Return object without model field if it's undefined
+  const result: NormalizedGate = { skill, mode };
+  if (model !== undefined) {
+    result.model = model;
+  }
+  return result;
+}
+
+/**
  * Read quality gates configuration from .omx-config.json
  */
 export function readQualityGatesConfig(codexHomeOverride?: string): QualityGatesConfig | null {
@@ -111,10 +180,10 @@ export function readQualityGatesConfig(codexHomeOverride?: string): QualityGates
 }
 
 /**
- * Get quality gates for a specific stage
- * Returns array of validated skill names
+ * Get normalized quality gates for a specific stage
+ * Returns array of validated and normalized gate entries
  */
-export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: string): string[] {
+export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: string): NormalizedGate[] {
   const config = readQualityGatesConfig(codexHomeOverride);
   const stageGates = config?.[stage];
   
@@ -122,10 +191,10 @@ export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: st
     return [];
   }
 
-  // Filter to valid skill names
-  return stageGates.filter((skill): skill is string => {
-    return typeof skill === 'string' && validateSkillName(skill).valid;
-  });
+  // Normalize and filter to valid entries
+  return stageGates
+    .map(entry => normalizeGateEntry(entry))
+    .filter((gate): gate is NormalizedGate => gate !== null);
 }
 
 /**
@@ -133,11 +202,11 @@ export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: st
  * Returns validated gates and list of validation errors
  */
 export function validateAllQualityGates(codexHomeOverride?: string): {
-  gates: string[];
-  errors: Array<{ stage: QualityGateStage; skillIndex: number; skill: string; error: string }>;
+  gates: NormalizedGate[];
+  errors: Array<{ stage: QualityGateStage; skillIndex: number; entry: string; error: string }>;
 } {
-  const gates: string[] = [];
-  const errors: Array<{ stage: QualityGateStage; skillIndex: number; skill: string; error: string }> = [];
+  const gates: NormalizedGate[] = [];
+  const errors: Array<{ stage: QualityGateStage; skillIndex: number; entry: string; error: string }> = [];
 
   const config = readQualityGatesConfig(codexHomeOverride);
   if (!config) {
@@ -150,26 +219,37 @@ export function validateAllQualityGates(codexHomeOverride?: string): {
     if (!stageGates || !Array.isArray(stageGates)) continue;
 
     for (let i = 0; i < stageGates.length; i++) {
-      const skill = stageGates[i];
-      if (typeof skill !== 'string') {
-        errors.push({
-          stage,
-          skillIndex: i,
-          skill: String(skill),
-          error: 'Gate entry must be a string (skill name)',
-        });
-        continue;
-      }
-
-      const validation = validateSkillName(skill);
-      if (validation.valid) {
-        gates.push(skill);
+      const entry = stageGates[i];
+      const entryStr = typeof entry === 'string' ? entry : JSON.stringify(entry);
+      
+      const normalized = normalizeGateEntry(entry);
+      if (normalized) {
+        gates.push(normalized);
       } else {
+        let error = 'Invalid gate entry';
+        
+        if (typeof entry === 'string') {
+          error = validateSkillName(entry).error || 'Invalid skill';
+        } else if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          const obj = entry as unknown as Record<string, unknown>;
+          if (!obj || !obj.skill) {
+            error = 'Gate object must have a "skill" property';
+          } else if (typeof obj.skill !== 'string') {
+            error = 'Gate skill must be a string';
+          } else if (obj.mode && !['blocking', 'advisory'].includes(obj.mode as string)) {
+            error = `Invalid mode: ${obj.mode}; must be 'blocking' or 'advisory'`;
+          } else {
+            error = validateSkillName(obj.skill).error || 'Invalid skill';
+          }
+        } else {
+          error = 'Gate entry must be a string or object with {skill, mode?, model?}';
+        }
+        
         errors.push({
           stage,
           skillIndex: i,
-          skill,
-          error: validation.error || 'Invalid skill',
+          entry: entryStr,
+          error,
         });
       }
     }
