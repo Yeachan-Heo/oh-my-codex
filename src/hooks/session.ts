@@ -1100,7 +1100,8 @@ function classifySessionProcess(
     || typeof state.pid_cmdline === 'string'
     || state.identity_schema_version !== undefined
     || state.process_identity !== undefined;
-  if (!hasPidMetadata && !hasIdentityMetadata) return 'usable';
+  // Without any metadata, we cannot prove the process is alive. For recovery, treat as dead.
+  if (!hasPidMetadata && !hasIdentityMetadata) return 'stale-dead';
   if (!hasPidMetadata) return 'identity-indeterminate';
 
   const runtimePlatform = dependencies.runtimePlatform;
@@ -1879,7 +1880,8 @@ function malformedRecoveryPointerReason(state: SessionState): string | undefined
     return 'started_at is missing or invalid';
   }
   if (typeof state.cwd !== 'string' || !state.cwd.trim()) return 'cwd is missing or invalid';
-  if (!Number.isInteger(state.pid) || state.pid <= 0) return 'pid is missing or invalid';
+  // For recovery, allow missing or zero pid; the classification logic will handle identity verification.
+  if (state.pid !== undefined && (!Number.isInteger(state.pid) || state.pid < 0)) return 'pid is invalid';
   if (Object.prototype.hasOwnProperty.call(state, 'state_root')
     && (typeof state.state_root !== 'string' || !state.state_root.trim())) return 'state_root is invalid';
   if (state.platform !== undefined && !['linux', 'darwin', 'win32'].includes(state.platform)) return 'platform is invalid';
@@ -1912,7 +1914,8 @@ function classifySessionProcessForRecovery(state: SessionState): 'usable' | 'dea
     || typeof state.pid_cmdline === 'string'
     || state.identity_schema_version !== undefined
     || state.process_identity !== undefined;
-  if (!hasPidMetadata && !hasIdentityMetadata) return 'usable';
+  // Without any metadata, we cannot prove the process is alive. Treat as dead to allow recovery.
+  if (!hasPidMetadata && !hasIdentityMetadata) return 'dead';
   if (!hasPidMetadata) return 'identity-indeterminate';
   const recordedPlatform = state.process_identity?.platform ?? state.platform;
   if (recordedPlatform !== undefined && recordedPlatform !== transactionDependencies.runtimePlatform) {

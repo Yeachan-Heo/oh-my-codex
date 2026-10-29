@@ -945,13 +945,38 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     }
   });
 
+  it('#3946: recovers Codex daemon session pointer with no identity metadata', async () => {
+    // Issue: omx resume blocked by live Codex daemon session pointer; official recovery refuses to release ownership.
+    // Root cause: classifySessionProcessForRecovery returns 'usable' when pid=0 and no identity metadata,
+    // preventing recovery from quarantining the dead pointer.
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-issue-3946-codex-daemon-pointer-'));
+    try {
+      const context = resolveSessionPointerContext(cwd);
+      await mkdir(context.baseStateDir, { recursive: true });
+      // Simulate a Codex daemon session pointer with no PID/identity metadata (pid: 0 or missing)
+      const pointerBody = JSON.stringify({
+        session_id: 'codex-daemon-session',
+        started_at: '2026-08-14T00:00:00.000Z',
+        cwd,
+        state_root: context.baseStateDir,
+        // pid is 0 or missing - no identity metadata at all
+      });
+      await writeFile(context.sessionPath, pointerBody, 'utf-8');
+      
+      // Without the fix, this returns 'usable' status, preventing recovery.
+      // With the fix, it should return 'recovered' status.
+      await withPointerDependencies({ probePid: () => 'dead', token: () => SUCCESSOR_TOKEN }, async () => {
+        const recovered = await recoverDeadSessionPointer(cwd);
+        assert.equal(recovered.recovered, true, `Expected recovery to succeed but got: ${recovered.status} - ${recovered.reason}`);
+        assert.equal(recovered.action, 'quarantined');
+        assert.equal(existsSync(context.sessionPath), false, 'Session pointer should be moved to quarantine');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   for (const scenario of [
-    {
-      name: 'usable owner',
-      pointer: { pid: 0 },
-      dependencies: {},
-      status: 'usable',
-    },
     {
       name: 'PID reuse birth mismatch',
       pointer: { identity_schema_version: 2, process_identity: { platform: 'linux', birth: '1' }, platform: 'linux' },
