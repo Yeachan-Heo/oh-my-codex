@@ -26,7 +26,6 @@ interface QualityGatesCliOptions {
  */
 function parseQualityGatesArgs(args: string[]): QualityGatesCliOptions {
   const options: QualityGatesCliOptions = {};
-  const acceptedFlags = new Set(['--stage', '--json', '--help', '-h']);
 
   let i = 0;
   while (i < args.length) {
