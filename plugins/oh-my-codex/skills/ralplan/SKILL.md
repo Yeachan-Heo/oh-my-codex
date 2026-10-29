@@ -63,16 +63,17 @@ The consensus workflow:
 
 3. **Architect** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — **await completion before step 4**. Launch this as a subsequent role-specific `Architect` subagent and pass the full task statement, context snapshot, PRD/test-spec paths, and relevant prior findings; do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt. In deliberate mode, Architect should explicitly flag principle violations.
 4. **Critic** evaluates against quality criteria — run only after step 3 completes. Launch this as a subsequent role-specific `Critic` subagent with the full task statement, context snapshot, PRD/test-spec paths, and the completed Architect review; do not ask the Architect subagent to perform the Critic gate and do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
-   **Plan quality gates (after step 4):** Read `.omx-config.json` `qualityGates.plan` using `omx quality-gates list --stage plan --json`. After the Critic review completes, spawn each configured gate skill as a separate subagent with the current plan, task/context, and completed Architect→Critic reviews. Gates supplement rather than replace those sequential reviewers. Apply an optional `model` only to that custom gate subagent; otherwise inherit the current model. Await results before progressing. Record each gate's skill, mode, verdict, summary, and evidence in the planning receipt (`ralplan_consensus_gate.qualityGateResults` stores the per-skill verdict and summary). Advisory findings, including unavailable advisory reviews, are recorded without blocking progression. A blocking gate that does not approve or cannot return evidence feeds into the revise loop and prevents handoff until it passes on the revised plan.
+   **Plan quality gates (after step 4):** Read `.omx-config.json` `qualityGates.ralplan` using `omx quality-gates list --stage ralplan --json`. After the Critic review completes, spawn each configured gate skill as a separate subagent with the current plan, task/context, and completed Architect→Critic reviews. Gates supplement rather than replace those sequential reviewers. Apply an optional `model` only to that custom gate subagent; otherwise inherit the current model. Await results before progressing. Record each gate's skill, mode, verdict, summary, and evidence in the planning receipt (`ralplan_consensus_gate.qualityGateResults` stores the per-skill verdict and summary). Advisory findings, including unavailable advisory reviews, are recorded without blocking progression. A blocking gate that does not approve or cannot return evidence feeds into the revise loop and prevents handoff until it passes on the revised plan.
 
    Example `.omx-config.json` configuration (install the referenced custom skills first):
 
    ```json
    {
      "qualityGates": {
-       "plan": [
-         { "skill": "design-audit", "mode": "advisory" },
-         { "skill": "security-audit", "mode": "blocking", "model": "gpt-5.4" }
+       "ralplan": [
+         "design-audit",
+         { "skill": "security-audit", "mode": "blocking" },
+         { "skill": "compliance-check", "mode": "advisory", "model": "claude-opus" }
        ]
      }
    }
@@ -165,4 +166,4 @@ Once Ralplan is active, preserve the planning/execution and consensus handoff re
 
 ## Quality Gates
 
-Custom quality gates can be configured for the ralplan Architect→Critic review stage via `.omx-config.json` under `qualityGates."ralplan"`. This is also used by `$plan` consensus mode. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md).
+Custom quality gates can be configured for the ralplan Architect→Critic review stage via `.omx-config.json` under `qualityGates.ralplan`. Gate entries can be plain skill-name strings (blocking mode) or objects with explicit `mode` and optional `model` override: `{"skill": "name", "mode": "blocking|advisory", "model": "claude-opus"}`. This is also used by `$plan` consensus mode. See [Custom Quality Gates Configuration](../../docs/reference/omx-config-quality-gates.md) for complete details and examples.
