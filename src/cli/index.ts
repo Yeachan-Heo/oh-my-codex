@@ -29,6 +29,7 @@ import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { ralplanCommand } from "./ralplan.js";
+import { qualityGatesCommand } from "../bin/quality-gates-cli.js";
 import { autopilotCommand } from "./autopilot.js";
 import { ultragoalCommand } from "./ultragoal.js";
 import { performanceGoalCommand } from "./performance-goal.js";
@@ -267,6 +268,8 @@ Usage:
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
   omx list      List packaged OMX skills and native agent prompts (--json)
+  omx quality-gates list --stage <interview|plan|codeReview> --json
+                List configured custom quality gates for a workflow stage
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
@@ -445,6 +448,7 @@ type CliCommand =
   | "setup"
   | "update"
   | "list"
+  | "quality-gates"
   | "agents"
   | "agents-init"
   | "deepinit"
@@ -5271,6 +5275,19 @@ if (command !== "launch" && command !== "resume") {
       case "ralplan":
         await ralplanCommand(args.slice(1));
         break;
+      case "quality-gates": {
+        const output = qualityGatesCommand(args.slice(1));
+        console.log(output);
+        try {
+          const result = JSON.parse(output);
+          if ('error' in result) {
+            process.exitCode = 1;
+          }
+        } catch {
+          process.exitCode = 1;
+        }
+        break;
+      }
       case "ultragoal":
         await ultragoalCommand(args.slice(1));
         break;

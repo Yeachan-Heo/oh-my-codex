@@ -1,4 +1,5 @@
 import type { AdvisoryReviewLifecycle } from './advisory-evidence.js';
+import type { QualityGate } from '../config/quality-gates.js';
 export type { AdvisoryReviewLifecycle } from './advisory-evidence.js';
 
 export const RALPLAN_ACTIVE_PHASES = ['draft', 'architect-review', 'critic-review', 'complete'] as const;
@@ -48,6 +49,14 @@ export interface RalplanReviewResult {
   advisory_artifact_manifest_sha256?: string;
 }
 
+export interface RalplanQualityGateResult extends QualityGate {
+  iteration: number;
+  verdict: RalplanReviewVerdict | 'unavailable';
+  summary: string;
+  thread_id?: string;
+  provenance_kind?: 'native_subagent';
+}
+
 export interface RalplanConsensusGate {
   required: true;
   complete: boolean;
@@ -59,6 +68,7 @@ export interface RalplanConsensusGate {
   architect_review: (RalplanReviewResult & { agent_role: 'architect'; iteration: number }) | null;
   critic_review: (RalplanReviewResult & { agent_role: 'critic'; iteration: number }) | null;
   blocked_reason: string | null;
+  qualityGateResults: Record<string, { verdict: RalplanQualityGateResult['verdict']; summary: string }>;
 }
 
 export interface RalplanConsensusIterationContext {
@@ -68,6 +78,7 @@ export interface RalplanConsensusIterationContext {
   priorDrafts: RalplanDraftResult[];
   architectReviews: RalplanReviewResult[];
   criticReviews: RalplanReviewResult[];
+  gateResults: RalplanQualityGateResult[];
   reusableRoleLanes: { architect?: RalplanReusableRoleLane; critic?: RalplanReusableRoleLane };
 }
 
@@ -77,6 +88,13 @@ export interface RalplanConsensusExecutor {
   criticReview(ctx: RalplanConsensusIterationContext & {
     draft: RalplanDraftResult;
     architectReview: RalplanReviewResult;
+  }): Promise<RalplanReviewResult>;
+  /** Spawn the configured skill as a native subagent, honoring gate.model and gate.mode. */
+  qualityGateReview?(ctx: RalplanConsensusIterationContext & {
+    gate: QualityGate;
+    draft: RalplanDraftResult;
+    architectReview: RalplanReviewResult;
+    criticReview: RalplanReviewResult;
   }): Promise<RalplanReviewResult>;
 }
 

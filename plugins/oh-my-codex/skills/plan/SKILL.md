@@ -51,6 +51,11 @@ Plan creates concise, actionable work plans. Auto-detects interview vs direct, s
 2. Evaluate via Critic; verdict APPROVED/REVISE/REJECT
 3. If author == reviewer, hand off to `$code-review`
 
+### Consensus planning and quality gates
+Consensus planning belongs to `$ralplan`, not a separate `$plan` consensus runtime. Hand off consensus requests to `$ralplan` and preserve the Planner → Architect → Critic ordering.
+
+Configure extra plan reviewers in `.omx-config.json` under `qualityGates.plan`, for example `{"qualityGates":{"plan":[{"skill":"design-audit","mode":"blocking"}]}}`. Inspect them with `omx quality-gates list --stage plan --json`. After Critic review, spawn each configured skill as a separate subagent with the plan and completed review evidence, applying its optional `model` only to that gate. Await all gate results before consensus progression. Record advisory findings in the receipt without blocking; blocking non-approval or unavailable evidence must feed back into the Planner → Architect → Critic revise loop, followed by another gate pass. Do not hand off to execution until built-in approvals and all blocking gates pass. An empty gate list leaves the existing workflow unchanged.
+
 ### Output
 Every plan includes: Requirements Summary, Acceptance Criteria (testable), Implementation Steps (with file refs, adaptive count), Risks/Mitigations, Verification. Saved to `.omx/plans/`.
 

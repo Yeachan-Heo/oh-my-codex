@@ -33,7 +33,7 @@ git diff -- <scope>
 
 1. Identify changed files and review boundaries; do not silently widen the scope.
 2. Launch the `code-reviewer` and `architect` agents in parallel. Both lanes run in parallel on a clean context with explicit scope and artifacts. If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
-3. Respect the user's current model and reasoning/effort selection. Do not pass `model` or `reasoning_effort` overrides in review-lane calls.
+3. Respect the user's current model and reasoning/effort selection. Do not pass `model` or `reasoning_effort` overrides in the built-in `code-reviewer` and `architect` review-lane calls. A configured custom quality gate may override its own subagent model as described below.
 
 ```text
 task(
@@ -56,6 +56,12 @@ recommendations, and Architectural Status: CLEAR / WATCH / BLOCK.
 Scope: [scope and artifacts]"
 )
 ```
+
+## Custom code-review quality gates
+
+After the built-in independent reviews, read `.omx-config.json` `qualityGates.codeReview` with `omx quality-gates list --stage codeReview --json`. Each gate specifies `skill`, `mode` (`advisory` or `blocking`), and optional `model`; for example `{"qualityGates":{"codeReview":[{"skill":"security-audit","mode":"blocking"}]}}`.
+
+Spawn each configured gate skill as a separate subagent with the same scoped diff, requirements, validation evidence, and completed built-in reviews. Honor an optional `model` only for that custom gate. Await results before final synthesis; record each skill, mode, verdict, findings, and evidence in the review receipt. Advisory findings, including unavailable advisory reviews, remain visible but do not independently block approval. A blocking gate that does not approve or cannot return evidence forces **REQUEST CHANGES** and prevents merge-ready status or downstream clean-review progression. Re-review the corrected scope and re-run gates before clearing that blocker; the standalone review remains read-only. Custom gates never replace the required `code-reviewer` and `architect` lanes. An empty gate list preserves the existing review flow.
 
 ## Review taxonomy
 
@@ -85,7 +91,7 @@ Combine the `code-reviewer` recommendation and architect status. Approval requir
 - Else if architect status is **WATCH**, final recommendation is **COMMENT**.
 - Else final recommendation follows the `code-reviewer` lane.
 
-Approval criteria: **APPROVE** only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence. **REQUEST CHANGES** for a blocker, unresolved high/critical finding, or unavailable lane. **COMMENT** may record non-blocking findings.
+Approval criteria: **APPROVE** only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, both independent lanes returned evidence, and every configured blocking quality gate passes. **REQUEST CHANGES** for a blocker, unresolved high/critical finding, unavailable lane, or non-passing/unavailable blocking quality gate. **COMMENT** may record non-blocking findings.
 
 Do not self-review as a fallback. If the `code-reviewer` or `architect` path is missing, unavailable, skipped, or fails, block approval until independent lane evidence exists. On the supported `omx ralph` CLI compatibility path, findings may trigger automatic fix follow-up without another permission prompt; plain `code-review` itself remains read-only and does **not** promise auto-fix.
 

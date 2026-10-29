@@ -7,6 +7,7 @@ import {
 import { resolveWritableStateScope } from '../mcp/state-paths.js';
 import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
+import { getPlanStageGates } from '../quality-gates/plan-stage-wiring.js';
 import {
   administrativelyAbandonRalplanAdvisory,
   readCurrentRalplanAdvisory,
@@ -17,6 +18,7 @@ import {
   type RalplanConsensusIterationContext,
   type RalplanDraftResult,
   type RalplanReviewResult,
+  type RalplanQualityGateResult,
   type RalplanReviewVerdict,
   type RalplanReusableRoleLane,
   type RalplanRuntimeResult,
@@ -46,6 +48,7 @@ interface RalplanModeUpdates {
   ralplan_consensus_gate?: RalplanConsensusGate;
   status_message?: string;
   review_history?: Array<Record<string, unknown>>;
+  gateResults?: RalplanQualityGateResult[];
   [key: string]: unknown;
 }
 
@@ -155,7 +158,7 @@ async function hasCompletedNativeReviewEvidence(
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
-  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean; iteration?: number } = {},
+  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean; iteration?: number; gateResults?: RalplanQualityGateResult[]; qualityGatesComplete?: boolean } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
@@ -173,7 +176,11 @@ function buildRalplanConsensusGate(
   const ralplanCriticReview = latestCritic
     ? { ...latestCritic, agent_role: 'critic' as const, session_id: options.sessionId, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 2 }
     : null;
-  const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete);
+  const currentGateResults = (options.gateResults ?? []).filter((result) => result.iteration === authoritativeCycle);
+  const blockingGate = currentGateResults.find((result) => result.mode === 'blocking' && result.verdict !== 'approve');
+  const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete)
+    ?? (blockingGate ? `quality_gate_not_approved:${blockingGate.skill}` : null)
+    ?? (options.qualityGatesComplete === false ? 'quality_gate_reviews_pending' : null);
   return {
     required: true,
     complete: blockedReason === null,
@@ -185,6 +192,10 @@ function buildRalplanConsensusGate(
     architect_review: ralplanArchitectReview,
     critic_review: ralplanCriticReview,
     blocked_reason: blockedReason,
+    qualityGateResults: Object.fromEntries(currentGateResults.map((result) => [result.skill, {
+      verdict: result.verdict,
+      summary: result.summary,
+    }])),
   };
 }
 
@@ -292,11 +303,14 @@ export async function runRalplanConsensus(
   // same explicit scope instead of falling back to root-only discovery.
   const runtimeSessionId = options.sessionId
     ?? (await resolveWritableStateScope(cwd)).sessionId;
-  const maxIterations = options.maxIterations ?? 5;
+  const maxIterations = Math.min(options.maxIterations ?? 5, 5);
+  const gateResults: RalplanQualityGateResult[] = [];
   const gateOptions = {
     cwd,
     sessionId: runtimeSessionId,
     requireNativeSubagents: options.requireNativeSubagents,
+    gateResults,
+    qualityGatesComplete: false,
     get iteration() { return iteration; },
   };
   const drafts: RalplanDraftResult[] = [];
@@ -311,7 +325,7 @@ export async function runRalplanConsensus(
     : await readModeState('ralplan', cwd);
   const lifecycle = await createRalplanRuntimeLifecycle({ cwd, runtimeSessionId, maxIterations, options, existing });
   const writeRalplanState = (updates: RalplanModeUpdates): Promise<void> =>
-    updateRalplanState(cwd, updates, lifecycle.sessionId);
+    updateRalplanState(cwd, { ...updates, gateResults }, lifecycle.sessionId);
   const snapshot = (
     consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
     reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews),
@@ -328,6 +342,7 @@ export async function runRalplanConsensus(
 
   try {
     while (iteration <= maxIterations) {
+      gateOptions.qualityGatesComplete = false;
       const reusableRoleLanes = {
         architect: latestCompatibleRoleLane(architectReviews, 'architect', runtimeSessionId),
         critic: latestCompatibleRoleLane(criticReviews, 'critic', runtimeSessionId),
@@ -339,6 +354,7 @@ export async function runRalplanConsensus(
         priorDrafts: [...drafts],
         architectReviews: [...architectReviews],
         criticReviews: [...criticReviews],
+        gateResults: [...gateResults],
         reusableRoleLanes,
       };
 
@@ -480,6 +496,53 @@ export async function runRalplanConsensus(
         preserveCompletionEvidence: true,
       });
 
+      if (criticReview.verdict === 'approve') {
+        for (const gate of getPlanStageGates(cwd)) {
+          let result: RalplanQualityGateResult;
+          try {
+            if (!executor.qualityGateReview) throw new Error('Native quality gate executor is unavailable');
+            const review = await executor.qualityGateReview({
+              ...iterationContext,
+              gate: { ...gate },
+              draft,
+              architectReview,
+              criticReview,
+            });
+            if (review.provenance_kind !== 'native_subagent' || !review.thread_id?.trim()) {
+              throw new Error('Quality gate requires native_subagent provenance and a thread_id');
+            }
+            if (!['approve', 'iterate', 'reject'].includes(review.verdict)) {
+              throw new Error('Quality gate returned an invalid verdict');
+            }
+            result = {
+              ...gate,
+              iteration,
+              verdict: review.verdict,
+              summary: review.summary ?? '',
+              provenance_kind: review.provenance_kind,
+              thread_id: review.thread_id,
+            };
+            await recordRalplanSubagentTurn(cwd, runtimeSessionId, {
+              threadId: review.thread_id,
+              laneId: `quality-gate:${gate.skill}`,
+              scope: options.task,
+              summary: review.summary,
+              completed: true,
+              completionSource: 'ralplan-quality-gate',
+            });
+          } catch (error) {
+            result = {
+              ...gate,
+              iteration,
+              verdict: 'unavailable',
+              summary: error instanceof Error ? error.message : String(error),
+            };
+          }
+          gateResults.push(result);
+        }
+        gateOptions.qualityGatesComplete = true;
+      }
+
       const reviewHistory = buildReviewHistory(drafts, architectReviews, criticReviews);
       const consensusGate = buildRalplanConsensusGate(architectReviews, criticReviews, {
         ...gateOptions,
@@ -495,11 +558,11 @@ export async function runRalplanConsensus(
         review_history: reviewHistory,
       });
 
-      const advisoryCompleted = await lifecycle.completeApproved({
+      const advisoryCompleted = consensusGate.complete ? await lifecycle.completeApproved({
         ...snapshot(consensusGate, reviewHistory),
         architectReview,
         criticReview,
-      });
+      }) : null;
       if (advisoryCompleted) return advisoryCompleted;
 
       if (consensusGate.complete) {

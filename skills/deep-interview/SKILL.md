@@ -365,6 +365,12 @@ Spec should include:
 - Technical context findings
 - Full or condensed transcript
 
+### Final-spec quality gates
+
+Before declaring the final spec ready or entering Phase 5, inspect `.omx-config.json` `qualityGates.interview` with `omx quality-gates list --stage interview --json`. Each entry has `skill`, `mode` (`advisory` or `blocking`), and optional `model`; for example `{"qualityGates":{"interview":[{"skill":"requirements-audit","mode":"blocking"}]}}`.
+
+Spawn each configured gate skill as a separate subagent with the crystallized spec, context snapshot, and relevant interview evidence. Use its optional model override only for that gate, and await every result before progressing. Record the skill, mode, verdict, findings, and evidence in the spec/handoff receipt. Advisory findings or unavailable advisory reviews are recorded as residual risks without blocking handoff. A blocking gate that does not approve or cannot return evidence prevents final-spec readiness and downstream handoff: refine the spec, ask only the necessary clarification question, then re-run gates on the revised artifact. If the interview hard cap is reached with a blocking gate unresolved, persist a blocked outcome rather than bypassing the gate with a residual-risk warning. With no configured gates, retain the existing readiness checks and handoff behavior. Custom gates do not replace ambiguity, non-goals, or decision-boundary checks.
+
 ### Autoresearch specialization
 
 When the clarified task is specifically about `$autoresearch`, or the skill is invoked with `--autoresearch`, keep the interview domain-specific and emit skill-consumable artifacts without skipping clarification.

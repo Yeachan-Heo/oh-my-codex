@@ -38,8 +38,8 @@ export interface PlanStageGateReceipt {
 /**
  * Get quality gates for the plan stage
  */
-export function getPlanStageGates(): QualityGate[] {
-  return getGatesForStage('plan');
+export function getPlanStageGates(cwd?: string): QualityGate[] {
+  return getGatesForStage('plan', cwd);
 }
 
 /**
