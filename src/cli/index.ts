@@ -268,7 +268,7 @@ Usage:
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
   omx list      List packaged OMX skills and native agent prompts (--json)
-  omx quality-gates list --stage <interview|plan|codeReview> --json
+  omx quality-gates list --stage <deep-interview|ralplan|code-review> --json
                 List configured custom quality gates for a workflow stage
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
