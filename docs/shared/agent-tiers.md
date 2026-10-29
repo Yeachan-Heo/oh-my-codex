@@ -20,7 +20,7 @@ Model routing: Each role belongs to a modelClass (`frontier`, `standard`, `fast`
 - Pinned roles (`planner`, `architect`, `researcher`) use exact `gpt-6-astra` with built-in providers
 - Per-agent `agentModels` overrides are respected
 
-**Environment variables** (`OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, `OMX_DEFAULT_SPARK_MODEL`) do NOT change native subagent models; they apply to Team worker fallback selection and mode resolution.
+**Environment variables** (`OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, `OMX_DEFAULT_SPARK_MODEL`) do NOT set the native TOML `model` field or change native subagent runtime model selection. They configure Team worker fallback selection and mode resolution, and may be reflected in generated `resolved_model` or AGENTS.md model-table metadata.
 
 ## Tiers
 

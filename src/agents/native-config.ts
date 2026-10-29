@@ -11,9 +11,8 @@
  * models and modelClass routing; see resolveAgentModel(). That richer resolution is informational only.
  *
  * IMPORTANT: OMX_DEFAULT_FRONTIER_MODEL, OMX_DEFAULT_STANDARD_MODEL, and OMX_DEFAULT_SPARK_MODEL
- * do NOT affect native Codex subagent model selection. These env vars apply only to Team worker
- * fallback models and mode-specific resolution (e.g., Autopilot). Native Codex subagents inherit
- * the Codex config.toml model, except for pinned roles with built-in providers and agentModels overrides.
+ * do not set the native TOML model field or change native runtime model selection. They configure
+ * Team worker fallbacks and mode-specific resolution, and may affect resolved_model/model-table metadata.
  */
 
 import { existsSync, readFileSync } from "fs";
