@@ -136,8 +136,12 @@ Team mode is the structured multi-agent surface. Use it when durable staged coor
 Team/Swarm worker model precedence (for worker roles only, NOT native Codex subagents):
 1. Explicit `OMX_TEAM_WORKER_LAUNCH_ARGS` `--model`
 2. Inherited leader `--model`
-3. Role-specific default: `.omx-config.json` `agentModels[role]`, then `modelClass` tier (frontier/standard/fast)
-4. Low-complexity fallback from `OMX_DEFAULT_SPARK_MODEL` (legacy alias: `OMX_SPARK_MODEL`) for fast roles
+3. Role-specific default (in order):
+   - `.omx-config.json` `agentModels[role]` override
+   - Role ending in `-low` → spark chain
+   - Built-in exactModel pin (`planner`/`architect`/`researcher` → `gpt-6-astra`)
+   - `executor` special case → frontier/main chain
+   - Otherwise by `modelClass`: `fast` → spark; `frontier` → main; `standard` → standard lane
 
 For native Codex subagents, model selection is different: they inherit `config.toml` model except for pinned roles (`planner`/`architect`/`researcher` with built-in providers) and per-agent `agentModels` overrides. Environment variables like `OMX_DEFAULT_FRONTIER_MODEL` do NOT affect native subagent model selection; they apply only to Team worker fallback selection.
 

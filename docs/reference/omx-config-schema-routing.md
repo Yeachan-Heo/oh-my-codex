@@ -174,13 +174,13 @@ These overrides do not change built-in defaults in source. Every built-in `Agent
 
 ### Effective model precedence for native agents
 
-Native agent TOML generation follows this precedence:
+Native agent TOML generation **writes the `model` key** only when these conditions are met:
 
-1. Per-agent override: `.omx-config.json` `agentModels[role]` (if set)
-2. **Built-in provider + exactModel pin:** For `planner`, `architect`, `researcher`, bake the `gpt-6-astra` pin
-   - **Custom provider:** Skip exactModel and let the agent inherit from config.toml at runtime
-3. Configured root/profile model (if built-in provider has a model configured)
-4. modelClass-based defaults (frontier/standard/fast lanes)
+1. Per-agent override: `.omx-config.json` `agentModels[role]` is configured → `model` key is written
+2. **Built-in provider + exactModel pin:** For `planner`, `architect`, `researcher` with built-in providers, the `gpt-6-astra` exactModel pin is written → `model` key is written
+3. Otherwise: **No `model` key** is written to the agent TOML. The agent inherits the Codex `config.toml` runtime model at runtime.
+   - For custom providers, exactModel pins are not baked; the agent inherits from the configured provider at runtime.
+   - The `resolved_model` shown in role instructions is **informational only** and reflects what the agent will inherit, but does not control the written TOML.
 
 **Important:** `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, and `OMX_DEFAULT_SPARK_MODEL` do **NOT** change native Codex subagent models. These environment variables apply only to **Team worker fallback models** and **mode-specific resolution** (such as Autopilot planning). Native Codex subagents inherit the Codex `config.toml` model, except when:
 - Exact model pins (`planner`, `architect`, `researcher` with built-in providers) are baked into native TOML
@@ -232,7 +232,7 @@ For team low-complexity helpers, the exact order depends on the call path: `getS
 
 ## Role/category routing examples
 
-Native agent TOML generation and team model-contract logic use agent definitions with `modelClass`, optional `exactModel`, and `reasoningEffort` metadata. Per-agent `agentModels[role]` overrides win first. Exact-model pins win before class-based routing only when no per-agent model override exists. Native-agent generation has one important frontier-lane precedence detail: for frontier roles and the `executor` special case, it reads the active Codex `config.toml` root `model` first, then falls back to `getMainDefaultModel()` if that root model is absent. Because `getMainDefaultModel()` is only the fallback in this path, `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL` does not override an explicit `config.toml` root `model` for generated native-agent TOML.
+Native agent TOML generation writes the `model` key only for agentModels overrides or exactModel pins (as described above). However, the `resolveAgentModel()` function (used for instruction overlays and metadata) follows a richer precedence that accounts for configured models and modelClass routing. For instruction composition, frontier roles and the `executor` special case use the active Codex `config.toml` root `model` first, then fall back to `getMainDefaultModel()` if that root model is absent. This richer resolution is **not** reflected in the written TOML `model` key; it only affects the `resolved_model` metadata shown in instructions.
 
 Examples:
 
@@ -244,12 +244,16 @@ Examples:
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
 | Executor special case | `executor` | Native-agent generation uses active `config.toml` root `model` first, then the main/frontier default fallback; team fallback routing keeps it on the frontier lane. |
 
-Team worker launches add another layer:
+Team worker launches add another layer (for each worker role, in order):
 
 1. Explicit `--model ...` inside `OMX_TEAM_WORKER_LAUNCH_ARGS` wins.
 2. Inheritable leader launch model args can be passed through to workers.
-3. If no explicit/inherited model is present, the worker role's default model class selects the fallback model.
-4. Fast roles such as `explore` and role names ending in `-low` use the low-complexity/spark fallback.
+3. If no explicit/inherited model is present, resolve the role-specific default:
+   - `.omx-config.json` `agentModels[role]` override (if configured)
+   - Role ending in `-low` → spark chain (getSparkDefaultModel: `OMX_DEFAULT_SPARK_MODEL` > config.toml model > `gpt-6-astra`)
+   - Built-in exactModel pin (`planner`, `architect`, `researcher` → `gpt-6-astra`)
+   - `executor` special case → main/frontier chain
+   - Otherwise by `modelClass`: `fast` → spark chain; `frontier` → main/frontier chain; `standard` → standard chain (OMX_DEFAULT_STANDARD_MODEL > main chain)
 
 Use `omx team status <team-name> --model-inspect` when you need inspect hints for a running team; the regular status path avoids spending model quota on summaries.
 

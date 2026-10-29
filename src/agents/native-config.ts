@@ -2,12 +2,13 @@
  * Native agent config generators for Codex CLI.
  * Writes standalone TOML files under ~/.codex/agents/ or ./.codex/agents/.
  *
- * Model resolution for native agents:
- * 1. Per-agent override: .omx-config.json agentModels[role]
- * 2. Exact model pins (built-in providers only): planner/architect/researcher use gpt-6-astra
- * 3. Custom providers: exactModel pins are NOT baked; agents inherit from config.toml at runtime
- * 4. Configured root/profile model (built-in providers)
- * 5. modelClass-based defaults (frontier/standard/fast)
+ * Model precedence for the written TOML `model` key (NOT written if neither applies):
+ * 1. Per-agent override: .omx-config.json agentModels[role] → `model` key written
+ * 2. exactModel + built-in provider: planner/architect/researcher → `model` key written (gpt-6-astra)
+ * 3. Otherwise: NO `model` key written; agent inherits Codex config.toml model at runtime
+ *
+ * For instruction composition (resolved_model metadata), richer logic applies including configured
+ * models and modelClass routing; see resolveAgentModel(). That richer resolution is informational only.
  *
  * IMPORTANT: OMX_DEFAULT_FRONTIER_MODEL, OMX_DEFAULT_STANDARD_MODEL, and OMX_DEFAULT_SPARK_MODEL
  * do NOT affect native Codex subagent model selection. These env vars apply only to Team worker
