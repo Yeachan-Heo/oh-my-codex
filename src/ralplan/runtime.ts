@@ -7,6 +7,7 @@ import {
 import { resolveWritableStateScope } from '../mcp/state-paths.js';
 import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
+import { codexHome } from '../utils/paths.js';
 import { getGatesForStage } from '../quality-gates/index.js';
 import {
   administrativelyAbandonRalplanAdvisory,
@@ -155,6 +156,14 @@ async function hasCompletedNativeReviewEvidence(
   return Boolean(threads?.[architectReview.thread_id ?? '']?.completed_at && threads?.[criticReview.thread_id ?? '']?.completed_at);
 }
 
+export function __buildRalplanConsensusGateForTests(
+  architectReviews: RalplanReviewResult[],
+  criticReviews: RalplanReviewResult[],
+  options?: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean; iteration?: number; gateResults?: RalplanQualityGateResult[]; qualityGatesComplete?: boolean },
+): RalplanConsensusGate {
+  return buildRalplanConsensusGate(architectReviews, criticReviews, options);
+}
+
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
@@ -178,10 +187,10 @@ function buildRalplanConsensusGate(
     : null;
   const currentGateResults = (options.gateResults ?? []).filter((result) => result.iteration === authoritativeCycle);
   const blockingGate = currentGateResults.find((result) => {
-    // A blocking gate blocks if it does NOT approve (verdict !== 'approve')
-    // This includes 'reject', 'iterate', and 'unavailable'
+    // A blocking gate blocks only on 'reject' or 'iterate' verdicts
+    // 'unavailable' (skill missing/executor unavailable) is a visible warning and is skipped
     const mode = result.mode ?? 'blocking';
-    return result.verdict !== 'approve' && mode === 'blocking';
+    return (result.verdict === 'reject' || result.verdict === 'iterate') && mode === 'blocking';
   });
   const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete)
     ?? (blockingGate ? `quality_gate_not_approved:${blockingGate.skill}` : null)
@@ -502,7 +511,7 @@ export async function runRalplanConsensus(
       });
 
       if (criticReview.verdict === 'approve') {
-        const normalizedGates = getGatesForStage('ralplan');
+        const normalizedGates = getGatesForStage('ralplan', codexHome(), cwd);
         for (const gate of normalizedGates) {
           let result: RalplanQualityGateResult;
           try {

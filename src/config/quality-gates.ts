@@ -159,32 +159,69 @@ export function normalizeGateEntry(entry: unknown): NormalizedGate | null {
 
 /**
  * Read quality gates configuration from .omx-config.json
+ * Reads from both project ./.omx-config.json (if cwd provided) and $CODEX_HOME/.omx-config.json
+ * Project config takes precedence over CODEX_HOME config for the same stage
  */
-export function readQualityGatesConfig(codexHomeOverride?: string): QualityGatesConfig | null {
-  const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
-  if (!existsSync(configPath)) return null;
+export function readQualityGatesConfig(codexHomeOverride?: string, cwd?: string): QualityGatesConfig | null {
+  const result: QualityGatesConfig = {};
+  let hasConfig = false;
 
-  try {
-    const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-
-    const qualityGates = raw.qualityGates;
-    if (!qualityGates || typeof qualityGates !== 'object' || Array.isArray(qualityGates)) {
-      return null;
+  // Read CODEX_HOME config first (lower precedence)
+  const codexHomePath = join(codexHomeOverride || codexHome(), '.omx-config.json');
+  if (existsSync(codexHomePath)) {
+    try {
+      const raw = JSON.parse(readFileSync(codexHomePath, 'utf-8'));
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const qualityGates = raw.qualityGates;
+        if (qualityGates && typeof qualityGates === 'object' && !Array.isArray(qualityGates)) {
+          const codexHomeGates = qualityGates as QualityGatesConfig;
+          for (const [stage, gates] of Object.entries(codexHomeGates)) {
+            if (gates) {
+              result[stage as QualityGateStage] = gates;
+              hasConfig = true;
+            }
+          }
+        }
+      }
+    } catch {
+      // Silently ignore parse errors in CODEX_HOME config
     }
-
-    return qualityGates as QualityGatesConfig;
-  } catch {
-    return null;
   }
+
+  // Read project config (higher precedence - overwrites CODEX_HOME)
+  if (cwd) {
+    const projectConfigPath = join(cwd, '.omx-config.json');
+    if (existsSync(projectConfigPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(projectConfigPath, 'utf-8'));
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          const qualityGates = raw.qualityGates;
+          if (qualityGates && typeof qualityGates === 'object' && !Array.isArray(qualityGates)) {
+            const projectGates = qualityGates as QualityGatesConfig;
+            for (const [stage, gates] of Object.entries(projectGates)) {
+              if (gates) {
+                result[stage as QualityGateStage] = gates;
+                hasConfig = true;
+              }
+            }
+          }
+        }
+      } catch {
+        // Silently ignore parse errors in project config
+      }
+    }
+  }
+
+  return hasConfig ? result : null;
 }
 
 /**
  * Get normalized quality gates for a specific stage
  * Returns array of validated and normalized gate entries
+ * Reads from both project and CODEX_HOME config with project taking precedence
  */
-export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: string): NormalizedGate[] {
-  const config = readQualityGatesConfig(codexHomeOverride);
+export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: string, cwd?: string): NormalizedGate[] {
+  const config = readQualityGatesConfig(codexHomeOverride, cwd);
   const stageGates = config?.[stage];
   
   if (!stageGates || !Array.isArray(stageGates)) {
@@ -200,15 +237,16 @@ export function getGatesForStage(stage: QualityGateStage, codexHomeOverride?: st
 /**
  * Validate all gates in the configuration file
  * Returns validated gates and list of validation errors
+ * Reads from both project and CODEX_HOME config with project taking precedence
  */
-export function validateAllQualityGates(codexHomeOverride?: string): {
+export function validateAllQualityGates(codexHomeOverride?: string, cwd?: string): {
   gates: NormalizedGate[];
   errors: Array<{ stage: QualityGateStage; skillIndex: number; entry: string; error: string }>;
 } {
   const gates: NormalizedGate[] = [];
   const errors: Array<{ stage: QualityGateStage; skillIndex: number; entry: string; error: string }> = [];
 
-  const config = readQualityGatesConfig(codexHomeOverride);
+  const config = readQualityGatesConfig(codexHomeOverride, cwd);
   if (!config) {
     return { gates, errors };
   }

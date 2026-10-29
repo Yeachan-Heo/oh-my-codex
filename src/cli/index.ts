@@ -5276,7 +5276,7 @@ if (command !== "launch" && command !== "resume") {
         await ralplanCommand(args.slice(1));
         break;
       case "quality-gates": {
-        const output = qualityGatesCommand(args.slice(1));
+        const output = qualityGatesCommand(args.slice(1), undefined, process.cwd());
         console.log(output);
         try {
           const result = JSON.parse(output);
