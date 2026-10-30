@@ -193,11 +193,11 @@ export function resolveTeamNameForCurrentContext(inputName: string, cwd: string,
 }
 
 export function resolveCurrentTeamName(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const candidates = listTeamLookupCandidates(cwd, env);
-  const active = candidates.filter((candidate) => !candidate.terminal);
-  const pool = active.length > 0 ? active : candidates;
   const scope = resolveTeamIdentityScope(env);
-  const current = pool.filter((candidate) => matchingCurrentLeader(candidate, scope));
-  if (current.length === 1) return current[0].teamName;
+  // Match the current leader first: another session's active team must not hide this leader's terminal one.
+  const current = listTeamLookupCandidates(cwd, env).filter((candidate) => matchingCurrentLeader(candidate, scope));
+  const active = current.filter((candidate) => !candidate.terminal);
+  const pool = active.length > 0 ? active : current;
+  if (pool.length === 1) return pool[0].teamName;
   return null;
 }

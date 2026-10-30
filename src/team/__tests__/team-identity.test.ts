@@ -80,6 +80,25 @@ describe('team identity', () => {
     }
   });
 
+  it('resolves the current leader terminal team even when another session has an active team', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-identity-terminal-vs-foreign-active-'));
+    try {
+      await initTeamState('demo-mine', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-mine' }, {
+        display_name: 'demo', requested_name: 'demo', identity_source: 'env-session',
+      });
+      await writePhase(cwd, 'demo-mine', 'complete', '2026-01-03T00:00:00.000Z');
+      await initTeamState('other-active', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-other' }, {
+        display_name: 'other', requested_name: 'other', identity_source: 'env-session',
+      });
+
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-mine' }), 'demo-mine');
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-other' }), 'other-active');
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-foreign' }), null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('does not accept a matching leader pane when an explicit current session conflicts', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-identity-session-precedence-'));
     try {
