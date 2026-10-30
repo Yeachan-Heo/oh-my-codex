@@ -98,26 +98,26 @@ async function wrapFakeTmuxWithDetachedLeader(fakeTmuxPath: string): Promise<voi
   await rename(fakeTmuxPath, implementationPath);
   await writeExecutable(fakeTmuxPath, `#!/bin/sh
 if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{session_created}'*'#{window_id}'*'#{pane_pid}'*) true;; *) false;; esac; then
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  session=$(cat "$0.detached-session-name" 2>/dev/null || printf omx-test)
   leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
   printf '%s\t$1\t1\t0\t@1\t%s\t%s\n' "$session" "$4" "$leader_pid"
   exit 0
 fi
 if [ "$1" = "set-option" ] && [ "$2" = "-t" ] && [ "$4" = "@omx_instance_id" ]; then
-  printf '%s' "$5" > /tmp/omx-test-detached-owner-id
+  printf '%s' "$5" > "$0.detached-owner-id"
 fi
 if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{pane_dead}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  session=$(cat "$0.detached-session-name" 2>/dev/null || printf omx-test)
   leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
   pane=$(cat "$0.detached-leader-pane" 2>/dev/null || printf '%%12')
-  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then owner='foreign-owner'; else owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf ''); fi
+  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then owner='foreign-owner'; else owner=$(cat "$0.detached-owner-id" 2>/dev/null || printf ''); fi
   printf '0\t%s\t%s\t%s\t$1\t1\t@1\t%s\n' "$pane" "$leader_pid" "$session" "$owner"
   exit 0
 fi
 if [ "$1" = "list-panes" ] && case "$*" in *'#{session_created}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
   ${JSON.stringify(implementationPath)} "$@" >/dev/null 2>&1 || true
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
-  owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf '')
+  session=$(cat "$0.detached-session-name" 2>/dev/null || printf omx-test)
+  owner=$(cat "$0.detached-owner-id" 2>/dev/null || printf '')
   leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
   pane=$(cat "$0.detached-leader-pane" 2>/dev/null || printf '%%12')
   printf '%s\t0\t%s\t%s\t$1\t1\t%s\n' "$pane" "$leader_pid" "$session" "$owner"
@@ -160,12 +160,12 @@ printf '%s' "$output"
 if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
   previous=''
   for arg in "$@"; do
-    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > /tmp/omx-test-detached-session-name; break; fi
+    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > $0.detached-session-name; break; fi
     previous="$arg"
   done
   for last_arg do :; done
   pane=$(printf '%s' "$output" | sed -n '1p')
-  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c 'eval "exec $1"' sh "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c 'eval "exec $1"' sh "$last_arg" </dev/null >"$0.detached-leader.log" 2>&1 &
   leader_pid=$!
   printf '%s' "$leader_pid" > "$0.detached-leader-pid"
   printf '%s' "$pane" > "$0.detached-leader-pane"
@@ -195,26 +195,26 @@ async function createLaunchFixture(
   await writeExecutable(tmuxImpl, tmuxScript(tmuxLogPath));
   await writeExecutable(join(fakeBin, 'tmux'), `#!/bin/sh
 if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{session_created}'*'#{window_id}'*'#{pane_pid}'*) true;; *) false;; esac; then
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  session=$(cat "$0.detached-session-name" 2>/dev/null || printf omx-test)
   leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
   printf '%s\t$1\t1\t0\t@1\t%s\t%s\n' "$session" "$4" "$leader_pid"
   exit 0
 fi
 if [ "$1" = "set-option" ] && [ "$2" = "-t" ] && [ "$4" = "@omx_instance_id" ]; then
-  printf '%s' "$5" > /tmp/omx-test-detached-owner-id
+  printf '%s' "$5" > "$0.detached-owner-id"
 fi
 if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{pane_dead}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  session=$(cat "$0.detached-session-name" 2>/dev/null || printf omx-test)
   leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
   pane=$(cat "$0.detached-leader-pane" 2>/dev/null || printf '%%12')
-  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then owner='foreign-owner'; else owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf ''); fi
+  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then owner='foreign-owner'; else owner=$(cat "$0.detached-owner-id" 2>/dev/null || printf ''); fi
   printf '0\t%s\t%s\t%s\t$1\t1\t@1\t%s\n' "$pane" "$leader_pid" "$session" "$owner"
   exit 0
 fi
 if [ "$1" = "list-panes" ] && case "$*" in *'#{session_created}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
   ${JSON.stringify(tmuxImpl)} "$@" >/dev/null 2>&1 || true
-  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
-  owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf '')
+  session=$(cat "$0.detached-session-name" 2>/dev/null || printf omx-test)
+  owner=$(cat "$0.detached-owner-id" 2>/dev/null || printf '')
   leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
   pane=$(cat "$0.detached-leader-pane" 2>/dev/null || printf '%%12')
   printf '%s\t0\t%s\t%s\t$1\t1\t%s\n' "$pane" "$leader_pid" "$session" "$owner"
@@ -234,14 +234,14 @@ if [ "$1" = "if-shell" ] && [ "$2" = "-F" ] && [ "$3" = "-t" ]; then
   receipt=$(printf '%s' "$success" | sed -n 's/.*\\(omx_detached_[A-Za-z0-9-]*\\).*/\\1/p')
   if [ -n "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" ] && case "$success" in *"@omx_instance_id"*) true;; *) false;; esac; then
     owner=$(printf '%s' "$success" | sed -n "s/.*@omx_instance_id '\\([^']*\\)'.*/\\1/p")
-    [ -n "$owner" ] && printf '%s' "$owner" > /tmp/omx-test-detached-owner-id
-    if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then printf foreign-owner > /tmp/omx-test-detached-owner-id; fi
+    [ -n "$owner" ] && printf '%s' "$owner" > "$0.detached-owner-id"
+    if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then printf foreign-owner > "$0.detached-owner-id"; fi
   fi
   if [ -n "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" ] && case "$5" in *'@omx_instance_id,'*) true;; *) false;; esac; then
     expected_owner=$(printf '%s' "$5" | sed -n 's/.*@omx_instance_id,\\([^}]*\\).*/\\1/p')
     expected_session=$(printf '%s' "$5" | sed -n 's/.*session_name,\\([^}]*\\).*/\\1/p')
-    owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf '')
-    session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf '')
+    owner=$(cat "$0.detached-owner-id" 2>/dev/null || printf '')
+    session=$(cat "$0.detached-session-name" 2>/dev/null || printf '')
     [ "$owner" = "$expected_owner" ] && [ "$session" = "$expected_session" ] || exit 0
   fi
   if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'once' ] && [ ! -f "$0.detached-owner-visibility-race" ]; then
@@ -277,7 +277,7 @@ printf '%s' "$output"
 if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
   previous=''
   for arg in "$@"; do
-    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > /tmp/omx-test-detached-session-name; break; fi
+    if [ "$previous" = '-s' ]; then printf '%s' "$arg" > $0.detached-session-name; break; fi
     previous="$arg"
   done
   for last_arg do :; done
@@ -287,7 +287,7 @@ if [ "$status" -eq 0 ] && [ "$1" = "new-session" ]; then
     previous="$arg"
   done
   pane=$(printf '%s' "$output" | sed -n '1p')
-  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c 'eval "exec $1"' sh "$last_arg" </dev/null >/tmp/omx-test-detached-leader.log 2>&1 &
+  TMUX=/tmp/omx-test-tmux,1,0 TMUX_PANE="$pane" nohup /bin/sh -c 'eval "exec $1"' sh "$last_arg" </dev/null >"$0.detached-leader.log" 2>&1 &
   leader_pid=$!
   printf '%s' "$leader_pid" > "$0.detached-leader-pid"
   printf '%s' "$pane" > "$0.detached-leader-pane"
