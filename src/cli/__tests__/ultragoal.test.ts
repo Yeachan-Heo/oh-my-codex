@@ -412,6 +412,25 @@ describe('cli/ultragoal', () => {
     });
   });
 
+  it('reports native get_goal tool catalog unavailability without claiming goal completion', async () => {
+    await withCwd(async () => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+      const status = await capture(() => ultragoalCommand([
+        'status', '--codex-goal-json',
+        JSON.stringify({ error: 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record' }),
+        '--json',
+      ]));
+      assert.equal(status.exitCode, undefined);
+      const parsed = JSON.parse(status.stdout.join('\n')) as {
+        summary: { complete: number }; codexGoalFallback?: { reason: string; message: string };
+      };
+      assert.equal(parsed.summary.complete, 0);
+      assert.equal(parsed.codexGoalFallback?.reason, 'tool_unavailable');
+      assert.match(parsed.codexGoalFallback?.message ?? '', /native tool catalog/);
+    });
+  });
+
   it('labels aggregate product completion separately from microgoal bookkeeping status', async () => {
     await withCwd(async () => {
       const taskObjective = 'Fix ultragoal task-scoped goal reconciliation.';
