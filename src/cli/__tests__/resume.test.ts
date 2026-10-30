@@ -32,6 +32,79 @@ function runOmx(
 }
 
 describe('omx resume', () => {
+  it('rejects malformed selected pointer before launching Codex and preserves its bytes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-malformed-pointer-'));
+    const root = join(wd, 'selected-root');
+    const pointer = join(root, '.omx', 'state', 'session.json');
+    try {
+      await mkdir(dirname(pointer), { recursive: true });
+      const original = '{not valid json';
+      await writeFile(pointer, original);
+      const result = runOmx(wd, ['resume', 'some-thread'], {
+        HOME: join(wd, 'home'), OMX_ROOT: root, OMX_LAUNCH_POLICY: 'direct', OMX_AUTO_UPDATE: '0',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /selected session pointer is malformed/);
+      assert.equal(await readFile(pointer, 'utf8'), original);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+  it('does not quarantine a pointer with live or indeterminate ownership on resume', async () => {
+    if (process.platform !== 'linux') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-live-pointer-'));
+    const stateRoot = join(wd, 'omx-root');
+    const pointer = join(stateRoot, '.omx', 'state', 'session.json');
+    const fakeBin = join(wd, 'bin');
+    try {
+      await mkdir(dirname(pointer), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(fakeBin, 'codex'), '#!/bin/sh\necho fake-codex:$*\n');
+      await chmod(join(fakeBin, 'codex'), 0o755);
+      const bytes = JSON.stringify({
+        session_id: 'omx-occupied', started_at: new Date(0).toISOString(),
+        cwd: wd, state_root: join(stateRoot, '.omx', 'state'), pid: process.pid, platform: 'linux',
+      });
+      await writeFile(pointer, bytes);
+      const result = runOmx(wd, ['resume', 'another-thread'], {
+        HOME: join(wd, 'home'), OMX_ROOT: stateRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`, OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_LAUNCH_POLICY: 'direct',
+      });
+      assert.notEqual(result.status, 0, 'occupied root must not launch a second runtime');
+      assert.match(result.stderr, /resume cannot start a second OMX runtime/);
+      assert.doesNotMatch(result.stdout, /fake-codex:/);
+      assert.equal(await readFile(pointer, 'utf8'), bytes);
+      assert.equal((await readdir(dirname(pointer))).filter(name => name.startsWith('session.json.quarantine.')).length, 0);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+  it('recovers a verified-dead runtime pointer before direct resume without losing forensic bytes', async () => {
+    if (process.platform !== 'linux') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-dead-pointer-'));
+    const stateRoot = join(wd, 'omx-root');
+    const pointer = join(stateRoot, '.omx', 'state', 'session.json');
+    const fakeBin = join(wd, 'bin');
+    try {
+      await mkdir(dirname(pointer), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(fakeBin, 'codex'), '#!/bin/sh\necho fake-codex:$*\n');
+      await chmod(join(fakeBin, 'codex'), 0o755);
+      const bytes = JSON.stringify({
+        session_id: 'omx-previous-dead', started_at: new Date(0).toISOString(),
+        cwd: wd, state_root: join(stateRoot, '.omx', 'state'), pid: 2147483646, platform: 'linux',
+      });
+      await writeFile(pointer, bytes);
+      const result = runOmx(wd, ['resume', 'previous-codex-thread'], {
+        HOME: join(wd, 'home'), OMX_ROOT: stateRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`, OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_LAUNCH_POLICY: 'direct',
+      });
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume previous-codex-thread/);
+      assert.match(result.stderr, /recovered verified-dead session pointer before resume/);
+      const quarantine = (await readdir(dirname(pointer))).find((name) => name.startsWith('session.json.quarantine.'));
+      assert.ok(quarantine);
+      assert.equal(await readFile(join(dirname(pointer), quarantine), 'utf8'), bytes);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
   it('runs project resume integration on Windows', async () => {
     if (process.platform !== 'win32') return;
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-windows-integration-'));
