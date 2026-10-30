@@ -1,45 +1,42 @@
-# oh-my-codex 0.21.42
+# oh-my-codex 0.21.43
 
-`0.21.42` is a patch release that makes Team and tmux status inspection read-only and improves native Codex goal reconciliation.
+`0.21.43` is a small patch release that corrects native process identity recovery guidance in `omx doctor`.
 
 ## Highlights
 
-- **READ-ONLY TEAM AND TMUX STATUS (#3963):** `omx team status` no longer runs monitor maintenance, writes state, or recovers claims, so inspection remains safe with a read-only OMX root. An omitted team name resolves only from a unique current-leader match. `omx tmux-hook status` reports missing configuration without initializing it.
-- **NATIVE CODEX GOAL RECONCILIATION (#3964):** Normalize structured and serialized `get_goal` response envelopes, distinguish a missing native goal tool from database/schema/context errors, and allow truthful non-terminal blocked checkpoints while verification is unavailable without fabricating goal completion.
+- **PROCESS IDENTITY RECOVERY GUIDANCE (#3971):** When the native process identity provider is unsupported or unavailable, `omx doctor` recommends `omx update` to hydrate the release-asset runtime cache. The guidance retains that session pointer recovery works without the native runtime.
 
 ## Fixes and compatibility
 
-- Detect same-inode history content changes even when size and modification time are restored; do not publish the altered history artifact (#3959).
-- Stabilize detached-launch and Windows platform test fixtures, including per-fixture sidecar isolation (#3963).
-- No breaking API changes. Package, npm lockfile, Cargo workspace/lockfile, and plugin metadata were already synchronized to `0.21.42` by #3962; the release does not double-bump them.
+- Removed `omx setup` from the Process identity cache-repair hint; setup does not repair the native runtime cache. Other failure cases retain their existing reinstall/update guidance.
+- No breaking API changes. Package, npm lockfile, Cargo workspace/lockfile, and plugin metadata were already synchronized to `0.21.43` by #3970; the release branch does not double-bump them.
 
 ## Known issues and exclusions
 
-- #3898 remains held for the owner design decision; related PRs #3939, #3900, #3907, #3915, and #3919 remain excluded.
-- #3965 is not included; its changes are requested and the work is split pending.
-- No other user-facing changes in the compare range are excluded.
+- The separate provider-unavailable report in #3968 (reporter Kevin-wenyu) remains unconfirmed; evidence was requested. This release corrects the remediation text and does not claim to fix the underlying reported provider failure.
+- #3898 remains held for the owner design decision. Related PRs #3939, #3900, #3907, #3915, and #3919 remain excluded.
+- #3965 is not included; changes were requested and the work is split pending. No other user-visible changes in the compare range are excluded.
 
 ## Merged PR inventory
 
 | PR | Author | Title | Impact |
 |---|---|---|---|
-| [#3959](https://github.com/Yeachan-Heo/oh-my-codex/pull/3959) | @Yeachan-Heo | fix(history): detect same-mtime content mutations | Reject altered history artifacts when content changes despite restored size and modification time |
-| [#3960](https://github.com/Yeachan-Heo/oh-my-codex/pull/3960) | @Yeachan-Heo | docs: record v0.21.41 publication evidence | Preserve prior-release publication evidence on dev |
-| [#3961](https://github.com/Yeachan-Heo/oh-my-codex/pull/3961) | @Yeachan-Heo | back-merge: main to dev for v0.21.41 | Synchronize dev with the previous shipped main |
-| [#3962](https://github.com/Yeachan-Heo/oh-my-codex/pull/3962) | @Yeachan-Heo | chore(dev): bump version to 0.21.42 | Synchronize package/plugin/Cargo version surfaces for development |
-| [#3963](https://github.com/Yeachan-Heo/oh-my-codex/pull/3963) | @nascyimento | fix: keep Team and tmux status commands read-only | Make status observational, resolve an omitted team name from the current leader, and avoid initializing missing tmux-hook config |
-| [#3964](https://github.com/Yeachan-Heo/oh-my-codex/pull/3964) | @nascyimento | fix: handle native goal responses and unavailable tools | Normalize native goal responses and preserve non-terminal blocked status when verification is unavailable |
+| [#3967](https://github.com/Yeachan-Heo/oh-my-codex/pull/3967) | @Yeachan-Heo | docs(release): record v0.21.42 publication evidence | Carry previous-release publication evidence onto dev |
+| [#3969](https://github.com/Yeachan-Heo/oh-my-codex/pull/3969) | @Yeachan-Heo | back-merge: main to dev for v0.21.42 | Synchronize dev with the previously shipped main |
+| [#3970](https://github.com/Yeachan-Heo/oh-my-codex/pull/3970) | @Yeachan-Heo | chore(dev): bump version to 0.21.43 | Align release-coupled development metadata |
+| [#3971](https://github.com/Yeachan-Heo/oh-my-codex/pull/3971) | @Yeachan-Heo | Fix misleading process identity doctor repair guidance | Remove the ineffective setup suggestion while retaining runtime-cache update and session-pointer guidance |
+| [#3972](https://github.com/Yeachan-Heo/oh-my-codex/pull/3972) | @Yeachan-Heo | docs(release): finalize v0.21.42 readiness evidence | Finalize evidence for the previous release |
 
 ## Validation
 
-- Pinned dev candidate `815f2a26d140cbd157e88569b8fcdc8dc7e27f44` passed CI run [41006632881](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41006632881): 18 jobs succeeded, 7 were skipped, and 0 failed across 25 unique job names. Both macOS Ralplan preflights passed (Node 20 job [123902962229](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41006632881/job/123902962229), Node 26.5.1 job [123902962178](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41006632881/job/123902962178)); CI Status passed (job [123908685619](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41006632881/job/123908685619)).
-- Release-branch build, typecheck, lint, generated checks, focused tests, version synchronization, release review, and publication evidence are recorded in [release readiness](docs/qa/release-readiness-0.21.42.md).
+- Pinned dev head `43d2d21f833ba6ff62d10807127b76eca8f0aea4` passed CI run [41032241638](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41032241638): CI Status and Docs Check passed; remaining source lanes, including macOS Ralplan preflights, were skipped by docs-only change detection. The preflight successes on source commit `72340934a318b9b3f0ca7c8e63d415bcc831d082` are in run [41029069165](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165), Node 20 job [123974337084](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165/job/123974337084) and Node 26.5.1 job [123974337061](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165/job/123974337061). These earlier preflights do not substitute for release-PR, main, or back-merge gates.
+- Release-branch build, typecheck, focused tests, version synchronization, and available CI evidence are recorded in [release readiness](docs/qa/release-readiness-0.21.43.md).
 
 ## Contributors
 
-Thanks to @nascyimento for the Team/tmux status and native goal handling fixes, and @Yeachan-Heo for history mutation handling, prior-release evidence, and release-train maintenance.
+Thanks to @Yeachan-Heo for the Process identity guidance fix and release-train changes, with @clawdbot co-authoring the doctor correction.
 
-**Full Changelog**: [`v0.21.41...v0.21.42`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.41...v0.21.42)
+**Full Changelog**: [`v0.21.42...v0.21.43`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.42...v0.21.43)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
