@@ -79,6 +79,7 @@ import { readExactPaneProof, readExactPaneProofSync } from '../exact-pane.js';
 
 const fsMutable = fs as typeof fs & {
   existsSync: typeof fs.existsSync;
+  readFileSync: typeof fs.readFileSync;
   fsyncSync: typeof fs.fsyncSync;
   statSync: typeof fs.statSync;
 };
@@ -128,6 +129,19 @@ function withMockedFsyncSync<T>(mock: typeof fs.fsyncSync, fn: () => T): T {
     fsMutable.fsyncSync = original;
     syncBuiltinESMExports();
   }
+}
+
+function neutralizeWslProcVersionForNativeWindowsTest(): () => void {
+  const original = fsMutable.readFileSync;
+  fsMutable.readFileSync = ((path: fs.PathOrFileDescriptor, ...args: any[]) => {
+    if (path === '/proc/version') return 'Linux version native-windows-test-host';
+    return (original as (...callArgs: any[]) => any)(path, ...args);
+  }) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  return () => {
+    fsMutable.readFileSync = original;
+    syncBuiltinESMExports();
+  };
 }
 
 function escapeRegExp(value: string): string {
@@ -2628,6 +2642,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.PS1';
     process.env.SHELL = '/bin/zsh';
@@ -2654,6 +2669,7 @@ describe('buildWorkerStartupCommand', () => {
       assert.match(decoded, /'--model' 'gpt-5'/);
       assert.match(decoded, /'--dangerously-bypass-approvals-and-sandbox'/);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2688,6 +2704,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.EXE;.PS1';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
@@ -2707,6 +2724,7 @@ describe('buildWorkerStartupCommand', () => {
       const prefix = `${powershellExePath} -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand `;
       assert.ok(cmd.startsWith(prefix), cmd);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2743,6 +2761,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.EXE;.PS1';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
@@ -2772,6 +2791,7 @@ describe('buildWorkerStartupCommand', () => {
       assert.ok(cmd.startsWith(prefix), cmd);
       assert.ok(!cmd.startsWith(`${pathPowerShellExe} `), cmd);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2814,6 +2834,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.CMD;.PS1';
     process.env.SHELL = '/bin/zsh';
@@ -2846,6 +2867,7 @@ describe('buildWorkerStartupCommand', () => {
       );
       assert.doesNotMatch(decoded, new RegExp(escapeRegExp(codexCmdPath)));
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -6976,6 +6998,11 @@ esac
   it('rejects standalone HUD PID reuse before native resize', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-hud-pid-reuse-'));
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
+    const prevWsl = process.env.WSL_DISTRO_NAME;
+    const prevInterop = process.env.WSL_INTEROP;
+    delete process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_INTEROP;
     try {
       await withMockTmuxFixture(
         'omx-tmux-standalone-hud-pid-reuse-',
@@ -7011,6 +7038,11 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
+      if (typeof prevWsl === 'string') process.env.WSL_DISTRO_NAME = prevWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevInterop === 'string') process.env.WSL_INTEROP = prevInterop;
+      else delete process.env.WSL_INTEROP;
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       await rm(cwd, { recursive: true, force: true });
     }
@@ -7383,6 +7415,7 @@ describe('native Windows HUD reconciliation', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
 
     try {
       await withMockTmuxFixture(
@@ -7468,6 +7501,7 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -7497,6 +7531,7 @@ esac
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
 
     try {
       await withMockTmuxFixture(
@@ -7587,6 +7622,7 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -7616,6 +7652,7 @@ esac
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
 
     try {
       await withMockTmuxFixture(
@@ -7706,6 +7743,7 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -9531,6 +9569,7 @@ describe('translatePathForMsys', () => {
 describe('isNativeWindows', () => {
   it('returns true when process.platform is win32 and not WSL2', () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     const prevDistro = process.env.WSL_DISTRO_NAME;
     const prevInterop = process.env.WSL_INTEROP;
     delete process.env.WSL_DISTRO_NAME;
@@ -9539,6 +9578,7 @@ describe('isNativeWindows', () => {
     try {
       assert.equal(isNativeWindows(), true);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
       else delete process.env.WSL_DISTRO_NAME;

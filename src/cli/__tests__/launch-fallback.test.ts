@@ -1903,12 +1903,14 @@ exit 0
 
   it('does not reuse the same active-detached lock for independent --madmax --high launches', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-madmax-independent-high-'));
+    const holdPath = join(wd, 'hold');
+    let leaderDone: string | null = null;
     try {
       const runs = join(wd, 'runs');
       const sessionMarker = join(wd, 'independent-session');
       const instanceMarker = join(wd, 'independent-instance');
 
-      const { env, tmuxLogPath } = await createLaunchFixture(
+      const { env, tmuxLogPath, leaderDonePath } = await createLaunchFixture(
         wd,
         (logPath) => `#!/bin/sh
 printf 'tmux:%s\n' "$*" >> "${logPath}"
@@ -1927,6 +1929,15 @@ esac
 exit 0
 `,
       );
+      leaderDone = leaderDonePath;
+      await writeFile(holdPath, 'hold\n');
+      await writeExecutable(join(wd, 'bin', 'codex'), `#!${process.execPath}
+const { existsSync } = require('node:fs');
+const timer = setInterval(() => {
+  if (existsSync(${JSON.stringify(holdPath)})) return;
+  clearInterval(timer);
+}, 20);
+`);
       const baseEnv = {
         ...env,
         OMX_RUNS_DIR: runs,
@@ -1960,6 +1971,8 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.equal((tmuxLog.match(/tmux:new-session/g) || []).length, 2);
     } finally {
+      await rm(holdPath, { force: true });
+      if (leaderDone && existsSync(join(wd, 'bin', 'tmux.detached-leader-pid'))) await waitForPath(leaderDone);
       await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
   });
