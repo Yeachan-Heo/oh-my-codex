@@ -184,6 +184,22 @@ describe('codex goal snapshot reconciliation', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(result.errors, []);
   });
+  it('classifies known goal-tool diagnostics delivered as plain text parts', () => {
+    const message = 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record';
+    for (const response of [
+      { content: [{ type: 'text', text: message }], isError: true },
+      { content: message, isError: true },
+    ]) {
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, false);
+      assert.equal(snapshot.unavailableReason, 'tool_unavailable');
+      assert.equal(snapshot.errorMessage, message);
+      assert.deepEqual(snapshot.raw, response);
+    }
+    const unrelated = parseCodexGoalSnapshot({ content: [{ type: 'text', text: 'working on it' }] });
+    assert.equal(unrelated.unavailableReason, undefined);
+  });
+
   it('preserves native blocked status instead of coercing it to unknown', () => {
     const snapshot = parseCodexGoalSnapshot({
       goal: { objective: 'Ship blocked path', status: 'blocked' },

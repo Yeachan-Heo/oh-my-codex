@@ -116,6 +116,13 @@ function hasRecognizableGoalResponseShape(value: unknown): boolean {
       || /native nested tool inventory did not return one matching catalog record/i.test(message));
 }
 
+// A failed native call can carry its diagnostic as plain text. Keep known goal-tool
+// diagnostics so they are classified instead of discarded as transport text.
+function recognizableTextDiagnostic(text: string): Record<string, unknown> | null {
+  const diagnostic = { message: text.trim() };
+  return hasRecognizableGoalResponseShape(diagnostic) ? diagnostic : null;
+}
+
 function unwrapNativeGoalResponse(value: unknown): unknown {
   const root = safeObject(value);
   if (Object.hasOwn(root, 'structuredContent') && hasRecognizableGoalResponseShape(root.structuredContent)) {
@@ -126,7 +133,11 @@ function unwrapNativeGoalResponse(value: unknown): unknown {
     try {
       const parsed: unknown = JSON.parse(root.content);
       if (hasRecognizableGoalResponseShape(parsed)) return parsed;
-    } catch { /* Transport content is not always JSON. */ }
+    } catch {
+      // Transport content is not always JSON.
+      const diagnostic = recognizableTextDiagnostic(root.content);
+      if (diagnostic) return diagnostic;
+    }
   }
   if (Array.isArray(root.content)) {
     for (const part of root.content) {
@@ -135,7 +146,10 @@ function unwrapNativeGoalResponse(value: unknown): unknown {
       try {
         const parsed: unknown = JSON.parse(item.text);
         if (hasRecognizableGoalResponseShape(parsed)) return parsed;
-      } catch { /* Other text parts may be diagnostics rather than JSON. */ }
+      } catch {
+        const diagnostic = recognizableTextDiagnostic(item.text);
+        if (diagnostic) return diagnostic;
+      }
     }
   }
   return value;
