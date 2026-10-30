@@ -987,14 +987,38 @@ describe("codex hooks helpers", () => {
     }
   });
 
-  it("forwards payload, stdout, stderr, and non-zero exit through the Windows shim when PowerShell is available", async () => {
+  it("forwards payload, stdout, stderr, and non-zero exit through the Windows shim when PowerShell is available", async (t) => {
     const shell = ["pwsh", "powershell.exe", "powershell"].find((candidate) => {
       const probe = spawnSync(candidate, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], {
         encoding: "utf-8",
+        timeout: 5_000,
       });
       return !probe.error && probe.status === 0;
     });
-    if (!shell) return;
+    if (!shell) {
+      t.skip("noPowerShell");
+      return;
+    }
+
+    const nodeProbe = spawnSync(
+      shell,
+      ["-NoProfile", "-Command", `$ErrorActionPreference = 'Stop'; & '${process.execPath.replace(/'/g, "''")}' -e 'process.exit(0)'; exit $LASTEXITCODE`],
+      {
+        encoding: "utf-8",
+        timeout: 5_000,
+      },
+    );
+    if (nodeProbe.error || nodeProbe.status !== 0) {
+      const observed = [
+        `shell=${shell}`,
+        `node=${process.execPath}`,
+        `status=${nodeProbe.status ?? "null"}`,
+        nodeProbe.error ? `error=${nodeProbe.error.message}` : null,
+        nodeProbe.stderr.trim() ? `stderr=${nodeProbe.stderr.trim()}` : null,
+      ].filter(Boolean).join(", ");
+      t.skip(`PowerShell/node pair cannot execute fixture (${observed})`);
+      return;
+    }
 
     const wd = await mkdtemp(join(tmpdir(), "omx-windows-hook-shim-"));
     try {

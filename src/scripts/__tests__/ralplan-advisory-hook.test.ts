@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { writeSessionStart } from '../../hooks/session.js';
 import {
   readCurrentRalplanAdvisory,
   reconcileRalplanAdvisory,
@@ -26,10 +27,7 @@ async function terminalFixture(prefix: string) {
   const stateDir = join(cwd, '.omx', 'state');
   const sessionDir = join(stateDir, 'sessions', sessionId);
   await mkdir(sessionDir, { recursive: true });
-  await writeFile(join(stateDir, 'session.json'), JSON.stringify({
-    session_id: sessionId, native_session_id: sessionId, owner_codex_session_id: sessionId,
-    leader_thread_id: 'root-a', started_at: '2026-08-28T00:00:00.000Z', cwd, state_root: stateDir,
-  }));
+  await writeSessionStart(cwd, sessionId, { nativeSessionId: sessionId, pid: process.pid });
   await writeFile(join(stateDir, 'subagent-tracking.json'), JSON.stringify({
     schemaVersion: 1,
     sessions: {
