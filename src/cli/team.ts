@@ -30,10 +30,9 @@ import {
   executeTeamApiOperation,
   type TeamApiOperation,
 } from '../team/api-interop.js';
-import { teamReadConfig as readTeamConfig, teamReadPhase as readTeamPhase } from '../team/team-ops.js';
-import { resolveTeamNameForCurrentContext } from '../team/team-identity.js';
+import { teamReadConfig as readTeamConfig, teamReadConfigSnapshot as readTeamConfigSnapshot, teamReadPhase as readTeamPhase } from '../team/team-ops.js';
+import { resolveCurrentTeamName, resolveTeamNameForCurrentContext } from '../team/team-identity.js';
 import { resolveCanonicalTeamStateRoot } from '../team/state-root.js';
-import { recordLeaderRuntimeActivity } from '../team/leader-activity.js';
 import { readTeamPaneStatus } from '../team/pane-status.js';
 import {
   buildApprovedTeamExecutionBinding,
@@ -283,7 +282,7 @@ function isTerminalModePhase(phase: string): boolean {
 
 const TEAM_HELP = `
 Usage: omx team [N:agent-type] "<task description>"
-       omx team status <team-name> [--json] [--tail-lines <100-1000>] [--model-inspect]
+       omx team status [<team-name>] [--json] [--tail-lines <100-1000>] [--model-inspect]
        omx team await <team-name> [--timeout-ms <ms>] [--after-event-id <id>] [--json]
        omx team resume <team-name>
        omx team shutdown <team-name> [--force] [--confirm-issues]
@@ -486,14 +485,14 @@ function parseStatusTailLines(args: string[]): number {
       const next = args[index + 1];
       const parsed = Number.parseInt(next || '', 10);
       if (!Number.isFinite(parsed) || parsed < MIN_SPARKSHELL_TAIL_LINES || parsed > MAX_SPARKSHELL_TAIL_LINES) {
-        throw new Error(`Usage: omx team status <team-name> [--json] [--tail-lines <${MIN_SPARKSHELL_TAIL_LINES}-${MAX_SPARKSHELL_TAIL_LINES}>]`);
+        throw new Error(`Usage: omx team status [<team-name>] [--json] [--tail-lines <${MIN_SPARKSHELL_TAIL_LINES}-${MAX_SPARKSHELL_TAIL_LINES}>]`);
       }
       return parsed;
     }
     if (token.startsWith('--tail-lines=')) {
       const parsed = Number.parseInt(token.slice('--tail-lines='.length), 10);
       if (!Number.isFinite(parsed) || parsed < MIN_SPARKSHELL_TAIL_LINES || parsed > MAX_SPARKSHELL_TAIL_LINES) {
-        throw new Error(`Usage: omx team status <team-name> [--json] [--tail-lines <${MIN_SPARKSHELL_TAIL_LINES}-${MAX_SPARKSHELL_TAIL_LINES}>]`);
+        throw new Error(`Usage: omx team status [<team-name>] [--json] [--tail-lines <${MIN_SPARKSHELL_TAIL_LINES}-${MAX_SPARKSHELL_TAIL_LINES}>]`);
       }
       return parsed;
     }
@@ -1503,12 +1502,17 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   }
 
   if (subcommand === 'status') {
-    const name = teamArgs[1];
-    const wantsJson = teamArgs.includes('--json');
-    if (!name) throw new Error('Usage: omx team status <team-name> [--json]');
-    const resolvedName = resolveTeamNameForCurrentContext(name, cwd);
-    await recordLeaderRuntimeActivity(cwd, 'team_status', resolvedName);
-    const snapshot = await monitorTeam(resolvedName, cwd);
+    const statusArgs = teamArgs.slice(1);
+    const tailLines = parseStatusTailLines(statusArgs);
+    const modelInspect = parseStatusModelInspect(statusArgs);
+    const name = statusArgs.find((token, index) => !token.startsWith('-')
+      && (index === 0 || statusArgs[index - 1] !== '--tail-lines'));
+    const wantsJson = statusArgs.includes('--json');
+    const resolvedName = name
+      ? resolveTeamNameForCurrentContext(name, cwd)
+      : resolveCurrentTeamName(cwd);
+    if (!resolvedName) throw new Error('Usage: omx team status [<team-name>] [--json]');
+    const snapshot = await monitorTeam(resolvedName, cwd, { readOnly: true });
     if (!snapshot) {
       const stateRoot = resolveCanonicalTeamStateRoot(cwd);
       const statePath = join(stateRoot, 'team', resolvedName);
@@ -1516,7 +1520,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
         console.log(JSON.stringify({
           ...buildJsonBase(),
           command: 'omx team status',
-          team_name: name,
+          team_name: name ?? resolvedName,
           status: 'missing',
           state_root: stateRoot,
           state_path: statePath,
@@ -1526,9 +1530,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
       console.log(`No team state found for ${name} (searched: ${statePath})`);
       return;
     }
-    const tailLines = parseStatusTailLines(teamArgs.slice(2));
-    const modelInspect = parseStatusModelInspect(teamArgs.slice(2));
-    const config = await readTeamConfig(resolvedName, cwd);
+    const config = await readTeamConfigSnapshot(resolvedName, cwd);
     const paneStatus = await readTeamPaneStatus(config, cwd, snapshot, tailLines);
     const ultragoalContext = await readPersistedTeamUltragoalContext(
       resolvedName,

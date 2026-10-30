@@ -1617,6 +1617,27 @@ async function readTeamConfigRaw(teamName: string, cwd: string): Promise<TeamCon
   }
 }
 
+/** Strictly observational config read for diagnostics. Never migrates, recovers, or acquires locks. */
+export async function readTeamConfigSnapshot(teamName: string, cwd: string): Promise<TeamConfig | null> {
+  const v2 = await readTeamManifestV2Raw(teamName, cwd);
+  if (v2) return { ...teamConfigFromManifest(v2), config_generation: (await readConfigGenerationRaw(teamName, cwd)) ?? 0 };
+  try {
+    const p = teamConfigPath(teamName, cwd);
+    if (!existsSync(p)) return null;
+    const raw = await readFile(p, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return normalizeTeamConfig(parsed as TeamConfig);
+  } catch {
+    return null;
+  }
+}
+
+/** Strictly observational manifest read for diagnostics. */
+export async function readTeamManifestV2Snapshot(teamName: string, cwd: string): Promise<TeamManifestV2 | null> {
+  return await readTeamManifestV2Raw(teamName, cwd);
+}
+
 export async function readTeamConfig(teamName: string, cwd: string): Promise<TeamConfig | null> {
   return await withTeamTaskBarrier(teamName, cwd, async () => {
     await recoverTeamMembershipTaskTransaction(teamName, cwd);
@@ -1887,6 +1908,15 @@ export async function listTasks(teamName: string, cwd: string): Promise<TeamTask
       isTeamTask,
       normalizeTask,
     });
+  });
+}
+
+/** Strictly observational task listing for diagnostics. Never recovers or acquires locks. */
+export async function listTasksSnapshot(teamName: string, cwd: string): Promise<TeamTask[]> {
+  return await listTasksImpl(teamName, cwd, {
+    teamDir,
+    isTeamTask,
+    normalizeTask,
   });
 }
 

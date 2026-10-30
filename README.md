@@ -409,6 +409,17 @@ omx team resume <team-name>
 omx team shutdown <team-name>
 ```
 
+`omx team status [<team-name>] [--json]` only observes existing state, so it can
+run against a read-only OMX root. It does not reclaim expired claims, deliver
+mailbox messages, integrate worker commits, or update runtime state. Without a
+team name, status resolves only a unique team belonging to the current leader
+session; provide an explicit name when no matching context is available.
+
+`omx tmux-hook status` is also observational. If hook configuration is missing,
+it reports that condition without creating files; use `omx tmux-hook init` to
+initialize configuration explicitly.
+
+
 ### Setup, doctor, and HUD
 
 These are operator/support surfaces:

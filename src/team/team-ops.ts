@@ -56,7 +56,9 @@ export { DEFAULT_MAX_WORKERS, ABSOLUTE_MAX_WORKERS } from './state.js';
 // === Team lifecycle ===
 export { initTeamState as teamInit } from './state.js';
 export { readTeamConfig as teamReadConfig } from './state.js';
+export { readTeamConfigSnapshot as teamReadConfigSnapshot } from './state.js';
 export { readTeamManifestV2 as teamReadManifest } from './state.js';
+export { readTeamManifestV2Snapshot as teamReadManifestSnapshot } from './state.js';
 export { writeTeamManifestV2 as teamWriteManifest } from './state.js';
 export { saveTeamConfig as teamSaveConfig } from './state.js';
 export { cleanupTeamState as teamCleanup } from './state.js';
@@ -76,6 +78,7 @@ export { writeWorkerInbox as teamWriteWorkerInbox } from './state.js';
 export { createTask as teamCreateTask } from './state.js';
 export { readTask as teamReadTask } from './state.js';
 export { listTasks as teamListTasks } from './state.js';
+export { listTasksSnapshot as teamListTasksSnapshot } from './state.js';
 export { updateTask as teamUpdateTask } from './state.js';
 export { claimTask as teamClaimTask } from './state.js';
 export { releaseTaskClaim as teamReleaseTaskClaim } from './state.js';

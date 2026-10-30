@@ -148,8 +148,10 @@ export function listTeamLookupCandidates(cwd: string, env: NodeJS.ProcessEnv = p
 }
 
 function matchingCurrentLeader(candidate: TeamLookupCandidate, scope: TeamIdentityScope): boolean {
-  return (Boolean(scope.sessionId) && candidate.leaderSessionId === scope.sessionId)
-    || (Boolean(scope.paneId) && candidate.leaderPaneId === scope.paneId);
+  if (scope.sessionId) {
+    return candidate.leaderSessionId === scope.sessionId;
+  }
+  return Boolean(scope.paneId) && candidate.leaderPaneId === scope.paneId;
 }
 
 function selectLatestTerminalCandidate(candidates: TeamLookupCandidate[]): TeamLookupCandidate | null {
@@ -188,4 +190,14 @@ export function resolveTeamNameForCurrentContext(inputName: string, cwd: string,
   }
 
   throw new TeamLookupAmbiguityError(input, current.length > 1 ? current : lookupCandidates);
+}
+
+export function resolveCurrentTeamName(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const candidates = listTeamLookupCandidates(cwd, env);
+  const active = candidates.filter((candidate) => !candidate.terminal);
+  const pool = active.length > 0 ? active : candidates;
+  const scope = resolveTeamIdentityScope(env);
+  const current = pool.filter((candidate) => matchingCurrentLeader(candidate, scope));
+  if (current.length === 1) return current[0].teamName;
+  return null;
 }

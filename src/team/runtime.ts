@@ -51,6 +51,7 @@ import {
   teamInit as initTeamState,
   DEFAULT_MAX_WORKERS,
   teamReadConfig as readTeamConfig,
+  teamReadConfigSnapshot as readTeamConfigSnapshot,
   teamWriteWorkerIdentity as writeWorkerIdentity,
   teamReadWorkerHeartbeat as readWorkerHeartbeat,
   teamReadWorkerStatus as readWorkerStatus,
@@ -58,8 +59,10 @@ import {
   teamCreateTask as createStateTask,
   teamReadTask as readTask,
   teamListTasks as listTasks,
+  teamListTasksSnapshot as listTasksSnapshot,
   teamUpdateTask as updateTask,
   teamReadManifest as readTeamManifestV2,
+  teamReadManifestSnapshot as readTeamManifestV2Snapshot,
   teamNormalizeGovernance as normalizeTeamGovernance,
   teamNormalizePolicy as normalizeTeamPolicy,
   teamClaimTask as claimTask,
@@ -4603,28 +4606,44 @@ export async function startTeam(
 /**
  * Monitor team state by polling files. Returns a snapshot.
  */
-export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSnapshot | null> {
+export async function monitorTeam(
+  teamName: string,
+  cwd: string,
+  options: { readOnly?: boolean } = {},
+): Promise<TeamSnapshot | null> {
+  const readOnly = options.readOnly === true;
   const monitorStartMs = performance.now();
   const sanitized = resolveTeamNameForCurrentContext(teamName, cwd);
-  const config = await readTeamConfig(sanitized, cwd);
+  const config = readOnly
+    ? await readTeamConfigSnapshot(sanitized, cwd)
+    : await readTeamConfig(sanitized, cwd);
   if (!config) return null;
-  const manifest = await readTeamManifestV2(sanitized, cwd);
+  const manifest = readOnly
+    ? await readTeamManifestV2Snapshot(sanitized, cwd)
+    : await readTeamManifestV2(sanitized, cwd);
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
   const previousSnapshot = await readMonitorSnapshot(sanitized, cwd);
 
   const sessionName = config.tmux_session;
   const listTasksStartMs = performance.now();
-  const allTasks = await listTasks(sanitized, cwd);
+  const allTasks = readOnly
+    ? await listTasksSnapshot(sanitized, cwd)
+    : await listTasks(sanitized, cwd);
   const listTasksMs = performance.now() - listTasksStartMs;
 
   const reclaimedTaskIds: string[] = [];
+  const expiredUnreclaimedTaskIds: string[] = [];
   for (const task of allTasks) {
     if (task.status !== 'in_progress' || !task.claim?.leased_until) continue;
     if (new Date(task.claim.leased_until) > new Date()) continue;
+    if (readOnly) {
+      expiredUnreclaimedTaskIds.push(task.id);
+      continue;
+    }
     const reclaimed = await reclaimExpiredTaskClaim(sanitized, task.id, cwd);
     if (reclaimed.ok && reclaimed.reclaimed) reclaimedTaskIds.push(task.id);
   }
-  let taskView = reclaimedTaskIds.length > 0 ? await listTasks(sanitized, cwd) : allTasks;
+  let taskView = !readOnly && reclaimedTaskIds.length > 0 ? await listTasks(sanitized, cwd) : allTasks;
   const taskById = new Map(taskView.map((task) => [task.id, task] as const));
   const inProgressByOwner = new Map<string, TeamTask[]>();
   for (const task of taskView) {
@@ -4697,6 +4716,9 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   for (const taskId of reclaimedTaskIds) {
     recommendations.push(`Reclaimed expired claim for task-${taskId}`);
   }
+  for (const taskId of expiredUnreclaimedTaskIds) {
+    recommendations.push(`Expired claim remains unreclaimed for task-${taskId}`);
+  }
   const rebalanceDecisions = buildRebalanceDecisions({
     tasks: taskView,
     workers: workers.map((worker) => ({
@@ -4711,6 +4733,10 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   let assignedDuringMonitor = false;
   for (const decision of rebalanceDecisions) {
     if (decision.type === 'assign' && decision.taskId && decision.workerName) {
+      if (readOnly) {
+        recommendations.push(`Would assign task-${decision.taskId} to ${decision.workerName}: ${decision.reason}`);
+        continue;
+      }
       try {
         await assignTask(sanitized, decision.workerName, decision.taskId, cwd);
         recommendations.push(`Assigned task-${decision.taskId} to ${decision.workerName}: ${decision.reason}`);
@@ -4763,25 +4789,31 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
       verificationPending: verificationPendingTasks.length > 0,
     });
   const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
-  await writeTeamPhaseState(sanitized, phaseState, cwd);
+  if (!readOnly) await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
-  await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
+  if (!readOnly) await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
 
   if (deadWorkerStall) {
     recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');
   }
 
-  await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
-  const integrationByWorker = await integrateWorkerCommitsIntoLeader({
-    teamName: sanitized,
-    config,
-    previous: previousSnapshot,
-    cwd,
-  });
+  if (!readOnly) {
+    await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
+  }
+  const integrationByWorker = readOnly
+    ? (previousSnapshot?.integrationByWorker ?? {})
+    : await integrateWorkerCommitsIntoLeader({
+        teamName: sanitized,
+        config,
+        previous: previousSnapshot,
+        cwd,
+      });
   const mailboxDeliveryStartMs = performance.now();
   const mailboxNotifiedByMessageId = phaseState.terminal_epoch
     ? {}
-    : await deliverPendingMailboxMessages(
+    : readOnly
+      ? (previousSnapshot?.mailboxNotifiedByMessageId ?? {})
+      : await deliverPendingMailboxMessages(
         sanitized,
         config,
         workers,
@@ -4792,24 +4824,26 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   const mailboxDeliveryMs = performance.now() - mailboxDeliveryStartMs;
 
   // Prune ephemeral status messages from leader mailbox (TTL: 60s)
-  try {
-    const leaderMailbox = await listMailboxMessages(sanitized, 'leader-fixed', cwd);
-    const now = Date.now();
-    for (const msg of leaderMailbox) {
-      if (msg.from_worker === 'system' && msg.created_at) {
-        const age = now - new Date(msg.created_at).getTime();
-        if (age > 60_000) {
-          await markMessageDelivered(sanitized, 'leader-fixed', msg.message_id, cwd);
+  if (!readOnly) {
+    try {
+      const leaderMailbox = await listMailboxMessages(sanitized, 'leader-fixed', cwd);
+      const now = Date.now();
+      for (const msg of leaderMailbox) {
+        if (msg.from_worker === 'system' && msg.created_at) {
+          const age = now - new Date(msg.created_at).getTime();
+          if (age > 60_000) {
+            await markMessageDelivered(sanitized, 'leader-fixed', msg.message_id, cwd);
+          }
         }
       }
+    } catch (err) {
+      process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
     }
-  } catch (err) {
-    process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
   }
 
   const updatedAt = new Date().toISOString();
   const totalMs = performance.now() - monitorStartMs;
-  await writeMonitorSnapshot(
+  if (!readOnly) await writeMonitorSnapshot(
     sanitized,
       {
         taskStatusById: Object.fromEntries(taskView.map((t) => [t.id, t.status])),
