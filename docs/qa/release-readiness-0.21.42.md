@@ -85,7 +85,13 @@ Publication-evidence PR #3967 is included in the single merge-commit back-merge 
 
 Published version: `0.21.42`. Main/tag/npm commit: `2fe1faf78775b8067e36a862760c4fe4b7831908`. Release workflow: [41014915631](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41014915631), success. GitHub Release: [v0.21.42](https://github.com/Yeachan-Heo/oh-my-codex/releases/tag/v0.21.42), non-draft/non-prerelease, 57 assets. npm latest is `0.21.42`; package `gitHead` is `2fe1faf78775b8067e36a862760c4fe4b7831908`.
 
-Back-merge evidence: PR [#3969](https://github.com/Yeachan-Heo/oh-my-codex/pull/3969) merged with commit `3234668fe86b001d797dea41522a1285a11c7ebc`; its exact-head findings gate was `[]`, full CI and both macOS preflights passed, and main is an ancestor of dev. The dev-only version-bump PR and final checks are recorded in that follow-up; the final ancestry check and remote release/back-merge/bump/evidence branch cleanup remain to be verified after it merges.
+Back-merge evidence: PR [#3969](https://github.com/Yeachan-Heo/oh-my-codex/pull/3969) merged with commit `3234668fe86b001d797dea41522a1285a11c7ebc`; its exact-head findings gate was `[]`, full CI and both macOS preflights passed, and main is an ancestor of dev.
+
+The dev-only `0.21.43` version bump PR [#3970](https://github.com/Yeachan-Heo/oh-my-codex/pull/3970) merged by squash as `ceca0d3162837f1cd3cacb8583f1be843996467e`. Its exact-head review completed without findings, the in-thread gate printed `[]`, and PR CI run [41026554638](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41026554638) passed (24 success, 1 skipped); both macOS preflights and CI Status passed.
+
+The post-bump push run [41028946779](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41028946779) was cancelled when concurrent PR #3971 pushed the next dev commit; it was not a timeout and was not rerun. The subsequent latest dev CI run [41029069165](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165) on `72340934a318b9b3f0ca7c8e63d415bcc831d082` completed successfully: 17 success, 8 skipped, 0 failed, 0 pending across 25 unique job names. Both macOS Ralplan preflights (Node 20 job [123974337084](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165/job/123974337084), Node 26.5.1 job [123974337061](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165/job/123974337061)) and CI Status (job [123981741521](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41029069165/job/123981741521)) passed.
+
+Final ancestry verification passed: `git merge-base --is-ancestor origin/main origin/dev` → `origin/main` `76b85d41684fdadc4eb2360ca4d599f48104a9a7` is an ancestor of `origin/dev` `72340934a318b9b3f0ca7c8e63d415bcc831d082`. Remote `release/omx-0.21.42`, `back-merge/v0.21.42`, `version-bump/0.21.43`, and `release-evidence/0.21.42` branches were deleted after their PRs merged.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
