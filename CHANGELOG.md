@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.43] - 2026-10-30
+
+Patch release corrects `omx doctor` guidance for unavailable native process identity: `omx update` repairs the native runtime cache; `omx setup` is no longer suggested as a cache repair. The session-pointer recovery note remains (7 commits, 12 files, +173/−37; PRs #3967, #3969–#3972). See [release notes](docs/release-notes-0.21.43.md) for the compare-range inventory, validation, and known gaps.
+
+### Fixed
+
+- **PROCESS IDENTITY DOCTOR GUIDANCE:** Remove `omx setup` from the native process identity recovery hint; `omx update` hydrates the release-asset runtime cache, while session pointer recovery remains available without the native runtime (#3971). This corrects the remedy text and does not establish a root cause for the separate provider-unavailable report in #3968.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.42...v0.21.43
+
 ## [0.21.42] - 2026-10-30
 
 Patch release makes Team and tmux status inspection read-only and improves native Codex goal reconciliation (8 commits, 30 files, +867/−116; PRs #3959–#3964).
