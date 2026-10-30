@@ -1452,7 +1452,7 @@ export function checkProcessIdentityReadiness(
 		// is unavailable for any other reason, say what actually restores it
 		// instead of prescribing a no-op reinstall (issue #3636).
 		const remedy = observation.kind === "unsupported"
-			? "run `omx update` (repairs the native runtime cache) or `omx setup`, then rerun doctor; session pointer recovery works without the native runtime"
+			? "run `omx update` (repairs the native runtime cache), then rerun doctor; session pointer recovery works without the native runtime"
 			: "reinstall or update OMX and rerun doctor";
 		return {
 			name: "Process identity",
