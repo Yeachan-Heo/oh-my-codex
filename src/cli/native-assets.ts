@@ -42,6 +42,8 @@ export interface HydrateNativeBinaryOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   signal?: AbortSignal;
+  /** Propagate unavailable-manifest HTTP errors instead of treating them as absent assets. */
+  strictManifestErrors?: boolean;
 }
 
 export interface NativeBinaryCandidateOptions {
@@ -733,6 +735,7 @@ export async function hydrateNativeBinary(
     platform = process.platform,
     arch = process.arch,
     signal,
+    strictManifestErrors = false,
   } = options;
 
   if (env[NATIVE_AUTO_FETCH_ENV]?.trim() === '0') return undefined;
@@ -749,7 +752,7 @@ export async function hydrateNativeBinary(
   try {
     manifest = await loadNativeReleaseManifest(packageRoot, version, env, signal);
   } catch (error) {
-    if (isUnavailableManifestError(error)) return undefined;
+    if (!strictManifestErrors && isUnavailableManifestError(error)) return undefined;
     throw error;
   }
   const assets = resolveNativeReleaseAssetCandidates(manifest, product, version, platform, arch, {

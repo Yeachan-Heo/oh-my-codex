@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { writeUserInstallStamp } from "../../cli/update.js";
 import {
+  hydrateOmxRuntime,
   hydrateOmxRuntimeNonFatal,
   isGlobalInstallLifecycle,
   runPostinstall,
@@ -25,6 +26,46 @@ describe("isGlobalInstallLifecycle", () => {
 });
 
 describe("runPostinstall", () => {
+  it("surfaces manifest HTTP failures to foreground hydration while keeping the wrapper non-fatal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-postinstall-manifest-error-"));
+    const logs: string[] = [];
+    const manifestUrl = "https://example.test/native-release-manifest.json?token=must-not-be-logged";
+    const originalFetch = globalThis.fetch;
+
+    try {
+      await writeFile(join(root, "package.json"), JSON.stringify({ version: "0.21.44" }));
+      globalThis.fetch = (async () => new Response("unavailable", {
+        status: 503,
+        statusText: "Service Unavailable",
+      })) as typeof fetch;
+
+      const options = {
+        packageRoot: root,
+        env: {
+          OMX_NATIVE_MANIFEST_URL: manifestUrl,
+          OMX_NATIVE_CACHE_DIR: join(root, "cache"),
+        },
+        platform: "linux" as const,
+        arch: "x64",
+      };
+      await assert.rejects(
+        () => hydrateOmxRuntime(options),
+        /503 Service Unavailable.*https:\/\/example\.test\/native-release-manifest\.json/,
+      );
+
+      const result = await hydrateOmxRuntimeNonFatal({
+        ...options,
+        log: (message) => logs.push(message),
+      });
+      assert.equal(result, undefined);
+      assert.match(logs.join("\n"), /503 Service Unavailable/);
+      assert.doesNotMatch(logs.join("\n"), /must-not-be-logged/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports the macOS ARM runtime asset and cause when hydration times out", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-postinstall-timeout-"));
     const logs: string[] = [];
