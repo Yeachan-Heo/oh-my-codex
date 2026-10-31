@@ -54,6 +54,7 @@ export async function hydrateOmxRuntime(options: {
       platform: options.platform,
       arch: options.arch,
       signal: controller.signal,
+      strictManifestErrors: true,
     });
   } catch (error) {
     if (!timedOut) throw error;
