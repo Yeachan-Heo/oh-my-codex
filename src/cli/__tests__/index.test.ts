@@ -2433,6 +2433,7 @@ describe("commandOwnsLocalHelp", () => {
       "code-intel",
       "team",
       "tmux-hook",
+      "native-runtime",
     ]) {
       assert.equal(
         commandOwnsLocalHelp(command),
@@ -2539,6 +2540,13 @@ describe("resolveCliInvocation", () => {
     });
   });
 
+  it("resolves native-runtime to its foreground command", () => {
+    assert.deepEqual(resolveCliInvocation(["native-runtime", "hydrate"]), {
+      command: "native-runtime",
+      launchArgs: [],
+    });
+  });
+
   it("resolves update channel flags and rejects invalid combinations", () => {
     assert.equal(resolveUpdateChannelArg([]), "stable");
     assert.equal(resolveUpdateChannelArg(["--stable"]), "stable");
@@ -2606,6 +2614,10 @@ describe("resolveCliInvocation", () => {
     assert.match(HELP, /omx update\s+Install the stable channel now, then refresh setup/);
     assert.match(HELP, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
     assert.match(HELP, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
+  });
+
+  it("advertises the foreground native runtime repair command", () => {
+    assert.match(HELP, /omx native-runtime hydrate\s+Retry native runtime cache hydration in the foreground and report errors/);
   });
 
   it("scopes Ralplan authority preflight in top-level help", () => {

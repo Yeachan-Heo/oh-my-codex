@@ -126,6 +126,7 @@ import {
 import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
 import { validateDetachedAdvisorySessionSkillTransition } from "../ralplan/advisory-detached-transition.js";
 import { maybeCheckAndPromptUpdate, runImmediateUpdate, type UpdateChannel } from "./update.js";
+import { nativeRuntimeCommand } from "./native-runtime.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
 import {
   generateOverlay,
@@ -265,6 +266,8 @@ Usage:
                 Install/rollback to npm stable (oh-my-codex@latest), then refresh setup
   omx update --dev
                 Install the upstream dev branch, then refresh setup
+  omx native-runtime hydrate
+                Retry native runtime cache hydration in the foreground and report errors
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
   omx list      List packaged OMX skills and native agent prompts (--json)
@@ -504,6 +507,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "exec",
   "capabilities",
   "mission",
+  "native-runtime",
   "imagegen",
   "hooks",
   "list",
@@ -5075,6 +5079,7 @@ export async function main(args: string[]): Promise<void> {
     "setup",
     "__detached-session-leader",
     "update",
+    "native-runtime",
     "list",
     "agents",
     "agents-init",
@@ -5178,6 +5183,9 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "update":
         await runImmediateUpdate(process.cwd(), {}, { channel: resolveUpdateChannelArg(args.slice(1)) });
+        break;
+      case "native-runtime":
+        await nativeRuntimeCommand(args.slice(1));
         break;
       case "list":
         await listCommand(args.slice(1));

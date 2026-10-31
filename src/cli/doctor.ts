@@ -1447,12 +1447,10 @@ export function checkProcessIdentityReadiness(
 						? "provider unavailable"
 						: "provider response unverifiable";
 		// The native runtime is hydrated to the version-keyed cache, not shipped
-		// in the npm tarball. When hydration never ran (offline install) or the
-		// cache was cleared, reinstall/update repairs it — but when the provider
-		// is unavailable for any other reason, say what actually restores it
-		// instead of prescribing a no-op reinstall (issue #3636).
+		// in the npm tarball. The foreground repair command retries hydration and
+		// surfaces its failure instead of looping through an opaque update.
 		const remedy = observation.kind === "unsupported"
-			? "run `omx update` (repairs the native runtime cache), then rerun doctor; session pointer recovery works without the native runtime"
+			? "run `omx native-runtime hydrate` in the foreground to retry native runtime hydration and report errors, then rerun doctor; session pointer recovery works without the native runtime"
 			: "reinstall or update OMX and rerun doctor";
 		return {
 			name: "Process identity",

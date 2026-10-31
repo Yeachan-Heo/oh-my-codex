@@ -57,6 +57,16 @@ Release-coupled version surfaces already read `0.21.43` on the pinned dev candid
 - Registry readback: `npm view oh-my-codex dist-tags.latest` → `0.21.43`; `npm view oh-my-codex@0.21.43 version gitHead` → version `0.21.43`, gitHead `4697129bddfc706410fdd6001a7cfb9d7393fb8b`.
 - The published release body has the correct v0.21.43 title and full changelog link. Its contributor sentence was reviewed against GitHub compare contributors (`@clawdbot` and `@Yeachan-Heo`), not the shortlog-only preview.
 
+## Back-merge to dev
+
+- Back-merge PR [#3975](https://github.com/Yeachan-Heo/oh-my-codex/pull/3975) merged with commit `00e88c28d4b1c72bdb8ff10a9e74ce6650145292`. It has parents `43d2d21f833ba6ff62d10807127b76eca8f0aea4` (dev) and `3c918cd3a991d57574d6460136d689a80ac5e385` (the merge branch), whose second parent is main with publication evidence (`a60b9435a8e6d894ba69d1540ecf20afaac63a7a`).
+- Exact-head Codex review completed on `3c918cd3a991d57574d6460136d689a80ac5e385` with no findings; the in-thread findings gate printed `[]` immediately before merge. The PR's path-based CI run skipped its Ralplan preflights, so full CI was dispatched on the exact merge head: run [41056825311](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41056825311) completed with 24 success, 1 skipped, and 0 failed across 25 jobs. Both macOS preflights passed: Node 20 (job [124066427628](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41056825311/job/124066427628)) and Node 26.5.1 (job [124066427519](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41056825311/job/124066427519)); CI Status passed (job [124074936566](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41056825311/job/124074936566)).
+- Post-merge dev CI run [41059836721](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41059836721) completed successfully (3 success, 16 skipped, 0 failed); CI Status passed (job [124076634412](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41059836721/job/124076634412)). `origin/main` `a60b9435a8e6d894ba69d1540ecf20afaac63a7a` is an ancestor of `origin/dev` at `00e88c28d4b1c72bdb8ff10a9e74ce6650145292`.
+
+## Post-release development base
+
+After the back-merge, the separate dev-only version bump updates package/plugin/Cargo metadata to `0.21.44`. This development base does not move or republish the `v0.21.43` tag.
+
 ## Known issues and exclusions
 
 - #3968 is a separate report by Kevin-wenyu about `provider unavailable`; its underlying cause remains unconfirmed and evidence was requested. #3971 corrects the doctor's remedy text only.
