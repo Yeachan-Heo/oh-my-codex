@@ -20,6 +20,8 @@ import {
   resolveCliInvocation,
   parseResumeCodexHomeSelection,
   isResumeCodexLaunch,
+  findResumeCodexSubcommandIndex,
+  requestedResumeNativeSessionId,
   CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE,
   isCodexVersionRequest,
   resolveUpdateChannelArg,
@@ -151,6 +153,36 @@ function expectedLowComplexityModel(codexHomeOverride?: string): string {
 
 afterEach(() => {
   mock.restoreAll();
+});
+
+it('finds the actual resume command rather than a global option value', () => {
+  assert.equal(findResumeCodexSubcommandIndex(['--model', 'resume', 'resume', '01234567-89ab-cdef-0123-456789abcdef']), 2);
+  assert.equal(findResumeCodexSubcommandIndex(['--model', 'resume', 'exec', 'resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['resume', '--', 'literal']), 0);
+});
+
+describe("resume positional attachment authority", () => {
+  const id = "01234567-89ab-4cde-8123-0123456789ab";
+  it("accepts an explicit selector around recognized options and end-of-options", () => {
+    for (const args of [
+      ["resume", id], ["--model", "gpt", "resume", id],
+      ["resume", "--model", "gpt", id], ["resume", id, "--model", "gpt"],
+      ["resume", "--model=gpt", id], ["resume", "--", id],
+      ["resume", "--search", id], ["resume", "--strict-config", id],
+      ["resume", "--approve-for-me", id], ["resume", "--no-daemon", id],
+      ["resume", "--worktree", id],
+      ["resume", "--dangerously-bypass-hook-trust", id],
+    ]) assert.equal(requestedResumeNativeSessionId(args), id, JSON.stringify(args));
+  });
+  it("never treats option values or later prompt tokens as session authority", () => {
+    for (const args of [
+      ["resume", "--add-dir", id], ["resume", "--model", id],
+      ["resume", "--profile", id], ["resume", "-m", id],
+      ["resume", "--model=" + id], ["resume", "--image", id],
+      ["resume", "--image", "a.png", id], ["resume", "named-session", id],
+      ["resume", "--unknown", id], ["exec", "resume", id],
+    ]) assert.equal(requestedResumeNativeSessionId(args), undefined, JSON.stringify(args));
+  });
 });
 
 describe("madmax state isolation", () => {

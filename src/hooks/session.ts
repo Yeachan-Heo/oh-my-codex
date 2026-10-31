@@ -1184,6 +1184,8 @@ function classifyParsedSessionPointer(
   }
   const state = value as SessionState;
   if (!normalizeSessionId(state.session_id)) return { status: 'malformed', raw };
+  if (context.sessionPath === join(context.baseStateDir, SESSION_FILE)
+    && (typeof state.cwd !== 'string' || !state.cwd.trim())) return { status: 'malformed', raw, state };
   if (typeof state.cwd === 'string' && state.cwd.trim() && !isSessionStateAuthoritativeForCwd(state, context.cwd)) {
     return { status: 'foreign-cwd', raw, state };
   }
@@ -1912,6 +1914,7 @@ function classifyParsedSessionPointerForRecovery(value: unknown, raw: string): S
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 'malformed', raw };
   const state = value as SessionState;
   if (!normalizeSessionId(state.session_id)) return { status: 'malformed', raw };
+  if (typeof state.cwd !== 'string' || !state.cwd.trim()) return { status: 'malformed', raw, state };
   if (state.identity_schema_version !== undefined && state.identity_schema_version !== 2) {
     return { status: 'identity-indeterminate', raw, state };
   }
