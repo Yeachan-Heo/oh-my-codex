@@ -69,7 +69,7 @@ describe('doctor native process identity readiness', () => {
     assert.equal(check?.status, 'fail');
     assert.equal(
       check?.message,
-      'native process identity is unavailable (provider unavailable); run `omx update` (repairs the native runtime cache), then rerun doctor; session pointer recovery works without the native runtime',
+      'native process identity is unavailable (provider unavailable); run `omx native-runtime hydrate` in the foreground to retry native runtime hydration and report errors, then rerun doctor; session pointer recovery works without the native runtime',
     );
   });
 
