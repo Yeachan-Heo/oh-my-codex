@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -246,6 +246,76 @@ setTimeout(waitForDelegate, 10);
 }
 
 describe("issue 3790 live plugin cache pins", () => {
+	it("pins a managed snapshot through an explicitly configured Codex-home alias", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-live-pin-home-alias-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const alias = join(wd, "codex-home-alias");
+				await symlink(codexHomeDir, alias, process.platform === "win32" ? "junction" : "dir");
+				process.env.CODEX_HOME = alias;
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				const materialized = await materializePackagedOmxPluginCache(alias, packaged);
+				assert.equal(materialized.status, "materialized");
+				const cacheDir = materialized.cacheDir!;
+				const result = spawnSync(process.execPath, [join(cacheDir, "hooks", "codex-native-hook.mjs")], {
+					cwd: wd,
+					input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "home-alias", codex_pid: process.pid, cwd: wd }),
+					encoding: "utf-8",
+					env: { ...process.env, CODEX_HOME: alias },
+				});
+				assert.equal(result.status, 0, result.stderr || result.stdout);
+				const entries = await readdir(join(cacheDir, ".omx-live-pin"));
+				assert.equal(entries.length, 1);
+				const pin = JSON.parse(await readFile(join(cacheDir, ".omx-live-pin", entries[0]!), "utf-8"));
+				assert.equal(pin.pid, process.pid);
+				assert.equal(pin.sessionHash, createHash("sha256").update("home-alias").digest("hex"));
+				assert.equal(await registerOmxPluginCacheLivePin(
+					join(omxPluginCacheBase(alias), materialized.version!), "direct-home-alias", process.pid,
+				), true);
+				const directEntries = await readdir(join(cacheDir, ".omx-live-pin"));
+				const directPins = await Promise.all(directEntries.map(async name => JSON.parse(await readFile(join(cacheDir, ".omx-live-pin", name), "utf-8"))));
+				assert.ok(directPins.some(record => record.pid === process.pid && record.sessionHash === createHash("sha256").update("direct-home-alias").digest("hex")));
+
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a redirected cache version below an aliased Codex home", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-live-pin-redirected-version-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const alias = join(wd, "codex-home-alias");
+				await symlink(codexHomeDir, alias, process.platform === "win32" ? "junction" : "dir");
+				process.env.CODEX_HOME = alias;
+				const cacheDir = await seedManagedSnapshot(codexHomeDir, packageVersion.version);
+				const outsideBase = join(wd, "outside-cache");
+				const outside = join(outsideBase, packageVersion.version);
+				await mkdir(outsideBase);
+				await rename(cacheDir, outside);
+				await symlink(outside, cacheDir, process.platform === "win32" ? "junction" : "dir");
+				const before = await computeOmxPluginCacheClaimDigest(outside);
+				const result = spawnSync(process.execPath, [join(cacheDir, "hooks", "codex-native-hook.mjs")], {
+					cwd: wd,
+					input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "redirected-version", codex_pid: process.pid, cwd: wd }),
+					encoding: "utf-8",
+					env: { ...process.env, CODEX_HOME: alias },
+				});
+				assert.equal(result.status, 0, result.stderr || result.stdout);
+				await assert.rejects(registerOmxPluginCacheLivePin(
+					join(omxPluginCacheBase(alias), packageVersion.version), "direct-redirected-version", process.pid,
+				), /symbolic link|non-directory namespace/);
+				await assert.rejects(lstat(join(outside, ".omx-live-pin")), { code: "ENOENT" });
+				assert.equal(await computeOmxPluginCacheClaimDigest(outside), before);
+				assert.deepEqual((await readdir(dirname(cacheDir))).filter(name => name.startsWith(".omx-live-pin")), []);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("writes a live pin from an uncorrelated SessionStart hook, not during publication", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-3790-session-pin-"));
 		try {
@@ -1951,7 +2021,8 @@ setTimeout(waitForDelegate, 10);
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
-				const payload = { hook_event_name: "UserPromptSubmit", session_id: "required-session-pin", cwd: wd };
+				// Pin refusal must not depend on whether this test has a real Codex ancestor.
+				const payload = { hook_event_name: "UserPromptSubmit", session_id: "required-session-pin", codex_pid: 99_999_999, cwd: wd };
 				const env = {
 					...process.env,
 					CODEX_HOME: codexHomeDir,
@@ -2024,7 +2095,7 @@ syncBuiltinESMExports();
 							...process.env,
 							CODEX_HOME: codexHomeDir,
 							OMX_NATIVE_HOOK_COMMAND: process.execPath,
-							OMX_TEST_CACHE_BASE: omxPluginCacheBase(codexHomeDir),
+							OMX_TEST_CACHE_BASE: await realpath(omxPluginCacheBase(codexHomeDir)),
 							OMX_TEST_LAUNCHER_INVOKED: launcherInvokedPath,
 						},
 					},
