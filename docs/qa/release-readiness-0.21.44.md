@@ -45,17 +45,24 @@ The pinned dev source already reads `0.21.44` across every release-coupled versi
 - `npm run lint` — passed across 900 files. Biome emitted the existing `linter.rules.recommended` deprecation notice from `biome.json`; no lint fixes were applied.
 - Version synchronization checks — passed as listed above.
 
+## Review follow-up mirrored to dev
+
+- The #3978 Codex P2 on foreground manifest HTTP errors was fixed in release commit `8c4b137d9718178fe1ead553b7f0624db6880614`: strict runtime hydration now surfaces the HTTP status and sanitized URL, while the install/update wrapper remains non-fatal. Regression coverage verifies a 503 response, URL-query redaction, and non-fatal continuation; the focused postinstall suite passed with 11 tests on both the release and dev branches.
+- The same fix was cherry-picked to dev as `4ca88bd708b12899cbf52a79ca6aa712a866ea67` and merged through [#3979](https://github.com/Yeachan-Heo/oh-my-codex/pull/3979) at `71190daf4dd5a7da5103951c4a50fe5a28ed0710`.
+
 ## Release PR and main gates
 
-Not yet run at this readiness-document revision. Record the release PR's latest-per-name check results, macOS preflight status, in-thread review-thread gate, exact release head and merge commit, and green main-push CI run here before proceeding to tag creation.
+- Release PR [#3978](https://github.com/Yeachan-Heo/oh-my-codex/pull/3978) head `8c4b137d9718178fe1ead553b7f0624db6880614` passed CI run [41196352882](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41196352882): 24 success, 1 skipped, 0 failed across 25 jobs. The skipped job was `Publish npm (trusted publishing)`, which was run separately after tag publication. PR Check run [41196350843](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41196350843) passed. Both macOS Ralplan preflights passed on the exact release head: Node 20 (job [124523227537](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41196352882/job/124523227537)) and Node 26.5.1 (job [124523227562](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41196352882/job/124523227562)). The exact-head Codex review completed with no findings. Review thread [4431474382](https://github.com/Yeachan-Heo/oh-my-codex/pull/3978#discussion_r4431474382) was answered in-thread; the required unanswered-thread gate printed `[]` immediately before merge.
+- PR #3978 merged by squash at `46a277224a93fb610de83bee7f0c28dfd52f129c`.
+- Main push CI run [41198130682](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41198130682) on that merge commit passed: 24 success, 1 skipped, 0 failed across 25 jobs. Both macOS Ralplan preflights ran and passed: Node 20 (job [124528391129](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41198130682/job/124528391129)) and Node 26.5.1 (job [124528391041](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41198130682/job/124528391041)). The skipped job was the separately dispatched npm publisher.
 
 ## Publication evidence
 
-Not yet run at this readiness-document revision. Record the annotated tag and target commit, successful tag-triggered Release run, successful trusted npm publishing dispatch, GitHub Release `publishedAt`, `npm view oh-my-codex dist-tags.latest`, and `npm view oh-my-codex@0.21.44 gitHead` here after all readbacks pass.
-
-## Back-merge and post-release development base
-
-Not yet run at this readiness-document revision. Record the merge-commit back-merge to dev (including this evidence commit), the subsequent dev-only `0.21.45` version bump, and the final `origin/main` ancestor check here after completion.
+- Annotated tag `v0.21.44` points to `46a277224a93fb610de83bee7f0c28dfd52f129c`.
+- Tag-triggered Release workflow [41199218868](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41199218868) succeeded: 11/11 jobs passed, including all seven native build targets, manifest verification, native asset smoke verification, and packed global-install smoke test.
+- GitHub Release [v0.21.44](https://github.com/Yeachan-Heo/oh-my-codex/releases/tag/v0.21.44) is non-draft with `publishedAt` `2026-10-31T12:15:10Z`. Its generated body is titled `# oh-my-codex v0.21.44` and contains the foreground command, 120-second timeout, sanitized diagnostics, and `v0.21.43...v0.21.44` compare link.
+- Trusted npm publishing was dispatched on `main` with `release_tag=v0.21.44` and full `release_sha=46a277224a93fb610de83bee7f0c28dfd52f129c`. CI run [41200976209](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41200976209), publish job [124536552163](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41200976209/job/124536552163), passed, including registry-visibility verification.
+- Registry readbacks: `npm view oh-my-codex dist-tags.latest` → `0.21.44`; `npm view oh-my-codex@0.21.44 gitHead` → `46a277224a93fb610de83bee7f0c28dfd52f129c`.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
