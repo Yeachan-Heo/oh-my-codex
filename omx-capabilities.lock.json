@@ -1419,7 +1419,7 @@
       ]
     },
     "skills": {
-      "digest": "9d830234988b51e6e111ca5bea34e4688c211f2bf58bbfbb25818c1a1a8ee801",
+      "digest": "61d930170f6cfb843fb99d1654ae4061d84619ba4df393812c2e1f25f30c32b2",
       "files": [
         {
           "digest": "d81095f3480b4d15dc8607d85c9dd5c872fe0786e29561a3d101a117f104e77b",
@@ -1494,7 +1494,7 @@
           "path": "skills/pipeline/SKILL.md"
         },
         {
-          "digest": "4a2312fee52f4780338eccc217a9340300e03c8a3e8b0f8e8dde0a8239afd0b7",
+          "digest": "f748a8ee15c39786abfd99ee4dd51cac89219fd2d985ce1fe0d25cb21b562387",
           "path": "skills/plan/SKILL.md"
         },
         {
@@ -1502,7 +1502,7 @@
           "path": "skills/ralph/SKILL.md"
         },
         {
-          "digest": "d27b3be9ed5efba26b2772dc7efd0726df340cf7f7717f8d14a7ce594588571e",
+          "digest": "e2a6de709b481dd670112076bc7a975a186841c1a149f8d9ca1e900272ef60fe",
           "path": "skills/ralplan/SKILL.md"
         },
         {
