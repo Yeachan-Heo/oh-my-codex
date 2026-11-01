@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "oh-my-codex",
     "shortDescription": "Workflow layer and skill bundle for OpenAI Codex CLI.",
-    "longDescription": "Plugin = OMX skill/workflow discovery plus plugin-scoped companion metadata for hooks, MCP servers, and apps. Setup = runtime wiring and native agent TOMLs in both modes. Legacy setup also installs prompt/skill copies; plugin setup enables official plugin-scoped hooks, archives legacy prompt copies, removes only stale generated/non-installable native agents, and preserves user-authored or ambiguous roles during normal setup. Scoped setup also maintains config, optional AGENTS.md, HUD, and runtime state.",
+    "longDescription": "Plugin = OMX skill/workflow discovery plus plugin-scoped companion metadata for hooks, MCP servers, and apps. Setup = runtime wiring and native agent TOMLs in both modes by default; --disable-hooks skips native agent installation in either mode. Legacy setup also installs prompt/skill copies; plugin setup enables official plugin-scoped hooks, archives legacy prompt copies, removes only stale generated/non-installable native agents, and preserves user-authored or ambiguous roles during normal setup. Scoped setup also maintains config, optional AGENTS.md, HUD, and runtime state.",
     "developerName": "Yeachan Heo",
     "category": "Developer Tools"
   },
