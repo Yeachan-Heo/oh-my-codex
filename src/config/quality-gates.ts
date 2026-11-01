@@ -13,8 +13,9 @@
  * }
  *
  * This module discovers configuration; it does not run reviewers or approve a stage.
- * Owning skills define gate order and require unavailable/non-approving blocking
- * gates to prevent progression. Advisory unavailability remains visible.
+ * Owning skills define gate order and completion guidance. Current Ralplan runtime
+ * skips unavailable gates, including blocking ones, despite its skill's fail-closed
+ * guidance; see docs/reference/omx-config-quality-gates.md for that mismatch.
  */
 
 import { existsSync, readFileSync } from 'fs';
