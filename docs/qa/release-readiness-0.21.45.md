@@ -39,11 +39,21 @@ The pinned source already reads `0.21.45` across every release-coupled version s
 
 ## Release PR and main gates
 
-Release PR, latest-per-name CI checks, review-thread resolution, merge commit, and main push CI evidence will be recorded after those gates complete.
+Release PR #3986 ([release: v0.21.45](https://github.com/Yeachan-Heo/oh-my-codex/pull/3986)) merged to `main` at `7ca48b79`. Its Release run #41332073403 ([run](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41332073403)) ended cancelled after two attempts when the `aarch64-apple-darwin` build hit the macOS 14 runner brownout tracked in [actions/runner-images#13518](https://github.com/actions/runner-images/issues/13518).
+
+Runner fix PR #3987 ([main](https://github.com/Yeachan-Heo/oh-my-codex/pull/3987)) moved the arm64 release build from `macos-14` to `macos-15` and merged to `main`; PR #3988 ([dev](https://github.com/Yeachan-Heo/oh-my-codex/pull/3988)) applied the same runner fix to `dev`. The `v0.21.45` tag was moved from `7ca48b79` to `8f35f24c865cfed15234dd00570331ec2aab0870`; the former tag target was never published.
+
+The tag move happened before main CI completed, an ordering deviation from the intended gate sequence. Main CI #41339407648 ([run](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41339407648)) on `8f35f24c865cfed15234dd00570331ec2aab0870` later concluded success. Release run #41339422194 ([run](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41339422194)) on the same commit concluded success, including the native asset publication and verification and the packed global-install smoke test.
 
 ## Publication evidence
 
-Tag, GitHub Release workflow, npm trusted-publishing dispatch, and registry readbacks will be recorded after publication. Required readbacks are `gh release view v0.21.45` (`isDraft=false`), npm `dist-tags.latest` (`0.21.45`), and `npm view oh-my-codex@0.21.45 gitHead` matching the tagged commit.
+GitHub Release `v0.21.45` is non-draft with `publishedAt` `2026-11-01T19:15:23Z`. The npm workflow was dispatched as run #41341474394 ([run](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41341474394)); its `Publish npm (trusted publishing)` job and registry propagation verification succeeded.
+
+Post-publication readbacks:
+
+- `gh release view v0.21.45 -R Yeachan-Heo/oh-my-codex --json isDraft,publishedAt` — `{"isDraft":false,"publishedAt":"2026-11-01T19:15:23Z"}`.
+- `npm view oh-my-codex dist-tags.latest` — `0.21.45`.
+- `npm view oh-my-codex@0.21.45 gitHead` — `8f35f24c865cfed15234dd00570331ec2aab0870`.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
