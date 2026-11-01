@@ -13,6 +13,8 @@ Use this task card to diagnose installation/discovery problems. Shared safety, l
 omx doctor
 omx doctor --team             # include Team runtime checks
 omx doctor --verbose          # include detailed check evidence
+omx doctor --force            # repair eligible repo artifact ownership issues
+omx doctor --dry-run --force  # preview eligible ownership repairs
 ```
 
 For a local source checkout, build first and invoke `node dist/cli/omx.js doctor`. Keep command output and exact paths for the report.
@@ -34,7 +36,7 @@ LATEST=$(npm view oh-my-codex version 2>/dev/null)
 echo "Latest npm: $LATEST"
 ```
 
-Report npm `LATEST` as the published stable channel, not proof that a local/development build is stale. Multiple cache versions may still have active consumers; version order alone does not establish a defect or authorize pruning. Use `omx doctor`'s actual check results and paths. Plugin discovery does not replace npm installation plus scoped `omx setup`; native/runtime wiring remains setup-owned.
+No cache is INFO (normal for npm/setup-only installs). A non-`local` cache version differing from `LATEST`, or multiple versions for one marketplace, is WARN. Plugin discovery does not replace npm installation plus `omx setup`; native/runtime wiring remains setup-owned.
 
 ### Hooks, AGENTS, and skill roots
 
@@ -43,14 +45,12 @@ CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 ls -la "$CODEX_DIR/config.toml" "$CODEX_DIR/settings.json" 2>/dev/null
 rg 'keyword-detector|persistent-mode|session-start|stop-continuation' "$CODEX_DIR/config.toml" "$CODEX_DIR/settings.json" 2>/dev/null || true
 ls -la "$CODEX_DIR/hooks"/*.sh 2>/dev/null
-rg -n 'OMX:AGENTS:START|omx:generated:agents-md' "$CODEX_DIR/AGENTS.md" ./AGENTS.md 2>/dev/null || true
+ls -la "$CODEX_DIR/AGENTS.md" 2>/dev/null
+grep -q "oh-my-codex Multi-Agent System" "$CODEX_DIR/AGENTS.md" 2>/dev/null && echo "Has OMX config" || echo "Missing OMX config"
 ls -la "$CODEX_DIR/agents" "$CODEX_DIR/commands" "$CODEX_DIR/skills" "$HOME/.agents/skills" 2>/dev/null
-omx agents list
 ```
 
-Check whether legacy hook references are active registrations before reporting duplicate execution; a script's presence alone does not prove it runs. Resolve the expected persistent AGENTS path from the selected setup scope (`$CODEX_DIR/AGENTS.md` for user scope, project-root `AGENTS.md` for project scope) and report the CLI's status rather than assigning a blanket severity.
-
-`${CODEX_HOME:-~/.codex}/skills` is OMX's canonical user skill root. Codex may also discover `~/.agents/skills`; inspect overlapping names without treating that whole tree as disposable. Current setup-owned native TOMLs under `$CODEX_DIR/agents/` are expected in both plugin and legacy setup modes. Check their catalog status and generated ownership markers; do not classify the directory itself as legacy. See the [plugin bundle ownership contract](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/plugin-bundle-ssot.md) for the prompt/native-agent distinction, matching the installed revision when diagnosing version-specific behavior.
+Classify legacy hook references as **CRITICAL** (duplicate hooks). The scripts `keyword-detector.sh`, `persistent-mode.sh`, `session-start.sh`, and `stop-continuation.sh` are **WARN**. Missing AGENTS.md is **CRITICAL**; missing the OMX marker is **WARN**. `${CODEX_HOME:-~/.codex}/skills` is the canonical user root. `~/.agents/skills` is historical and overlapping trees can duplicate skill entries. OMX files under legacy `agents/` or `commands/` are **WARN**.
 
 With `--team`, retain any `resume_blocker`, `slow_shutdown`, `delayed_status_lag`, `stale_leader`, or `orphan_tmux_session` diagnostics; failed checks set a non-zero exit status.
 
@@ -67,7 +67,7 @@ With `--team`, retain any `resume_blocker`, `slow_shutdown`, `delayed_status_lag
 | Legacy Scripts (~/.codex/hooks/) | OK/WARN | ... |
 | AGENTS.md | OK/WARN/CRITICAL | ... |
 | Plugin Cache | OK/WARN | ... |
-| Native Agents / Legacy Commands | OK/WARN | ... |
+| Legacy Agents / Commands | OK/WARN | ... |
 | Skills (canonical / historical root) | OK/WARN | ... |
 ### Issues Found
 1. ...
@@ -75,36 +75,43 @@ With `--team`, retain any `resume_blocker`, `slow_shutdown`, `delayed_status_lag
 ...
 ```
 
-## Remediation within the authorized scope
+## Remediation (after user confirmation and confirming each target is OMX-owned)
 
-Diagnostics do not authorize deletion or setup changes. Continue an already-authorized repair without asking again; request only missing authority or a material scope/destructive decision. Before any removal or replacement, record the exact target, ownership evidence, current content/identity, active consumers, preserved dependencies, and intended effect. A directory containing OMX files can also contain user files and is not wholly OMX-owned.
-
-For a check that documents eligible repository-artifact ownership repairs, `omx doctor --dry-run --force` previews those repairs. Apply `omx doctor --force` only within the authorized repair scope; it is not a diagnostic-only command or a general cleanup mode.
-
-### Hooks, native agents, and skills
-
-- Prefer the installed CLI's check-specific recovery and scoped setup paths. Preview supported repairs before applying the same selected scope.
-- Remove only a confirmed obsolete OMX registration or exact managed file. Preserve unrelated keys in `settings.json`, hook files, custom native roles, custom skills, and discovery links. Do not remove entire `agents/`, `commands/`, or skill roots to resolve a mixed installation.
-- Normal setup uses catalog membership and generated markers to distinguish installable native roles from stale generated/non-installable files. Preserve ambiguous or user-authored TOMLs; do not use `--force` as a generic cleanup shortcut.
-- For duplicate skill names, identify the exact canonical and duplicate entries and any consumers before changing an entry. Preserve non-overlapping personal skills.
-
-### Persistent AGENTS guidance
-
-Use the installed release's scoped merge path instead of replacing the file with raw upstream content. Preserve manual guidance and runtime markers. Choose one scope deliberately; project scope runs from the intended project root:
+Remove only confirmed OMX legacy content; preserve unrelated user files:
 
 ```bash
-omx setup --scope user --merge-agents --dry-run
-# Or, from the intended project:
-omx setup --scope project --merge-agents --dry-run
+# If settings.json exists, remove only its legacy "hooks" section.
+rm -f "$CODEX_DIR/hooks/keyword-detector.sh" "$CODEX_DIR/hooks/persistent-mode.sh" "$CODEX_DIR/hooks/session-start.sh" "$CODEX_DIR/hooks/stop-continuation.sh"
+PLUGIN_CACHE_ROOT="${CODEX_HOME:-$HOME/.codex}/plugins/cache"
+find "$PLUGIN_CACHE_ROOT" -path "*/oh-my-codex" -type d -prune -exec rm -rf {} +
 ```
 
-Inspect the preview and preservation rules, then apply only the authorized chosen command without `--dry-run`. If active-session safeguards skip the guidance write, keep that result visible and use the documented recovery path; do not bypass it by overwriting AGENTS.md manually.
+For older curl installs, inspect first and remove only directories containing OMX-managed files:
 
-### Plugin cache
+```bash
+ls -la "$CODEX_DIR/agents" "$CODEX_DIR/commands" "$CODEX_DIR/skills" "$HOME/.agents/skills" 2>/dev/null
+# Optional backups:
+# mv "$CODEX_DIR/agents" "$CODEX_DIR/agents.bak"
+# mv "$CODEX_DIR/commands" "$CODEX_DIR/commands.bak"
+# mv "$HOME/.agents/skills" "$HOME/.agents/skills.bak"
+rm -rf "$CODEX_DIR/agents" "$CODEX_DIR/commands" "$HOME/.agents/skills"
+```
 
-Do not prune cache versions by age, lexical/version order, or presence of a newer version. Inspect the exact marketplace/version entry, live pins, sessions, references, and recovery dependencies. Keep active or uncertain entries. For a diagnosed immutable-cache failure, use the installed CLI's exact repair guidance and supported preview rather than recursively deleting the plugin cache. This card does not authorize in-place edits to a live plugin snapshot.
+If AGENTS.md is missing/outdated, fetch the current raw file and write it to `$CODEX_DIR/AGENTS.md`:
 
-Rerun `omx doctor` after an applied repair. Report changed exact paths, preserved custom assets, held entries and reasons, and before/after evidence. Restart Codex only when the applied discovery/configuration change requires it.
+```text
+WebFetch(url: "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-codex/main/docs/AGENTS.md", prompt: "Return the complete raw markdown content exactly as-is")
+```
+
+To keep only the newest cache version for a selected marketplace:
+
+```bash
+PLUGIN_CACHE_DIR="$PLUGIN_CACHE_ROOT/$MARKETPLACE_NAME/oh-my-codex"
+KEEP_VERSION=$(for d in "$PLUGIN_CACHE_DIR"/*; do [[ -d "$d" ]] && basename "$d"; done | sort -V | tail -1)
+[[ -n "$KEEP_VERSION" ]] && find "$PLUGIN_CACHE_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "$KEEP_VERSION" -exec rm -rf {} +
+```
+
+If AGENTS.md is missing or stale, refresh it from the current release source, then rerun `omx doctor`. If legacy `~/.agents/skills` overlaps the canonical root, archive/remove that tree only after checking for custom skills. Restart Codex after fixes and report before/after evidence.
 
 ## Exit conditions
 

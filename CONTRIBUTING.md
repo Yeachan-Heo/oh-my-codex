@@ -82,15 +82,15 @@ If `node_modules` is already fresh and you are iterating locally, you can skip `
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
-- `prompts/` -- canonical role guidance and setup prompt assets; setup generates installable native TOMLs in both modes and installs prompt copies in legacy mode
-- `skills/` -- canonical skill directories; plugin mode discovers their generated plugin mirror, while legacy mode installs scoped skill copies
+- `prompts/` -- agent prompt markdown files (installed to `~/.codex/prompts/`)
+- `skills/` -- skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
 - `templates/` -- `AGENTS.md` orchestration brain template
 
 ### Adding a new agent prompt
 
-1. Create `prompts/my-agent.md` with the agent's system prompt.
-2. For an installable native role, add its definition/catalog entry and follow [Native agent SSOT](docs/plugin-bundle-ssot.md#native-agent-ssot), including `npm run verify:native-agents`.
-3. Test scoped setup in an isolated Codex home, preserving custom assets. Plugin mode installs native TOMLs, not `/prompts:` copies; use the exposed native role routing on the target Codex surface. Legacy mode also installs scoped prompt copies.
+1. Create `prompts/my-agent.md` with the agent's system prompt
+2. Run `omx setup --force` to install it to `~/.codex/prompts/`
+3. Use `/prompts:my-agent` in Codex CLI
 
 ### Prompt guidance contract
 
@@ -100,9 +100,9 @@ That document defines the GPT-5.6 behavior contract contributors should preserve
 
 ### Adding a new skill
 
-1. Create `skills/my-skill/SKILL.md` with the skill workflow.
-2. Update both catalog manifests, then follow [Adding or changing a skill](docs/plugin-bundle-ssot.md#adding-or-changing-a-skill) to build, sync, and verify the plugin mirror.
-3. Test the selected setup/discovery mode in an isolated Codex home, then use `$my-skill` through that surface. Do not use `--force` against a personal installation merely to test a new skill.
+1. Create `skills/my-skill/SKILL.md` with the skill workflow
+2. Run `omx setup --force` to install it to `~/.codex/skills/`
+3. Use `$my-skill` in Codex CLI
 
 
 ### Document refresh warnings

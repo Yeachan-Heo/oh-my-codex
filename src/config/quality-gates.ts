@@ -12,9 +12,8 @@
  *   }
  * }
  *
- * This module discovers configuration; it does not run reviewers or approve a stage.
- * Owning skills define gate order and require unavailable/non-approving blocking
- * gates to prevent progression. Advisory unavailability remains visible.
+ * Gates are native subagents that run alongside standard reviewers.
+ * Missing skills produce visible warnings and are skipped.
  */
 
 import { existsSync, readFileSync } from 'fs';
@@ -25,7 +24,7 @@ import { REMOVED_SKILLS } from '../hooks/sunset-stub.js';
 /**
  * Workflow stage where quality gates apply
  * - 'deep-interview': deep-interview final-spec stage
- * - 'ralplan': ralplan Architect→Critic consensus review (not lightweight $plan)
+ * - 'ralplan': ralplan Architect→Critic review (consensus mode, also used by $plan)
  * - 'code-review': code-review stage
  */
 export type QualityGateStage = 'deep-interview' | 'ralplan' | 'code-review';
