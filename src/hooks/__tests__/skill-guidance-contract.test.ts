@@ -10,6 +10,20 @@ describe('execution-heavy skill guidance contract', () => {
     });
   }
 
+  it('doctor recovery preserves owned boundaries rather than deleting mixed roots', () => {
+    for (const path of ['skills/doctor/SKILL.md', 'plugins/oh-my-codex/skills/doctor/SKILL.md']) {
+      const content = loadSurface(path);
+      const commands = [...content.matchAll(/```(?:bash|text)\n([\s\S]*?)```/g)]
+        .map((match) => match[1]).join('\n');
+      assert.doesNotMatch(commands, /\brm\s+-rf\b|\bfind\b[^\n]*-exec\s+rm|WebFetch\(/);
+      assert.match(content, /exact target, ownership evidence, current content\/identity, active consumers, preserved dependencies/);
+      assert.match(content, /Current setup-owned native TOMLs.*expected in both plugin and legacy setup modes/);
+      assert.match(content, /omx setup --scope user --merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope project --merge-agents --dry-run/);
+      assert.match(content, /Keep active or uncertain entries/);
+    }
+  });
+
   it('ultraqa requires adversarial dynamic e2e coverage and structured reporting', () => {
     const rootSkill = loadSurface('skills/ultraqa/SKILL.md');
     const pluginSkill = loadSurface('plugins/oh-my-codex/skills/ultraqa/SKILL.md');
