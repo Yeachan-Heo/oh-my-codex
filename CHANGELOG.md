@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.45] - 2026-11-01
+
+Patch release fixes `omx doctor` incorrectly rejecting trust for unchanged foreign Codex hook groups whose matcher is the empty string. The hash input now preserves an explicitly empty matcher, matching Codex's identity representation. See [release notes](docs/release-notes-0.21.45.md) for exact scope and evidence.
+
+### Fixed
+
+- **EMPTY FOREIGN HOOK MATCHER TRUST (#3985, fixes #3984):** Include an explicitly empty-string matcher in the foreign hook trust hash input so unchanged trusted hook groups no longer appear to have an unsafe trust migration. The separate reported SessionEnd outlier is not addressed.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.44...v0.21.45
+
 ## [0.21.44] - 2026-10-31
 
 Patch release fixes native runtime hydration timeout/abort failures reported in #3968. Postinstall hydration now allows a 120-second window, diagnostics preserve actionable errors, and `omx native-runtime hydrate` provides a foreground retry; `omx doctor` points to that command for the affected readiness state. The release-coupled package, lock, Cargo, and plugin versions were already synchronized to `0.21.44` by #3976. See [release notes](docs/release-notes-0.21.44.md) for exact scope and evidence.

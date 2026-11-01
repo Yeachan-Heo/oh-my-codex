@@ -2253,6 +2253,41 @@ describe("codex hooks helpers", () => {
     assert.ok(migration.config.includes(`trusted_hash = ${JSON.stringify(expectedHash)}`));
   });
 
+  it("migrates foreign hook trust when Codex hashes an explicitly empty matcher", () => {
+    const hooksPath = "/fixture/.codex/hooks.json";
+    const managedCommand = buildManagedCodexHooksConfig("/repo", { platform: "linux" })
+      .hooks.SessionStart[0]!.hooks[0]!.command;
+    const hooksContent = JSON.stringify({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "startup|resume|clear",
+            hooks: [{ type: "command", command: managedCommand }],
+          },
+          { matcher: "", hooks: [{ type: "command", command: "echo foreign" }] },
+        ],
+      },
+    });
+    const plan = planManagedCodexHooksRemoval(hooksContent, hooksPath, { platform: "linux" });
+    assert.equal(plan.ok, true);
+    if (!plan.ok) return;
+
+    const expectedHash = `sha256:${createHash("sha256").update(
+      '{"event_name":"session_start","hooks":[{"async":false,"command":"echo foreign","timeout":600,"type":"command"}],"matcher":""}',
+    ).digest("hex")}`;
+    const { oldKey, newKey } = plan.coordinateMoves[0]!;
+    const config = `[hooks.state.${JSON.stringify(oldKey)}]\ntrusted_hash = ${JSON.stringify(expectedHash)}\n`;
+    const migration = migrateManagedCodexHookTrustStateCoordinates(config, plan.coordinateMoves);
+
+    assert.equal(plan.coordinateMoves[0]!.expectedTrustedHash, expectedHash);
+    assert.equal(migration.keyRewrites.length, 1);
+    assert.equal(migration.keyRewrites[0]!.oldKey, oldKey);
+    assert.equal(migration.keyRewrites[0]!.newKey, newKey);
+    assert.equal(migration.config.includes(oldKey), false);
+    assert.ok(migration.config.includes(`[hooks.state.${JSON.stringify(newKey)}]`));
+    assert.ok(migration.config.includes(`trusted_hash = ${JSON.stringify(expectedHash)}`));
+  });
+
   it("fails closed when stale destination trust exists but source trust is missing", () => {
     const hooksPath = "/fixture/.codex/hooks.json";
     const managedCommand = buildManagedCodexHooksConfig("/repo", { platform: "linux" })
