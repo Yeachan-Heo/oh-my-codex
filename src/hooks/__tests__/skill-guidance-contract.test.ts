@@ -21,6 +21,10 @@ describe('execution-heavy skill guidance contract', () => {
       assert.match(content, /omx setup --scope user --merge-agents --dry-run/);
       assert.match(content, /omx setup --scope project --merge-agents --dry-run/);
       assert.match(content, /Keep active or uncertain entries/);
+      assert.match(content, /`omx doctor --dry-run --force` is an ownership-check preview, not a repair-eligibility preview/);
+      assert.match(content, /Doctor may recover a native-hook claim journal before that check, even with `--dry-run`/);
+      assert.match(content, /Recovery can restore a canonical file, remove a claim file, and clear the journal/);
+      assert.doesNotMatch(content, /--dry-run --force` previews those repairs/);
     }
   });
 

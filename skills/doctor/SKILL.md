@@ -79,7 +79,7 @@ With `--team`, retain any `resume_blocker`, `slow_shutdown`, `delayed_status_lag
 
 Diagnostics do not authorize deletion or setup changes. Continue an already-authorized repair without asking again; request only missing authority or a material scope/destructive decision. Before any removal or replacement, record the exact target, ownership evidence, current content/identity, active consumers, preserved dependencies, and intended effect. A directory containing OMX files can also contain user files and is not wholly OMX-owned.
 
-For a check that documents eligible repository-artifact ownership repairs, `omx doctor --dry-run --force` previews those repairs. Apply `omx doctor --force` only within the authorized repair scope; it is not a diagnostic-only command or a general cleanup mode.
+`omx doctor --dry-run --force` is an ownership-check preview, not a repair-eligibility preview or a no-write operation. For non-team invocations, Doctor may recover a native-hook claim journal before that check, even with `--dry-run`. Recovery can restore a canonical file, remove a claim file, and clear the journal. Use Doctor only when that recovery is within the authorized scope. Apply `omx doctor --force` only within the authorized repair scope; it is not a diagnostic-only command or a general cleanup mode.
 
 ### Hooks, native agents, and skills
 
