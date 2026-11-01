@@ -67,8 +67,8 @@ Quality gate stage keys map directly to documented workflow/skill names:
 | Stage Key | Workflow/Skill | Stage Step | Description |
 | --- | --- | --- | --- |
 | `deep-interview` | $deep-interview | final-spec | Requirements gathering and specification phase; gates execute after specification is complete and before handoff |
-| `ralplan` | $ralplan (also $plan consensus mode) | Architect→Critic review | Planning and design phase; gates execute after initial planning and feed into the revise loop within the iteration cap |
-| `code-review` | $code-review | review stage | Code review and approval; gates execute alongside standard reviewers |
+| `ralplan` | $ralplan | Architect→Critic review | Consensus planning phase; gates execute after Critic review and feed into the revise loop within the iteration cap. Lightweight $plan modes do not run this stage. |
+| `code-review` | $code-review | review stage | Code review and approval; gates execute after the built-in independent reviews |
 
 ## Skill Name Format
 
@@ -96,11 +96,13 @@ Sunset skills from the removed skills list (e.g., `ask-claude`, `deepsearch`, `r
 ## Verdict and Behavior
 
 Each quality gate:
-- **Runs as a native subagent** next to standard reviewers (Architect, Critic, etc.)
+- **Runs as a separate native subagent** at the owning workflow's documented stage: after the final specification for Deep Interview, after Critic review for Ralplan, and after the built-in independent reviews for Code Review. Custom gates supplement required reviewers.
 - **Returns verdicts**: `approve`, `iterate`, or `reject` (same format as Critic)
-- **Missing skill** produces a visible warning and the gate is skipped
-- **Blocking gates** (verdict = `reject`) feed into the existing revise loop exactly like the Critic's vote
-- **Advisory gates** (verdict = `reject`) are recorded without blocking progression
+- **Missing or unavailable skill** produces visible evidence of unavailability; a warning is not an approval.
+- **Blocking gates** must approve before stage approval or execution handoff. Any non-approving verdict (`iterate` or `reject`), or an unavailable gate, prevents progression and enters the owning workflow's revise loop where supported.
+- **Advisory gates** record non-approving or unavailable results without independently blocking progression.
+
+This is the workflow completion contract. The quality-gate listing/configuration surface does not run reviewers or establish approval.
 
 The iteration cap applies to blocking gate verdicts just as it does to Critic feedback. Advisory gate verdicts do not count against progression.
 

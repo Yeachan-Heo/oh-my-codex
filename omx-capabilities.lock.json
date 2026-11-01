@@ -2,7 +2,7 @@
   "kind": "omx_capabilities_lock",
   "surfaces": {
     "agents": {
-      "digest": "c9d10436a36011c308e0e46b5e151d955445f277bbcfdb0c5774167d2aa4b87a",
+      "digest": "913f4b9a7afe3d639abb7486c9155af20ce59d5af72abde07b044695233d8260",
       "files": [
         {
           "digest": "c4f74fb651155bb39281ea97fb582d22b6d5e8b33b45073633ec11baf1baa7f9",
@@ -57,7 +57,7 @@
           "path": "prompts/explore.md"
         },
         {
-          "digest": "8d4d0871382892ce72d72af7b14f923a0e20af6ffbcd7e48dc43fb15cd54c431",
+          "digest": "808f9d7683aa843926754a64e57a2f0b2b6969d2d95f3446d056ceb05f35e6e7",
           "path": "prompts/git-master.md"
         },
         {
@@ -1419,7 +1419,7 @@
       ]
     },
     "skills": {
-      "digest": "9d830234988b51e6e111ca5bea34e4688c211f2bf58bbfbb25818c1a1a8ee801",
+      "digest": "d94a47c029e86b9b6f88cb3f9f2f1d59105e9fcd4fd1511065f6130243875407",
       "files": [
         {
           "digest": "d81095f3480b4d15dc8607d85c9dd5c872fe0786e29561a3d101a117f104e77b",
@@ -1470,7 +1470,7 @@
           "path": "skills/design/SKILL.md"
         },
         {
-          "digest": "7c934251a6b56cdbcf0903f5cdc1420b53ee3515ebf9af046fc0350f27435dec",
+          "digest": "e991a67bcacda41fb2a8046aefae1529d3180561022d98191205edc5a93cd552",
           "path": "skills/doctor/SKILL.md"
         },
         {
@@ -1494,7 +1494,7 @@
           "path": "skills/pipeline/SKILL.md"
         },
         {
-          "digest": "4a2312fee52f4780338eccc217a9340300e03c8a3e8b0f8e8dde0a8239afd0b7",
+          "digest": "f748a8ee15c39786abfd99ee4dd51cac89219fd2d985ce1fe0d25cb21b562387",
           "path": "skills/plan/SKILL.md"
         },
         {
@@ -1502,7 +1502,7 @@
           "path": "skills/ralph/SKILL.md"
         },
         {
-          "digest": "d27b3be9ed5efba26b2772dc7efd0726df340cf7f7717f8d14a7ce594588571e",
+          "digest": "e2a6de709b481dd670112076bc7a975a186841c1a149f8d9ca1e900272ef60fe",
           "path": "skills/ralplan/SKILL.md"
         },
         {

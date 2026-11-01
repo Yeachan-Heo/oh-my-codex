@@ -10,6 +10,41 @@ describe('execution-heavy skill guidance contract', () => {
     });
   }
 
+  it('plan uses the available host surface and preserves direct execution', () => {
+    for (const path of ['skills/plan/SKILL.md', 'plugins/oh-my-codex/skills/plan/SKILL.md']) {
+      const content = loadSurface(path);
+      assert.match(content, /In attached OMX tmux, use `omx question` with `OMX_QUESTION_RETURN_PANE`/);
+      assert.match(content, /Outside tmux, use native structured input when available; otherwise ask one concise plain-text question and wait/);
+      assert.match(content, /Use only the host's exposed native subagent tools/);
+      assert.doesNotMatch(content, /ask_codex/);
+      assert.match(content, /"skip planning".*direct execution.*preserving any active workflow's gates/);
+      assert.doesNotMatch(content, /"skip planning".*→ hand off to `\$ultragoal`/);
+    }
+  });
+
+  it('doctor recovery preserves owned boundaries rather than deleting mixed roots', () => {
+    for (const path of ['skills/doctor/SKILL.md', 'plugins/oh-my-codex/skills/doctor/SKILL.md']) {
+      const content = loadSurface(path);
+      const commands = [...content.matchAll(/```(?:bash|text)\n([\s\S]*?)```/g)]
+        .map((match) => match[1]).join('\n');
+      assert.doesNotMatch(commands, /\brm\s+-rf\b|\bfind\b[^\n]*-exec\s+rm|WebFetch\(/);
+      assert.match(content, /exact target, ownership evidence, current content\/identity, active consumers, preserved dependencies/);
+      assert.match(content, /Current setup-owned native TOMLs.*expected in both plugin and legacy setup modes/);
+      assert.match(content, /omx setup --scope user --merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope project --merge-agents --dry-run/);
+      assert.match(content, /Keep active or uncertain entries/);
+    }
+  });
+
+  it('ralplan owns consensus without redirecting to a nonexistent lightweight Plan mode', () => {
+    for (const path of ['skills/ralplan/SKILL.md', 'plugins/oh-my-codex/skills/ralplan/SKILL.md']) {
+      const content = loadSurface(path);
+      assert.match(content, /This skill owns the consensus sequence and handoff contract/);
+      assert.match(content, /`\$plan` provides lightweight planning and plan review; it does not expose a consensus mode/);
+      assert.doesNotMatch(content, /Follow the Plan skill's full documentation for consensus|also used by `\$plan` consensus mode/);
+    }
+  });
+
   it('ultraqa requires adversarial dynamic e2e coverage and structured reporting', () => {
     const rootSkill = loadSurface('skills/ultraqa/SKILL.md');
     const pluginSkill = loadSurface('plugins/oh-my-codex/skills/ultraqa/SKILL.md');
