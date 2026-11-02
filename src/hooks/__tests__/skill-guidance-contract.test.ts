@@ -10,14 +10,6 @@ describe('execution-heavy skill guidance contract', () => {
     });
   }
 
-  for (const path of ['docs/reference/omx-config-quality-gates.md', 'src/config/quality-gates.ts']) {
-    it(`${path} keeps Ralplan consensus separate from lightweight Plan`, () => {
-      const content = loadSurface(path).replace(/`/g, '');
-      assert.match(content, /Lightweight \$plan modes do not run this stage|not lightweight \$plan/i);
-      assert.doesNotMatch(content, /also (?:used by )?\$plan/i);
-    });
-  }
-
   it('ultraqa requires adversarial dynamic e2e coverage and structured reporting', () => {
     const rootSkill = loadSurface('skills/ultraqa/SKILL.md');
     const pluginSkill = loadSurface('plugins/oh-my-codex/skills/ultraqa/SKILL.md');
@@ -111,6 +103,14 @@ describe('execution-heavy skill guidance contract', () => {
     );
     assert.doesNotMatch('Harness debris noted.', harnessDebris);
   });
+
+  for (const path of ['docs/reference/omx-config-quality-gates.md', 'src/config/quality-gates.ts']) {
+    it(`${path} keeps Ralplan consensus separate from lightweight Plan`, () => {
+      const content = loadSurface(path).replace(/`/g, '');
+      assert.match(content, /Lightweight \$plan modes do not run this stage|not lightweight \$plan/i);
+      assert.doesNotMatch(content, /also (?:used by )?\$plan/i);
+    });
+  }
 
   it('ultrawork is a sunset stub pointing to team', () => {
     const rootSkill = loadSurface('skills/ultrawork/SKILL.md');
