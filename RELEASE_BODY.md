@@ -1,32 +1,28 @@
-# oh-my-codex v0.21.45
+# oh-my-codex v0.21.46
 
 ## Summary
 
-This patch release fixes `omx doctor` falsely reporting an unsafe trust migration for an unchanged foreign Codex hook group whose matcher is the empty string (#3984).
+This patch release keeps generated native-agent instructions within the assigned scope and clarifies Git Master's task authority for history and remote writes.
 
 ## Fixed
 
-- **EMPTY FOREIGN HOOK MATCHER TRUST (#3985, fixes #3984):** Preserve any string matcher, including `""`, in the foreign hook trust hash input. Previously the truthiness check omitted an empty matcher, causing the calculated hash to differ from Codex's stored trust hash and `omx doctor` to report `unsafe_managed_removal` for an unchanged trusted hook group.
-
-The fix targets the empty-matcher hash mismatch. The separately reported SessionEnd outlier is not addressed.
+- **ASSIGNMENT-SCOPED NATIVE AGENT OVERLAYS (#3989):** Generated posture and exact-model guidance no longer tell read-only or advisory roles to implement or always build. Specialist coverage, completion criteria, and verification requirements follow the assignment and repository/task requirements.
+- **GIT MASTER AUTHORITY BOUNDARIES (#3997):** History rewrites and remote writes require task authority. Preserve unrelated dirty and untracked work without stashing, resetting, cleaning, or overwriting it; split independent concerns while keeping a behavior's required tests and support files together.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata was already synchronized to `0.21.45` on dev by #3982; the release does not bump those surfaces again.
+No breaking API changes. Release-coupled metadata was already synchronized to `0.21.46` on dev by #3993; the release branch does not bump those surfaces again.
 
 ## Verification
 
 - `npm ci` — passed.
 - `npm run build` — passed.
-- `npm test` — passed, including runtime build/tests, all 475 Node test files, generated catalog checks, and prompt-invariant checks.
+- `npm test` — passed on the subsequent full run: all 475 Node test files and the generated catalog and prompt-inventory checks completed. An earlier attempt exceeded the command timeout without a final summary.
 - `npm run check:no-unused` — passed.
-- `npm run lint` — passed across 900 files; Biome reported the existing `linter.rules.recommended` deprecation notice.
+- `npm run lint` — passed across 900 files; Biome emitted the existing `linter.rules.recommended` deprecation notice, with no fixes applied.
+- Release-coupled version synchronization — passed: `node dist/scripts/check-version-sync.js --tag v0.21.46` and `cargo metadata --locked --format-version 1 --no-deps` report all six OMX workspace crates as `0.21.46`.
 
-## Contributors
-
-Thanks to @Kelvinkim for reporting the empty-matcher trust-hash issue and to the contributors who shipped the fix.
-
-**Full Changelog**: [`v0.21.44...v0.21.45`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.44...v0.21.45)
+**Full Changelog**: [`v0.21.45...v0.21.46`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.45...v0.21.46)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
