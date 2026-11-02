@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.46] - 2026-11-02
+
+Patch release preserves assignment scope in generated native-agent overlays and bounds Git Master's history and write authority. See [release notes](docs/release-notes-0.21.46.md) for exact scope and evidence.
+
+### Fixed
+
+- **ASSIGNMENT-SCOPED NATIVE AGENT OVERLAYS (#3989):** Keep posture and exact-model guidance aligned with the assigned scope, so read-only and advisory roles are not told to implement or always run builds.
+- **GIT MASTER AUTHORITY BOUNDARIES (#3997):** Require task authority for history rewrites and remote writes, preserve unrelated dirty work, and split commits by independent concern.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.45...v0.21.46
+
 ## [0.21.45] - 2026-11-01
 
 Patch release fixes `omx doctor` incorrectly rejecting trust for unchanged foreign Codex hook groups whose matcher is the empty string. The hash input now preserves an explicitly empty matcher, matching Codex's identity representation. See [release notes](docs/release-notes-0.21.45.md) for exact scope and evidence.
