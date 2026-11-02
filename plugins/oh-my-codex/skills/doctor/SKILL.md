@@ -44,13 +44,13 @@ ls -la "$CODEX_DIR/config.toml" "$CODEX_DIR/settings.json" 2>/dev/null
 rg 'keyword-detector|persistent-mode|session-start|stop-continuation' "$CODEX_DIR/config.toml" "$CODEX_DIR/settings.json" 2>/dev/null || true
 ls -la "$CODEX_DIR/hooks"/*.sh 2>/dev/null
 rg -n 'OMX:AGENTS:START|omx:generated:agents-md' "$CODEX_DIR/AGENTS.md" ./AGENTS.md 2>/dev/null || true
-ls -la "$CODEX_DIR/agents" "$CODEX_DIR/commands" "$CODEX_DIR/skills" "$HOME/.agents/skills" 2>/dev/null
+ls -la "$CODEX_DIR/agents" ./.codex/agents "$CODEX_DIR/commands" "$CODEX_DIR/skills" "$HOME/.agents/skills" 2>/dev/null
 omx agents list
 ```
 
 Check whether legacy hook references are active registrations before reporting duplicate execution; a script's presence alone does not prove it runs. Resolve the expected persistent AGENTS path from the selected setup scope (`$CODEX_DIR/AGENTS.md` for user scope, project-root `AGENTS.md` for project scope) and report the CLI's status rather than assigning a blanket severity.
 
-`${CODEX_HOME:-~/.codex}/skills` is OMX's canonical user skill root. Codex may also discover `~/.agents/skills`; inspect overlapping names without treating that whole tree as disposable. Current setup-owned native TOMLs under `$CODEX_DIR/agents/` are expected in both plugin and legacy setup modes. Check their catalog status and generated ownership markers; do not classify the directory itself as legacy. See the [plugin bundle ownership contract](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/plugin-bundle-ssot.md) for the prompt/native-agent distinction, matching the installed revision when diagnosing version-specific behavior.
+`${CODEX_HOME:-~/.codex}/skills` is OMX's canonical user skill root. Codex may also discover `~/.agents/skills`; inspect overlapping names without treating that whole tree as disposable. Current setup-owned native TOMLs are expected in both plugin and legacy setup modes: user scope uses `$CODEX_DIR/agents/`, while project scope uses `<project>/.codex/agents/`. Run project checks from the intended project root; `omx agents list` shows both scopes by default. Check their catalog status and generated ownership markers; do not classify the directory itself as legacy. See the [plugin bundle ownership contract](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/plugin-bundle-ssot.md) for the prompt/native-agent distinction, matching the installed revision when diagnosing version-specific behavior.
 
 With `--team`, retain any `resume_blocker`, `slow_shutdown`, `delayed_status_lag`, `stale_leader`, or `orphan_tmux_session` diagnostics; failed checks set a non-zero exit status.
 
@@ -90,7 +90,7 @@ Diagnostics do not authorize deletion or setup changes. Continue an already-auth
 
 ### Persistent AGENTS guidance
 
-Use the installed release's scoped merge path instead of replacing the file with raw upstream content. Preserve manual guidance and runtime markers. Choose one scope deliberately; project scope runs from the intended project root:
+For an existing file, use the installed release's scoped merge path instead of replacing the file with raw upstream content. Preserve manual guidance and runtime markers. Choose one scope deliberately; project scope runs from the intended project root:
 
 ```bash
 omx setup --scope user --merge-agents --dry-run
@@ -98,7 +98,15 @@ omx setup --scope user --merge-agents --dry-run
 omx setup --scope project --merge-agents --dry-run
 ```
 
-Inspect the preview and preservation rules, then apply only the authorized chosen command without `--dry-run`. If active-session safeguards skip the guidance write, keep that result visible and use the documented recovery path; do not bypass it by overwriting AGENTS.md manually.
+For a missing persistent AGENTS.md in plugin mode, `--merge-agents` cannot create it because merge mode disables defaults. Confirm that the resolved target is absent, not a dangling symlink, then preview creation with merge mode explicitly disabled (including any persisted merge preference):
+
+```bash
+omx setup --scope user --no-merge-agents --dry-run
+# Or, from the intended project:
+omx setup --scope project --no-merge-agents --dry-run
+```
+
+Accept AGENTS.md defaults if prompted. These setup commands can affect other scoped assets and persist the chosen merge preference; inspect all previewed effects and apply only within the authorized setup scope. Inspect the preview and preservation rules, then apply only the authorized chosen command without `--dry-run`. If active-session safeguards skip the guidance write, keep that result visible and use the documented recovery path; do not bypass it by overwriting AGENTS.md manually.
 
 ### Plugin cache
 

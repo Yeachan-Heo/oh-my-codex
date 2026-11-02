@@ -20,6 +20,10 @@ describe('execution-heavy skill guidance contract', () => {
       assert.match(content, /Current setup-owned native TOMLs.*expected in both plugin and legacy setup modes/);
       assert.match(content, /omx setup --scope user --merge-agents --dry-run/);
       assert.match(content, /omx setup --scope project --merge-agents --dry-run/);
+      assert.match(content, /user scope uses `\$CODEX_DIR\/agents\/`, while project scope uses `<project>\/.codex\/agents\/`/);
+      assert.match(content, /a missing persistent AGENTS.md in plugin mode.*`--merge-agents` cannot create it/);
+      assert.match(content, /omx setup --scope user --no-merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope project --no-merge-agents --dry-run/);
       assert.match(content, /Keep active or uncertain entries/);
       assert.match(content, /`omx doctor --dry-run --force` is an ownership-check preview, not a repair-eligibility preview/);
       assert.match(content, /Doctor may recover a native-hook claim journal before that check, even with `--dry-run`/);
