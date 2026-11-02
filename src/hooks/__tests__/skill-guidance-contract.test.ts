@@ -22,8 +22,11 @@ describe('execution-heavy skill guidance contract', () => {
       assert.match(content, /omx setup --scope project --merge-agents --dry-run/);
       assert.match(content, /user scope uses `\$CODEX_DIR\/agents\/`, while project scope uses `<project>\/.codex\/agents\/`/);
       assert.match(content, /a missing persistent AGENTS.md in plugin mode.*`--merge-agents` cannot create it/);
-      assert.match(content, /omx setup --scope user --no-merge-agents --dry-run/);
-      assert.match(content, /omx setup --scope project --no-merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope user --plugin --no-merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope project --plugin --no-merge-agents --dry-run/);
+      assert.match(content, /record the prior matching-scope `mergeAgents` policy/);
+      assert.match(content, /After successful creation, restore the recorded policy/);
+      assert.match(content, /`--merge-agents` for `true`, `--no-merge-agents` for `false`, or `--clear-merge-agents-policy` if it was absent/);
       assert.match(content, /Keep active or uncertain entries/);
       assert.match(content, /`omx doctor --dry-run --force` is an ownership-check preview, not a repair-eligibility preview/);
       assert.match(content, /Doctor may recover a native-hook claim journal before that check, even with `--dry-run`/);
