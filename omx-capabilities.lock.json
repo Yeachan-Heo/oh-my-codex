@@ -1419,7 +1419,7 @@
       ]
     },
     "skills": {
-      "digest": "0573dfff1d4fd1b0d710526925af104d864d0c874b50c4c48a47aa6b544d628b",
+      "digest": "d5d623c3f43f09a427e6467b066864670e7d3528bfdb7fc0a5280dd6af98d464",
       "files": [
         {
           "digest": "d81095f3480b4d15dc8607d85c9dd5c872fe0786e29561a3d101a117f104e77b",
@@ -1470,7 +1470,7 @@
           "path": "skills/design/SKILL.md"
         },
         {
-          "digest": "7df21646fc1ac287b575dc6b329d52b52505bb90351ac8b9de4cbd446ad2e421",
+          "digest": "08a2a2708e768044bdd872ca1ed4739c97d0b1615658ab8b9dd0ba429f7bd274",
           "path": "skills/doctor/SKILL.md"
         },
         {
