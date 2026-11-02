@@ -50,6 +50,12 @@ Model routing: Each role belongs to a modelClass (`frontier`, `standard`, `fast`
 
 ## Posture Guidance
 
+Posture and model overlays stay within the assigned role and task authority.
+Read-only analysis or planning completes with supported conclusions or a plan;
+it does not require implementation. Diagnostics, tests, and builds apply when
+the assigned result or repository requires them. Native leaf agents report
+missing specialist coverage to their leader instead of delegating it.
+
 - `frontier-orchestrator`:
   - Best for steerable frontier models and leader-style roles.
   - Prioritizes intent classification, delegation, verification, and architectural judgment.
