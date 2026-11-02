@@ -10,6 +10,43 @@ describe('execution-heavy skill guidance contract', () => {
     });
   }
 
+  it('doctor recovery preserves owned boundaries rather than deleting mixed roots', () => {
+    for (const path of ['skills/doctor/SKILL.md', 'plugins/oh-my-codex/skills/doctor/SKILL.md']) {
+      const content = loadSurface(path);
+      const commands = [...content.matchAll(/```(?:bash|text)\n([\s\S]*?)```/g)]
+        .map((match) => match[1]).join('\n');
+      assert.doesNotMatch(commands, /\brm\s+-rf\b|\bfind\b[^\n]*-exec\s+rm|WebFetch\(/);
+      assert.match(content, /exact target, ownership evidence, current content\/identity, active consumers, preserved dependencies/);
+      assert.match(content, /Current setup-owned native TOMLs.*expected in both plugin and legacy setup modes/);
+      assert.match(content, /omx setup --scope user --plugin --mcp compat --enable-team --merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope project --plugin --mcp compat --enable-team --merge-agents --dry-run/);
+      assert.match(content, /user scope uses `\$CODEX_DIR\/agents\/`, while project scope uses `<project>\/.codex\/agents\/`/);
+      assert.match(content, /a missing persistent AGENTS.md in plugin mode.*`--merge-agents` cannot create it/);
+      assert.match(content, /omx setup --scope user --plugin --mcp compat --enable-team --no-merge-agents --dry-run/);
+      assert.match(content, /omx setup --scope project --plugin --mcp compat --enable-team --no-merge-agents --dry-run/);
+      assert.match(content, /Record Doctor's resolved setup scope, install mode, and MCP mode/);
+      assert.match(content, /replace `--plugin` with `--legacy`.*replace `--mcp compat` with `--mcp none`/);
+      assert.match(content, /Carry the same explicit install-mode, MCP-mode, and Team-mode selectors through merge, creation, policy restoration, and hook restoration/);
+      assert.match(content, /record the prior matching-scope `mergeAgents` policy/);
+      assert.match(content, /After successful AGENTS repair, restore the recorded policy/);
+      assert.match(content, /`--merge-agents` for `true`, `--no-merge-agents` for `false`, or `--clear-merge-agents-policy` if it was absent/);
+      assert.match(content, /Record the prior Team mode/);
+      assert.match(content, /replace `--enable-team` with `--disable-team`/);
+      assert.match(content, /For a symlink.*setup skips both merge and defaults/);
+      assert.match(content, /Update the authorized target through its owning source/);
+      assert.match(content, /restore intentionally disabled hooks after the AGENTS write and policy restoration/);
+      assert.match(content, /--disable-hooks`.*returns before the AGENTS phase/);
+      assert.match(content, /temporary re-enablement/);
+      assert.match(content, /omx setup --scope user --plugin --mcp compat --enable-team --disable-hooks --dry-run/);
+      assert.match(content, /omx setup --scope project --plugin --mcp compat --enable-team --disable-hooks --dry-run/);
+      assert.match(content, /Keep active or uncertain entries/);
+      assert.match(content, /`omx doctor --dry-run --force` is an ownership-check preview, not a repair-eligibility preview/);
+      assert.match(content, /Doctor may recover a native-hook claim journal before that check, even with `--dry-run`/);
+      assert.match(content, /Recovery can restore a canonical file, remove a claim file, and clear the journal/);
+      assert.doesNotMatch(content, /--dry-run --force` previews those repairs/);
+    }
+  });
+
   it('ultraqa requires adversarial dynamic e2e coverage and structured reporting', () => {
     const rootSkill = loadSurface('skills/ultraqa/SKILL.md');
     const pluginSkill = loadSurface('plugins/oh-my-codex/skills/ultraqa/SKILL.md');
