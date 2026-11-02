@@ -20,6 +20,8 @@ No breaking API changes. Release-coupled metadata was already synchronized to `0
 - `npm test` — passed on the subsequent full run: all 475 Node test files and the generated catalog and prompt-inventory checks completed. An earlier attempt exceeded the command timeout without a final summary.
 - `npm run check:no-unused` — passed.
 - `npm run lint` — passed across 900 files; Biome emitted the existing `linter.rules.recommended` deprecation notice, with no fixes applied.
+- Focused `native-config.test.js` regression suite — passed: 36 passed, 0 failed.
+- Focused `codex-hooks.test.js` regression suite — passed: 74 passed, 1 skipped, 0 failed.
 - Release-coupled version synchronization — passed: `node dist/scripts/check-version-sync.js --tag v0.21.46` and `cargo metadata --locked --format-version 1 --no-deps` report all six OMX workspace crates as `0.21.46`.
 
 **Full Changelog**: [`v0.21.45...v0.21.46`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.45...v0.21.46)

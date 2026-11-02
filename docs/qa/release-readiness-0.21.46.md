@@ -35,6 +35,7 @@ The pinned source already reads `0.21.46` across every release-coupled version s
 - `npm run check:no-unused` — passed.
 - `npm run lint` — passed across 900 files. Biome emitted the existing `linter.rules.recommended` deprecation notice; no lint fixes were applied.
 - Focused native agent overlay tests — passed: 36 passed, 0 failed.
+- Focused `codex-hooks.test.js` regression suite — passed: 74 passed, 1 skipped, 0 failed.
 - Version synchronization checks — passed as listed above.
 
 ## Release PR and main gates
