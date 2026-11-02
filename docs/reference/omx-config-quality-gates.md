@@ -67,7 +67,7 @@ Quality gate stage keys map directly to documented workflow/skill names:
 | Stage Key | Workflow/Skill | Stage Step | Description |
 | --- | --- | --- | --- |
 | `deep-interview` | $deep-interview | final-spec | Requirements gathering and specification phase; gates execute after specification is complete and before handoff |
-| `ralplan` | $ralplan | Architect→Critic review | Consensus planning phase; gates execute after Critic review and feed into the revise loop within the iteration cap. Lightweight $plan modes do not run this stage. |
+| `ralplan` | $ralplan | Architect→Critic review | Consensus planning phase; the current runtime runs gates after Critic approval and feeds blocking gate findings into the revise loop within the iteration cap. Lightweight $plan modes do not run this stage. |
 | `code-review` | $code-review | review stage | Code review and approval; gates execute after the built-in independent reviews |
 
 ## Skill Name Format
@@ -96,13 +96,15 @@ Sunset skills from the removed skills list (e.g., `ask-claude`, `deepsearch`, `r
 ## Verdict and Behavior
 
 Each quality gate:
-- **Runs as a separate native subagent** at the owning workflow's documented stage: after the final specification for Deep Interview, after Critic review for Ralplan, and after the built-in independent reviews for Code Review. Custom gates supplement required reviewers.
+- **Runs as a separate native subagent** at the owning workflow's stage: after the final specification for Deep Interview, after Critic approval in the current Ralplan runtime, and after the built-in independent reviews for Code Review. Custom gates supplement required reviewers.
 - **Returns reviewer verdicts**: `approve`, `iterate`, or `reject` (same format as Critic). Ralplan records `unavailable` when its executor cannot provide a valid native review.
 - **Unavailable reviews** are distinct from approving evidence; their effect on progression depends on the owning guidance or runtime described below.
 - **Blocking gates** with `iterate` or `reject` enter the owning workflow's revise loop where supported.
 - **Advisory gates** record non-approving or unavailable results without independently blocking progression.
 
-The quality-gate listing/configuration surface discovers and normalizes configuration. It does not run reviewers or enforce stage completion. Skill instructions and executable behavior currently differ for unavailable Ralplan gates:
+The Ralplan skill places custom gates after Critic review. The current runtime further requires the Critic to return `approve` before running them; a Critic `iterate` or `reject` result skips custom gates for that draft. Gate feedback is therefore not available on every draft that needs revision.
+
+The quality-gate listing/configuration surface discovers and normalizes configuration. It does not run reviewers or enforce stage completion. Skill instructions and executable behavior also differ for unavailable Ralplan gates:
 
 | Surface | Unavailable blocking gate |
 | --- | --- |
@@ -206,4 +208,4 @@ Returns JSON with normalized gate objects, each containing `skill`, `mode`, and 
 ## See Also
 
 - [.omx-config.json Reference](./omx-config-schema-routing.md)
-- [Skills Reference](../skills/)
+- [Skills Reference](../../skills/)
