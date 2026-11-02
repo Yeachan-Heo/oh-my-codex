@@ -90,25 +90,27 @@ Diagnostics do not authorize deletion or setup changes. Continue an already-auth
 
 ### Persistent AGENTS guidance
 
+Record Doctor's resolved setup scope, install mode, and MCP mode before choosing any setup command. Setup does not infer plugin mode or MCP compatibility from the same config evidence as Doctor; absent persisted choices or cache discovery, its defaults can differ. Preserve the diagnosed values explicitly instead of relying on those defaults. The examples below illustrate plugin mode with MCP compatibility: replace `--plugin` with `--legacy` for a diagnosed legacy installation, and replace `--mcp compat` with `--mcp none` for a diagnosed CLI-first installation. Do not copy the illustrative selectors when they differ from the diagnosis. Carry the same explicit install-mode and MCP-mode selectors through creation and policy restoration.
+
 For an existing file, use the installed release's scoped merge path instead of replacing the file with raw upstream content. Preserve manual guidance and runtime markers. Choose one scope deliberately; project scope runs from the intended project root:
 
 ```bash
-omx setup --scope user --merge-agents --dry-run
+omx setup --scope user --plugin --mcp compat --merge-agents --dry-run
 # Or, from the intended project:
-omx setup --scope project --merge-agents --dry-run
+omx setup --scope project --plugin --mcp compat --merge-agents --dry-run
 ```
 
 For a missing persistent AGENTS.md in plugin mode, `--merge-agents` cannot create it because merge mode disables defaults. Before creation, record the prior matching-scope `mergeAgents` policy (`true`, `false`, or absent) from the invoking project root's `.omx/setup-scope.json`, even for user scope. Confirm that the resolved target is absent, not a dangling symlink, then preview creation with plugin mode explicit and merge mode disabled (including any persisted merge preference):
 
 ```bash
-omx setup --scope user --plugin --no-merge-agents --dry-run
+omx setup --scope user --plugin --mcp compat --no-merge-agents --dry-run
 # Or, from the intended project:
-omx setup --scope project --plugin --no-merge-agents --dry-run
+omx setup --scope project --plugin --mcp compat --no-merge-agents --dry-run
 ```
 
 Accept AGENTS.md defaults if prompted. These setup commands can affect other scoped assets and persist the chosen merge preference; inspect all previewed effects and apply only within the authorized setup scope. Inspect the preview and preservation rules, then apply only the authorized chosen command without `--dry-run`. If active-session safeguards skip the guidance write, keep that result visible and use the documented recovery path; do not bypass it by overwriting AGENTS.md manually.
 
-After successful creation, restore the recorded policy in the same invoking root and selected scope. Use `--merge-agents` for `true`, `--no-merge-agents` for `false`, or `--clear-merge-agents-policy` if it was absent. Keep `--plugin` explicit; preview that scoped setup command with `--dry-run`, inspect all effects, then apply it without `--dry-run` within the authorized scope. Verify the selected persistent AGENTS.md exists and the matching-scope saved policy is restored before handoff. Do not leave the one-time `mergeAgents: false` setting in place when the prior policy was true or absent: updates replay it and noninteractive plugin setup then skips refreshing an existing AGENTS.md. Clearing an absent policy restores the previous default behavior; it does not enable automatic merges.
+After successful creation, restore the recorded policy in the same invoking root and selected scope. Use `--merge-agents` for `true`, `--no-merge-agents` for `false`, or `--clear-merge-agents-policy` if it was absent. Keep `--plugin` and the diagnosed `--mcp compat` or `--mcp none` explicit for this plugin-mode recovery; preview that scoped setup command with `--dry-run`, inspect all effects, then apply it without `--dry-run` within the authorized scope. Verify the selected persistent AGENTS.md exists and the matching-scope saved policy is restored before handoff. Do not leave the one-time `mergeAgents: false` setting in place when the prior policy was true or absent: updates replay it and noninteractive plugin setup then skips refreshing an existing AGENTS.md. Clearing an absent policy restores the previous default behavior; it does not enable automatic merges.
 
 ### Plugin cache
 
