@@ -82,7 +82,7 @@ If `node_modules` is already fresh and you are iterating locally, you can skip `
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
-- `prompts/` -- canonical role guidance and setup prompt assets; setup normally generates installable native TOMLs in both modes; `--disable-hooks` skips native agent installation in either mode. Legacy setup also installs prompt copies
+- `prompts/` -- canonical role guidance and setup prompt assets; setup normally generates installable native TOMLs in both modes; `--disable-hooks` performs hook teardown and returns before normal asset installation and configuration in either mode. Legacy setup also installs prompt copies
 - `skills/` -- canonical skill directories; plugin mode discovers their generated plugin mirror, while legacy mode installs scoped skill copies
 - `templates/` -- `AGENTS.md` orchestration brain template
 
