@@ -40,11 +40,19 @@ The pinned source already reads `0.21.46` across every release-coupled version s
 
 ## Release PR and main gates
 
-Pending.
+- [#4000](https://github.com/Yeachan-Heo/oh-my-codex/pull/4000), “release: add the Contributors section to the v0.21.46 release body,” merged to `main` at `f7830d0ae1b5c39cb2a86937dabfc1bdd9b7f237` on 2026-11-02 05:02:11Z.
+- Main push CI run [41391689457](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41391689457) on that commit completed successfully.
 
 ## Publication evidence
 
-Pending.
+- The first `v0.21.46` tag pointed to `451d2f7c3612baac73d95d9c95f01a616f2fa2ad`. Release run [41388538882](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41388538882) failed in **Publish Native Assets / Generate release body** with `release body template is missing section: ## Contributors`. No release or npm package was published from that attempt.
+- After #4000 merged, the tag was re-cut from `451d2f7c3612baac73d95d9c95f01a616f2fa2ad` to the final commit `f7830d0ae1b5c39cb2a86937dabfc1bdd9b7f237`.
+- Final annotated tag commit: `f7830d0ae1b5c39cb2a86937dabfc1bdd9b7f237`.
+- Release run [41393644023](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41393644023) completed successfully, including native builds, native asset publication, native asset verification, and packed-install smoke test. The GitHub Release is non-draft and contains the generated release body, including `## Contributors`.
+- npm workflow-dispatch run [41395509936](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/41395509936): **Publish npm (trusted publishing)** completed successfully.
+- GitHub Release `publishedAt`: `2026-11-02T05:34:01Z`.
+- npm `dist-tags.latest`: `0.21.46`.
+- npm `oh-my-codex@0.21.46` `gitHead`: `f7830d0ae1b5c39cb2a86937dabfc1bdd9b7f237` (matches the final tag commit).
 
 ## Back-merge and version bump
 
