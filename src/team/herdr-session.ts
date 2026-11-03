@@ -372,6 +372,68 @@ function requirePaneId(result: unknown, command: string): string {
 }
 
 /**
+ * Bring a freshly started agent to a promptable state. Herdr returns
+ * `agent_not_ready` when the agent shows a first-run dialog (codex/claude
+ * folder trust) — the same situation the tmux backend dismisses with Enter
+ * rounds (dismissTrustPromptIfPresent). Dismiss and wait for a settled
+ * idle/done state before the first prompt.
+ */
+async function herdrAgentState(
+	paneId: string,
+	options: { env?: NodeJS.ProcessEnv; execFn?: HerdrExecOptions['execFn'] },
+): Promise<string | undefined> {
+	try {
+		const result = await runHerdrResult<{ agent?: { agent_status?: string } }>(
+			["agent", "get", paneId],
+			{ env: options.env, execFn: options.execFn },
+		);
+		return result?.agent?.agent_status;
+	} catch {
+		return undefined;
+	}
+}
+
+async function pollHerdrAgentSettled(
+	paneId: string,
+	options: { env?: NodeJS.ProcessEnv; execFn?: HerdrExecOptions['execFn'] },
+	timeoutMs: number,
+): Promise<string | undefined> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const state = await herdrAgentState(paneId, options);
+		if (state === "idle" || state === "done" || state === "blocked") return state;
+		if (Date.now() >= deadline) return state;
+		await new Promise((resolveSleep) => setTimeout(resolveSleep, 2_000));
+	}
+}
+
+/**
+ * Bring a freshly started agent to a promptable state. Herdr returns
+ * `agent_not_ready` when the agent shows a first-run dialog (e.g. the codex
+ * "Folder access / Trust and continue" prompt, rule trust_directory). The
+ * highlighted option continues on Enter — the same dismissal the tmux backend
+ * applies — but the state needs settle time, so poll instead of assuming.
+ */
+export async function ensureHerdrAgentPromptable(
+	paneId: string,
+	options: { env?: NodeJS.ProcessEnv; execFn?: HerdrExecOptions['execFn'] } = {},
+): Promise<void> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const settled = await pollHerdrAgentSettled(paneId, options, 15_000);
+		if (settled === "idle" || settled === "done") return;
+		try {
+			await runHerdr(["agent", "send-keys", paneId, "enter"], {
+				env: options.env,
+				execFn: options.execFn,
+			});
+		} catch {
+			// best-effort dismissal; the next attempt re-checks state
+		}
+	}
+	throw new HerdrError("agent_not_promptable", `agent at ${paneId} never reached an idle state`);
+}
+
+/**
  * Create the Herdr team topology: one workspace + one tab + one agent per
  * worker. Returns identities for TeamConfig persistence.
  */
@@ -400,7 +462,10 @@ export async function createHerdrTeam(
 	try {
 		for (const worker of workers) {
 			const workerIndex = createdWorkers.length + 1;
-			const agentName = buildHerdrAgentName(teamName, workerIndex);
+			// The agent name is cosmetic (workers are addressed by pane id);
+			// on a collision with a leftover agent from an unclean prior team,
+			// degrade to a suffixed variant instead of failing the start.
+			let agentName = buildHerdrAgentName(teamName, workerIndex);
 			const tab = await runHerdrResult<{ tab?: { tab_id?: string }; root_pane?: HerdrPaneLikeInfo }>(
 				buildTabCreateArgs(workspaceId, worker.cwd, `worker-${workerIndex}`, worker.env),
 				{ env: options.env, execFn: options.execFn },
@@ -409,10 +474,36 @@ export async function createHerdrTeam(
 			const tabId = typeof tab?.tab?.tab_id === "string" ? tab.tab.tab_id : "";
 			createdTabIds.push(tabId);
 
-			await runHerdr(
-				buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
-				{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
-			);
+			try {
+				await runHerdr(
+					buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
+					{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
+				).catch(async (startError: unknown) => {
+					if (startError instanceof HerdrError && startError.code === "agent_name_taken") {
+						agentName = buildHerdrAgentName(`${teamName}r${workerIndex}`, workerIndex);
+						await runHerdr(
+							buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
+							{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
+						);
+						return;
+					}
+					throw startError;
+				});
+			} catch (error) {
+				if (
+					error instanceof HerdrError
+					&& (error.code === "agent_not_ready" || error.code === "timeout")
+				) {
+					// First-run folder-trust dialogs block startup (agent_not_ready),
+					// and the start gate can also out-live its own timeout while the
+					// agent is actually fine. In both cases the pane may already host
+					// a live agent: dismiss any dialog, wait for idle, and continue
+					// addressing the worker by pane id.
+					await ensureHerdrAgentPromptable(paneId, options);
+				} else {
+					throw error;
+				}
+			}
 			createdWorkers.push({ index: workerIndex, agentName, paneId, tabId });
 
 			if (worker.initialPrompt && worker.initialPrompt.trim().length > 0) {
@@ -423,14 +514,9 @@ export async function createHerdrTeam(
 			}
 		}
 	} catch (error) {
-		// Roll back partially created tabs so a failed start leaves no orphans.
-		for (const tabId of createdTabIds) {
-			try {
-				await runHerdr(buildTabCloseArgs(tabId), { env: options.env, execFn: options.execFn });
-			} catch {
-				// best-effort rollback
-			}
-		}
+		// Roll back by closing the workspace: that reaps every pane/tab it
+		// created (closing individual tabs first races the agent shutdown and
+		// can leave the workspace — and its registered agent names — behind).
 		try {
 			await runHerdr(buildWorkspaceCloseArgs(workspaceId), { env: options.env, execFn: options.execFn });
 		} catch {
@@ -449,19 +535,19 @@ export async function createHerdrTeam(
 
 /** Submit a task to a worker through the semantic agent surface. */
 export async function submitToHerdrWorker(
-	agentName: string,
+	paneId: string,
 	text: string,
 	options: { env?: NodeJS.ProcessEnv; execFn?: HerdrExecOptions['execFn'] } = {},
 ): Promise<void> {
-	await runHerdr(buildAgentPromptArgs(agentName, text), { env: options.env, execFn: options.execFn });
+	await runHerdr(buildAgentPromptArgs(paneId, text), { env: options.env, execFn: options.execFn });
 }
 
 /** Interrupt the agent turn (Ctrl+C equivalent). */
 export async function interruptHerdrWorker(
-	agentName: string,
+	paneId: string,
 	options: { env?: NodeJS.ProcessEnv; execFn?: HerdrExecOptions['execFn'] } = {},
 ): Promise<void> {
-	await runHerdr(buildAgentSendKeysArgs(agentName, "ctrl+c"), { env: options.env, execFn: options.execFn });
+	await runHerdr(buildAgentSendKeysArgs(paneId, "ctrl+c"), { env: options.env, execFn: options.execFn });
 }
 
 /**

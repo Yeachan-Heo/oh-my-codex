@@ -31,16 +31,19 @@ describe('herdr team session (real herdr)', () => {
 
     const dir = mkdtempSync(join(tmpdir(), 'omx-herdr-itest-'));
     const serverState = await ensureHerdrServer();
+    let teamWorkspaceId: string | null = null;
     try {
-      const team = await createHerdrTeam('omxitest', dir, [
+      const uniqueTeam = `omxitest${Date.now().toString(36)}`;
+      const team = await createHerdrTeam(uniqueTeam, dir, [
         { kind: 'codex', agentArgs: [], env: { OMX_HERDR_ITEST: '1' }, cwd: dir },
       ]);
 
-      assert.equal(team.name, 'herdr-omxitest');
-      assert.match(team.workspaceLabel, /^omx-team-omxitest$/);
+      assert.equal(team.name, `herdr-${uniqueTeam}`);
+      teamWorkspaceId = team.workspaceId;
+      assert.equal(team.workspaceLabel, `omx-team-${uniqueTeam}`);
       assert.equal(team.workers.length, 1);
       const worker = team.workers[0];
-      assert.match(worker.paneId, /^w\d+:p\d+$/);
+      assert.match(worker.paneId, /^w[0-9a-z]+:p[0-9a-z]+$/i);
       assert.match(worker.agentName, /^omx-/);
 
       assert.equal(await isHerdrWorkerAlive(worker.paneId), true);
@@ -56,6 +59,9 @@ describe('herdr team session (real herdr)', () => {
       const listedAfter = await listHerdrTeams();
       assert.ok(!listedAfter.some((t) => t.workspaceId === team.workspaceId));
     } finally {
+      if (teamWorkspaceId) {
+        try { await destroyHerdrTeam(teamWorkspaceId); } catch { /* best-effort */ }
+      }
       rmSync(dir, { recursive: true, force: true });
       if (serverState === 'started') {
         // We spawned the headless server for this test; stop it again so the

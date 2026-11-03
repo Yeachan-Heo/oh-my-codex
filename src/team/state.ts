@@ -632,7 +632,8 @@ function resolveWorkerLaunchModeFromEnv(env: NodeJS.ProcessEnv): TeamPolicy['wor
   const raw = readEnvValue(env, ['OMX_TEAM_WORKER_LAUNCH_MODE']);
   if (!raw || raw === 'interactive') return 'interactive';
   if (raw === 'prompt') return 'prompt';
-  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt`);
+  if (raw === 'herdr') return 'herdr';
+  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt, herdr`);
 }
 
 function resolvePermissionsSnapshot(env: NodeJS.ProcessEnv): PermissionsSnapshot {
