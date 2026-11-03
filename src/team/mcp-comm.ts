@@ -21,7 +21,7 @@ export interface TeamNotifierTarget {
   paneId?: string;
 }
 
-export type DispatchTransport = 'hook' | 'prompt_stdin' | 'tmux_send_keys' | 'mailbox' | 'none';
+export type DispatchTransport = 'hook' | 'prompt_stdin' | 'tmux_send_keys' | 'herdr_prompt' | 'mailbox' | 'none';
 
 export interface DispatchOutcome {
   ok: boolean;

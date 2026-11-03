@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { mkdir, readFile, realpath, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
+import { readMultiplexerConfig } from '../config/multiplexer.js';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
@@ -592,6 +593,9 @@ export async function scaleUp(
   }
 
   if (!isTmuxAvailable()) {
+    if (readMultiplexerConfig({ env }).backend === 'herdr') {
+      return { ok: false, error: 'scaling is not yet supported on the herdr backend (issue #3241 Phase 2); set multiplexer=tmux or unset OMX_MULTIPLEXER to scale' };
+    }
     return { ok: false, error: 'tmux is not available' };
   }
 
