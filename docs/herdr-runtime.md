@@ -86,9 +86,75 @@ binary honors the same `HERDR_BIN_PATH` trust-pin as the TypeScript backend.
 Detach is `Unsupported` — detaching is a Herdr TUI keybinding with no CLI
 surface.
 
+## Detached launch design (not yet implemented)
+
+Detached (madmax) launch remains tmux-only. This section records why a
+mechanical port is not possible and what a herdr-native implementation would
+look like, so the follow-up does not rediscover the mapping.
+
+### Why the tmux step machine does not port
+
+`buildDetachedSessionBootstrapSteps` (src/cli/index.ts) emits raw tmux argv
+steps, and `launchDetachedSession` drives them through an authority envelope
+that is tmux-specific at every joint:
+
+- **Identity fences**: `DetachedLeaderAuthority` / `DetachedHudAuthority` bind
+  `(session_name, session_id $N, session_created, window_index, window_id @N,
+  pane_id %N, pane_pid)`. Herdr has no session/window/PID identities — its
+  stable unit is the never-reused pane id `wN:pM`.
+- **Guarded mutations**: tag/history-limit/remain-on-exit/split/HUD effects run
+  through `if-shell` receipt-fenced commands (`runDetachedLeaderMutation`,
+  `runDetachedLeaderSplit`, `tagDetachedHudPane`) that re-prove the exact pane
+  incarnation immediately before each server-side effect. This machinery
+  exists because tmux recycles pane ids; herdr ids are never reused, so the
+  fences would be both unimplementable (no if-shell/set-option) and
+  unnecessary.
+- **HUD sub-machine**: the detached HUD is a tmux split with
+  resize/client-attached `set-hook`s, delayed resizes, and window-cramping
+  checks. Herdr teams already declare the sidebar the HUD; there is no
+  herdr equivalent and none is needed.
+- **Readiness binding**: the leader-written release-marker report is
+  backend-independent, but `isDetachedReadyReportAuthorized` binds it to the
+  tmux pane id + pane PID.
+
+### Herdr-native sketch (Phase 3)
+
+- **Leader container**: `herdr workspace create --cwd <cwd> --label
+  omx-detached-<session> --no-focus` (a label prefix distinct from
+  `omx-team-`); never operate on the focused workspace. Env delivery rides
+  `tab create --env KEY=VALUE` (control-plane keys, `CODEX_HOME`,
+  `OMX_TEAM_WORKER_LAUNCH_ARGS`, notify temp contract, inherited model) —
+  the tab replaces `new-session -e`.
+- **Leader process**: `herdr pane run <pane> "<omx leader command>"` in the
+  created tab's root pane (plain shell command + Enter; the startup-script
+  machinery from `buildDetachedSessionLeaderCommand` can be reused verbatim
+  since `pane run` executes a shell string).
+- **Readiness**: keep the release-marker protocol; authorize the report with
+  a herdr binding `(nonce, sessionId, workspace label, paneId)` plus the
+  agent identity from `agent get` instead of pane PID.
+- **Attach**: `herdr agent attach <pane>` (interactive) or workspace focus in
+  the TUI; `session attach` binds to herdr *sessions*, a different concept —
+  verify before relying on it.
+- **Rollback/teardown**: `workspace close <id>` reaps the whole topology in
+  one idempotent step; `pane_not_found` on individual closes proves
+  convergence (same invariant the scaling paths use).
+- **Liveness**: live `agent list` inventory.
+
+The authority story simplifies rather than translates: because herdr pane ids
+are never reused and every command pins an explicit workspace/pane id, the
+recorded id itself is the effect authority — the receipt fences collapse into
+"verify the recorded id still resolves, then act", which is what
+`src/team/herdr-session.ts` + the scaling paths already do.
+
+Recommended first step when implementing: an explicit gate in the detached
+launch path that returns a clear "detached launch is tmux-only" error when
+`multiplexer=herdr` is resolved (today it silently launches via tmux, which
+is harmless but surprising), then the workspace/tab leader container above.
+
 ## Current limitations (follow-ups)
 
-- **Detached (madmax) launch** and the HUD watch pane remain tmux-only.
+- **Detached (madmax) launch** and the HUD watch pane remain tmux-only
+  (design above).
 
 ## Scaling
 
