@@ -6,6 +6,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_NUDGE_CONFIG, NudgeTracker, capturePane, isPaneIdle } from '../idle-nudge.js';
 
+/** Fake herdr exec (same injection shape as herdr-session tests). */
+function fakeHerdrExec(
+  script: (args: string[]) => { stdout?: string; fail?: Error & { stderr?: string } },
+) {
+  const calls: string[][] = [];
+  const fn = (_bin: string, args: string[]) => {
+    calls.push(args);
+    const reply = script(args);
+    if (reply.fail) return Promise.reject(reply.fail);
+    return Promise.resolve({ stdout: reply.stdout ?? '', stderr: '' });
+  };
+  return { fn: fn as never, calls };
+}
+
 const WORKER_TARGET = '';
 
 function buildFakeTmux(tmuxLogPath: string): string {
@@ -287,6 +301,88 @@ describe('idle-nudge', () => {
         const log = existsSync(tmuxLogPath) ? await readFile(tmuxLogPath, 'utf-8') : '';
         assert.doesNotMatch(log, /send-keys/);
       });
+    });
+  });
+
+  it('captures herdr pane ids through pane read, never tmux', async () => {
+    await withFakeTmux(async ({ tmuxLogPath }) => {
+      const herdr = fakeHerdrExec((args) => {
+        assert.equal(args[0], 'pane');
+        return { stdout: '› \n' };
+      });
+      const captured = await capturePane('w5:p2', { herdrExecFn: herdr.fn });
+      assert.equal(captured, '› \n');
+      assert.deepEqual(herdr.calls, [['pane', 'read', 'w5:p2', '--source', 'recent-unwrapped', '--lines', '80']]);
+      // tmux is never invoked for herdr pane ids.
+      assert.equal(existsSync(tmuxLogPath), false);
+    });
+  });
+
+  it('returns empty capture when herdr pane read fails', async () => {
+    const herdr = fakeHerdrExec(() => ({
+      fail: Object.assign(new Error('pane_not_found'), {
+        stderr: JSON.stringify({ error: { code: 'pane_not_found', message: 'nope' } }),
+      }),
+    }));
+    assert.equal(await capturePane('wA:pB', { herdrExecFn: herdr.fn }), '');
+    assert.equal(await isPaneIdle('wA:pB', { herdrExecFn: herdr.fn }), false);
+  });
+
+  it('classifies herdr pane captures with the shared idle classifiers', async () => {
+    const responses = new Map<string, string>([
+      ['w5:p2', '› \n'],
+      ['w5:p3', '› \n• Doing work (3s • esc to interrupt)\n'],
+    ]);
+    const herdr = fakeHerdrExec((args) => ({ stdout: responses.get(args[2]) ?? '' }));
+    assert.equal(await isPaneIdle('w5:p2', { herdrExecFn: herdr.fn }), true);
+    assert.equal(await isPaneIdle('w5:p3', { herdrExecFn: herdr.fn }), false);
+  });
+
+  it('nudges an authorized herdr worker target through agent prompt', async () => {
+    await withFakeTmux(async ({ tmuxLogPath }) => {
+      const herdr = fakeHerdrExec((args) => {
+        if (args[0] === 'pane' && args[1] === 'read') return { stdout: '› \n' };
+        if (args[0] === 'agent' && args[1] === 'prompt') {
+          return { stdout: JSON.stringify({ id: 'cli:agent:prompt', result: { agent: {} } }) };
+        }
+        return { stdout: JSON.stringify({ id: 'cli:ok', result: {} }) };
+      });
+      await withMockedNow(10_000, async () => {
+        const tracker = new NudgeTracker(
+          { delayMs: 0, maxCount: 1, message: 'keep going' },
+          { herdrExecFn: herdr.fn },
+        );
+        const target = { paneId: 'w9:p12', workerIndex: 1, panePid: 0, teamOwnerId: 'omx-team-a-owner' };
+        const nudged = await tracker.checkAndNudge([target], undefined, 'herdr-alpha');
+        assert.deepEqual(nudged, ['w9:p12']);
+        assert.equal(tracker.totalNudges, 1);
+
+        const prompt = herdr.calls.find((call) => call[0] === 'agent' && call[1] === 'prompt');
+        assert.ok(prompt, 'nudge is submitted through agent prompt');
+        assert.deepEqual(prompt!.slice(0, 4), ['agent', 'prompt', 'w9:p12', 'keep going']);
+        // No tmux effect ever ran.
+        assert.equal(existsSync(tmuxLogPath), false);
+      });
+    });
+  });
+
+  it('does not count herdr nudges when agent prompt fails', async () => {
+    const herdr = fakeHerdrExec((args) => {
+      if (args[0] === 'pane' && args[1] === 'read') return { stdout: '› \n' };
+      return {
+        fail: Object.assign(new Error('agent_blocked'), {
+          stderr: JSON.stringify({ error: { code: 'agent_blocked', message: 'blocked' } }),
+        }),
+      };
+    });
+    await withMockedNow(10_000, async () => {
+      const tracker = new NudgeTracker(
+        { delayMs: 0, maxCount: 1, message: 'nudge' },
+        { herdrExecFn: herdr.fn },
+      );
+      const target = { paneId: 'w5:p2', workerIndex: 1, panePid: 0, teamOwnerId: 'omx-team-a-owner' };
+      assert.deepEqual(await tracker.checkAndNudge([target], undefined, 'herdr-alpha'), []);
+      assert.equal(tracker.totalNudges, 0);
     });
   });
 });
