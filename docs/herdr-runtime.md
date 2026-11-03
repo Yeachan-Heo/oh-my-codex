@@ -75,9 +75,22 @@ the agent inventory instead of `tmux list-sessions`.
 
 ## Current limitations (follow-ups)
 
-- **Scaling** (`team scale up`) is tmux-only for now and returns a clear error
-  on the herdr backend.
 - **Detached (madmax) launch** and the HUD watch pane remain tmux-only.
+
+## Scaling
+
+`team scale up` / `scale down` work on the herdr backend. Scale-up derives the
+team workspace from any existing worker pane id (`wN:pM` → `wN`), ensures the
+Herdr server is running, and spawns each new worker as a tab + agent inside
+that workspace (`spawnOneHerdrWorker`, the same per-worker core
+`createHerdrTeam` uses: env via `tab create --env`, trust-dialog dismissal,
+agent-name collision fallback). Bootstrap dispatch goes through
+`agent prompt` instead of tmux send-keys. Because herdr pane ids are never
+recycled, the tmux recycled-pane proofs (PID pinning, owner tags,
+session/window receipts) do not apply: teardown addresses the recorded pane id
+directly, and a `pane_not_found` answer proves convergence. Worker records
+carry no `pid`/`session_id`/`window_id`; scale-down cleanup debt journals
+herdr panes with `pid: null`.
 
 ## Verification
 

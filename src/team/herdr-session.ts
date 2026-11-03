@@ -107,10 +107,13 @@ export function resolveHerdrBinary(env: NodeJS.ProcessEnv = process.env): string
 	return "herdr";
 }
 
-export async function isHerdrBinaryCallable(bin = resolveHerdrBinary()): Promise<boolean> {
+export async function isHerdrBinaryCallable(
+	bin = resolveHerdrBinary(),
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
 	if (bin === null) return false;
 	return new Promise((resolvePromise) => {
-		execFile(bin, ["--version"], { timeout: 5_000 }, (error) => {
+		execFile(bin, ["--version"], { timeout: 5_000, env }, (error) => {
 			resolvePromise(error === null);
 		});
 	});
@@ -444,6 +447,93 @@ export async function ensureHerdrAgentPromptable(
 	throw new HerdrError("agent_not_promptable", `agent at ${paneId} never reached an idle state`);
 }
 
+/** One spawned worker's Herdr identities (for TeamConfig persistence). */
+export interface HerdrSpawnedWorker {
+	index: number;
+	agentName: string;
+	paneId: string;
+	tabId: string;
+}
+
+/**
+ * Spawn one worker (tab + agent) inside an existing Herdr workspace. This is
+ * the per-worker core of createHerdrTeam, factored out so scaling can add a
+ * worker to a live team with identical semantics: worker env via
+ * `tab create --env`, agent-name collision fallback, first-run trust-dialog
+ * dismissal, and the optional initial prompt.
+ *
+ * On failure the created pane is closed (best effort) so the caller never
+ * inherits an orphan tab: createHerdrTeam's rollback closes the whole
+ * workspace anyway, while scaling must not disturb the live workspace.
+ */
+export async function spawnOneHerdrWorker(
+	teamName: string,
+	workspaceId: string,
+	workerIndex: number,
+	worker: HerdrWorkerSpawnPlan,
+	options: { env?: NodeJS.ProcessEnv; execFn?: HerdrExecOptions['execFn'] } = {},
+): Promise<HerdrSpawnedWorker> {
+	// The agent name is cosmetic (workers are addressed by pane id); on a
+	// collision with a leftover agent from an unclean prior team, degrade to a
+	// suffixed variant instead of failing the start.
+	let agentName = buildHerdrAgentName(teamName, workerIndex);
+	const tab = await runHerdrResult<{ tab?: { tab_id?: string }; root_pane?: HerdrPaneLikeInfo }>(
+		buildTabCreateArgs(workspaceId, worker.cwd, `worker-${workerIndex}`, worker.env),
+		{ env: options.env, execFn: options.execFn },
+	);
+	const paneId = requirePaneId(tab, "tab create");
+	const tabId = typeof tab?.tab?.tab_id === "string" ? tab.tab.tab_id : "";
+
+	try {
+		try {
+			await runHerdr(
+				buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
+				{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
+			).catch(async (startError: unknown) => {
+				if (startError instanceof HerdrError && startError.code === "agent_name_taken") {
+					agentName = buildHerdrAgentName(`${teamName}r${workerIndex}`, workerIndex);
+					await runHerdr(
+						buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
+						{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
+					);
+					return;
+				}
+				throw startError;
+			});
+		} catch (error) {
+			if (
+				error instanceof HerdrError
+				&& (error.code === "agent_not_ready" || error.code === "timeout")
+			) {
+				// First-run folder-trust dialogs block startup (agent_not_ready),
+				// and the start gate can also out-live its own timeout while the
+				// agent is actually fine. In both cases the pane may already host
+				// a live agent: dismiss any dialog, wait for idle, and continue
+				// addressing the worker by pane id.
+				await ensureHerdrAgentPromptable(paneId, options);
+			} else {
+				throw error;
+			}
+		}
+
+		if (worker.initialPrompt && worker.initialPrompt.trim().length > 0) {
+			await runHerdr(buildAgentPromptArgs(agentName, worker.initialPrompt), {
+				env: options.env,
+				execFn: options.execFn,
+			});
+		}
+	} catch (error) {
+		try {
+			await runHerdr(["pane", "close", paneId], { env: options.env, execFn: options.execFn });
+		} catch {
+			// best-effort cleanup; createHerdrTeam's rollback reaps the workspace
+		}
+		throw error;
+	}
+
+	return { index: workerIndex, agentName, paneId, tabId };
+}
+
 /**
  * Create the Herdr team topology: one workspace + one tab + one agent per
  * worker. Returns identities for TeamConfig persistence.
@@ -469,60 +559,12 @@ export async function createHerdrTeam(
 	// tab so the Herdr sidebar lists one agent per worker.
 
 	const createdWorkers: HerdrCreatedTeam["workers"] = [];
-	const createdTabIds: string[] = [];
 	try {
 		for (const worker of workers) {
 			const workerIndex = createdWorkers.length + 1;
-			// The agent name is cosmetic (workers are addressed by pane id);
-			// on a collision with a leftover agent from an unclean prior team,
-			// degrade to a suffixed variant instead of failing the start.
-			let agentName = buildHerdrAgentName(teamName, workerIndex);
-			const tab = await runHerdrResult<{ tab?: { tab_id?: string }; root_pane?: HerdrPaneLikeInfo }>(
-				buildTabCreateArgs(workspaceId, worker.cwd, `worker-${workerIndex}`, worker.env),
-				{ env: options.env, execFn: options.execFn },
+			createdWorkers.push(
+				await spawnOneHerdrWorker(teamName, workspaceId, workerIndex, worker, options),
 			);
-			const paneId = requirePaneId(tab, "tab create");
-			const tabId = typeof tab?.tab?.tab_id === "string" ? tab.tab.tab_id : "";
-			createdTabIds.push(tabId);
-
-			try {
-				await runHerdr(
-					buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
-					{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
-				).catch(async (startError: unknown) => {
-					if (startError instanceof HerdrError && startError.code === "agent_name_taken") {
-						agentName = buildHerdrAgentName(`${teamName}r${workerIndex}`, workerIndex);
-						await runHerdr(
-							buildAgentStartArgs(agentName, worker.kind, paneId, worker.agentArgs),
-							{ env: options.env, execFn: options.execFn, timeoutMs: HERDR_AGENT_START_TIMEOUT_MS + 10_000 },
-						);
-						return;
-					}
-					throw startError;
-				});
-			} catch (error) {
-				if (
-					error instanceof HerdrError
-					&& (error.code === "agent_not_ready" || error.code === "timeout")
-				) {
-					// First-run folder-trust dialogs block startup (agent_not_ready),
-					// and the start gate can also out-live its own timeout while the
-					// agent is actually fine. In both cases the pane may already host
-					// a live agent: dismiss any dialog, wait for idle, and continue
-					// addressing the worker by pane id.
-					await ensureHerdrAgentPromptable(paneId, options);
-				} else {
-					throw error;
-				}
-			}
-			createdWorkers.push({ index: workerIndex, agentName, paneId, tabId });
-
-			if (worker.initialPrompt && worker.initialPrompt.trim().length > 0) {
-				await runHerdr(buildAgentPromptArgs(agentName, worker.initialPrompt), {
-					env: options.env,
-					execFn: options.execFn,
-				});
-			}
 		}
 	} catch (error) {
 		// Roll back by closing the workspace: that reaps every pane/tab it
