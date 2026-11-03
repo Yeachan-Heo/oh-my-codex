@@ -73,6 +73,19 @@ id is derivable from any worker pane id, so no schema fields were added.
 Stale-team detection and `findActiveTeams` prove herdr-team liveness through
 the agent inventory instead of `tmux list-sessions`.
 
+## Rust MuxAdapter
+
+`crates/omx-mux` ships `HerdrAdapter` next to `TmuxAdapter`, implementing the
+same generic `MuxAdapter` trait (resolve-target / send-input / capture-tail /
+inspect-liveness / attach / detach) against the pane-addressed Herdr CLI:
+`agent prompt` for SendInput (the submit policy's Enter presses are satisfied
+by the semantic submission), `pane read --source recent-unwrapped` for
+CaptureTail, and the live `agent list` inventory for liveness. Targets are
+validated against the `wN:pM` grammar before any process is spawned, and the
+binary honors the same `HERDR_BIN_PATH` trust-pin as the TypeScript backend.
+Detach is `Unsupported` — detaching is a Herdr TUI keybinding with no CLI
+surface.
+
 ## Current limitations (follow-ups)
 
 - **Detached (madmax) launch** and the HUD watch pane remain tmux-only.
