@@ -1,4 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
+
+import { readMultiplexerConfig } from '../config/multiplexer.js';
 import { promisify } from 'util';
 import { closeSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -214,7 +216,7 @@ const OMX_TEAM_STATE_ROOT_ENV = 'OMX_TEAM_STATE_ROOT';
 
 export type TeamWorkerCli = 'codex' | 'claude' | 'gemini';
 type TeamWorkerCliMode = 'auto' | TeamWorkerCli;
-export type TeamWorkerLaunchMode = 'interactive' | 'prompt';
+export type TeamWorkerLaunchMode = 'interactive' | 'prompt' | 'herdr';
 
 export interface WorkerSubmitPlan {
   shouldInterrupt: boolean;
@@ -1638,9 +1640,15 @@ export function resolveTeamWorkerLaunchMode(
   env: NodeJS.ProcessEnv = process.env,
 ): TeamWorkerLaunchMode {
   const raw = String(env[OMX_TEAM_WORKER_LAUNCH_MODE_ENV] ?? 'interactive').trim().toLowerCase();
-  if (raw === '' || raw === 'interactive') return 'interactive';
+  if (raw === 'herdr') return 'herdr';
+  if (raw === '' || raw === 'interactive') {
+    // Default interactive mode runs on tmux unless the multiplexer setting
+    // selects the Herdr runtime backend (issue #3241, Phase 2).
+    if (readMultiplexerConfig({ env }).backend === 'herdr') return 'herdr';
+    return 'interactive';
+  }
   if (raw === 'prompt') return 'prompt';
-  throw new Error(`Invalid ${OMX_TEAM_WORKER_LAUNCH_MODE_ENV} value "${env[OMX_TEAM_WORKER_LAUNCH_MODE_ENV]}". Expected: interactive, prompt`);
+  throw new Error(`Invalid ${OMX_TEAM_WORKER_LAUNCH_MODE_ENV} value "${env[OMX_TEAM_WORKER_LAUNCH_MODE_ENV]}". Expected: interactive, prompt, herdr`);
 }
 
 function extractModelOverride(args: string[]): string | null {
