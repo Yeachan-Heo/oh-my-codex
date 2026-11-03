@@ -333,6 +333,17 @@ export function herdrWorkspaceIdFromPaneId(paneId: string): string {
 	return paneId.slice(0, separator);
 }
 
+/**
+ * Herdr pane ids are `wN:pM` where both segments run alphanumeric past 9
+ * (`wA:pB`, ...). Unlike tmux `%N` ids they are never reused, so a recorded
+ * pane id remains a safe address for the pane's whole lifetime.
+ */
+export const HERDR_PANE_ID_PATTERN = /^w[0-9a-z]+:p[0-9a-z]+$/i;
+
+export function isHerdrPaneId(paneId: string): boolean {
+	return HERDR_PANE_ID_PATTERN.test(paneId);
+}
+
 // ---------------------------------------------------------------------------
 // Team engine operations
 // ---------------------------------------------------------------------------

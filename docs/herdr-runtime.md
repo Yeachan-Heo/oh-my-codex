@@ -45,6 +45,13 @@ Engine: `src/team/herdr-session.ts`. All invocations are `execFile` argv arrays
 (no shell); the binary is trust-pinned to `HERDR_BIN_PATH` when that env var
 holds an absolute path to an existing file (same policy as the Phase 1 bridge).
 
+Idle nudges (`src/team/idle-nudge.ts`) are backend-aware: pane ids matching
+the herdr grammar (`wN:pM`, alphanumeric past 9) capture through
+`pane read --source recent-unwrapped` — the same joined-line semantics as
+`capture-pane -J`, so the shared `paneLooksReady` / `paneHasActiveTask`
+classifiers apply unchanged — and the nudge itself is submitted through
+`agent prompt` instead of tmux send-keys.
+
 ## Server bootstrap
 
 Herdr CLI commands fail with `server_not_running` when no Herdr server owns
@@ -70,9 +77,7 @@ the agent inventory instead of `tmux list-sessions`.
 
 - **Scaling** (`team scale up`) is tmux-only for now and returns a clear error
   on the herdr backend.
-- **Idle nudges** rely on tmux pane capture; on herdr they degrade to no-ops.
-- **Detached (madmax) launch**, HUD watch pane, and the Rust `MuxAdapter`
-  (`crates/omx-mux`) remain tmux-only.
+- **Detached (madmax) launch** and the HUD watch pane remain tmux-only.
 
 ## Verification
 
