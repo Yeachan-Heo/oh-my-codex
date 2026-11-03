@@ -222,26 +222,25 @@ describe('createHerdrTeam', () => {
         { kind: 'codex', agentArgs: [], env: {}, cwd: '/repo' },
         { kind: 'codex', agentArgs: [], env: {}, cwd: '/repo' },
       ], { env: {}, execFn: fake.fn }),
-      /agent_not_ready/,
+      /agent_not_promptable|agent_not_ready/,
     );
 
     const flat = fake.calls.map((c) => c.slice(0, 2).join(' '));
-    assert.ok(flat.includes('tab close'), 'failed tabs are closed');
-    assert.ok(flat.includes('workspace close'), 'workspace is closed on rollback');
+    assert.ok(flat.includes('workspace close'), 'workspace is closed on rollback (reaps all panes)');
   });
 });
 
 describe('worker operations', () => {
   it('submit uses agent prompt with the raw text', async () => {
     const fake = fakeExec(() => ({ stdout: envelope('cli:agent:prompt', { agent: {} }) }));
-    await submitToHerdrWorker('omx-a-1-w1', 'ship it', { env: {}, execFn: fake.fn });
-    assert.deepEqual(fake.calls[0], ['agent', 'prompt', 'omx-a-1-w1', 'ship it']);
+    await submitToHerdrWorker('w5:p2', 'ship it', { env: {}, execFn: fake.fn });
+    assert.deepEqual(fake.calls[0], ['agent', 'prompt', 'w5:p2', 'ship it']);
   });
 
   it('interrupt sends ctrl+c', async () => {
     const fake = fakeExec(() => ({ stdout: envelope('cli:agent:send-keys', {}) }));
-    await interruptHerdrWorker('omx-a-1-w1', { env: {}, execFn: fake.fn });
-    assert.deepEqual(fake.calls[0], ['agent', 'send-keys', 'omx-a-1-w1', 'ctrl+c']);
+    await interruptHerdrWorker('w5:p2', { env: {}, execFn: fake.fn });
+    assert.deepEqual(fake.calls[0], ['agent', 'send-keys', 'w5:p2', 'ctrl+c']);
   });
 
   it('capture returns the raw pane text (pane read prints plain text on the CLI)', async () => {

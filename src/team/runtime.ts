@@ -46,7 +46,6 @@ import {
   resolveSharedSessionShutdownTopology,
 } from './tmux-session.js';
 import {
-  buildHerdrAgentName,
   createHerdrTeam,
   destroyHerdrTeam,
   herdrWorkspaceIdFromPaneId,
@@ -894,6 +893,17 @@ async function reconcileDetachedSessionDestroyReceipt(teamName: string, cwd: str
 
 async function destroyConfiguredDetachedTeamSession(teamName: string, cwd: string, config: TeamConfig): Promise<void> {
   if (!config.tmux_session) return;
+  if (config.worker_launch_mode === 'herdr') {
+    // Herdr teams have no tmux session authority to converge; the workspace
+    // itself is the session.
+    const firstHerdrPane = config.workers
+      .map((worker) => worker.pane_id)
+      .find((paneId): paneId is string => typeof paneId === 'string' && paneId !== '');
+    if (firstHerdrPane) {
+      await destroyHerdrTeam(herdrWorkspaceIdFromPaneId(firstHerdrPane));
+    }
+    return;
+  }
   await withDetachedSessionDestroyLock(teamName, cwd, async () => {
     const canonical = await readTeamConfig(teamName, cwd);
     if (!canonical) throw new Error(`detached_session_destroy_authorization_unavailable:${config.tmux_session}`);
@@ -4088,6 +4098,8 @@ export async function startTeam(
       writeWarning: options.writeCleanupWarning,
     });
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
+    // Set by the interactive ready-wait or the herdr agent-start settle below.
+    let startupReadyPromptObserved = false;
     let workerStartupArgs: ReadonlyArray<ReadonlyArray<string>> | undefined;
 
     if (workerLaunchMode === 'interactive') {
@@ -4150,6 +4162,10 @@ export async function startTeam(
         });
       }
       const herdrTeam = await createHerdrTeam(sanitized, leaderCwd, herdrPlans, { env: launchEnv });
+      // createHerdrTeam returns only after every agent reached an idle,
+      // promptable state (agent-start readiness + settle polling): that is
+      // the herdr equivalent of observing a ready prompt in a tmux pane.
+      startupReadyPromptObserved = true;
       sessionName = herdrTeam.name;
       sessionCreated = true;
       config.tmux_session = herdrTeam.name;
@@ -4164,6 +4180,7 @@ export async function startTeam(
           config.workers[worker.index - 1].pane_id = worker.paneId;
           config.workers[worker.index - 1].pid = undefined;
         }
+        workerPaneIds[worker.index - 1] = worker.paneId;
         createdWorkerPaneIds.push(worker.paneId);
         startupTiming.mark('split_returned', { worker: `worker-${worker.index}`, pane_id: worker.paneId });
       }
@@ -4275,7 +4292,6 @@ export async function startTeam(
         };
       }
 
-      let startupReadyPromptObserved = false;
       if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait && !initialPrompt && !startupDirectOutcome?.ok) {
         startupTiming.mark('ready_wait_start', { worker: workerName, pane_id: paneId });
         let readinessIncompatibility: string | null = null;
@@ -5788,7 +5804,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     for (const w of config.workers) {
       if (typeof w.pane_id !== 'string' || w.pane_id === '') continue;
       try {
-        await interruptHerdrWorker(buildHerdrAgentName(sanitized, w.index));
+        await interruptHerdrWorker(w.pane_id);
       } catch {
         // Best-effort interrupt: teardown below still removes the pane.
       }
@@ -6332,7 +6348,7 @@ async function notifyWorkerOutcome(config: TeamConfig, workerIndex: number, mess
       return { ok: false, transport: 'herdr_prompt', reason: 'herdr_pane_id_missing' };
     }
     try {
-      await submitToHerdrWorker(buildHerdrAgentName(config.name, workerIndex), message);
+      await submitToHerdrWorker(worker.pane_id, message);
       return { ok: true, transport: 'herdr_prompt', reason: 'herdr_prompt_sent' };
     } catch (error) {
       return {
