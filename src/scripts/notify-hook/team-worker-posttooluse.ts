@@ -1,3 +1,4 @@
+import { renewWorkerTaskLease } from './team-worker-lease.js';
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
@@ -424,6 +425,7 @@ export async function handleTeamWorkerPostToolUseSuccess(
 
     const nowIso = new Date().toISOString();
     await writeHeartbeat(stateRoot, teamName, workerName, nowIso);
+    await renewWorkerTaskLease(stateRoot, teamName, workerName);
 
     const config = await readTeamConfig(stateRoot, teamName);
     const leaderArtifactCwd = readLeaderArtifactCwd(config, cwd);

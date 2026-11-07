@@ -6813,6 +6813,53 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('monitorTeam leaves overflow pending and preserves the only inbox while its claim is outstanding', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-rebalance-inbox-'));
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-rebalance-inbox-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState('team-one-inbox', 'followups', 'executor', 1, cwd);
+        const tasks = await Promise.all(Array.from({ length: 3 }, (_, i) => createTask('team-one-inbox', {
+          subject: `followup ${i}`, description: 'work', status: 'pending',
+        }, cwd)));
+        const manifestPath = join(cwd, '.omx/state/team/team-one-inbox/manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        manifest.policy.dispatch_mode = 'transport_direct';
+        manifest.tmux_session = 'omx-team-one-inbox';
+        await writeAtomic(manifestPath, JSON.stringify(manifest));
+        await writeWorkerStatus('team-one-inbox', 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, cwd);
+        const first = await monitorTeam('team-one-inbox', cwd);
+        assert.equal(first?.tasks.in_progress, 1, JSON.stringify(first?.recommendations));
+        assert.equal(first?.tasks.pending, 2);
+        const inboxPath = join(cwd, '.omx/state/team/team-one-inbox/workers/worker-1/inbox.md');
+        const inbox = await readFile(inboxPath, 'utf8');
+        const claimed = (await Promise.all(tasks.map((task) => readTask('team-one-inbox', task.id, cwd)))).find((task) => task?.status === 'in_progress')!;
+        assert.match(inbox, new RegExp(`Task ${claimed.id}`));
+        assert.equal((await listDispatchRequests('team-one-inbox', cwd)).filter((request) => request.kind === 'inbox').length, 1);
+        // The worker has not updated its idle status yet; the live claim still excludes it.
+        await monitorTeam('team-one-inbox', cwd);
+        assert.equal(await readFile(inboxPath, 'utf8'), inbox);
+        assert.equal((await listDispatchRequests('team-one-inbox', cwd)).filter((request) => request.kind === 'inbox').length, 1);
+        assert.equal((await Promise.all(tasks.map((task) => readTask('team-one-inbox', task.id, cwd)))).filter((task) => task?.status === 'pending').length, 2);
+        const done = await transitionTaskStatus('team-one-inbox', claimed.id, 'in_progress', 'completed', claimed.claim!.token, cwd);
+        assert.equal(done.ok, true);
+        const next = await monitorTeam('team-one-inbox', cwd);
+        assert.equal(next?.tasks.in_progress, 1);
+        assert.equal(next?.tasks.pending, 1, 'overflow becomes available on a later monitor');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam surfaces reclaimed work pickup attempts when an idle worker is available', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-reassign-reclaimed-'));
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;

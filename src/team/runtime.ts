@@ -1600,9 +1600,11 @@ async function integrateWorkerCommitsIntoLeader(params: {
         const workerHeadAfterRebase = resolveWorkerHead(worktreePath);
         const state = next[worker.name] ?? {};
         state.last_rebased_leader_head = newLeaderHead;
-        state.status = 'idle';
-        state.conflict_commit = undefined;
-        state.conflict_files = undefined;
+        if (state.status !== 'cherry_pick_conflict' && state.status !== 'integration_failed') {
+          state.status = 'idle';
+          state.conflict_commit = undefined;
+          state.conflict_files = undefined;
+        }
         state.updated_at = new Date().toISOString();
         next[worker.name] = state;
         await appendIntegrationEvent(teamName, 'worker_cross_rebase_applied', worker, {
@@ -4782,13 +4784,44 @@ export async function monitorTeam(
     && deadWorkers.length >= config.workers.length
     && !allTasksTerminal;
 
+  const integrationByWorker = readOnly
+    ? (previousSnapshot?.integrationByWorker ?? {})
+    : await integrateWorkerCommitsIntoLeader({
+        teamName: sanitized,
+        config,
+        previous: previousSnapshot,
+        cwd,
+      });
+  const deliveryWorkers = config.workers.filter((worker) => worker.worktree_path && worker.worktree_repo_root);
+  let integrationPending = false;
+  let integrationFailed = false;
+  for (const worker of deliveryWorkers) {
+    const delivery = integrationByWorker[worker.name];
+    if (delivery?.status === 'cherry_pick_conflict' || delivery?.status === 'integration_failed') {
+      integrationFailed = true;
+      recommendations.push(`Integration unresolved for ${worker.name}; resolve delivery failure before terminal success`);
+      continue;
+    }
+    const workerHead = resolveWorkerHead(worker.worktree_path!);
+    const status = runGitCommand(worker.worktree_repo_root!, ['--no-optional-locks', 'status', '--porcelain'], worker.worktree_path!);
+    const contained = workerHead && leaderContainsCommit(worker.worktree_repo_root!, cwd, workerHead);
+    const delivered = workerHead && delivery?.last_seen_head === workerHead && delivery.last_integrated_head === workerHead;
+    if (!workerHead || !status.ok || status.stdout.trim() || (!contained && !delivered)) {
+      integrationPending = true;
+      recommendations.push(`Integration pending for ${worker.name}; verify code delivery before terminal success`);
+    }
+  }
+
   const persistedPhase = await readTeamPhaseState(sanitized, cwd);
   const targetPhase = deadWorkerStall
     ? 'failed'
     : inferPhaseTargetFromTaskCounts(taskCounts, {
-      verificationPending: verificationPendingTasks.length > 0,
+      verificationPending: verificationPendingTasks.length > 0 || integrationPending,
     });
-  const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
+  const deliveryGatedTarget = targetPhase === 'complete' || targetPhase === 'team-verify'
+    ? integrationFailed ? 'team-fix' : targetPhase
+    : targetPhase;
+  const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, deliveryGatedTarget);
   if (!readOnly) await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
   if (!readOnly) await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
@@ -4800,14 +4833,6 @@ export async function monitorTeam(
   if (!readOnly) {
     await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
   }
-  const integrationByWorker = readOnly
-    ? (previousSnapshot?.integrationByWorker ?? {})
-    : await integrateWorkerCommitsIntoLeader({
-        teamName: sanitized,
-        config,
-        previous: previousSnapshot,
-        cwd,
-      });
   const mailboxDeliveryStartMs = performance.now();
   const mailboxNotifiedByMessageId = phaseState.terminal_epoch
     ? {}

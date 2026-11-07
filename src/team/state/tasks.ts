@@ -13,6 +13,7 @@ import type {
   ClaimTaskResult,
   TransitionTaskResult,
   ReleaseTaskClaimResult,
+  RenewTaskClaimResult,
   ReclaimTaskResult,
   TeamMonitorSnapshotState,
 } from './types.js';
@@ -116,6 +117,37 @@ export async function claimTask(
 
   if (!lock.ok) return { ok: false, error: 'claim_conflict' };
   return lock.value;
+}
+
+export async function renewTaskClaim(
+  taskId: string,
+  workerName: string,
+  claimToken: string,
+  deps: ClaimTaskDeps,
+): Promise<RenewTaskClaimResult> {
+  const lock = await deps.withTaskClaimLock(deps.teamName, taskId, deps.cwd, async () => {
+    const current = await deps.readTask(deps.teamName, taskId, deps.cwd);
+    if (!current) return { ok: false as const, error: 'task_not_found' as const };
+    const task = deps.normalizeTask(current);
+    if (deps.isTerminalTaskStatus(task.status)) return { ok: false as const, error: 'already_terminal' as const };
+    const config = await deps.readTeamConfig(deps.teamName, deps.cwd);
+    if (!config?.workers.some((worker) => worker.name === workerName)) {
+      return { ok: false as const, error: 'worker_not_found' as const };
+    }
+    if (task.status !== 'in_progress' || task.owner !== workerName || task.claim?.owner !== workerName || task.claim.token !== claimToken) {
+      return { ok: false as const, error: 'claim_conflict' as const };
+    }
+    const now = Date.now();
+    if (!(Date.parse(task.claim.leased_until) > now)) return { ok: false as const, error: 'lease_expired' as const };
+    const updated: TeamTaskV2 = {
+      ...task,
+      claim: { ...task.claim, leased_until: new Date(Math.max(Date.parse(task.claim.leased_until), now + 15 * 60 * 1000)).toISOString() },
+      version: task.version + 1,
+    };
+    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    return { ok: true as const, task: updated };
+  });
+  return lock.ok ? lock.value : { ok: false, error: 'claim_conflict' };
 }
 
 function extractDelegationComplianceEvidence(
