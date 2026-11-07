@@ -86,8 +86,9 @@ async function markAsPrePinManagedSnapshot(
 	await writeFile(join(cacheDir, ".omx-complete"), `${JSON.stringify({ version, claimDigest })}\n`);
 }
 
-async function writeDeadLivePin(cacheDir: string): Promise<void> {
-	const markerDir = join(cacheDir, ".omx-live-pin");
+async function writeDeadLivePin(cacheDir: string, codexHomeDir: string, version: string): Promise<void> {
+	const cacheBase = omxPluginCacheBase(codexHomeDir);
+	const markerDir = join(cacheBase, ".omx-pins", version);
 	await mkdir(markerDir, { recursive: true });
 	const record = {
 		version: 1,
@@ -101,6 +102,10 @@ async function writeDeadLivePin(cacheDir: string): Promise<void> {
 function livePinMutationLockPath(codexHomeDir: string, version: string): string {
 	const versionHash = createHash("sha256").update(version).digest("hex").slice(0, 24);
 	return join(omxPluginCacheBase(codexHomeDir), `.omx-live-pin-${versionHash}.lock`);
+}
+
+function livePinDirectoryPath(codexHomeDir: string, version: string): string {
+	return join(omxPluginCacheBase(codexHomeDir), ".omx-pins", version);
 }
 
 function livePinIntentPath(codexHomeDir: string, version: string, sessionId: string): string {
