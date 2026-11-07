@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { monitorTeam } from '../runtime.js';
@@ -50,6 +51,10 @@ describe('monitorTeam code delivery success gate', () => {
   });
   async function rootState() {
     return JSON.parse(await readFile(join(repo, '.omx/state/team-state.json'), 'utf8'));
+  }
+
+  async function rebaseMetadata(path: string) {
+    return Promise.all((await readdir(path)).sort().map(async (name) => [name, await readFile(join(path, name), 'utf8')]));
   }
 
   async function completeTask(taskId = '1', requiresCodeChange = true) {
@@ -139,6 +144,125 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
   });
 
+  it('refreshes the source/receipt pair when externally contained follow-up output replaces an older delivery', async () => {
+    await commit(worker, 'feature.txt');
+    await commit(repo, 'leader.txt');
+    await completeTask();
+    const followup = await createTask(team, { subject: 'follow-up output', description: 'Keep delivery active', status: 'pending' }, repo);
+    await monitorTeam(team, repo);
+    const receipt = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].delivery_leader_commit!;
+    await commit(worker, 'followup.txt');
+    const followupHead = git(worker, 'rev-parse', 'HEAD');
+    await completeTask(followup.id);
+    const sentinel = await createTask(team, { subject: 'final research check', description: 'Keep the team active', status: 'pending' }, repo);
+    git(repo, 'merge', '--ff-only', followupHead);
+    await monitorTeam(team, repo);
+    const contained = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+    git(repo, 'reset', '--hard', receipt);
+    await commit(repo, 'independent.txt');
+    git(repo, 'merge-base', '--is-ancestor', receipt, 'HEAD');
+    await assert.rejects(readFile(join(repo, 'followup.txt')), { code: 'ENOENT' });
+    await completeTask(sentinel.id, false);
+    assert.notEqual((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
+    assert.equal((await rootState()).active, true);
+    assert.equal(contained.last_integrated_head, followupHead);
+    assert.equal(contained.delivery_leader_commit, followupHead);
+    const writable = await monitorTeam(team, repo);
+    if (writable?.phase === 'complete') assert.equal(await readFile(join(repo, 'followup.txt'), 'utf8'), 'followup.txt\n');
+    else assert.equal((await rootState()).active, true);
+  });
+
+  for (const readOnly of [true, false]) {
+    it(`vetoes configured-hidden untracked output on ${readOnly ? 'read-only' : 'normal'} monitoring`, async () => {
+      await commit(worker, 'feature.txt');
+      await completeTask();
+      const sentinel = await createTask(team, { subject: 'final check', description: 'Keep the team active', status: 'pending' }, repo);
+      await monitorTeam(team, repo);
+      await completeTask(sentinel.id, false);
+      git(worker, 'config', 'status.showUntrackedFiles', 'no');
+      const head = git(worker, 'rev-parse', 'HEAD');
+      await writeFile(join(worker, 'hidden.txt'), 'unverified hidden output');
+      assert.equal(git(worker, 'status', '--porcelain'), '');
+      assert.notEqual((await monitorTeam(team, repo, { readOnly }))?.phase, 'complete');
+      assert.equal(git(worker, 'rev-parse', 'HEAD'), head);
+      assert.equal((await rootState()).active, true);
+      await assert.rejects(readFile(join(repo, 'hidden.txt')), { code: 'ENOENT' });
+    });
+  }
+
+  for (const readOnly of [true, false]) {
+    it(`vetoes configured-hidden submodule dirt on ${readOnly ? 'read-only' : 'normal'} monitoring`, async () => {
+      const submodule = await mkdtemp(join(tmpdir(), 'omx-delivery-submodule-'));
+      try {
+        git(submodule, 'init');
+        git(submodule, 'config', 'user.email', 'test@example.com');
+        git(submodule, 'config', 'user.name', 'Test');
+        await commit(submodule, 'nested.txt');
+        git(worker, '-c', 'protocol.file.allow=always', 'submodule', 'add', submodule, 'nested');
+        git(worker, 'commit', '-am', 'add submodule');
+        await completeTask();
+        const sentinel = await createTask(team, { subject: 'final check', description: 'Keep the team active', status: 'pending' }, repo);
+        await monitorTeam(team, repo);
+        await completeTask(sentinel.id, false);
+        git(worker, 'config', 'submodule.nested.ignore', 'all');
+        const head = git(worker, 'rev-parse', 'HEAD');
+        await writeFile(join(worker, 'nested/unverified.txt'), 'unverified nested output');
+        assert.equal(git(worker, 'status', '--porcelain'), '');
+        assert.notEqual((await monitorTeam(team, repo, { readOnly }))?.phase, 'complete');
+        assert.equal(git(worker, 'rev-parse', 'HEAD'), head);
+        assert.equal((await rootState()).active, true);
+        assert.equal(await readFile(join(worker, 'nested/unverified.txt'), 'utf8'), 'unverified nested output');
+      } finally {
+        await rm(submodule, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('does not alias a clean late commit onto the earlier delivery receipt after cross-rebase', async () => {
+    await commit(worker, 'feature.txt');
+    const deliveredSource = git(worker, 'rev-parse', 'HEAD');
+    await commit(repo, 'leader.txt');
+    await completeTask();
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const bin = await mkdtemp(join(tmpdir(), 'omx-delivery-git-shim-'));
+    const previousPath = process.env.PATH;
+    const injected = join(bin, 'injected');
+    try {
+      await writeFile(join(bin, 'git'), `#!${process.execPath}
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+function git(args) {
+  const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+if (process.cwd() === fs.realpathSync(${JSON.stringify(worker)}) && args[0] === 'rebase' && args[1] === '-X' && !fs.existsSync(${JSON.stringify(injected)})) {
+  fs.writeFileSync(${JSON.stringify(join(worker, 'late.txt'))}, 'late unpublished output\\n');
+  git(['add', 'late.txt']);
+  git(['commit', '-m', 'late clean commit before actual rebase']);
+  fs.writeFileSync(${JSON.stringify(injected)}, 'injected');
+}
+git(args);
+`, { mode: 0o755 });
+      process.env.PATH = `${bin}:${previousPath}`;
+      const snapshot = await monitorTeam(team, repo);
+      assert.equal(existsSync(injected), true);
+      assert.notEqual(snapshot?.phase, 'complete');
+      const delivery = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+      assert.equal(delivery.last_integrated_head, deliveredSource);
+      assert.notEqual(git(worker, 'rev-parse', 'HEAD'), deliveredSource);
+      assert.equal(git(worker, 'status', '--porcelain', '--untracked-files=all'), '');
+      assert.equal(await readFile(join(worker, 'late.txt'), 'utf8'), 'late unpublished output\n');
+      await assert.rejects(readFile(join(repo, 'late.txt')), { code: 'ENOENT' });
+      assert.notEqual((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
+      assert.equal((await rootState()).active, true);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(bin, { recursive: true, force: true });
+    }
+  });
+
   it('vetoes terminal success on cross-rebase index.lock failure and retries on a quiet second poll', async () => {
     await commit(worker, 'feature.txt');
     await commit(repo, 'leader.txt');
@@ -165,8 +289,34 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal((await rootState()).active, false);
   });
 
+  for (const lateChange of ['committed', 'hidden-untracked'] as const) {
+    it(`does not cross-rebase ${lateChange} undelivered work on a pending retry with a live receipt`, async () => {
+      await commit(worker, 'feature.txt');
+      await commit(repo, 'leader.txt');
+      await completeTask();
+      const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
+      await writeFile(lock, 'held by regression test');
+      assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+      await rm(lock);
+      const pending = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+      git(worker, 'config', 'status.showUntrackedFiles', 'no');
+      await writeFile(join(worker, 'unpublished.txt'), 'unverified output');
+      if (lateChange === 'committed') {
+        git(worker, 'add', 'unpublished.txt');
+        git(worker, 'commit', '-m', 'unverified follow-up');
+      }
+      const head = git(worker, 'rev-parse', 'HEAD');
+      assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+      assert.equal(git(worker, 'rev-parse', 'HEAD'), head);
+      assert.equal((await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].pending_rebase_leader_head, pending.pending_rebase_leader_head);
+      assert.equal(await readFile(join(worker, 'unpublished.txt'), 'utf8'), 'unverified output');
+      await assert.rejects(readFile(join(repo, 'unpublished.txt')), { code: 'ENOENT' });
+      assert.equal((await rootState()).active, true);
+    });
+  }
+
   for (const unfinishedRebase of [false, true]) {
-    it(`redelivers lost pending-rebase receipts on a quiet poll${unfinishedRebase ? ' after restoring the original source' : ''}`, async () => {
+    it(`redelivers lost pending-rebase receipts on a quiet poll${unfinishedRebase ? ' only after operator cleanup of an unfinished rebase' : ''}`, async () => {
       await commit(worker, 'feature.txt');
       const sourceHead = git(worker, 'rev-parse', 'HEAD');
       await commit(repo, 'leader.txt');
@@ -180,14 +330,34 @@ describe('monitorTeam code delivery success gate', () => {
       assert.ok(failed.pending_rebase_leader_head);
       assert.match(failed.rebase_error!, /index.lock/);
       await rm(lock);
+      let unfinishedHead: string | undefined;
+      let unfinishedMetadata: string | undefined;
+      let unfinishedMetadataBefore: string[][] | undefined;
       if (unfinishedRebase) {
-        // Leave real rebase metadata and an intermediate HEAD, as after a failed abort.
+        // Identical orig-head/onto can be manually recreated; they do not prove operation ownership.
         assert.throws(() => git(worker, 'rebase', '--reapply-cherry-picks', '--empty=keep', '--exec', 'false', failed.pending_rebase_leader_head!));
-        assert.notEqual(git(worker, 'rev-parse', 'HEAD'), sourceHead);
+        unfinishedHead = git(worker, 'rev-parse', 'HEAD');
+        unfinishedMetadata = git(worker, 'rev-parse', '--git-path', 'rebase-merge');
+        unfinishedMetadataBefore = await rebaseMetadata(unfinishedMetadata);
+        assert.notEqual(unfinishedHead, sourceHead);
+        await writeFile(join(worker, 'manual-resolution.txt'), 'preserve this manual work');
       }
       git(repo, 'reset', '--hard', beforeDelivery);
       await assert.rejects(readFile(join(repo, 'feature.txt')), { code: 'ENOENT' });
       assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'team-fix');
+      if (unfinishedRebase) {
+        for (let poll = 0; poll < 2; poll++) {
+          assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+          assert.equal(git(worker, 'rev-parse', 'HEAD'), unfinishedHead);
+          assert.deepEqual(await rebaseMetadata(unfinishedMetadata!), unfinishedMetadataBefore);
+          assert.equal(await readFile(join(worker, 'manual-resolution.txt'), 'utf8'), 'preserve this manual work');
+          assert.equal(git(repo, 'rev-parse', 'HEAD'), beforeDelivery);
+          assert.match((await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].rebase_error!, /Finish or abort it manually/);
+        }
+        // Only the operator may discard this operation; clean, metadata-free recovery can then resume.
+        git(worker, 'rebase', '--abort');
+        await rm(join(worker, 'manual-resolution.txt'));
+      }
       assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
       assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
       const resolved = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
@@ -199,6 +369,45 @@ describe('monitorTeam code delivery success gate', () => {
       assert.equal((await rootState()).active, false);
     });
   }
+
+  it('preserves an unrelated conflicting manual rebase and staged resolution while the old receipt remains live', async () => {
+    const base = git(repo, 'rev-parse', 'HEAD');
+    await commit(worker, 'feature.txt');
+    await commit(repo, 'leader.txt');
+    await completeTask();
+    const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
+    await writeFile(lock, 'held by regression test');
+    assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+    await rm(lock);
+    const pending = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+    git(repo, 'merge-base', '--is-ancestor', pending.delivery_leader_commit!, 'HEAD');
+    git(worker, 'checkout', '-b', 'manual-target', base);
+    await writeFile(join(worker, 'README.md'), 'unrelated target\n');
+    git(worker, 'commit', '-am', 'manual target');
+    git(worker, 'checkout', 'worker-delivery');
+    await writeFile(join(worker, 'README.md'), 'unrelated source\n');
+    git(worker, 'commit', '-am', 'manual source');
+    assert.throws(() => git(worker, 'rebase', 'manual-target'));
+    await writeFile(join(worker, 'README.md'), 'operator conflict resolution\n');
+    git(worker, 'add', 'README.md');
+    const metadataPath = git(worker, 'rev-parse', '--git-path', 'rebase-merge');
+    const metadata = await rebaseMetadata(metadataPath);
+    const head = git(worker, 'rev-parse', 'HEAD');
+    const index = git(worker, 'diff', '--cached');
+    for (let poll = 0; poll < 2; poll++) {
+      const snapshot = await monitorTeam(team, repo);
+      assert.deepEqual(await rebaseMetadata(metadataPath), metadata);
+      assert.equal(snapshot?.phase, 'team-fix');
+      assert.equal(git(worker, 'rev-parse', 'HEAD'), head);
+      assert.equal(git(worker, 'diff', '--cached'), index);
+      assert.equal(await readFile(join(worker, 'README.md'), 'utf8'), 'operator conflict resolution\n');
+      assert.equal((await rootState()).active, true);
+      const preserved = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+      assert.equal(preserved.pending_rebase_leader_head, pending.pending_rebase_leader_head);
+      assert.equal(preserved.delivery_leader_commit, pending.delivery_leader_commit);
+      assert.match(preserved.rebase_error!, /Finish or abort it manually/);
+    }
+  });
 
   it('keeps lost-receipt pending state sticky while the worker is active or dirty, without checkpointing', async () => {
     await commit(worker, 'feature.txt');
@@ -216,6 +425,7 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal(git(repo, 'rev-parse', 'HEAD'), beforeDelivery);
     await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
     await writeFile(join(worker, 'unverified.txt'), 'do not publish');
+    git(worker, 'config', 'status.showUntrackedFiles', 'no');
     for (let poll = 0; poll < 2; poll++) {
       assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
       assert.equal(git(worker, 'rev-parse', 'HEAD'), sourceHead);
