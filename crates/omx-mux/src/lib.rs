@@ -1,6 +1,11 @@
+mod herdr;
 mod tmux;
 mod types;
 
+pub use herdr::{
+    build_agent_attach_args, build_agent_list_args, build_agent_prompt_args, build_pane_get_args,
+    build_pane_read_args, is_herdr_pane_id, liveness_from_agent_list, HerdrAdapter,
+};
 pub use tmux::{build_capture_pane_args, TmuxAdapter};
 pub use types::*;
 

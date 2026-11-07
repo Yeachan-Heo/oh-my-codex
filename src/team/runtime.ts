@@ -45,6 +45,17 @@ import {
   listTeamSessions,
   resolveSharedSessionShutdownTopology,
 } from './tmux-session.js';
+import {
+  createHerdrTeam,
+  destroyHerdrTeam,
+  herdrWorkspaceIdFromPaneId,
+  interruptHerdrWorker,
+  isHerdrBinaryCallable,
+  isHerdrWorkerAlive,
+  submitToHerdrWorker,
+  teardownHerdrWorker,
+  type HerdrWorkerSpawnPlan,
+} from './herdr-session.js';
 import { readExactPaneProofSync, readExactPaneProofsSync, type ExactPaneProof } from './exact-pane.js';
 import { reconcileScaleDownCleanupDebt } from './scaling.js';
 import {
@@ -882,6 +893,17 @@ async function reconcileDetachedSessionDestroyReceipt(teamName: string, cwd: str
 
 async function destroyConfiguredDetachedTeamSession(teamName: string, cwd: string, config: TeamConfig): Promise<void> {
   if (!config.tmux_session) return;
+  if (config.worker_launch_mode === 'herdr') {
+    // Herdr teams have no tmux session authority to converge; the workspace
+    // itself is the session.
+    const firstHerdrPane = config.workers
+      .map((worker) => worker.pane_id)
+      .find((paneId): paneId is string => typeof paneId === 'string' && paneId !== '');
+    if (firstHerdrPane) {
+      await destroyHerdrTeam(herdrWorkspaceIdFromPaneId(firstHerdrPane));
+    }
+    return;
+  }
   await withDetachedSessionDestroyLock(teamName, cwd, async () => {
     const canonical = await readTeamConfig(teamName, cwd);
     if (!canonical) throw new Error(`detached_session_destroy_authorization_unavailable:${config.tmux_session}`);
@@ -3687,7 +3709,11 @@ export async function startTeam(
       launchEnv,
     );
   }
-  if (workerLaunchMode === 'interactive') {
+  if (workerLaunchMode === 'herdr') {
+    if (!(await isHerdrBinaryCallable())) {
+      throw new Error('Team mode herdr backend requires the herdr binary. Install from https://herdr.dev (curl -fsSL https://herdr.dev/install.sh | sh, or brew install herdr) and retry.');
+    }
+  } else if (workerLaunchMode === 'interactive') {
     if (!isTmuxAvailable()) {
       throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
     }
@@ -4072,6 +4098,8 @@ export async function startTeam(
       writeWarning: options.writeCleanupWarning,
     });
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
+    // Set by the interactive ready-wait or the herdr agent-start settle below.
+    let startupReadyPromptObserved = false;
     let workerStartupArgs: ReadonlyArray<ReadonlyArray<string>> | undefined;
 
     if (workerLaunchMode === 'interactive') {
@@ -4106,6 +4134,55 @@ export async function startTeam(
 
       for (const [index, paneId] of createdSession.workerPaneIds.entries()) {
         startupTiming.mark('split_returned', { worker: `worker-${index + 1}`, pane_id: paneId });
+      }
+    } else if (workerLaunchMode === 'herdr') {
+      const herdrPlans: HerdrWorkerSpawnPlan[] = [];
+      for (let i = 1; i <= workerCount; i++) {
+        const startup = workerStartups[i - 1];
+        const workerLaunchPolicy = workerLaunchPolicyPlan[i - 1];
+        if (!startup || !workerLaunchPolicy) {
+          throw new Error(`missing worker launch plan for worker-${i}`);
+        }
+        const spec = buildWorkerProcessLaunchSpec(
+          sanitized,
+          i,
+          startup.launchArgs,
+          startup.cwd,
+          startup.env,
+          startup.workerCli,
+          startup.initialPrompt,
+          startup.workerRole,
+        );
+        herdrPlans.push({
+          kind: spec.workerCli,
+          agentArgs: spec.args,
+          env: spec.env,
+          cwd: startup.cwd,
+          initialPrompt: startup.initialPrompt,
+        });
+      }
+      const herdrTeam = await createHerdrTeam(sanitized, leaderCwd, herdrPlans, { env: launchEnv });
+      // createHerdrTeam returns only after every agent reached an idle,
+      // promptable state (agent-start readiness + settle polling): that is
+      // the herdr equivalent of observing a ready prompt in a tmux pane.
+      startupReadyPromptObserved = true;
+      sessionName = herdrTeam.name;
+      sessionCreated = true;
+      config.tmux_session = herdrTeam.name;
+      config.leader_pane_id = null;
+      config.hud_pane_id = null;
+      config.leader_pane_pid = null;
+      config.hud_pane_pid = null;
+      config.resize_hook_name = null;
+      config.resize_hook_target = null;
+      for (const worker of herdrTeam.workers) {
+        if (config.workers[worker.index - 1]) {
+          config.workers[worker.index - 1].pane_id = worker.paneId;
+          config.workers[worker.index - 1].pid = undefined;
+        }
+        workerPaneIds[worker.index - 1] = worker.paneId;
+        createdWorkerPaneIds.push(worker.paneId);
+        startupTiming.mark('split_returned', { worker: `worker-${worker.index}`, pane_id: worker.paneId });
       }
     } else {
       config.tmux_session = `prompt-${sanitized}`;
@@ -4215,7 +4292,6 @@ export async function startTeam(
         };
       }
 
-      let startupReadyPromptObserved = false;
       if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait && !initialPrompt && !startupDirectOutcome?.ok) {
         startupTiming.mark('ready_wait_start', { worker: workerName, pane_id: paneId });
         let readinessIncompatibility: string | null = null;
@@ -4661,9 +4737,7 @@ export async function monitorTeam(
   const workerScanStartMs = performance.now();
   const workerSignals = await Promise.all(
     config.workers.map(async (worker) => {
-      const alive = config.worker_launch_mode === 'prompt'
-        ? isPromptWorkerAlive(config, worker)
-        : isWorkerAlive(sessionName, worker.index, worker.pane_id, worker.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
+      const alive = await isTeamWorkerAliveForMode(config, sessionName, worker);
       const [status, heartbeat] = await Promise.all([
         readWorkerStatus(sanitized, worker.name, cwd),
         readWorkerHeartbeat(sanitized, worker.name, cwd),
@@ -4777,7 +4851,7 @@ export async function monitorTeam(
 
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
   const deadWorkerStall =
-    config.worker_launch_mode === 'prompt'
+    config.worker_launch_mode !== 'interactive'
     && config.workers.length > 0
     && deadWorkers.length >= config.workers.length
     && !allTasksTerminal;
@@ -5281,21 +5355,19 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         throw new Error(`shutdown_rejected:${detail}`);
       }
 
-      const anyAlive = config!.workers.some((w) => (
-        config!.worker_launch_mode === 'prompt'
-          ? isPromptWorkerAlive(config!, w)
-          : isWorkerAlive(sessionName, w.index, w.pane_id, w.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)
-      ));
+      const anyAliveSignals = await Promise.all(
+        config!.workers.map((w) => isTeamWorkerAliveForMode(config!, sessionName, w)),
+      );
+      const anyAlive = anyAliveSignals.some(Boolean);
       if (!anyAlive) break;
       // Sleep 2s
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    const anyAliveAfterWait = config!.workers.some((w) => (
-      config!.worker_launch_mode === 'prompt'
-        ? isPromptWorkerAlive(config!, w)
-        : isWorkerAlive(sessionName, w.index, w.pane_id, w.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)
-    ));
+    const anyAliveAfterWaitSignals = await Promise.all(
+      config!.workers.map((w) => isTeamWorkerAliveForMode(config!, sessionName, w)),
+    );
+    const anyAliveAfterWait = anyAliveAfterWaitSignals.some(Boolean);
     if (anyAliveAfterWait && !force) {
       // Workers may have accepted shutdown but not exited (Codex TUI requires explicit exit).
       // In this case, proceed to force kill panes (next step) rather than failing and leaving state around.
@@ -5726,6 +5798,36 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (workerTeardown.kill.failed > 0) {
       throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
     }
+  } else if (config.worker_launch_mode === 'herdr') {
+    const herdrTeardownFailures: string[] = [];
+    let herdrWorkspaceClosed = false;
+    for (const w of config.workers) {
+      if (typeof w.pane_id !== 'string' || w.pane_id === '') continue;
+      try {
+        await interruptHerdrWorker(w.pane_id);
+      } catch {
+        // Best-effort interrupt: teardown below still removes the pane.
+      }
+      try {
+        await teardownHerdrWorker(w.pane_id);
+      } catch (error) {
+        herdrTeardownFailures.push(`${w.name}:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const firstHerdrPane = config.workers
+      .map((w) => w.pane_id)
+      .find((paneId): paneId is string => typeof paneId === 'string' && paneId !== '');
+    if (firstHerdrPane) {
+      try {
+        await destroyHerdrTeam(herdrWorkspaceIdFromPaneId(firstHerdrPane));
+        herdrWorkspaceClosed = true;
+      } catch (error) {
+        herdrTeardownFailures.push(`workspace:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (herdrTeardownFailures.length > 0 && !herdrWorkspaceClosed) {
+      console.warn(`[team shutdown] ${sanitized}: herdr teardown issues: ${herdrTeardownFailures.join(',')}`);
+    }
   } else if (config.worker_launch_mode === 'prompt') {
     const promptTeardownFailures: string[] = [];
     const promptTeardownResults: Map<string, { terminated: boolean }> = new Map();
@@ -5939,7 +6041,14 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
       `approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
     );
   }
-  if (config.worker_launch_mode === 'prompt') {
+  if (config.worker_launch_mode === 'herdr') {
+    const aliveSignals = await Promise.all(
+      config.workers
+        .filter((worker) => typeof worker.pane_id === 'string' && worker.pane_id !== '')
+        .map((worker) => isHerdrWorkerAlive(worker.pane_id as string)),
+    );
+    if (!aliveSignals.some(Boolean)) return null;
+  } else if (config.worker_launch_mode === 'prompt') {
     const handleTeamConfig = { ...config, name: sanitized };
     const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(handleTeamConfig, worker));
     if (!hasLivePromptWorker) return null;
@@ -5983,8 +6092,7 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
   const root = teamRuntimeTeamsRoot(cwd);
   if (!existsSync(root)) return [];
   const listedSessions = listTeamSessions();
-  if (listedSessions === null) throw new Error('tmux_session_query_unavailable');
-  const sessions = new Set(listedSessions);
+  const sessions = listedSessions !== null ? new Set(listedSessions) : null;
 
   const entries = await readdir(root, { withFileTypes: true });
   const active: string[] = [];
@@ -6009,6 +6117,21 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
       }
       continue;
     }
+    if (workerLaunchMode === 'herdr') {
+      const herdrAlive = await Promise.all(
+        (cfg?.workers ?? [])
+          .filter((worker) => typeof worker.pane_id === 'string' && worker.pane_id !== '')
+          .map((worker) => isHerdrWorkerAlive(worker.pane_id as string)),
+      );
+      if (herdrAlive.some(Boolean)) {
+        active.push(teamName);
+      }
+      continue;
+    }
+    if (sessions === null) {
+      // An interactive (tmux) team exists but tmux cannot be queried.
+      throw new Error('tmux_session_query_unavailable');
+    }
     if (sessions.has(tmuxSession)) active.push(teamName);
   }
   return active;
@@ -6023,10 +6146,21 @@ async function detectAndCleanStaleTeam(
   const stateDir = teamRuntimeTeamRoot(teamName, leaderCwd);
   if (!existsSync(stateDir)) return;
 
-  const listedSessions = listTeamSessions();
-  if (listedSessions === null) return;
-  const sessions = new Set(listedSessions);
-  if (sessions.has(`omx-team-${teamName}`)) return;
+  const existingConfig = await readTeamConfig(teamName, leaderCwd);
+  if (existingConfig?.worker_launch_mode === 'herdr') {
+    // Herdr teams have no tmux session; liveness comes from their panes.
+    const herdrAlive = await Promise.all(
+      (existingConfig.workers ?? [])
+        .filter((worker) => typeof worker.pane_id === 'string' && worker.pane_id !== '')
+        .map((worker) => isHerdrWorkerAlive(worker.pane_id as string)),
+    );
+    if (herdrAlive.some(Boolean)) return;
+  } else {
+    const listedSessions = listTeamSessions();
+    if (listedSessions === null) return;
+    const sessions = new Set(listedSessions);
+    if (sessions.has(`omx-team-${teamName}`)) return;
+  }
 
   const repoRootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd: leaderCwd, encoding: 'utf-8', windowsHide: true,
@@ -6189,9 +6323,41 @@ async function emitMonitorDerivedEvents(
   }
 }
 
+/** Backend-aware worker liveness: prompt children, herdr panes, or tmux panes. */
+async function isTeamWorkerAliveForMode(
+  config: TeamConfig,
+  sessionName: string,
+  worker: TeamConfig['workers'][number],
+): Promise<boolean> {
+  if (config.worker_launch_mode === 'prompt') {
+    return isPromptWorkerAlive(config, worker);
+  }
+  if (config.worker_launch_mode === 'herdr') {
+    if (typeof worker.pane_id !== 'string' || worker.pane_id === '') return false;
+    return isHerdrWorkerAlive(worker.pane_id);
+  }
+  return isWorkerAlive(sessionName, worker.index, worker.pane_id, worker.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
+}
+
 async function notifyWorkerOutcome(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): Promise<DispatchOutcome> {
   const worker = config.workers.find((candidate) => candidate.index === workerIndex);
   if (!worker) return { ok: false, transport: 'none', reason: 'worker_not_found' };
+
+  if (config.worker_launch_mode === 'herdr') {
+    if (typeof worker.pane_id !== 'string' || worker.pane_id === '') {
+      return { ok: false, transport: 'herdr_prompt', reason: 'herdr_pane_id_missing' };
+    }
+    try {
+      await submitToHerdrWorker(worker.pane_id, message);
+      return { ok: true, transport: 'herdr_prompt', reason: 'herdr_prompt_sent' };
+    } catch (error) {
+      return {
+        ok: false,
+        transport: 'herdr_prompt',
+        reason: `herdr_prompt_failed:${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
 
   if (config.worker_launch_mode === 'prompt') {
     const handle = getPromptWorkerHandle(config.name, worker.name);

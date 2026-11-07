@@ -90,7 +90,7 @@ export interface TeamConfig {
   name: string;
   task: string;
   agent_type: string;
-  worker_launch_mode: 'interactive' | 'prompt';
+  worker_launch_mode: 'interactive' | 'prompt' | 'herdr';
   lifecycle_profile: 'default';
   worker_count: number;
   max_workers: number; // default 20, configurable up to 20
@@ -253,7 +253,7 @@ export interface TeamLeader {
 
 export interface TeamPolicy {
   display_mode: 'split_pane' | 'auto';
-  worker_launch_mode: 'interactive' | 'prompt';
+  worker_launch_mode: 'interactive' | 'prompt' | 'herdr';
   dispatch_mode: 'hook_preferred_with_fallback' | 'transport_direct';
   dispatch_ack_timeout_ms: number;
 }
@@ -572,7 +572,9 @@ export function normalizeTeamPolicy(
     : 'hook_preferred_with_fallback';
 
   return {
-    worker_launch_mode: policy?.worker_launch_mode === 'prompt' ? 'prompt' : base.worker_launch_mode,
+    worker_launch_mode: policy?.worker_launch_mode === 'prompt' || policy?.worker_launch_mode === 'herdr'
+      ? policy.worker_launch_mode
+      : base.worker_launch_mode,
     display_mode: policy?.display_mode === 'split_pane' ? 'split_pane' : base.display_mode,
     dispatch_mode: dispatchMode,
     dispatch_ack_timeout_ms: clampDispatchAckTimeoutMs(policy?.dispatch_ack_timeout_ms),
@@ -630,7 +632,8 @@ function resolveWorkerLaunchModeFromEnv(env: NodeJS.ProcessEnv): TeamPolicy['wor
   const raw = readEnvValue(env, ['OMX_TEAM_WORKER_LAUNCH_MODE']);
   if (!raw || raw === 'interactive') return 'interactive';
   if (raw === 'prompt') return 'prompt';
-  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt`);
+  if (raw === 'herdr') return 'herdr';
+  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt, herdr`);
 }
 
 function resolvePermissionsSnapshot(env: NodeJS.ProcessEnv): PermissionsSnapshot {
@@ -1323,7 +1326,9 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
 function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
   const normalizedPolicy = normalizeTeamPolicy(manifest.policy, {
     display_mode: manifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
-    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' || manifest.policy?.worker_launch_mode === 'herdr'
+      ? manifest.policy.worker_launch_mode
+      : 'interactive',
   });
   const workerLaunchMode = normalizedPolicy.worker_launch_mode;
   return {
@@ -1457,7 +1462,9 @@ export async function writeTeamManifestV2(manifest: TeamManifestV2, cwd: string)
   await withTeamTaskBarrier(manifest.name, cwd, async () => {
   const normalizedPolicy = normalizeTeamPolicy(manifest.policy, {
     display_mode: manifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
-    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' || manifest.policy?.worker_launch_mode === 'herdr'
+      ? manifest.policy.worker_launch_mode
+      : 'interactive',
   });
   const normalizedGovernance = normalizeTeamGovernance(
     manifest.governance,
