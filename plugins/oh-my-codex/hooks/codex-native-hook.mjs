@@ -1309,20 +1309,20 @@ function hasKnownLiveSessionPin(pluginRoot, sessionId) {
 }
 
 function hasLivePinForDelegate(pluginRoot) {
+  // A legacy in-tree .omx-live-pin keeps protecting the delegate regardless of the external pin directory.
+  try {
+    lstatSync(join(resolve(pluginRoot), '.omx-live-pin'));
+    return true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return true;
+  }
   let pinState;
   try {
     pinState = livePinDirectory(pluginRoot);
   } catch (error) {
     return error?.code !== 'ENOENT';
   }
-  if (!pinState) {
-    try {
-      lstatSync(join(resolve(pluginRoot), '.omx-live-pin'));
-      return true;
-    } catch (error) {
-      return error?.code !== 'ENOENT';
-    }
-  }
+  if (!pinState) return false;
   try {
     for (const entry of readdirSync(pinState.path, { withFileTypes: true })) {
       if (!entry.name.startsWith('pin-')) continue;

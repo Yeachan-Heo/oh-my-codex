@@ -140,14 +140,16 @@ async function assertDelegateSurvivesLostLeasesWithPin(
 	pluginRoot: string,
 	sessionId: string,
 	launchId: string,
-	pinName: string,
+	pinName: string | null,
 	pinContent: string,
 	version: string,
 ): Promise<string> {
 	const pinDirectory = livePinDirectoryPath(codexHomeDir, version);
-	await mkdir(pinDirectory, { recursive: true });
-	const pinPath = join(pinDirectory, pinName);
-	await writeFile(pinPath, pinContent);
+	const pinPath = join(pinDirectory, pinName ?? "no-external-pin");
+	if (pinName !== null) {
+		await mkdir(pinDirectory, { recursive: true });
+		await writeFile(pinPath, pinContent);
+	}
 	const delegateStartedPath = join(wd, `${launchId}-delegate-started`);
 	const delegateStoppedPath = join(wd, `${launchId}-delegate-stopped`);
 	const delegateFinishedPath = join(wd, `${launchId}-delegate-finished`);
@@ -179,10 +181,10 @@ process.stdin.resume();
 		routingPath,
 		`${JSON.stringify({ routing: "omx-plugin-hook-routing-only:v1", ownerSessionId: sessionId })}\n`,
 	);
-	const versionHash = createHash("sha256").update("0.20.0").digest("hex").slice(0, 24);
+	const versionHash = createHash("sha256").update(version).digest("hex").slice(0, 24);
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
 	const intentLockPath = join(cacheBase, `.omx-live-pin-intent-${versionHash}.lock`);
-	const mutationLockPath = livePinMutationLockPath(codexHomeDir, "0.20.0");
+	const mutationLockPath = livePinMutationLockPath(codexHomeDir, version);
 	const preloadPath = join(wd, `${launchId}-expire-guards.mjs`);
 	await writeFile(preloadPath, `
 import { existsSync, writeFileSync } from "node:fs";
@@ -3084,131 +3086,179 @@ process.stdout.write("{}\\n");
 		}
 	});
 
-	it("I1: native hook pin writes anchored under <cacheBase>/.omx-pins/<version>, rejects symlink parent (issue 4010)", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-4010-hook-anchoring-i1-"));
-		try {
-			await withIsolatedUserHome(wd, async (codexHomeDir) => {
-				const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
-				const cacheBase = omxPluginCacheBase(codexHomeDir);
-				const pinParentPath = join(cacheBase, ".omx-pins");
-				const trapDir = join(wd, "trap-dir");
-				await mkdir(trapDir);
-				
-				// Attack: Replace .omx-pins with symlink before hook runs
-				await rm(pinParentPath, { recursive: true, force: true });
-				await symlink(trapDir, pinParentPath);
-				
-				// Spawn native hook directly (exercises real hook code path, not CLI)
-				const sessionId = "i1-anchoring-test";
-				const hookResult = spawnSync(process.execPath, [join(pluginRoot, "hooks", "codex-native-hook.mjs")], {
-					cwd: wd,
-					input: JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, codex_pid: process.pid, cwd: wd }),
-					encoding: "utf-8",
-					env: { ...process.env, CODEX_HOME: codexHomeDir },
+	it("I1: hook pin create/write/rename/lease-renewal stay inside <cacheBase>/.omx-pins/<version> when the directory is swapped for a symlink (issue 4010)", async () => {
+		for (const swap of ["pins-parent", "version-dir"] as const) {
+			const wd = await mkdtemp(join(tmpdir(), "omx-4010-i1-"));
+			try {
+				await withIsolatedUserHome(wd, async (codexHomeDir) => {
+					const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
+					const cacheBase = omxPluginCacheBase(codexHomeDir);
+					const pinsParent = join(cacheBase, ".omx-pins");
+					const trapDir = join(wd, "trap-dir");
+					await mkdir(trapDir);
+					const sessionId = "i1-renewal-session";
+					const sessionHash = createHash("sha256").update(sessionId).digest("hex");
+					const pendingName = `.pending-${sessionHash}.json`;
+					const delegatePath = join(wd, "i1-delegate.mjs");
+					await writeFile(delegatePath, `
+import { existsSync } from "node:fs";
+const timer = setInterval(() => {
+  if (!existsSync(process.env.OMX_TEST_DELEGATE_FINISHED)) return;
+  clearInterval(timer);
+  process.stdout.write("{}\\n");
+  process.exit(0);
+}, 10);
+process.stdin.resume();
+`);
+					await writeFile(
+						join(pluginRoot, "hooks", "omx-command.json"),
+						`${JSON.stringify({ command: process.execPath, argsPrefix: [delegatePath] })}\n`,
+					);
+					const finishedPath = join(wd, "i1-finished");
+					const preloadPath = join(wd, "i1-swap-then-renew.mjs");
+					await writeFile(preloadPath, `
+import { existsSync, linkSync, mkdirSync, renameSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const realSetInterval = globalThis.setInterval;
+const callbacks = [];
+globalThis.setInterval = function (callback, delay, ...args) {
+  if (delay === 60_000) { callbacks.push(callback); return { unref() {} }; }
+  return realSetInterval(callback, delay, ...args);
+};
+const parent = process.env.OMX_TEST_PINS_PARENT;
+const trap = process.env.OMX_TEST_TRAP;
+const version = "0.20.0";
+const pendingName = process.env.OMX_TEST_PENDING_NAME;
+let attempts = 0;
+const run = () => {
+  const pendingPath = join(parent, version, pendingName);
+  if (!existsSync(pendingPath)) {
+    if (++attempts < 500) setTimeout(run, 10);
+    return;
+  }
+  // The trap holds a hard link to the live pending file so a renewal that
+  // follows the symlink would visibly update it.
+  mkdirSync(join(trap, version), { recursive: true });
+  linkSync(pendingPath, join(trap, version, pendingName));
+  const stale = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(pendingPath, stale, stale);
+  if (process.env.OMX_TEST_SWAP === "pins-parent") {
+    renameSync(parent, parent + ".real");
+    symlinkSync(trap, parent);
+  } else {
+    renameSync(join(parent, version), join(parent, version + ".real"));
+    symlinkSync(join(trap, version), join(parent, version));
+  }
+  for (const callback of callbacks) callback();
+  setTimeout(() => writeFileSync(process.env.OMX_TEST_FINISHED, "finish"), 100);
+};
+setTimeout(run, 10);
+`);
+					const hookResult = spawnSync(
+						process.execPath,
+						["--import", preloadPath, join(pluginRoot, "hooks", "codex-native-hook.mjs")],
+						{
+							cwd: wd,
+							input: JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, codex_pid: process.pid, cwd: wd }),
+							encoding: "utf-8",
+							timeout: 15_000,
+							env: {
+								...process.env,
+								CODEX_HOME: codexHomeDir,
+								OMX_NATIVE_HOOK_COMMAND: process.execPath,
+								OMX_TEST_PINS_PARENT: pinsParent,
+								OMX_TEST_TRAP: trapDir,
+								OMX_TEST_PENDING_NAME: pendingName,
+								OMX_TEST_SWAP: swap,
+								OMX_TEST_FINISHED: finishedPath,
+							},
+						},
+					);
+					const linked = join(trapDir, "0.20.0", pendingName);
+					const linkedStats = await lstat(linked).catch(() => null);
+					assert.ok(linkedStats, `${swap}: the swap must have happened (hook output: ${hookResult.stderr})`);
+					// The shared inode was aged before the swap; a renewal through the symlink would refresh it.
+					assert.ok(Date.now() - linkedStats.mtimeMs > 30 * 60 * 1000, `${swap}: lease renewal must not follow the symlink`);
+					const trapEntries = (await readdir(join(trapDir, "0.20.0"))).sort();
+					assert.deepEqual(trapEntries, [pendingName], `${swap}: no file may appear in the symlink target`);
+					assert.equal(
+						(await readdir(trapDir)).length,
+						1,
+						`${swap}: nothing but the seeded link in the symlink target`,
+					);
 				});
-				
-				// INVARIANT I1: Hook must not write through symlink. Trap dir must remain empty.
-				const trapEntries = await readdir(trapDir);
-				assert.equal(trapEntries.length, 0, "trap dir empty: hook rejected symlink parent, no writes through link");
+			} finally {
+				await rm(wd, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("I2: active legacy in-tree .omx-live-pin session survives hook lease loss, GC and repair (issue 4010)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-i2-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				const published = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+				assert.equal(published.status, "materialized");
+				const cacheDir = published.cacheDir!;
+				const version = published.version!;
+				const legacyPinDir = join(cacheDir, ".omx-live-pin");
+				await mkdir(legacyPinDir);
+				await writeFile(
+					join(legacyPinDir, "pin-legacy-delegate.json"),
+					`${JSON.stringify({ version: 1, pid: process.pid, processStartHash: null, sessionHash: createHash("sha256").update("legacy-delegate-session").digest("hex") })}\n`,
+				);
+				const olderSnapshots = await Promise.all(
+					["0.20.1", "0.20.2"].map((v) => seedManagedSnapshot(codexHomeDir, v)),
+				);
+
+				// Hook lease loss: no external pin exists and every hook lease expires; the delegate must survive.
+				await assertDelegateSurvivesLostLeasesWithPin(
+					wd, codexHomeDir, cacheDir, "i2-session", "i2-launch", null, "", version,
+				);
+				await lstat(join(legacyPinDir, "pin-legacy-delegate.json"));
+
+				// GC
+				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "999.0.0");
+				assert.equal(retired.includes(cacheDir), false, "legacy-pinned snapshot must survive GC");
+				assert.equal(retired.includes(olderSnapshots[0]!), true, "unpinned older snapshot is still collected");
+				await lstat(cacheDir);
+
+				// Repair
+				const manifestPath = join(cacheDir, ".codex-plugin", "plugin.json");
+				const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+				manifest.version = "corrupted-version";
+				await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+				const blocked = await materializePackagedOmxPluginCache(codexHomeDir, packaged, { repairCache: true });
+				assert.equal(blocked.status, "stale-launcher", JSON.stringify(blocked));
+				assert.match(blocked.reason ?? "", /pinned by a live Codex session/);
+				await lstat(join(legacyPinDir, "pin-legacy-delegate.json"));
+				assert.equal(JSON.parse(await readFile(manifestPath, "utf-8")).version, "corrupted-version");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
 
-	it("I2: active legacy-pin sessions stay protected through GC and repair (issue 4010)", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-4010-legacy-pin-i2-"));
+	it("I3: second same-version repair succeeds immediately after gate cleanup, no lease wait (issue 4010)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-i3-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
-				const snapshots = await Promise.all(
-					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
-				);
-				
-				// Create a legacy in-tree pin (.omx-live-pin inside snapshot) to simulate older delegate protection
-				const legacyPinDir = join(snapshots[0]!, ".omx-live-pin");
-				await mkdir(legacyPinDir, { recursive: true });
-				const legacyPinPath = join(legacyPinDir, "pin-legacy-delegate.json");
-				const legacyPin = {
-					version: 1,
-					pid: process.pid,
-					processStartHash: null,
-					sessionHash: createHash("sha256").update("legacy-delegate-session").digest("hex"),
-				};
-				await writeFile(legacyPinPath, `${JSON.stringify(legacyPin)}\n`);
-				
-				// INVARIANT I2: GC should recognize legacy pin and preserve the snapshot
-				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
-				
-				// Snapshot with legacy pin should NOT be retired
-				assert.ok(!retired.includes(snapshots[0]!), "snapshot with legacy pin must be preserved through GC");
-				
-				// Legacy pin directory should still exist after GC
-				const legacyPinStillExists = await lstat(legacyPinDir).catch(() => null);
-				assert.ok(legacyPinStillExists, "legacy .omx-live-pin dir protected from GC");
-			});
-		} finally {
-			await rm(wd, { recursive: true, force: true });
-		}
-	});
-
-	it("I3: second same-version repair succeeds immediately after gate cleanup, inside init lease (issue 4010)", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-4010-sequential-repair-i3-"));
-		try {
-			await withIsolatedUserHome(wd, async (codexHomeDir) => {
-				const snapshots = await Promise.all(
-					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
-				);
-				
-				const version = "0.20.0";
-				const cacheBase = omxPluginCacheBase(codexHomeDir);
-				const versionDir = join(cacheBase, ".omx-pins", version);
-				
-				// STEP 1: First repair - register a pin
-				let result = await registerOmxPluginCacheLivePin(
-					snapshots[0]!,
-					"i3-session-1",
-					process.pid,
-				);
-				assert.ok(result, "first pin registration should succeed");
-				
-				// STEP 2: Clean up pin files (simulate session end)
-				let entries = await readdir(versionDir);
-				for (const entry of entries) {
-					await rm(join(versionDir, entry), { force: true });
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				const published = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+				assert.equal(published.status, "materialized");
+				const manifestPath = join(published.cacheDir!, ".codex-plugin", "plugin.json");
+				const expectedVersion = published.version!;
+				for (const round of [1, 2]) {
+					const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+					manifest.version = "corrupted-version";
+					await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+					const repaired = await materializePackagedOmxPluginCache(codexHomeDir, packaged, { repairCache: true });
+					assert.equal(repaired.status, "materialized", `repair #${round}: ${JSON.stringify(repaired)}`);
+					assert.equal(JSON.parse(await readFile(manifestPath, "utf-8")).version, expectedVersion);
 				}
-				entries = await readdir(versionDir);
-				assert.equal(entries.length, 0, "version directory empty after cleanup");
-				
-				// STEP 3: Age directory slightly past init lease (5 min) to enable retirement
-				// This is necessary for snapshot GC, but the key is that the second repair
-				// succeeds IMMEDIATELY after cleanup (inside the lease window for NEW pins)
-				const leaseMs = 5 * 60 * 1000;
-				const agedTime = new Date(Date.now() - leaseMs - 1000); // 1 second past lease
-				await utimes(versionDir, agedTime, agedTime);
-				
-				// STEP 4: Retire snapshot to trigger gate cleanup
-				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
-				assert.ok(retired.includes(snapshots[0]!), "snapshot should be retired");
-				
-				// STEP 5: Snapshot was deleted by retirement. Recreate it with the same version.
-				// The key test is that this recreated snapshot can be pinned immediately without
-				// being blocked by a stale empty directory or initialization lease.
-				const recreated = await seedManagedSnapshot(codexHomeDir, version);
-				assert.equal(recreated, snapshots[0], "recreated snapshot should have same path");
-				
-				// STEP 6: INVARIANT I3 - second pin registration must succeed IMMEDIATELY
-				// This proves empty dir cleanup during gate removal enables fresh lease for new pins
-				result = await registerOmxPluginCacheLivePin(
-					recreated,
-					"i3-session-2",
-					process.pid,
-				);
-				assert.ok(result, "second pin registration must succeed immediately for recreated snapshot (I3 invariant)");
-				
-				// Verify second repair created new pin file
-				entries = await readdir(versionDir);
-				const hasPinFiles = entries.some((e) => e.startsWith(".pending-") || e.startsWith("pin-"));
-				assert.ok(hasPinFiles, "second repair created new pin files inside the fresh lease window");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
