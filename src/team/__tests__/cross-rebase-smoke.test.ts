@@ -98,53 +98,105 @@ describe('cross-rebase smoke regression', () => {
     }
   });
 
-  it('surfaces cross-rebase conflicts as wakeable and preserves cleanup/report evidence', async () => {
+  it('fails closed for two workers editing the same line and never rebases away the conflict', async () => {
     const repo = await initRepo();
+    const paths: string[] = [];
+    const heads: string[] = [];
+    const team = 'same-line-conflict';
+    try {
+      for (const index of [1, 2]) {
+        const path = await addWorktree(repo, `same-line-${index}`, `omx-same-line-${index}-`);
+        paths.push(path);
+        await writeFile(join(path, 'README.md'), `worker-${index}\n`);
+        execFileSync('git', ['add', 'README.md'], { cwd: path, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-m', `worker ${index} edits same line`], { cwd: path, stdio: 'ignore' });
+        heads.push(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf-8' }).trim());
+      }
+      await configureWorkers(team, repo, paths.map((path, index) => ({ path, branch: `same-line-${index + 1}` })));
+      await writeWorkerStatus(team, 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
+      await monitorTeam(team, repo);
+      const leaderHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
+      // A repeated monitor must not lose the conflict or the original worker history.
+      await monitorTeam(team, repo);
+      assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim(), leaderHead);
+      assert.equal(await readFile(join(repo, 'README.md'), 'utf-8'), 'worker-1\n');
+      for (const [index, path] of paths.entries()) {
+        assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf-8' }).trim(), heads[index]);
+        assert.equal(await readFile(join(path, 'README.md'), 'utf-8'), `worker-${index + 1}\n`);
+        assert.equal(execFileSync('git', ['show', `${heads[index]}:README.md`], { cwd: repo, encoding: 'utf-8' }), `worker-${index + 1}\n`);
+      }
+      assert.equal(execFileSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: repo, encoding: 'utf-8' }), '');
+      assert.equal(existsSync(join(repo, '.git', 'CHERRY_PICK_HEAD')), false);
+      const snapshot = await readMonitorSnapshot(team, repo);
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.status, 'cherry_pick_conflict');
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.conflict_commit, heads[1]);
+      assert.deepEqual(snapshot?.integrationByWorker?.['worker-2']?.conflict_files, ['README.md']);
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.last_integrated_head, undefined);
+      const events = await readTeamEvents(team, repo, { wakeableOnly: false });
+      const wakeable = await readTeamEvents(team, repo, { wakeableOnly: true });
+      assert.equal(wakeable.some((event) => event.type === 'worker_cherry_pick_conflict' && event.worker === 'worker-2'), true);
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_skipped' && event.worker === 'worker-2' && event.metadata?.reason === 'unintegrated_changes'), true);
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_applied' && event.worker === 'worker-2'), false);
+      const mailbox = await listMailboxMessages(team, 'leader-fixed', repo);
+      assert.equal(mailbox.some((message) => /INTEGRATION CONFLICT:.*README.md.*Resolve the conflict/.test(message.body)), true);
+      const report = await readFile(join(repo, '.omx', 'state', 'team', team, 'integration-report.md'), 'utf-8');
+      assert.match(report, /cherry-pick.*README.md.*aborted/);
+      assert.doesNotMatch(report, /auto-resolved/);
+    } finally {
+      for (const path of paths) await rm(path, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('aborts a real text-conflicting cross-rebase and preserves the pre-rebase commit', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-rebase-race-bin-'));
+    const previousPath = process.env.PATH;
     let worker1Path = '';
     let worker2Path = '';
     try {
-      await writeFile(join(repo, 'original.txt'), 'original content\n', 'utf-8');
-      execFileSync('git', ['add', 'original.txt'], { cwd: repo, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'add original.txt'], { cwd: repo, stdio: 'ignore' });
-
-      worker1Path = await addWorktree(repo, 'wk1-cross-conflict', 'omx-cross-conflict-w1-');
-      worker2Path = await addWorktree(repo, 'wk2-cross-conflict', 'omx-cross-conflict-w2-');
-
-      execFileSync('git', ['mv', 'original.txt', 'renamed-by-w1.txt'], { cwd: worker1Path, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'worker-1 renames original'], { cwd: worker1Path, stdio: 'ignore' });
-
-      execFileSync('git', ['mv', 'original.txt', 'renamed-by-w2.txt'], { cwd: worker2Path, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'worker-2 renames original'], { cwd: worker2Path, stdio: 'ignore' });
-
-      const worker2HeadBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim();
-
-      await configureWorkers('cross-rebase-conflict', repo, [
-        { path: worker1Path, branch: 'wk1-cross-conflict' },
-        { path: worker2Path, branch: 'wk2-cross-conflict' },
+      worker1Path = await addWorktree(repo, 'rebase-text-1', 'omx-rebase-text-1-');
+      worker2Path = await addWorktree(repo, 'rebase-text-2', 'omx-rebase-text-2-');
+      await writeFile(join(worker1Path, 'README.md'), 'worker-one\n');
+      execFileSync('git', ['add', 'README.md'], { cwd: worker1Path, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'worker one'], { cwd: worker1Path, stdio: 'ignore' });
+      await configureWorkers('rebase-text', repo, [
+        { path: worker1Path, branch: 'rebase-text-1' },
+        { path: worker2Path, branch: 'rebase-text-2' },
       ]);
-      await writeWorkerStatus('cross-rebase-conflict', 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
-
-      await monitorTeam('cross-rebase-conflict', repo);
-
-      const worker2HeadAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim();
-      const worker2StatusOutput = execFileSync('git', ['status'], { cwd: worker2Path, encoding: 'utf-8' });
-      const events = await readTeamEvents('cross-rebase-conflict', repo, { wakeableOnly: false });
-      const wakeable = await readTeamEvents('cross-rebase-conflict', repo, { wakeableOnly: true });
-      const leaderMailbox = await listMailboxMessages('cross-rebase-conflict', 'leader-fixed', repo);
-      const reportPath = join(repo, '.omx', 'state', 'team', 'cross-rebase-conflict', 'integration-report.md');
-      const report = await readFile(reportPath, 'utf-8');
-
-      assert.equal(worker2HeadAfter, worker2HeadBefore);
-      assert.doesNotMatch(worker2StatusOutput, /rebase in progress/i);
-      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_conflict'), true);
+      await writeWorkerStatus('rebase-text', 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
+      const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf-8' }).trim();
+      const originalHeadPath = join(fakeBin, 'original-head');
+      // Simulate a worker committing after integration checks but before rebase starts.
+      await writeFile(join(fakeBin, 'git'), `#!/bin/bash
+set -eu
+if [[ "$PWD" -ef ${JSON.stringify(worker2Path)} && "\${1:-}" == "status" && "$(cat ${JSON.stringify(join(repo, 'README.md'))})" == "worker-one" && ! -f ${JSON.stringify(originalHeadPath)} ]]; then
+  printf 'worker-two\\n' > README.md
+  ${JSON.stringify(realGit)} add README.md
+  ${JSON.stringify(realGit)} commit -m 'late worker commit' >/dev/null
+  ${JSON.stringify(realGit)} rev-parse HEAD > ${JSON.stringify(originalHeadPath)}
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`, { mode: 0o755 });
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+      await monitorTeam('rebase-text', repo);
+      const originalHead = (await readFile(originalHeadPath, 'utf-8')).trim();
+      assert.equal(execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim(), originalHead);
+      assert.equal(await readFile(join(worker2Path, 'README.md'), 'utf-8'), 'worker-two\n');
+      assert.equal(await readFile(join(repo, 'README.md'), 'utf-8'), 'worker-one\n');
+      assert.doesNotMatch(execFileSync(realGit, ['status'], { cwd: worker2Path, encoding: 'utf-8' }), /rebase in progress/);
+      const snapshot = await readMonitorSnapshot('rebase-text', repo);
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.status, 'rebase_conflict');
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.conflict_commit, originalHead);
+      assert.deepEqual(snapshot?.integrationByWorker?.['worker-2']?.conflict_files, ['README.md']);
+      const wakeable = await readTeamEvents('rebase-text', repo, { wakeableOnly: true });
       assert.equal(wakeable.some((event) => event.type === 'worker_cross_rebase_conflict'), true);
-      assert.equal(
-        leaderMailbox.some((message) => /rebase onto .* with -X ours failed/i.test(message.body)),
-        true,
-      );
-      assert.equal(existsSync(reportPath), true);
-      assert.match(report, /rebase/i);
+      const mailbox = await listMailboxMessages('rebase-text', 'leader-fixed', repo);
+      assert.equal(mailbox.some((message) => /REBASE CONFLICT:.*aborted.*README.md/.test(message.body)), true);
     } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(fakeBin, { recursive: true, force: true });
       if (worker1Path) await rm(worker1Path, { recursive: true, force: true });
       if (worker2Path) await rm(worker2Path, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
