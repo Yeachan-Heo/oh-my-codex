@@ -4,7 +4,7 @@
 
 OMX supports configurable custom quality gates for workflow stages via the `.omx-config.json` configuration file. Quality gates allow you to invoke specialized skills at specific workflow stages to perform additional checks, validations, or reviews.
 
-Each gate spawns as a native subagent alongside standard reviewers and uses the same verdict format. Gates can be configured in blocking mode (default) to feed into the revision loop, or advisory mode to record verdicts without blocking progression. Optionally, you can override the subagent model for individual gates.
+Each gate runs as a separate native subagent at its owning workflow's stage and uses the same verdict format. Gates can be configured in blocking mode (default) to feed non-approving verdicts into the revision loop, or advisory mode to record verdicts without independently blocking progression. Availability handling differs between skill guidance and the current Ralplan runtime; see [Verdict and Behavior](#verdict-and-behavior). Optionally, you can override the subagent model for individual gates.
 
 ## Configuration Schema
 
@@ -56,7 +56,7 @@ For fine-grained control, use an object with explicit configuration:
 **Object properties:**
 - `skill` (required): Skill name in kebab-case
 - `mode` (optional): `"blocking"` (default) or `"advisory"`
-  - **Blocking**: Rejection feeds into the revision loop like Critic; prevents progression until resolved
+  - **Blocking**: `iterate` or `reject` feeds into the revision loop like Critic; see [Verdict and Behavior](#verdict-and-behavior) for unavailable-gate handling
   - **Advisory**: Verdict recorded without blocking; used for informational/risk assessment gates
 - `model` (optional): Override the subagent model for this gate only (e.g., `"claude-opus"`, `"claude-sonnet"`)
 
@@ -67,8 +67,8 @@ Quality gate stage keys map directly to documented workflow/skill names:
 | Stage Key | Workflow/Skill | Stage Step | Description |
 | --- | --- | --- | --- |
 | `deep-interview` | $deep-interview | final-spec | Requirements gathering and specification phase; gates execute after specification is complete and before handoff |
-| `ralplan` | $ralplan (also $plan consensus mode) | Architect→Critic review | Planning and design phase; gates execute after initial planning and feed into the revise loop within the iteration cap |
-| `code-review` | $code-review | review stage | Code review and approval; gates execute alongside standard reviewers |
+| `ralplan` | $ralplan | Architect→Critic review | Consensus planning phase; the current runtime runs gates after Critic approval and feeds blocking gate findings into the revise loop within the iteration cap. Lightweight $plan modes do not run this stage. |
+| `code-review` | $code-review | review stage | Code review and approval; gates execute after the built-in independent reviews |
 
 ## Skill Name Format
 
@@ -96,13 +96,25 @@ Sunset skills from the removed skills list (e.g., `ask-claude`, `deepsearch`, `r
 ## Verdict and Behavior
 
 Each quality gate:
-- **Runs as a native subagent** next to standard reviewers (Architect, Critic, etc.)
-- **Returns verdicts**: `approve`, `iterate`, or `reject` (same format as Critic)
-- **Missing skill** produces a visible warning and the gate is skipped
-- **Blocking gates** (verdict = `reject`) feed into the existing revise loop exactly like the Critic's vote
-- **Advisory gates** (verdict = `reject`) are recorded without blocking progression
+- **Runs as a separate native subagent** at the owning workflow's stage: after the final specification for Deep Interview, after Critic approval in the current Ralplan runtime, and after the built-in independent reviews for Code Review. Custom gates supplement required reviewers.
+- **Returns reviewer verdicts**: `approve`, `iterate`, or `reject` (same format as Critic). Ralplan records `unavailable` when its executor cannot provide a valid native review.
+- **Unavailable reviews** are distinct from approving evidence; their effect on progression depends on the owning guidance or runtime described below.
+- **Blocking gates** with `iterate` or `reject` enter the owning workflow's revise loop where supported.
+- **Advisory gates** record non-approving or unavailable results without independently blocking progression.
 
-The iteration cap applies to blocking gate verdicts just as it does to Critic feedback. Advisory gate verdicts do not count against progression.
+The Ralplan skill places custom gates after Critic review. The current runtime further requires the Critic to return `approve` before running them; a Critic `iterate` or `reject` result skips custom gates for that draft. Gate feedback is therefore not available on every draft that needs revision.
+
+The quality-gate listing/configuration surface discovers and normalizes configuration. It does not run reviewers or enforce stage completion. Skill instructions and executable behavior also differ for unavailable Ralplan gates:
+
+| Surface | Unavailable blocking gate |
+| --- | --- |
+| [Deep Interview](../../skills/deep-interview/SKILL.md) and [Code Review](../../skills/code-review/SKILL.md) skill guidance | Requires blocking evidence to approve; unavailable evidence prevents readiness or handoff. |
+| [Ralplan skill guidance](../../skills/ralplan/SKILL.md) | Also requires fail-closed handling before handoff. |
+| [Current Ralplan runtime](../../src/ralplan/runtime.ts) | Records `unavailable` and skips it, including in blocking mode. Consensus can complete when the other consensus requirements pass. |
+
+Ralplan catches missing/failed executors or invalid native-review results as `unavailable`, then marks its configured gate-review loop complete. Its [quality-gate verdict tests](../../src/ralplan/__tests__/runtime.test.ts) explicitly expect an unavailable blocking gate not to block consensus. Blocking `iterate` or `reject` results still enter the revise loop within the iteration cap; advisory results and skipped unavailable results do not independently require another iteration.
+
+**Known guidance/runtime mismatch:** the current Ralplan runtime does not enforce its skill's fail-closed requirement for unavailable gates. A completed consensus receipt alone does not prove that every configured blocking gate returned approving evidence. A fail-closed runtime policy needs maintainer confirmation and corresponding runtime/test changes.
 
 ## Examples
 
@@ -196,4 +208,4 @@ Returns JSON with normalized gate objects, each containing `skill`, `mode`, and 
 ## See Also
 
 - [.omx-config.json Reference](./omx-config-schema-routing.md)
-- [Skills Reference](../skills/)
+- [Skills Reference](../../skills/)

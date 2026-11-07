@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.47] - 2026-11-07
+
+Patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux's output format. See [release notes](docs/release-notes-0.21.47.md) for exact scope and evidence.
+
+### Fixed
+
+- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** Embed the split receipt in the tmux format specifier (`-F '#{pane_id}:'`) for all platforms instead of appending a shell comment, so psmux workers no longer exit on Windows.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.46...v0.21.47
+
 ## [0.21.46] - 2026-11-02
 
 Patch release preserves assignment scope in generated native-agent overlays and bounds Git Master's history and write authority. See [release notes](docs/release-notes-0.21.46.md) for exact scope and evidence.
