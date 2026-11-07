@@ -1625,6 +1625,13 @@ function assertScaleDownWorktreesPreserved(
     const git = (args: string[], cwd = worker.worktree_path!) => spawnSync('git', args, {
       cwd, encoding: 'utf8', windowsHide: true,
     });
+    if (['rebase-merge', 'rebase-apply'].some((directory) => {
+      const path = git(['rev-parse', '--git-path', directory]);
+      return path.status !== 0 || !path.stdout.trim()
+        || existsSync(resolve(worker.worktree_path!, path.stdout.trim()));
+    })) {
+      throw new Error(`scale_down_worktree_not_preserved:${worker.name}`);
+    }
     const head = git(['rev-parse', 'HEAD']);
     const status = git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
     if (head.status !== 0 || status.status !== 0 || status.stdout.trim()
