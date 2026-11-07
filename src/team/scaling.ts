@@ -19,7 +19,6 @@ import {
   isTmuxAvailable,
   waitForWorkerReady,
   dismissTrustPromptIfPresent,
-  isWorkerAlive,
   buildWorkerStartupCommand,
   trustWorkerMiseConfigIfAvailable,
   writeWorkerStartupScriptCommand,
@@ -1525,6 +1524,7 @@ interface ScaleDownCleanupDebt {
   resource_workers?: ScaleDownCleanupDebtResource[];
   reasons?: string[];
   removed_worker_names?: string[];
+  force?: boolean;
 }
 
 interface PathContainmentSemantics {
@@ -1617,11 +1617,32 @@ async function validateScaleDownCleanupResources(
   }
 }
 
+function assertScaleDownWorktreesPreserved(
+  workers: readonly ScaleDownCleanupDebtResource[],
+  leaderCwd: string,
+): void {
+  for (const worker of workers) {
+    if (!worker.worktree_path || !existsSync(worker.worktree_path)) continue;
+    const git = (args: string[], cwd = worker.worktree_path!) => spawnSync('git', args, {
+      cwd, encoding: 'utf8', windowsHide: true,
+    });
+    const head = git(['rev-parse', 'HEAD']);
+    const status = git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
+    if (head.status !== 0 || status.status !== 0 || status.stdout.trim()
+      || git(['merge-base', '--is-ancestor', head.stdout.trim(), 'HEAD'], leaderCwd).status !== 0) {
+      throw new Error(`scale_down_worktree_not_preserved:${worker.name}`);
+    }
+  }
+}
+
 async function cleanupScaleDownResources(
   teamName: string,
   teamStateRoot: string,
   workers: readonly ScaleDownCleanupDebtResource[],
+  leaderCwd: string,
+  force: boolean,
 ): Promise<void> {
+  if (!force) assertScaleDownWorktreesPreserved(workers, leaderCwd);
   for (const worker of workers) {
     // An absent exact worktree means a prior cleanup completed before crashing.
     // Do not replay a restoration or git removal against a replacement path.
@@ -1657,7 +1678,7 @@ async function cleanupScaleDownResources(
       // branch rather than deleting one that may have predated this worker.
       createdBranch: false,
     }));
-  if (worktrees.length > 0) await rollbackProvisionedWorktrees(worktrees, { force: true });
+  if (worktrees.length > 0) await rollbackProvisionedWorktrees(worktrees, { force });
   await Promise.all(workers.map(async (worker) => {
     await rm(join(teamStateRoot, 'team', teamName, 'workers', worker.name), { recursive: true, force: true });
   }));
@@ -1777,7 +1798,8 @@ export async function reconcileScaleDownCleanupDebt(
     } catch (error) {
       return { ok: false, error: `scale_down_cleanup_debt_unreadable:${String(error)}` };
     }
-    if (debt.schema_version !== 1 || debt.operation !== 'scale_down') {
+    if (debt.schema_version !== 1 || debt.operation !== 'scale_down'
+      || (debt.force !== undefined && typeof debt.force !== 'boolean')) {
       return { ok: false, error: 'scale_down_cleanup_debt_malformed' };
     }
     const removedWorkerNames = Array.isArray(debt.removed_worker_names)
@@ -1901,7 +1923,7 @@ export async function reconcileScaleDownCleanupDebt(
       return { ok: false, error: `scale_down_cleanup_debt_unresolved:${unresolvedPanes.map((pane) => pane.pane_id).join(',')}` };
     }
     try {
-      await cleanupScaleDownResources(sanitized, teamStateRoot, resources);
+      await cleanupScaleDownResources(sanitized, teamStateRoot, resources, leaderCwd, debt.force === true);
     } catch (error) {
       await writeAtomic(cleanupDebtPath, JSON.stringify({
         ...debt,
@@ -1936,6 +1958,9 @@ export async function scaleDown(
   const leaderCwd = resolve(cwd);
   const force = options.force === true;
   const drainTimeoutMs = options.drainTimeoutMs ?? 30_000;
+  if (!Number.isFinite(drainTimeoutMs) || drainTimeoutMs < 0) {
+    return { ok: false, error: 'drainTimeoutMs must be a non-negative finite number' };
+  }
 
   return await withScalingLock(sanitized, leaderCwd, async (): Promise<ScaleDownResult | ScaleError> => {
     const config = await withTaskMembershipBarrier(sanitized, leaderCwd, async () => {
@@ -1969,7 +1994,7 @@ export async function scaleDown(
       const idleWorkers: WorkerInfo[] = [];
       for (const w of config.workers) {
         const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
-        if (status.state === 'idle' || status.state === 'done' || status.state === 'unknown') {
+        if (status.state === 'idle' || status.state === 'done') {
           idleWorkers.push(w);
         }
       }
@@ -1998,7 +2023,6 @@ export async function scaleDown(
       return { ok: false, error: 'Cannot remove all workers — at least 1 must remain' };
     }
 
-    const sessionName = config.tmux_session;
     const removedNames: string[] = [];
     const priorWorkerStatusArtifacts = new Map<string, { exists: true; raw: Buffer } | { exists: false }>();
     for (const worker of targetWorkers) {
@@ -2027,36 +2051,29 @@ export async function scaleDown(
 
 
 
-    // Phase 1: Set workers to 'draining' status
+    // Already-idle workers need no drain request. Busy workers must publish a
+    // fresh idle/done acknowledgement; a request or missing liveness is not one.
     for (const w of targetWorkers) {
-      const drainingStatus: WorkerStatus = {
+      const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
+      if (status.state === 'idle' || status.state === 'done') continue;
+      await writeWorkerStatus(sanitized, w.name, {
+        ...status,
         state: 'draining',
         reason: 'scale_down requested by leader',
         updated_at: new Date().toISOString(),
-      };
-      await writeWorkerStatus(sanitized, w.name, drainingStatus, leaderCwd);
+      }, leaderCwd);
     }
 
-    // Phase 2: Wait for draining workers to finish or timeout
     if (!force) {
       const deadline = Date.now() + drainTimeoutMs;
-      while (Date.now() < deadline) {
-        const allDrained = await Promise.all(
-          targetWorkers.map(async (w) => {
-            const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
-            return status.state === 'idle' || status.state === 'done' ||
-                   status.state === 'draining' || !isWorkerAlive(
-                     sessionName,
-                     w.index,
-                     w.pane_id,
-                     w.pid,
-                     config.tmux_pane_owner_id ?? undefined,
-                     config.hud_pane_id ?? undefined,
-                   );
-          }),
-        );
-        if (allDrained.every(Boolean)) break;
-        await new Promise(r => setTimeout(r, 2_000));
+      while (true) {
+        const statuses = await Promise.all(targetWorkers.map((w) => readWorkerStatus(sanitized, w.name, leaderCwd)));
+        if (statuses.every((status) => status.state === 'idle' || status.state === 'done')) break;
+        if (Date.now() >= deadline) {
+          await restorePriorWorkerStatuses(targetWorkers);
+          return { ok: false, error: 'scale_down_drain_timeout' };
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
       }
     }
 
@@ -2086,6 +2103,13 @@ export async function scaleDown(
           .map((task) => task.id);
         await withTaskClaimLocks(sanitized, candidateTaskIds, leaderCwd, async () => {
           const lockedTasks = await listTasks(sanitized, leaderCwd);
+          if (!force) {
+            const statuses = await Promise.all(removableWorkers.map((w) => readWorkerStatus(sanitized, w.name, leaderCwd)));
+            if (!statuses.every((status) => status.state === 'idle' || status.state === 'done')) {
+              throw new Error('scale_down_worker_not_drained');
+            }
+            assertScaleDownWorktreesPreserved(removableWorkers, leaderCwd);
+          }
           const configPath = join(teamStateRoot, 'team', sanitized, 'config.json');
           const configSnapshot = await readFile(configPath);
           const manifestPath = join(teamStateRoot, 'team', sanitized, 'manifest.v2.json');
@@ -2143,6 +2167,7 @@ export async function scaleDown(
           const cleanupDebtBase = {
             schema_version: 1,
             operation: 'scale_down',
+            force,
             status: 'pending_teardown',
             created_at: new Date().toISOString(),
             removed_worker_names: removableWorkers.map((worker) => worker.name),

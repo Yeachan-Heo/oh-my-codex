@@ -1284,6 +1284,25 @@ function leaderContainsCommit(repoRoot: string, cwd: string, commit: string): bo
   return runGitCommand(repoRoot, ['merge-base', '--is-ancestor', commit, 'HEAD'], cwd).ok;
 }
 
+async function isWorkerReadyForIntegration(teamName: string, worker: WorkerInfo, cwd: string): Promise<boolean> {
+  const status = await readWorkerStatus(teamName, worker.name, cwd);
+  if (status.state !== 'idle' && status.state !== 'done') return false;
+  const tasks = await listTasks(teamName, cwd);
+  const taskIds = new Set([
+    ...worker.assigned_tasks,
+    ...(status.current_task_id ? [status.current_task_id] : []),
+    ...tasks.filter((task) => task.owner === worker.name || task.claim?.owner === worker.name).map((task) => task.id),
+  ]);
+  // Idle alone is not a handoff: every associated task must be owned, completed,
+  // and backed by the same structured verification evidence used by monitoring.
+  return taskIds.size > 0 && [...taskIds].every((id) => {
+    const task = tasks.find((candidate) => candidate.id === id);
+    return task?.owner === worker.name && task.status === 'completed'
+      && (!task.claim || task.claim.owner === worker.name)
+      && hasStructuredVerificationEvidence(task.result);
+  });
+}
+
 async function integrateWorkerCommitsIntoLeader(params: {
   teamName: string;
   config: TeamConfig;
@@ -1300,6 +1319,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
   // ── Phase A: Auto-commit dirty worktrees ──
   for (const worker of config.workers) {
     if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
+    if (!await isWorkerReadyForIntegration(teamName, worker, cwd)) continue;
     const { committed, commitHash } = autoCommitDirtyWorktree(worker);
     if (committed) {
       await appendIntegrationEvent(teamName, 'worker_auto_commit', worker, {
@@ -1324,6 +1344,9 @@ async function integrateWorkerCommitsIntoLeader(params: {
   // ── Phase B: Integrate worker commits to leader (hybrid strategy) ──
   for (const worker of config.workers) {
     if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
+    if (!await isWorkerReadyForIntegration(teamName, worker, cwd)) continue;
+    const clean = runGitCommand(resolve(worker.worktree_repo_root), ['status', '--porcelain'], resolve(worker.worktree_path));
+    if (!clean.ok || clean.stdout.trim()) continue;
     const repoRoot = resolve(worker.worktree_repo_root);
     const worktreePath = resolve(worker.worktree_path);
     const leaderHead = resolveLeaderHead(repoRoot, cwd);
@@ -1549,7 +1572,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
     next[worker.name] = state;
   }
 
-  // ── Phase C: Cross-worker rebase (idle/done/failed workers onto new leader) ──
+  // ── Phase C: Cross-worker rebase (ready workers onto new leader) ──
   const newLeaderHead = resolveLeaderHead(resolve(config.workers[0]?.worktree_repo_root ?? cwd), cwd);
   if (newLeaderHead && leaderHeadAtCycleStart && newLeaderHead !== leaderHeadAtCycleStart) {
     for (const worker of config.workers) {
@@ -1569,10 +1592,8 @@ async function integrateWorkerCommitsIntoLeader(params: {
       const repoRoot = resolve(worker.worktree_repo_root);
       const worktreePath = resolve(worker.worktree_path);
 
-      // Only rebase idle/done/failed workers to avoid race conditions
       const workerStatus = await readWorkerStatus(teamName, worker.name, cwd);
-      const rebaseEligibleStates = new Set(['idle', 'done', 'failed']);
-      if (!rebaseEligibleStates.has(workerStatus.state)) {
+      if (!await isWorkerReadyForIntegration(teamName, worker, cwd)) {
         await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
           worker_name: worker.name,
           worker_state: workerStatus.state,
@@ -1583,9 +1604,9 @@ async function integrateWorkerCommitsIntoLeader(params: {
         continue;
       }
 
-      // Skip if worktree is dirty (will auto-commit next cycle, then rebase)
+      // Never rebase a dirty or unreadable worktree.
       const statusCheck = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
-      if (statusCheck.ok && statusCheck.stdout.trim()) {
+      if (!statusCheck.ok || statusCheck.stdout.trim()) {
         await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
           worker_name: worker.name,
           reason: 'dirty_worktree',
