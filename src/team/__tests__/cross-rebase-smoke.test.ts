@@ -202,11 +202,12 @@ describe('cross-rebase smoke regression', () => {
       ]);
       await writeWorkerStatus('rebase-text', 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
       const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf-8' }).trim();
+      const verifiedHead = execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim();
       const originalHeadPath = join(fakeBin, 'original-head');
-      // Simulate a worker committing after integration checks but before rebase starts.
+      // Race after the final verified-HEAD check: inject only when Git rebase is invoked.
       await writeFile(join(fakeBin, 'git'), `#!/bin/bash
 set -eu
-if [[ "$PWD" -ef ${JSON.stringify(worker2Path)} && "\${1:-}" == "status" && "$#" == "2" && "$(cat ${JSON.stringify(join(repo, 'README.md'))})" == "worker-one" && ! -f ${JSON.stringify(originalHeadPath)} ]]; then
+if [[ "$PWD" -ef ${JSON.stringify(worker2Path)} && "\${1:-}" == "rebase" && "\${2:-}" != "--abort" && "$#" == "2" && "$(cat ${JSON.stringify(join(repo, 'README.md'))})" == "worker-one" && ! -f ${JSON.stringify(originalHeadPath)} ]]; then
   printf 'worker-two\\n' > README.md
   ${JSON.stringify(realGit)} add README.md
   ${JSON.stringify(realGit)} commit -m 'late worker commit' >/dev/null
@@ -217,13 +218,16 @@ exec ${JSON.stringify(realGit)} "$@"
       process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
       await monitorTeam('rebase-text', repo);
       const originalHead = (await readFile(originalHeadPath, 'utf-8')).trim();
+      assert.notEqual(originalHead, verifiedHead);
+      assert.equal(execFileSync(realGit, ['rev-parse', `${originalHead}^`], { cwd: worker2Path, encoding: 'utf-8' }).trim(), verifiedHead);
       assert.equal(execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim(), originalHead);
       assert.equal(await readFile(join(worker2Path, 'README.md'), 'utf-8'), 'worker-two\n');
       assert.equal(await readFile(join(repo, 'README.md'), 'utf-8'), 'worker-one\n');
       assert.doesNotMatch(execFileSync(realGit, ['status'], { cwd: worker2Path, encoding: 'utf-8' }), /rebase in progress/);
       const snapshot = await readMonitorSnapshot('rebase-text', repo);
       assert.equal(snapshot?.integrationByWorker?.['worker-2']?.status, 'rebase_conflict');
-      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.conflict_commit, originalHead);
+      // Diagnostic metadata records the last observed pre-call HEAD, not the later injected commit.
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.conflict_commit, verifiedHead);
       assert.deepEqual(snapshot?.integrationByWorker?.['worker-2']?.conflict_files, ['README.md']);
       const wakeable = await readTeamEvents('rebase-text', repo, { wakeableOnly: true });
       assert.equal(wakeable.some((event) => event.type === 'worker_cross_rebase_conflict'), true);
