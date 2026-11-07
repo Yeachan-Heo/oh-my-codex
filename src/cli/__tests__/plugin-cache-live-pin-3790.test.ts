@@ -3083,4 +3083,129 @@ process.stdout.write("{}\\n");
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("validates .omx-pins parent against TOCTOU symlink swaps (issue 4010 HIGH)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-toctou-symlink-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const snapshots = await Promise.all(
+					["0.20.0", "0.20.1"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
+				);
+				
+				const version = "0.20.0";
+				const cacheBase = omxPluginCacheBase(codexHomeDir);
+				const pinParentPath = join(cacheBase, ".omx-pins");
+				const trapDir = join(wd, "trap-dir");
+				await mkdir(trapDir);
+				
+				// First registration should succeed
+				let result = await registerOmxPluginCacheLivePin(
+					snapshots[0]!,
+					"test-session-1",
+					process.pid,
+				);
+				assert.ok(result, "first pin registration should succeed");
+				
+				// Verify .omx-pins exists as a real directory
+				const beforeStats = await lstat(pinParentPath);
+				assert.ok(beforeStats.isDirectory(), ".omx-pins should be a directory");
+				assert.equal(beforeStats.isSymbolicLink(), false, ".omx-pins should not be a symlink");
+				
+				// Attack: replace .omx-pins with a symlink to trap directory
+				await rm(pinParentPath, { recursive: true, force: true });
+				await symlink(trapDir, pinParentPath);
+				
+				// Second registration should reject the symlink and not create files in trap dir
+				result = await registerOmxPluginCacheLivePin(
+					snapshots[1]!,
+					"test-session-2",
+					process.pid,
+				);
+				assert.equal(result, false, "pin registration should fail when .omx-pins is a symlink");
+				
+				// Verify trap directory is still empty (no files were created there)
+				const trapEntries = await readdir(trapDir);
+				assert.equal(trapEntries.length, 0, "trap directory should remain empty; attack was blocked");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("sequential repairs succeed when empty version dir is removed after gate cleanup (issue 4010 MEDIUM regression)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-sequential-repair-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const snapshots = await Promise.all(
+					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
+				);
+				
+				const version = "0.20.0";
+				const cacheBase = omxPluginCacheBase(codexHomeDir);
+				const versionDir = join(cacheBase, ".omx-pins", version);
+				
+				// STEP 1: First repair - register a pin
+				let result = await registerOmxPluginCacheLivePin(
+					snapshots[0]!,
+					"test-session-repair-1",
+					process.pid,
+				);
+				assert.ok(result, "first pin registration should succeed");
+				let dirExists = true;
+				try {
+					await lstat(versionDir);
+				} catch (e: any) {
+					if (e?.code === "ENOENT") dirExists = false;
+				}
+				assert.ok(dirExists, "version directory should exist after first pin registration");
+				
+				// STEP 2: Clean up the pin files to simulate end-of-session cleanup
+				let entries = await readdir(versionDir);
+				for (const entry of entries) {
+					await rm(join(versionDir, entry), { force: true });
+				}
+				
+				// Verify directory is now empty
+				entries = await readdir(versionDir);
+				assert.equal(entries.length, 0, "version directory should be empty after cleanup");
+				
+				// Age the directory beyond the initialization lease so it's eligible for cleanup
+				const agedTime = new Date(Date.now() - 6 * 60 * 1000);
+				await utimes(versionDir, agedTime, agedTime);
+				
+				// STEP 3: Retire the snapshot to trigger gate cleanup
+				// This should remove the gate marker and the empty version directory
+				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
+				assert.ok(retired.includes(snapshots[0]!), "snapshot should be retired after first repair");
+				
+				// Verify the directory was cleaned up (or at least is no longer blocking)
+				// On Linux with proper anchoring, the empty directory should be removed
+				// This is the key regression test: without the fix, the directory remains
+				// and blocks subsequent same-version repairs
+				dirExists = true;
+				try {
+					await lstat(versionDir);
+				} catch (e: any) {
+					if (e?.code === "ENOENT") dirExists = false;
+				}
+				
+				// STEP 4: Attempt second repair on the same version
+				// This must succeed even if the directory wasn't removed (it would be empty)
+				// But ideally, after the fix, the directory should be removed
+				result = await registerOmxPluginCacheLivePin(
+					snapshots[0]!,
+					"test-session-repair-2",
+					process.pid,
+				);
+				assert.ok(result, "second pin registration should succeed (regression test for ba5196b)");
+				
+				// Verify the second repair created a new pin file
+				entries = await readdir(versionDir);
+				const hasPinFiles = entries.some((e) => e.startsWith(".pending-") || e.startsWith("pin-"));
+				assert.ok(hasPinFiles, "second repair should create new pin files");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 });

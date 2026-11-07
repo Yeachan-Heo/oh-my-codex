@@ -488,10 +488,15 @@ function livePinDirectory(pluginRoot) {
   if (!target) return null;
   const { pluginRoot: absoluteRoot, version, cacheBase, expectedRoot } = target;
   let rootFd = null;
+  let pinParentAnchor = null;
   const closeRoot = () => {
     if (rootFd === null) return;
     try { closeSync(rootFd); } catch {}
     rootFd = null;
+  };
+  const closePinParent = () => {
+    closeLivePinParent(pinParentAnchor);
+    pinParentAnchor = null;
   };
   try {
     const rootStats = lstatSync(absoluteRoot);
@@ -530,23 +535,32 @@ function livePinDirectory(pluginRoot) {
         return null;
       }
     }
+    // Anchor and validate the .omx-pins parent directory
+    pinParentAnchor = validateAndCreateLivePinParent(cacheBase);
+    if (!pinParentAnchor) {
+      closeRoot();
+      return null;
+    }
     // Use external pin directory location instead of inside the plugin root
     const pinDir = externalLivePinDirectory(cacheBase, version);
     try {
       const pinDirStats = lstatSync(pinDir);
       if (!pinDirStats.isDirectory() || pinDirStats.isSymbolicLink()) {
         closeRoot();
+        closePinParent();
         return null;
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') {
         closeRoot();
+        closePinParent();
         return null;
       }
     }
-    return { path: pinDir, pluginRoot: absoluteRoot, version, cacheBase, rootDev: rootStats.dev, rootIno: rootStats.ino, rootFd };
+    return { path: pinDir, pluginRoot: absoluteRoot, version, cacheBase, rootDev: rootStats.dev, rootIno: rootStats.ino, rootFd, pinParentAnchor };
   } catch (error) {
     closeRoot();
+    closePinParent();
     throw error;
   }
 }
@@ -574,8 +588,11 @@ function livePinRootMatches(pinState) {
 }
 
 function closeLivePinDirectory(pinState) {
-  if (!pinState || pinState.rootFd === null) return;
-  try { closeSync(pinState.rootFd); } catch {}
+  if (!pinState) return;
+  if (pinState.rootFd !== null) {
+    try { closeSync(pinState.rootFd); } catch {}
+  }
+  closeLivePinParent(pinState.pinParentAnchor);
 }
 
 function livePinRetirementGateExists(pinDir) {
@@ -682,14 +699,30 @@ function externalLivePinDirectory(cacheBase, version) {
 function validateAndCreateLivePinParent(cacheBase) {
   // Anchor and validate the .omx-pins parent directory before creating version subdirs.
   // Rejects if parent is a symlink or non-existent (requires manual creation).
+  // Returns { path, fd, dev, ino } or null.
   const pinParent = join(cacheBase, '.omx-pins');
+  let fd = null;
   try {
     const stats = lstatSync(pinParent);
     // Parent must exist, be a directory, and NOT be a symlink.
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
       return null;
     }
-    return pinParent;
+    // On Linux, open with O_NOFOLLOW|O_DIRECTORY to anchor against symlink swaps
+    if (process.platform === 'linux') {
+      try {
+        fd = openSync(pinParent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+        const openedStats = fstatSync(fd);
+        if (openedStats.dev !== stats.dev || openedStats.ino !== stats.ino) {
+          closeSync(fd);
+          return null;
+        }
+      } catch {
+        if (fd !== null) try { closeSync(fd); } catch {}
+        return null;
+      }
+    }
+    return { path: pinParent, fd, dev: stats.dev, ino: stats.ino };
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       return null;
@@ -698,11 +731,44 @@ function validateAndCreateLivePinParent(cacheBase) {
     // This fails if cacheBase itself doesn't exist.
     try {
       mkdirSync(pinParent, { mode: 0o700 });
-      return pinParent;
+      // After creating, validate it again with anchoring
+      return validateAndCreateLivePinParent(cacheBase);
     } catch {
       return null;
     }
   }
+}
+
+function verifyLivePinParent(pinParentAnchor) {
+  if (!pinParentAnchor) return false;
+  if (process.platform === 'linux' && typeof pinParentAnchor.fd === 'number') {
+    try {
+      const stats = fstatSync(pinParentAnchor.fd);
+      if (stats.dev !== pinParentAnchor.dev || stats.ino !== pinParentAnchor.ino) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  // Also verify via lstat to catch TOCTOU between our check and use
+  try {
+    const stats = lstatSync(pinParentAnchor.path);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      return false;
+    }
+    if (stats.dev !== pinParentAnchor.dev || stats.ino !== pinParentAnchor.ino) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function closeLivePinParent(pinParentAnchor) {
+  if (!pinParentAnchor || !pinParentAnchor.fd) return;
+  try { closeSync(pinParentAnchor.fd); } catch {}
 }
 
 function readLivePinMutationLock(path) {
@@ -1306,15 +1372,16 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     pinState = livePinDirectory(pluginRoot);
     if (!pinState || pinState.version !== target.version || pinState.cacheBase !== target.cacheBase || !livePinRootMatches(pinState)) return null;
     const pinDir = pinState.path;
-    // First, validate/create the .omx-pins parent directory safely.
-    const pinParent = validateAndCreateLivePinParent(pinState.cacheBase);
-    if (!pinParent) return null;
+    // Verify the .omx-pins parent is still valid (anchored against TOCTOU)
+    if (!verifyLivePinParent(pinState.pinParentAnchor)) return null;
     // Then create the version subdirectory non-recursively.
     try {
       mkdirSync(pinDir, { mode: 0o700 });
     } catch (error) {
       if (error?.code !== 'EEXIST') return null;
     }
+    // Re-verify parent before operations on the directory
+    if (!verifyLivePinParent(pinState.pinParentAnchor)) return null;
     const pinDirStats = lstatSync(pinDir);
     if (!pinDirStats.isDirectory() || pinDirStats.isSymbolicLink()) return null;
     if (livePinRetirementGateExists(pinDir) || !livePinRootMatches(pinState) || !livePinMutationLockMatches(mutationLock)) return null;
@@ -1425,9 +1492,13 @@ function renewPendingSessionPinLease(pluginRoot, path, sessionHash, expectedStat
       || !livePinMutationLockMatches(mutationLock)
       || livePinRetirementGateExists(pinState.path)
     ) return false;
+    // Verify the .omx-pins parent is still valid (anchored against TOCTOU)
+    if (!verifyLivePinParent(pinState.pinParentAnchor)) return false;
     const pinPath = join(pinState.path, basename(path));
     const pending = readPendingSessionRegistration(pinPath, sessionHash);
     if (!pending || !sameFileIdentity(pending.stats, expectedStats)) return false;
+    // Re-verify parent before operations on the file
+    if (!verifyLivePinParent(pinState.pinParentAnchor)) return false;
     return renewPendingFileLease(pinPath, expectedStats)
       && livePinRootMatches(pinState)
       && !livePinRetirementGateExists(pinState.path)

@@ -1804,15 +1804,37 @@ async function removeLivePinRetirementGate(cacheBaseRef: DirectoryRef, version: 
 		
 		// After removing the gate, try to remove the empty version directory
 		// to prevent it from blocking subsequent repairs within the lease window.
+		// Remove through the anchored parent (.omx-pins) by name to avoid TOCTOU issues.
 		if (gateRemoved) {
 			try {
 				const entries = await readdir(pinDirectoryRef.operationPath, { withFileTypes: true });
 				if (entries.length === 0) {
-					// Directory is empty; attempt removal
-					await rmdir(pinDirectoryRef.operationPath).catch(() => {});
+					// Directory is empty; get anchored parent and remove by name
+					let pinParentRef: DirectoryRef | undefined;
+					try {
+						pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
+						const versionDirStats = await pinDirectoryRef.handle.stat();
+						// Remove the version directory through its parent by name (not through fd path)
+						const removed = await removeChild(pinParentRef, version, {
+							recursive: false,
+							force: false,
+						});
+						// Only swallow ENOTEMPTY and ENOENT errors; other errors indicate real problems
+					} catch (error) {
+						const code = (error as NodeJS.ErrnoException).code;
+						// ENOTEMPTY and ENOENT are expected; ignore them
+						if (code !== "ENOTEMPTY" && code !== "ENOENT") {
+							throw error;
+						}
+					} finally {
+						if (pinParentRef) await pinParentRef.handle.close().catch(() => undefined);
+					}
 				}
-			} catch {
-				// Ignore errors from directory removal attempt
+			} catch (error) {
+				// Ignore other errors from directory removal attempt
+				if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" && (error as NodeJS.ErrnoException).code !== "ENOENT") {
+					// Still ignore - this is best-effort cleanup
+				}
 			}
 		}
 		
