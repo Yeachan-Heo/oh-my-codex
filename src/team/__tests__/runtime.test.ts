@@ -4205,8 +4205,16 @@ esac
     }
   });
 
-  for (const partialFailure of [false, true]) {
-    it(`startTeam preserves early Gemini ownership changes ${partialFailure ? 'with partial-create proof debt' : 'before transport publication'}`, async () => {
+  for (const { partialFailure, followupDispatch } of [
+    { partialFailure: false, followupDispatch: undefined },
+    { partialFailure: true, followupDispatch: undefined },
+    { partialFailure: false, followupDispatch: 'gemini' },
+    { partialFailure: false, followupDispatch: 'codex-direct' },
+    { partialFailure: false, followupDispatch: 'codex-queued' },
+  ]) {
+    it(followupDispatch
+      ? `startTeam preserves a follow-up inbox assigned after transport publication (${followupDispatch})`
+      : `startTeam preserves early Gemini ownership changes ${partialFailure ? 'with partial-create proof debt' : 'before transport publication'}`, async () => {
       const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-early-startup-'));
       try {
         await withMockTmuxFixture(
@@ -4231,6 +4239,7 @@ esac
     list-panes)
       case "$*" in
         *"-a -F #{pane_id}"*)
+          ${followupDispatch ? `if [ -f "${cwd}/early-ownership.json" ] && [ ! -f "${cwd}/handoff-started" ]; then gemini handoff > /dev/null; fi` : ':'}
           if [ -f "${cwd}/partial-proof-failure" ]; then printf 'malformed-pane-snapshot\n'; exit 0; fi
           printf "%%1\t0\t2000004141\n"
           if [ -f "${cwd}/early-startup-w1" ]; then printf "%%2\t0\t2000004242\n"; fi
@@ -4253,7 +4262,7 @@ esac
       exit 0
       ;;
     capture-pane)
-      printf 'OpenAI Codex\nmodel: test\n› \n'
+      printf '${followupDispatch === 'codex-queued' ? 'plain shell\n' : 'OpenAI Codex\nmodel: test\n› \n'}'
       exit 0
       ;;
     split-window)
@@ -4290,9 +4299,25 @@ esac
   (async () => {
     const { readdir, readFile, writeFile } = await import('node:fs/promises');
     const { join } = await import('node:path');
-    const { readTeamConfig, claimTask, releaseTaskClaim, createTask } = await import(${JSON.stringify(new URL('../state.js', import.meta.url).href)});
+    const { readTeamConfig, claimTask, releaseTaskClaim, createTask, readTask, readTeamManifestV2, writeTeamManifestV2, writeWorkerStatus } = await import(${JSON.stringify(new URL('../state.js', import.meta.url).href)});
     const cwd = ${JSON.stringify(cwd)};
     const [name] = await readdir(join(cwd, '.omx/state/team'));
+    if (process.argv.includes('handoff')) {
+      const transport = await readTeamConfig(name, cwd);
+      if (!transport.workers[0].pane_id) return;
+      const assert = (await import('node:assert/strict')).default;
+      assert.equal(transport.workers[0].pane_id, '%2');
+      assert.equal(transport.workers[0].pid, 2000004242);
+      assert.equal(transport.hud_pane_id, '%4');
+      await writeFile(join(cwd, 'handoff-started'), '');
+      const { created } = JSON.parse(await readFile(join(cwd, 'early-ownership.json'), 'utf8'));
+      const { assignTask } = await import(${JSON.stringify(new URL('../runtime.js', import.meta.url).href)});
+      await assignTask(name, 'worker-1', created.id, cwd);
+      const assigned = await readTask(name, created.id, cwd);
+      const inbox = await readFile(join(cwd, '.omx/state/team', name, 'workers/worker-1/inbox.md'), 'utf8');
+      await writeFile(join(cwd, 'followup-assigned.json'), JSON.stringify({ transport, assigned, inbox }));
+      return;
+    }
     const before = await readTeamConfig(name, cwd);
     const identities = await Promise.all(before.workers.map(async (worker) => {
       try { return JSON.parse(await readFile(join(cwd, '.omx/state/team', name, 'workers', worker.name, 'identity.json'), 'utf8')); }
@@ -4302,15 +4327,22 @@ esac
     if (!claim.ok) throw new Error('early_claim_failed');
     if (!(await releaseTaskClaim(name, '1', claim.claimToken, 'worker-1', cwd)).ok) throw new Error('early_release_failed');
     const created = await createTask(name, { subject: 'early followup', description: 'preserve task counter', status: 'pending' }, cwd);
+    ${followupDispatch ? `const manifest = await readTeamManifestV2(name, cwd);
+    manifest.policy.dispatch_mode = 'transport_direct';
+    await writeTeamManifestV2(manifest, cwd);
+    for (const worker of before.workers) {
+      await writeWorkerStatus(name, worker.name, { state: 'working', updated_at: new Date().toISOString() }, cwd);
+    }` : ''}
     const released = await readTeamConfig(name, cwd);
     await writeFile(join(cwd, 'early-ownership.json'), JSON.stringify({ before, identities, released, created }));
   })().catch((error) => { console.error(error); process.exitCode = 1; });
-  ` }],
+  ` }, { name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
             env: {
               TMUX: undefined,
               TMUX_PANE: '%1',
               OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
-              OMX_TEAM_WORKER_CLI: 'gemini',
+              OMX_TEAM_WORKER_CLI: followupDispatch?.startsWith('codex') ? 'codex' : 'gemini',
+              OMX_TEAM_SKIP_READY_WAIT: followupDispatch === 'codex-queued' ? '1' : undefined,
             },
           },
           async ({ tmuxLogPath }) => {
@@ -4345,7 +4377,7 @@ esac
             const canonical = await readTeamConfig(teamName, cwd);
             const manifest = await readTeamManifestV2(teamName, cwd);
             assert.ok(canonical);
-            assert.deepEqual(canonical.workers.map((worker) => worker.assigned_tasks), [[], ['2']]);
+            assert.deepEqual(canonical.workers.map((worker) => worker.assigned_tasks), [followupDispatch ? [created.id] : [], ['2']]);
             assert.equal(canonical.next_task_id, Number(created.id) + 1);
             assert.equal(canonical.next_task_id, released.next_task_id);
             assert.deepEqual(manifest?.workers, canonical.workers);
@@ -4353,6 +4385,26 @@ esac
             assert.equal(manifest?.config_generation, canonical.config_generation);
             assert.equal((await readTask(teamName, '1', cwd))?.owner, undefined);
             assert.equal((await readTask(teamName, created.id, cwd))?.subject, 'early followup');
+            if (followupDispatch) {
+              const handoff = JSON.parse(await readFile(join(cwd, 'followup-assigned.json'), 'utf8'));
+              const assigned = await readTask(teamName, created.id, cwd);
+              assert.equal(assigned?.status, 'in_progress');
+              assert.equal(assigned?.owner, 'worker-1');
+              assert.ok(assigned?.claim?.token);
+              assert.equal(assigned.claim.token, handoff.assigned.claim.token);
+              assert.deepEqual(assigned, handoff.assigned);
+              const inbox = await readFile(join(cwd, '.omx/state/team', teamName, 'workers/worker-1/inbox.md'), 'utf8');
+              assert.match(inbox, /early followup/);
+              assert.match(inbox, new RegExp(`Task ${created.id}`));
+              assert.equal(inbox, handoff.inbox, 'startup must preserve the entire current handoff, including any claim token');
+              const requests = await listDispatchRequests(teamName, cwd);
+              assert.ok(requests.some((request) => request.inbox_correlation_key === `assign:${created.id}:worker-1`));
+              if (followupDispatch.startsWith('codex')) {
+                const prefix = followupDispatch === 'codex-direct' ? 'startup-direct' : 'startup';
+                assert.ok(requests.some((request) => request.inbox_correlation_key === `${prefix}:worker-1`),
+                  'the later startup notification path must also preserve the follow-up inbox');
+              }
+            }
             if (partialFailure) {
               assert.equal(canonical.workers[0]?.pane_id, '%2');
               assert.equal(canonical.hud_pane_id, '%4');

@@ -111,7 +111,7 @@ import {
   writeTeamManifestV2 as writeTeamManifestV2State,
 } from './state.js';
 import {
-  queueInboxInstruction,
+  queueInboxNotification,
   queueDirectMailboxMessage,
   queueBroadcastMailboxMessage,
   waitForDispatchReceipt,
@@ -2111,7 +2111,7 @@ const STARTUP_TIMING_LOG_VERSION = 1;
 type StartupTimingPhase =
   | 'startup_direct_bypass'
   | 'split_returned'
-  | 'identity_inbox_written'
+  | 'identity_written'
   | 'ready_wait_start'
   | 'ready_wait_end'
   | 'dispatch_queued'
@@ -3998,7 +3998,7 @@ export async function startTeam(
     });
 
 
-    const materializeWorkerStartupState = async (
+    const materializeWorkerStartupIdentity = async (
       bootstrapPlan: typeof workerBootstrapPlans[number],
       workerIndex: number,
       paneId: string | undefined,
@@ -4050,7 +4050,6 @@ export async function startTeam(
       }
 
       await writeWorkerIdentity(sanitized, bootstrapPlan.workerName, identity, leaderCwd);
-      await writeWorkerInbox(sanitized, bootstrapPlan.workerName, bootstrapPlan.inbox, leaderCwd);
     };
 
     // 6. Create worker runtime (interactive tmux panes or prompt-mode child processes)
@@ -4082,7 +4081,8 @@ export async function startTeam(
         const plan = workerBootstrapPlans[i - 1]!;
         current.workers[i - 1]!.assigned_tasks = startupTasks
           .filter((task) => task.owner === plan.workerName).map((task) => task.id);
-        await materializeWorkerStartupState(plan, i, undefined);
+        await materializeWorkerStartupIdentity(plan, i, undefined);
+        await writeWorkerInbox(sanitized, plan.workerName, plan.inbox, leaderCwd);
       }
       await saveTeamConfig(current, leaderCwd);
       return current;
@@ -4154,14 +4154,14 @@ export async function startTeam(
 
     await persistStartupTransport();
 
-    // Add frozen transport identities without restoring bootstrap task assignments.
+    // Refresh transport identities only; a running worker may already have a follow-up inbox.
     for (let i = 1; i <= workerCount; i++) {
       const bootstrapPlan = workerBootstrapPlans[i - 1];
       if (!bootstrapPlan) {
         throw new Error(`missing bootstrap plan for worker-${i}`);
       }
-      await materializeWorkerStartupState(bootstrapPlan, i, workerPaneIds[i - 1]);
-      startupTiming.mark('identity_inbox_written', { worker: bootstrapPlan.workerName, pane_id: workerPaneIds[i - 1] });
+      await materializeWorkerStartupIdentity(bootstrapPlan, i, workerPaneIds[i - 1]);
+      startupTiming.mark('identity_written', { worker: bootstrapPlan.workerName, pane_id: workerPaneIds[i - 1] });
     }
 
     // 7. Start all safe per-worker readiness/dispatch attempts concurrently.
@@ -4184,7 +4184,6 @@ export async function startTeam(
       const workerName = bootstrapPlan.workerName;
       const paneId = workerPaneIds[workerIndex - 1];
       const workerTasks = bootstrapPlan.workerTasks;
-      const inbox = bootstrapPlan.inbox;
       const trigger = bootstrapPlan.trigger;
       const triggerIntent = bootstrapPlan.triggerIntent;
       const initialPrompt = bootstrapPlan.initialPrompt;
@@ -4205,7 +4204,6 @@ export async function startTeam(
           paneId,
           workerCli: bootstrapPlan.workerCli,
           finalArgs: workerStartupArgs?.[workerIndex - 1],
-          inbox,
           triggerMessage: trigger,
           intent: triggerIntent,
           taskIds: workerTasks.map((task) => task.id),
@@ -4296,7 +4294,6 @@ export async function startTeam(
             workerIndex,
             paneId,
             workerCli: bootstrapPlan.workerCli,
-            inbox,
             triggerMessage: trigger,
             intent: triggerIntent,
             cwd: leaderCwd,
@@ -4986,13 +4983,13 @@ export async function assignTask(
       resolveInstructionStateRoot(workerInfo.worktree_path),
     );
     for (let attempt = 1; attempt <= maxAssignRetries; attempt++) {
+      await writeWorkerInbox(sanitized, workerName, inbox, cwd);
       outcome = await dispatchCriticalInboxInstruction({
         teamName: sanitized,
         config,
         workerName,
         workerIndex: workerInfo.index,
         paneId: workerInfo.pane_id,
-        inbox,
         triggerMessage: triggerDirective.text,
         intent: triggerDirective.intent,
         cwd,
@@ -5253,13 +5250,13 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
           sanitized,
           resolveInstructionStateRoot(w.worktree_path),
         );
+        await writeWorkerInbox(sanitized, w.name, generateShutdownInbox(sanitized, w.name), cwd);
         await dispatchCriticalInboxInstruction({
           teamName: sanitized,
           config,
           workerName: w.name,
           workerIndex: w.index,
           paneId: w.pane_id,
-          inbox: generateShutdownInbox(sanitized, w.name),
           triggerMessage: triggerDirective.text,
           intent: triggerDirective.intent,
           cwd,
@@ -6294,7 +6291,6 @@ async function attemptStartupDirectTrigger(params: {
   paneId?: string;
   workerCli?: TeamWorkerCli;
   finalArgs?: readonly string[];
-  inbox: string;
   triggerMessage: string;
   intent?: TeamReminderIntent;
   taskIds: string[];
@@ -6309,7 +6305,6 @@ async function attemptStartupDirectTrigger(params: {
     paneId,
     workerCli,
     finalArgs,
-    inbox,
     triggerMessage,
     intent,
     taskIds,
@@ -6331,12 +6326,11 @@ async function attemptStartupDirectTrigger(params: {
     return null;
   }
 
-  const queued = await queueInboxInstruction({
+  const queued = await queueInboxNotification({
     teamName,
     workerName,
     workerIndex,
     paneId,
-    inbox,
     triggerMessage,
     intent,
     cwd,
@@ -6412,7 +6406,6 @@ async function dispatchCriticalInboxInstruction(params: {
   workerIndex: number;
   paneId?: string;
   workerCli?: TeamWorkerCli;
-  inbox: string;
   triggerMessage: string;
   intent?: TeamReminderIntent;
   cwd: string;
@@ -6430,7 +6423,6 @@ async function dispatchCriticalInboxInstruction(params: {
     workerIndex,
     paneId,
     workerCli,
-    inbox,
     triggerMessage,
     intent,
     cwd,
@@ -6446,12 +6438,11 @@ async function dispatchCriticalInboxInstruction(params: {
   };
 
   if (config.worker_launch_mode === 'prompt') {
-    return await queueInboxInstruction({
+    return await queueInboxNotification({
       teamName,
       workerName,
       workerIndex,
       paneId,
-      inbox,
       triggerMessage,
       intent,
       cwd,
@@ -6463,12 +6454,11 @@ async function dispatchCriticalInboxInstruction(params: {
   }
 
   if (dispatchPolicy.dispatch_mode === 'transport_direct') {
-    return await queueInboxInstruction({
+    return await queueInboxNotification({
       teamName,
       workerName,
       workerIndex,
       paneId,
-      inbox,
       triggerMessage,
       intent,
       cwd,
@@ -6479,12 +6469,11 @@ async function dispatchCriticalInboxInstruction(params: {
     });
   }
 
-  const queued = await queueInboxInstruction({
+  const queued = await queueInboxNotification({
     teamName,
     workerName,
     workerIndex,
     paneId,
-    inbox,
     triggerMessage,
     intent,
     cwd,
