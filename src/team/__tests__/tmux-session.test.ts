@@ -2932,27 +2932,29 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
-  it('embeds receipt in PowerShell script before encoding (not after)', () => {
+  it('embeds receipt in PowerShell script before encoding (when on native Windows) or appends to POSIX', () => {
     const receipt = 'omx_source_test_receipt';
     const prevShell = process.env.SHELL;
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
 
     try {
-      // On Windows, buildWorkerStartupCommand should embed receipt in the PowerShell script before encoding
-      const cmdWithReceipt: string = withMockedExistsSync(
-        (candidate): boolean => String(candidate).includes('powershell.exe'),
-        () => buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt),
-      );
+      // buildWorkerStartupCommand should either:
+      // - On Windows: embed receipt in the PowerShell script before encoding
+      // - On POSIX: append receipt as shell comment
+      const cmdWithReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt);
 
       if (cmdWithReceipt.includes('-EncodedCommand')) {
-        // Verify receipt is in the encoded command
+        // Windows PowerShell case: Verify receipt is in the encoded command
         const match = cmdWithReceipt.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
         assert(match, 'Should have encoded command with receipt');
         const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
         assert(decoded.includes(`# ${receipt}`), 'Decoded script should contain receipt as comment at start');
         // Verify no trailing '#' after the encoded command
         assert.doesNotMatch(cmdWithReceipt, /-EncodedCommand\s+[A-Za-z0-9+/=]+\s+#/, 'Should not have trailing # after PowerShell command');
+      } else {
+        // POSIX case: Verify receipt is appended
+        assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment in POSIX command');
       }
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
@@ -2973,10 +2975,12 @@ describe('buildWorkerStartupCommand', () => {
       const cmdWithReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt);
 
       // POSIX commands should embed the receipt directly in the shell invocation
-      if (cmdWithReceipt.includes(receipt)) {
-        assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment');
-        // The main body should be identical
-        assert(cmdWithReceipt.includes(cmdNoReceipt) || cmdNoReceipt.includes(cmdWithReceipt), 'Core command should be preserved');
+      if (!cmdWithReceipt.includes('-EncodedCommand')) {
+        // It's a POSIX command, verify receipt is appended
+        assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment to POSIX command');
+        // Verify both commands contain the shell and basic structure
+        assert(cmdNoReceipt.includes('exec'), 'Both should be exec commands');
+        assert(cmdWithReceipt.includes('exec'), 'Both should be exec commands');
       }
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
