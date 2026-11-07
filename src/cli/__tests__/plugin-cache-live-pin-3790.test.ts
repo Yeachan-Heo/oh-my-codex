@@ -2609,7 +2609,6 @@ process.stdout.write("{}\\n");
 					hash.update("codex-plugin-bundle-v1");
 					
 					const pending: string[] = [rootPath];
-					const buffer = Buffer.alloc(64 * 1024);
 					
 					while (pending.length > 0) {
 						const path = pending.pop()!;
