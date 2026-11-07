@@ -252,12 +252,14 @@ export interface TeamSnapshot {
   };
 }
 
-async function syncRootTeamModeStateOnTerminalPhase(
+async function syncRootTeamModeStateForMonitor(
   teamName: string,
-  phase: TeamPhase | TerminalPhase,
+  phaseState: TeamPhaseState,
   cwd: string,
 ): Promise<void> {
-  if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
+  const phase = phaseState.current_phase;
+  const terminal = isTerminalPhase(phase);
+  if (!terminal && phaseState.terminal_epoch) return;
 
   try {
     const localStatePath = join(resolve(cwd), '.omx', 'state', 'team-state.json');
@@ -269,6 +271,17 @@ async function syncRootTeamModeStateOnTerminalPhase(
 
     const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
     if (stateTeamName && stateTeamName !== teamName) return;
+    if (!terminal) {
+      if (stateTeamName !== teamName || teamState.active !== false
+        || teamState.current_phase !== 'complete' || teamState.terminal_epoch) return;
+      const updates = { active: true, current_phase: phase, completed_at: undefined };
+      if (localTeamState) {
+        await writeFile(localStatePath, JSON.stringify({ ...localTeamState, ...updates }, null, 2), 'utf-8');
+      } else {
+        await updateModeState('team', updates, cwd);
+      }
+      return;
+    }
 
     const alreadySynced = teamState.active === false
       && teamState.current_phase === phase
@@ -4863,6 +4876,11 @@ export async function monitorTeam(
       recommendations.push(`Integration unresolved for ${worker.name}; resolve delivery failure before terminal success`);
       continue;
     }
+    if (worktreeHasUnfinishedRebase(worker.worktree_repo_root!, worker.worktree_path!)) {
+      integrationFailed = true;
+      recommendations.push(`Integration unresolved for ${worker.name}; unfinished rebase preserved before terminal success`);
+      continue;
+    }
     const workerHead = resolveWorkerHead(worker.worktree_path!);
     const status = runGitCommand(worker.worktree_repo_root!, ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worker.worktree_path!);
     const contained = workerHead && leaderContainsCommit(worker.worktree_repo_root!, cwd, workerHead);
@@ -4874,7 +4892,6 @@ export async function monitorTeam(
     }
   }
 
-  const persistedPhase = await readTeamPhaseState(sanitized, cwd);
   const targetPhase = deadWorkerStall
     ? 'failed'
     : inferPhaseTargetFromTaskCounts(taskCounts, {
@@ -4883,10 +4900,20 @@ export async function monitorTeam(
   const deliveryGatedTarget = targetPhase === 'complete' || targetPhase === 'team-verify'
     ? integrationFailed ? 'team-fix' : targetPhase
     : targetPhase;
-  const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, deliveryGatedTarget);
-  if (!readOnly) await writeTeamPhaseState(sanitized, phaseState, cwd);
+  const reconcileMonitorPhase = async (): Promise<TeamPhaseState> => {
+    const persistedPhase = await readTeamPhaseState(sanitized, cwd);
+    const next = reconcilePhaseStateForMonitor(persistedPhase, deliveryGatedTarget);
+    if (!readOnly) {
+      await writeTeamPhaseState(sanitized, next, cwd);
+      await syncRootTeamModeStateForMonitor(sanitized, next, cwd);
+    }
+    return next;
+  };
+  // Shutdown publishes its epoch under this barrier; never reopen root from a stale phase read.
+  const phaseState = readOnly
+    ? await reconcileMonitorPhase()
+    : await withTeamTaskMembershipBarrier(sanitized, cwd, reconcileMonitorPhase);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
-  if (!readOnly) await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
 
   if (deadWorkerStall) {
     recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');

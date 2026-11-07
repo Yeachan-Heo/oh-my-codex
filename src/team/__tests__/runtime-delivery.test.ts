@@ -144,6 +144,96 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
   });
 
+  it('observes a clean initial-break manual rebase as undelivered without changing the operation', async () => {
+    const base = git(repo, 'rev-parse', 'HEAD');
+    await commit(worker, 'feature.txt');
+    const source = git(worker, 'rev-parse', 'HEAD');
+    await commit(repo, 'leader.txt');
+    await completeTask();
+    const editor = join(repo, '.git', 'initial-break.cjs');
+    await writeFile(editor, 'const fs=require("node:fs");const p=process.argv[2];fs.writeFileSync(p,"break\\n"+fs.readFileSync(p,"utf8"));');
+    execFileSync('git', ['rebase', '-i', '--onto', git(repo, 'rev-parse', 'HEAD'), base], {
+      cwd: worker, env: { ...process.env, GIT_SEQUENCE_EDITOR: `${process.execPath} ${editor}` }, stdio: 'pipe',
+    });
+    const metadataPath = git(worker, 'rev-parse', '--git-path', 'rebase-merge');
+    assert.equal(await readFile(join(metadataPath, 'orig-head'), 'utf8'), `${source}\n`);
+    assert.match(await readFile(join(metadataPath, 'git-rebase-todo'), 'utf8'), new RegExp(`pick ${source.slice(0, 7)}`));
+    assert.throws(() => git(repo, 'merge-base', '--is-ancestor', source, 'HEAD'));
+    const head = git(worker, 'rev-parse', 'HEAD');
+    git(repo, 'merge-base', '--is-ancestor', head, 'HEAD');
+    assert.equal(git(worker, 'status', '--porcelain', '--untracked-files=all'), '');
+    const snapshotBefore = await readMonitorSnapshot(team, repo);
+    assert.deepEqual(snapshotBefore?.integrationByWorker, {});
+    const metadata = await rebaseMetadata(metadataPath);
+    const phasePath = join(repo, '.omx/state/team', team, 'phase.json');
+    const phaseBefore = await readFile(phasePath, 'utf8');
+    const rootBefore = await rootState();
+    const readOnly = await monitorTeam(team, repo, { readOnly: true });
+    assert.notEqual(readOnly?.phase, 'complete');
+    assert.deepEqual(await readMonitorSnapshot(team, repo), snapshotBefore);
+    assert.equal(await readFile(phasePath, 'utf8'), phaseBefore);
+    assert.deepEqual(await rootState(), rootBefore);
+    assert.deepEqual(await rebaseMetadata(metadataPath), metadata);
+    assert.notEqual((await monitorTeam(team, repo))?.phase, 'complete');
+    assert.equal(git(worker, 'rev-parse', 'HEAD'), head);
+    assert.deepEqual(await rebaseMetadata(metadataPath), metadata);
+    assert.match((await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].rebase_error!, /Finish or abort it manually/);
+  });
+
+  for (const rootOwner of ['matching', 'already-reopened', 'unrelated', 'epoch-fenced', 'stopped'] as const) {
+    it(`reconciles rewritten delivery debt only for an ordinary completed ${rootOwner} root`, async () => {
+      await commit(worker, 'feature.txt');
+      const verifiedHead = git(worker, 'rev-parse', 'HEAD');
+      await commit(repo, 'leader.txt');
+      const beforeDelivery = git(repo, 'rev-parse', 'HEAD');
+      await completeTask();
+      assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
+      const sealed = await rootState();
+      assert.equal(sealed.active, false);
+      assert.equal(sealed.current_phase, 'complete');
+      assert.ok(sealed.completed_at);
+      assert.notEqual(git(worker, 'rev-parse', 'HEAD'), verifiedHead, 'initial diverged delivery cross-rebased the source');
+      if (rootOwner === 'unrelated') {
+        await writeFile(join(repo, '.omx/state/team-state.json'), JSON.stringify({ ...sealed, team_name: 'another-team' }));
+      }
+      if (rootOwner === 'stopped') {
+        await writeFile(join(repo, '.omx/state/team-state.json'), JSON.stringify({ ...sealed, current_phase: 'cancelled' }));
+      }
+      if (rootOwner === 'epoch-fenced' || rootOwner === 'already-reopened' || rootOwner === 'stopped') {
+        const phasePath = join(repo, '.omx/state/team', team, 'phase.json');
+        const phase = JSON.parse(await readFile(phasePath, 'utf8'));
+        await writeFile(phasePath, JSON.stringify(rootOwner === 'epoch-fenced' || rootOwner === 'stopped'
+          ? { ...phase, current_phase: rootOwner === 'stopped' ? 'cancelled' : 'complete', terminal_epoch: new Date().toISOString(), terminal_reason: 'forced_shutdown' }
+          : { ...phase, current_phase: 'team-verify' }));
+      }
+      const rootBefore = await readFile(join(repo, '.omx/state/team-state.json'), 'utf8');
+      git(repo, 'reset', '--hard', beforeDelivery);
+      await commit(repo, 'independent.txt');
+      const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
+      await writeFile(lock, 'hold cross-rebase after invalidation');
+      try {
+        const readOnly = await monitorTeam(team, repo, { readOnly: true });
+        if (rootOwner !== 'epoch-fenced') assert.notEqual(readOnly?.phase, 'complete');
+        assert.equal(await readFile(join(repo, '.omx/state/team-state.json'), 'utf8'), rootBefore);
+        const snapshot = await monitorTeam(team, repo);
+        if (rootOwner === 'epoch-fenced') assert.equal(snapshot?.phase, 'complete');
+        else if (rootOwner === 'stopped') assert.equal(snapshot?.phase, 'cancelled');
+        else assert.notEqual(snapshot?.phase, 'complete');
+        if (rootOwner === 'matching' || rootOwner === 'already-reopened') {
+          const reopened = await rootState();
+          assert.equal(reopened.active, true);
+          assert.equal(reopened.current_phase, snapshot?.phase);
+          assert.equal(reopened.completed_at, undefined);
+          assert.equal(reopened.team_name, team);
+        } else {
+          assert.equal(await readFile(join(repo, '.omx/state/team-state.json'), 'utf8'), rootBefore);
+        }
+      } finally {
+        await rm(lock, { force: true });
+      }
+    });
+  }
+
   it('refreshes the source/receipt pair when externally contained follow-up output replaces an older delivery', async () => {
     await commit(worker, 'feature.txt');
     await commit(repo, 'leader.txt');

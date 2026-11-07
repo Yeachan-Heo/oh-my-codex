@@ -16917,6 +16917,47 @@ exit 0
     }
   });
 
+  it("surfaces unexpected status I/O as native real-wire PostToolUse STOP without task mutation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-status-io-"));
+    const teamName = "native-status-io";
+    const stateRoot = join(cwd, ".omx/state");
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      await mkdir(join(workerRoot, "status.json"));
+      const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+      const taskBefore = await readFile(taskPath, "utf8");
+      const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      git(["init"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test User"]);
+      await writeFile(join(cwd, "work.txt"), "before\n");
+      git(["add", "work.txt"]);
+      git(["commit", "-m", "initial"]);
+      const head = git(["rev-parse", "HEAD"]);
+      await writeFile(join(cwd, "work.txt"), "unverified output\n");
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "status-io",
+        tool_input: { command: "printf ok" }, tool_response: "plain stdout/stderr\n",
+      }, { cwd });
+      assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*renewal_error:.*EISDIR.*STOP editing/);
+      const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+      assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+      assert.match(await readFile(join(workerRoot, "lease-loss.json"), "utf8"), /EISDIR.*STOP editing/);
+      assert.equal(git(["rev-parse", "HEAD"]), head);
+      assert.equal(git(["diff", "--cached"]), "");
+      assert.equal(await readFile(join(cwd, "work.txt"), "utf8"), "unverified output\n");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces lease loss from PostToolUse without checkpointing stale work", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-lease-loss-"));
     const teamName = "native-lease-loss";

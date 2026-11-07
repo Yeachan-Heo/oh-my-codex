@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -327,6 +327,64 @@ describe('task claim renewal', () => {
       release();
       await barrier;
     }
+  });
+
+  for (const reportingFails of [false, true]) {
+    it(`unexpected status read I/O stops PostToolUse and notify heartbeat even when reporting ${reportingFails ? 'fails' : 'succeeds'}`, async (t) => {
+      const claim = await claimed();
+      const stateRoot = join(cwd, '.omx/state');
+      const teamRoot = join(stateRoot, 'team', team);
+      const workerRoot = join(teamRoot, 'workers/worker-1');
+      await writeAtomic(join(workerRoot, 'identity.json'), JSON.stringify({ name: 'worker-1', team_state_root: stateRoot, worktree_path: cwd }));
+      await mkdir(join(workerRoot, 'status.json'));
+      if (reportingFails) {
+        await mkdir(join(workerRoot, 'lease-loss.json'));
+        await rm(join(teamRoot, 'mailbox'), { recursive: true, force: true });
+        await writeFile(join(teamRoot, 'mailbox'), 'blocked');
+        t.mock.method(process.stderr, 'write', () => { throw new Error('stderr closed'); });
+      }
+      const git = (args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      git(['init']);
+      git(['config', 'user.email', 'test@example.com']);
+      git(['config', 'user.name', 'Test User']);
+      await writeFile(join(cwd, 'work.txt'), 'before\n');
+      git(['add', 'work.txt']);
+      git(['commit', '-m', 'initial']);
+      const head = git(['rev-parse', 'HEAD']);
+      await writeFile(join(cwd, 'work.txt'), 'unverified output\n');
+      const result = await handleTeamWorkerPostToolUseSuccess({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'plain stdout/stderr\n', tool_use_id: 'status-io',
+      }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
+      assert.match(result.stopMessage!, /renewal_error:.*EISDIR.*STOP editing/);
+      assert.deepEqual(result.operationKinds, []);
+      assert.equal(result.checkpointCommit, undefined);
+      assert.equal(result.dedupeKey, undefined);
+      const heartbeat = await updateWorkerHeartbeat(stateRoot, team, 'worker-1');
+      assert.ok(heartbeat && !heartbeat.ok && 'stopMessage' in heartbeat);
+      assert.match(heartbeat.stopMessage, /renewal_error:.*EISDIR.*STOP editing/);
+      if (!reportingFails) {
+        assert.match(await readFile(join(workerRoot, 'lease-loss.json'), 'utf8'), /EISDIR.*STOP editing/);
+        for (const recipient of ['worker-1', 'leader-fixed']) {
+          assert.ok((await listMailboxMessages(team, recipient, cwd)).some((message) => /EISDIR.*STOP editing/.test(message.body)));
+        }
+      }
+      assert.deepEqual(await readTask(team, claim.task.id, cwd), claim.task);
+      assert.equal(existsSync(join(workerRoot, 'posttooluse-dedupe.json')), false);
+      assert.equal(existsSync(join(cwd, '.omx/reports/team-commit-hygiene', `${team}.ledger.json`)), false);
+      assert.equal(git(['rev-parse', 'HEAD']), head);
+      assert.equal(git(['diff', '--cached']), '');
+      assert.equal(await readFile(join(cwd, 'work.txt'), 'utf8'), 'unverified output\n');
+      assert.ok((await stat(join(workerRoot, 'status.json'))).isDirectory());
+    });
+  }
+
+  it('missing or malformed status stays intentionally quiet without adopting a task token', async () => {
+    const claim = await claimed();
+    const stateRoot = join(cwd, '.omx/state');
+    assert.equal(await renewWorkerTaskLease(stateRoot, team, 'worker-1'), null);
+    await writeFile(join(stateRoot, 'team', team, 'workers/worker-1/status.json'), '{');
+    assert.equal(await renewWorkerTaskLease(stateRoot, team, 'worker-1'), null);
+    assert.deepEqual(await readTask(team, claim.task.id, cwd), claim.task);
   });
 
   it('automatic renewal catches config lookup errors only after capturing a working task/token', async () => {
