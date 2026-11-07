@@ -194,6 +194,9 @@ Uruchamiając `--madmax` w repozytorium Git, wybierz worktree zamiast bieżąceg
 
 ```bash
 omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
@@ -213,7 +216,17 @@ Trwała preferencja shella/profilu:
 OMX_LAUNCH_POLICY=direct omx --yolo
 ```
 
-Wróć do trybu domyślnego poleceniem `unset OMX_LAUNCH_POLICY`. Flagi CLI mają pierwszeństwo przed środowiskiem; przed `--` obowiązuje ostatnia flaga polityki. Obsługiwane wartości: `direct|tmux|detached-tmux|auto`; ta wersja nie dodaje ustawienia w pliku konfiguracyjnym. `--direct` uruchomione w istniejącym panelu tmux nie tworzy podziałów HUD, nie włącza myszy ani extended-key handling, ale proces nadal działa w tym panelu.
+Wróć do trybu domyślnego poleceniem:
+
+```bash
+unset OMX_LAUNCH_POLICY
+``` Flagi CLI mają pierwszeństwo przed środowiskiem. Ten przykład wymusza tryb tmux, nawet gdy preferencja środowiska to `direct`:
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+Przed `--` obowiązuje ostatnia flaga polityki. Obsługiwane wartości: `direct|tmux|detached-tmux|auto`; ta wersja nie dodaje ustawienia w pliku konfiguracyjnym. `--direct` uruchomione w istniejącym panelu tmux nie tworzy podziałów HUD, nie włącza myszy ani extended-key handling, ale proces nadal działa w tym panelu.
 
 Wypróbuj kanoniczny przepływ:
 
