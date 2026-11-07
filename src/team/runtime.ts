@@ -4340,7 +4340,9 @@ export async function startTeam(
     if (firstStartupError) {
       throw firstStartupError.error;
     }
-    await saveTeamConfig(config, leaderCwd);
+    // Startup attempts only read config; workers may have changed canonical task assignments meanwhile.
+    config = await readTeamConfig(sanitized, leaderCwd);
+    if (!config) throw new Error(`team_config_missing:${sanitized}`);
     await startupTiming.flush();
 
     return {

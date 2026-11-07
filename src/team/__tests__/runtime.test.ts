@@ -14,6 +14,7 @@ import {
   writeWorkerIdentity,
   writeWorkerInbox,
   readTeamConfig,
+  readTeamManifestV2,
   saveTeamConfig,
   listMailboxMessages,
   sendDirectMessage,
@@ -4200,6 +4201,155 @@ esac
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRIES;
       if (typeof previousStartupDispatchRetryDelay === 'string') process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS = previousStartupDispatchRetryDelay;
       else delete process.env.OMX_TEAM_STARTUP_DISPATCH_RETRY_DELAY_MS;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam preserves released assignments when ownership changes during concurrent startup', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-generation-'));
+    const teamName = 'team-startup-generation';
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-startup-generation-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+${tmuxOwnerProofShim}
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*) echo "120" ;;
+      *) echo "leader:0 %1" ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-a -F #{pane_id}"*)
+        printf "%%1\t0\t2000004141\n"
+        if [ -f "${cwd}/startup-generation-w1" ]; then printf "%%2\t0\t2000004242\n"; fi
+        if [ -f "${cwd}/startup-generation-w2" ]; then printf "%%3\t0\t2000004343\n"; fi
+        if [ -f "${cwd}/startup-generation-hud" ]; then printf "%%4\t0\t2000004444\n"; fi
+        ;;
+      *"pane_current_command"*)
+        printf "%%1\tnode\t'codex'\n"
+        if [ -f "${cwd}/startup-generation-w1" ]; then printf "%%2\tcodex\tcodex\n"; fi
+        if [ -f "${cwd}/startup-generation-w2" ]; then printf "%%3\tcodex\tcodex\n"; fi
+        if [ -f "${cwd}/startup-generation-hud" ]; then printf "%%4\tnode\thud --watch\n"; fi
+        ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
+      *"#{pane_dead}"*) echo "0" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
+      *"-t %3"*"#{pane_pid}"*) echo "2000004343" ;;
+      *"#{pane_pid}"*) echo "2000004141" ;;
+      *) exit 0 ;;
+    esac
+    exit 0
+    ;;
+  capture-pane)
+    printf 'OpenAI Codex\nmodel: test\n› \n'
+    exit 0
+    ;;
+  split-window)
+    count_file="${cwd}/startup-generation-split-count"
+    count=0
+    if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$count_file"
+    case "$count" in
+      1) : > "${cwd}/startup-generation-w1"; echo "%2" ;;
+      2) : > "${cwd}/startup-generation-w2"; echo "%3" ;;
+      *) : > "${cwd}/startup-generation-hud"; echo "%4" ;;
+    esac
+    exit 0
+    ;;
+  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane|kill-session|resize-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
+          env: {
+            TMUX: undefined,
+            TMUX_PANE: '%1',
+            OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
+            OMX_TEAM_WORKER_CLI: 'codex',
+            OMX_TEAM_READY_TIMEOUT_MS: '500',
+            OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS: '50',
+            OMX_TEAM_STARTUP_DISPATCH_RETRIES: '1',
+          },
+        },
+        async ({ tmuxLogPath }) => {
+          let settled = false;
+          const startup = withoutTeamWorkerEnv(() => startTeam(
+            teamName, 'ownership changes during startup', 'executor', 2,
+            [
+              { subject: 'w1', description: 'worker one', owner: 'worker-1' },
+              { subject: 'w2', description: 'worker two', owner: 'worker-2' },
+            ], cwd,
+          ));
+          void startup.then(() => { settled = true; }, () => { settled = true; });
+          try {
+            // Keep worker-2's hook receipt pending while worker-1 starts and releases its task.
+            const deadline = Date.now() + 10_000;
+            while (true) {
+              const requests = await listDispatchRequests(await resolveRuntimeTeamName(cwd, teamName), cwd);
+              if (['worker-1', 'worker-2'].every((worker) => requests.some((request) =>
+                request.to_worker === worker && request.inbox_correlation_key === `startup:${worker}`
+                && request.status === 'pending'))) break;
+              assert.equal(settled, false, 'startup must still be waiting for dispatch');
+              assert.ok(Date.now() < deadline, 'both workers must reach startup dispatch');
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            const canonicalName = await resolveRuntimeTeamName(cwd, teamName);
+            await markPendingInboxDispatchesDelivered(canonicalName, cwd, { toWorker: 'worker-1' });
+            const beforeRelease = await readTeamConfig(canonicalName, cwd);
+            assert.ok(beforeRelease);
+            const taskId = beforeRelease.workers[0]!.assigned_tasks[0]!;
+            const claim = await claimTask(canonicalName, taskId, 'worker-1', null, cwd);
+            assert.ok(claim.ok);
+            assert.ok((await releaseTaskClaim(canonicalName, taskId, claim.claimToken, 'worker-1', cwd)).ok);
+            const releasedConfig = await readTeamConfig(canonicalName, cwd);
+            assert.ok(releasedConfig);
+            assert.ok(releasedConfig.config_generation! > beforeRelease.config_generation!);
+            assert.equal(settled, false, 'worker-2 dispatch must hold startup open through release');
+            assert.ok((await listDispatchRequests(canonicalName, cwd)).some((request) =>
+              request.to_worker === 'worker-2' && request.status === 'pending'));
+
+            await markPendingInboxDispatchesDelivered(canonicalName, cwd, { toWorker: 'worker-2' });
+            const runtime = await startup;
+            const canonical = await readTeamConfig(runtime.teamName, cwd);
+            const manifest = await readTeamManifestV2(runtime.teamName, cwd);
+            assert.deepEqual(runtime.config, canonical);
+            assert.deepEqual(canonical, releasedConfig, 'startup must not rewrite canonical membership');
+            assert.deepEqual(canonical?.workers.map((worker) => worker.assigned_tasks), [[], beforeRelease.workers[1]!.assigned_tasks]);
+            assert.deepEqual(manifest?.workers, canonical?.workers);
+            assert.equal(manifest?.config_generation, canonical?.config_generation);
+            const releasedTask = await readTask(runtime.teamName, taskId, cwd);
+            assert.equal(releasedTask?.status, 'pending');
+            assert.equal(releasedTask?.owner, undefined);
+            assert.equal(releasedTask?.claim, undefined);
+            for (const worker of runtime.config.workers) {
+              assert.ok(existsSync(join(cwd, '.omx/state/team', runtime.teamName, 'workers', worker.name, 'identity.json')));
+            }
+            for (const marker of ['startup-generation-w1', 'startup-generation-w2', 'startup-generation-hud']) {
+              assert.ok(existsSync(join(cwd, marker)), 'created pane resources must remain');
+            }
+            assert.doesNotMatch(await readFile(tmuxLogPath, 'utf-8'), /^(?:kill-pane|kill-session|set-hook -u)\b/m);
+          } finally {
+            await startup.catch(() => {});
+          }
+        },
+      );
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
