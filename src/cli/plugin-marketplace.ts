@@ -1686,6 +1686,17 @@ async function isLivePinnedSnapshot(
 
 async function hasLegacyInSnapshotLivePin(snapshotRef: DirectoryRef): Promise<boolean> {
 	try {
+		// First check for the simple file marker (pre-pin style)
+		const legacyPinMarkerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
+		try {
+			const markerStats = await lstat(legacyPinMarkerPath);
+			// If .omx-live-pin exists (either as file or directory), it indicates a pinned snapshot
+			if (markerStats.isFile() || markerStats.isDirectory()) return true;
+		} catch (error) {
+			if (!isMissingPathError(error)) return true; // Treat permission errors as pinned
+		}
+		
+		// Then check for pin records in the legacy directory (if it's a directory)
 		const legacyPinDir = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER).catch(() => null);
 		if (!legacyPinDir) return false;
 		try {
