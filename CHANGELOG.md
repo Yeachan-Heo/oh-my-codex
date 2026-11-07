@@ -6,11 +6,11 @@ All notable changes to this project are documented in this file.
 
 ## [0.21.47] - 2026-11-07
 
-Patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux's output format. See [release notes](docs/release-notes-0.21.47.md) for exact scope and evidence.
+Patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms. See [release notes](docs/release-notes-0.21.47.md) for exact scope and evidence.
 
 ### Fixed
 
-- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** Embed the split receipt in the tmux format specifier (`-F '#{pane_id}:'`) for all platforms instead of appending a shell comment, so psmux workers no longer exit on Windows.
+- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** On native Windows with psmux, `omx team` workers exited at launch because OMX appended a `# omx_source_...` receipt to the worker command. The receipt is now appended as a final '; # <receipt>' statement inside the PowerShell script before -EncodedCommand encoding; POSIX keeps ' # <receipt>' inside the sh -c string; and paneHasReceipt decodes encoded commands for ambiguous-split reconciliation.
 
 **Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.46...v0.21.47
 
