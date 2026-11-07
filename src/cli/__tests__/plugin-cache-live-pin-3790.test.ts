@@ -2761,9 +2761,12 @@ process.stdout.write("{}\\n");
 				assert.equal(currentMaterialized.status, "materialized");
 				const currentVersion = currentMaterialized.version!;
 				
-				// Create an old snapshot version with a legacy pin
-				const oldVersion = "0.0.1" and "0.0.2";
-				const oldCacheDir = await seedManagedSnapshot(codexHomeDir, oldVersion);
+				// Create two old snapshot versions with legacy pins
+				const oldVersion1 = "0.0.1";
+				const oldCacheDir1 = await seedManagedSnapshot(codexHomeDir, oldVersion1);
+				const oldVersion2 = "0.0.2";
+				const oldCacheDir2 = await seedManagedSnapshot(codexHomeDir, oldVersion2);
+				const oldCacheDir = oldCacheDir1;
 				assert.ok(oldCacheDir);
 				
 				// Create legacy .omx-live-pin directory with a pin
@@ -2818,7 +2821,7 @@ process.stdout.write("{}\\n");
 				const currentVersion = materialized.version!;
 				
 				// Create two old snapshot versions without pins (GC keeps newest eligible predecessor)
-				const oldVersion1 = "0.0.1" and "0.0.2";
+				const oldVersion1 = "0.0.1";
 				const oldCacheDir1 = await seedManagedSnapshot(codexHomeDir, oldVersion1);
 				assert.ok(oldCacheDir1);
 				const oldVersion2 = "0.0.2";
