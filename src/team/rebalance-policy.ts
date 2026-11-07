@@ -31,7 +31,7 @@ function isWorkerAvailable(worker: RebalanceWorkerInput): boolean {
 
 export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceDecision[] {
   const taskById = new Map(input.tasks.map((task) => [task.id, task] as const));
-  const busyOwners = new Set(input.tasks.filter((task) => task.status === 'in_progress').map((task) => task.owner));
+  const busyOwners = new Set(input.tasks.filter((task) => (task.status === 'pending' || task.status === 'in_progress')).map((task) => task.owner));
   const liveWorkers = input.workers.filter((worker) => isWorkerAvailable(worker) && !busyOwners.has(worker.name));
   if (liveWorkers.length === 0) return [];
 

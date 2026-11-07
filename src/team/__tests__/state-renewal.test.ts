@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   initTeamState, createTask, claimTask, renewTaskClaim, transitionTaskStatus,
-  reclaimExpiredTaskClaim, readTask, writeWorkerStatus, writeAtomic,
+  reclaimExpiredTaskClaim, readTask, writeWorkerStatus, writeAtomic, listMailboxMessages,
 } from '../state.js';
 import { executeTeamApiOperation } from '../api-interop.js';
 import { updateWorkerHeartbeat } from '../../scripts/notify-hook/team-worker.js';
@@ -102,7 +102,12 @@ describe('task claim renewal', () => {
       updated_at: new Date().toISOString(),
     }, cwd);
     await expire(claim.task.id);
-    await updateWorkerHeartbeat(join(cwd, '.omx/state'), team, 'worker-1');
+    const rejectedHeartbeat = await updateWorkerHeartbeat(join(cwd, '.omx/state'), team, 'worker-1');
+    assert.ok(rejectedHeartbeat && !rejectedHeartbeat.ok && 'stopMessage' in rejectedHeartbeat);
+    assert.match(rejectedHeartbeat.stopMessage, /LEASE LOST:.*STOP editing/);
+    for (const recipient of ['worker-1', 'leader-fixed']) {
+      assert.ok((await listMailboxMessages(team, recipient, cwd)).some((message) => /LEASE LOST:.*lease_expired.*STOP editing/.test(message.body)));
+    }
     assert.deepEqual(await renewTaskClaim(team, claim.task.id, 'worker-1', claim.claimToken, cwd), { ok: false, error: 'lease_expired' });
     const reclaimed = await reclaimExpiredTaskClaim(team, claim.task.id, cwd);
     assert.equal(reclaimed.ok, true);
@@ -111,6 +116,19 @@ describe('task claim renewal', () => {
     if (!next.ok) throw new Error('reclaim failed');
     const before = await readTask(team, claim.task.id, cwd);
     assert.deepEqual(await renewWorkerTaskLease(join(cwd, '.omx/state'), team, 'worker-1'), { ok: false, error: 'claim_conflict' });
+    const stateRoot = join(cwd, '.omx/state');
+    await writeAtomic(join(stateRoot, 'team', team, 'workers/worker-1/identity.json'), JSON.stringify({
+      name: 'worker-1', team_state_root: stateRoot, worktree_path: cwd,
+    }));
+    const postTool = await handleTeamWorkerPostToolUseSuccess({
+      hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { exit_code: 0 },
+    }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
+    assert.match(postTool.stopMessage!, /claim_conflict.*STOP editing/);
+    assert.deepEqual(postTool.operationKinds, []);
+    assert.equal(postTool.checkpointCommit, undefined);
+    for (const recipient of ['worker-1', 'leader-fixed']) {
+      assert.ok((await listMailboxMessages(team, recipient, cwd)).some((message) => /claim_conflict.*STOP editing/.test(message.body)));
+    }
     assert.deepEqual(await readTask(team, claim.task.id, cwd), before);
     assert.equal((await transitionTaskStatus(team, claim.task.id, 'in_progress', 'completed', claim.claimToken, cwd)).ok, false);
   });

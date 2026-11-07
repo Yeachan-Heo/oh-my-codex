@@ -7,19 +7,32 @@ export const TASK_LEASE_SHELL_FUNCTION = `with_task_lease() (
     omx team api renew-task-claim --input "$renewal_input" --json |
       node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{try{const r=JSON.parse(s);process.exit(r.ok===true&&r.data?.ok===true?0:1)}catch{process.exit(1)}})'
   }
-  renew || exit 1
-  "$@" & work_pid=$!
+  work_pid=
   lease_pid=
   cleanup() {
-    [ -z "$work_pid" ] || kill "$work_pid" 2>/dev/null || :
-    if [ -n "$lease_pid" ]; then kill "$lease_pid" 2>/dev/null || :; wait "$lease_pid" 2>/dev/null || :; fi
-    [ -z "$work_pid" ] || wait "$work_pid" 2>/dev/null || :
+    trap '' USR1 INT TERM
+    for pid in "$lease_pid" "$work_pid"; do
+      [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || :
+    done
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      alive=
+      for pid in "$lease_pid" "$work_pid"; do
+        [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null || alive=1
+      done
+      [ -n "$alive" ] || break
+      /bin/sleep 0.1
+    done
+    for pid in "$lease_pid" "$work_pid"; do
+      [ -z "$pid" ] || { kill -KILL "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; }
+    done
   }
   lease_owner_pid=$BASHPID
   trap cleanup EXIT
   trap 'exit 1' USR1
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  renew || exit 1
+  "$@" & work_pid=$!
   (
     trap - EXIT
     sleep_pid=

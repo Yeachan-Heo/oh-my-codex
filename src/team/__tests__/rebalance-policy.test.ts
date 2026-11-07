@@ -136,6 +136,18 @@ describe('rebalance-policy', () => {
     assert.equal(decisions[0]?.workerName, 'worker-2');
   });
 
+  it('reserves an owned pending startup assignment before its worker claims it', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        { id: '1', subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1', created_at: '2026-03-11T00:00:00Z' },
+        { id: '2', subject: 'overflow', description: 'work', status: 'pending', created_at: '2026-03-11T00:00:00Z' },
+      ],
+      workers: [{ name: 'worker-1', alive: true, status: { state: 'unknown', updated_at: '2026-03-11T00:00:00Z' } }],
+    });
+    assert.deepEqual(decisions, []);
+  });
+
   it('assigns at most one pending task per available worker and leaves overflow for later', () => {
     const tasks = Array.from({ length: 5 }, (_, i) => ({
       id: String(i + 1), subject: 'followup', description: 'work', status: 'pending' as const,

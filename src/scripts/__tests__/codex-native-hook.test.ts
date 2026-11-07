@@ -21,6 +21,7 @@ import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { DOCUMENT_REFRESH_EXEMPTION_PREFIX } from "../../document-refresh/enforcer.js";
 import {
 	initTeamState,
+  createTask, claimTask,
   readTeamConfig,
 	readTeamLeaderAttention,
 	readTeamPhase,
@@ -16883,6 +16884,38 @@ exit 0
       else delete process.env.OMX_TEAM_STATE_ROOT;
       if (typeof prevLeaderCwd === "string") process.env.OMX_TEAM_LEADER_CWD = prevLeaderCwd;
       else delete process.env.OMX_TEAM_LEADER_CWD;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces lease loss from PostToolUse without checkpointing stale work", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-lease-loss-"));
+    const teamName = "native-lease-loss";
+    const stateRoot = join(cwd, ".omx/state");
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      await writeJson(join(workerRoot, "status.json"), {
+        state: "working", current_task_id: task.id, current_claim_token: claim.claimToken,
+      });
+      const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+      await writeJson(taskPath, { ...claim.task, claim: { ...claim.task.claim, leased_until: new Date(0).toISOString() } });
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_STATE_ROOT = stateRoot;
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash",
+        tool_input: { command: "printf ok" }, tool_response: { exit_code: 0 },
+      }, { cwd });
+      assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*lease_expired.*STOP editing/);
+      const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(workerRoot, "lease-loss.json")), true);
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });

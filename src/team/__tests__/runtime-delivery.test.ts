@@ -87,6 +87,57 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
   });
 
+  it('invalidates rewritten-away cherry-pick delivery even after an intervening nonterminal poll', async () => {
+    await commit(worker, 'feature.txt');
+    await commit(repo, 'leader.txt');
+    const beforeDelivery = git(repo, 'rev-parse', 'HEAD');
+    const taskPath = join(repo, '.omx/state/team', team, 'tasks/task-1.json');
+    const task = JSON.parse(await readFile(taskPath, 'utf8'));
+    await writeAtomic(taskPath, JSON.stringify({ ...task, status: 'in_progress' }));
+    await writeWorkerStatus(team, 'worker-1', { state: 'working', updated_at: new Date().toISOString() }, repo);
+    await monitorTeam(team, repo);
+    const proof = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].delivery_leader_commit;
+    assert.equal(proof, git(repo, 'rev-parse', 'HEAD'));
+    git(repo, 'reset', '--hard', beforeDelivery);
+    // Read-only must distrust the old receipt even when every task is terminal.
+    await writeAtomic(taskPath, JSON.stringify(task));
+    assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'team-verify');
+    assert.equal((await rootState()).active, true);
+    // Mutating poll before completion must either restore delivery or leave honest debt.
+    await writeAtomic(taskPath, JSON.stringify({ ...task, status: 'in_progress' }));
+    await monitorTeam(team, repo);
+    await writeAtomic(taskPath, JSON.stringify(task));
+    const readOnly = await monitorTeam(team, repo, { readOnly: true });
+    if (readOnly?.phase === 'complete') assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
+    assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
+    assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
+  });
+
+  it('vetoes terminal success on cross-rebase index.lock failure and retries on a quiet second poll', async () => {
+    await commit(worker, 'feature.txt');
+    await commit(repo, 'leader.txt');
+    await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
+    const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
+    await writeFile(lock, 'held by regression test');
+    const first = await monitorTeam(team, repo);
+    assert.equal(first?.phase, 'team-fix');
+    const failed = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+    assert.equal(failed.status, 'rebase_conflict');
+    assert.ok(failed.pending_rebase_leader_head);
+    assert.match(failed.rebase_error!, /index.lock/);
+    assert.equal((await rootState()).active, true);
+    assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'team-fix');
+    const leaderHead = git(repo, 'rev-parse', 'HEAD');
+    await rm(lock);
+    assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), leaderHead, 'retry does not require fresh leader advancement');
+    const resolved = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+    assert.equal(resolved.pending_rebase_leader_head, undefined);
+    assert.equal(resolved.rebase_error, undefined);
+    assert.equal(resolved.last_rebased_leader_head, leaderHead);
+    assert.equal((await rootState()).active, false);
+  });
+
   it('allows genuinely no-change research worktrees to complete', async () => {
     assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
   });
