@@ -115,7 +115,9 @@ Nếu muốn Codex thuần không có lớp workflow bổ sung, có thể bạn 
 omx doctor
 codex login status
 omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
+```
 omx --worktree=feat/task --madmax --xhigh
+```
 ```
 
 `omx doctor` kiểm tra cài đặt, hooks và điều kiện runtime; smoke test thực hiện lệnh thật để phát hiện lỗi auth, profile hoặc provider.
@@ -132,20 +134,74 @@ OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 
 PowerShell dùng `$env:OMX_ROOT`, Command Prompt dùng `%USERPROFILE%`. Root tường minh trùng nhau gây xung đột; checkout khác nhau có root mặc định riêng.
 
+### Đặt OMX_ROOT trong PowerShell và Command Prompt
+
+PowerShell:
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+Command Prompt:
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
 ### An toàn khi dùng Madmax và worktree
 
 `--madmax` là viết tắt của `--dangerously-bypass-approvals-and-sandbox`, loại bỏ bảo vệ phê duyệt và sandbox. Chỉ dùng trong môi trường tin cậy. Trong repo git, ưu tiên worktree có tên:
 
 ```bash
+Worktree có tên cho một task:
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
 omx --worktree=feature/auth --madmax --xhigh
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
 `--worktree` chuyển sang checkout git riêng; dạng không tên tạo worktree detached dùng một lần. Worktree bẩn sẽ có cảnh báo nhưng vẫn khởi chạy. Dùng `--direct` nếu không muốn OMX quản lý tmux/HUD. `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` đặt lựa chọn môi trường; cờ CLI ưu tiên hơn. Không có thiết lập config file mới trong thay đổi này.
 
+Ví dụ khởi chạy trực tiếp:
+```bash
+omx --direct --yolo
+```
+
+Đặt lựa chọn profile lâu dài:
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+Quay lại chế độ tự động:
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+Cờ CLI ưu tiên hơn biến môi trường; giữa các cờ CLI, cờ cuối cùng có hiệu lực:
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
 ### /goal và lựa chọn skill
 
 Dùng `/goal` khi cần mục tiêu/checkpoint lâu dài; `$plan` để lập kế hoạch, `$team` để làm song song, `$ultragoal` để hoàn thành nhiều mục tiêu bền vững. Mặc định chỉ nạp 2–5 skill liên quan; nạp cả catalog thường làm giảm tập trung.
+
+Ví dụ mục tiêu bền vững:
+```text
+/goal Phát hành bản sửa lỗi checkout với checkpoint cho tái hiện, triển khai, kiểm thử hồi quy và xác minh cuối cùng.
+
+$plan "duyệt kế hoạch sửa lỗi checkout và xem xét đánh đổi"
+$ultragoal "thực hiện bản sửa đã duyệt với bằng chứng checkpoint"
+```
+
+Phản mẫu: đừng tải hàng loạt skill “cho chắc” trước khi nêu task:
+```text
+omx --madmax --xhigh
+# Đừng tải ngay 20 skill "cho chắc" trước khi mô tả task.
+# Việc đó làm phình context và khiến mô hình chú ý workflow không liên quan.
+```
 
 ## Mô hình đơn giản
 
@@ -206,8 +262,27 @@ Skill lập kế hoạch chỉ tạo kế hoạch, không tự thực thi code; 
 ```bash
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
+```
+```bash
 omx wiki list --json
+omx wiki query --input '{"query":"session-start lifecycle"}' --json
 omx wiki lint --json
+omx wiki refresh --json
+```
+
+Lệnh vận hành Team:
+```bash
+omx team 3:executor "fix the failing tests with verification"
+omx team status <team-name>
+omx team resume <team-name>
+omx team shutdown <team-name>
+```
+
+Chỉ dọn dẹp cưỡng bức khi đã xác nhận team chết hoặc bị bỏ dở có chủ ý:
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
 ```
 
 ### Ghi chú nền tảng cho Team
