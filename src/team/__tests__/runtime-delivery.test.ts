@@ -165,6 +165,69 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal((await rootState()).active, false);
   });
 
+  for (const unfinishedRebase of [false, true]) {
+    it(`redelivers lost pending-rebase receipts on a quiet poll${unfinishedRebase ? ' after restoring the original source' : ''}`, async () => {
+      await commit(worker, 'feature.txt');
+      const sourceHead = git(worker, 'rev-parse', 'HEAD');
+      await commit(repo, 'leader.txt');
+      const beforeDelivery = git(repo, 'rev-parse', 'HEAD');
+      await completeTask();
+      const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
+      await writeFile(lock, 'held by regression test');
+      assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+      const failed = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+      assert.equal(failed.last_integrated_head, sourceHead);
+      assert.ok(failed.pending_rebase_leader_head);
+      assert.match(failed.rebase_error!, /index.lock/);
+      await rm(lock);
+      if (unfinishedRebase) {
+        // Leave real rebase metadata and an intermediate HEAD, as after a failed abort.
+        assert.throws(() => git(worker, 'rebase', '--reapply-cherry-picks', '--empty=keep', '--exec', 'false', failed.pending_rebase_leader_head!));
+        assert.notEqual(git(worker, 'rev-parse', 'HEAD'), sourceHead);
+      }
+      git(repo, 'reset', '--hard', beforeDelivery);
+      await assert.rejects(readFile(join(repo, 'feature.txt')), { code: 'ENOENT' });
+      assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'team-fix');
+      assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
+      assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
+      const resolved = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'];
+      assert.equal(resolved.pending_rebase_leader_head, undefined);
+      assert.equal(resolved.rebase_error, undefined);
+      assert.equal(resolved.last_integrated_head, sourceHead);
+      assert.equal(resolved.delivery_leader_commit, git(repo, 'rev-parse', 'HEAD'));
+      assert.equal(git(worker, 'status', '--porcelain'), '');
+      assert.equal((await rootState()).active, false);
+    });
+  }
+
+  it('keeps lost-receipt pending state sticky while the worker is active or dirty, without checkpointing', async () => {
+    await commit(worker, 'feature.txt');
+    const sourceHead = git(worker, 'rev-parse', 'HEAD');
+    await commit(repo, 'leader.txt');
+    const beforeDelivery = git(repo, 'rev-parse', 'HEAD');
+    await completeTask();
+    const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
+    await writeFile(lock, 'held by regression test');
+    assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+    await rm(lock);
+    git(repo, 'reset', '--hard', beforeDelivery);
+    await writeWorkerStatus(team, 'worker-1', { state: 'working', updated_at: new Date().toISOString() }, repo);
+    assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), beforeDelivery);
+    await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
+    await writeFile(join(worker, 'unverified.txt'), 'do not publish');
+    for (let poll = 0; poll < 2; poll++) {
+      assert.equal((await monitorTeam(team, repo))?.phase, 'team-fix');
+      assert.equal(git(worker, 'rev-parse', 'HEAD'), sourceHead);
+      assert.equal(git(repo, 'rev-parse', 'HEAD'), beforeDelivery);
+      assert.ok((await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].pending_rebase_leader_head);
+    }
+    await rm(join(worker, 'unverified.txt'));
+    assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
+    await assert.rejects(readFile(join(repo, 'unverified.txt')), { code: 'ENOENT' });
+    assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
+  });
+
   it('allows genuinely no-change research worktrees to complete', async () => {
     await completeTask('1', false);
     assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
