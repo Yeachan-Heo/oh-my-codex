@@ -194,6 +194,9 @@ Al usar `--madmax` en un repositorio Git, prefiere iniciar en un worktree en vez
 
 ```bash
 omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
@@ -215,7 +218,17 @@ Para una preferencia persistente de shell/perfil:
 OMX_LAUNCH_POLICY=direct omx --yolo
 ```
 
-Restablece el comportamiento predeterminado con `unset OMX_LAUNCH_POLICY`. Las opciones CLI prevalecen sobre el entorno, y antes de `--` se aplica la última opción de política CLI. Valores válidos: `direct|tmux|detached-tmux|auto`. No hay opción equivalente en archivo de configuración. Dentro de un panel tmux existente, `--direct` no crea divisiones HUD, activa el modo ratón ni configura teclas extendidas, aunque el proceso sigue ejecutándose dentro de esa terminal.
+Restablece el comportamiento predeterminado con:
+
+```bash
+unset OMX_LAUNCH_POLICY
+``` Las opciones CLI prevalecen sobre el entorno. Este ejemplo fuerza el modo tmux aunque la preferencia de entorno sea `direct`:
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+Antes de `--` se aplica la última opción de política CLI. Valores válidos: `direct|tmux|detached-tmux|auto`. No hay opción equivalente en archivo de configuración. Dentro de un panel tmux existente, `--direct` no crea divisiones HUD, activa el modo ratón ni configura teclas extendidas, aunque el proceso sigue ejecutándose dentro de esa terminal.
 
 Prueba el flujo canónico:
 
