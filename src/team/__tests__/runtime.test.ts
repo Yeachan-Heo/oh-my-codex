@@ -12677,18 +12677,22 @@ esac
       await initTeamState(teamName, 'pending reservation', 'executor', 1, cwd);
       const reserved = await createTask(teamName, { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
       const selected = await createTask(teamName, { subject: 'queued', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+      const reservedBefore = await readTask(teamName, reserved.id, cwd);
+      const selectedBefore = await readTask(teamName, selected.id, cwd);
+      assert.ok(reservedBefore);
+      assert.ok(selectedBefore);
       await writeWorkerInbox(teamName, 'worker-1', 'Original startup handoff', cwd);
       const inboxPath = join(cwd, '.omx/state/team', teamName, 'workers/worker-1/inbox.md');
       const inbox = await readFile(inboxPath);
       await assert.rejects(() => assignTask(teamName, 'worker-1', selected.id, cwd), /already owns outstanding task/);
       await assert.rejects(() => reassignTask(teamName, selected.id, 'worker-2', 'worker-1', cwd), /already owns outstanding task/);
-      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reserved);
-      assert.deepEqual(await readTask(teamName, selected.id, cwd), selected);
+      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reservedBefore);
+      assert.deepEqual(await readTask(teamName, selected.id, cwd), selectedBefore);
       assert.deepEqual(await readFile(inboxPath), inbox);
       assert.equal((await listDispatchRequests(teamName, cwd)).length, 0);
       // Bootstrap may claim an owned queue directly; only assignment owns the fixed-inbox capacity rule.
       assert.equal((await claimTask(teamName, selected.id, 'worker-1', selected.version, cwd)).ok, true);
-      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reserved);
+      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reservedBefore);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -2802,7 +2802,6 @@ export interface TeamWorkerIntegrationState {
   rebase_error?: string;
   last_leader_head?: string;
   last_rebased_leader_head?: string;
-  pending_rebase_leader_head?: string;
   status?: TeamWorkerIntegrationStatus;
   conflict_commit?: string;
   conflict_files?: string[];
