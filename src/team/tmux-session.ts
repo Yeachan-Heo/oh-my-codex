@@ -353,6 +353,31 @@ function sourceTransactionReceipt(): string {
   return receipt;
 }
 
+export function bindSplitReceiptToPaneCommand(command: string, receipt: string): string {
+  // On Windows with PowerShell (psmux), the command is encoded with -EncodedCommand.
+  // Appending a shell comment after the -EncodedCommand causes it to become an extra
+  // argument to powershell.exe, which fails with "PowerShell: unrecognized argument".
+  // For PowerShell commands, inject the receipt as a comment inside the encoded script,
+  // then re-encode it. This preserves transaction attribution for fallback pane detection.
+  if (command.includes('-EncodedCommand')) {
+    const match = /^(.+?-EncodedCommand\s+)([A-Za-z0-9+/=]+)(.*)$/.exec(command);
+    if (match) {
+      const [, prefix, encodedCommand, suffix] = match;
+      try {
+        const decoded = Buffer.from(encodedCommand, 'base64').toString('utf16le');
+        const withReceipt = `# ${receipt}\n${decoded}`;
+        const reencoded = Buffer.from(withReceipt, 'utf16le').toString('base64');
+        return `${prefix}${reencoded}${suffix}`;
+      } catch {
+        // If decode/encode fails, return the command unchanged
+        return command;
+      }
+    }
+    return command;
+  }
+  return `${command} # ${receipt}`;
+}
+
 export function bindSplitWindowReceiptFormat(effect: string, receipt: string): string {
   if (!SOURCE_TRANSACTION_RECEIPT_PATTERN.test(receipt)) {
     throw new Error('tmux_source_transaction_receipt_invalid');
@@ -362,10 +387,6 @@ export function bindSplitWindowReceiptFormat(effect: string, receipt: string): s
     throw new Error('tmux_split_window_format_contract_invalid');
   }
   return `${effect.slice(0, firstFormatIndex)}-F '#{pane_id}:${receipt}'${effect.slice(firstFormatIndex + SPLIT_WINDOW_PANE_FORMAT.length)}`;
-}
-
-function bindSplitReceiptToPaneCommand(command: string, receipt: string): string {
-  return `${command} # ${receipt}`;
 }
 
 /** Queue an effect in the source pane's tmux server only when its exact pane/session/window incarnation still matches. */
@@ -378,6 +399,26 @@ export function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: str
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);
   if (result.stdout !== receipt) throw new Error('tmux source authority changed before effect');
   return receipt;
+}
+
+function paneHasReceipt(pane: { startCommand: string }, receipt: string): boolean {
+  // Check if receipt is directly in the command (POSIX shell case with comment)
+  if (pane.startCommand.includes(receipt)) {
+    return true;
+  }
+  // On Windows with PowerShell, the receipt is encoded inside the -EncodedCommand.
+  // Decode and check if the receipt is inside the encoded script.
+  const match = /-EncodedCommand\s+([A-Za-z0-9+/=]+)/.exec(pane.startCommand);
+  if (match) {
+    const encodedCommand = match[1]!;
+    try {
+      const decoded = Buffer.from(encodedCommand, 'base64').toString('utf16le');
+      return decoded.includes(receipt);
+    } catch {
+      // If decode fails, continue with next check
+    }
+  }
+  return false;
 }
 
 export function runSourceAuthorizedSplit(
@@ -407,7 +448,7 @@ export function runSourceAuthorizedSplit(
     const newlyObservedPaneIds = afterTopology.error
       ? []
       : afterTopology.panes
-        .filter((pane) => !beforePaneIds.has(pane.paneId) && pane.startCommand.includes(receipt))
+        .filter((pane) => !beforePaneIds.has(pane.paneId) && paneHasReceipt(pane, receipt))
         .map((pane) => pane.paneId);
     throw new AmbiguousSplitWindowOutputError(newlyObservedPaneIds, afterTopology.error);
   }

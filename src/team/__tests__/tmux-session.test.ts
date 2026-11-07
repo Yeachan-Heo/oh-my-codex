@@ -63,6 +63,7 @@ import {
   waitForWorkerReadyAsync,
   paneIsBootstrapping,
   parseSplitWindowPaneId,
+  bindSplitReceiptToPaneCommand,
   bindSplitWindowReceiptFormat,
   classifyWorkerStartupInjectSafety,
   checkWorkerStartupInjectSafety,
@@ -4954,6 +4955,36 @@ describe('createTeamSession tmux instance tagging', () => {
         /tmux_source_transaction_receipt_invalid/,
       );
     }
+  });
+
+  it('injects receipt inside PowerShell encoded commands instead of appending as comment', () => {
+    const receipt = 'omx_source_receipt_example';
+
+    // For PowerShell encoded commands, the receipt should be injected inside the encoded script,
+    // not appended after -EncodedCommand (which would make it an extra argument to powershell.exe).
+    const powershellCommand = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand abc123def456';
+    const result = bindSplitReceiptToPaneCommand(powershellCommand, receipt);
+    // The result should have the same prefix and suffix, but a different encoded command
+    assert.match(result, /^C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand [A-Za-z0-9+/=]+$/);
+    assert.notEqual(result, powershellCommand, 'PowerShell command should be modified to include receipt');
+    // The encoded part should be different from the original
+    assert.doesNotMatch(result, /abc123def456/, 'Should not contain the original encoded command');
+
+    // POSIX shell commands should still have receipt appended as a comment
+    const bashCommand = '/bin/bash -c "worker_command"';
+    assert.equal(
+      bindSplitReceiptToPaneCommand(bashCommand, receipt),
+      `${bashCommand} # ${receipt}`,
+      'Bash command should have receipt appended as comment',
+    );
+
+    // Plain command should have receipt appended
+    const plainCommand = 'worker_process';
+    assert.equal(
+      bindSplitReceiptToPaneCommand(plainCommand, receipt),
+      `${plainCommand} # ${receipt}`,
+      'Plain command should have receipt appended as comment',
+    );
   });
 
   it('fails closed on multi-row worker and HUD split-window output', async () => {
