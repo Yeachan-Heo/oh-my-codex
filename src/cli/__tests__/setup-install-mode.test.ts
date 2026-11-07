@@ -1528,6 +1528,7 @@ describe("omx setup install mode behavior", () => {
 					const initial = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
 					assert.equal(initial.status, "materialized");
 					const cacheDir = initial.cacheDir!;
+				const version = initial.version!;
 					const launcherPath = join(cacheDir, "hooks", "omx-command.json");
 					await writeFile(launcherPath, `${JSON.stringify({ command: "/stale/node", argsPrefix: ["/stale/omx.js"] })}\n`);
 					await writeBoundCompletionMarker(cacheDir);

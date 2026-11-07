@@ -1676,7 +1676,8 @@ async function isLivePinnedSnapshot(
 			const record = parseOmxPluginCacheLivePinRecord(parsed);
 			if (!record || (await isLivePinOwnerAlive(record))) return true;
 		}
-		return false;
+		// No valid pins in external directory; also check legacy in-snapshot pins
+		return await hasLegacyInSnapshotLivePin(snapshotRef);
 	} catch {
 		return true;
 	} finally {
@@ -2703,46 +2704,54 @@ export async function removeChildIfIdentity(
 				}
 				let preservationNeeded = false;
 				let livePinAtDestructiveCheck = false;
-				const removed = await removeChild(cacheBaseRef, quarantineName, {
-					...options,
-					preserveRecursive: false,
-					beforeDestructiveRemove: async () => {
-						if (
-							!(await omxPluginCacheLivePinMutationLockIsOwned(
-								cacheBaseRef,
-								options.expectedManagedVersion!,
-								mutationLockContent!,
-							)) ||
-							!(await omxPluginCacheLivePinMutationLockIsOwned(
-								cacheBaseRef,
-								options.expectedManagedVersion!,
-								intentLockContent!,
-								omxPluginCacheLivePinIntentLockName(options.expectedManagedVersion!),
-							))
-						) {
-							preservationNeeded = true;
-							livePinAtDestructiveCheck = true;
-							return false;
-						}
-						const state = await verifyQuarantineOwnership(retirementGateContent);
-						if (!state.owned || state.livePin) {
-							preservationNeeded = true;
-							livePinAtDestructiveCheck ||= state.livePin;
-						}
-						return state.owned && !state.livePin;
-					},
-				});
-				if (removed) {
-					// Successfully removed the snapshot; remove the retirement gate
-					await removeLivePinRetirementGate(cacheBaseRef.path, options.expectedManagedVersion!, retirementGateContent);
-				} else if (preservationNeeded) {
-					const restored = livePinAtDestructiveCheck && (await restoreQuarantinedSnapshot(retirementGateContent));
-					if (!livePinAtDestructiveCheck) {
+				try {
+					const removed = await removeChild(cacheBaseRef, quarantineName, {
+						...options,
+						preserveRecursive: false,
+						beforeDestructiveRemove: async () => {
+							if (
+								!(await omxPluginCacheLivePinMutationLockIsOwned(
+									cacheBaseRef,
+									options.expectedManagedVersion!,
+									mutationLockContent!,
+								)) ||
+								!(await omxPluginCacheLivePinMutationLockIsOwned(
+									cacheBaseRef,
+									options.expectedManagedVersion!,
+									intentLockContent!,
+									omxPluginCacheLivePinIntentLockName(options.expectedManagedVersion!),
+								))
+							) {
+								preservationNeeded = true;
+								livePinAtDestructiveCheck = true;
+								return false;
+							}
+							const state = await verifyQuarantineOwnership(retirementGateContent);
+							if (!state.owned || state.livePin) {
+								preservationNeeded = true;
+								livePinAtDestructiveCheck ||= state.livePin;
+							}
+							return state.owned && !state.livePin;
+						},
+					});
+					if (removed) {
+						// Successfully removed the snapshot; remove the retirement gate
 						await removeLivePinRetirementGate(cacheBaseRef.path, options.expectedManagedVersion!, retirementGateContent);
+					} else if (preservationNeeded) {
+						const restored = livePinAtDestructiveCheck && (await restoreQuarantinedSnapshot(retirementGateContent));
+						if (!livePinAtDestructiveCheck) {
+							await removeLivePinRetirementGate(cacheBaseRef.path, options.expectedManagedVersion!, retirementGateContent);
+						}
+						options.preservedPaths?.push(join(cacheBaseRef.path, restored ? childName : quarantineName));
 					}
-					options.preservedPaths?.push(join(cacheBaseRef.path, restored ? childName : quarantineName));
+					return removed;
+				} finally {
+					// Ensure retirement gate is cleaned up even if removal fails or we exit early
+					if (!preservationNeeded || !livePinAtDestructiveCheck) {
+						// If not preserved with live pin, attempt to clean up gate to avoid blocking future operations
+						await removeLivePinRetirementGate(cacheBaseRef.path, options.expectedManagedVersion!, retirementGateContent).catch(() => {});
+					}
 				}
-				return removed;
 			}
 		} finally {
 			if (intentLockContent) {
