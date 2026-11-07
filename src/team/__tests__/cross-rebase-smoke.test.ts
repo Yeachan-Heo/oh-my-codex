@@ -1,14 +1,19 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   initTeamState,
+  createTask,
+  claimTask,
+  transitionTaskStatus,
   listMailboxMessages,
   readMonitorSnapshot,
+  readTask,
   readTeamConfig,
   saveTeamConfig,
   writeWorkerStatus,
@@ -21,6 +26,7 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  await writeFile(join(cwd, '.git/info/exclude'), '.omx/\n');
   await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
   execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
@@ -55,6 +61,32 @@ async function configureWorkers(
     };
   });
   await saveTeamConfig(cfg, repo);
+  for (const worker of cfg.workers) {
+    const taskId = await completeIntegrationTask(teamName, repo, worker.name, worker.worktree_path!);
+    assert.deepEqual(worker.assigned_tasks, [taskId]);
+  }
+}
+
+async function completeIntegrationTask(teamName: string, repo: string, workerName: string, workerCwd: string, taskId?: string): Promise<string> {
+  const task = taskId ? await readTask(teamName, taskId, repo) : await createTask(teamName, {
+    subject: `Verified output from ${workerName}`, description: 'Ready for integration',
+    status: 'pending', owner: workerName, requires_code_change: true,
+  }, repo);
+  assert.ok(task);
+  const claim = await claimTask(teamName, task.id, workerName, null, repo);
+  assert.ok(claim.ok);
+  await mkdir(join(workerCwd, '.omx/evidence'), { recursive: true });
+  await writeFile(join(workerCwd, '.omx/evidence/handoff.json'), JSON.stringify({
+    teamName, taskId: task.id, claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+    verifiedHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerCwd, encoding: 'utf8' }).trim(),
+    summary: 'Verified worker output', verification: [{ command: 'npm test', result: 'passed', output: 'Tests passed' }], unverified: [],
+  }));
+  const completed = await transitionTaskStatus(teamName, task.id, 'in_progress', 'completed', claim.claimToken, repo, {
+    result: 'Verification: PASS `npm test` for worker output.\nEVIDENCE_RECORDED: .omx/evidence/handoff.json',
+  }, workerCwd);
+  assert.ok(completed.ok, JSON.stringify(completed));
+  await writeWorkerStatus(teamName, workerName, { state: 'done', updated_at: new Date().toISOString() }, repo);
+  return task.id;
 }
 
 describe('cross-rebase smoke regression', () => {
@@ -121,7 +153,11 @@ describe('cross-rebase smoke regression', () => {
       assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim(), leaderHead);
       assert.equal(await readFile(join(repo, 'README.md'), 'utf-8'), 'worker-1\n');
       for (const [index, path] of paths.entries()) {
-        assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf-8' }).trim(), heads[index]);
+        if (index === 1) {
+          assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path, encoding: 'utf-8' }).trim(), heads[index]);
+        } else {
+          execFileSync('git', ['merge-base', '--is-ancestor', heads[index], 'HEAD'], { cwd: path, stdio: 'ignore' });
+        }
         assert.equal(await readFile(join(path, 'README.md'), 'utf-8'), `worker-${index + 1}\n`);
         assert.equal(execFileSync('git', ['show', `${heads[index]}:README.md`], { cwd: repo, encoding: 'utf-8' }), `worker-${index + 1}\n`);
       }
@@ -170,7 +206,7 @@ describe('cross-rebase smoke regression', () => {
       // Simulate a worker committing after integration checks but before rebase starts.
       await writeFile(join(fakeBin, 'git'), `#!/bin/bash
 set -eu
-if [[ "$PWD" -ef ${JSON.stringify(worker2Path)} && "\${1:-}" == "status" && "$(cat ${JSON.stringify(join(repo, 'README.md'))})" == "worker-one" && ! -f ${JSON.stringify(originalHeadPath)} ]]; then
+if [[ "$PWD" -ef ${JSON.stringify(worker2Path)} && "\${1:-}" == "status" && "$#" == "2" && "$(cat ${JSON.stringify(join(repo, 'README.md'))})" == "worker-one" && ! -f ${JSON.stringify(originalHeadPath)} ]]; then
   printf 'worker-two\\n' > README.md
   ${JSON.stringify(realGit)} add README.md
   ${JSON.stringify(realGit)} commit -m 'late worker commit' >/dev/null
@@ -199,6 +235,129 @@ exec ${JSON.stringify(realGit)} "$@"
       await rm(fakeBin, { recursive: true, force: true });
       if (worker1Path) await rm(worker1Path, { recursive: true, force: true });
       if (worker2Path) await rm(worker2Path, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('rebases a previously cherry-picked unchanged worker when another worker advances the next cycle', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-cached-rebase-bin-'));
+    const previousPath = process.env.PATH;
+    const team = 'cached-cherry-pick';
+    let worker1Path = '';
+    let worker2Path = '';
+    try {
+      worker1Path = await addWorktree(repo, 'cached-worker-1', 'omx-cached-worker-1-');
+      await writeFile(join(worker1Path, 'w1.txt'), 'from worker 1\n');
+      execFileSync('git', ['add', 'w1.txt'], { cwd: worker1Path, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'worker diverges'], { cwd: worker1Path, stdio: 'ignore' });
+      const sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worker1Path, encoding: 'utf8' }).trim();
+      await writeFile(join(repo, 'leader.txt'), 'leader divergence\n');
+      execFileSync('git', ['add', 'leader.txt'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'leader diverges'], { cwd: repo, stdio: 'ignore' });
+      worker2Path = await addWorktree(repo, 'cached-worker-2', 'omx-cached-worker-2-');
+      await configureWorkers(team, repo, [
+        { path: worker1Path, branch: 'cached-worker-1' },
+        { path: worker2Path, branch: 'cached-worker-2' },
+      ]);
+      const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
+      const nextTask = await createTask(team, {
+        subject: 'Second cycle worker change', description: 'Publish worker 2 output next cycle',
+        status: 'pending', owner: 'worker-2', requires_code_change: true,
+      }, repo);
+      const statusPath = join(repo, '.omx', 'state', 'team', team, 'workers', 'worker-1', 'status.json');
+      // Publication starts done; a real successful pick races with the worker resuming work before Phase C.
+      await writeFile(join(fakeBin, 'git'), `#!/bin/bash
+set -eu
+if [[ "$PWD" -ef ${JSON.stringify(repo)} && "\${1:-}" == "cherry-pick" && "\${2:-}" == "--allow-empty" ]]; then
+  ${JSON.stringify(realGit)} "$@"
+  printf '%s' '${JSON.stringify({ state: 'working', updated_at: new Date().toISOString() })}' > ${JSON.stringify(statusPath)}
+  exit 0
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`, { mode: 0o755 });
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+      await monitorTeam(team, repo);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      const firstSnapshot = await readMonitorSnapshot(team, repo);
+      assert.equal(firstSnapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, sourceHead);
+      assert.equal(execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: worker1Path, encoding: 'utf8' }).trim(), sourceHead);
+      const firstLeaderHead = execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+      assert.notEqual(firstLeaderHead, sourceHead);
+      assert.notEqual(execFileSync(realGit, ['merge-base', sourceHead, firstLeaderHead], { cwd: repo, encoding: 'utf8' }).trim(), sourceHead);
+      assert.equal(await readFile(join(repo, 'w1.txt'), 'utf8'), 'from worker 1\n');
+      const firstEvents = await readTeamEvents(team, repo, { wakeableOnly: false });
+      assert.equal(firstEvents.some((event) => event.type === 'worker_cherry_pick_applied' && event.worker === 'worker-1'), true);
+      assert.equal(firstEvents.some((event) => event.type === 'worker_cross_rebase_skipped' && event.worker === 'worker-1' && event.metadata?.worker_state === 'working'), true);
+
+      await writeWorkerStatus(team, 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, repo);
+      await writeFile(join(worker2Path, 'w2.txt'), 'from worker 2\n');
+      execFileSync(realGit, ['add', 'w2.txt'], { cwd: worker2Path, stdio: 'ignore' });
+      execFileSync(realGit, ['commit', '-m', 'second cycle worker change'], { cwd: worker2Path, stdio: 'ignore' });
+      await completeIntegrationTask(team, repo, 'worker-2', worker2Path, nextTask.id);
+      await monitorTeam(team, repo);
+
+      const leaderHead = execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+      assert.notEqual(leaderHead, firstLeaderHead);
+      assert.equal(await readFile(join(worker1Path, 'w2.txt'), 'utf8'), 'from worker 2\n');
+      assert.equal(await readFile(join(worker1Path, 'w1.txt'), 'utf8'), 'from worker 1\n');
+      execFileSync(realGit, ['merge-base', '--is-ancestor', leaderHead, 'HEAD'], { cwd: worker1Path, stdio: 'ignore' });
+      const snapshot = await readMonitorSnapshot(team, repo);
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.last_rebased_leader_head, leaderHead);
+      const events = await readTeamEvents(team, repo, { wakeableOnly: false });
+      assert.equal(events.filter((event) => event.type === 'worker_cherry_pick_applied' && event.worker === 'worker-1').length, 1);
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_applied' && event.worker === 'worker-1'), true);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(fakeBin, { recursive: true, force: true });
+      if (worker1Path) await rm(worker1Path, { recursive: true, force: true });
+      if (worker2Path) await rm(worker2Path, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat a failed Git commit-range query as proof of integration', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-range-failure-bin-'));
+    const previousPath = process.env.PATH;
+    const paths: string[] = [];
+    const team = 'range-query-failure';
+    try {
+      for (const index of [1, 2]) {
+        const path = await addWorktree(repo, `range-worker-${index}`, `omx-range-worker-${index}-`);
+        paths.push(path);
+        await writeFile(join(path, `w${index}.txt`), `worker ${index}\n`);
+        execFileSync('git', ['add', '.'], { cwd: path, stdio: 'ignore' });
+        execFileSync('git', ['commit', '-m', `worker ${index}`], { cwd: path, stdio: 'ignore' });
+      }
+      await configureWorkers(team, repo, paths.map((path, index) => ({ path, branch: `range-worker-${index + 1}` })));
+      const sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: paths[1], encoding: 'utf8' }).trim();
+      const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
+      await writeFile(join(fakeBin, 'git'), `#!/bin/bash
+if [[ "$PWD" -ef ${JSON.stringify(paths[1])} && "\${1:-}" == "rev-list" ]]; then
+  echo 'simulated commit-range failure' >&2
+  exit 1
+fi
+exec ${JSON.stringify(realGit)} "$@"
+`, { mode: 0o755 });
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+      await monitorTeam(team, repo);
+      assert.equal(execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: paths[1], encoding: 'utf8' }).trim(), sourceHead);
+      assert.equal(existsSync(join(repo, 'w1.txt')), true);
+      assert.equal(existsSync(join(repo, 'w2.txt')), false);
+      assert.equal(existsSync(join(paths[1], 'w1.txt')), false);
+      const snapshot = await readMonitorSnapshot(team, repo);
+      assert.equal(snapshot?.integrationByWorker?.['worker-2']?.last_integrated_head, undefined);
+      const events = await readTeamEvents(team, repo, { wakeableOnly: false });
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_skipped' && event.worker === 'worker-2' && event.metadata?.reason === 'unintegrated_changes'), true);
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_applied' && event.worker === 'worker-2'), false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(fakeBin, { recursive: true, force: true });
+      for (const path of paths) await rm(path, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
     }
   });

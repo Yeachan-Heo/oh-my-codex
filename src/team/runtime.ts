@@ -1453,6 +1453,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
         : leaderHead;
       const commits = listCommitRange(repoRoot, baseline, workerHead, worktreePath);
       if (commits.length === 0) {
+        if (state.last_integrated_head === workerHead) integratedWorkerNames.add(worker.name);
         next[worker.name] = state;
         continue;
       }
@@ -1554,7 +1555,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
     for (const worker of config.workers) {
       if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
       // Never rewrite a worker whose current changes have not all landed on leader.
-      if (!integratedWorkerNames.has(worker.name)) {
+      if (!integratedWorkerNames.has(worker.name) && !next[worker.name]?.pending_rebase_leader_head) {
         await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
           worker_name: worker.name,
           reason: 'unintegrated_changes',

@@ -90,6 +90,7 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  await writeFile(join(cwd, '.git/info/exclude'), '.omx/\n');
   await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
   execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
@@ -100,6 +101,31 @@ async function addWorktree(repo: string, branchName: string, pathPrefix: string)
   const worktreePath = await mkdtemp(join(tmpdir(), pathPrefix));
   execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD'], { cwd: repo, stdio: 'ignore' });
   return worktreePath;
+}
+
+async function handOffVerifiedIntegrationTasks(teamName: string, cwd: string): Promise<void> {
+  const config = await readTeamConfig(teamName, cwd);
+  assert.ok(config);
+  for (const worker of config.workers) {
+    const task = await createTask(teamName, {
+      subject: `Verified output from ${worker.name}`, description: 'Ready for integration',
+      status: 'pending', owner: worker.name, requires_code_change: true,
+    }, cwd);
+    const claim = await claimTask(teamName, task.id, worker.name, null, cwd);
+    assert.ok(claim.ok);
+    const workerCwd = worker.worktree_path!;
+    await mkdir(join(workerCwd, '.omx/evidence'), { recursive: true });
+    await writeFile(join(workerCwd, '.omx/evidence/handoff.json'), JSON.stringify({
+      teamName, taskId: task.id, claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+      verifiedHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerCwd, encoding: 'utf8' }).trim(),
+      summary: 'Verified worker output', verification: [{ command: 'npm test', result: 'passed', output: 'Tests passed' }], unverified: [],
+    }));
+    const completed = await transitionTaskStatus(teamName, task.id, 'in_progress', 'completed', claim.claimToken, cwd, {
+      result: 'Verification: PASS `npm test` for worker output.\nEVIDENCE_RECORDED: .omx/evidence/handoff.json',
+    }, workerCwd);
+    assert.ok(completed.ok, JSON.stringify(completed));
+    await writeWorkerStatus(teamName, worker.name, { state: 'done', updated_at: new Date().toISOString() }, cwd);
+  }
 }
 
 function computeGitBlobSha1(content: string): string {
@@ -7551,6 +7577,7 @@ exec "${realGit}" "$@"
       };
       await saveTeamConfig(cfg, repo);
 
+      await handOffVerifiedIntegrationTasks('team-conflict-resolve', repo);
       await monitorTeam('team-conflict-resolve', repo);
 
       assert.equal(await readFile(join(repo, 'README.md'), 'utf-8'), 'leader version\n');
@@ -7684,6 +7711,7 @@ exec "${realGit}" "$@"
       // Set worker-2 status to idle (eligible for rebase attempt)
       await writeWorkerStatus('team-rebase-fail', 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
 
+      await handOffVerifiedIntegrationTasks('team-rebase-fail', repo);
       await monitorTeam('team-rebase-fail', repo);
 
       // Verify worker-1's changes landed on leader
