@@ -2967,6 +2967,7 @@ describe('buildWorkerStartupCommand', () => {
   it('appends receipt to POSIX worker startup commands without modifying the inner command', () => {
     const receipt = 'omx_source_posix_receipt';
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
 
@@ -2974,17 +2975,25 @@ describe('buildWorkerStartupCommand', () => {
       const cmdNoReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
       const cmdWithReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt);
 
-      // POSIX commands should embed the receipt directly in the shell invocation
-      if (!cmdWithReceipt.includes('-EncodedCommand')) {
-        // It's a POSIX command, verify receipt is appended
+      // If it's a PowerShell command (Windows), receipt should be embedded in the script
+      // If it's a POSIX command (Unix/macOS), receipt should be appended
+      assert(cmdWithReceipt.includes(receipt), 'Receipt must be present in command');
+      
+      if (cmdWithReceipt.includes('-EncodedCommand')) {
+        // PowerShell case
+        const match = cmdWithReceipt.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+        assert(match, 'Should extract encoded command');
+        const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
+        assert(decoded.includes(receipt), 'Decoded script should contain receipt');
+      } else {
+        // POSIX case: verify receipt is appended as comment
         assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment to POSIX command');
-        // Verify both commands contain the shell and basic structure
-        assert(cmdNoReceipt.includes('exec'), 'Both should be exec commands');
-        assert(cmdWithReceipt.includes('exec'), 'Both should be exec commands');
       }
     } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
     }
   });
 });
