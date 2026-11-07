@@ -54,6 +54,7 @@ interface ClaimTaskDeps extends TaskReadDeps {
   isTerminalTaskStatus: (status: TeamTaskStatus) => boolean;
   taskFilePath: (teamName: string, taskId: string, cwd: string) => string;
   writeAtomic: (path: string, data: string) => Promise<void>;
+  persistTaskOwnership: (task: TeamTaskV2) => Promise<void>;
 }
 
 export async function claimTask(
@@ -110,7 +111,7 @@ export async function claimTask(
       version: v.version + 1,
     };
 
-    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    await deps.persistTaskOwnership(updated);
     return { ok: true as const, task: updated, claimToken };
   });
 
@@ -324,7 +325,7 @@ export async function releaseTaskClaim(
       claim: undefined,
       version: v.version + 1,
     };
-    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    await deps.persistTaskOwnership(updated);
     return { ok: true as const, task: updated };
   });
 
@@ -353,7 +354,7 @@ export async function reclaimExpiredTaskClaim(
       claim: undefined,
       version: v.version + 1,
     };
-    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    await deps.persistTaskOwnership(updated);
     return { ok: true as const, task: updated, reclaimed: true };
   });
 

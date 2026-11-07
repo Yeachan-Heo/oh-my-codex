@@ -25,6 +25,7 @@ import {
   readMonitorSnapshot,
   claimTask,
   transitionTaskStatus,
+  releaseTaskClaim,
   readWorkerStatus,
   writeWorkerStatus,
   readTeamPhase,
@@ -7163,6 +7164,57 @@ process.on('SIGTERM', () => process.exit(0));
       }
     });
   }
+
+  it('monitorTeam integrates verified B after public release and reassignment of bootstrap A', async () => {
+    const repo = await initRepo();
+    let workerPath = '';
+    try {
+      const team = 'team-transfer-handoff';
+      workerPath = await addWorktree(repo, 'transfer-handoff-worker', 'omx-runtime-transfer-handoff-');
+      await initTeamState(team, 'release A then verify B', 'executor', 2, repo);
+      const taskA = await createTask(team, { subject: 'A', description: 'reassigned research', status: 'pending', requires_code_change: false }, repo);
+      const config = await readTeamConfig(team, repo);
+      assert.ok(config);
+      Object.assign(config.workers[0]!, {
+        assigned_tasks: [taskA.id], worktree_repo_root: repo,
+        worktree_path: workerPath, worktree_branch: 'transfer-handoff-worker',
+      });
+      await saveTeamConfig(config, repo);
+      const first = await claimTask(team, taskA.id, 'worker-1', null, repo);
+      assert.ok(first.ok);
+      assert.ok((await releaseTaskClaim(team, taskA.id, first.claimToken, 'worker-1', repo)).ok);
+      const transferred = await claimTask(team, taskA.id, 'worker-2', null, repo);
+      assert.ok(transferred.ok);
+      assert.ok((await transitionTaskStatus(team, taskA.id, 'in_progress', 'completed', transferred.claimToken, repo, { result: 'Research A complete.' })).ok);
+
+      await writeFile(join(workerPath, 'code-b.txt'), 'verified B after transferring A\n');
+      execFileSync('git', ['add', 'code-b.txt'], { cwd: workerPath });
+      execFileSync('git', ['commit', '-m', 'verified B'], { cwd: workerPath, stdio: 'ignore' });
+      const taskB = await createTask(team, { subject: 'B', description: 'verified code', status: 'pending', requires_code_change: true }, repo);
+      const claimB = await claimTask(team, taskB.id, 'worker-1', null, repo);
+      assert.ok(claimB.ok);
+      const verifiedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerPath, encoding: 'utf8' }).trim();
+      await mkdir(join(workerPath, '.omx/evidence'), { recursive: true });
+      await writeFile(join(workerPath, '.omx/evidence/b.json'), JSON.stringify({
+        teamName: team, taskId: taskB.id,
+        claimTokenSha256: createHash('sha256').update(claimB.claimToken).digest('hex'), verifiedHead,
+        summary: 'Verified B', verification: [{ command: 'npm test', result: 'passed', output: 'B passed' }], unverified: [],
+      }));
+      const completed = await transitionTaskStatus(team, taskB.id, 'in_progress', 'completed', claimB.claimToken, repo, {
+        result: 'Verification: PASS `npm test` for B.\nEVIDENCE_RECORDED: .omx/evidence/b.json',
+      });
+      assert.ok(completed.ok, JSON.stringify(completed));
+      assert.equal(completed.task.verified_head, verifiedHead);
+      await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
+      assert.deepEqual((await readTeamConfig(team, repo))?.workers.map((worker) => worker.assigned_tasks), [[taskB.id], [taskA.id]]);
+      await monitorTeam(team, repo);
+      assert.equal(await readFile(join(repo, 'code-b.txt'), 'utf8'), 'verified B after transferring A\n');
+      assert.ok((await readMonitorSnapshot(team, repo))?.integrationByWorker?.['worker-1']?.last_integrated_head);
+    } finally {
+      if (workerPath) await rm(workerPath, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 
   it('monitorTeam integrates verified code after exempt historical research completion', async () => {
     const repo = await initRepo();

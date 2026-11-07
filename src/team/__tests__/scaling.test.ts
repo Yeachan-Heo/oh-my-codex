@@ -3379,6 +3379,9 @@ describe('scaleDown', () => {
         current_task_id: 't-2',
         updated_at: new Date().toISOString(),
       }, cwd);
+      const teamRoot = join(cwd, '.omx/state/team/busy-test');
+      const artifactPaths = ['config.json', 'manifest.v2.json', 'workers/worker-1/status.json', 'workers/worker-2/status.json'];
+      const before = await Promise.all(artifactPaths.map((path) => readFile(join(teamRoot, path), 'utf8')));
       const result = await scaleDown(
         'busy-test', cwd,
         { count: 1 },
@@ -3388,6 +3391,8 @@ describe('scaleDown', () => {
       if (!result.ok) {
         assert.match(result.error, /Not enough idle workers/);
       }
+      assert.deepEqual(await Promise.all(artifactPaths.map((path) => readFile(join(teamRoot, path), 'utf8'))), before);
+      assert.equal(existsSync(join(teamRoot, '.scale-down-cleanup-debt.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -4814,7 +4819,7 @@ describe('nonforce scale-down worktree preservation', () => {
     }
   });
 
-  it('preserves a newer worker acknowledgment when another of three workers times out', async () => {
+  it('never writes worker status while waiting, including acknowledgment during another worker timeout', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-drain-partial-timeout-'));
     try {
       const team = 'partial-timeout';
@@ -4824,12 +4829,15 @@ describe('nonforce scale-down worktree preservation', () => {
       assert.ok(claim.ok);
       const before = { state: 'working' as const, current_task_id: task.id, updated_at: new Date(0).toISOString() };
       for (const name of ['worker-2', 'worker-3']) await writeWorkerStatus(team, name, before, cwd);
+      const stateDir = join(cwd, '.omx/state/team', team);
+      const configBytes = await readFile(join(stateDir, 'config.json'), 'utf8');
+      const manifestBytes = await readFile(join(stateDir, 'manifest.v2.json'), 'utf8');
+      const inboxPath = join(stateDir, 'workers/worker-2/inbox.md');
+      await writeFile(inboxPath, 'Keep working on assigned task A.\n');
       const removal = scaleDown(team, cwd, { workerNames: ['worker-2', 'worker-3'], drainTimeoutMs: 500 }, { OMX_TEAM_SCALING_ENABLED: '1' });
-      const deadline = Date.now() + 5_000;
-      while ((await readWorkerStatus(team, 'worker-3', cwd)).state !== 'draining') {
-        assert.ok(Date.now() < deadline);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      // scaleDown is only a reader: the worker's working status stays authoritative.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      for (const name of ['worker-2', 'worker-3']) assert.deepEqual(await readWorkerStatus(team, name, cwd), before);
       assert.ok((await transitionTaskStatus(team, task.id, 'in_progress', 'completed', claim.claimToken, cwd)).ok);
       const acknowledgment = { state: 'done' as const, updated_at: new Date().toISOString() };
       await writeWorkerStatus(team, 'worker-2', acknowledgment, cwd);
@@ -4838,6 +4846,10 @@ describe('nonforce scale-down worktree preservation', () => {
       assert.deepEqual(await readWorkerStatus(team, 'worker-3', cwd), before);
       assert.equal((await readTask(team, task.id, cwd))?.status, 'completed');
       assert.equal((await readTeamConfig(team, cwd))?.workers.length, 3);
+      assert.equal(await readFile(join(stateDir, 'config.json'), 'utf8'), configBytes);
+      assert.equal(await readFile(join(stateDir, 'manifest.v2.json'), 'utf8'), manifestBytes);
+      assert.equal(await readFile(inboxPath, 'utf8'), 'Keep working on assigned task A.\n');
+      assert.equal(existsSync(join(stateDir, '.scale-down-cleanup-debt.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -4873,12 +4885,9 @@ describe('nonforce scale-down worktree preservation', () => {
         const beforeTask = await readTask(team, task.id, repo);
         const startedAt = Date.now();
         const removal = scaleDown(team, repo, { workerNames: ['worker-2'], force: false, drainTimeoutMs: scenario === 'busy-timeout' ? 250 : 5_000 }, { OMX_TEAM_SCALING_ENABLED: '1' });
-        // Observe the request before acknowledging it, rather than racing a fixed sleep.
-        const deadline = Date.now() + 5_000;
-        while ((await readWorkerStatus(team, 'worker-2', repo)).state !== 'draining') {
-          assert.ok(Date.now() < deadline, 'leader should request drain');
-          await new Promise((resolve) => setTimeout(resolve, 5));
-        }
+        // The leader waits without replacing worker-owned status or task inboxes.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.deepEqual(await readWorkerStatus(team, 'worker-2', repo), originalStatus);
         assert.equal((await readWorkerStatus(team, 'worker-2', repo)).current_task_id, task.id);
         assert.equal(existsSync(worktree), true);
         if (scenario !== 'busy-timeout') {
@@ -4892,7 +4901,7 @@ describe('nonforce scale-down worktree preservation', () => {
         } else {
           assert.equal(result.ok, false);
           if (!result.ok) assert.match(result.error, scenario === 'busy-timeout' ? /scale_down_drain_timeout/ : /scale_down_worktree_not_preserved/);
-          if (scenario === 'busy-timeout') assert.ok(Date.now() - startedAt >= 250, 'draining is not an immediate acknowledgment');
+          if (scenario === 'busy-timeout') assert.ok(Date.now() - startedAt >= 250, 'busy status is not a drain acknowledgment');
           assert.equal(await readFile(join(worktree, 'unsaved.txt'), 'utf8'), 'worker output');
           assert.equal(await readFile(join(stateDir, 'config.json'), 'utf8'), beforeConfig);
           assert.equal(await readFile(join(stateDir, 'manifest.v2.json'), 'utf8'), beforeManifest);

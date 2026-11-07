@@ -7,7 +7,7 @@
  * Key design decisions:
  * - Monotonic worker index counter (next_worker_index in config) ensures unique names
  * - File-based scaling lock prevents concurrent scale operations
- * - 'draining' worker status for graceful transitions during scale_down
+ * - Worker-published idle/done status for graceful scale_down
  */
 
 import { randomUUID } from 'crypto';
@@ -37,7 +37,6 @@ import {
   teamReadManifest as readTeamManifestV2,
   teamNormalizePolicy as normalizeTeamPolicy,
   teamReadWorkerStatus as readWorkerStatus,
-  teamWriteWorkerStatus as writeWorkerStatus,
   teamWithScalingLock as withScalingLock,
   teamWithTaskMembershipBarrier as withTaskMembershipBarrier,
   recoverTeamMembershipTaskTransaction,
@@ -1943,8 +1942,8 @@ export async function reconcileScaleDownCleanupDebt(
 /**
  * Remove workers from a running team.
  *
- * Sets targeted workers to 'draining' status, waits for them to finish
- * current work (or force kills), then removes tmux panes and updates config.
+ * Waits for targeted workers to publish idle/done (unless forced), then removes
+ * tmux panes and updates config without mutating worker-owned status files.
  */
 export async function scaleDown(
   teamName: string,
@@ -2024,60 +2023,12 @@ export async function scaleDown(
     }
 
     const removedNames: string[] = [];
-    const priorWorkerStatusArtifacts = new Map<string, { exists: true; raw: Buffer } | { exists: false }>();
-    for (const worker of targetWorkers) {
-      const statusPath = join(teamStateRoot, 'team', sanitized, 'workers', worker.name, 'status.json');
-      try {
-        priorWorkerStatusArtifacts.set(worker.name, { exists: true, raw: await readFile(statusPath) });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          priorWorkerStatusArtifacts.set(worker.name, { exists: false });
-        } else {
-          throw error;
-        }
-      }
-    }
-    const drainStatusArtifacts = new Map<string, string>();
-    const restorePriorWorkerStatuses = async (workers: readonly WorkerInfo[]): Promise<void> => {
-      await Promise.all(workers.map(async (worker) => {
-        const statusPath = join(teamStateRoot, 'team', sanitized, 'workers', worker.name, 'status.json');
-        const requested = drainStatusArtifacts.get(worker.name);
-        if (!requested) return;
-        const current = await readFile(statusPath, 'utf8').catch(() => null);
-        if (current !== requested) return;
-        const priorArtifact = priorWorkerStatusArtifacts.get(worker.name);
-        if (priorArtifact?.exists) {
-          await writeFile(statusPath, priorArtifact.raw);
-        } else {
-          await rm(statusPath, { force: true });
-        }
-      }));
-    };
-
-
-
-    // Already-idle workers need no drain request. Busy workers must publish a
-    // fresh idle/done acknowledgement; a request or missing liveness is not one.
-    for (const w of targetWorkers) {
-      const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
-      if (status.state === 'idle' || status.state === 'done') continue;
-      const drainStatus = {
-        ...status,
-        state: 'draining',
-        reason: 'scale_down requested by leader',
-        updated_at: new Date().toISOString(),
-      } as const;
-      drainStatusArtifacts.set(w.name, JSON.stringify(drainStatus, null, 2));
-      await writeWorkerStatus(sanitized, w.name, drainStatus, leaderCwd);
-    }
-
     if (!force) {
       const deadline = Date.now() + drainTimeoutMs;
       while (true) {
         const statuses = await Promise.all(targetWorkers.map((w) => readWorkerStatus(sanitized, w.name, leaderCwd)));
         if (statuses.every((status) => status.state === 'idle' || status.state === 'done')) break;
         if (Date.now() >= deadline) {
-          await restorePriorWorkerStatuses(targetWorkers);
           return { ok: false, error: 'scale_down_drain_timeout' };
         }
         await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
@@ -2271,7 +2222,6 @@ export async function scaleDown(
             typeof worker.pane_id === 'string' && !resolvedPaneIds.has(worker.pane_id)
           ));
           if (unresolvedWorkers.length > 0) {
-            await restorePriorWorkerStatuses(unresolvedWorkers);
             const proofDebt = [...unpinnedProofDebt, ...paneTeardown.proofUnavailable.map((proof) => `${proof.paneId}:${proof.reason}`)];
             const killDebt = paneTeardown.kill.failedPaneIds.map((paneId) => `${paneId}:kill_failed`);
             await writeAtomic(cleanupDebtPath, JSON.stringify({
@@ -2308,7 +2258,6 @@ export async function scaleDown(
         });
       });
     } catch (error) {
-      await restorePriorWorkerStatuses(removableWorkers);
       return { ok: false, error: `scale_down_task_reconciliation_failed:${String(error)}` };
     }
     if (teardownFailure) return teardownFailure;
