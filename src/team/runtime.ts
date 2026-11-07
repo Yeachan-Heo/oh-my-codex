@@ -5038,6 +5038,13 @@ export async function assignTask(
   if (!workerInfo) throw new Error(`Worker ${workerName} not found in team`);
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
 
+  const outstandingTask = (await listTasks(sanitized, cwd)).find((current) =>
+    current.id !== taskId && current.owner === workerName
+    && (current.status === 'pending' || current.status === 'in_progress'));
+  if (outstandingTask) {
+    throw new Error(`Worker ${workerName} already owns outstanding task ${outstandingTask.id}`);
+  }
+
   const claim = await claimTask(sanitized, taskId, workerName, task.version ?? 1, cwd);
   if (!claim.ok) {
     if (claim.error === 'blocked_dependency') {
