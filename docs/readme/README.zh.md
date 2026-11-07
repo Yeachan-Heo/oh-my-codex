@@ -81,6 +81,7 @@ omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
 PowerShell：`$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"`  
@@ -216,6 +217,98 @@ Team 在 macOS/Linux + tmux 上体验最佳。原生 Windows 是次要路径，W
 ## 语言
 
 - [English](../../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md) · [Türkçe](README.tr.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Italiano](README.it.md) · [Ελληνικά](README.el.md) · [Polski](README.pl.md) · [Українська](README.uk.md) · [Bahasa Indonesia](README.id.md)
+
+## 更多启动示例
+
+### 目标与工作流
+
+```text
+# 适用于长期任务的持久目标与检查点：
+/goal 制定并实现安全的身份验证重构计划，并验证登录、登出和 refresh token 行为。
+
+$deep-interview "澄清身份验证变更"
+$ralplan "批准身份验证计划并审视取舍"
+$ultragoal "将获批计划作为持久 Codex 目标执行"
+```
+
+```bash
+omx --worktree=feat/task --madmax --xhigh
+```
+
+### 多会话与 worktree 示例
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
+```
+
+### 直接启动与 launch policy
+
+```bash
+omx --direct --yolo
+```
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+CLI policy 标志优先于环境变量；在 `--` 之前最后出现的 policy 标志生效。
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+### Checkout 修复的持久目标
+
+```text
+# 可复制使用的持久目标示例：
+/goal 修复 checkout 缺陷，并为复现、实现、回归测试和最终验证设置检查点。
+
+$plan "批准 checkout 缺陷修复计划并审视取舍"
+$ultragoal "带着检查点证据执行已批准的 checkout 修复"
+```
+
+反例：
+
+```text
+omx --madmax --xhigh
+# 在说明任务前就“以防万一”加载 20 个 skill。
+# 这会膨胀上下文，并让模型把注意力浪费在无关工作流上。
+```
+
+### 清理已停止的 Team
+
+只有在确认 Team 已停止或被有意放弃后，才使用强制关闭。
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+### 额外的 Sparkshell pane 检查
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
 
 ## 贡献者
 
