@@ -81,6 +81,7 @@ macOS/Linux에서 tmux를 사용할 수 있으면 OMX는 기본적으로 리더�
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
 PowerShell: `$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"`  
@@ -218,6 +219,98 @@ Team은 macOS/Linux와 tmux에서 가장 잘 작동합니다. Windows native는 
 ## 언어
 
 - [English](../../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md) · [Türkçe](README.tr.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Italiano](README.it.md) · [Ελληνικά](README.el.md) · [Polski](README.pl.md) · [Українська](README.uk.md) · [Bahasa Indonesia](README.id.md)
+
+## 추가 실행 예제
+
+### 목표와 워크플로
+
+```text
+# 장기 작업을 위한 지속 목표와 체크포인트:
+/goal 안전한 인증 리팩터링 계획을 세우고 구현한 뒤 로그인, 로그아웃, refresh token 동작을 검증합니다.
+
+$deep-interview "인증 변경 사항을 명확히 하기"
+$ralplan "인증 계획을 승인하고 trade-off 검토하기"
+$ultragoal "승인된 계획을 지속 가능한 Codex 목표로 실행하기"
+```
+
+```bash
+omx --worktree=feat/task --madmax --xhigh
+```
+
+### 여러 대화 및 worktree 예제
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
+```
+
+### 직접 실행 및 launch policy
+
+```bash
+omx --direct --yolo
+```
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+CLI 정책 플래그는 환경 변수보다 우선하며, `--` 앞에 둔 마지막 정책 플래그가 적용됩니다.
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+### 체크아웃 작업용 지속 목표
+
+```text
+# 복사해 사용할 수 있는 지속 목표 예제:
+/goal 재현, 구현, 회귀 테스트 및 최종 검증 체크포인트를 포함해 checkout 버그 수정 작업을 완료합니다.
+
+$plan "checkout 버그 수정 계획을 승인하고 trade-off 검토하기"
+$ultragoal "체크포인트 증거와 함께 승인된 checkout 수정 실행하기"
+```
+
+피해야 할 패턴:
+
+```text
+omx --madmax --xhigh
+# 요청을 설명하기도 전에 "혹시 모르니" 스킬 20개를 한꺼번에 로드합니다.
+# 이렇게 하면 컨텍스트가 불필요하게 커져 관련 없는 워크플로에 주의를 빼앗깁니다.
+```
+
+### 중단된 Team 정리
+
+실제로 종료되었거나 의도적으로 버린 Team임을 확인한 경우에만 강제 종료를 사용합니다.
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+### 추가 Sparkshell pane 점검
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
 
 ## 기여자
 
