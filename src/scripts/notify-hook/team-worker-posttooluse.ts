@@ -427,6 +427,9 @@ export async function handleTeamWorkerPostToolUseSuccess(
     const nowIso = new Date().toISOString();
     await writeHeartbeat(stateRoot, teamName, workerName, nowIso);
     const renewal = await renewWorkerTaskLease(stateRoot, teamName, workerName);
+    if (renewal && 'terminalHandoff' in renewal) {
+      return { handled: true, status: 'skipped', reason: 'terminal_handoff', teamName, workerName, stateRoot, worktreePath, operationKinds: [] };
+    }
     if (renewal && !renewal.ok) {
       const stopMessage = await reportWorkerTaskLeaseLoss(stateRoot, teamName, workerName, renewal.error);
       return { handled: true, status: 'skipped', reason: `lease_lost:${renewal.error}`, stopMessage, teamName, workerName, stateRoot, worktreePath, operationKinds: [] };
