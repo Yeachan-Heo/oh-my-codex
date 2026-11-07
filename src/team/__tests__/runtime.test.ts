@@ -6813,6 +6813,35 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('monitorTeam preserves an owned pending startup inbox before the first claim', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-pending-inbox-'));
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-pending-inbox-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState('pending-inbox', 'startup', 'executor', 1, cwd);
+        const initial = await createTask('pending-inbox', { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+        const overflow = await createTask('pending-inbox', { subject: 'overflow', description: 'work', status: 'pending' }, cwd);
+        await writeWorkerInbox('pending-inbox', 'worker-1', `Initial Task ${initial.id}`, cwd);
+        await writeWorkerStatus('pending-inbox', 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, cwd);
+        await monitorTeam('pending-inbox', cwd);
+        assert.equal(await readFile(join(cwd, '.omx/state/team/pending-inbox/workers/worker-1/inbox.md'), 'utf8'), `Initial Task ${initial.id}`);
+        assert.equal((await readTask('pending-inbox', overflow.id, cwd))?.owner, undefined);
+        assert.equal((await readTask('pending-inbox', initial.id, cwd))?.status, 'pending');
+        assert.equal((await listDispatchRequests('pending-inbox', cwd)).length, 0);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam leaves overflow pending and preserves the only inbox while its claim is outstanding', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-rebalance-inbox-'));
     try {
@@ -7680,7 +7709,7 @@ exec "${realGit}" "$@"
     }
   });
 
-  it('monitorTeam aborts failed rebase and leaves worktree in clean state', async () => {
+  it('monitorTeam preserves failed integration without attempting cross-rebase', async () => {
     const repo = await initRepo();
     let worker1Path = '';
     let worker2Path = '';
@@ -7697,7 +7726,7 @@ exec "${realGit}" "$@"
       execFileSync('git', ['mv', 'original.txt', 'renamed-by-w1.txt'], { cwd: worker1Path, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'worker-1 renames original'], { cwd: worker1Path, stdio: 'ignore' });
 
-      // Worker-2 renames original.txt → renamed-by-w2.txt (will conflict on rebase)
+      // Worker-2 renames original.txt → renamed-by-w2.txt (will conflict during integration)
       execFileSync('git', ['mv', 'original.txt', 'renamed-by-w2.txt'], { cwd: worker2Path, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'worker-2 renames original'], { cwd: worker2Path, stdio: 'ignore' });
 
@@ -7736,18 +7765,20 @@ exec "${realGit}" "$@"
       // Verify worker-1's changes landed on leader
       assert.equal(existsSync(join(repo, 'renamed-by-w1.txt')), true, 'leader should have worker-1 renamed file');
 
-      // Verify worker-2 worktree is NOT in a broken rebase state (rebase --abort was called)
+      // Failed source integration must not be followed by a history rewrite.
       const worker2HeadAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim();
-      assert.equal(worker2HeadAfter, worker2HeadBefore, 'worker-2 HEAD should revert to pre-rebase state after abort');
+      assert.equal(worker2HeadAfter, worker2HeadBefore, 'worker-2 HEAD should remain unchanged after failed integration');
       // Verify no rebase-in-progress markers
       const gitStatusOutput = execFileSync('git', ['status'], { cwd: worker2Path, encoding: 'utf-8' });
       assert.doesNotMatch(gitStatusOutput, /rebase in progress/, 'worktree should not have rebase in progress');
 
-      // Verify integration report logged the failure
+      const integration = (await readMonitorSnapshot('team-rebase-fail', repo))?.integrationByWorker?.['worker-2'];
+      assert.equal(integration?.status, 'cherry_pick_conflict');
+      assert.equal(integration?.last_rebased_leader_head, undefined);
       const reportPath = join(repo, '.omx', 'state', 'team', 'team-rebase-fail', 'integration-report.md');
-      assert.equal(existsSync(reportPath), true, 'integration report should exist after rebase failure');
       const report = await readFile(reportPath, 'utf-8');
-      assert.match(report, /rebase/, 'report should mention the rebase operation');
+      assert.match(report, /cherry-pick/);
+      assert.doesNotMatch(report, /rebase -X/);
     } finally {
       if (worker1Path) {
         await rm(worker1Path, { recursive: true, force: true });

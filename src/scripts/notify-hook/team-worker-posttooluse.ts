@@ -1,4 +1,4 @@
-import { renewWorkerTaskLease } from './team-worker-lease.js';
+import { renewWorkerTaskLease, reportWorkerTaskLeaseLoss } from './team-worker-lease.js';
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
@@ -19,6 +19,7 @@ export interface TeamWorkerPostToolUseResult {
   handled: boolean;
   status: PostToolUseStatus;
   reason?: string;
+  stopMessage?: string;
   teamName?: string;
   workerName?: string;
   stateRoot?: string;
@@ -425,7 +426,11 @@ export async function handleTeamWorkerPostToolUseSuccess(
 
     const nowIso = new Date().toISOString();
     await writeHeartbeat(stateRoot, teamName, workerName, nowIso);
-    await renewWorkerTaskLease(stateRoot, teamName, workerName);
+    const renewal = await renewWorkerTaskLease(stateRoot, teamName, workerName);
+    if (renewal && !renewal.ok) {
+      const stopMessage = await reportWorkerTaskLeaseLoss(stateRoot, teamName, workerName, renewal.error);
+      return { handled: true, status: 'skipped', reason: `lease_lost:${renewal.error}`, stopMessage, teamName, workerName, stateRoot, worktreePath, operationKinds: [] };
+    }
 
     const config = await readTeamConfig(stateRoot, teamName);
     const leaderArtifactCwd = readLeaderArtifactCwd(config, cwd);

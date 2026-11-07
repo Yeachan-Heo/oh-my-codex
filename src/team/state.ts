@@ -2797,6 +2797,9 @@ export async function readShutdownAck(
 export interface TeamWorkerIntegrationState {
   last_seen_head?: string;
   last_integrated_head?: string;
+  delivery_leader_commit?: string;
+  pending_rebase_leader_head?: string;
+  rebase_error?: string;
   last_leader_head?: string;
   last_rebased_leader_head?: string;
   status?: TeamWorkerIntegrationStatus;

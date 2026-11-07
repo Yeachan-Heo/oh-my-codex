@@ -14,7 +14,7 @@ n=0; [ ! -f "$LEASE_TEST_DIR/count" ] || n=$(cat "$LEASE_TEST_DIR/count")
 n=$((n+1)); echo "$n" > "$LEASE_TEST_DIR/count"
 if [ "$n" -gt 1 ] || [ "$LEASE_TEST_MODE" = initial-rejection ]; then
   case "$LEASE_TEST_MODE" in
-    catch-term) while [ ! -f "$LEASE_TEST_DIR/ready" ]; do /bin/sleep 0.01; done; echo '{"ok":true,"data":{"ok":false}}'; exit 0 ;;
+    catch-term|ignore-term) while [ ! -f "$LEASE_TEST_DIR/ready" ]; do /bin/sleep 0.01; done; echo '{"ok":true,"data":{"ok":false}}'; exit 0 ;;
     rejection|initial-rejection) echo '{"ok":true,"data":{"ok":false}}'; exit 0 ;;
     outer) echo '{"ok":false,"data":{"ok":true}}'; exit 0 ;;
     crash) exit 2 ;;
@@ -83,6 +83,12 @@ describe('generated task lease Bash wrapper', () => {
     assert.notEqual(result.code, 0, result.output);
     assert.match(result.output, /caught-term/);
     assert.doesNotMatch(result.output, /finished/);
+  });
+  it('kills and reaps a direct child that ignores TERM within a bounded grace period', async () => {
+    const started = Date.now();
+    const result = await runWrapper('ignore-term', 'console.log("work-pid:"+process.pid);process.on("SIGTERM",()=>{});require("node:fs").writeFileSync(process.env.LEASE_TEST_DIR+"/ready","");setInterval(()=>{},100)');
+    assert.notEqual(result.code, 0, result.output);
+    assert.ok(Date.now() - started < 5000, result.output);
   });
   it('does not start work when the initial renewal is rejected', async () => {
     const result = await runWrapper('initial-rejection', work);
