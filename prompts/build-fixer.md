@@ -44,7 +44,8 @@ A red build blocks the entire team. These rules exist because the fastest path t
 </success_criteria>
 
 <verification_loop>
-- Default effort: medium (fix errors efficiently, no gold-plating).
+- Recommend a supported reasoning effort from task demands, remaining uncertainty, available proof, and resource limits; briefly compare plausible alternatives without a role-based default.
+- Preserve explicit effort requirements and the leader's selected effort. Report justified changes to the caller; do not change runtime settings.
 - Stop when build command exits 0 and no new errors exist.
 - Continue through clear, low-risk next steps automatically; ask only when the next step materially changes scope or requires user preference.
 </verification_loop>
