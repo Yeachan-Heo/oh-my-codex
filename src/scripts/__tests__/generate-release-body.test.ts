@@ -22,7 +22,7 @@ function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
   return String(result.stdout || '').trim();
 }
 
-const TEMPLATE = `# oh-my-codex v0.0.0
+const TEMPLATE = `# oh-my-codex v0.13.0
 
 ## Summary
 
@@ -107,7 +107,26 @@ describe('generate-release-body', () => {
       git(root, ['commit', '-m', 'release']);
       git(root, ['tag', 'v0.13.1']);
 
-      await writeFile(join(root, 'RELEASE_BODY.md'), TEMPLATE);
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.13.1
+
+## Summary
+
+Custom summary that must stay intact.
+
+## Fixed
+
+- Keep this handwritten section.
+
+## Verification
+
+- npm test
+
+## Contributors
+
+Outdated contributor text.
+
+**Full Changelog**: [\`v0.0.0...v0.0.1\`](https://github.com/example/compare/v0.0.0...v0.0.1)
+`);
       const originalFetch = global.fetch;
       global.fetch = (async () => new Response(JSON.stringify({
         commits: [
@@ -162,7 +181,26 @@ describe('generate-release-body', () => {
       git(root, ['tag', 'v0.15.0']);
       git(root, ['checkout', 'v0.15.1']);
 
-      await writeFile(join(root, 'RELEASE_BODY.md'), TEMPLATE);
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.15.1
+
+## Summary
+
+Custom summary that must stay intact.
+
+## Fixed
+
+- Keep this handwritten section.
+
+## Verification
+
+- npm test
+
+## Contributors
+
+Outdated contributor text.
+
+**Full Changelog**: [\`v0.0.0...v0.0.1\`](https://github.com/example/compare/v0.0.0...v0.0.1)
+`);
       await generateReleaseBody({
         cwd: root,
         templatePath: 'RELEASE_BODY.md',
@@ -205,7 +243,26 @@ describe('generate-release-body', () => {
         /invalid release compare range: v0\.13\.1 is not an ancestor of v0\.13\.0/,
       );
 
-      await writeFile(join(root, 'RELEASE_BODY.md'), TEMPLATE);
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.13.1
+
+## Summary
+
+Custom summary that must stay intact.
+
+## Fixed
+
+- Keep this handwritten section.
+
+## Verification
+
+- npm test
+
+## Contributors
+
+Outdated contributor text.
+
+**Full Changelog**: [\`v0.0.0...v0.0.1\`](https://github.com/example/compare/v0.0.0...v0.0.1)
+`);
       await assert.rejects(
         generateReleaseBody({
           cwd: root,
@@ -238,7 +295,7 @@ describe('generate-release-body', () => {
       git(root, ['commit', '-m', 'release']);
       git(root, ['tag', 'v0.13.1']);
 
-      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.0.0
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.13.1
 
 ## Summary
 
@@ -280,7 +337,14 @@ Missing required sections.
       git(root, ['config', 'user.name', 'Release Bot']);
       git(root, ['config', 'user.email', 'release@example.com']);
 
-      await writeFile(join(root, 'RELEASE_BODY.md'), '# oh-my-codex v0.21.46\n\n## Contributors\n\nThanks to the contributors who made this release possible.\n\n## Full Changelog');
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.21.46
+
+## Contributors
+
+Thanks to the contributors who made this release possible.
+
+**Full Changelog**: [\`v0.21.45...v0.21.46\`](https://github.com/example/compare/v0.21.45...v0.21.46)
+`);
       await writeFile(join(root, 'notes.txt'), 'release notes');
       git(root, ['add', '.']);
       git(root, ['commit', '-m', 'base']);
@@ -293,6 +357,7 @@ Missing required sections.
 
       await assert.rejects(
         generateReleaseBody({
+          cwd: root,
           templatePath: 'RELEASE_BODY.md',
           outPath: 'RELEASE_BODY.generated.md',
           currentTag: 'v0.21.47',
@@ -313,18 +378,34 @@ Missing required sections.
       git(root, ['config', 'user.name', 'Release Bot']);
       git(root, ['config', 'user.email', 'release@example.com']);
 
-      await writeFile(join(root, 'RELEASE_BODY.md'), '# oh-my-codex v0.21.47\n\n## Contributors\n\nThanks to the contributors who made this release possible.\n\n## Full Changelog');
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.21.46
+
+## Contributors
+
+Thanks to the contributors who made this release possible.
+
+**Full Changelog**: [\`v0.21.45...v0.21.46\`](https://github.com/example/compare/v0.21.45...v0.21.46)
+`);
       await writeFile(join(root, 'notes.txt'), 'release notes');
       git(root, ['add', '.']);
       git(root, ['commit', '-m', 'base']);
       git(root, ['tag', 'v0.21.46']);
 
+      await writeFile(join(root, 'RELEASE_BODY.md'), `# oh-my-codex v0.21.47
+
+## Contributors
+
+Thanks to the contributors who made this release possible.
+
+**Full Changelog**: [\`v0.21.46...v0.21.47\`](https://github.com/example/compare/v0.21.46...v0.21.47)
+`);
       await writeFile(join(root, 'notes.txt'), 'new release notes');
-      git(root, ['add', 'notes.txt']);
+      git(root, ['add', '.']);
       git(root, ['commit', '-m', 'release']);
       git(root, ['tag', 'v0.21.47']);
 
       const generated = await generateReleaseBody({
+        cwd: root,
         templatePath: 'RELEASE_BODY.md',
         outPath: 'RELEASE_BODY.generated.md',
         currentTag: 'v0.21.47',
