@@ -98,7 +98,7 @@ Choisissez soigneusement le scope :
 
 `--force` est indépendant et temporaire : il n’est ni enregistré ni rejoué et ne remplace pas la politique explicite. Le choix n’est enregistré qu’après la réussite complète du setup. Cela ne fait pas de la fusion le comportement par défaut.
 
-### Installation du plugin Codex
+**Installation du plugin Codex :**
 
 Ce dépôt fournit aussi une disposition de plugin Codex sous `plugins/oh-my-codex`. Le plugin fournit les skills groupés et des métadonnées de hooks/intégrations, mais ne remplace pas le CLI global `oh-my-codex` ni le setup scoped. Les hooks du plugin lancent le CLI `omx` installé.
 
@@ -234,6 +234,10 @@ OMX ne remplace pas Codex :
 5. Depuis un dépôt Git, lancez un worktree nommé.
 6. Utilisez `$deep-interview` pour clarifier les exigences, `$ralplan` pour approuver le plan, puis `$ultragoal` pour l’exécuter durablement.
 7. Utilisez `$team` lorsqu’une story bénéficie d’une coordination parallèle ; ajoutez `/goal` si des objectifs et checkpoints explicites sont nécessaires.
+### `/goal` et choix des skills
+
+Démarrez une session forte avec `omx --madmax --xhigh` ou ajoutez `--worktree=<task>` dans un dépôt Git. Utilisez `/goal` pour un objectif durable avec checkpoints ; choisissez `$ultragoal` pour une exécution à plusieurs objectifs, `$team` pour une coordination parallèle, et `$plan` lorsqu’un plan explicite doit être préparé d’abord.
+
 Exemple prêt à copier :
 
 ```text
