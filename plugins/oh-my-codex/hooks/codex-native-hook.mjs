@@ -771,6 +771,78 @@ function closeLivePinParent(pinParentAnchor) {
   try { closeSync(pinParentAnchor.fd); } catch {}
 }
 
+// Anchor helper for every pin mutation (mkdir, create/write, link, rename, unlink, utimes).
+//
+// Linux: the .omx-pins directory is held as an O_DIRECTORY|O_NOFOLLOW fd and the
+// version directory is opened relative to it (/proc/self/fd/<fd>/<version>, also
+// O_NOFOLLOW). All mutations then go through /proc/self/fd/<versionFd>/<name>, so a
+// directory swapped for a symlink after the last check cannot redirect them; they
+// act on the original anchored directory (later checks then fail closed).
+//
+// Non-Linux: Node exposes no *at primitives, so mutations use the lexical path.
+// The guarantee there is narrower: the directory is lstat-verified immediately
+// before use, but a swap inside that check-to-use window is not prevented. Tracked
+// as a known residual in #4022.
+function openPinVersionDir(pinParentAnchor, version, { create = false } = {}) {
+  if (!pinParentAnchor) throw new Error('pin parent is not anchored');
+  if (process.platform === 'linux' && typeof pinParentAnchor.fd === 'number') {
+    const childPath = join(`/proc/self/fd/${pinParentAnchor.fd}`, version);
+    if (create) {
+      try {
+        mkdirSync(childPath, { mode: 0o700 });
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+      }
+    }
+    const fd = openSync(childPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    try {
+      const stats = fstatSync(fd);
+      if (!stats.isDirectory()) throw new Error('pin version path is not a directory');
+      return { fd, path: `/proc/self/fd/${fd}`, dev: stats.dev, ino: stats.ino };
+    } catch (error) {
+      try { closeSync(fd); } catch {}
+      throw error;
+    }
+  }
+  const path = join(pinParentAnchor.path, version);
+  if (create) {
+    try {
+      mkdirSync(path, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+  const stats = lstatSync(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error('pin version path is not a directory');
+  return { fd: null, path, dev: stats.dev, ino: stats.ino };
+}
+
+function closePinVersionDir(dir) {
+  if (dir && dir.fd !== null) {
+    try { closeSync(dir.fd); } catch {}
+  }
+}
+
+// Resolve a lexical .omx-pins/<version>/<name> path to an anchored operation path.
+function withAnchoredPinEntry(lexicalPath, fn) {
+  if (process.platform !== 'linux') return fn(lexicalPath);
+  const versionDir = dirname(lexicalPath);
+  const pinsParent = dirname(versionDir);
+  if (basename(pinsParent) !== '.omx-pins') return null;
+  let parentFd = null;
+  let dir = null;
+  try {
+    parentFd = openSync(pinsParent, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    dir = openPinVersionDir({ fd: parentFd, path: pinsParent }, basename(versionDir));
+    return fn(join(dir.path, basename(lexicalPath)));
+  } catch {
+    return null;
+  } finally {
+    closePinVersionDir(dir);
+    if (parentFd !== null) try { closeSync(parentFd); } catch {}
+  }
+}
+
 function readLivePinMutationLock(path) {
   let stats;
   try {
@@ -1364,6 +1436,7 @@ function hasLivePinForDelegate(pluginRoot) {
 function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = false) {
   let pinState;
   let mutationLock;
+  let versionDir = null;
   try {
     const target = livePinTarget(pluginRoot);
     if (!target) return null;
@@ -1371,19 +1444,12 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     if (!mutationLock) return null;
     pinState = livePinDirectory(pluginRoot);
     if (!pinState || pinState.version !== target.version || pinState.cacheBase !== target.cacheBase || !livePinRootMatches(pinState)) return null;
-    const pinDir = pinState.path;
-    // Verify the .omx-pins parent is still valid (anchored against TOCTOU)
+    // Verify the .omx-pins parent is still valid, then create and open the
+    // version directory through the held parent handle (see openPinVersionDir).
     if (!verifyLivePinParent(pinState.pinParentAnchor)) return null;
-    // Then create the version subdirectory non-recursively.
-    try {
-      mkdirSync(pinDir, { mode: 0o700 });
-    } catch (error) {
-      if (error?.code !== 'EEXIST') return null;
-    }
-    // Re-verify parent before operations on the directory
+    versionDir = openPinVersionDir(pinState.pinParentAnchor, pinState.version, { create: true });
+    const pinDir = versionDir.path;
     if (!verifyLivePinParent(pinState.pinParentAnchor)) return null;
-    const pinDirStats = lstatSync(pinDir);
-    if (!pinDirStats.isDirectory() || pinDirStats.isSymbolicLink()) return null;
     if (livePinRetirementGateExists(pinDir) || !livePinRootMatches(pinState) || !livePinMutationLockMatches(mutationLock)) return null;
     // This is a leased bootstrap guard, not the durable session record. A unique
     // pending marker expires after a crash instead of pinning on a reused PID.
@@ -1396,7 +1462,7 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     const pinName = `${LIVE_PIN_PENDING_PREFIX}${sessionHash}.json`;
     const stagePath = join(pinDir, stageName);
     const pinPath = join(pinDir, pinName);
-    const cleanupPath = join(pinDir, pinName);
+    const cleanupPath = join(pinState.path, pinName);
     try {
       writeFileSync(stagePath, content, { flag: 'wx', mode: 0o600 });
       if (livePinRetirementGateExists(pinDir) || !livePinRootMatches(pinState) || !livePinMutationLockMatches(mutationLock)) {
@@ -1424,6 +1490,7 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     return null;
   } finally {
     releaseLivePinMutationLock(mutationLock);
+    closePinVersionDir(versionDir);
     closeLivePinDirectory(pinState);
   }
 }
@@ -1476,6 +1543,7 @@ function startPendingSessionPinLease(pluginRoot, sessionId, stableSessionMarker 
 function renewPendingSessionPinLease(pluginRoot, path, sessionHash, expectedStats) {
   let pinState = null;
   let mutationLock = null;
+  let versionDir = null;
   try {
     const target = livePinTarget(pluginRoot);
     if (!target) return false;
@@ -1490,29 +1558,36 @@ function renewPendingSessionPinLease(pluginRoot, path, sessionHash, expectedStat
       || pinState.cacheBase !== target.cacheBase
       || !livePinRootMatches(pinState)
       || !livePinMutationLockMatches(mutationLock)
-      || livePinRetirementGateExists(pinState.path)
     ) return false;
-    // Verify the .omx-pins parent is still valid (anchored against TOCTOU)
+    // Verify the .omx-pins parent is still valid, then renew through a freshly
+    // anchored version-directory handle (never the lexical path).
     if (!verifyLivePinParent(pinState.pinParentAnchor)) return false;
-    const pinPath = join(pinState.path, basename(path));
+    versionDir = openPinVersionDir(pinState.pinParentAnchor, pinState.version);
+    if (livePinRetirementGateExists(versionDir.path)) return false;
+    const pinPath = join(versionDir.path, basename(path));
     const pending = readPendingSessionRegistration(pinPath, sessionHash);
     if (!pending || !sameFileIdentity(pending.stats, expectedStats)) return false;
     // Re-verify parent before operations on the file
     if (!verifyLivePinParent(pinState.pinParentAnchor)) return false;
     return renewPendingFileLease(pinPath, expectedStats)
       && livePinRootMatches(pinState)
-      && !livePinRetirementGateExists(pinState.path)
+      && !livePinRetirementGateExists(versionDir.path)
       && livePinMutationLockMatches(mutationLock);
   } catch {
     return false;
   } finally {
     releaseLivePinMutationLock(mutationLock);
+    closePinVersionDir(versionDir);
     closeLivePinDirectory(pinState);
   }
 }
 
 function removePendingSessionPin(pinPath) {
   if (!pinPath) return;
+  if (process.platform === 'linux' && !pinPath.startsWith('/proc/self/fd/')) {
+    withAnchoredPinEntry(pinPath, removePendingSessionPin);
+    return;
+  }
   try {
     const pendingHash = basename(pinPath).match(/^(?:\.pending-|\.stage-pending-)([0-9a-f]{64})(?:\.json|-)/)?.[1];
     if (!pendingHash) return;

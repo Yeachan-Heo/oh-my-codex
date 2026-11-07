@@ -678,7 +678,7 @@ import { syncBuiltinESMExports } from "node:module";
 const originalWriteFileSync = fs.writeFileSync;
 let renamed = false;
 fs.writeFileSync = function (path, ...args) {
-	if (!renamed && typeof path === "string" && path.includes("/.omx-pins/0.20.0/.stage-")) {
+	if (!renamed && typeof path === "string" && path.includes("/.stage-pending-")) {
 		fs.renameSync(process.env.OMX_TEST_PLUGIN_ROOT, process.env.OMX_TEST_QUARANTINE);
 		renamed = true;
 	}
@@ -836,7 +836,7 @@ import { syncBuiltinESMExports } from "node:module";
 const originalWriteFileSync = fs.writeFileSync;
 let paused = false;
 fs.writeFileSync = function (path, ...args) {
-	if (!paused && typeof path === "string" && path.includes("/.omx-pins/0.20.0/.stage-")) {
+	if (!paused && typeof path === "string" && path.includes("/.stage-pending-")) {
 		paused = true;
 		originalWriteFileSync.call(this, process.env.OMX_TEST_PIN_READY, "ready\\n");
 		const wait = new Int32Array(new SharedArrayBuffer(4));
@@ -3189,6 +3189,93 @@ setTimeout(run, 10);
 				});
 			} finally {
 				await rm(wd, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("I1 residual: hook pin mutations bind to the held directory handle when .omx-pins or the version dir is swapped immediately before the syscall (issue 4010, linux)", { skip: process.platform !== "linux" ? "anchoring via /proc/self/fd is Linux-only; non-Linux Node has no *at primitives (residual tracked in #4022)" : false }, async () => {
+		for (const point of ["writeFileSync", "linkSync"] as const) {
+			for (const swap of ["pins-parent", "version-dir"] as const) {
+				const wd = await mkdtemp(join(tmpdir(), "omx-4010-i1r-"));
+				try {
+					await withIsolatedUserHome(wd, async (codexHomeDir) => {
+						const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
+						const pinsParent = join(omxPluginCacheBase(codexHomeDir), ".omx-pins");
+						const trapDir = join(wd, "trap-dir");
+						await mkdir(join(trapDir, "0.20.0"), { recursive: true });
+						const swappedMarker = join(wd, "swapped");
+						const leakedPath = join(wd, "leaked");
+						const preloadPath = join(wd, "i1r-swap-before-syscall.mjs");
+						await writeFile(preloadPath, `
+import fs from "node:fs";
+import { basename } from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+const parent = process.env.OMX_TEST_PINS_PARENT;
+const trap = process.env.OMX_TEST_TRAP;
+const version = "0.20.0";
+let swapped = false;
+function swapNow() {
+  swapped = true;
+  if (process.env.OMX_TEST_SWAP === "pins-parent") {
+    fs.renameSync(parent, parent + ".real");
+    fs.symlinkSync(trap, parent);
+  } else {
+    fs.renameSync(parent + "/" + version, parent + "/" + version + ".real");
+    fs.symlinkSync(trap + "/" + version, parent + "/" + version);
+  }
+  fs.writeFileSync(process.env.OMX_TEST_SWAPPED, "swapped");
+}
+function wrap(name) {
+  const original = fs[name];
+  fs[name] = function (path, ...args) {
+    if (!swapped && name === process.env.OMX_TEST_POINT && typeof path === "string" && basename(path).startsWith(".stage-pending-")) swapNow();
+    const result = original.call(this, path, ...args);
+    if (swapped && name === process.env.OMX_TEST_POINT) {
+      const seen = fs.readdirSync(trap + "/" + version);
+      if (seen.length > 0) fs.appendFileSync(process.env.OMX_TEST_LEAKED, seen.join("\\n") + "\\n");
+    }
+    return result;
+  };
+}
+wrap("writeFileSync");
+wrap("linkSync");
+syncBuiltinESMExports();
+`);
+						spawnSync(
+							process.execPath,
+							["--import", preloadPath, join(pluginRoot, "hooks", "codex-native-hook.mjs")],
+							{
+								cwd: wd,
+								input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "i1r-session", codex_pid: process.pid, cwd: wd }),
+								encoding: "utf-8",
+								timeout: 15_000,
+								env: {
+									...process.env,
+									CODEX_HOME: codexHomeDir,
+									OMX_NATIVE_HOOK_COMMAND: process.execPath,
+									OMX_TEST_PINS_PARENT: pinsParent,
+									OMX_TEST_TRAP: trapDir,
+									OMX_TEST_SWAP: swap,
+									OMX_TEST_POINT: point,
+									OMX_TEST_SWAPPED: swappedMarker,
+									OMX_TEST_LEAKED: leakedPath,
+								},
+							},
+						);
+						const label = `${point}/${swap}`;
+						assert.ok(await lstat(swappedMarker).catch(() => null), `${label}: the swap must have been injected before the syscall`);
+						const leaked = await readFile(leakedPath, "utf-8").catch(() => "");
+						assert.equal(leaked, "", `${label}: the mutation syscall must not create anything in the symlink target (saw: ${leaked.trim()})`);
+						assert.deepEqual(
+							await readdir(join(trapDir, "0.20.0")),
+							[],
+							`${label}: nothing may be created or modified in the symlink target`,
+						);
+						assert.deepEqual(await readdir(trapDir), ["0.20.0"], `${label}: nothing else in the symlink target`);
+					});
+				} finally {
+					await rm(wd, { recursive: true, force: true });
+				}
 			}
 		}
 	});
