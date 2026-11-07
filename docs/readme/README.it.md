@@ -115,7 +115,9 @@ Per Codex senza un livello di workflow aggiuntivo, OMX probabilmente non serve.
 omx doctor
 codex login status
 omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
+```
 omx --worktree=feat/task --madmax --xhigh
+```
 ```
 
 `omx doctor` controlla installazione e runtime locale; il vero smoke test verifica autenticazione, profilo e provider con una richiesta effettiva.
@@ -131,20 +133,74 @@ OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
 
 Imposta `$env:OMX_ROOT` in PowerShell oppure `OMX_ROOT` nel Prompt dei comandi. Root esplicite uguali generano conflitto; checkout separati hanno root predefinite separate.
 
+### OMX_ROOT in PowerShell e Prompt dei comandi
+
+PowerShell:
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+Prompt dei comandi:
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
 ### Sicurezza di Madmax e worktree
 
 `--madmax` corrisponde a `--dangerously-bypass-approvals-and-sandbox`: rimuove le protezioni normali, quindi usalo solo in repository e ambienti fidati. Preferisci un worktree nominato:
 
 ```bash
+Worktree nominato per un singolo task:
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
 omx --worktree=feature/auth --madmax --xhigh
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
 `--worktree` crea una checkout separata; senza nome usa una directory detached temporanea. Se un worktree è già sporco, OMX avvisa ma avvia comunque. Per una sessione senza gestione tmux/HUD usa `--direct`; `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` controlla la preferenza persistente, mentre i flag CLI hanno precedenza. Il flag non introduce una nuova impostazione in file di configurazione.
 
+Avvio diretto:
+```bash
+omx --direct --yolo
+```
+
+Preferenza di profilo:
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+Ripristino automatico:
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+I flag CLI prevalgono sulla variabile d'ambiente; tra i flag CLI vale l'ultimo:
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
 ### Selezione di /goal e skill
 
 Avvia con `omx --madmax --xhigh` o aggiungi `--worktree=<task>`. Usa `/goal` per obiettivi e checkpoint durevoli, `$plan` per pianificare, `$team` per coordinamento parallelo, oppure `$ultragoal` per eseguire obiettivi multipli. In genere carica solo 2–5 skill pertinenti; un catalogo intero riduce la qualità dell’attenzione.
+
+Esempio di obiettivo durevole:
+```text
+/goal Rilascia la correzione checkout con checkpoint per riproduzione, implementazione, test di regressione e verifica finale.
+
+$plan "approva il piano della correzione checkout e valuta i compromessi"
+$ultragoal "esegui la correzione approvata con evidenza dei checkpoint"
+```
+
+Antipattern: non caricare subito molte skill «per sicurezza»:
+```text
+omx --madmax --xhigh
+# Non caricare subito 20 skill prima di descrivere il task.
+# Questo gonfia il contesto e distrae da workflow non pertinenti.
+```
 
 ## Modello mentale semplice
 
@@ -207,8 +263,27 @@ Esempi:
 ```bash
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
+```
+```bash
 omx wiki list --json
+omx wiki query --input '{"query":"session-start lifecycle"}' --json
 omx wiki lint --json
+omx wiki refresh --json
+```
+
+Comandi Team:
+```bash
+omx team 3:executor "fix the failing tests with verification"
+omx team status <team-name>
+omx team resume <team-name>
+omx team shutdown <team-name>
+```
+
+Usa la pulizia forzata solo dopo aver verificato che il team sia morto o abbandonato:
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
 ```
 
 ### Note di piattaforma per Team
