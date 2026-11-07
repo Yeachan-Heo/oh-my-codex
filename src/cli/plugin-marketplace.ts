@@ -270,6 +270,22 @@ async function openDirectoryRef(path: string): Promise<DirectoryRef> {
 }
 
 /**
+ * Opens the external live-pin directory for a given version (read-only).
+ * Anchors .omx-pins as a child of cacheBase to prevent symlink escapes.
+ * Does not create directories if they don't exist.
+ */
+async function openExternalLivePinDirectoryReadOnly(cacheBaseRef: DirectoryRef, version: string): Promise<DirectoryRef> {
+	// First, open .omx-pins as a child of cacheBase (anchored, no creation)
+	const pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
+	try {
+		// Then open the version directory under .omx-pins
+		return await openDirectoryChild(pinParentRef, version);
+	} finally {
+		await pinParentRef.handle.close().catch(() => undefined);
+	}
+}
+
+/**
  * Opens the external live-pin directory for a given version.
  * Anchors .omx-pins as a child of cacheBase to prevent symlink escapes.
  */
@@ -1283,7 +1299,8 @@ async function hasLiveSessionPinRecord(
 	let pinDirectoryRef: DirectoryRef | undefined;
 	try {
 		try {
-			pinDirectoryRef = await openExternalLivePinDirectory(cacheBaseRef, version);
+			// Use read-only variant to check for existing pins without creating directories
+			pinDirectoryRef = await openExternalLivePinDirectoryReadOnly(cacheBaseRef, version);
 		} catch (error) {
 			if (isMissingPathError(error)) {
 				// External pin directory doesn't exist; skip to legacy pin check
