@@ -1,10 +1,10 @@
 # oh-my-codex 0.21.47
 
-`0.21.47` keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux's output format rather than appending it as a shell comment.
+`0.21.47` keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms.
 
 ## Fixed
 
-- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** On native Windows with psmux, `omx team` workers exited at launch because OMX appended a `# omx_source_...` receipt to the worker command. psmux does not treat `#` as a comment starter, so the receipt reached `powershell.exe` as extra arguments. The receipt is now embedded in the tmux format specifier (`-F '#{pane_id}:'`) for all platforms, providing verification without a shell comment.
+- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** On native Windows with psmux, `omx team` workers exited at launch because OMX appended a `# omx_source_...` receipt to the worker command. psmux does not treat `#` as a comment starter, so the receipt reached `powershell.exe` as extra arguments. The receipt is now appended as a final '; # <receipt>' statement inside the PowerShell script before -EncodedCommand encoding; POSIX keeps ' # <receipt>' inside the sh -c string; and paneHasReceipt decodes encoded commands for ambiguous-split reconciliation.
 
 ## Compatibility
 

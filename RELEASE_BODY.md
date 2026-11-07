@@ -1,34 +1,32 @@
-# oh-my-codex v0.21.46
+# oh-my-codex v0.21.47
 
 ## Summary
 
-This patch release keeps generated native-agent instructions within the assigned scope and clarifies Git Master's task authority for history and remote writes.
+This patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms.
 
 ## Fixed
 
-- **ASSIGNMENT-SCOPED NATIVE AGENT OVERLAYS (#3989):** Generated posture and exact-model guidance no longer tell read-only or advisory roles to implement or always build. Specialist coverage, completion criteria, and verification requirements follow the assignment and repository/task requirements.
-- **GIT MASTER AUTHORITY BOUNDARIES (#3997):** History rewrites and remote writes require task authority. Preserve unrelated dirty and untracked work without stashing, resetting, cleaning, or overwriting it; split independent concerns while keeping a behavior's required tests and support files together.
+- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** On native Windows with psmux, `omx team` workers exited at launch because OMX appended a `# omx_source_...` receipt to the worker command. psmux does not treat `#` as a comment starter, so the receipt reached `powershell.exe` as extra arguments. The receipt is now appended as a final '; # <receipt>' statement inside the PowerShell script before -EncodedCommand encoding; POSIX keeps ' # <receipt>' inside the sh -c string; and paneHasReceipt decodes encoded commands for ambiguous-split reconciliation.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata was already synchronized to `0.21.46` on dev by #3993; the release branch does not bump those surfaces again.
+No breaking API changes. Release-coupled metadata was synchronized to `0.21.47` on dev by #4003, so the release branch does not bump those values again. `package.json`, both root `package-lock.json` version entries, the Cargo workspace and six workspace crates, and plugin metadata all report `0.21.47` at the pinned source.
 
 ## Verification
 
-- `npm ci` — passed.
+- `npm ci` — passed; 172 packages installed and lifecycle hooks completed.
 - `npm run build` — passed.
-- `npm test` — passed on the subsequent full run: all 475 Node test files and the generated catalog and prompt-inventory checks completed. An earlier attempt exceeded the command timeout without a final summary.
+- `npm test` — passed on the subsequent full run: runtime build, all 475 Node test files, generated catalog check, and prompt-inventory check completed.
 - `npm run check:no-unused` — passed.
-- `npm run lint` — passed across 900 files; Biome emitted the existing `linter.rules.recommended` deprecation notice, with no fixes applied.
-- Focused `native-config.test.js` regression suite — passed: 36 passed, 0 failed.
+- `npm run lint` — passed across 900 files. Biome emitted the existing `linter.rules.recommended` deprecation notice; no lint fixes were applied.
+- Focused native-config regression tests — passed: 36 passed, 0 failed.
 - Focused `codex-hooks.test.js` regression suite — passed: 74 passed, 1 skipped, 0 failed.
-- Release-coupled version synchronization — passed: `node dist/scripts/check-version-sync.js --tag v0.21.46` and `cargo metadata --locked --format-version 1 --no-deps` report all six OMX workspace crates as `0.21.46`.
 
 ## Contributors
 
-Thanks to @ev78394 for the native agent overlay scope fix (#3989) and the Git Master history-operation policy (#3997).
+Thanks to @Yeachan-Heo for the psmux receipt embedding fix (#4008) and to @aglikman for reporting the issue (#4007).
 
-**Full Changelog**: [`v0.21.45...v0.21.46`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.45...v0.21.46)
+**Full Changelog**: [`v0.21.46...v0.21.47`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.46...v0.21.47)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
