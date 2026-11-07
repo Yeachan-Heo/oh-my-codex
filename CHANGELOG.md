@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.47] - 2026-11-07
+
+Patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms. See [release notes](docs/release-notes-0.21.47.md) for exact scope and evidence.
+
+### Fixed
+
+- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** On native Windows with psmux, `omx team` workers exited at launch because OMX appended a `# omx_source_...` receipt to the worker command. The receipt is now appended as a final '; # <receipt>' statement inside the PowerShell script before -EncodedCommand encoding; POSIX keeps ' # <receipt>' inside the sh -c string; and paneHasReceipt decodes encoded commands for ambiguous-split reconciliation.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.46...v0.21.47
+
 ## [0.21.46] - 2026-11-02
 
 Patch release preserves assignment scope in generated native-agent overlays and bounds Git Master's history and write authority. See [release notes](docs/release-notes-0.21.46.md) for exact scope and evidence.
