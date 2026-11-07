@@ -3,10 +3,7 @@
 <p align="center">
   <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex character" width="280">
   <br>
-  <em>Mulai sesi Codex dengan lebih mantap, lalu biarkan OMX menambahkan prompt, workflow, dan bantuan runtime yang lebih baik saat pekerjaan makin besar.</em>
-  <br><br>
-  <strong>Suka OmX tetapi terasa agak berlebihan? <a href="https://github.com/Yeachan-Heo/gajae-code">Coba gajae-code</a>.</strong><br>
-  <sub>Pertahankan Codex OAuth dengan jalur berbasis SDK yang lebih cepat, lebih murah, lebih sederhana, dan lebih powerful untuk OpenClaw, Hermes, Grokbot, serta integrasi lainnya.</sub>
+  <em>Mulai dengan Codex yang lebih kuat; saat pekerjaan berkembang, OMX menambahkan prompt, alur kerja, dan dukungan runtime yang lebih baik.</em>
 </p>
 
 [![npm version](https://img.shields.io/npm/v/oh-my-codex)](https://www.npmjs.com/package/oh-my-codex)
@@ -14,144 +11,56 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-**Website:** https://yeachan-heo.github.io/oh-my-codex-website/
+**Situs web:** https://yeachan-heo.github.io/oh-my-codex-website/  
+**Dokumentasi:** [Memulai](../../docs/getting-started.html) · [Agen](../../docs/agents.html) · [Skill](../../docs/skills.html) · [Integrasi](../../docs/integrations.html) · [Demo](../../DEMO.md) · [Panduan OpenClaw](../openclaw-integration.md)  
+**Komunitas:** [Discord](https://discord.gg/wSyUQYfhAw) — server komunitas Gajae bersama untuk oh-my-codex, [gajae-code](https://github.com/Yeachan-Heo/gajae-code), dan alat terkait.
 
-**Dokumentasi:** [Memulai](../getting-started.html) · [Agent](../agents.html) · [Skill](../skills.html) · [Integrasi](../integrations.html) · [Demo](../../DEMO.md) · [Panduan OpenClaw](../openclaw-integration.md)
+## Proyek dan paket resmi
 
-**Komunitas:** [Discord](https://discord.gg/wSyUQYfhAw) — server komunitas Gajae bersama untuk oh-my-codex, [gajae-code](https://github.com/Yeachan-Heo/gajae-code), dan tooling terkait.
+Proyek OMX resmi adalah repositori ini, [Yeachan-Heo/oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex), dan paket npm resminya adalah [oh-my-codex](https://www.npmjs.com/package/oh-my-codex). Instal dengan `npm install -g oh-my-codex`. Proyek atau fork pihak ketiga yang memakai nama seperti “OMX v2” bukan penerus, pengganti, atau lini rilis resmi kecuali README atau dokumentasi ini menyatakannya. Jika ragu, gunakan repositori ini dan paket npm tersebut sebagai target instalasi resmi.
 
-## Proyek dan package resmi
+OMX adalah lapisan alur kerja untuk [OpenAI Codex CLI](https://github.com/openai/codex). Codex tetap menjadi mesin eksekusi; OMX membantu memulai sesi standar yang lebih kuat, menjalankan alur kerja konsisten, memanggil alur kerja secara mandiri seperti `$plan`, `$ultragoal`, `$team`, `$code-review`, dan `$ultraqa`, serta menyimpan panduan proyek dan status persisten di `.omx/`.
 
-Proyek OMX resmi/orisinal adalah repository ini, [`Yeachan-Heo/oh-my-codex`](https://github.com/Yeachan-Heo/oh-my-codex), dan package npm resmi untuk proyek ini adalah [`oh-my-codex`](https://www.npmjs.com/package/oh-my-codex). Instal proyek ini dengan `npm install -g oh-my-codex` (atau bersama Codex CLI seperti ditunjukkan di bawah).
+> ⚠️ **Lingkungan default yang disarankan: macOS atau Linux dengan Codex CLI.** OMX terutama dirancang dan disetel untuk jalur ini. Windows native dan Codex App bukan pengalaman default, dapat bermasalah atau berperilaku tidak konsisten, dan saat ini mendapat dukungan lebih terbatas.
 
-Proyek pihak ketiga atau fork yang menggunakan nama seperti “OMX v2” bukan kelanjutan, pengganti, atau jalur release resmi repository ini kecuali README atau dokumentasi ini menyatakannya secara eksplisit. Jika ragu, percayai repository ini dan package `oh-my-codex` sebagai target instalasi resmi.
-
-OMX adalah layer workflow untuk [OpenAI Codex CLI](https://github.com/openai/codex).
-
-<table>
-<tr>
-<td><strong>🚨 PERHATIAN — DEFAULT YANG DIREKOMENDASIKAN HANYALAH macOS atau Linux dengan Codex CLI.</strong><br><br><strong>OMX terutama dirancang dan secara aktif dioptimalkan untuk jalur tersebut.</strong><br><strong>Windows native dan Codex App bukan pengalaman default, dapat bermasalah atau berperilaku tidak konsisten, dan saat ini mendapat dukungan yang lebih terbatas.</strong></td>
-</tr>
-</table>
-
-OMX mempertahankan Codex sebagai execution engine dan mempermudah Anda untuk:
-- memulai sesi Codex yang lebih kuat secara default
-- menjalankan satu workflow yang konsisten dari klarifikasi hingga selesai
-- menjalankan workflow kanonis dengan `$plan`, `$ultragoal`, `$team`, `$code-review`, dan `$ultraqa` — masing-masing dapat dipakai secara independen, tanpa urutan tetap
-- menyimpan panduan proyek, rencana, log, dan state di `.omx/`
-
-## Maintainer Utama
+## Pemelihara inti
 
 | Peran | Nama | GitHub |
 | --- | --- | --- |
-| Kreator & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
-| Maintainer | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
-| Maintainer | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
+| Pembuat & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Pemelihara | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Pemelihara | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
 
-## Duta
+## Duta dan kontributor utama
 
-| Nama | GitHub |
-| --- | --- |
-| Sigrid Jin | [@sigridjineth](https://github.com/sigridjineth) |
-
-## Kolaborator Utama
-
-| Nama | GitHub |
-| --- | --- |
-| Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
-| Junho Yeo | [@junhoyeo](https://github.com/junhoyeo) |
-| JiHongKim98 | [@JiHongKim98](https://github.com/JiHongKim98) |
-| Lor | [@gobylor](https://github.com/gobylor) |
-| HyunjunJeon | [@HyunjunJeon](https://github.com/HyunjunJeon) |
+- Duta: Sigrid Jin ([@sigridjineth](https://github.com/sigridjineth))
+- Kontributor utama: Doyun Ha, Junho Yeo, JiHongKim98, Lor, dan HyunjunJeon. Lihat daftar lengkap di [GitHub](https://github.com/Yeachan-Heo/oh-my-codex/graphs/contributors).
 
 ## Alur default yang direkomendasikan
 
-Jika Anda menginginkan pengalaman OMX default, mulai dari sini:
-
-Pilih satu jalur instalasi. Jika Codex CLI sudah terinstal (Homebrew, npm, atau metode lain yang didukung):
+Jika Codex CLI sudah terpasang:
 
 ```bash
 codex --version
 npm install -g oh-my-codex
-# from the git project you want Codex to edit; choose a task-specific name
+# Jalankan dari proyek Git yang ingin diedit Codex; gunakan nama khusus untuk tugas.
 omx --worktree=feat/task --madmax --xhigh
 ```
 
-Jika Anda belum memiliki Codex CLI dan ingin npm yang mengelolanya:
+Jika Codex CLI belum ada dan ingin dikelola oleh npm:
 
 ```bash
 npm install -g @openai/codex
 npm install -g oh-my-codex
 ```
 
-Jangan menjalankan gabungan `npm install -g @openai/codex oh-my-codex` di atas binary `codex` yang sudah dimiliki Homebrew seperti `/opt/homebrew/bin/codex`; npm dapat gagal dengan `EEXIST` saat `@openai/codex` mencoba membuat binary yang sama. OMX hanya membutuhkan perintah `codex` yang berfungsi dan sudah terautentikasi di `PATH`; Codex tidak harus diinstal melalui npm.
+Jangan pasang Codex melalui npm di atas binary `codex` yang sudah dikelola Homebrew (misalnya `/opt/homebrew/bin/codex`); hal ini dapat menyebabkan `EEXIST`. OMX hanya memerlukan perintah `codex` yang berfungsi dan sudah terautentikasi di PATH, bukan Codex yang dipasang melalui npm. Setelah peningkatan versi OMX yang sebenarnya, setup tidak berjalan otomatis; jalankan `omx setup --scope project --merge-agents` atau `omx update`. Pemeriksaan pembaruan npm saat peluncuran dibatasi frekuensinya dan meminta konfirmasi. Gunakan `OMX_AUTO_UPDATE=0` untuk menonaktifkannya, atau `OMX_AUTO_UPDATE=defer` untuk menjadwalkan pembaruan setelah sesi selesai tanpa prompt.
 
-Pada bump versi `oh-my-codex` yang sebenarnya, instalasi npm global sekarang mencetak pengingat eksplisit alih-alih menjalankan setup secara otomatis. Saat siap, jalankan perintah setup dengan scope di bawah atau gunakan `omx update` untuk memeriksa npm lalu menjalankan jalur refresh setup yang sama.
+Pilih cakupan setup dengan sengaja: jalankan `omx setup --scope project --merge-agents` dari proyek Git target bila proyek harus memiliki panduan persisten `AGENTS.md`; gunakan `omx setup --scope user` untuk setup Codex tingkat pengguna. Hindari setup proyek dari direktori home yang luas kecuali direktori tersebut memang proyek target. Kebijakan merge disimpan per root kerja, bukan kebijakan force/default. Bagian yang dikelola OMX berada di antara `<!-- OMX:AGENTS:START -->` dan `<!-- OMX:AGENTS:END -->`.
 
-OMX juga memeriksa update npm saat launch dengan frekuensi yang dibatasi dan meminta konfirmasi sebelum menjadwalkan update setelah sesi saat ini selesai. Set `OMX_AUTO_UPDATE=0` untuk menonaktifkan pemeriksaan saat launch, atau set `OMX_AUTO_UPDATE=defer` untuk menjadwalkan update tertunda yang sama tanpa prompt konfirmasi.
+Repositori ini juga menyediakan tata letak plugin Codex resmi di `plugins/oh-my-codex`. Mode plugin tetap menjalankan CLI `omx` yang terpasang dan memerlukan `AGENTS.md` persisten untuk panduan orkestrasi. `omx setup --disable-hooks` menonaktifkan hook milik OMX lalu berhenti sebelum instalasi aset dan konfigurasi normal.
 
-Pilih scope setup dengan sengaja:
-- Gunakan `omx setup --scope project --merge-agents` dari proyek git tempat OMX akan bekerja ketika repository tersebut seharusnya memiliki panduan `AGENTS.md` yang persisten.
-- Gunakan `omx setup --scope user` untuk setup Codex tingkat user saat Anda tidak sedang menyiapkan direktori saat ini sebagai proyek OMX.
-- Hindari menjalankan setup dengan scope project dari direktori home yang luas atau hub operasional, kecuali direktori tersebut memang sengaja menjadi proyek yang sedang ditinjau. `AGENTS.md` tingkat home sering berisi aturan keselamatan dan routing global; simpan panduan runtime OMX yang spesifik proyek di repository yang sebenarnya.
-
-### Mempertahankan kebijakan merge AGENTS secara eksplisit
-
-`omx setup --merge-agents`, `omx setup --no-merge-agents`, dan `omx setup --clear-merge-agents-policy` adalah satu-satunya selector kebijakan; gunakan bentuk polosnya (bukan bentuk `=value`). Mengulang selector yang sama tidak masalah, tetapi mencampur pilihan set dan clear akan gagal sebelum setup mengubah apa pun. Set eksplisit akan mengesampingkan kebijakan yang tersimpan.
-
-Set eksplisit yang berhasil mencatat `mergeAgents: true` atau `false` di `./.omx/setup-scope.json` pada working root saat ini, bahkan ketika scope setup adalah `user`; kebijakan ini tidak pernah menjadi preferensi user global atau bocor ke root lain. `omx update` berikutnya akan memutar ulang kebijakan valid yang cocok untuk refresh langsung maupun tertunda.
-
-`true` menggunakan branch merge yang sudah ada. `false` hanya menekan branch tersebut: nilai ini tidak menjanjikan preservasi, penggantian, atau mode keselamatan baru, sehingga perilaku prompt, skip, managed-refresh, plugin-default, dan force yang sudah ada tetap berlaku. Review dengan scope yang cocok mempertahankan kebijakan saat pengaturan lain berubah. Reset atau perubahan scope menghapus kebijakan warisan kecuali run setup yang sama secara eksplisit menetapkan `true` atau `false`; clear selalu menghapus kebijakan dan tidak dapat digabungkan dengan selector set.
-Data tersimpan yang malformed, tidak dikenal, bukan boolean, atau memiliki scope yang salah akan diabaikan dengan aman.
-
-`--force` bersifat independen dan sementara: flag ini tidak dicatat maupun diputar ulang, dan tidak mengesampingkan kebijakan merge eksplisit. Setup menyimpan intent set atau clear eksplisit secara atomik hanya setelah seluruh pekerjaan setup berhasil, termasuk ketika safeguard sesi aktif atau symlink plugin melewati penulisan `AGENTS.md` saat ini, sehingga refresh berikutnya dapat menghormati kebijakan yang diminta. Hal ini tidak menjadikan merge sebagai default atau menghidupkan kembali pendekatan merge-by-default #2892 yang ditolak.
-Versi OMX yang lebih lama akan mengabaikan field tersebut dengan aman, tetapi mungkin menghapusnya saat menulis ulang preferensi setup yang dikenalnya.
-
-
-**Catatan instalasi plugin Codex:** repo ini juga menyediakan layout plugin Codex resmi di `plugins/oh-my-codex` dengan metadata marketplace di `.agents/plugins/marketplace.json`. Plugin tersebut membundel permukaan skill yang dicerminkan beserta metadata pendamping dengan scope plugin untuk lifecycle hook resmi Codex, server kompatibilitas MCP opsional, dan app.
-Plugin ini tetap **bukan** pengganti CLI global `oh-my-codex` plus setup dengan scope: hook dengan scope plugin menjalankan CLI `omx` yang terinstal, mode setup legacy menginstal agent dan prompt native, sedangkan mode setup plugin mengandalkan discovery plugin untuk skill yang dibundel sambil mengarsipkan/menghapus prompt dan TOML native-agent lama yang dikelola OMX agar file role usang tidak membayangi perilaku plugin.
-Mode plugin tetap membutuhkan `AGENTS.md` dengan scope persisten (`~/.codex/AGENTS.md` untuk setup user atau `./AGENTS.md` untuk setup project) sebagai layer panduan orkestrasi yang persisten; file AGENTS dengan scope sesi hanya menggabungkan panduan persisten tersebut dengan overlay runtime dan bukan penggantinya.
-
-Kemudian bekerja seperti biasa di dalam Codex:
-
-```text
-# Durable objective/checkpoints for a long task:
-/goal Create a safe authentication refactor plan, implement it, and verify login, logout, and refresh-token behavior.
-
-$deep-interview "clarify the authentication change"
-$ralplan "approve the auth plan and review tradeoffs"
-$ultragoal "turn the approved plan into durable Codex goals"
-```
-
-Itulah jalur utamanya.
-Sebelum menganggap runtime siap, jalankan smoke test quick-start di bawah: `omx doctor` memverifikasi bentuk instalasi, sementara `omx exec` membuktikan bahwa runtime Codex aktif benar-benar dapat melakukan autentikasi dan menyelesaikan model call dari environment saat ini.
-Mulai OMX dengan konfigurasi yang kuat, lakukan klarifikasi lebih dulu bila diperlukan, setujui rencana, lalu gunakan `$ultragoal` sebagai wrapper penyelesaian persisten default. Gunakan `$team` di dalam jalur eksekusi tersebut hanya ketika story Ultragoal tertentu membutuhkan pekerjaan paralel yang terkoordinasi; lanjutkan dengan `$ultragoal` untuk menjaga objective dan checkpoint tetap berjalan sampai selesai.
-
-## Untuk apa OMX digunakan
-
-Gunakan OMX jika Anda sudah menyukai Codex dan menginginkan runtime harian yang lebih baik di sekitarnya:
-- workflow standar yang dibangun di sekitar `$deep-interview` -> `$ralplan` -> `$ultragoal`
-- batasan research: gunakan `$best-practice-research` untuk evidence resmi/upstream biasa sebelum planning, `$autoresearch` untuk artifact research yang dibatasi dan melewati validator gate (`$deep-interview --autoresearch` untuk intake, lalu `$autoresearch` dengan mode validasi yang dipilih) untuk mission research, lalu masukkan temuan research ke `$ralplan` untuk sintesis arsitektur
-- handoff multi-goal persisten dengan `$ultragoal` dan artifact `.omx/ultragoal` sebagai jalur penyelesaian default setelah planning
-- role spesialis dan skill pendukung saat tugas membutuhkannya
-- panduan proyek melalui `AGENTS.md` dengan scope
-- state persisten di `.omx/` untuk rencana, log, memory, dan pelacakan mode
-
-Jika Anda menginginkan Codex polos tanpa layer workflow tambahan, kemungkinan Anda tidak memerlukan OMX.
-
-## Mulai cepat
-
-### Persyaratan
-
-- Node.js 20+
-- Codex CLI terinstal, diverifikasi dengan `codex --version`, dan terautentikasi (Homebrew maupun npm sama-sama boleh; jangan instal ulang `@openai/codex` dengan npm jika Homebrew sudah memiliki `codex`)
-- autentikasi Codex terkonfigurasi dan terlihat di shell/profile yang sama yang akan menjalankan OMX
-- `tmux` di macOS/Linux jika Anda menginginkan runtime team persisten yang direkomendasikan
-- `psmux` di Windows native hanya jika Anda memang menginginkan jalur team Windows yang dukungannya lebih terbatas
-
-### Sesi pertama yang baik
-
-Setelah instalasi, periksa kedua batas ini:
+Setelah instalasi, periksa:
 
 ```bash
 omx doctor
@@ -159,212 +68,84 @@ codex login status
 omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 ```
 
-`omx doctor` mendeteksi file OMX, hook, dan prerequisite runtime yang hilang. Smoke test sebenarnya mendeteksi masalah auth, profile, serta provider/base-URL yang baru muncul ketika Codex benar-benar melakukan request.
+`omx doctor` memeriksa file OMX, hook, dan prasyarat runtime. Smoke test eksekusi nyata memverifikasi autentikasi, profil, dan endpoint Codex di shell yang sedang digunakan.
 
-Launch OMX dengan cara yang direkomendasikan dari proyek git:
+## Sesi pertama dan keamanan peluncuran
 
-```bash
-omx --worktree=feat/task --madmax --xhigh
-```
+Di terminal interaktif macOS/Linux dengan tmux, OMX secara default menjalankan leader dalam detached tmux yang dikelola OMX sehingga pane HUD/runtime dapat dibuat dan dipulihkan. `--worktree` memindahkan peluncuran ke Git checkout terpisah dan merupakan pilihan lebih aman saat memakai `--madmax`. Gunakan worktree bernama untuk pekerjaan berulang atau bersamaan.
 
-Pada terminal interaktif macOS/Linux dengan `tmux` tersedia, ini memulai
-leader di tmux detached yang dikelola OMX secara default agar pane HUD/runtime dapat
-dibuat dan dipulihkan. `--worktree` juga memindahkan launch ke checkout git
-terpisah, yang merupakan default lebih aman saat menggunakan `--madmax`. Ganti
-`feat/task` dengan nama seperti branch untuk tugas tersebut.
+`--madmax` adalah singkatan Codex untuk `--dangerously-bypass-approvals-and-sandbox`; ini menghapus perlindungan persetujuan dan sandbox normal, jadi hanya gunakan pada repositori dan lingkungan tepercaya. `--high` dan `--xhigh` adalah singkatan pengaturan reasoning effort. Gunakan nama seperti `--worktree=feature/auth` untuk worktree berulang. `--worktree` tanpa nama membuat worktree detached sekali pakai; jika HEAD checkout sumber berubah setelahnya, peluncuran berikutnya dapat gagal dengan `worktree_target_mismatch`. Worktree target yang kotor hanya diberi peringatan lalu dijalankan, jadi bersihkan, commit, atau stash terlebih dahulu bila isolasi penting. Worker Team secara default mendapat worktree khusus.
 
-### Percakapan standar secara bersamaan
-
-Launch standar memiliki satu pointer sesi yang dapat ditulis di bawah `OMX_ROOT` yang dipilih. Karena itu, launch `omx` biasa kedua dari checkout yang sama akan fail-closed alih-alih berbagi atau diam-diam mengubah root tersebut. Berikan root eksplisit yang berbeda untuk setiap percakapan tambahan:
+Peluncuran biasa memiliki satu pointer sesi yang dapat ditulis di `OMX_ROOT` terpilih. Peluncuran biasa kedua dari checkout yang sama gagal agar root tidak dibagi atau berubah diam-diam. Berikan root unik untuk percakapan tambahan:
 
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
-OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
-PowerShell:
+PowerShell: `$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"`  
+Command Prompt: `set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"`
 
-```powershell
-$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
-omx
-```
+Menjalankan dua kali dengan `OMX_ROOT` eksplisit yang sama menyebabkan konflik pemilik. Checkout berbeda memiliki root default sendiri. Alat repo-aware menerima konteks `OMX_*` untuk root repo/worktree, Git common dir, dan mode CodeGraph. Mode auto memilih database lokal worktree, lalu database leader/repo, atau off. OMX tidak memasang, mengindeks otomatis, menyalin, atau membuat symlink CodeGraph; indeks bersama berguna untuk navigasi baseline tetapi mungkin tidak akurat untuk perubahan khusus worktree.
 
-Command Prompt:
+Untuk peluncuran sekali tanpa pengelolaan tmux/HUD OMX, gunakan `omx --direct --yolo`; preferensi shell persisten dapat menggunakan `OMX_LAUNCH_POLICY=direct omx --yolo`. Pilihan kebijakan: `direct|tmux|detached-tmux|auto`; flag CLI mengalahkan environment. Di dalam pane tmux yang sudah ada, `--direct` tidak membuat split HUD baru tetapi proses tetap berjalan di pane tersebut.
 
-```bat
-set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
-omx
-```
+## Untuk apa OMX digunakan
 
-Root yang ditentukan user bersifat literal: menjalankan dua kali dengan `OMX_ROOT` eksplisit yang sama tetap menghasilkan konflik owner fatal. Checkout terpisah memiliki root default terpisah, sementara `--worktree` dan `--madmax` mempertahankan perilaku isolasi yang sudah ada.
+OMX tidak menggantikan Codex. Codex melakukan pekerjaan agen; keyword role OMX membuat peran dapat digunakan kembali, skill membuat alur kerja umum dapat digunakan kembali, dan `.omx/` menyimpan rencana, log, memori, serta status runtime. Anggap OMX sebagai lapisan untuk routing tugas, alur kerja, dan runtime yang lebih baik—bukan permukaan perintah untuk dioperasikan manual sepanjang hari. Jika Codex biasa sudah memenuhi kebutuhan, Anda mungkin tidak memerlukan OMX.
 
-### Keamanan launch Madmax dan worktree
+## Mulai di sini jika Anda baru menggunakan OMX
 
-`--madmax` adalah shorthand OMX untuk Codex
-`--dangerously-bypass-approvals-and-sandbox`. Flag ini menghapus guardrail approval dan
-sandbox normal, jadi gunakan hanya di repository dan environment tepercaya.
-`--high` dan `--xhigh` adalah shorthand untuk `-c model_reasoning_effort="high|xhigh"`; sesi kuat normal adalah `omx --madmax --xhigh` (atau `omx --worktree=feat/task --madmax --xhigh` dari proyek git).
+1. Pastikan Codex CLI dengan `codex --version`, lalu instal/perbarui OMX memakai `npm install -g oh-my-codex`. Jika npm akan mengelola Codex, pasang `@openai/codex` secara terpisah terlebih dahulu.
+2. Setelah peningkatan OMX, jalankan `omx setup --scope project --merge-agents` di proyek target atau `omx setup --scope user` untuk setup pengguna. Gunakan `omx update` bila npm juga perlu memeriksa dan memasang build terbaru.
+3. Jalankan `omx doctor`.
+4. Jalankan `codex login status` dan smoke test `omx exec` di atas.
+5. Di repo Git, mulai dengan worktree bernama; setiap sesi `--madmax` bersamaan harus menggunakan worktree berbeda.
+6. Gunakan `$deep-interview` bila permintaan atau batasannya masih belum jelas.
+7. Gunakan `$ralplan` untuk menyetujui rencana dan meninjau trade-off.
+8. Gunakan `/goal` untuk tujuan/checkpoint persisten, `$ultragoal` untuk eksekusi beberapa tujuan yang persisten, dan `$team` untuk koordinasi paralel.
 
-Saat menggunakan `--madmax` dari repository git, pilih launch worktree alih-alih
-menjalankannya langsung di checkout saat ini. Untuk pekerjaan yang dapat diulang atau berjalan bersamaan,
-gunakan worktree bernama:
+## Alur kerja yang direkomendasikan
 
-```bash
-omx --worktree=feature/auth --madmax --xhigh
-```
+`$autopilot` adalah orkestrator bertahap utama dengan alur default `$deep-interview -> $ralplan -> $ultragoal`. Setiap tahap dapat dipanggil secara mandiri jika kontrak input sebelumnya sudah terpenuhi.
 
-Jika Anda berada di luar repository git, hilangkan `--worktree`; launch worktree
-memerlukan Git.
+1. `$deep-interview` — klarifikasi iteratif untuk mengatasi ambiguitas dan menghasilkan persyaratan siap eksekusi.
+2. `$ralplan` — meninjau arsitektur, kelayakan, dan konsensus berdasarkan hasil wawancara.
+3. `$ultragoal` — eksekusi multi-tujuan persisten dengan checkpoint ledger `.omx/ultragoal`.
+4. `$team` — eksekusi paralel terkoordinasi bila pekerjaan mendapat manfaat dari beberapa lane.
 
-Untuk beberapa sesi `--madmax` yang berjalan bersamaan, **jangan** jalankan semuanya di
-direktori yang sama. Berikan masing-masing sesi worktree bernama sendiri:
+`$deep-interview` adalah tahap persyaratan mandiri, bukan alias `$plan --interview`, dan tidak melakukan implementasi. Skill perencanaan berhenti pada artefak rencana; perubahan kode memerlukan lane eksekusi eksplisit (`$ultragoal` atau `$team`). Di dalam story Ultragoal, gunakan Team hanya bila koordinasi paralel bermanfaat.
 
-```bash
-omx --worktree=feature/auth --madmax --xhigh
-omx --worktree=fix/flaky-tests --madmax --xhigh
-```
+### Permukaan umum dalam sesi
 
-`--worktree` / `-w` tanpa nama membuat atau menggunakan kembali worktree launch detached di
-`../<repo>.omx-worktrees/launch-detached`. `--worktree=<name>`,
-`--worktree <name>`, atau `-w <name>` membuat atau menggunakan kembali worktree launch bernama
-di bawah `../<repo>.omx-worktrees/` dan checkout nama branch tersebut. OMX mengonsumsi
-flag worktree sebelum memulai Codex; flag ini tidak diteruskan ke Codex.
-Perlakukan bentuk detached tanpa nama sebagai kemudahan sekali pakai: jika source checkout
-maju setelah worktree tersebut dibuat, launch tanpa nama berikutnya dapat gagal dengan
-`worktree_target_mismatch` karena `launch-detached` masih menunjuk ke HEAD
-lama. Gunakan worktree bernama untuk pekerjaan berulang, atau hapus worktree detached
-lama sebelum mencoba lagi.
-Jika target worktree launch sudah dirty, OMX memperingatkan dan menjalankannya apa adanya, jadi
-bersihkan, commit, atau stash worktree tersebut sebelum mengandalkannya untuk isolasi.
-
-Untuk `omx team`, worker sudah menggunakan worktree khusus secara otomatis secara
-default; `--worktree` pada `omx team` hanya merupakan override yang kompatibel dengan legacy.
-
-Tool yang sadar repository menerima konteks kanonis yang sama pada runtime launch, team-worker, dan autoresearch: `OMX_REPO_ROOT`, `OMX_WORKTREE_ROOT`, `OMX_GIT_COMMON_DIR`, `OMX_WORKTREE_SCOPE`, `OMX_CODEGRAPH_MODE`, dan `OMX_CODEGRAPH_PROJECT_PATH`. `OMX_CODEGRAPH_MODE=auto` memilih `.codegraph/codegraph.db` lokal-worktree terlebih dahulu, lalu `.codegraph/codegraph.db` milik leader/repo, dan jika tidak ada akan menjadi `off`. Nilai eksplisit `shared`, `local`, dan `off` dihormati.
-OMX tidak menginstal CodeGraph, melakukan auto-index worktree, atau menyalin/membuat symlink `.codegraph`; index leader bersama berguna untuk navigasi baseline tetapi tidak akurat terhadap branch untuk perubahan yang hanya ada di worktree.
-
-Jika Anda menginginkan launch sekali pakai tanpa pengelolaan tmux/HUD OMX, gunakan `--direct`:
-
-```bash
-omx --direct --yolo
-```
-
-Untuk preferensi shell/profile yang persisten, set kebijakan environment:
-
-```bash
-OMX_LAUNCH_POLICY=direct omx --yolo
-```
-
-Kembali ke perilaku auto/default dengan:
-
-```bash
-unset OMX_LAUNCH_POLICY
-```
-
-Flag kebijakan CLI mengalahkan environment, dan flag kebijakan CLI terakhir sebelum
-`--` yang berlaku:
-
-```bash
-OMX_LAUNCH_POLICY=direct omx --tmux --yolo
-```
-
-Gunakan `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto`. Iterasi ini hanya
-menambahkan kontrol CLI dan environment; secara sengaja tidak menambahkan pengaturan config-file.
-Jika Anda menjalankan `--direct` dari dalam pane tmux yang sudah ada, OMX tidak akan
-membuat split HUD, mengaktifkan mouse mode, atau membungkus handling extended-key, tetapi
-proses tetap berjalan di dalam pane terminal yang sudah terbuka tersebut.
-
-Kemudian coba workflow kanonis:
-
-```text
-# Copy/pasteable durable-goal example:
-/goal Ship the checkout bug fix with a durable objective, checkpoints for reproduction, implementation, regression tests, and final verification.
-
-$plan "approve the checkout bug-fix plan and review tradeoffs"
-$ultragoal "execute the approved checkout fix with checkpoint evidence"
-```
-
-Gunakan `$team` ketika story Ultragoal aktif membutuhkan pekerjaan paralel yang terkoordinasi.
-
-### `/goal` dan pemilihan skill
-
-Mulai sesi kuat normal dengan `omx --madmax --xhigh` (atau tambahkan `--worktree=<task>` di repo git). Di dalam sesi tersebut, lakukan eksekusi langsung atau gunakan `$ultragoal` untuk run multi-goal persisten, `$team` untuk pekerjaan paralel terkoordinasi, atau `$plan` saat tugas membutuhkan planning eksplisit terlebih dahulu. Gunakan `/goal` ketika tugas itu sendiri memerlukan struktur objektif/checkpoint persisten yang harus terus direkonsiliasi Codex lintas turn.
-
-Tambahkan hanya 2-5 skill yang relevan secara default. Lebih banyak skill boleh digunakan jika scope tugas memang membutuhkannya, tetapi memuat katalog besar biasanya menjadi masalah context budget dan kualitas perhatian, bukan hard blocker parser/runtime. Perlakukan ini sebagai blocker runtime konkret hanya ketika sebuah perintah benar-benar error.
-
-Pola yang perlu dihindari:
-
-```text
-omx --madmax --xhigh
-# Then immediately load 20 skills "just in case" before stating the task.
-# This bloats session context and makes the model spend attention on irrelevant workflows.
-```
-
-## Model mental sederhana
-
-OMX **tidak** menggantikan Codex.
-
-OMX menambahkan layer kerja yang lebih baik di sekitarnya:
-- **Codex** melakukan pekerjaan agent yang sebenarnya
-- **keyword role OMX** membuat role yang berguna dapat digunakan kembali
-- **skill OMX** membuat workflow umum dapat digunakan kembali
-- **`.omx/`** menyimpan rencana, log, memory, dan state runtime
-
-Sebagian besar user sebaiknya memandang OMX sebagai **routing tugas yang lebih baik + workflow yang lebih baik + runtime yang lebih baik**, bukan sebagai antarmuka command yang harus dioperasikan manual sepanjang hari.
-
-## Mulai dari sini jika Anda baru menggunakan OMX
-
-1. Jika Codex CLI sudah ada, verifikasi dengan `codex --version` lalu instal atau update OMX dengan `npm install -g oh-my-codex`; jika belum, instal `@openai/codex` secara terpisah terlebih dahulu jika Anda ingin npm mengelola Codex
-2. Setelah instalasi atau bump versi OMX yang sebenarnya, jalankan `omx setup --scope project --merge-agents` dari proyek git target atau `omx setup --scope user` untuk setup Codex tingkat user, atau gunakan `omx update` ketika Anda juga ingin npm memeriksa dan menginstal build terbaru sebelum me-refresh setup
-3. Jalankan `omx doctor`
-4. Jalankan smoke test eksekusi nyata: `codex login status` dan `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`
-5. Launch dengan worktree bernama dari repo git, misalnya `omx --worktree=feat/task --madmax --xhigh`; jika Anda menjalankan beberapa sesi `--madmax` bersamaan, gunakan worktree bernama berbeda seperti `--worktree=feature/auth`
-6. Gunakan `$deep-interview "..."` ketika request atau batasan masih belum jelas
-7. Gunakan `$ralplan "..."` untuk menyetujui rencana dan meninjau tradeoff
-8. Gunakan `$ultragoal` atau `$team` ketika tugas membutuhkan eksekusi persisten atau paralel; tambahkan `/goal` ketika struktur objektif/checkpoint persisten perlu dibuat eksplisit
-
-## Workflow yang direkomendasikan
-
-`$autopilot` adalah orchestrator kanonis kelas utama untuk workflow bertahap `$deep-interview -> $ralplan -> $ultragoal`. Rangkaian ini adalah default yang mendefinisikannya, sementara setiap tahap tetap dapat dijalankan secara independen ketika kontrak input dari tahap sebelumnya sudah terpenuhi.
-
-1. `$deep-interview` — klarifikasi ambiguitas secara Sokratik dan iteratif, state yang dapat dilanjutkan, serta artifact requirement yang siap dieksekusi.
-2. `$ralplan` — planning arsitektur, feasibility, dan konsensus berdasarkan artifact deep-interview.
-3. `$ultragoal` — eksekusi multi-goal persisten dengan checkpoint ledger `.omx/ultragoal`.
-4. `$team` — eksekusi paralel terkoordinasi ketika sebuah story mendapat manfaat dari beberapa lane.
-
-`$deep-interview` adalah tahap requirement independen, bukan alias untuk `$plan --interview`, dan tidak pernah langsung mengimplementasikan. Skill planning berhenti pada artifact planning; perubahan kode membutuhkan lane eksekusi eksplisit (`$ultragoal` atau `$team`).
-
-Di dalam story Ultragoal, gunakan `$team` hanya ketika story tersebut mendapat manfaat dari eksekusi paralel yang terkoordinasi.
-
-## Antarmuka umum dalam sesi
-
-| Permukaan | Gunakan untuk |
+| Permukaan | Kegunaan |
 | --- | --- |
-| `$plan "..."` | planning dan klarifikasi opsional (mode `--interview`) |
-| `$ultragoal "..."` | penyelesaian multi-goal persisten setelah rencana disetujui |
-| `$team "..."` | eksekusi paralel terkoordinasi ketika pekerjaan cukup besar |
-| `/skills` | menjelajahi skill terinstal dan helper pendukung |
-| `/goal ...` | struktur objektif/checkpoint persisten untuk tugas yang harus merekonsiliasi progress lintas turn |
-| `omx mission <file>` | run batch prompt/checklist berurutan melalui `omx exec`, dengan artifact operator `.omx/missions/<slug>/summary.json` dan `ledger.jsonl` |
+| `$plan "..."` | Perencanaan dan klarifikasi opsional |
+| `$ultragoal "..."` | Penyelesaian multi-tujuan persisten setelah rencana disetujui |
+| `$team "..."` | Eksekusi paralel terkoordinasi untuk pekerjaan cukup besar |
+| `/skills` | Menjelajahi skill terpasang dan bantuan pendukung |
+| `/goal ...` | Tujuan/checkpoint persisten yang harus diselaraskan lintas giliran |
+| `omx mission <file>` | Batch prompt/checklist berurutan melalui `omx exec` |
 
-## Antarmuka advanced / operator
+## Permukaan lanjutan/operator
 
-Ini berguna, tetapi bukan jalur onboarding utama.
+### Runner antrean Mission
 
-### Runner mission queue
+Gunakan `omx mission plan ./mission.md` atau `omx mission ./mission.md --dry-run` untuk memvalidasi input, lalu `omx mission run ./mission.md -- --model gpt-5` untuk menjalankannya. Run yang terhenti dapat diperiksa dengan `status`, dilanjutkan dengan `resume`, ditandai dengan `mark --status blocked`, atau diperbaiki per tugas dengan `rerun --task`. Ringkasan dan ledger operator disimpan di `.omx/missions/<slug>/`. Lihat [dokumentasi Mission](../../docs/mission.md).
 
-Gunakan `omx mission` ketika Anda memiliki checklist singkat prompt OmX/Codex yang harus dijalankan satu per satu alih-alih membuka perintah shell terpisah untuk setiap prompt. Mulai dengan `omx mission plan ./mission.md` atau `omx mission ./mission.md --dry-run` untuk memvalidasi parsing dan memeriksa summary persisten, lalu jalankan `omx mission run ./mission.md -- --model gpt-5` ketika prompt sudah siap.
-Run yang terinterupsi dapat diperiksa dengan `omx mission status ./mission.md`, dilanjutkan dengan `omx mission resume ./mission.md`, diblokir operator dengan `omx mission mark ./mission.md --task task-002 --status blocked`, dan diperbaiki per task dengan `omx mission rerun ./mission.md --task task-002`. Lihat [`docs/mission.md`](../mission.md) untuk format input, output status, dan detail artifact.
+### Ekspor percakapan sebelumnya
 
-### Runtime team
+Temukan ID dengan `omx session search "frasa yang diingat"`, lalu ekspor dengan `omx session export <session-id> --output conversation.md`. Mendukung ID persis atau prefix unik dan transcript aktif/arsip dari Codex home yang sama. Gunakan `--format json`, `--include-tools`, atau `--codex-home <path>`. Tanpa `--output`, hasil dikirim ke stdout; file yang sudah ada tidak ditimpa. Secara default hanya pesan user dan assistant yang disertakan; instruksi system/developer dan catatan reasoning dikecualikan, tetapi teks pesan tidak disamarkan. Lihat [session export](../../docs/session-export.md).
 
-Gunakan runtime team ketika Anda memang membutuhkan koordinasi tmux/worktree yang persisten, bukan sebagai cara default untuk mulai menggunakan OMX. Di Codex App atau sesi biasa di luar tmux, perlakukan `omx team` sebagai antarmuka shell runtime tmux, bukan workflow yang langsung tersedia di dalam app; launch OMX CLI dari shell terlebih dahulu jika Anda memang ingin menjalankan team.
+### Penggunaan token dan timeline eksekusi
 
-Ketika Team berjalan di dalam story Ultragoal, Ultragoal tetap menjadi state milik leader: worker melaporkan evidence yang siap menjadi checkpoint ke atas alih-alih memutasi `.omx/ultragoal` secara langsung. Startup Team menoleransi artifact Ultragoal yang stale atau malformed untuk pekerjaan yang tidak terkait, tetapi launch Team yang secara eksplisit terhubung ke Ultragoal tetap fail-closed.
-Startup Team juga menulis `.omx/state/team/<team-name>/preflight-context.json` sehingga run Team besar dapat dilanjutkan setelah compaction dengan task awal, pembagian worker, konteks Ultragoal, dan checklist verifikasi.
+`omx session usage --since 7d --sort tokens` memeriksa total penggunaan token tercatat pada sesi lokal aktif dan arsip. Gunakan `--project current`, `--session`, `--json`, `--codex-home`, atau `--limit` untuk mempersempit tampilan. Rentang memilih sesi berdasarkan aktivitas terakhir yang tercatat, sehingga hitungan dapat mencakup pekerjaan sebelumnya dan bukan laporan tagihan/pemakaian dalam periode itu. Mirror sesi dihitung sekali; data yang hilang ditandai unknown. Lihat [session usage](../../docs/session-usage.md).
 
-Untuk pekerjaan atomik yang sangat kecil, Team dapat membatasi fanout implisit menjadi satu worker dan mencetak peringatan over-orchestration; berikan jumlah worker eksplisit hanya ketika biaya koordinasi tambahan memang disengaja.
+`omx session timeline <session-id>` menampilkan tool call, batas giliran, compaction konteks, error, durasi tanpa mengekspor teks percakapan. Contoh filter: `--kind tools --sort duration --limit 10`, `--status failed`, `--tool <name>`, `--json --output timeline.json`. Filter/paginasi hanya mengubah daftar event; ringkasan tetap mencakup seluruh sesi. Durasi tak diketahui tetap unknown, dan hasil tanpa error eksplisit bukan bukti bahwa operasi berhasil. Lihat [session timeline](../../docs/session-timeline.md).
+
+### Runtime Team
+
+Gunakan runtime Team hanya bila membutuhkan koordinasi tmux/worktree yang persisten, bukan sebagai cara default memulai OMX. Di Codex App atau sesi tanpa tmux, perlakukan `omx team` sebagai antarmuka runtime shell, bukan workflow in-app; jalankan OMX CLI dari shell terlebih dahulu bila ingin Team. Pada story Ultragoal, status tujuan tetap dimiliki leader dan worker melaporkan bukti checkpoint ke atas. Konteks preflight disimpan agar run besar dapat dilanjutkan. Untuk pekerjaan atomik kecil, fanout implisit dapat dibatasi ke satu worker disertai peringatan orkestrasi berlebih.
 
 ```bash
 omx team 3:executor "fix the failing tests with verification"
@@ -373,85 +154,41 @@ omx team resume <team-name>
 omx team shutdown <team-name>
 ```
 
+`omx team status` dan `omx tmux-hook status` hanya mengamati status yang ada; keduanya tidak mengambil claim kedaluwarsa, mengirim pesan mailbox, mengintegrasikan commit worker, atau mengubah runtime. Jika konfigurasi hook tidak ada, status hanya melaporkan kondisi tersebut; gunakan `omx tmux-hook init` untuk menginisialisasi secara eksplisit.
+
 ### Setup, doctor, dan HUD
 
-Ini adalah antarmuka operator/dukungan:
-- discovery/instalasi marketplace plugin Codex dapat menyimpan cache plugin di `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` (instalasi lokal dapat menggunakan `local` sebagai identifier versi); plugin terpaket tersebut menyertakan metadata pendamping dengan scope plugin untuk lifecycle hook resmi Codex, server kompatibilitas MCP opsional, dan app (MCP/app dinonaktifkan secara default), sehingga tetap dipasangkan dengan CLI `omx` yang terinstal untuk eksekusi runtime
-- Setup dengan scope menginstal prompt, skill, scaffolding AGENTS, `.codex/config.toml`, dan (untuk instalasi legacy atau Codex lama tanpa `plugin_hooks`) hook native Codex yang dikelola OMX di `.codex/hooks.json`
-  - refresh setup mempertahankan entry hook non-OMX di `.codex/hooks.json` dan hanya menulis ulang wrapper yang dikelola OMX
-  - setup plugin mempertahankan `AGENTS.md` sebagai panduan persisten walaupun skill/hook yang dibundel berasal dari cache plugin; `omx doctor` menganggap hilangnya `AGENTS.md` dengan scope persisten dalam mode plugin sebagai check yang gagal karena file AGENTS dengan scope sesi jika tidak demikian hanya akan berisi panduan overlay runtime
-  - `omx setup --merge-agents` mempertahankan panduan `AGENTS.md` proyek yang sudah ada sambil menyisipkan atau me-refresh bagian OMX yang dihasilkan di antara `<!-- OMX:AGENTS:START -->` / `<!-- OMX:AGENTS:END -->`; `--no-merge-agents` mencatat pilihan contextual non-merge secara eksplisit, dan `--clear-merge-agents-policy` selalu menghapus pilihan yang tercatat serta tidak dapat digabungkan dengan selector set.
-Kebijakan disimpan per working root (bahkan untuk scope user), diputar ulang oleh update langsung maupun tertunda hanya ketika scope tersimpannya valid dan cocok, dan tidak pernah menjadi kebijakan force/default.
-  - `omx uninstall` menghapus wrapper yang dikelola OMX dari `.codex/hooks.json` tetapi mempertahankan file tersebut ketika hook user masih ada
-- `omx update` langsung memeriksa npm, menginstal build OMX global terbaru, lalu menjalankan kembali jalur refresh setup interaktif yang sama
-- pemeriksaan update saat launch dibatasi frekuensinya dan meminta konfirmasi secara default; gunakan `OMX_AUTO_UPDATE=0` untuk menonaktifkannya atau `OMX_AUTO_UPDATE=defer` untuk menjadwalkan update tertunda tanpa prompt
-- seeding config baru yang dikelola OMX untuk `gpt-5.6-sol` sekarang merekomendasikan `model_context_window = 250000` dan `model_auto_compact_token_limit = 200000`, tetapi hanya ketika key tersebut belum ada
-- routing model/env `.omx-config.json` didokumentasikan di [referensi routing model/env](../reference/omx-config-schema-routing.md); hanya edit key yang didukung oleh versi OMX terinstal Anda
-- `omx doctor` memverifikasi instalasi ketika ada sesuatu yang tampak salah; ini tidak membuktikan bahwa profile Codex aktif dapat melakukan model call yang terautentikasi
-- `omx hud --watch` adalah antarmuka monitoring/status, bukan workflow utama user
+Codex plugin marketplace dapat menyimpan plugin di `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/`. Bundle menyertakan metadata hook lifecycle resmi Codex, server kompatibilitas MCP opsional, dan apps (MCP/apps nonaktif secara default), tetapi eksekusi runtime tetap memakai CLI `omx` yang terpasang. Bergantung cakupan, setup mengelola prompt, skill, scaffolding AGENTS, konfigurasi, dan hook native untuk instalasi lama/Codex versi lama. Refresh mempertahankan hook non-OMX dan hanya menulis ulang wrapper OMX; uninstall tetap menyimpan file bila hook pengguna masih ada.
 
-Untuk sesi non-team, hook native Codex sekarang menjadi antarmuka lifecycle kanonis:
-- `plugins/oh-my-codex/hooks/hooks.json` = registrasi hook resmi dengan scope plugin untuk instalasi plugin
-- `.codex/hooks.json` = registrasi hook native Codex legacy/fallback yang dipertahankan untuk instalasi legacy dan versi Codex lama
-- `.omx/hooks/*.mjs` = hook plugin OMX
-- `omx tmux-hook` / notify-hook / derived watcher = jalur fallback tmux + runtime
+`omx update` segera memeriksa npm, memasang build global OMX terbaru, lalu mengulang refresh setup interaktif yang sama. Setup baru menggunakan `gpt-6-astra` sebagai default untuk agent frontier/standard/spark dan mempertahankan konfigurasi pengguna serta override eksplisit. Lihat [referensi model/env routing](../../docs/reference/omx-config-schema-routing.md) dan hanya ubah key yang didukung versi terpasang. `omx doctor` memvalidasi instalasi lokal, bukan keberhasilan panggilan model terautentikasi. `omx hud --watch` adalah permukaan status/monitor.
 
-Lihat [pemetaan hook native Codex](../codex-native-hooks.md) untuk matriks native / fallback saat ini.
+HUD menampilkan nama Team dan jumlah worker aktif, serta status, task ID, role, pane tmux, dan umur pembaruan setiap agent. Data yang hilang ditampilkan sebagai unknown; status working bukan pemeriksaan proses hidup. File Team dibaca tanpa diubah. Progress GitGuardex hanya muncul bila `"guardex": { "enabled": true }` diaktifkan pada `.omx/hud-config.json` proyek. Worker yang tidak muat di layar diringkas sebagai `+N workers`.
 
+Untuk sesi non-Team, hook native Codex adalah permukaan lifecycle utama: registrasi plugin ada di `plugins/oh-my-codex/hooks/hooks.json`; fallback legacy/versi Codex lama di `.codex/hooks.json`; hook plugin OMX di `.omx/hooks/*.mjs`; tmux/notify/watcher adalah jalur fallback runtime. Lihat [pemetaan Codex native hooks](../../docs/codex-native-hooks.md).
 
-### Troubleshooting readiness yang terlihat hijau padahal gagal
+### Diagnosis kesiapan yang tampak baik tetapi eksekusi gagal
 
-`omx doctor` yang hijau berarti instalasi dan wiring runtime lokal terlihat sehat. Jika eksekusi nyata masih gagal, periksa environment yang benar-benar digunakan Codex:
+`omx doctor` hijau berarti instalasi dan wiring runtime lokal terlihat normal. Jika eksekusi nyata tetap gagal, jalankan `codex login status` dan tes `omx exec` dari shell/profile yang sama dengan yang akan menjalankan OMX. Dalam HOME, profile, container, atau service shell khusus, pastikan `CODEX_HOME` yang aktif berisi auth/config yang diharapkan. Jika memakai proxy lokal kompatibel OpenAI, pastikan `openai_base_url` di `config.toml` aktif benar. Jika resume Team melaporkan team usang atau tmux session hilang, paksa shutdown hanya setelah memastikan team memang mati/ditinggalkan; lalu jalankan `omx cancel` dan `omx doctor --team`.
 
-- Jalankan `codex login status` dan `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"` dari shell/profile yang sama yang akan menjalankan OMX.
-- Di shell dengan HOME, profile, container, atau service kustom, pastikan `~/.codex` aktif (atau `CODEX_HOME`) adalah yang memiliki auth dan config yang diharapkan. Jangan berasumsi `~/.codex` user normal Anda terlihat di sana.
-- Jika Anda bergantung pada proxy lokal yang kompatibel dengan OpenAI, pastikan `~/.codex/config.toml` aktif menyertakan `openai_base_url` yang diharapkan; jika tidak, key yang diterbitkan proxy dapat dikirim ke endpoint default dan gagal dengan `401 Unauthorized`, `Missing bearer or basic authentication in header`, atau `Incorrect API key provided`.
-- Jika `omx doctor --team` atau resume melaporkan team stale seperti `resume_blocker` atau sesi tmux yang hilang, bersihkan state runtime mati sebelum mencoba lagi:
+Jika Shift+Enter di sesi tmux masih mengirim pesan alih-alih membuat baris baru, lihat [pemecahan masalah kesiapan eksekusi](../../docs/troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions). Masalah yang menetap biasanya terkait kapabilitas/penemuan terminal tmux, bukan gap fitur OMX.
 
-```bash
-omx team shutdown <team-name> --force --confirm-issues
-omx cancel
-omx doctor --team
-```
+### Sparkshell dan Wiki
 
-Gunakan forced team shutdown hanya untuk team yang sudah Anda pastikan mati atau sengaja ditinggalkan.
-
-Jika `Shift+Enter` masih mengirim alih-alih memasukkan newline di dalam sesi tmux yang dikelola OMX, lihat [Troubleshooting kesiapan eksekusi](../troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions). OMX saat ini sudah mengaktifkan forwarding extended-key tmux di sekitar jalur launch Codex miliknya, jadi kegagalan persisten biasanya merupakan masalah capability/discovery terminal tmux, bukan kekurangan fitur OMX baru.
-
-### Sparkshell
-
-- `omx sparkshell <command>` digunakan untuk inspeksi shell-native dan verifikasi berbatas
-- untuk lookup repository read-only, gunakan tool/subagent inspeksi repository Codex biasa (perintah `omx explore` yang deprecated telah dihapus)
-- override env sparkshell sengaja dibatasi: `OMX_SPARKSHELL_BIN` memilih path sidecar native, `OMX_SPARKSHELL_MODEL` memilih model summary utama, `OMX_SPARKSHELL_FALLBACK_MODEL` memilih model retry, `OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE` memilih instruksi summary, dan `OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS` mengontrol timeout summary API lokal
-
-Contoh:
+- `omx sparkshell <command>` untuk inspeksi native shell dan verifikasi terbatas. Untuk pencarian repo read-only, gunakan tool/child agent repository standar Codex; perintah lama `omx explore` sudah dihapus.
+- Model ringkasan utama dan fallback Sparkshell default-nya `gpt-6-astra`. `OMX_SPARKSHELL_FALLBACK_MODEL` mengatur fallback berbeda; variabel `OMX_SPARKSHELL_*` lain memilih binary, model, file instruksi, dan batas waktu ringkasan.
+- `omx wiki` adalah antarmuka JSON CLI-first; MCP `omx_wiki` hanya untuk kompatibilitas. Data wiki ada di `omx_wiki/` sebagai pengetahuan proyek Markdown, berorientasi pencarian, bukan vektor.
 
 ```bash
 omx sparkshell git status
-omx sparkshell --tmux-pane %12 --tail-lines 400
-```
-- Entri server MCP: `omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (server wiki repository), `omx_hermes` (jembatan terbatas untuk status dan koordinasi sesi)
-
-### Wiki
-
-- `omx wiki` adalah antarmuka JSON berbasis CLI untuk operasi wiki; MCP `omx_wiki` hanya untuk kompatibilitas eksplisit
-- data wiki tersimpan sebagai knowledge proyek repository di bawah `omx_wiki/`
-- wiki bersifat markdown-first dan search-first, bukan vector-first
-
-Contoh:
-
-```bash
 omx wiki list --json
 omx wiki query --input '{"query":"session-start lifecycle"}' --json
 omx wiki lint --json
 omx wiki refresh --json
 ```
 
-### Catatan platform untuk mode team
+### Catatan platform untuk Team
 
-`omx team` bekerja paling baik di macOS/Linux dengan `tmux`.
-Windows native tetap menjadi jalur sekunder, dan WSL2 umumnya merupakan pilihan yang lebih baik jika Anda menginginkan setup yang di-host Windows.
-Di Windows native, OMX menerima `psmux` sebagai binary yang kompatibel dengan tmux untuk jalur berbasis tmux yang sudah digunakannya.
+Team paling baik digunakan di macOS/Linux dengan tmux. Windows native adalah jalur sekunder; WSL2 umumnya lebih disarankan. Di Windows native, `psmux` dapat digunakan sebagai binary kompatibel tmux untuk jalur yang sudah didukung.
 
 | Platform | Instalasi |
 | --- | --- |
@@ -464,57 +201,29 @@ Di Windows native, OMX menerima `psmux` sebagai binary yang kompatibel dengan tm
 
 ## Masalah yang diketahui
 
-### Intel Mac: CPU `syspolicyd` / `trustd` tinggi saat startup
+Pada sebagian Intel Mac, startup OMX—terutama dengan `--madmax --high`—dapat menaikkan penggunaan CPU `syspolicyd`/`trustd` saat Gatekeeper memvalidasi banyak proses bersamaan. Coba:
 
-Di beberapa Intel Mac, startup OMX — terutama dengan `--madmax --high` — dapat menyebabkan penggunaan CPU `syspolicyd` / `trustd` melonjak ketika macOS Gatekeeper memvalidasi banyak process launch secara bersamaan.
-
-Jika ini terjadi, coba:
 - `xattr -dr com.apple.quarantine $(which omx)`
-- tambahkan aplikasi terminal Anda ke allowlist Developer Tools di pengaturan Security macOS
-- gunakan concurrency yang lebih rendah (misalnya, hindari `--madmax --high`)
+- Tambahkan aplikasi terminal ke daftar Developer Tools di pengaturan Security macOS
+- Kurangi konkurensi, misalnya hindari `--madmax --high`
 
 ## Dokumentasi
 
-- [Memulai](../getting-started.html)
-- [Panduan demo](../../DEMO.md)
-- [Fitur wiki](../wiki-feature.md)
-- [Katalog agent](../agents.html)
-- [Referensi skill](../skills.html)
-- [Pemetaan hook native Codex](../codex-native-hooks.md)
-- [Pipeline identitas GitHub / PR / package](../pipeline/github-pr-package-identity.md)
-- [Integrasi](../integrations.html)
-- [Troubleshooting kesiapan eksekusi](../troubleshooting.md)
-- [Panduan OpenClaw / notification gateway](../openclaw-integration.md)
-- [Kontribusi](../../CONTRIBUTING.md)
-- [Changelog](../../CHANGELOG.md)
+- [Memulai](../../docs/getting-started.html) · [Panduan demo](../../DEMO.md) · [Fitur Wiki](../../docs/wiki-feature.md) · [Katalog agen](../../docs/agents.html) · [Referensi skill](../../docs/skills.html)
+- [Pemetaan Codex native hook](../../docs/codex-native-hooks.md) · [Pipeline identitas GitHub/PR/package](../../docs/pipeline/github-pr-package-identity.md) · [Integrasi](../../docs/integrations.html)
+- [Pemecahan masalah](../../docs/troubleshooting.md) · [Panduan gateway OpenClaw/notifikasi](../openclaw-integration.md) · [Kontribusi](../../CONTRIBUTING.md) · [Changelog](../../CHANGELOG.md)
 
 ## Bahasa
 
-- [English](../../README.md)
-- [한국어](./README.ko.md)
-- [日本語](./README.ja.md)
-- [简体中文](./README.zh.md)
-- [繁體中文](./README.zh-TW.md)
-- [Tiếng Việt](./README.vi.md)
-- [Español](./README.es.md)
-- [Português](./README.pt.md)
-- [Русский](./README.ru.md)
-- [Türkçe](./README.tr.md)
-- [Deutsch](./README.de.md)
-- [Français](./README.fr.md)
-- [Italiano](./README.it.md)
-- [Ελληνικά](./README.el.md)
-- [Polski](./README.pl.md)
-- [Українська](./README.uk.md)
-- [Bahasa Indonesia](./README.id.md)
+- [English](../../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md) · [Türkçe](README.tr.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Italiano](README.it.md) · [Ελληνικά](README.el.md) · [Polski](README.pl.md) · [Українська](README.uk.md) · [Bahasa Indonesia](README.id.md)
 
 ## Kontributor
 
 | Peran | Nama | GitHub |
 | --- | --- | --- |
-| Kreator & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
-| Maintainer | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
-| Maintainer | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
+| Pembuat & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Pemelihara | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Pemelihara | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
 
 ## Riwayat Star
 
@@ -526,7 +235,7 @@ MIT
 
 ## Benchmark visibilitas GEO
 
-OmX menyertakan spec produk [`geobench`](https://github.com/NomaDamas/geobench) untuk mengukur hit rate LLM, MRR, share of voice, dan citation.
+OMX menyertakan spesifikasi produk [`geobench`](https://github.com/NomaDamas/geobench) untuk mengukur hit rate LLM, MRR, share of voice, dan sitasi.
 
-- Spec: [`geobench/oh-my-codex.yaml`](../../geobench/oh-my-codex.yaml)
-- Runbook: [`docs/geobench.md`](../geobench.md)
+- Spesifikasi: [`geobench/oh-my-codex.yaml`](../../geobench/oh-my-codex.yaml)
+- Runbook: [`docs/geobench.md`](../../docs/geobench.md)
