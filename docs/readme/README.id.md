@@ -81,6 +81,7 @@ Peluncuran biasa memiliki satu pointer sesi yang dapat ditulis di `OMX_ROOT` ter
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
 PowerShell: `$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"`  
@@ -216,6 +217,98 @@ Pada sebagian Intel Mac, startup OMX—terutama dengan `--madmax --high`—dapat
 ## Bahasa
 
 - [English](../../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md) · [Türkçe](README.tr.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Italiano](README.it.md) · [Ελληνικά](README.el.md) · [Polski](README.pl.md) · [Українська](README.uk.md) · [Bahasa Indonesia](README.id.md)
+
+## Contoh peluncuran tambahan
+
+### Tujuan dan alur kerja
+
+```text
+# Contoh tujuan persisten dan checkpoint untuk pekerjaan jangka panjang:
+/goal Buat dan implementasikan rencana refaktor autentikasi yang aman, lalu verifikasi login, logout, dan refresh token.
+
+$deep-interview "perjelas perubahan autentikasi"
+$ralplan "setujui rencana autentikasi dan tinjau trade-off"
+$ultragoal "jalankan rencana yang disetujui sebagai tujuan Codex persisten"
+```
+
+```bash
+omx --worktree=feat/task --madmax --xhigh
+```
+
+### Contoh beberapa percakapan dan worktree
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
+```
+
+### Peluncuran langsung dan launch policy
+
+```bash
+omx --direct --yolo
+```
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+Flag policy CLI mengalahkan variabel lingkungan; flag policy terakhir sebelum `--` yang berlaku.
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+### Tujuan persisten untuk perbaikan checkout
+
+```text
+# Contoh tujuan persisten yang dapat disalin:
+/goal Selesaikan bug checkout dengan checkpoint untuk reproduksi, implementasi, tes regresi, dan verifikasi akhir.
+
+$plan "setujui rencana perbaikan bug checkout dan tinjau trade-off"
+$ultragoal "jalankan perbaikan checkout yang disetujui dengan bukti checkpoint"
+```
+
+Pola yang perlu dihindari:
+
+```text
+omx --madmax --xhigh
+# Langsung memuat 20 skill "untuk berjaga-jaga" sebelum menjelaskan tugas.
+# Ini membengkakkan konteks dan mengalihkan perhatian ke alur kerja yang tidak relevan.
+```
+
+### Membersihkan Team yang berhenti
+
+Gunakan shutdown paksa hanya setelah memastikan Team memang sudah mati atau sengaja ditinggalkan.
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+### Pemeriksaan pane Sparkshell tambahan
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
 
 ## Kontributor
 
