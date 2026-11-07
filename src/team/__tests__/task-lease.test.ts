@@ -31,7 +31,7 @@ echo '{"ok":true,"data":{"ok":true}}'
       .replace('with_task_lease() (', 'with_task_lease() (\n  echo lease-wrapper-pid:$BASHPID')
       .replace('renew_check_pid=$!', 'renew_check_pid=$!; echo "$renew_check_pid" >> "$LEASE_TEST_DIR/check-pids"')
       .replace('wait "$work_pid";', 'echo lease-child-pid:$lease_pid; wait "$work_pid";');
-    const script = `set -e\n${wrapper}\nwith_task_lease '{}' node -e ${JSON.stringify(work)}\n`;
+    const script = `set -e\n${wrapper}\nwith_task_lease '{}' node -e '${work.replaceAll("'", "'\\''")}'\n`;
     const child = spawn('bash', ['-c', script], { cwd, env: {
       ...process.env, PATH: `${cwd}:${process.env.PATH}`, LEASE_TEST_DIR: cwd, LEASE_TEST_MODE: mode,
     }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -83,7 +83,16 @@ describe('generated task lease Bash wrapper', () => {
   });
 
   it('renews before and during work, then cleans up its sleeping renewer', async () => {
-    const result = await runWrapper('success', work);
+    const result = await runWrapper('success', `
+console.log('work-pid:' + process.pid);
+const fs = require('node:fs');
+const timer = setInterval(() => {
+  if (Number(fs.readFileSync(process.env.LEASE_TEST_DIR + '/count', 'utf8')) < 2) return;
+  clearInterval(timer);
+  console.log('finished');
+}, 10);
+setTimeout(() => process.exit(2), 5000).unref();
+`);
     assert.equal(result.code, 0, result.output);
     assert.ok(result.count >= 2);
     assert.match(result.output, /finished/);
