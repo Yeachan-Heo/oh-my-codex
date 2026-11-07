@@ -142,6 +142,82 @@ describe('task claim renewal', () => {
     }
   }
 
+  for (const outcome of ['live', 'expired', 'wrong-token'] as const) {
+    for (const reportingFails of outcome === 'live' ? [false] : [false, true]) {
+      it(`heartbeat directory still ${outcome === 'live' ? 'renews' : 'stops'} a ${outcome} claim in both hooks when reporting ${reportingFails ? 'fails' : 'succeeds'}`, async (t) => {
+        const claim = await claimed();
+        const stateRoot = join(cwd, '.omx/state');
+        const teamRoot = join(stateRoot, 'team', team);
+        const workerRoot = join(teamRoot, 'workers/worker-1');
+        await writeAtomic(join(workerRoot, 'identity.json'), JSON.stringify({ name: 'worker-1', team_state_root: stateRoot, worktree_path: cwd }));
+        await writeWorkerStatus(team, 'worker-1', {
+          state: 'working', current_task_id: claim.task.id,
+          current_claim_token: outcome === 'wrong-token' ? 'wrong-captured-token' : claim.claimToken,
+          updated_at: new Date().toISOString(),
+        }, cwd);
+        await mkdir(join(workerRoot, 'heartbeat.json'));
+        if (outcome === 'expired') await expire(claim.task.id);
+        if (reportingFails) {
+          await mkdir(join(workerRoot, 'lease-loss.json'));
+          await rm(join(teamRoot, 'mailbox'), { recursive: true, force: true });
+          await writeFile(join(teamRoot, 'mailbox'), 'blocked');
+          t.mock.method(process.stderr, 'write', () => { throw new Error('stderr closed'); });
+        }
+        const git = (args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+        git(['init']);
+        git(['config', 'user.email', 'test@example.com']);
+        git(['config', 'user.name', 'Test User']);
+        await writeFile(join(cwd, 'work.txt'), 'before\n');
+        git(['add', 'work.txt']);
+        git(['commit', '-m', 'initial']);
+        const head = git(['rev-parse', 'HEAD']);
+        await writeFile(join(cwd, 'work.txt'), 'unverified output\n');
+        const taskBefore = await readTask(team, claim.task.id, cwd);
+        const statusBefore = await readFile(join(workerRoot, 'status.json'), 'utf8');
+        Date.now = () => realNow() + 10 * 60_000;
+        const postTool = await handleTeamWorkerPostToolUseSuccess({
+          hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 'heartbeat-io',
+          tool_response: outcome === 'live' ? 'plain stdout/stderr\n' : { exit_code: 0 },
+        }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
+        if (outcome === 'live') assert.equal((await readTask(team, claim.task.id, cwd))?.version, claim.task.version + 1);
+        const heartbeat = await updateWorkerHeartbeat(stateRoot, team, 'worker-1');
+        const taskAfter = await readTask(team, claim.task.id, cwd);
+        if (outcome === 'live') {
+          assert.equal(postTool.reason, 'nonzero_exit');
+          assert.equal(postTool.stopMessage, undefined);
+          assert.ok(heartbeat?.ok && !('terminalHandoff' in heartbeat));
+          assert.equal(taskAfter?.version, claim.task.version + 2);
+          assert.ok(Date.parse(taskAfter!.claim!.leased_until) > Date.parse(taskBefore!.claim!.leased_until));
+          assert.equal(taskAfter!.claim!.token, claim.claimToken);
+          assert.equal(taskAfter!.claim!.claimed_at, claim.task.claim!.claimed_at);
+        } else {
+          const stop = outcome === 'expired' ? /lease_expired.*STOP editing/ : /claim_conflict.*STOP editing/;
+          assert.match(postTool.stopMessage!, stop);
+          assert.ok(heartbeat && !heartbeat.ok && 'stopMessage' in heartbeat);
+          assert.match(heartbeat.stopMessage, stop);
+          assert.deepEqual(taskAfter, taskBefore);
+          if (!reportingFails) {
+            assert.match(await readFile(join(workerRoot, 'lease-loss.json'), 'utf8'), stop);
+            for (const recipient of ['worker-1', 'leader-fixed']) {
+              assert.ok((await listMailboxMessages(team, recipient, cwd)).some((message) => stop.test(message.body)));
+            }
+          }
+        }
+        assert.deepEqual(postTool.operationKinds, []);
+        assert.equal(postTool.checkpointCommit, undefined);
+        assert.equal(postTool.dedupeKey, undefined);
+        assert.equal(existsSync(join(workerRoot, 'posttooluse-dedupe.json')), false);
+        assert.equal(existsSync(join(cwd, '.omx/reports/team-commit-hygiene', `${team}.ledger.json`)), false);
+        assert.equal(existsSync(join(workerRoot, `heartbeat.json.tmp.${process.pid}`)), false);
+        assert.ok((await stat(join(workerRoot, 'heartbeat.json'))).isDirectory());
+        assert.equal(await readFile(join(workerRoot, 'status.json'), 'utf8'), statusBefore);
+        assert.equal(git(['rev-parse', 'HEAD']), head);
+        assert.equal(git(['diff', '--cached']), '');
+        assert.equal(await readFile(join(cwd, 'work.txt'), 'utf8'), 'unverified output\n');
+      });
+    }
+  }
+
   it('explicit CLI API renewal validates inputs, owner and token', async () => {
     const claim = await claimed();
     const missing = await executeTeamApiOperation('renew-task-claim', { team_name: team }, cwd);
@@ -233,6 +309,15 @@ describe('task claim renewal', () => {
         hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'handoff complete\n', tool_use_id: 'terminal-handoff',
       }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
       assert.equal(postTool.reason, 'terminal_handoff');
+      await rm(join(workerRoot, 'heartbeat.json'));
+      await mkdir(join(workerRoot, 'heartbeat.json'));
+      const blockedHeartbeat = await updateWorkerHeartbeat(stateRoot, team, 'worker-1');
+      assert.ok(blockedHeartbeat?.ok && 'terminalHandoff' in blockedHeartbeat);
+      const blockedPostTool = await handleTeamWorkerPostToolUseSuccess({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { exit_code: 0 },
+      }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
+      assert.equal(blockedPostTool.reason, 'terminal_handoff');
+      assert.equal(blockedPostTool.stopMessage, undefined);
       assert.equal(postTool.stopMessage, undefined);
       assert.equal(postTool.checkpointCommit, undefined);
       assert.deepEqual(postTool.operationKinds, []);
@@ -381,10 +466,20 @@ describe('task claim renewal', () => {
   it('missing or malformed status stays intentionally quiet without adopting a task token', async () => {
     const claim = await claimed();
     const stateRoot = join(cwd, '.omx/state');
-    assert.equal(await renewWorkerTaskLease(stateRoot, team, 'worker-1'), null);
-    await writeFile(join(stateRoot, 'team', team, 'workers/worker-1/status.json'), '{');
-    assert.equal(await renewWorkerTaskLease(stateRoot, team, 'worker-1'), null);
-    assert.deepEqual(await readTask(team, claim.task.id, cwd), claim.task);
+    const workerRoot = join(stateRoot, 'team', team, 'workers/worker-1');
+    await writeAtomic(join(workerRoot, 'identity.json'), JSON.stringify({ name: 'worker-1', team_state_root: stateRoot, worktree_path: cwd }));
+    await mkdir(join(workerRoot, 'heartbeat.json'));
+    for (const malformed of [false, true]) {
+      if (malformed) await writeFile(join(workerRoot, 'status.json'), '{');
+      assert.equal(await renewWorkerTaskLease(stateRoot, team, 'worker-1'), null);
+      assert.equal(await updateWorkerHeartbeat(stateRoot, team, 'worker-1'), null);
+      const postTool = await handleTeamWorkerPostToolUseSuccess({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'plain stdout/stderr\n',
+      }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
+      assert.equal(postTool.reason, 'nonzero_exit');
+      assert.equal(postTool.stopMessage, undefined);
+      assert.deepEqual(await readTask(team, claim.task.id, cwd), claim.task);
+    }
   });
 
   it('automatic renewal catches config lookup errors only after capturing a working task/token', async () => {
