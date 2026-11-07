@@ -115,7 +115,9 @@ $ultragoal "μετέτρεψε το εγκεκριμένο σχέδιο σε α�
 omx doctor
 codex login status
 omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
+```
 omx --worktree=feat/task --madmax --xhigh
+```
 ```
 
 Το `omx doctor` εντοπίζει ελλείψεις εγκατάστασης, hooks και runtime. Το πραγματικό smoke test ελέγχει authentication, profile και provider με κανονικό αίτημα Codex.
@@ -131,20 +133,74 @@ OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
 
 Για PowerShell ορίστε `$env:OMX_ROOT`· για Command Prompt χρησιμοποιήστε `%USERPROFILE%`. Ίδια ρητή root προκαλεί owner conflict, ενώ διαφορετικά checkouts έχουν ξεχωριστές προεπιλογές.
 
+### OMX_ROOT σε PowerShell και Command Prompt
+
+PowerShell:
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+Command Prompt:
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
 ### Ασφάλεια Madmax και worktree
 
 Το `--madmax` είναι συντομογραφία του `--dangerously-bypass-approvals-and-sandbox` και αφαιρεί τις κανονικές δικλείδες. Χρησιμοποιήστε το μόνο σε έμπιστα repos και περιβάλλοντα. Προτιμήστε ονομασμένο worktree:
 
 ```bash
+Ονομασμένο worktree για ένα task:
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
 omx --worktree=feature/auth --madmax --xhigh
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
 Το `--worktree` δημιουργεί ξεχωριστό git checkout· χωρίς όνομα χρησιμοποιεί detached worktree μίας χρήσης. Αν είναι dirty, OMX προειδοποιεί αλλά συνεχίζει. Το `--direct` παρακάμπτει διαχείριση tmux/HUD για μία εκκίνηση· το `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` ορίζει προτίμηση περιβάλλοντος και τα CLI flags υπερισχύουν. Δεν προστίθεται ρύθμιση config file.
 
+Άμεση εκκίνηση:
+```bash
+omx --direct --yolo
+```
+
+Μόνιμη προτίμηση profile:
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+Επαναφορά στην αυτόματη λειτουργία:
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+Τα CLI flags υπερισχύουν της μεταβλητής περιβάλλοντος· ισχύει το τελευταίο CLI flag:
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
 ### /goal και επιλογή skill
 
 Χρησιμοποιήστε `/goal` για διαρκείς στόχους/checkpoints, `$plan` για σχεδιασμό, `$team` για παράλληλο συντονισμό και `$ultragoal` για διαρκή εκτέλεση πολλών στόχων. Φορτώστε συνήθως μόνο 2–5 σχετικά skills· η μαζική φόρτωση σπαταλά πλαίσιο και προσοχή.
+
+Παράδειγμα διαρκούς στόχου:
+```text
+/goal Κυκλοφόρησε τη διόρθωση checkout με checkpoints για αναπαραγωγή, υλοποίηση, regression tests και τελική επαλήθευση.
+
+$plan "έγκρινε το σχέδιο διόρθωσης checkout και αξιολόγησε τα tradeoffs"
+$ultragoal "υλοποίησε την εγκεκριμένη διόρθωση με τεκμήρια checkpoints"
+```
+
+Anti-pattern: μην φορτώνετε πολλά skills «για καλό και για κακό»:
+```text
+omx --madmax --xhigh
+# Μην φορτώσετε αμέσως 20 skills πριν περιγράψετε το task.
+# Αυτό διογκώνει το context και αποσπά την προσοχή σε άσχετα workflows.
+```
 
 ## Ένα απλό νοητικό μοντέλο
 
@@ -205,8 +261,27 @@ omx --worktree=fix/flaky-tests --madmax --xhigh
 ```bash
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
+```
+```bash
 omx wiki list --json
+omx wiki query --input '{"query":"session-start lifecycle"}' --json
 omx wiki lint --json
+omx wiki refresh --json
+```
+
+Εντολές Team:
+```bash
+omx team 3:executor "fix the failing tests with verification"
+omx team status <team-name>
+omx team resume <team-name>
+omx team shutdown <team-name>
+```
+
+Forced cleanup μόνο αφού επιβεβαιώσετε ότι το team έχει πεθάνει ή εγκαταλειφθεί σκόπιμα:
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
 ```
 
 ### Σημειώσεις πλατφόρμας Team
