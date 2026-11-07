@@ -3219,6 +3219,11 @@ setTimeout(run, 10);
 				);
 				await lstat(join(legacyPinDir, "pin-legacy-delegate.json"));
 
+				// The hook left only an expired/empty external pin dir; the legacy pin must still decide.
+				const externalPinEntries = await readdir(livePinDirectoryPath(codexHomeDir, version)).catch(() => []);
+				assert.equal(externalPinEntries.some((name) => name.startsWith("pin-")), false);
+				await utimes(livePinDirectoryPath(codexHomeDir, version), new Date(0), new Date(0)).catch(() => undefined);
+
 				// GC
 				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "999.0.0");
 				assert.equal(retired.includes(cacheDir), false, "legacy-pinned snapshot must survive GC");
