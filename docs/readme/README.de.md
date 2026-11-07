@@ -98,7 +98,7 @@ Wähle den Setup-Scope bewusst:
 
 `--force` ist unabhängig und vorübergehend; es wird nicht gespeichert und überschreibt keine explizite Merge-Richtlinie. Die Richtlinie wird erst gespeichert, wenn das Setup vollständig erfolgreich war. Sie macht Merge weder zum Standard noch stellt sie den abgelehnten Merge-by-default-Ansatz wieder her.
 
-### Codex-Plugin-Installation
+**Codex-Plugin-Installation:**
 
 Das Repository enthält außerdem ein offizielles Codex-Plugin unter `plugins/oh-my-codex`. Es liefert gebündelte Skills und pluginbezogene Metadaten für Hooks und optionale Integrationen, ersetzt aber nicht das globale `oh-my-codex`-CLI plus scoped Setup. Plugin-Hooks starten weiterhin das installierte `omx`-CLI.
 
@@ -109,7 +109,7 @@ Für ein explizites dauerhaftes Ziel kannst du `/goal` mit einem passenden Check
 
 ```text
 # Dauerhaftes Ziel mit Checkpoints:
- /goal Erstelle einen sicheren Authentifizierungs-Refactor-Plan, setze ihn um und überprüfe Anmeldung, Abmeldung und Refresh-Token-Verhalten.
+/goal Erstelle einen sicheren Authentifizierungs-Refactor-Plan, setze ihn um und überprüfe Anmeldung, Abmeldung und Refresh-Token-Verhalten.
 
 $deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
@@ -236,6 +236,10 @@ Die Leitplanken umfassen `AGENTS.md`, Skills, Prompts, Codex-Konfiguration und p
 5. Starte vorzugsweise mit einem benannten Worktree.
 6. Nutze `$deep-interview` zur Klärung, `$ralplan` zur Planfreigabe und `$ultragoal` für dauerhafte Umsetzung.
 7. Verwende `$team`, wenn eine konkrete Story wirklich parallele Koordination erfordert; ergänze `/goal`, wenn ein explizites, dauerhaftes Ziel-/Checkpoint-Gerüst nützlich ist.
+### `/goal` und Skill-Auswahl
+
+Starte eine normale starke Sitzung mit `omx --madmax --xhigh` oder ergänze im Git-Projekt `--worktree=<task>`. Nutze `/goal` für ein dauerhaftes Ziel mit Checkpoints; wähle `$ultragoal` für mehrstufige Umsetzung, `$team` für koordinierte Parallelität und `$plan`, wenn zuerst ein eigener Plan nötig ist.
+
 Für ein kopierbares Beispiel:
 
 ```text
