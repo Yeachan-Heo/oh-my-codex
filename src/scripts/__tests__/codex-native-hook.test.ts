@@ -21,7 +21,7 @@ import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { DOCUMENT_REFRESH_EXEMPTION_PREFIX } from "../../document-refresh/enforcer.js";
 import {
 	initTeamState,
-  createTask, claimTask,
+  createTask, claimTask, withTeamTaskBarrier, transitionTaskStatus, writeWorkerStatus,
   readTeamConfig,
 	readTeamLeaderAttention,
 	readTeamPhase,
@@ -16916,6 +16916,120 @@ exit 0
       assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
       assert.equal(existsSync(join(workerRoot, "lease-loss.json")), true);
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const terminalStatus of ['completed', 'failed'] as const) {
+    it(`allows separate idle status after native PostToolUse for an own ${terminalStatus} handoff without checkpointing`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-terminal-handoff-"));
+      const teamName = "native-terminal-handoff";
+      const stateRoot = join(cwd, ".omx/state");
+      try {
+        await configureAuthoritativeTeamWorker(cwd, teamName);
+        const task = await createTask(teamName, { subject: "research", description: "no code", status: "pending", requires_code_change: false }, cwd);
+        await createTask(teamName, { subject: "other ongoing work", description: "keep team active", status: "pending" }, cwd);
+        const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+        assert.ok(claim.ok);
+        await writeWorkerStatus(teamName, "worker-1", {
+          state: "working", current_task_id: task.id, current_claim_token: claim.claimToken, updated_at: new Date().toISOString(),
+        }, cwd);
+        const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+        const statusPath = join(workerRoot, "status.json");
+        const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+        assert.ok((await transitionTaskStatus(teamName, task.id, "in_progress", terminalStatus, claim.claimToken, cwd, {
+          result: "Research complete; no code changes.", error: "Research could not finish.",
+        })).ok);
+        const statusBefore = await readFile(statusPath, "utf8");
+        const taskBefore = await readFile(taskPath, "utf8");
+        const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+        git(["init"]);
+        git(["config", "user.email", "test@example.com"]);
+        git(["config", "user.name", "Test User"]);
+        await writeFile(join(cwd, "work.txt"), "before\n");
+        git(["add", "work.txt"]);
+        git(["commit", "-m", "initial"]);
+        const headBefore = git(["rev-parse", "HEAD"]);
+        await writeFile(join(cwd, "work.txt"), "unverified terminal edits\n");
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "terminal-handoff",
+          tool_input: { command: "omx team api transition-task-status" }, tool_response: { exit_code: 0 },
+        }, { cwd });
+        assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
+        for (const file of ["lease-loss.json", "posttooluse-dedupe.json"]) assert.equal(existsSync(join(workerRoot, file)), false);
+        assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+        assert.equal(git(["rev-parse", "HEAD"]), headBefore);
+        assert.equal(git(["diff", "--cached"]), "");
+        assert.equal(await readFile(join(cwd, "work.txt"), "utf8"), "unverified terminal edits\n");
+        assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+        assert.equal(await readFile(statusPath, "utf8"), statusBefore);
+        await writeWorkerStatus(teamName, "worker-1", { state: "idle", updated_at: new Date().toISOString() }, cwd);
+        const idle = await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_response: { exit_code: 0 },
+          tool_input: { command: "write idle worker status" },
+        }, { cwd });
+        assert.doesNotMatch(JSON.stringify(idle.outputJson), /LEASE LOST|STOP editing/);
+        assert.equal(JSON.parse(await readFile(statusPath, "utf8")).state, "idle");
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("surfaces a thrown automatic renewal membership timeout as native PostToolUse STOP without checkpoint or dedupe", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-renewal-timeout-"));
+    const teamName = "native-renewal-timeout";
+    const stateRoot = join(cwd, ".omx/state");
+    let release!: () => void;
+    let barrier: Promise<void> | undefined;
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      const statusPath = join(workerRoot, "status.json");
+      await writeJson(statusPath, {
+        state: "working", current_task_id: task.id, current_claim_token: claim.claimToken,
+      });
+      const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+      const taskBefore = await readFile(taskPath, "utf8");
+      const statusBefore = await readFile(statusPath, "utf8");
+      const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      git(["init"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test User"]);
+      await writeFile(join(cwd, "work.txt"), "before\n");
+      git(["add", "work.txt"]);
+      git(["commit", "-m", "initial"]);
+      const headBefore = git(["rev-parse", "HEAD"]);
+      await writeFile(join(cwd, "work.txt"), "unverified edits\n");
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_STATE_ROOT = stateRoot;
+      let acquired!: () => void;
+      const ready = new Promise<void>((resolve) => { acquired = resolve; });
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      barrier = withTeamTaskBarrier(teamName, cwd, async () => { acquired(); await held; });
+      await ready;
+      // Dispatch outside the barrier callback so ALS reentrancy cannot bypass its deadline.
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "renewal-timeout",
+        tool_input: { command: "printf ok" }, tool_response: { exit_code: 0 },
+      }, { cwd });
+      assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*Timed out acquiring team task lock.*STOP editing/);
+      const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+      assert.equal(existsSync(join(workerRoot, "lease-loss.json")), true);
+      assert.equal(git(["rev-parse", "HEAD"]), headBefore);
+      assert.equal(git(["diff", "--cached"]), "");
+      assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+      assert.equal(await readFile(statusPath, "utf8"), statusBefore);
+    } finally {
+      release?.();
+      await barrier;
       await rm(cwd, { recursive: true, force: true });
     }
   });
