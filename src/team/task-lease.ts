@@ -53,9 +53,9 @@ export const TASK_LEASE_SHELL_FUNCTION = `with_task_lease() (
   exit "$lease_status"
 )`;
 
-export const TASK_LEASE_INSTRUCTIONS = `After claiming, write {"state":"working","current_task_id":"<id>","current_claim_token":"<returned claimToken>","updated_at":"<ISO timestamp>"} to your worker status.json. Notify/PostToolUse heartbeats renew only that unexpired token. For work or tool waits over 5 minutes, define and use this Bash wrapper (replace the JSON placeholders with your current claim):
+export const TASK_LEASE_INSTRUCTIONS = `Use either a freshly claimed token or the existing current claim token from a leader handoff. Before using a handoff, validate the task file owner, claim token, version, and unexpired lease against that handoff; do not claim again just to renew a valid handoff. Write {"state":"working","current_task_id":"<id>","current_claim_token":"<current claim token>","updated_at":"<ISO timestamp>"} to your worker status.json. Notify/PostToolUse heartbeats renew only that unexpired token. For work or tool waits over 5 minutes, define and use this Bash wrapper (replace the JSON placeholders with your current claim):
 \`\`\`bash
 ${TASK_LEASE_SHELL_FUNCTION}
-with_task_lease '{"team_name":"<team>","task_id":"<id>","worker":"<worker>","claim_token":"<returned claimToken>"}' <command> <args...>
+with_task_lease '{"team_name":"<team>","task_id":"<id>","worker":"<worker>","claim_token":"<current claim token>"}' <command> <args...>
 \`\`\`
 It renews before starting and every 5 minutes, fails closed on renewal failure, and cleans up its own direct children. Commands that spawn grandchildren must handle/terminate their own children. If renewal fails, stop editing and contact the leader; expired claims cannot be revived.`;
