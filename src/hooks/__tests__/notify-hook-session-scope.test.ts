@@ -32,7 +32,7 @@ describe('notify-hook session-scoped iteration updates', () => {
       const sessionId = 'sess-current';
       await mkdir(stateDir, { recursive: true });
 
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }));
       await writeFile(join(stateDir, 'team-state.json'), JSON.stringify({
         active: true,
         iteration: 41,
@@ -67,7 +67,7 @@ describe('notify-hook session-scoped iteration updates', () => {
       const sessionScopedDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionScopedDir, { recursive: true });
 
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }));
       await writeFile(join(sessionScopedDir, 'team-state.json'), JSON.stringify({ active: true, iteration: 0 }));
 
       const result = runNotifyHook({
@@ -96,7 +96,7 @@ describe('notify-hook session-scoped iteration updates', () => {
       const sessionScopedDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionScopedDir, { recursive: true });
 
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }));
       await writeFile(join(sessionScopedDir, 'ralph-state.json'), JSON.stringify({
         active: true,
         iteration: 1,
@@ -137,7 +137,7 @@ describe('notify-hook session-scoped iteration updates', () => {
       const sessionScopedDir = join(stateDir, 'sessions', sessionId);
       await mkdir(sessionScopedDir, { recursive: true });
 
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd: wd }));
       await writeFile(join(sessionScopedDir, 'team-state.json'), JSON.stringify({
         active: true,
         iteration: 1,

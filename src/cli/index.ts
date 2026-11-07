@@ -140,6 +140,7 @@ import {
   establishLaunchSessionBinding,
   readNativeSessionOwnerEvidence,
   readSessionPointer,
+  recoverDeadSessionPointer,
   readSessionState,
   resolveSessionPointerContext,
   sessionOwnerFileIdentityMatches,
@@ -2403,7 +2404,7 @@ export async function preflightResumeOmxPluginState(
 
 export { CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE } from "../auth/hotswap.js";
 
-export function isResumeCodexLaunch(args: string[]): boolean {
+export function findResumeCodexSubcommandIndex(args: string[]): number {
   const { omxArgs } = splitOmxArgsAtEndOfOptions(args);
   for (let index = 0; index < omxArgs.length; index += 1) {
     const arg = omxArgs[index];
@@ -2415,16 +2416,54 @@ export function isResumeCodexLaunch(args: string[]): boolean {
     if (optionValue?.valueArity === "variadic") {
       if (optionValue.attached) continue;
       let nextIndex = index + 1;
-      while (nextIndex < omxArgs.length && !omxArgs[nextIndex]!.startsWith("-")) {
-        nextIndex += 1;
-      }
+      while (nextIndex < omxArgs.length && !omxArgs[nextIndex]!.startsWith("-")) nextIndex += 1;
       index = nextIndex - 1;
       continue;
     }
     if (arg.startsWith("-")) continue;
-    return arg === "resume";
+    return arg === "resume" ? index : -1;
   }
-  return false;
+  return -1;
+}
+
+const CODEX_RESUME_BOOLEAN_OPTIONS = new Set([
+  "--last", "--all", "--include-non-interactive", "--no-alt-screen", "--oss", "--full-auto",
+  "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
+  "--search", "--strict-config", "--approve-for-me", "--no-daemon", "--worktree",
+]);
+
+/** Only the first positional selector may authorize attachment to a live runtime. */
+export function requestedResumeNativeSessionId(args: string[]): string | undefined {
+  const commandIndex = findResumeCodexSubcommandIndex(args);
+  if (commandIndex < 0) return undefined;
+  let positionalOnly = false;
+  for (let index = commandIndex + 1; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!positionalOnly) {
+      if (arg === "--") { positionalOnly = true; continue; }
+      const optionValue = resolveCodexGlobalOptionValue(arg);
+      if (optionValue?.valueArity === "single") {
+        if (!optionValue.attached) index += 1;
+        continue;
+      }
+      if (optionValue?.valueArity === "variadic") {
+        if (!optionValue.attached) {
+          while (index + 1 < args.length && !args[index + 1]!.startsWith("-")) index += 1;
+        }
+        continue;
+      }
+      // Unknown options might consume the following token. Fail closed rather
+      // than interpreting their values as a session selector.
+      if (arg.startsWith("-") && !CODEX_RESUME_BOOLEAN_OPTIONS.has(arg)) return undefined;
+      if (arg.startsWith("-")) continue;
+    }
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(arg) ? arg : undefined;
+  }
+  return undefined;
+}
+
+export function isResumeCodexLaunch(args: string[]): boolean {
+  return findResumeCodexSubcommandIndex(args) >= 0;
 }
 
 async function prepareResumeCodexHomeForLaunch(
@@ -3444,10 +3483,15 @@ function reportOrdinaryLaunchRootConflict(
 export function reportDetachedSessionPointerGuidance(
   error: unknown,
   cwd: string = process.cwd(),
+  resumeLaunch = false,
 ): void {
   const candidate = findDetachedSessionPointerAbort(error);
   if (!candidate) return;
   if (candidate.code === "session_pointer_owner_conflict") {
+    if (resumeLaunch) {
+      console.error("[omx] resume conflicts with an existing OMX runtime owner. Check `omx doctor` and identify that owner's session before resuming. Do not kill the other process or delete its pointer; use a distinct OMX_ROOT only for a genuinely independent conversation.");
+      return;
+    }
     // Rebuild a well-formed SessionPointerLaunchAbort so reportOrdinaryLaunchRootConflict's
     // isSessionPointerLaunchAbort gate (name/committed/cwd/operation/code) accepts it,
     // then reuse the ordinary path's exact OMX_ROOT guidance block unchanged.
@@ -3465,7 +3509,9 @@ export function reportDetachedSessionPointerGuidance(
     return;
   }
   if (candidate.code === "session_pointer_unusable") {
-    console.error("[omx] the selected session pointer is unusable; run `omx doctor` for the exact pointer status and bounded recovery steps.");
+    console.error(resumeLaunch
+      ? "[omx] resume was refused because the existing OMX session pointer is unusable. Run `omx doctor` and `omx session pointer recover --cwd \"$PWD\" --json` to inspect recovery evidence; recovery is refused if owner liveness is uncertain. Do not delete the pointer or kill an unrelated Codex session."
+      : "[omx] the selected session pointer is unusable; run `omx doctor` for the exact pointer status and bounded recovery steps.");
   }
 }
 
@@ -5379,7 +5425,7 @@ if (command !== "launch" && command !== "resume") {
     if (err instanceof DetachedLaunchSafetyError) {
       console.error(`Error: ${err.message}`);
       console.error(`[omx] detached launch safety report: ${renderDetachedLaunchSafetyReport(err)}`);
-      reportDetachedSessionPointerGuidance(err.cause);
+      reportDetachedSessionPointerGuidance(err.cause, process.cwd(), args.includes("resume"));
     } else {
       console.error(`Error: ${err instanceof Error ? err.message : err}`);
     }
@@ -5705,6 +5751,61 @@ export async function launchWithHud(args: string[]): Promise<void> {
   applyDisposableWorktreeOmxRootForLaunch(ensuredLaunchWorktree);
   applyWorktreeToolContextForLaunch(cwd, ensuredLaunchWorktree);
   if (launchPolicy === "detached-tmux" && detachedPreflight && handleMadmaxDetachedReuse(madmaxWorktreeRuntimeContext, detachedPreflight)) return;
+
+  // Resume may encounter the verified-dead pointer left by an interrupted OMX
+  // wrapper. Recover only that classification through the canonical fenced,
+  // byte-preserving transaction; never reclaim a live/uncertain owner or a
+  // managed Codex daemon pointer as a side-effect of resume.
+  if (isResumeCodexLaunch(normalizedArgs)) {
+    const selected = await readSessionPointer(resolveSessionPointerContext(cwd));
+    if (selected.status === "usable" || selected.status === "identity-indeterminate") {
+      const owner = selected.state;
+      // Global Codex flags can precede `resume`; never assume it is argv[0].
+      // Only an explicit native UUID after the subcommand can authorize reattach.
+      const requestedNativeId = requestedResumeNativeSessionId(normalizedArgs);
+      if (selected.status === "usable" && owner?.tmux_session_name && owner.tmux_pane_id
+        && requestedNativeId && requestedNativeId === owner.native_session_id
+        && launchPolicy === "detached-tmux" && detachedPreflight?.shouldAttach) {
+        // Attach only if tmux itself proves the pane belongs to the canonical
+        // pointer's OMX instance. Names alone are not authority.
+        let rows = "";
+        try {
+          rows = execTmuxFileSync(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_dead}\t#{session_name}\t#{@omx_instance_id}"],
+            { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+        } catch {
+          // An unavailable tmux server is not evidence of ownership. Preserve
+          // the occupied pointer and use the usual actionable conflict error.
+        }
+        const matches = rows.split("\n").filter((row) => {
+          const [paneId, dead, name, instance, ...extra] = row.split("\t");
+          return extra.length === 0 && paneId === owner.tmux_pane_id && dead === "0"
+            && name === owner.tmux_session_name && instance === owner.session_id;
+        });
+        if (matches.length === 1) {
+          // The tmux probe happens after the initial pointer read. Do not
+          // attach if another owner replaced that pointer in the meantime.
+          const current = await readSessionPointer(resolveSessionPointerContext(cwd));
+          if (current.status !== "usable" || current.raw !== selected.raw) {
+            throw new Error("[omx] resume owner changed while verifying tmux binding; refusing reattach.");
+          }
+          console.error(`[omx] requested native session is already active; attaching existing OMX tmux session ${owner.tmux_session_name}.`);
+          execTmuxFileSync(["attach-session", "-t", owner.tmux_session_name], { stdio: "inherit" });
+          return;
+        }
+      }
+      throw new Error(`[omx] session_pointer_owner_conflict: resume cannot start a second OMX runtime under the occupied state root (${selected.status}). Reattach to the existing OMX tmux session, or finish that runtime before resuming. The pointer and its owner were preserved.`);
+    }
+    if (selected.status === "stale-dead") {
+      const recovery = await recoverDeadSessionPointer(cwd);
+      if (!recovery.recovered) {
+        throw new Error(`[omx] resume cannot recover verified-dead session pointer: ${recovery.reason}`);
+      }
+      console.error(`[omx] recovered verified-dead session pointer before resume; forensic state preserved at ${recovery.quarantinePath}`);
+    }
+    if (!["absent", "non-runtime-owner", "stale-dead"].includes(selected.status)) {
+      throw new Error(`[omx] resume refused because the selected session pointer is ${selected.status}. No new OMX runtime was started and the pointer was preserved. Inspect recoverability with omx session pointer recover --json; never delete an uncertain owner's pointer.`);
+    }
+  }
 
 
 
