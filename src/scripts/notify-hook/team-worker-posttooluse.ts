@@ -422,7 +422,8 @@ export async function handleTeamWorkerPostToolUseSuccess(
     }
 
     const nowIso = new Date().toISOString();
-    await writeHeartbeat(stateRoot, teamName, workerName, nowIso);
+    // Best-effort heartbeat telemetry must not bypass authoritative renewal.
+    await writeHeartbeat(stateRoot, teamName, workerName, nowIso).catch(() => {});
     const renewal = await renewWorkerTaskLease(stateRoot, teamName, workerName);
     if (renewal && 'terminalHandoff' in renewal) {
       return { handled: true, status: 'skipped', reason: 'terminal_handoff', teamName, workerName, stateRoot, worktreePath, operationKinds: [] };

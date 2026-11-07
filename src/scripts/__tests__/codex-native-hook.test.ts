@@ -16917,6 +16917,68 @@ exit 0
     }
   });
 
+  for (const outcome of ['live', 'expired', 'wrong-token'] as const) {
+    it(`heartbeat directory does not bypass native PostToolUse ${outcome === 'live' ? 'renewal' : 'STOP'} for a ${outcome} claim`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-heartbeat-io-"));
+      const teamName = "native-heartbeat-io";
+      const stateRoot = join(cwd, ".omx/state");
+      try {
+        await configureAuthoritativeTeamWorker(cwd, teamName);
+        const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+        const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+        assert.ok(claim.ok);
+        const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+        await writeWorkerStatus(teamName, "worker-1", {
+          state: "working", current_task_id: task.id,
+          current_claim_token: outcome === 'wrong-token' ? 'wrong-captured-token' : claim.claimToken,
+          updated_at: new Date().toISOString(),
+        }, cwd);
+        await mkdir(join(workerRoot, "heartbeat.json"));
+        const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+        if (outcome !== 'wrong-token') {
+          await writeJson(taskPath, { ...claim.task, claim: { ...claim.task.claim, leased_until: new Date(outcome === 'expired' ? 0 : Date.now() + 60_000).toISOString() } });
+        }
+        const taskBefore = await readFile(taskPath, "utf8");
+        const statusBefore = await readFile(join(workerRoot, "status.json"), "utf8");
+        const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+        git(["init"]);
+        git(["config", "user.email", "test@example.com"]);
+        git(["config", "user.name", "Test User"]);
+        await writeFile(join(cwd, "work.txt"), "before\n");
+        git(["add", "work.txt"]);
+        git(["commit", "-m", "initial"]);
+        const head = git(["rev-parse", "HEAD"]);
+        await writeFile(join(cwd, "work.txt"), "unverified output\n");
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "heartbeat-io",
+          tool_input: { command: "printf ok" }, tool_response: "plain stdout/stderr\n",
+        }, { cwd });
+        if (outcome === 'live') {
+          assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
+          const after = JSON.parse(await readFile(taskPath, "utf8"));
+          assert.equal(after.version, claim.task.version + 1);
+          assert.equal(after.claim.token, claim.claimToken);
+          assert.ok(Date.parse(after.claim.leased_until) > Date.parse(JSON.parse(taskBefore).claim.leased_until));
+        } else {
+          const stop = outcome === 'expired' ? /lease_expired.*STOP editing/ : /claim_conflict.*STOP editing/;
+          assert.match(String(result.outputJson?.systemMessage), stop);
+          const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+          assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+          assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+          assert.match(await readFile(join(workerRoot, "lease-loss.json"), "utf8"), stop);
+        }
+        assert.equal(await readFile(join(workerRoot, "status.json"), "utf8"), statusBefore);
+        assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+        assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+        assert.equal(git(["rev-parse", "HEAD"]), head);
+        assert.equal(git(["diff", "--cached"]), "");
+        assert.equal(await readFile(join(cwd, "work.txt"), "utf8"), "unverified output\n");
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("surfaces unexpected status I/O as native real-wire PostToolUse STOP without task mutation", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-status-io-"));
     const teamName = "native-status-io";
