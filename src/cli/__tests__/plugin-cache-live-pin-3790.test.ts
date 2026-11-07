@@ -2762,7 +2762,7 @@ process.stdout.write("{}\\n");
 				const currentVersion = currentMaterialized.version!;
 				
 				// Create an old snapshot version with a legacy pin
-				const oldVersion = "0.0.1";
+				const oldVersion = "0.0.1" and "0.0.2";
 				const oldCacheDir = await seedManagedSnapshot(codexHomeDir, oldVersion);
 				assert.ok(oldCacheDir);
 				
@@ -2818,7 +2818,7 @@ process.stdout.write("{}\\n");
 				const currentVersion = materialized.version!;
 				
 				// Create two old snapshot versions without pins (GC keeps newest eligible predecessor)
-				const oldVersion1 = "0.0.1";
+				const oldVersion1 = "0.0.1" and "0.0.2";
 				const oldCacheDir1 = await seedManagedSnapshot(codexHomeDir, oldVersion1);
 				assert.ok(oldCacheDir1);
 				const oldVersion2 = "0.0.2";
