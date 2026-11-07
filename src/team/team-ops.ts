@@ -38,6 +38,7 @@ export type {
   TeamDispatchTransportPreference,
   TaskReadiness,
   ClaimTaskResult,
+  RenewTaskClaimResult,
   TransitionTaskResult,
   ReleaseTaskClaimResult,
   ReclaimTaskResult,
@@ -81,6 +82,7 @@ export { listTasks as teamListTasks } from './state.js';
 export { listTasksSnapshot as teamListTasksSnapshot } from './state.js';
 export { updateTask as teamUpdateTask } from './state.js';
 export { claimTask as teamClaimTask } from './state.js';
+export { renewTaskClaim as teamRenewTaskClaim } from './state.js';
 export { releaseTaskClaim as teamReleaseTaskClaim } from './state.js';
 export { reclaimExpiredTaskClaim as teamReclaimExpiredTaskClaim } from './state.js';
 export { transitionTaskStatus as teamTransitionTaskStatus } from './state.js';

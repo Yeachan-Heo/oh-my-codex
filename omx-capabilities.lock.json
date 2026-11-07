@@ -2,7 +2,7 @@
   "kind": "omx_capabilities_lock",
   "surfaces": {
     "agents": {
-      "digest": "333249d3d85c80f2e13eaca7b107da885b5b7207655f3421ef246da2a3c2bd0b",
+      "digest": "913f4b9a7afe3d639abb7486c9155af20ce59d5af72abde07b044695233d8260",
       "files": [
         {
           "digest": "c4f74fb651155bb39281ea97fb582d22b6d5e8b33b45073633ec11baf1baa7f9",
@@ -17,7 +17,7 @@
           "path": "prompts/architect.md"
         },
         {
-          "digest": "6c7cfae1a40fbbc8f8632dfae88f0981584d55ba74efd48644cbae53ef1ab449",
+          "digest": "0a7f080af951632f77326cf0b1c83ea8c21d2cc62edb3f4c7cf73d9110e5012c",
           "path": "prompts/build-fixer.md"
         },
         {
@@ -33,7 +33,7 @@
           "path": "prompts/critic.md"
         },
         {
-          "digest": "d85641125e929de631ba3a21d2e3a12e89671f5f1979352fd55113c2c08d965e",
+          "digest": "9760e4089f99616c8963975ba4b7d75347c132cbcb62241e2b1927acba981dad",
           "path": "prompts/debugger.md"
         },
         {
@@ -57,7 +57,7 @@
           "path": "prompts/explore.md"
         },
         {
-          "digest": "b94040746c2e699c97da89e0e213ab21bd20f594ae14b80d0c457c0249e29eeb",
+          "digest": "808f9d7683aa843926754a64e57a2f0b2b6969d2d95f3446d056ceb05f35e6e7",
           "path": "prompts/git-master.md"
         },
         {
@@ -101,11 +101,11 @@
           "path": "prompts/security-reviewer.md"
         },
         {
-          "digest": "c26ed116260fe49e229996d8b8b4caa80797c2b2a801ec892aecd0619a452314",
+          "digest": "8dc0ea45e9edcc294487fa3f6c4988069b58692eee094329b1b454707a1e8b97",
           "path": "prompts/style-reviewer.md"
         },
         {
-          "digest": "a8bc1c9d894b1e6945ccd9ca103b2489fca7aac32a91067b82ed2c0b195a614b",
+          "digest": "0e13c0e5a755881756476bc48ba5f38c6e02506d8db4d96cf543c96343336b62",
           "path": "prompts/team-executor.md"
         },
         {
@@ -125,11 +125,11 @@
           "path": "prompts/verifier.md"
         },
         {
-          "digest": "f573173f2087303305857c41ac09b04cc2111b95f994100b8245e1a394079f97",
+          "digest": "357ce4f1c9b4b88bcd82ebde3b69f29899ddc4d4bf45398491c982cfec0e2bfb",
           "path": "prompts/vision.md"
         },
         {
-          "digest": "9f356584d4b91d4dc5de4e1cc5d8cc5db03b5fb7b5078951386781c2817d4653",
+          "digest": "20a40dd88fc1d8dbe3f088c50919598340336339ce9975dd9956eb604c3b4cac",
           "path": "prompts/writer.md"
         },
         {
@@ -1419,7 +1419,7 @@
       ]
     },
     "skills": {
-      "digest": "70836a21bf81fde658af431fe83be55cb8bce3df03f27ef987fd06f641c8b61e",
+      "digest": "8dbd3440411d93f193cf4c04dfd86fd4ea171b65fc0f794676831b7f1df5a4c8",
       "files": [
         {
           "digest": "d81095f3480b4d15dc8607d85c9dd5c872fe0786e29561a3d101a117f104e77b",
@@ -1534,7 +1534,7 @@
           "path": "skills/wiki/SKILL.md"
         },
         {
-          "digest": "9bd9954ed113643b88e56d7102e62a847dfb42a4b56fb4a5e6b8e52411d06cac",
+          "digest": "da4379e2b76f63e8937fdb64b17853a05c8a7ee785850051284f8b8e8935142f",
           "path": "skills/worker/SKILL.md"
         }
       ]

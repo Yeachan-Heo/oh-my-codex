@@ -60,6 +60,7 @@ export interface WorkerHeartbeat {
 export interface WorkerStatus {
   state: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'draining' | 'unknown';
   current_task_id?: string;
+  current_claim_token?: string;
   reason?: string;
   updated_at: string;
 }
@@ -304,6 +305,10 @@ export type TaskReadiness =
 export type ClaimTaskResult =
   | { ok: true; task: TeamTaskV2; claimToken: string }
   | { ok: false; error: 'claim_conflict' | 'blocked_dependency' | 'task_not_found' | 'already_terminal' | 'worker_not_found'; dependencies?: string[] };
+
+export type RenewTaskClaimResult =
+  | { ok: true; task: TeamTaskV2 }
+  | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'worker_not_found' };
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
