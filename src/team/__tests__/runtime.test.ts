@@ -18,6 +18,7 @@ import {
   listMailboxMessages,
   sendDirectMessage,
   listDispatchRequests,
+  listTasks,
   transitionDispatchRequest,
   updateWorkerHeartbeat,
   writeAtomic,
@@ -36,6 +37,7 @@ import {
   resumeTeam,
   startTeam,
   assignTask,
+  reassignTask,
   sendWorkerMessage,
   applyCreatedInteractiveSessionToConfig,
   reconcileStartupCleanupPanes,
@@ -63,6 +65,7 @@ import { buildInternalTeamName, resolveTeamIdentityScope } from '../team-identit
 import { writePersistedApprovedTeamExecutionBinding } from '../approved-execution.js';
 import { planWorktreeTarget } from '../worktree.js';
 import { scaleDown } from '../scaling.js';
+import { buildRebalanceDecisions } from '../rebalance-policy.js';
 import { registerTeamNotice, teamNoticeLedgerPath, teamNoticeTargetKey } from '../notice-ledger.js';
 
 const coverageRun = process.env.NODE_V8_COVERAGE ? true : false;
@@ -12607,6 +12610,122 @@ esac
       else delete process.env.OMX_TEAM_STATE_ROOT;
       if (typeof prevLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = prevLeaderCwd;
       else delete process.env.OMX_TEAM_LEADER_CWD;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask rejects a stale rebalance plan without changing the outstanding claim or inbox', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-stale-assignment-'));
+    const teamName = 'team-stale-assignment';
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-stale-assignment-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState(teamName, 'stale assignment', 'executor', 2, cwd);
+        const dependency = await createTask(teamName, { subject: 'dependency', description: 'work', status: 'pending' }, cwd);
+        const first = await createTask(teamName, { subject: 'blocked first', description: 'work', status: 'pending', depends_on: [dependency.id] }, cwd);
+        const second = await createTask(teamName, { subject: 'ready second', description: 'work', status: 'pending' }, cwd);
+        const dependencyClaim = await claimTask(teamName, dependency.id, 'worker-2', dependency.version, cwd);
+        assert.ok(dependencyClaim.ok);
+        const manifestPath = join(cwd, '.omx/state/team', teamName, 'manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        manifest.policy.dispatch_mode = 'transport_direct';
+        await writeAtomic(manifestPath, JSON.stringify(manifest));
+        const workers = [{ name: 'worker-1', role: 'executor', alive: true, status: { state: 'idle' as const, updated_at: new Date().toISOString() } }];
+        const stalePlan = buildRebalanceDecisions({ tasks: await listTasks(teamName, cwd), workers, reclaimedTaskIds: [] });
+        assert.equal(stalePlan[0]?.taskId, second.id);
+        assert.equal((await transitionTaskStatus(teamName, dependency.id, 'in_progress', 'completed', dependencyClaim.claimToken, cwd)).ok, true);
+        const freshPlan = buildRebalanceDecisions({ tasks: await listTasks(teamName, cwd), workers, reclaimedTaskIds: [] });
+        assert.equal(freshPlan[0]?.taskId, first.id);
+        await assignTask(teamName, freshPlan[0]!.workerName!, first.id, cwd);
+        const claimed = await readTask(teamName, first.id, cwd);
+        assert.equal(claimed?.status, 'in_progress');
+        assert.equal(claimed?.owner, 'worker-1');
+        assert.ok(claimed?.claim);
+        const pending = await readTask(teamName, second.id, cwd);
+        assert.equal(pending?.status, 'pending');
+        assert.equal(pending?.version, second.version);
+        assert.equal(pending?.owner, undefined);
+        assert.equal(pending?.claim, undefined);
+        const inboxPath = join(cwd, '.omx/state/team', teamName, 'workers/worker-1/inbox.md');
+        const inbox = await readFile(inboxPath);
+        assert.match(inbox.toString(), new RegExp(`Task ${first.id}`));
+        const dispatches = await listDispatchRequests(teamName, cwd);
+        assert.equal(dispatches.length, 1);
+        await assert.rejects(() => assignTask(teamName, stalePlan[0]!.workerName!, second.id, cwd), /already owns outstanding task/);
+        assert.deepEqual(await readTask(teamName, first.id, cwd), claimed, 'first version, owner, token and lease stay unchanged');
+        assert.deepEqual(await readTask(teamName, second.id, cwd), pending, 'second stays unclaimed at its original version');
+        assert.deepEqual(await readFile(inboxPath), inbox, 'rejection must not write an assignment or cancellation');
+        assert.deepEqual(await listDispatchRequests(teamName, cwd), dispatches, 'no second dispatch');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask and reassignTask preserve another owned pending startup reservation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-assignment-reservation-'));
+    const teamName = 'team-assignment-reservation';
+    try {
+      await initTeamState(teamName, 'pending reservation', 'executor', 1, cwd);
+      const reserved = await createTask(teamName, { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+      const selected = await createTask(teamName, { subject: 'queued', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+      await writeWorkerInbox(teamName, 'worker-1', 'Original startup handoff', cwd);
+      const inboxPath = join(cwd, '.omx/state/team', teamName, 'workers/worker-1/inbox.md');
+      const inbox = await readFile(inboxPath);
+      await assert.rejects(() => assignTask(teamName, 'worker-1', selected.id, cwd), /already owns outstanding task/);
+      await assert.rejects(() => reassignTask(teamName, selected.id, 'worker-2', 'worker-1', cwd), /already owns outstanding task/);
+      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reserved);
+      assert.deepEqual(await readTask(teamName, selected.id, cwd), selected);
+      assert.deepEqual(await readFile(inboxPath), inbox);
+      assert.equal((await listDispatchRequests(teamName, cwd)).length, 0);
+      // Bootstrap may claim an owned queue directly; only assignment owns the fixed-inbox capacity rule.
+      assert.equal((await claimTask(teamName, selected.id, 'worker-1', selected.version, cwd)).ok, true);
+      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reserved);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask permits the selected owned pending reservation when no other work is outstanding', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-assign-own-pending-'));
+    const teamName = 'team-assign-own-pending';
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-own-pending-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState(teamName, 'own pending assignment', 'executor', 1, cwd);
+        const task = await createTask(teamName, { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+        const finished = await createTask(teamName, { subject: 'finished', description: 'work', status: 'pending' }, cwd);
+        const claim = await claimTask(teamName, finished.id, 'worker-1', finished.version, cwd);
+        assert.ok(claim.ok);
+        assert.equal((await transitionTaskStatus(teamName, finished.id, 'in_progress', 'completed', claim.claimToken, cwd)).ok, true);
+        const manifestPath = join(cwd, '.omx/state/team', teamName, 'manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        manifest.policy.dispatch_mode = 'transport_direct';
+        await writeAtomic(manifestPath, JSON.stringify(manifest));
+        await assignTask(teamName, 'worker-1', task.id, cwd);
+        const assigned = await readTask(teamName, task.id, cwd);
+        assert.equal(assigned?.status, 'in_progress');
+        assert.equal(assigned?.owner, 'worker-1');
+        assert.ok(assigned?.claim);
+        assert.equal((await listDispatchRequests(teamName, cwd)).length, 1);
+      });
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
