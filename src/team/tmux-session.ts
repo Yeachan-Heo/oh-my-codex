@@ -356,13 +356,7 @@ function sourceTransactionReceipt(): string {
 export function bindSplitReceiptToPaneCommand(command: string, receipt: string): string {
   // Receipt should be embedded at construction time (in buildWorkerStartupCommand for PowerShell,
   // or directly in the command string for POSIX). This function is kept for backward compatibility.
-  // For POSIX commands, append the receipt as a comment.
-  // For PowerShell, the receipt should already be embedded, so just return the command as-is.
-  if (command.includes('-EncodedCommand')) {
-    // PowerShell command - receipt should already be embedded, don't parse or modify
-    return command;
-  }
-  // POSIX command - append receipt as comment if not already present
+  // Always append the receipt as a comment if not already present.
   if (!command.includes(`# ${receipt}`)) {
     return `${command} # ${receipt}`;
   }
@@ -2109,14 +2103,14 @@ export function buildWorkerStartupCommand(
       .join('; ');
     const invocation = ['&', quotePowerShellArg(processSpec.command), ...startupArgs.map(quotePowerShellArg)].join(' ');
     const scriptLines = [
-      receipt ? `# ${receipt}` : '',
       "$ErrorActionPreference = 'Stop'",
       pathBootstrap,
       hudEnvUnset,
       envAssignments,
       invocation,
     ].filter(Boolean);
-    const encodedCommand = encodePowerShellCommand(scriptLines.join('; '));
+    const script = scriptLines.join('; ') + (receipt ? `; # ${receipt}` : '');
+    const encodedCommand = encodePowerShellCommand(script);
     return `${powershellPath} -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
   }
 
