@@ -1328,13 +1328,38 @@ async function integrateWorkerCommitsIntoLeader(params: {
   // ── Phase B: Integrate worker commits to leader (hybrid strategy) ──
   for (const worker of config.workers) {
     if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
-    if (next[worker.name]?.pending_rebase_leader_head) continue;
     const repoRoot = resolve(worker.worktree_repo_root);
     const worktreePath = resolve(worker.worktree_path);
+    const previousState = next[worker.name] ?? {};
+    if (previousState.pending_rebase_leader_head) {
+      if (previousState.delivery_leader_commit && leaderContainsCommit(repoRoot, cwd, previousState.delivery_leader_commit)) continue;
+      const workerStatus = await readWorkerStatus(teamName, worker.name, cwd);
+      if (workerStatus.state !== 'idle' && workerStatus.state !== 'done') continue;
+      // Restore only our unfinished rebase; its intermediate HEAD is not the delivered source.
+      let restored = true;
+      for (const name of ['rebase-merge', 'rebase-apply']) {
+        const path = runGitCommand(repoRoot, ['rev-parse', '--git-path', name], worktreePath);
+        if (!path.ok) { restored = false; break; }
+        const rebasePath = resolve(worktreePath, path.stdout.trim());
+        if (!existsSync(rebasePath)) continue;
+        const originalHead = await readFile(join(rebasePath, 'orig-head'), 'utf8').catch(() => '');
+        const onto = await readFile(join(rebasePath, 'onto'), 'utf8').catch(() => '');
+        if (originalHead.trim() !== previousState.last_integrated_head || onto.trim() !== previousState.pending_rebase_leader_head
+          || !runGitCommand(repoRoot, ['rebase', '--abort'], worktreePath).ok) restored = false;
+      }
+      const status = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
+      if (!restored || !status.ok || status.stdout.trim()
+        || !previousState.last_integrated_head || resolveWorkerHead(worktreePath) !== previousState.last_integrated_head) continue;
+      // Phase A already skipped this pending worker: redeliver the clean source normally, never checkpoint it here.
+      next[worker.name] = {
+        ...previousState, last_integrated_head: undefined, delivery_leader_commit: undefined,
+        pending_rebase_leader_head: undefined, rebase_error: undefined,
+        conflict_commit: undefined, conflict_files: undefined, status: 'idle',
+      };
+    }
     const leaderHead = resolveLeaderHead(repoRoot, cwd);
     const workerHead = resolveWorkerHead(worktreePath);
-    const previousState = next[worker.name] ?? {};
-    const state: TeamWorkerIntegrationState = { ...previousState, last_leader_head: leaderHead ?? previousState.last_leader_head };
+    const state: TeamWorkerIntegrationState = { ...next[worker.name], last_leader_head: leaderHead ?? previousState.last_leader_head };
     if (!workerHead || !leaderHead) {
       next[worker.name] = state;
       continue;

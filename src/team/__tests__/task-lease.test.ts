@@ -14,6 +14,7 @@ n=0; [ ! -f "$LEASE_TEST_DIR/count" ] || n=$(cat "$LEASE_TEST_DIR/count")
 n=$((n+1)); echo "$n" > "$LEASE_TEST_DIR/count"
 if [ "$n" -gt 1 ] || [ "$LEASE_TEST_MODE" = initial-rejection ]; then
   case "$LEASE_TEST_MODE" in
+    inflight) trap '' TERM; echo $$ > "$LEASE_TEST_DIR/api-pid"; touch "$LEASE_TEST_DIR/inflight"; exec /bin/sleep 6 ;;
     catch-term|ignore-term) while [ ! -f "$LEASE_TEST_DIR/ready" ]; do /bin/sleep 0.01; done; echo '{"ok":true,"data":{"ok":false}}'; exit 0 ;;
     rejection|initial-rejection) echo '{"ok":true,"data":{"ok":false}}'; exit 0 ;;
     outer) echo '{"ok":false,"data":{"ok":true}}'; exit 0 ;;
@@ -27,7 +28,9 @@ echo '{"ok":true,"data":{"ok":true}}'
     await writeFile(join(cwd, 'sleep'), '#!/bin/sh\necho $$ >> "$LEASE_TEST_DIR/sleep-pids"\nexec /bin/sleep "$@"\n');
     await chmod(join(cwd, 'sleep'), 0o755);
     const wrapper = TASK_LEASE_SHELL_FUNCTION.replace('sleep 300', 'sleep 0.05')
-      .replace('with_task_lease() (', 'with_task_lease() (\n  echo lease-wrapper-pid:$BASHPID');
+      .replace('with_task_lease() (', 'with_task_lease() (\n  echo lease-wrapper-pid:$BASHPID')
+      .replace('renew_check_pid=$!', 'renew_check_pid=$!; echo "$renew_check_pid" >> "$LEASE_TEST_DIR/check-pids"')
+      .replace('wait "$work_pid";', 'echo lease-child-pid:$lease_pid; wait "$work_pid";');
     const script = `set -e\n${wrapper}\nwith_task_lease '{}' node -e ${JSON.stringify(work)}\n`;
     const child = spawn('bash', ['-c', script], { cwd, env: {
       ...process.env, PATH: `${cwd}:${process.env.PATH}`, LEASE_TEST_DIR: cwd, LEASE_TEST_MODE: mode,
@@ -52,6 +55,14 @@ echo '{"ok":true,"data":{"ok":true}}'
     const count = Number(await readFile(join(cwd, 'count'), 'utf8'));
     const match = /work-pid:(\d+)/.exec(output);
     if (match) assert.throws(() => process.kill(Number(match[1]), 0), /ESRCH/, 'wrapper must not leave its work child alive');
+    const leasePid = /lease-child-pid:(\d+)/.exec(output);
+    if (leasePid) assert.throws(() => process.kill(Number(leasePid[1]), 0), /ESRCH/, 'wrapper must reap its renewal shell');
+    for (const file of ['api-pid', 'check-pids']) {
+      const pids = await readFile(join(cwd, file), 'utf8').catch(() => '');
+      for (const pid of pids.trim().split('\n').filter(Boolean)) {
+        assert.throws(() => process.kill(Number(pid), 0), /ESRCH/, 'wrapper must reap its renewal pipeline children');
+      }
+    }
     const sleepPids = await readFile(join(cwd, 'sleep-pids'), 'utf8').catch(() => '');
     for (const pid of sleepPids.trim().split('\n').filter(Boolean)) {
       assert.throws(() => process.kill(Number(pid), 0), /ESRCH/, 'wrapper must not leave sleeping renewer children alive');
@@ -108,6 +119,16 @@ describe('generated task lease Bash wrapper', () => {
     assert.equal(result.code, 143, result.output);
     assert.doesNotMatch(result.output, /finished/);
   });
+  for (const status of [0, 7]) {
+    it(`returns work status ${status} within the cleanup bound when renewal API is in flight`, async () => {
+      const started = Date.now();
+      const result = await runWrapper('inflight', `console.log("work-pid:"+process.pid);const timer=setInterval(()=>{if(require("node:fs").existsSync(process.env.LEASE_TEST_DIR+"/inflight")){clearInterval(timer);console.log("finished");process.exit(${status})}},10)`);
+      assert.equal(result.code, status, result.output);
+      assert.equal(result.count, 2);
+      assert.match(result.output, /finished/);
+      assert.ok(Date.now() - started < 4000, result.output);
+    });
+  }
   it('propagates command failure', async () => {
     assert.equal((await runWrapper('success', 'process.exit(7)')).code, 7);
   });
