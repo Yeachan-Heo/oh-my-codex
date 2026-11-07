@@ -1687,11 +1687,17 @@ export async function registerOmxPluginCacheLivePin(
 		return false;
 	const sessionHash = createHash("sha256").update(normalizedSessionId).digest("hex");
 	const rootPath = resolve(pluginRoot);
-	const codexHomeDir = codexHome();
+	const configuredHome = codexHome();
+	const codexHomeDir = await canonicalRealpath(configuredHome);
+	if (!codexHomeDir) return false;
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
-	const relativeRoot = relative(resolve(cacheBase), rootPath);
-	if (!isSafeCacheVersion(relativeRoot) || relativeRoot.includes(sep) || isAbsolute(relativeRoot)) return false;
-	const version = relativeRoot;
+	// Accept either spelling of the configured home, but never resolve the cache
+	// suffix here: redirected namespace/version entries must still fail no-follow
+	// traversal below rather than becoming an authorized canonical target.
+	const version = [cacheBase, omxPluginCacheBase(configuredHome)]
+		.map((base) => relative(resolve(base), rootPath))
+		.find((candidate) => isSafeCacheVersion(candidate) && !candidate.includes(sep) && !isAbsolute(candidate));
+	if (!version) return false;
 	const expectedCacheDir = join(cacheBase, version);
 
 	const namespace = await openManagedCacheNamespace(cacheBase, codexHomeDir, { create: false });
