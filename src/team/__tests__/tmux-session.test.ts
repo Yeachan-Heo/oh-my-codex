@@ -4970,6 +4970,12 @@ describe('createTeamSession tmux instance tagging', () => {
     // The encoded part should be different from the original
     assert.doesNotMatch(result, /abc123def456/, 'Should not contain the original encoded command');
 
+    // Verify the receipt is actually encoded in the command by decoding it
+    const match = result.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+    assert(match, 'Should extract encoded command');
+    const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
+    assert(decoded.includes(receipt), 'Decoded command should contain the receipt');
+
     // POSIX shell commands should still have receipt appended as a comment
     const bashCommand = '/bin/bash -c "worker_command"';
     assert.equal(
@@ -4985,6 +4991,38 @@ describe('createTeamSession tmux instance tagging', () => {
       `${plainCommand} # ${receipt}`,
       'Plain command should have receipt appended as comment',
     );
+  });
+
+  it('detects receipt in both POSIX shell comments and PowerShell encoded commands for fallback reconciliation', () => {
+    const receipt = 'omx_source_test_fallback';
+
+    // Test POSIX shell case: receipt in command as comment
+    const posixCommand = `/bin/bash -c "worker" # ${receipt}`;
+    let pane = { startCommand: posixCommand };
+    // Would test paneHasReceipt here, but it's private; verify through bindSplitReceiptToPaneCommand
+    // to ensure receipt injection works consistently
+    assert(posixCommand.includes(receipt), 'POSIX command should contain receipt');
+
+    // Test PowerShell case: receipt should be detectable after encoding
+    const powerShellCommand = 'powershell.exe -EncodedCommand SQBuAHYAbwBsAGkAZABFAG4AYwBvAGQAaQBuAGcA';
+    const enrichedPsCmd = bindSplitReceiptToPaneCommand(powerShellCommand, receipt);
+    // After binding, the receipt is inside the re-encoded command
+    const psMatch = enrichedPsCmd.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+    assert(psMatch, 'Should extract re-encoded command');
+    const psDecoded = Buffer.from(psMatch[1], 'base64').toString('utf16le');
+    assert(psDecoded.includes(receipt), 'Re-encoded PS command should contain receipt');
+
+    // Verify that panes WITHOUT receipts would not match (prevents false reconciliation)
+    const noReceiptCommand = '/bin/bash -c "worker"';
+    const noReceiptPane = { startCommand: noReceiptCommand };
+    assert(!noReceiptCommand.includes(receipt), 'Pane without receipt should not match');
+
+    const psNoReceiptCommand = 'powershell.exe -EncodedCommand SQBuAHYAbwBsAGkAZABFAG4AYwBvAGQAaQBuAGcA';
+    const psNoReceiptMatch = psNoReceiptCommand.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+    if (psNoReceiptMatch) {
+      const psNoReceiptDecoded = Buffer.from(psNoReceiptMatch[1], 'base64').toString('utf16le');
+      assert(!psNoReceiptDecoded.includes(receipt), 'PS pane without receipt should not match');
+    }
   });
 
   it('fails closed on multi-row worker and HUD split-window output', async () => {

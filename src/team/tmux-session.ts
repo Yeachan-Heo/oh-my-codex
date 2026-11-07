@@ -363,15 +363,10 @@ export function bindSplitReceiptToPaneCommand(command: string, receipt: string):
     const match = /^(.+?-EncodedCommand\s+)([A-Za-z0-9+/=]+)(.*)$/.exec(command);
     if (match) {
       const [, prefix, encodedCommand, suffix] = match;
-      try {
-        const decoded = Buffer.from(encodedCommand, 'base64').toString('utf16le');
-        const withReceipt = `# ${receipt}\n${decoded}`;
-        const reencoded = Buffer.from(withReceipt, 'utf16le').toString('base64');
-        return `${prefix}${reencoded}${suffix}`;
-      } catch {
-        // If decode/encode fails, return the command unchanged
-        return command;
-      }
+      const decoded = Buffer.from(encodedCommand, 'base64').toString('utf16le');
+      const withReceipt = `# ${receipt}\n${decoded}`;
+      const reencoded = Buffer.from(withReceipt, 'utf16le').toString('base64');
+      return `${prefix}${reencoded}${suffix}`;
     }
     return command;
   }
@@ -407,15 +402,11 @@ function paneHasReceipt(pane: { startCommand: string }, receipt: string): boolea
     return true;
   }
   // On Windows with PowerShell, the receipt is encoded inside the -EncodedCommand.
-  // Decode and check if the receipt is inside the encoded script.
-  const match = /-EncodedCommand\s+([A-Za-z0-9+/=]+)/.exec(pane.startCommand);
-  if (match) {
-    const encodedCommand = match[1]!;
-    try {
-      const decoded = Buffer.from(encodedCommand, 'base64').toString('utf16le');
-      return decoded.includes(receipt);
-    } catch {
-      // If decode fails, continue with next check
+  // Reuse the existing helper to decode and check if the receipt is inside.
+  const decodedCommands = decodePowerShellEncodedCommands(pane.startCommand);
+  for (const decoded of decodedCommands) {
+    if (decoded.includes(receipt)) {
+      return true;
     }
   }
   return false;
