@@ -16888,6 +16888,35 @@ exit 0
     }
   });
 
+  it("renews the captured claim on real-wire plain-string PostToolUse without checkpoint or dedupe", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-real-wire-renewal-"));
+    const teamName = "native-real-wire";
+    const stateRoot = join(cwd, ".omx/state");
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      await writeWorkerStatus(teamName, "worker-1", {
+        state: "working", current_task_id: task.id, current_claim_token: claim.claimToken, updated_at: new Date().toISOString(),
+      }, cwd);
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "real-wire-renewal",
+        tool_input: { command: "printf ok" }, tool_response: "ok\n",
+      }, { cwd });
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
+      const after = JSON.parse(await readFile(join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`), "utf8"));
+      assert.equal(after.version, claim.task.version + 1);
+      assert.equal(after.claim.token, claim.claimToken);
+      assert.equal(JSON.parse(await readFile(join(workerRoot, "heartbeat.json"), "utf8")).source, "posttooluse");
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces lease loss from PostToolUse without checkpointing stale work", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-lease-loss-"));
     const teamName = "native-lease-loss";
@@ -16908,7 +16937,7 @@ exit 0
       process.env.OMX_TEAM_STATE_ROOT = stateRoot;
       const result = await dispatchCodexNativeHook({
         hook_event_name: "PostToolUse", cwd, tool_name: "Bash",
-        tool_input: { command: "printf ok" }, tool_response: { exit_code: 0 },
+        tool_input: { command: "printf ok" }, tool_response: "ok\n",
       }, { cwd });
       assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*lease_expired.*STOP editing/);
       const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
@@ -16953,7 +16982,7 @@ exit 0
         await writeFile(join(cwd, "work.txt"), "unverified terminal edits\n");
         const result = await dispatchCodexNativeHook({
           hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "terminal-handoff",
-          tool_input: { command: "omx team api transition-task-status" }, tool_response: { exit_code: 0 },
+          tool_input: { command: "omx team api transition-task-status" }, tool_response: "handoff complete\n",
         }, { cwd });
         assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
         for (const file of ["lease-loss.json", "posttooluse-dedupe.json"]) assert.equal(existsSync(join(workerRoot, file)), false);
@@ -16965,7 +16994,7 @@ exit 0
         assert.equal(await readFile(statusPath, "utf8"), statusBefore);
         await writeWorkerStatus(teamName, "worker-1", { state: "idle", updated_at: new Date().toISOString() }, cwd);
         const idle = await dispatchCodexNativeHook({
-          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_response: { exit_code: 0 },
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_response: "idle\n",
           tool_input: { command: "write idle worker status" },
         }, { cwd });
         assert.doesNotMatch(JSON.stringify(idle.outputJson), /LEASE LOST|STOP editing/);
@@ -17015,7 +17044,7 @@ exit 0
       // Dispatch outside the barrier callback so ALS reentrancy cannot bypass its deadline.
       const result = await dispatchCodexNativeHook({
         hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "renewal-timeout",
-        tool_input: { command: "printf ok" }, tool_response: { exit_code: 0 },
+        tool_input: { command: "printf ok" }, tool_response: "plain stdout/stderr\n",
       }, { cwd });
       assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*Timed out acquiring team task lock.*STOP editing/);
       const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
