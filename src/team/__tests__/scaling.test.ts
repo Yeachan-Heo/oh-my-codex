@@ -4922,13 +4922,17 @@ describe('nonforce scale-down worktree preservation', () => {
   }
 });
 
-describe('scale-down unfinished rebase preservation', () => {
-  for (const recovery of [false, true]) {
-    it(`preserves an actual initial-break rebase ${recovery ? 'during cleanup debt recovery' : 'before membership and pane effects'}`, async () => {
+describe('scale-down unfinished Git operation preservation', () => {
+  for (const [operation, recovery] of [
+    ['initial-break rebase', false], ['initial-break rebase', true],
+    ['clean no-commit merge', false], ['clean no-commit merge', true],
+  ] as const) {
+    it(`preserves an actual ${operation} ${recovery ? 'during cleanup debt recovery' : 'before membership and pane effects'}`, async () => {
       const repo = await initRepo();
       const previousPath = process.env.PATH;
       try {
-        const team = 'initial-break';
+        const isRebase = operation === 'initial-break rebase';
+        const team = isRebase ? 'initial-break' : 'no-commit-merge';
         await initTeamState(team, 'task', 'executor', 2, repo);
         await createTask(team, { subject: 'finished work', description: 'no active claim', status: 'completed', owner: 'worker-2' }, repo);
         const config = await readTeamConfig(team, repo);
@@ -4937,19 +4941,23 @@ describe('scale-down unfinished rebase preservation', () => {
         const git = (args: string[], cwd = worktree, env = process.env): string =>
           execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
         git(['worktree', 'add', '--detach', worktree], repo);
-        await writeFile(join(worktree, 'unpublished.txt'), 'original worker commit\n');
-        git(['add', 'unpublished.txt']);
-        git(['commit', '-m', 'unpublished worker commit']);
+        if (isRebase) {
+          await writeFile(join(worktree, 'unpublished.txt'), 'original worker commit\n');
+          git(['add', 'unpublished.txt']);
+        }
+        git(['commit', '--allow-empty', '-m', 'unpublished worker commit']);
         const originalHead = git(['rev-parse', 'HEAD']);
-        await writeFile(join(repo, 'leader.txt'), 'independent leader commit\n');
-        git(['add', 'leader.txt'], repo);
-        git(['commit', '-m', 'independent leader commit'], repo);
+        if (isRebase) {
+          await writeFile(join(repo, 'leader.txt'), 'independent leader commit\n');
+          git(['add', 'leader.txt'], repo);
+        }
+        git(['commit', '--allow-empty', '-m', 'independent leader commit'], repo);
         const leaderHead = git(['rev-parse', 'HEAD'], repo);
         Object.assign(config.workers[1]!, {
           worktree_path: worktree, worktree_repo_root: repo, worktree_created: true,
           worktree_detached: true, pane_id: '%13', pid: 42413,
         });
-        config.tmux_pane_owner_id = 'team:initial-break';
+        config.tmux_pane_owner_id = `team:${team}`;
         await writeWorkerIdentity(team, 'worker-2', config.workers[1]!, repo);
         if (recovery) {
           config.workers = config.workers.slice(0, 1);
@@ -4964,16 +4972,28 @@ describe('scale-down unfinished rebase preservation', () => {
           removed_worker_names: ['worker-2'], workers: [], unresolved_panes: [],
           resource_workers: [{ name: 'worker-2', worktree_path: worktree, worktree_repo_root: repo, worktree_created: true, worktree_detached: true }],
         }));
-        const editor = join(repo, '.git', 'initial-break-editor.sh');
-        await writeFile(editor, '#!/bin/sh\nset -eu\n{ printf "break\\n"; cat "$1"; } > "$1.new"\nmv "$1.new" "$1"\n');
-        await chmod(editor, 0o755);
-        git(['rebase', '-i', leaderHead], worktree, { ...process.env, GIT_SEQUENCE_EDITOR: editor });
+        const beforeDebt = recovery ? JSON.parse(await readFile(debtPath, 'utf8')) : null;
+        const gitDir = git(['rev-parse', '--absolute-git-dir']);
+        const operationPath = join(gitDir, isRebase ? 'rebase-merge' : 'MERGE_HEAD');
+        const mergeMessage = 'Operator-edited merge message: retain this unfinished integration.\n';
+        if (isRebase) {
+          const editor = join(repo, '.git', 'initial-break-editor.sh');
+          await writeFile(editor, '#!/bin/sh\nset -eu\n{ printf "break\\n"; cat "$1"; } > "$1.new"\nmv "$1.new" "$1"\n');
+          await chmod(editor, 0o755);
+          git(['rebase', '-i', leaderHead], worktree, { ...process.env, GIT_SEQUENCE_EDITOR: editor });
+          assert.equal((await readFile(join(operationPath, 'orig-head'), 'utf8')).trim(), originalHead);
+          assert.match(await readFile(join(operationPath, 'git-rebase-todo'), 'utf8'), new RegExp(originalHead.slice(0, 7)));
+        } else {
+          assert.equal(git(['rev-parse', `${originalHead}^{tree}`]), git(['rev-parse', `${leaderHead}^{tree}`]));
+          assert.notEqual(git(['merge-base', originalHead, leaderHead]), originalHead);
+          git(['reset', '--hard', leaderHead]);
+          git(['merge', '--no-commit', '--no-ff', originalHead]);
+          assert.equal((await readFile(operationPath, 'utf8')).trim(), originalHead);
+          await writeFile(join(gitDir, 'MERGE_MSG'), mergeMessage);
+        }
         assert.equal(git(['rev-parse', 'HEAD']), leaderHead);
         git(['merge-base', '--is-ancestor', 'HEAD', leaderHead]);
         assert.equal(git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']), '');
-        const gitDir = git(['rev-parse', '--absolute-git-dir']);
-        assert.equal((await readFile(join(gitDir, 'rebase-merge/orig-head'), 'utf8')).trim(), originalHead);
-        assert.match(await readFile(join(gitDir, 'rebase-merge/git-rebase-todo'), 'utf8'), new RegExp(originalHead.slice(0, 7)));
         const bin = join(repo, '.git', 'fake-bin');
         await mkdir(bin);
         const tmuxLog = join(bin, 'tmux.log');
@@ -5002,10 +5022,10 @@ describe('scale-down unfinished rebase preservation', () => {
           : await scaleDown(team, repo, { workerNames: ['worker-2'], force: false, drainTimeoutMs: 100 }, { OMX_TEAM_SCALING_ENABLED: '1' });
         const observed = JSON.stringify({
           result, members: (await readTeamConfig(team, repo))?.workers.map((worker) => worker.name),
-          worktreeExists: existsSync(worktree), rebaseExists: existsSync(join(gitDir, 'rebase-merge')),
+          worktreeExists: existsSync(worktree), operationExists: existsSync(operationPath),
           tmuxCommands: existsSync(tmuxLog) ? await readFile(tmuxLog, 'utf8') : '',
         });
-        assert.equal(result.ok, false, `unfinished rebase must veto removal: ${observed}`);
+        assert.equal(result.ok, false, `unfinished ${operation} must veto removal: ${observed}`);
         if (!result.ok) assert.match(result.error, /scale_down_worktree_not_preserved:worker-2/, observed);
         assert.equal(existsSync(worktree), true);
         assert.deepEqual(await snapshot(gitDir), beforeGit, 'all per-worktree Git metadata must remain byte-identical');
@@ -5014,12 +5034,16 @@ describe('scale-down unfinished rebase preservation', () => {
         assert.deepEqual(await readFile(join(stateDir, 'manifest.v2.json')), beforeManifest);
         assert.deepEqual(await readFile(join(stateDir, 'workers/worker-2/identity.json')), beforeIdentity);
         assert.equal(git(['rev-parse', 'HEAD']), leaderHead);
+        if (!isRebase) assert.equal(await readFile(join(gitDir, 'MERGE_MSG'), 'utf8'), mergeMessage);
         assert.equal(existsSync(tmuxLog), false, 'no pane probe or teardown is authorized');
         assert.equal(existsSync(debtPath), recovery);
         if (recovery) {
           const debt = JSON.parse(await readFile(debtPath, 'utf8'));
           assert.equal(debt.status, 'resource_cleanup_pending');
           assert.match(debt.reasons[0], /scale_down_worktree_not_preserved:worker-2/);
+          delete debt.updated_at;
+          delete debt.reasons;
+          assert.deepEqual(debt, beforeDebt, 'cleanup authority and resource debt must be retained');
         }
       } finally {
         if (previousPath === undefined) delete process.env.PATH;

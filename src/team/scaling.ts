@@ -1625,8 +1625,9 @@ function assertScaleDownWorktreesPreserved(
     const git = (args: string[], cwd = worker.worktree_path!) => spawnSync('git', args, {
       cwd, encoding: 'utf8', windowsHide: true,
     });
-    if (['rebase-merge', 'rebase-apply'].some((directory) => {
-      const path = git(['rev-parse', '--git-path', directory]);
+    // ORIG_HEAD and COMMIT_EDITMSG survive completed operations; only active state vetoes removal.
+    if (['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_START'].some((marker) => {
+      const path = git(['rev-parse', '--git-path', marker]);
       return path.status !== 0 || !path.stdout.trim()
         || existsSync(resolve(worker.worktree_path!, path.stdout.trim()));
     })) {

@@ -207,6 +207,7 @@ exec ${JSON.stringify(realGit)} "$@"
     const repo = await initRepo();
     const team = 'range-worker-team';
     const paths: string[] = [];
+    const previousPath = process.env.PATH;
     try {
       for (const index of [1, 2]) {
         const path = await addWorktree(repo, `range-worker-${index}`, `omx-range-worker-${index}-`);
@@ -219,7 +220,6 @@ exec ${JSON.stringify(realGit)} "$@"
       const sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: paths[1], encoding: 'utf8' }).trim();
       const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
       const fakeBin = await mkdtemp(join(tmpdir(), 'omx-range-worker-fake-'));
-      const previousPath = process.env.PATH;
       await writeFile(join(fakeBin, 'git'), `#!/bin/bash
 if [[ "$PWD" -ef ${JSON.stringify(paths[1])} && "\${1:-}" == "rev-list" ]]; then
   echo 'simulated commit-range failure' >&2
@@ -241,8 +241,7 @@ exec ${JSON.stringify(realGit)} "$@"
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
-      const fakeBin = await mkdtemp(join(tmpdir(), 'omx-range-worker-fake-'));
-      await rm(fakeBin, { recursive: true, force: true });
+
       for (const path of paths) await rm(path, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
     }
