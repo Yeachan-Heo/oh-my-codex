@@ -43,7 +43,7 @@ OMX lässt Codex die Ausführung übernehmen und hilft dir dabei:
 
 | Rolle | Name | GitHub |
 | --- | --- | --- |
-| Creator & Lead | Yеachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Creator & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
 | Maintainer | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
 | Maintainer | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
 
@@ -335,7 +335,7 @@ Bei manchen Intel Macs kann Gatekeeper beim Start vieler paralleler Prozesse die
 
 | Rolle | Name | GitHub |
 | --- | --- | --- |
-| Creator & Lead | Yеachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Creator & Lead | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
 | Maintainer | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
 | Maintainer | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
 
