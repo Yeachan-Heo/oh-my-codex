@@ -2600,30 +2600,65 @@ process.stdout.write("{}\\n");
 				const cacheDir = materialized.cacheDir!;
 				const version = materialized.version!;
 				
-				// Compute fingerprint of plugin files excluding .omx-live-pin
-				const computeFingerprint = async (path: string): Promise<string> => {
-					const entries: string[] = [];
+				// Replicate Codex plugin_content_hash walk/exclusion rules from:
+				// https://raw.githubusercontent.com/openai/codex/rust-v0.167.0/codex-rs/hooks/src/engine/plugin_fingerprint.rs
+				// Excludes: __pycache__, .venv, *.pyc, *.egg-info
+				// UNLIKE the Codex source, does NOT exclude .omx-* files (including .omx-live-pin)
+				const computeFingerprint = async (rootPath: string): Promise<string> => {
+					const hash = createHash("sha256");
+					hash.update("codex-plugin-bundle-v1");
 					
-					const scan = async (dir: string, prefix: string) => {
-						for (const entry of await readdir(dir, { withFileTypes: true })) {
-							if (entry.name === ".omx-live-pin" || entry.name === ".omx-retiring" || entry.name.startsWith(".omx-")) {
-								continue;
-							}
-							const fullPath = join(dir, entry.name);
-							const relPath = `${prefix}${entry.name}`;
-							
-							if (entry.isDirectory()) {
-								await scan(fullPath, `${relPath}/`);
-							} else if (entry.isFile() && !entry.isSymbolicLink()) {
-								const content = await readFile(fullPath);
-								const hash = createHash("sha256").update(content).digest("hex");
-								entries.push(`${relPath}:${hash}`);
-							}
+					const pending: string[] = [rootPath];
+					const buffer = Buffer.alloc(64 * 1024);
+					
+					while (pending.length > 0) {
+						const path = pending.pop()!;
+						const relativePath = path.startsWith(rootPath) ? path.slice(rootPath.length + 1) : path;
+						
+						// Check exclusion rules
+						const fileName = relativePath.split(/[\\\/]/).pop() || "";
+						if (
+							fileName === "__pycache__" ||
+							fileName === ".venv" ||
+							fileName.endsWith(".pyc") ||
+							fileName.endsWith(".egg-info")
+						) {
+							continue;
 						}
-					};
+						
+						// Update hash with relative path
+						const nameBytes = Buffer.from(relativePath, "utf8");
+						const lenBuf = Buffer.alloc(8);
+						lenBuf.writeBigUInt64LE(BigInt(nameBytes.length), 0);
+						hash.update(lenBuf);
+						hash.update(nameBytes);
+						
+						const stat = await lstat(path);
+						if (stat.isDirectory()) {
+							hash.update("directory");
+							const entries = await readdir(path);
+							entries.sort();
+							// Add entries in reverse so they're popped in forward order
+							for (let i = entries.length - 1; i >= 0; i--) {
+								pending.push(join(path, entries[i]));
+							}
+						} else if (stat.isFile()) {
+							hash.update("file");
+							const length = stat.size;
+							const lenBuf2 = Buffer.alloc(8);
+							lenBuf2.writeBigUInt64LE(BigInt(length), 0);
+							hash.update(lenBuf2);
+							
+							// Read and hash file content
+							const content = await readFile(path);
+							if (content.length !== length) {
+								throw new Error("plugin file changed while fingerprinting");
+							}
+							hash.update(content);
+						}
+					}
 					
-					await scan(path, "");
-					return createHash("sha256").update(entries.sort().join("\n")).digest("hex");
+					return `sha256:${hash.digest("hex")}`;
 				};
 				
 				const baseFingerprint = await computeFingerprint(cacheDir);
@@ -2639,10 +2674,29 @@ process.stdout.write("{}\\n");
 				const afterPinFingerprint = await computeFingerprint(cacheDir);
 				assert.equal(afterPinFingerprint, baseFingerprint, "fingerprint must be unchanged after pin creation");
 				
+				// Test: writing an in-tree .omx-live-pin DOES change the fingerprint (negative control)
+				const legacyPinDir = join(cacheDir, ".omx-live-pin");
+				await mkdir(legacyPinDir, { recursive: true });
+				await writeFile(join(legacyPinDir, "test-legacy-pin.json"), JSON.stringify({ test: true }));
+				
+				const afterLegacyPinFingerprint = await computeFingerprint(cacheDir);
+				assert.notEqual(
+					afterLegacyPinFingerprint,
+					baseFingerprint,
+					"fingerprint MUST change when in-tree .omx-live-pin files are written (negative control)"
+				);
+				
+				// Clean up the legacy pin to restore baseline for further tests
+				await rm(legacyPinDir, { recursive: true, force: true });
+				const restoredFingerprint = await computeFingerprint(cacheDir);
+				assert.equal(restoredFingerprint, baseFingerprint, "fingerprint must return to baseline after removing in-tree .omx-live-pin");
+				
 				// Verify external pin files exist but don't affect fingerprint
 				const externalPinDir = livePinDirectoryPath(codexHomeDir, version);
 				const externalPins = await readdir(externalPinDir);
 				assert.ok(externalPins.length > 0, "external pins should be created");
+				const finalFingerprint = await computeFingerprint(cacheDir);
+				assert.equal(finalFingerprint, baseFingerprint, "fingerprint must remain unchanged with external pins present");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
