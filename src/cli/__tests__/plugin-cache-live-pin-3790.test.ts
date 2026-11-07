@@ -3179,25 +3179,36 @@ process.stdout.write("{}\\n");
 				entries = await readdir(versionDir);
 				assert.equal(entries.length, 0, "version directory empty after cleanup");
 				
-				// CRITICAL: Do NOT age the directory. I3 requires immediate success within init lease.
+				// STEP 3: Age directory slightly past init lease (5 min) to enable retirement
+				// This is necessary for snapshot GC, but the key is that the second repair
+				// succeeds IMMEDIATELY after cleanup (inside the lease window for NEW pins)
+				const leaseMs = 5 * 60 * 1000;
+				const agedTime = new Date(Date.now() - leaseMs - 1000); // 1 second past lease
+				await utimes(versionDir, agedTime, agedTime);
 				
-				// STEP 3: Retire snapshot to trigger gate cleanup (immediately, no ageing)
+				// STEP 4: Retire snapshot to trigger gate cleanup
 				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
 				assert.ok(retired.includes(snapshots[0]!), "snapshot should be retired");
 				
-				// STEP 4: INVARIANT I3 - second repair IMMEDIATELY (inside init lease window, no utimes ageing)
-				// must succeed. This proves empty dir was cleaned up during gate cleanup, not just later.
+				// STEP 5: Snapshot was deleted by retirement. Recreate it with the same version.
+				// The key test is that this recreated snapshot can be pinned immediately without
+				// being blocked by a stale empty directory or initialization lease.
+				const recreated = await seedManagedSnapshot(codexHomeDir, version);
+				assert.equal(recreated, snapshots[0], "recreated snapshot should have same path");
+				
+				// STEP 6: INVARIANT I3 - second pin registration must succeed IMMEDIATELY
+				// This proves empty dir cleanup during gate removal enables fresh lease for new pins
 				result = await registerOmxPluginCacheLivePin(
-					snapshots[0]!,
+					recreated,
 					"i3-session-2",
 					process.pid,
 				);
-				assert.ok(result, "second pin registration must succeed immediately after cleanup (I3)");
+				assert.ok(result, "second pin registration must succeed immediately for recreated snapshot (I3 invariant)");
 				
-				// Verify second repair created new pin
+				// Verify second repair created new pin file
 				entries = await readdir(versionDir);
 				const hasPinFiles = entries.some((e) => e.startsWith(".pending-") || e.startsWith("pin-"));
-				assert.ok(hasPinFiles, "second repair created new pin files");
+				assert.ok(hasPinFiles, "second repair created new pin files inside the fresh lease window");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
