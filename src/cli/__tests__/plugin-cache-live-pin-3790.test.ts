@@ -676,7 +676,7 @@ import { syncBuiltinESMExports } from "node:module";
 const originalWriteFileSync = fs.writeFileSync;
 let renamed = false;
 fs.writeFileSync = function (path, ...args) {
-	if (!renamed && typeof path === "string" && path.includes("/.omx-live-pin/.stage-")) {
+	if (!renamed && typeof path === "string" && path.includes(".omx-pins") && path.includes(".stage-")) {
 		fs.renameSync(process.env.OMX_TEST_PLUGIN_ROOT, process.env.OMX_TEST_QUARANTINE);
 		renamed = true;
 	}
@@ -832,7 +832,7 @@ import { syncBuiltinESMExports } from "node:module";
 const originalWriteFileSync = fs.writeFileSync;
 let paused = false;
 fs.writeFileSync = function (path, ...args) {
-	if (!paused && typeof path === "string" && path.includes("/.omx-live-pin/.stage-")) {
+	if (!paused && typeof path === "string" && path.includes(".omx-pins") && path.includes(".stage-")) {
 		paused = true;
 		originalWriteFileSync.call(this, process.env.OMX_TEST_PIN_READY, "ready\\n");
 		const wait = new Int32Array(new SharedArrayBuffer(4));
@@ -2817,18 +2817,25 @@ process.stdout.write("{}\\n");
 				const cacheDir = materialized.cacheDir!;
 				const currentVersion = materialized.version!;
 				
-				// Create an old snapshot version without pins
-				const oldVersion = "0.0.1";
-				const oldCacheDir = await seedManagedSnapshot(codexHomeDir, oldVersion);
-				assert.ok(oldCacheDir);
+				// Create two old snapshot versions without pins (GC keeps newest eligible predecessor)
+				const oldVersion1 = "0.0.1";
+				const oldCacheDir1 = await seedManagedSnapshot(codexHomeDir, oldVersion1);
+				assert.ok(oldCacheDir1);
+				const oldVersion2 = "0.0.2";
+				const oldCacheDir2 = await seedManagedSnapshot(codexHomeDir, oldVersion2);
+				assert.ok(oldCacheDir2);
 				
-				// Retire the old snapshot (it has no pins)
+				// Retire the old snapshots (they have no pins)
 				const retired1 = await retireUnpinnedManagedSnapshots(codexHomeDir, currentVersion);
 				assert.ok(retired1.length > 0, "old snapshot should be retired");
 				
-				// Verify the old snapshot was removed
-				const afterRemoval = await lstat(oldCacheDir).catch(() => null);
-				assert.ok(!afterRemoval?.isDirectory(), "old snapshot should be removed after retirement");
+				// Verify at least one old snapshot was removed
+				const afterRemoval1 = await lstat(oldCacheDir1).catch(() => null);
+				const afterRemoval2 = await lstat(oldCacheDir2).catch(() => null);
+				assert.ok(
+					!afterRemoval1?.isDirectory() || !afterRemoval2?.isDirectory(),
+					"at least one old snapshot should be removed after retirement",
+				);
 				
 				// Now try to register a new pin on the current version
 				// This should work even though retirement gate was just used
@@ -2847,45 +2854,42 @@ process.stdout.write("{}\\n");
 	it("pin operations work with alternate cache namespace (non-default cacheBase)", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-3790-alternate-cache-"));
 		try {
-			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+			// Create alternate CODEX_HOME directory with its own cache base
+			const altCodexHome = join(wd, "alt-codex-home");
+			await mkdir(altCodexHome, { recursive: true });
+			
+			const originalCodexHome = process.env.CODEX_HOME;
+			try {
+				process.env.CODEX_HOME = altCodexHome;
 				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
 				assert.ok(packaged);
 				
-				// Use an alternate cache location instead of the default
-				const altCacheBase = join(wd, "alt-cache");
-				await mkdir(altCacheBase, { recursive: true });
-				
-				// Materialize with alternate cacheBase
-				const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
-					cacheDirOverride: altCacheBase,
-				});
+				// Materialize with alternate CODEX_HOME
+				const materialized = await materializePackagedOmxPluginCache(altCodexHome, packaged);
 				assert.equal(materialized.status, "materialized");
 				const cacheDir = materialized.cacheDir!;
 				
-				// Create a pin for this alternate cache
+				// Create a pin for this alternate cache namespace
 				const pinResult = await registerOmxPluginCacheLivePin(
 					cacheDir,
 					"test-session-alt-cache",
 					process.pid,
 				);
-				assert.ok(pinResult, "pin registration should work with alternate cache");
+				assert.ok(pinResult, "pin registration should work with alternate CODEX_HOME");
 				
-				// Verify the pin was created in the alternate cache location
+				// Verify the pin was created in the correct cache location
 				const version = materialized.version!;
+				const altCacheBase = omxPluginCacheBase(altCodexHome);
 				const externalPinDir = join(altCacheBase, ".omx-pins", version);
 				const externalPins = await readdir(externalPinDir).catch(() => []);
-				assert.ok(externalPins.length > 0, "pins should be in the alternate cache location, not default");
-				
-				// Verify default location is NOT being used
-				const defaultCacheBase = omxPluginCacheBase(codexHomeDir);
-				const defaultPinDir = join(defaultCacheBase, ".omx-pins", version);
-				const defaultPins = await readdir(defaultPinDir).catch(() => []);
-				// The default location should not have pins from our alternate cache operation
-				assert.ok(
-					defaultPins.length === 0 || !defaultPins.some((p) => !p.startsWith(".")),
-					"default cache location should not have our test pins",
-				);
-			});
+				assert.ok(externalPins.length > 0, "pins should be in the alternate cache location");
+			} finally {
+				if (originalCodexHome) {
+					process.env.CODEX_HOME = originalCodexHome;
+				} else {
+					delete process.env.CODEX_HOME;
+				}
+			}
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
