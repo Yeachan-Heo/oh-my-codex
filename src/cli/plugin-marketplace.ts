@@ -1584,7 +1584,10 @@ async function isLivePinnedSnapshot(
 	try {
 		pinDirStats = await lstat(pinDirPath);
 	} catch (error) {
-		if (isMissingPathError(error)) return false;
+		if (isMissingPathError(error)) {
+			// External pin dir missing; check legacy in-snapshot pins
+			return await hasLegacyInSnapshotLivePin(snapshotRef);
+		}
 		return true;
 	}
 	if (pinDirStats.isSymbolicLink()) return true;
@@ -1602,7 +1605,10 @@ async function isLivePinnedSnapshot(
 		if (entries.length === 0) {
 			const currentStats = await pinDirectoryRef.handle.stat();
 			const ageMs = Date.now() - currentStats.mtimeMs;
-			return !Number.isFinite(ageMs) || ageMs < 0 || ageMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS;
+			const hasExternalPin = !Number.isFinite(ageMs) || ageMs < 0 || ageMs <= OMX_PLUGIN_LIVE_PIN_INITIALIZATION_LEASE_MS;
+			if (hasExternalPin) return true;
+			// External pin dir is empty; check legacy in-snapshot pins
+			return await hasLegacyInSnapshotLivePin(snapshotRef);
 		}
 		for (const entry of entries) {
 			const pinPath = join(pinDirectoryRef.operationPath, entry.name);
@@ -1675,6 +1681,47 @@ async function isLivePinnedSnapshot(
 		return true;
 	} finally {
 		await pinDirectoryRef.handle.close();
+	}
+}
+
+async function hasLegacyInSnapshotLivePin(snapshotRef: DirectoryRef): Promise<boolean> {
+	try {
+		const legacyPinDir = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER).catch(() => null);
+		if (!legacyPinDir) return false;
+		try {
+			// Check if there are any valid pins in the legacy directory
+			if (await livePinRetirementGateExists(legacyPinDir)) return false;
+			const entries = await readdir(legacyPinDir.scanOperationPath, { withFileTypes: true });
+			for (const entry of entries) {
+				if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith("pin-")) continue;
+				const pinPath = join(legacyPinDir.operationPath, entry.name);
+				const stats = await lstat(pinPath);
+				if (
+					!stats.isFile() ||
+					stats.isSymbolicLink() ||
+					stats.nlink !== 1 ||
+					stats.size <= 0 ||
+					stats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
+				)
+					continue;
+				const bytes = await readOmxPluginCacheFileNoFollow(pinPath, { anchorDir: legacyPinDir.operationPath });
+				if (bytes === null) continue;
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
+				} catch {
+					continue;
+				}
+				const record = parseOmxPluginCacheLivePinRecord(parsed);
+				if (record && (await isLivePinOwnerAlive(record))) return true;
+			}
+			return false;
+		} finally {
+			await legacyPinDir.handle.close().catch(() => undefined);
+		}
+	} catch {
+		// Ignore errors reading legacy location
+		return false;
 	}
 }
 
@@ -2674,7 +2721,10 @@ export async function removeChildIfIdentity(
 						return state.owned && !state.livePin;
 					},
 				});
-				if (!removed && preservationNeeded) {
+				if (removed) {
+					// Successfully removed the snapshot; remove the retirement gate
+					await removeLivePinRetirementGate(cacheBaseRef.path, options.expectedManagedVersion!, retirementGateContent);
+				} else if (preservationNeeded) {
 					const restored = livePinAtDestructiveCheck && (await restoreQuarantinedSnapshot(retirementGateContent));
 					if (!livePinAtDestructiveCheck) {
 						await removeLivePinRetirementGate(cacheBaseRef.path, options.expectedManagedVersion!, retirementGateContent);

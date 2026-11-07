@@ -2695,4 +2695,146 @@ process.stdout.write("{}\\n");
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("GC/repair must not remove snapshot if old hook pin present in legacy location", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3790-legacy-retirement-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				
+				// Create current version
+				const currentMaterialized = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+				assert.equal(currentMaterialized.status, "materialized");
+				const currentVersion = currentMaterialized.version!;
+				
+				// Create an old snapshot version with a legacy pin
+				const oldVersion = "0.0.1";
+				const oldCacheDir = await seedManagedSnapshot(codexHomeDir, oldVersion);
+				assert.ok(oldCacheDir);
+				
+				// Create legacy .omx-live-pin directory with a pin
+				const legacyPinDir = join(oldCacheDir, ".omx-live-pin");
+				await mkdir(legacyPinDir, { recursive: true });
+				const legacyPin = {
+					version: 1,
+					pid: 88888,  // Use a PID that likely doesn't exist
+					processStartHash: "legacylegacylegacylegacylegacy",
+					sessionHash: createHash("sha256").update("legacy-session-that-must-not-be-removed").digest("hex"),
+				};
+				await writeFile(
+					join(legacyPinDir, `pin-${legacyPin.pid}-${legacyPin.sessionHash.slice(0, 24)}-${legacyPin.processStartHash}.json`),
+					`${JSON.stringify(legacyPin)}\n`,
+				);
+				
+				// Verify the old snapshot exists before retirement
+				const beforeStats = await lstat(oldCacheDir);
+				assert.ok(beforeStats.isDirectory(), "old snapshot should exist before retirement");
+				
+				// Try to retire unpinned snapshots
+				// This should NOT remove the old snapshot because it has a legacy pin
+				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, currentVersion);
+				
+				// Verify the old snapshot was NOT removed (because it has a legacy pin)
+				const afterStats = await lstat(oldCacheDir).catch(() => null);
+				assert.ok(afterStats?.isDirectory(), `old snapshot with legacy pin should be preserved during retirement; retired: ${retired.join(", ")}`);
+				
+				// Verify the legacy pin still exists
+				const legacyPinContent = await readFile(
+					join(legacyPinDir, `pin-${legacyPin.pid}-${legacyPin.sessionHash.slice(0, 24)}-${legacyPin.processStartHash}.json`),
+					"utf-8",
+				);
+				assert.deepEqual(JSON.parse(legacyPinContent), legacyPin, "legacy pin should be preserved");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("same-version repair + pin registration works after retirement gate cleanup", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3790-retirement-gate-reuse-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				
+				// Create and materialize current version
+				const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+				assert.equal(materialized.status, "materialized");
+				const cacheDir = materialized.cacheDir!;
+				const currentVersion = materialized.version!;
+				
+				// Create an old snapshot version without pins
+				const oldVersion = "0.0.1";
+				const oldCacheDir = await seedManagedSnapshot(codexHomeDir, oldVersion);
+				assert.ok(oldCacheDir);
+				
+				// Retire the old snapshot (it has no pins)
+				const retired1 = await retireUnpinnedManagedSnapshots(codexHomeDir, currentVersion);
+				assert.ok(retired1.length > 0, "old snapshot should be retired");
+				
+				// Verify the old snapshot was removed
+				const afterRemoval = await lstat(oldCacheDir).catch(() => null);
+				assert.ok(!afterRemoval?.isDirectory(), "old snapshot should be removed after retirement");
+				
+				// Now try to register a new pin on the current version
+				// This should work even though retirement gate was just used
+				const pinResult = await registerOmxPluginCacheLivePin(
+					cacheDir,
+					"test-session-after-gate-cleanup",
+					process.pid,
+				);
+				assert.ok(pinResult, "pin registration should succeed after retirement gate cleanup");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("pin operations work with alternate cache namespace (non-default cacheBase)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3790-alternate-cache-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				
+				// Use an alternate cache location instead of the default
+				const altCacheBase = join(wd, "alt-cache");
+				await mkdir(altCacheBase, { recursive: true });
+				
+				// Materialize with alternate cacheBase
+				const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+					cacheDirOverride: altCacheBase,
+				});
+				assert.equal(materialized.status, "materialized");
+				const cacheDir = materialized.cacheDir!;
+				
+				// Create a pin for this alternate cache
+				const pinResult = await registerOmxPluginCacheLivePin(
+					cacheDir,
+					"test-session-alt-cache",
+					process.pid,
+				);
+				assert.ok(pinResult, "pin registration should work with alternate cache");
+				
+				// Verify the pin was created in the alternate cache location
+				const version = materialized.version!;
+				const externalPinDir = join(altCacheBase, ".omx-pins", version);
+				const externalPins = await readdir(externalPinDir).catch(() => []);
+				assert.ok(externalPins.length > 0, "pins should be in the alternate cache location, not default");
+				
+				// Verify default location is NOT being used
+				const defaultCacheBase = omxPluginCacheBase(codexHomeDir);
+				const defaultPinDir = join(defaultCacheBase, ".omx-pins", version);
+				const defaultPins = await readdir(defaultPinDir).catch(() => []);
+				// The default location should not have pins from our alternate cache operation
+				assert.ok(
+					defaultPins.length === 0 || !defaultPins.some((p) => !p.startsWith(".")),
+					"default cache location should not have our test pins",
+				);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 });
