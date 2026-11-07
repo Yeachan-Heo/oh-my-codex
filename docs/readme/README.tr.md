@@ -115,7 +115,9 @@ Ek workflow katmanı istemiyorsanız OMX'e ihtiyacınız olmayabilir.
 omx doctor
 codex login status
 omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
+```
 omx --worktree=feat/task --madmax --xhigh
+```
 ```
 
 `omx doctor` dosyaları, hook'ları ve önkoşulları kontrol eder. Gerçek smoke testi auth, profil ve sağlayıcı ayarlarını gerçek bir Codex isteğiyle doğrular.
@@ -131,20 +133,74 @@ OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
 
 PowerShell'de `$env:OMX_ROOT`, cmd'de `%USERPROFILE%` kullanın. Aynı açık root ile iki çalıştırma sahiplik çakışmasıdır; farklı checkout'lar varsayılan root'larını ayırır.
 
+### PowerShell ve Komut İstemi'nde OMX_ROOT
+
+PowerShell:
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+Komut İstemi:
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
 ### Madmax ve worktree güvenliği
 
 `--madmax`, `--dangerously-bypass-approvals-and-sandbox` seçeneğinin kısa yazımıdır; normal onay ve sandbox korumalarını kaldırır. Yalnızca güvenilir repo ve ortamlarda kullanın. Git repo'sunda özellikle eşzamanlı işler için isimli worktree tercih edin:
 
 ```bash
+Tek görev için adlandırılmış worktree:
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
 omx --worktree=feature/auth --madmax --xhigh
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
 `--worktree` ayrı git checkout açar; isimsiz biçim detached geçici worktree oluşturur. Kirli worktree'de uyarı verir ama başlatır. `--direct`, tmux/HUD yönetimi olmadan tek seferlik başlatır; `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` kalıcı tercih belirler, CLI bayrakları önce gelir. Bu iterasyon config dosyasına yeni ayar eklemez.
 
+Doğrudan başlatma:
+```bash
+omx --direct --yolo
+```
+
+Profil tercihi:
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+Otomatik davranışa dönme:
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+CLI bayrakları ortam değişkeninden önce gelir; son CLI politika bayrağı geçerlidir:
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
 ### /goal ve skill seçimi
 
 `omx --madmax --xhigh` ile başlatın; git içinde `--worktree=<task>` ekleyin. Kalıcı hedef/checkpoint için `/goal`, plan için `$plan`, paralel koordinasyon için `$team`, çok aşamalı kalıcı yürütme için `$ultragoal` kullanın. Varsayılan olarak yalnızca ilgili 2–5 skill'i yükleyin.
+
+Kalıcı checkout hedefi örneği:
+```text
+/goal Checkout düzeltmesini yeniden üretim, uygulama, regresyon testleri ve son doğrulama checkpoint'leriyle tamamla.
+
+$plan "checkout düzeltme planını ve ödünleşimleri onayla"
+$ultragoal "onaylanan düzeltmeyi checkpoint kanıtıyla yürüt"
+```
+
+Anti-pattern: görevi belirtmeden önce çok sayıda skill yüklemeyin:
+```text
+omx --madmax --xhigh
+# Görevi anlatmadan önce "ne olur ne olmaz" diye 20 skill yüklemeyin.
+# Bu bağlamı şişirir ve ilgisiz workflow'lara dikkati harcar.
+```
 
 ## Basit zihinsel model
 
@@ -205,8 +261,27 @@ Planlama skill'leri plan üretir, uygulama yapmaz. Task'e göre `$plan`, `$code-
 ```bash
 omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
+```
+```bash
 omx wiki list --json
+omx wiki query --input '{"query":"session-start lifecycle"}' --json
 omx wiki lint --json
+omx wiki refresh --json
+```
+
+Team komutları:
+```bash
+omx team 3:executor "fix the failing tests with verification"
+omx team status <team-name>
+omx team resume <team-name>
+omx team shutdown <team-name>
+```
+
+Zorla temizliği yalnızca team'in öldüğünü ya da bilerek terk edildiğini doğruladıktan sonra kullanın:
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
 ```
 
 ### Team için platform notları
