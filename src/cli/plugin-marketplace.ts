@@ -1814,26 +1814,23 @@ async function removeLivePinRetirementGate(cacheBaseRef: DirectoryRef, version: 
 					try {
 						pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
 						// Remove the version directory through its parent by name (not through fd path)
+						// Only swallow ENOTEMPTY and ENOENT errors; other errors indicate real problems
 						await removeChild(pinParentRef, version, {
 							recursive: false,
 							force: false,
+						}).catch((error: unknown) => {
+							const code = (error as NodeJS.ErrnoException).code;
+							// ENOTEMPTY and ENOENT are expected; ignore them
+							if (code !== "ENOTEMPTY" && code !== "ENOENT") {
+								throw error;
+							}
 						});
-						// Only swallow ENOTEMPTY and ENOENT errors; other errors indicate real problems
-					} catch (error) {
-						const code = (error as NodeJS.ErrnoException).code;
-						// ENOTEMPTY and ENOENT are expected; ignore them
-						if (code !== "ENOTEMPTY" && code !== "ENOENT") {
-							throw error;
-						}
 					} finally {
 						if (pinParentRef) await pinParentRef.handle.close().catch(() => undefined);
 					}
 				}
-			} catch (error) {
-				// Ignore other errors from directory removal attempt
-				if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" && (error as NodeJS.ErrnoException).code !== "ENOENT") {
-					// Still ignore - this is best-effort cleanup
-				}
+			} catch {
+				// Ignore errors from directory removal attempt (best-effort cleanup)
 			}
 		}
 		
