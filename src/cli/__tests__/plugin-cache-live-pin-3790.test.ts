@@ -2255,7 +2255,7 @@ process.stdout.write("{}\\n");
 						seedManagedSnapshot(codexHomeDir, version),
 					),
 				);
-				await writeDeadLivePin(snapshots[0]!);
+				await writeDeadLivePin(snapshots[0]!, codexHomeDir, "0.20.0");
 				const retired = await retireUnpinnedManagedSnapshots(
 					codexHomeDir,
 					"0.20.3",
