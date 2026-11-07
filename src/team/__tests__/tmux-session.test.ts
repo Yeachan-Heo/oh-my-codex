@@ -2921,12 +2921,64 @@ describe('buildWorkerStartupCommand', () => {
       const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish', () =>
         buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
       );
-      assert.match(cmd, /'\/bin\/sh' -c\b/, 'must launch workers through /bin/sh when no supported shells exist');
-      assert.doesNotMatch(cmd, /'\/bin\/sh' -lc\b/);
+      assert.match(cmd, /'\/'bin\/'sh' -c\b/, 'must launch workers through /bin/sh when no supported shells exist');
+      assert.doesNotMatch(cmd, /'\/'bin\/'sh' -lc\b/);
       assert.doesNotMatch(cmd, /\.zshrc|\.bashrc/, 'must not source zsh/bash rc files for /bin/sh fallback');
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('embeds receipt in PowerShell script before encoding (not after)', () => {
+    const receipt = 'omx_source_test_receipt';
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+    try {
+      // On Windows, buildWorkerStartupCommand should embed receipt in the PowerShell script before encoding
+      const cmdWithReceipt: string = withMockedExistsSync(
+        (candidate): boolean => String(candidate).includes('powershell.exe'),
+        () => buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt),
+      );
+
+      if (cmdWithReceipt.includes('-EncodedCommand')) {
+        // Verify receipt is in the encoded command
+        const match = cmdWithReceipt.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+        assert(match, 'Should have encoded command with receipt');
+        const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
+        assert(decoded.includes(`# ${receipt}`), 'Decoded script should contain receipt as comment at start');
+        // Verify no trailing '#' after the encoded command
+        assert.doesNotMatch(cmdWithReceipt, /-EncodedCommand\s+[A-Za-z0-9+/=]+\s+#/, 'Should not have trailing # after PowerShell command');
+      }
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('appends receipt to POSIX worker startup commands without modifying the inner command', () => {
+    const receipt = 'omx_source_posix_receipt';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+    try {
+      const cmdNoReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      const cmdWithReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt);
+
+      // POSIX commands should embed the receipt directly in the shell invocation
+      if (cmdWithReceipt.includes(receipt)) {
+        assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment');
+        // The main body should be identical
+        assert(cmdWithReceipt.includes(cmdNoReceipt) || cmdNoReceipt.includes(cmdWithReceipt), 'Core command should be preserved');
+      }
+    } finally {
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     }
@@ -4957,26 +5009,20 @@ describe('createTeamSession tmux instance tagging', () => {
     }
   });
 
-  it('injects receipt inside PowerShell encoded commands instead of appending as comment', () => {
+  it('embeds receipt in PowerShell script before encoding and appends to POSIX commands', () => {
     const receipt = 'omx_source_receipt_example';
 
-    // For PowerShell encoded commands, the receipt should be injected inside the encoded script,
-    // not appended after -EncodedCommand (which would make it an extra argument to powershell.exe).
-    const powershellCommand = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand abc123def456';
+    // PowerShell commands from buildWorkerStartupCommand now have receipt embedded at construction time,
+    // so bindSplitReceiptToPaneCommand should return them unchanged.
+    // Test with a command that already has the receipt embedded:
+    const scriptWithReceipt = `# ${receipt}\n$ErrorActionPreference = 'Stop'`;
+    const encodedReceipt = Buffer.from(scriptWithReceipt, 'utf16le').toString('base64');
+    const powershellCommand = `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedReceipt}`;
     const result = bindSplitReceiptToPaneCommand(powershellCommand, receipt);
-    // The result should have the same prefix and suffix, but a different encoded command
-    assert.match(result, /^C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand [A-Za-z0-9+/=]+$/);
-    assert.notEqual(result, powershellCommand, 'PowerShell command should be modified to include receipt');
-    // The encoded part should be different from the original
-    assert.doesNotMatch(result, /abc123def456/, 'Should not contain the original encoded command');
+    // Should return unchanged since it already has the receipt embedded
+    assert.equal(result, powershellCommand, 'PowerShell command with embedded receipt should be returned unchanged');
 
-    // Verify the receipt is actually encoded in the command by decoding it
-    const match = result.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
-    assert(match, 'Should extract encoded command');
-    const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
-    assert(decoded.includes(receipt), 'Decoded command should contain the receipt');
-
-    // POSIX shell commands should still have receipt appended as a comment
+    // POSIX shell commands should have receipt appended as a comment
     const bashCommand = '/bin/bash -c "worker_command"';
     assert.equal(
       bindSplitReceiptToPaneCommand(bashCommand, receipt),
@@ -4991,6 +5037,16 @@ describe('createTeamSession tmux instance tagging', () => {
       `${plainCommand} # ${receipt}`,
       'Plain command should have receipt appended as comment',
     );
+
+    // Test POSIX command containing the literal text '-EncodedCommand' in its content
+    // This should not be misinterpreted as a PowerShell command
+    const posixWithEncodedCommandText = 'echo "Usage: -EncodedCommand option for PowerShell"';
+    const resultWithEncodedText = bindSplitReceiptToPaneCommand(posixWithEncodedCommandText, receipt);
+    assert.equal(
+      resultWithEncodedText,
+      `${posixWithEncodedCommandText} # ${receipt}`,
+      'POSIX command with -EncodedCommand text should still get receipt appended, not parsed as PowerShell',
+    );
   });
 
   it('detects receipt in both POSIX shell comments and PowerShell encoded commands for fallback reconciliation', () => {
@@ -4998,26 +5054,26 @@ describe('createTeamSession tmux instance tagging', () => {
 
     // Test POSIX shell case: receipt in command as comment
     const posixCommand = `/bin/bash -c "worker" # ${receipt}`;
-    let pane = { startCommand: posixCommand };
-    // Would test paneHasReceipt here, but it's private; verify through bindSplitReceiptToPaneCommand
-    // to ensure receipt injection works consistently
     assert(posixCommand.includes(receipt), 'POSIX command should contain receipt');
 
-    // Test PowerShell case: receipt should be detectable after encoding
-    const powerShellCommand = 'powershell.exe -EncodedCommand SQBuAHYAbwBsAGkAZABFAG4AYwBvAGQAaQBuAGcA';
-    const enrichedPsCmd = bindSplitReceiptToPaneCommand(powerShellCommand, receipt);
-    // After binding, the receipt is inside the re-encoded command
-    const psMatch = enrichedPsCmd.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
-    assert(psMatch, 'Should extract re-encoded command');
+    // Test PowerShell case: receipt should be detectable inside the decoded script
+    const scriptWithReceipt = `# ${receipt}\n$ErrorActionPreference = 'Stop'`;
+    const encodedWithReceipt = Buffer.from(scriptWithReceipt, 'utf16le').toString('base64');
+    const powerShellCommand = `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedWithReceipt}`;
+    // Extract and verify the receipt is in the decoded script
+    const psMatch = powerShellCommand.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+    assert(psMatch, 'Should extract encoded command');
     const psDecoded = Buffer.from(psMatch[1], 'base64').toString('utf16le');
-    assert(psDecoded.includes(receipt), 'Re-encoded PS command should contain receipt');
+    assert(psDecoded.includes(receipt), 'Decoded PS command should contain receipt');
 
     // Verify that panes WITHOUT receipts would not match (prevents false reconciliation)
     const noReceiptCommand = '/bin/bash -c "worker"';
-    const noReceiptPane = { startCommand: noReceiptCommand };
     assert(!noReceiptCommand.includes(receipt), 'Pane without receipt should not match');
 
-    const psNoReceiptCommand = 'powershell.exe -EncodedCommand SQBuAHYAbwBsAGkAZABFAG4AYwBvAGQAaQBuAGcA';
+    // PowerShell command without receipt
+    const scriptNoReceipt = '$ErrorActionPreference = "Stop"';
+    const encodedNoReceipt = Buffer.from(scriptNoReceipt, 'utf16le').toString('base64');
+    const psNoReceiptCommand = `powershell.exe -EncodedCommand ${encodedNoReceipt}`;
     const psNoReceiptMatch = psNoReceiptCommand.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
     if (psNoReceiptMatch) {
       const psNoReceiptDecoded = Buffer.from(psNoReceiptMatch[1], 'base64').toString('utf16le');

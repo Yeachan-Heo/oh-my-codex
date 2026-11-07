@@ -354,23 +354,19 @@ function sourceTransactionReceipt(): string {
 }
 
 export function bindSplitReceiptToPaneCommand(command: string, receipt: string): string {
-  // On Windows with PowerShell (psmux), the command is encoded with -EncodedCommand.
-  // Appending a shell comment after the -EncodedCommand causes it to become an extra
-  // argument to powershell.exe, which fails with "PowerShell: unrecognized argument".
-  // For PowerShell commands, inject the receipt as a comment inside the encoded script,
-  // then re-encode it. This preserves transaction attribution for fallback pane detection.
+  // Receipt should be embedded at construction time (in buildWorkerStartupCommand for PowerShell,
+  // or directly in the command string for POSIX). This function is kept for backward compatibility.
+  // For POSIX commands, append the receipt as a comment.
+  // For PowerShell, the receipt should already be embedded, so just return the command as-is.
   if (command.includes('-EncodedCommand')) {
-    const match = /^(.+?-EncodedCommand\s+)([A-Za-z0-9+/=]+)(.*)$/.exec(command);
-    if (match) {
-      const [, prefix, encodedCommand, suffix] = match;
-      const decoded = Buffer.from(encodedCommand, 'base64').toString('utf16le');
-      const withReceipt = `# ${receipt}\n${decoded}`;
-      const reencoded = Buffer.from(withReceipt, 'utf16le').toString('base64');
-      return `${prefix}${reencoded}${suffix}`;
-    }
+    // PowerShell command - receipt should already be embedded, don't parse or modify
     return command;
   }
-  return `${command} # ${receipt}`;
+  // POSIX command - append receipt as comment if not already present
+  if (!command.includes(`# ${receipt}`)) {
+    return `${command} # ${receipt}`;
+  }
+  return command;
 }
 
 export function bindSplitWindowReceiptFormat(effect: string, receipt: string): string {
@@ -2076,6 +2072,7 @@ export function buildWorkerStartupCommand(
   workerCliOverride?: TeamWorkerCli,
   initialPrompt?: string,
   workerRole?: string,
+  receipt?: string,
 ): string {
   const processSpec = buildWorkerStartupProcessLaunchSpec(
     teamName,
@@ -2111,15 +2108,15 @@ export function buildWorkerStartupCommand(
       .map(([key, value]) => `$env:${key} = ${quotePowerShellArg(value)}`)
       .join('; ');
     const invocation = ['&', quotePowerShellArg(processSpec.command), ...startupArgs.map(quotePowerShellArg)].join(' ');
-    const encodedCommand = encodePowerShellCommand(
-      [
-        "$ErrorActionPreference = 'Stop'",
-        pathBootstrap,
-        hudEnvUnset,
-        envAssignments,
-        invocation,
-      ].filter(Boolean).join('; '),
-    );
+    const scriptLines = [
+      receipt ? `# ${receipt}` : '',
+      "$ErrorActionPreference = 'Stop'",
+      pathBootstrap,
+      hudEnvUnset,
+      envAssignments,
+      invocation,
+    ].filter(Boolean);
+    const encodedCommand = encodePowerShellCommand(scriptLines.join('; '));
     return `${powershellPath} -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
   }
 
@@ -2137,7 +2134,8 @@ export function buildWorkerStartupCommand(
   const rcPrefix = shouldSourceTeamWorkerShellRc({ ...process.env, ...extraEnv }) && launchSpec.rcFile
     ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; `
     : '';
-  const inner = `${rcPrefix}${pathPrefix}${cliInvocation}`;
+  const receiptComment = receipt ? ` # ${receipt}` : '';
+  const inner = `${rcPrefix}${pathPrefix}${cliInvocation}${receiptComment}`;
   const envParts = Object.entries(startupEnv).map(([key, value]) => `${key}=${value}`);
   const unsetParts = ['-u', OMX_TMUX_HUD_OWNER_ENV, '-u', OMX_TMUX_HUD_LEADER_PANE_ENV];
 
@@ -2609,16 +2607,6 @@ export function createTeamSession(
       const attachedStartupPlan = buildAttachedTmuxWorkerStartupPlan(safeTeamName, i, launchArgsForWorker, workerCwd, workerEnv, workerCliPlan[i - 1], startup.initialPrompt, startup.workerRole);
       workerStartupArgs[i - 1] = attachedStartupPlan.startupArgs;
       trustWorkerMiseConfigIfAvailable(workerCwd);
-      const cmd = writeWorkerStartupScriptCommand(safeTeamName, i, launchArgsForWorker, workerCwd, workerEnv, workerCliPlan[i - 1], startup.initialPrompt, startup.workerRole, attachedStartupPlan) ?? buildWorkerStartupCommand(
-        safeTeamName,
-        i,
-        launchArgsForWorker,
-        workerCwd,
-        workerEnv,
-        workerCliPlan[i - 1],
-        startup.initialPrompt,
-        startup.workerRole,
-      );
       // First split creates the right side from leader. Remaining splits stack on the right.
       const splitDirection = i === 1 ? '-h' : '-v';
       const splitTarget = requireLiveTeamOwnedPaneSync(
@@ -2632,7 +2620,21 @@ export function createTeamSession(
       try {
         paneId = runSourceAuthorizedSplit(
           splitSource,
-          (receipt) => `split-window ${splitDirection} -t ${splitTarget} -d -P -F '#{pane_id}' -c ${shellQuoteSingle(tmuxWorkerCwd)} ${shellQuoteSingle(bindSplitReceiptToPaneCommand(cmd, receipt))}`,
+          (receipt) => {
+            const scriptCmd = writeWorkerStartupScriptCommand(safeTeamName, i, launchArgsForWorker, workerCwd, workerEnv, workerCliPlan[i - 1], startup.initialPrompt, startup.workerRole, attachedStartupPlan);
+            const cmd = scriptCmd ? `${scriptCmd} # ${receipt}` : buildWorkerStartupCommand(
+              safeTeamName,
+              i,
+              launchArgsForWorker,
+              workerCwd,
+              workerEnv,
+              workerCliPlan[i - 1],
+              startup.initialPrompt,
+              startup.workerRole,
+              receipt,
+            );
+            return `split-window ${splitDirection} -t ${splitTarget} -d -P -F '#{pane_id}' -c ${shellQuoteSingle(tmuxWorkerCwd)} ${shellQuoteSingle(cmd)}`;
+          },
         );
       } catch (error) {
         if (error instanceof AmbiguousSplitWindowOutputError) {
@@ -2730,7 +2732,6 @@ export function createTeamSession(
     let resizeHookName: string | null = null;
     let resizeHookTarget: string | null = null;
     if (canRecreateTeamHud && omxEntry) {
-      const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: ownerSessionId, leaderPaneId })} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
       const hudCwd = translatePathForMsys(cwd);
       requireFrozenWindowTopologySync(teamTarget, frozenWindowPanePids, frozenWindowPaneOwners);
       const hudSplitTarget = leaderPaneId;
@@ -2740,7 +2741,10 @@ export function createTeamSession(
       try {
         id = runSourceAuthorizedSplit(
           hudSource,
-          (receipt) => `split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t ${hudSplitTarget} -d -P -F '#{pane_id}' -c ${shellQuoteSingle(hudCwd)} ${shellQuoteSingle(bindSplitReceiptToPaneCommand(hudCmd, receipt))}`,
+          (receipt) => {
+            const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: ownerSessionId, leaderPaneId })} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch # ${receipt}`;
+            return `split-window -v -f -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t ${hudSplitTarget} -d -P -F '#{pane_id}' -c ${shellQuoteSingle(hudCwd)} ${shellQuoteSingle(hudCmd)}`;
+          },
         );
       } catch (error) {
         if (error instanceof AmbiguousSplitWindowOutputError) {
@@ -3126,10 +3130,7 @@ export function restoreStandaloneHudPane(
   const beforeSplitPaneIds = new Set(paneListResult.panes.map((pane) => pane.paneId));
 
   const splitReceipt = sourceTransactionReceipt();
-  const hudCmd = bindSplitReceiptToPaneCommand(
-    `exec env ${formatHudEnvAssignments(process.env, { sessionId: options.sessionId, leaderPaneId: normalizedLeaderPaneId })} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`,
-    splitReceipt,
-  );
+  const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: options.sessionId, leaderPaneId: normalizedLeaderPaneId })} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch # ${splitReceipt}`;
   let hudResult: ReturnType<typeof runTmux> | null = null;
   for (const restoreCwd of resolveStandaloneHudRestoreCwdCandidates(
     normalizedLeaderPaneId,
