@@ -1287,6 +1287,13 @@ function leaderContainsCommit(repoRoot: string, cwd: string, commit: string): bo
   return runGitCommand(repoRoot, ['merge-base', '--is-ancestor', commit, 'HEAD'], cwd).ok;
 }
 
+function worktreeHasUnfinishedRebase(repoRoot: string, worktreePath: string): boolean {
+  return ['rebase-merge', 'rebase-apply'].some((name) => {
+    const path = runGitCommand(repoRoot, ['rev-parse', '--git-path', name], worktreePath);
+    return !path.ok || existsSync(resolve(worktreePath, path.stdout.trim()));
+  });
+}
+
 async function integrateWorkerCommitsIntoLeader(params: {
   teamName: string;
   config: TeamConfig;
@@ -1303,7 +1310,8 @@ async function integrateWorkerCommitsIntoLeader(params: {
   // ── Phase A: Auto-commit dirty worktrees ──
   for (const worker of config.workers) {
     if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
-    if (next[worker.name]?.pending_rebase_leader_head) continue;
+    if (next[worker.name]?.pending_rebase_leader_head
+      || worktreeHasUnfinishedRebase(resolve(worker.worktree_repo_root), resolve(worker.worktree_path))) continue;
     const { committed, commitHash } = autoCommitDirtyWorktree(worker);
     if (committed) {
       await appendIntegrationEvent(teamName, 'worker_auto_commit', worker, {
@@ -1331,24 +1339,20 @@ async function integrateWorkerCommitsIntoLeader(params: {
     const repoRoot = resolve(worker.worktree_repo_root);
     const worktreePath = resolve(worker.worktree_path);
     const previousState = next[worker.name] ?? {};
+    // Orig-head/onto do not prove ownership: a manual rebase can recreate the same operation.
+    if (worktreeHasUnfinishedRebase(repoRoot, worktreePath)) {
+      next[worker.name] = {
+        ...previousState, status: 'rebase_conflict',
+        rebase_error: 'Unfinished rebase preserved. Finish or abort it manually before retrying integration.',
+      };
+      continue;
+    }
     if (previousState.pending_rebase_leader_head) {
       if (previousState.delivery_leader_commit && leaderContainsCommit(repoRoot, cwd, previousState.delivery_leader_commit)) continue;
       const workerStatus = await readWorkerStatus(teamName, worker.name, cwd);
       if (workerStatus.state !== 'idle' && workerStatus.state !== 'done') continue;
-      // Restore only our unfinished rebase; its intermediate HEAD is not the delivered source.
-      let restored = true;
-      for (const name of ['rebase-merge', 'rebase-apply']) {
-        const path = runGitCommand(repoRoot, ['rev-parse', '--git-path', name], worktreePath);
-        if (!path.ok) { restored = false; break; }
-        const rebasePath = resolve(worktreePath, path.stdout.trim());
-        if (!existsSync(rebasePath)) continue;
-        const originalHead = await readFile(join(rebasePath, 'orig-head'), 'utf8').catch(() => '');
-        const onto = await readFile(join(rebasePath, 'onto'), 'utf8').catch(() => '');
-        if (originalHead.trim() !== previousState.last_integrated_head || onto.trim() !== previousState.pending_rebase_leader_head
-          || !runGitCommand(repoRoot, ['rebase', '--abort'], worktreePath).ok) restored = false;
-      }
-      const status = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
-      if (!restored || !status.ok || status.stdout.trim()
+      const status = runGitCommand(repoRoot, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worktreePath);
+      if (!status.ok || status.stdout.trim()
         || !previousState.last_integrated_head || resolveWorkerHead(worktreePath) !== previousState.last_integrated_head) continue;
       // Phase A already skipped this pending worker: redeliver the clean source normally, never checkpoint it here.
       next[worker.name] = {
@@ -1373,7 +1377,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
     state.last_seen_head = workerHead;
     const alreadyMerged = runGitCommand(repoRoot, ['merge-base', '--is-ancestor', workerHead, 'HEAD'], cwd).ok;
     if (alreadyMerged) {
-      state.last_integrated_head = workerHead;
+      Object.assign(state, { last_integrated_head: workerHead, delivery_leader_commit: workerHead });
       state.status = 'idle';
       state.updated_at = new Date().toISOString();
       next[worker.name] = state;
@@ -1608,8 +1612,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
       const sourceDelivered = sourceHead && (leaderContainsCommit(repoRoot, cwd, sourceHead)
         || (state.last_integrated_head === sourceHead && state.delivery_leader_commit
           && leaderContainsCommit(repoRoot, cwd, state.delivery_leader_commit)));
-      if (!sourceDelivered && !(state.pending_rebase_leader_head && state.delivery_leader_commit
-        && leaderContainsCommit(repoRoot, cwd, state.delivery_leader_commit))) continue;
+      if (!sourceDelivered) continue;
 
       // Only rebase idle/done/failed workers to avoid race conditions
       const workerStatus = await readWorkerStatus(teamName, worker.name, cwd);
@@ -1625,29 +1628,28 @@ async function integrateWorkerCommitsIntoLeader(params: {
         continue;
       }
 
-      const rebaseInProgress = ['rebase-merge', 'rebase-apply'].some((name) => {
-        const path = runGitCommand(repoRoot, ['rev-parse', '--git-path', name], worktreePath);
-        return path.ok && existsSync(resolve(worktreePath, path.stdout.trim()));
-      });
-      const abort = rebaseInProgress ? runGitCommand(repoRoot, ['rebase', '--abort'], worktreePath) : null;
-      // A failed abort must remain sticky, not disappear behind the dirty-worktree skip.
-      if (!abort || abort.ok) {
-        const statusCheck = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
-        if (!statusCheck.ok || statusCheck.stdout.trim()) {
-          await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
-            worker_name: worker.name,
-            reason: 'dirty_worktree',
-            leader_head: newLeaderHead,
-            worktree_path: worktreePath,
-            summary: `skipped cross-rebase for ${worker.name} (dirty worktree)`,
-          }, cwd);
-          continue;
-        }
+      if (worktreeHasUnfinishedRebase(repoRoot, worktreePath)) {
+        next[worker.name] = {
+          ...state, status: 'rebase_conflict',
+          rebase_error: 'Unfinished rebase preserved. Finish or abort it manually before retrying integration.',
+        };
+        continue;
+      }
+      const statusCheck = runGitCommand(repoRoot, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worktreePath);
+      if (!statusCheck.ok || statusCheck.stdout.trim()) {
+        await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
+          worker_name: worker.name,
+          reason: 'dirty_worktree',
+          leader_head: newLeaderHead,
+          worktree_path: worktreePath,
+          summary: `skipped cross-rebase for ${worker.name} (dirty worktree)`,
+        }, cwd);
+        continue;
       }
 
       // Rebase with -X ours (in rebase context, "ours" = upstream = leader wins)
       const workerHeadBeforeRebase = resolveWorkerHead(worktreePath);
-      const rebase = abort && !abort.ok ? abort : runGitCommand(repoRoot, ['rebase', '-X', 'ours', newLeaderHead], worktreePath);
+      const rebase = runGitCommand(repoRoot, ['rebase', '-X', 'ours', newLeaderHead], worktreePath);
       if (rebase.ok) {
         const workerHeadAfterRebase = resolveWorkerHead(worktreePath);
         state.last_rebased_leader_head = newLeaderHead;
@@ -4862,7 +4864,7 @@ export async function monitorTeam(
       continue;
     }
     const workerHead = resolveWorkerHead(worker.worktree_path!);
-    const status = runGitCommand(worker.worktree_repo_root!, ['--no-optional-locks', 'status', '--porcelain'], worker.worktree_path!);
+    const status = runGitCommand(worker.worktree_repo_root!, ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worker.worktree_path!);
     const contained = workerHead && leaderContainsCommit(worker.worktree_repo_root!, cwd, workerHead);
     const delivered = workerHead && delivery?.last_integrated_head === workerHead
       && delivery.delivery_leader_commit && leaderContainsCommit(worker.worktree_repo_root!, cwd, delivery.delivery_leader_commit);
