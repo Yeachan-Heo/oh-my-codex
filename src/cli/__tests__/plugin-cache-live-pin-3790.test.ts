@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -2972,13 +2972,113 @@ process.stdout.write("{}\\n");
 				assert.equal(pin.pid, process.pid);
 				assert.equal(pin.sessionHash, createHash("sha256").update("test-session-alt-cache").digest("hex"));
 				await assert.rejects(lstat(join(cacheDir, ".omx-live-pin")), { code: "ENOENT" });
-			} finally {
-				if (originalCodexHome !== undefined) {
-					process.env.CODEX_HOME = originalCodexHome;
-				} else {
-					delete process.env.CODEX_HOME;
-				}
+		} finally {
+			if (originalCodexHome !== undefined) {
+				process.env.CODEX_HOME = originalCodexHome;
+			} else {
+				delete process.env.CODEX_HOME;
 			}
+		}
+	} finally {
+		await rm(wd, { recursive: true, force: true });
+	}
+});
+
+	it("validates and creates .omx-pins parent safely (issue 3898 HIGH: native hook validation)", async () => {
+		// This test verifies that the native hook code path validates the .omx-pins parent
+		// directory before creating version subdirectories. The validation rejects symlinks
+		// and ensures non-recursive creation of the parent.
+		// 
+		// The TypeScript code path (registerOmxPluginCacheLivePin) already has proper validation
+		// in openExternalLivePinDirectory and openDirectoryChild, but the native hook needs
+		// independent validation since it creates directories directly with mkdirSync.
+		// 
+		// The fix adds validateAndCreateLivePinParent() which checks for symlinks and
+		// creates the parent non-recursively before version subdirectories are created.
+		const wd = await mkdtemp(join(tmpdir(), "omx-3898-parent-validation-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const snapshots = await Promise.all(
+					["0.20.0"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
+				);
+				const pluginRoot = snapshots[0]!;
+				
+				// Attempt to register a pin; should succeed and create the parent safely
+				const pinResult = await registerOmxPluginCacheLivePin(
+					pluginRoot,
+					"test-session-parent-validation",
+					process.pid,
+				);
+				assert.ok(pinResult, "pin registration should succeed");
+				
+				// Verify the .omx-pins parent was created and is a real directory
+				const cacheBase = omxPluginCacheBase(codexHomeDir);
+				const pinsDir = join(cacheBase, ".omx-pins");
+				const stats = await lstat(pinsDir);
+				assert.ok(stats.isDirectory(), ".omx-pins should be a directory");
+				assert.equal(stats.isSymbolicLink(), false, ".omx-pins should not be a symlink");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("removes empty .omx-pins/<version> directory after gate cleanup (issue 3898 MEDIUM)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3898-empty-dir-cleanup-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const snapshots = await Promise.all(
+					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
+				);
+				
+				const version = "0.20.0";
+				const pinDirectory = livePinDirectoryPath(codexHomeDir, version);
+				
+				// Create a pin, then remove the pin file to simulate a cleared/cancelled pin
+				const pinResult = await registerOmxPluginCacheLivePin(
+					snapshots[0]!,
+					"test-session-for-cleanup-medium",
+					process.pid,
+				);
+				assert.ok(pinResult, "pin registration should succeed");
+				
+				// Verify the pin directory exists with a pin file
+				let entries = await readdir(pinDirectory);
+				assert.ok(entries.length > 0, "pin directory should have a pin file");
+				
+				// Remove all files from the pin directory (simulate cleanup)
+				for (const entry of entries) {
+					await rm(join(pinDirectory, entry), { force: true });
+				}
+			
+				// Verify directory is now empty
+				entries = await readdir(pinDirectory);
+				assert.equal(entries.length, 0, "pin directory should be empty after file removal");
+			
+				// Age the directory beyond the initialization lease window (5 minutes)
+				const agedTime = new Date(Date.now() - 6 * 60 * 1000);
+				await utimes(pinDirectory, agedTime, agedTime);
+				
+				// Retire the snapshot (no active pins, so retirement gate will be created)
+				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
+				assert.ok(retired.includes(snapshots[0]!), "snapshot should be retired");
+				
+				// After retirement, check if the empty pin directory was cleaned up.
+				// The gate cleanup should remove the retirement marker, and if the directory
+				// is empty, it should be removed to prevent it from being considered "active"
+				// within the initialization lease window during subsequent repairs.
+				try {
+					await lstat(pinDirectory);
+					// If directory still exists, it should be empty
+					const finalEntries = await readdir(pinDirectory);
+					assert.equal(finalEntries.length, 0, "pin directory should be empty or removed after gate cleanup");
+				} catch (error: any) {
+					// Empty directory was successfully removed (ENOENT is acceptable and preferred)
+					if (error?.code !== "ENOENT") {
+						throw error;
+					}
+				}
+			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}

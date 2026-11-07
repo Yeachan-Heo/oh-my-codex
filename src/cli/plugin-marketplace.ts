@@ -1800,7 +1800,23 @@ async function removeLivePinRetirementGate(cacheBaseRef: DirectoryRef, version: 
 		const stats = await lstat(gatePath);
 		const bytes = await readOmxPluginCacheFileNoFollow(gatePath, { anchorDir: pinDirectoryRef.operationPath });
 		if (bytes?.toString("utf-8") !== gateContent) return false;
-		return await removeChildIfIdentity(pinDirectoryRef, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER, stats, { force: true });
+		const gateRemoved = await removeChildIfIdentity(pinDirectoryRef, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER, stats, { force: true });
+		
+		// After removing the gate, try to remove the empty version directory
+		// to prevent it from blocking subsequent repairs within the lease window.
+		if (gateRemoved) {
+			try {
+				const entries = await readdir(pinDirectoryRef.operationPath, { withFileTypes: true });
+				if (entries.length === 0) {
+					// Directory is empty; attempt removal
+					await rmdir(pinDirectoryRef.operationPath).catch(() => {});
+				}
+			} catch {
+				// Ignore errors from directory removal attempt
+			}
+		}
+		
+		return gateRemoved;
 	} catch {
 		return false;
 	} finally {

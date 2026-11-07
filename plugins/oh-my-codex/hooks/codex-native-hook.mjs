@@ -679,6 +679,32 @@ function externalLivePinDirectory(cacheBase, version) {
   return join(cacheBase, '.omx-pins', version);
 }
 
+function validateAndCreateLivePinParent(cacheBase) {
+  // Anchor and validate the .omx-pins parent directory before creating version subdirs.
+  // Rejects if parent is a symlink or non-existent (requires manual creation).
+  const pinParent = join(cacheBase, '.omx-pins');
+  try {
+    const stats = lstatSync(pinParent);
+    // Parent must exist, be a directory, and NOT be a symlink.
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      return null;
+    }
+    return pinParent;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      return null;
+    }
+    // Parent doesn't exist; try to create it non-recursively.
+    // This fails if cacheBase itself doesn't exist.
+    try {
+      mkdirSync(pinParent, { mode: 0o700 });
+      return pinParent;
+    } catch {
+      return null;
+    }
+  }
+}
+
 function readLivePinMutationLock(path) {
   let stats;
   try {
@@ -1280,10 +1306,14 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     pinState = livePinDirectory(pluginRoot);
     if (!pinState || pinState.version !== target.version || pinState.cacheBase !== target.cacheBase || !livePinRootMatches(pinState)) return null;
     const pinDir = pinState.path;
+    // First, validate/create the .omx-pins parent directory safely.
+    const pinParent = validateAndCreateLivePinParent(pinState.cacheBase);
+    if (!pinParent) return null;
+    // Then create the version subdirectory non-recursively.
     try {
-      mkdirSync(pinDir, { recursive: true, mode: 0o700 });
+      mkdirSync(pinDir, { mode: 0o700 });
     } catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
+      if (error?.code !== 'EEXIST') return null;
     }
     const pinDirStats = lstatSync(pinDir);
     if (!pinDirStats.isDirectory() || pinDirStats.isSymbolicLink()) return null;
