@@ -1,262 +1,313 @@
+
 # oh-my-codex (OMX)
 
 <p align="center">
   <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex character" width="280">
   <br>
-  <em>Votre codex n'est pas seul.</em>
+  <em>Démarrez Codex sur de bonnes bases ; OMX ajoute de meilleurs prompts, workflows et aides d’exécution quand le travail prend de l’ampleur.</em>
+  <br><br>
+  <strong>Vous aimez OMX mais le trouvez un peu trop complet ? <a href="https://github.com/Yeachan-Heo/gajae-code">Essayez gajae-code</a>.</strong><br>
+  <sub>Gardez Codex OAuth avec une voie basée sur un SDK, plus rapide, moins coûteuse et plus simple, pour OpenClaw, Hermes, Grokbot et d’autres intégrations.</sub>
 </p>
 
 [![npm version](https://img.shields.io/npm/v/oh-my-codex)](https://www.npmjs.com/package/oh-my-codex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-> **[Website](https://yeachan-heo.github.io/oh-my-codex-website/)** | **[Documentation](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** | **[CLI Reference](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** | **[Workflows](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** | **[Guide d’intégration OpenClaw](../openclaw-integration.fr.md)** | **[GitHub](https://github.com/Yeachan-Heo/oh-my-codex)** | **[npm](https://www.npmjs.com/package/oh-my-codex)**
+**Site web :** https://yeachan-heo.github.io/oh-my-codex-website/
 
-Couche d'orchestration multi-agents pour [OpenAI Codex CLI](https://github.com/openai/codex).
+**Documentation :** [Bien démarrer](../getting-started.html) · [Agents](../agents.html) · [Skills](../skills.html) · [Intégrations](../integrations.html) · [Démo](../../DEMO.md) · [Guide OpenClaw](../openclaw-integration.fr.md)
 
-## Notes de version historiques de la v0.9.0 — Spark Initiative
+**Communauté :** [Discord](https://discord.gg/wSyUQYfhAw) — serveur communautaire Gajae pour oh-my-codex, [gajae-code](https://github.com/Yeachan-Heo/gajae-code) et les outils associés.
 
-Spark Initiative est la version qui renforce la voie native d’exploration et d’inspection dans OMX.
+## Projet et package officiels
 
-- **Harness natif pour `omx explore`** — exécute l’exploration read-only du dépôt via une voie Rust plus rapide et plus stricte.
-- **`omx sparkshell`** — surface native orientée opérateur, avec résumés de sorties longues et capture explicite de panneaux tmux.
-- **Artifacts natifs multiplateformes** — le chemin d’hydratation de `omx-explore-harness`, `omx-sparkshell` et `native-release-manifest.json` fait désormais partie du pipeline de release.
-- **CI/CD renforcé** — ajoute une configuration explicite de la toolchain Rust dans le job `build`, ainsi que `cargo fmt --check` et `cargo clippy -- -D warnings`.
+Le projet OMX officiel est ce dépôt, [Yeachan-Heo/oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex), et son package npm officiel est [oh-my-codex](https://www.npmjs.com/package/oh-my-codex). Installez-le avec `npm install -g oh-my-codex`.
 
-Voir aussi les [notes de version v0.9.0](../release-notes-0.9.0.md) et le [corps de release](../release-body-0.9.0.md).
+Les projets tiers ou forks utilisant des noms comme « OMX v2 » ne sont pas des continuations ni des versions officielles, sauf mention explicite dans ce README ou la documentation. En cas de doute, fiez-vous à ce dépôt et au package `oh-my-codex`.
 
-## Première session
+OMX est une couche de workflow pour [OpenAI Codex CLI](https://github.com/openai/codex).
 
-Dans Codex :
+<table>
+<tr><td><strong>🚨 ATTENTION — PARCOURS RECOMMANDÉ : macOS ou Linux avec Codex CLI.</strong><br><br>OMX est principalement conçu et optimisé pour ce parcours. Windows natif et Codex App ne constituent pas l’expérience par défaut, peuvent être instables et bénéficient actuellement d’un support plus limité.</td></tr>
+</table>
 
-```text
-$deep-interview "clarify the auth change"
-$ralplan "approve the auth plan and review tradeoffs"
-$ultragoal "carry the approved plan to completion"
-$team 3:executor "execute the approved plan in parallel"
-```
+OMX laisse Codex effectuer le travail et facilite :
+- le démarrage de sessions Codex solides ;
+- l’utilisation d’un workflow cohérent, de la clarification à la livraison ;
+- l’appel indépendant de `$plan`, `$ultragoal`, `$team`, `$code-review` et `$ultraqa` ;
+- le stockage des consignes du projet, plans, journaux et états dans `.omx/`.
 
-Depuis le terminal :
+## Mainteneurs principaux
 
-```bash
-omx team 4:executor "parallelize a multi-module refactor"
-omx team status <team-name>
-omx team shutdown <team-name>
-```
+| Rôle | Nom | GitHub |
+| --- | --- | --- |
+| Créateur et responsable | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Mainteneur | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Mainteneur | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
 
-## Flux recommandé
+## Ambassadeurs
 
-1. `$deep-interview` — quand le périmètre ou les limites restent flous.
-2. `$ralplan` — pour transformer ce périmètre clarifié en plan validé d’architecture et d’implémentation.
-3. `$team` ou `$ultragoal` — utilisez `$team` pour une exécution parallèle coordonnée, ou `$ultragoal` pour suivre durablement les objectifs jusqu’à l’achèvement.
+| Nom | GitHub |
+| --- | --- |
+| Sigrid Jin | [@sigridjineth](https://github.com/sigridjineth) |
 
-## Modèle de base
+## Principaux contributeurs
 
-OMX installe et connecte ces couches :
+| Nom | GitHub |
+| --- | --- |
+| Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Junho Yeo | [@junhoyeo](https://github.com/junhoyeo) |
+| JiHongKim98 | [@JiHongKim98](https://github.com/JiHongKim98) |
+| Lor | [@gobylor](https://github.com/gobylor) |
+| HyunjunJeon | [@HyunjunJeon](https://github.com/HyunjunJeon) |
 
-```text
-User
-  -> Codex CLI
-    -> AGENTS.md (cerveau d'orchestration)
-    -> ~/.codex/prompts/*.md (catalogue de prompts d'agents)
-    -> ~/.codex/skills/*/SKILL.md (catalogue de skills)
-    -> ~/.codex/config.toml (fonctionnalités, notifications, MCP)
-    -> .omx/ (état d'exécution, mémoire, plans, journaux)
-```
+## Parcours recommandé
 
-## Commandes principales
+Si Codex CLI est déjà installé :
 
 ```bash
-omx                # Lancer Codex (+ HUD dans tmux si disponible)
-omx setup          # Installer prompts/skills/config par scope + .omx du projet + AGENTS.md propre au scope
-omx doctor         # Diagnostics d'installation/exécution
-omx doctor --team  # Diagnostics Team/Swarm
-omx team ...       # Démarrer/statut/reprendre/arrêter les workers d'équipe tmux
-omx status         # Afficher les modes actifs
-omx cancel         # Annuler les modes d'exécution actifs
-omx reasoning <mode> # low|medium|high|xhigh
-omx tmux-hook ...  # init|status|validate|test
-omx hooks ...      # init|status|validate|test (workflow d'extension de plugins)
-omx hud ...        # --watch|--json|--preset
-omx help
+codex --version
+npm install -g oh-my-codex
+# Depuis le dépôt Git que Codex doit modifier ; choisissez un nom propre à la tâche
+omx --worktree=feat/task --madmax --xhigh
 ```
 
-## Extension Hooks (Surface additive)
-
-OMX inclut désormais `omx hooks` pour l'échafaudage et la validation de plugins.
-
-- `omx tmux-hook` reste supporté et inchangé.
-- `omx hooks` est additif et ne remplace pas les workflows tmux-hook.
-- Les fichiers de plugins se trouvent dans `.omx/hooks/*.mjs`.
-- Les plugins sont désactivés par défaut ; activez-les avec `OMX_HOOK_PLUGINS=1`.
-
-Consultez `docs/hooks-extension.md` pour le workflow d'extension complet et le modèle d'événements.
-
-## Flags de lancement
+Si vous souhaitez que npm gère également Codex CLI :
 
 ```bash
---yolo
---high
---xhigh
---madmax
---force
---dry-run
---verbose
---scope <user|project>  # uniquement pour setup
+npm install -g @openai/codex
+npm install -g oh-my-codex
 ```
 
-`--madmax` correspond à Codex `--dangerously-bypass-approvals-and-sandbox`.
-À utiliser uniquement dans des environnements sandbox de confiance/externes.
+N’exécutez pas `npm install -g @openai/codex oh-my-codex` si une installation Homebrew possède déjà `codex` (par exemple `/opt/homebrew/bin/codex`) : npm peut échouer avec `EEXIST`. OMX a seulement besoin d’une commande `codex` fonctionnelle et authentifiée dans le `PATH`.
 
-### Politique MCP workingDirectory (durcissement optionnel)
+Lors d’un vrai changement de version OMX, l’installation npm globale affiche un rappel explicite sans lancer Setup automatiquement. Lancez `omx setup` avec le bon scope ou `omx update` lorsque vous êtes prêt. La vérification des mises à jour au démarrage est limitée en fréquence ; `OMX_AUTO_UPDATE=0` la désactive et `OMX_AUTO_UPDATE=defer` programme l’update sans invite après la session.
 
-Par défaut, les outils MCP état/mémoire/trace acceptent le `workingDirectory` fourni par l'appelant.
-Pour restreindre cela, définissez une liste d'autorisation de racines :
+Choisissez soigneusement le scope :
+- `omx setup --scope project --merge-agents` depuis le projet cible si ce dépôt doit posséder ses consignes `AGENTS.md` durables ;
+- `omx setup --scope user` pour la configuration Codex de l’utilisateur ;
+- évitez le setup de projet depuis un répertoire home ou un hub générique.
+
+### Enregistrer la politique de fusion AGENTS
+
+`omx setup --merge-agents`, `--no-merge-agents` et `--clear-merge-agents-policy` sont les sélecteurs de politique. Un choix explicite réussi est enregistré dans `./.omx/setup-scope.json` du root de travail, même pour le scope utilisateur ; il ne devient jamais une préférence globale. `omx update` réapplique une politique valide correspondant au scope.
+
+`true` emprunte la branche de fusion existante. `false` la désactive seulement et ne garantit ni conservation ni remplacement des fichiers existants. Un reset ou changement de scope supprime la politique héritée, sauf nouveau choix explicite ; le sélecteur de suppression ne peut pas être combiné avec un choix. Les valeurs invalides ou hors scope sont ignorées.
+
+`--force` est indépendant et temporaire : il n’est ni enregistré ni rejoué et ne remplace pas la politique explicite. Le choix n’est enregistré qu’après la réussite complète du setup. Cela ne fait pas de la fusion le comportement par défaut.
+
+### Installation du plugin Codex
+
+Ce dépôt fournit aussi une disposition de plugin Codex sous `plugins/oh-my-codex`. Le plugin fournit les skills groupés et des métadonnées de hooks/intégrations, mais ne remplace pas le CLI global `oh-my-codex` ni le setup scoped. Les hooks du plugin lancent le CLI `omx` installé.
+
+Le mode plugin nécessite toujours un `AGENTS.md` durable au scope choisi : `~/.codex/AGENTS.md` pour le scope utilisateur ou `./AGENTS.md` pour le scope projet. Les fichiers AGENTS propres à une session ne font qu’ajouter des overlays d’exécution.
+
+## À quoi sert OMX
+
+OMX s’adresse aux personnes qui aiment Codex et veulent un workflow plus cohérent, des rôles et skills réutilisables, des consignes durables et un état de runtime dans `.omx/`. Si vous préférez Codex sans couche de workflow supplémentaire, OMX n’est probablement pas nécessaire.
+
+## Démarrage rapide
+
+### Prérequis
+- Node.js 20+
+- Codex CLI installé et authentifié, vérifiable avec `codex --version`
+- Authentification visible depuis le même shell/profil qu’OMX
+- `tmux` sur macOS/Linux pour le runtime d’équipe recommandé
+- `psmux` uniquement pour la voie d’équipe Windows native, moins prise en charge
+
+### Une bonne première session
 
 ```bash
-export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
+omx doctor
+codex login status
+omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 ```
 
-Lorsque défini, les valeurs `workingDirectory` en dehors de ces racines sont rejetées.
+`omx doctor` détecte les fichiers OMX, hooks et prérequis manquants. Le smoke test réel vérifie que Codex peut s’authentifier et effectuer une requête au modèle.
 
-## Contrôle Codex-First des prompts
-
-Par défaut, OMX injecte :
-
-```text
--c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
-```
-
-Ce fichier généré ne contient que l'overlay d'exécution OMX (`<!-- OMX:RUNTIME:START -->` à `<!-- OMX:RUNTIME:END -->`). Les instructions durables de `CODEX_HOME/AGENTS.md` et des `AGENTS.md` de projet n'y sont pas copiées : Codex les charge une seule fois via sa découverte native AGENTS. Les workers Team composent toujours leurs propres instructions.
-Cela étend le comportement de Codex, mais ne remplace/contourne pas les politiques système de base de Codex.
-
-Contrôles :
+Depuis un dépôt Git, démarrez de préférence ainsi :
 
 ```bash
-OMX_BYPASS_DEFAULT_SYSTEM_PROMPT=0 omx     # désactiver l'injection AGENTS.md
-OMX_MODEL_INSTRUCTIONS_FILE=/path/to/instructions.md omx
+omx --worktree=feat/task --madmax --xhigh
 ```
 
-## Mode équipe
+Sur un terminal interactif macOS/Linux où tmux est disponible, OMX lance par défaut le leader dans un tmux détaché géré par OMX. `--worktree` isole le travail dans un checkout séparé, option plus sûre avec `--madmax`.
 
-Utilisez le mode équipe pour les travaux importants qui bénéficient de workers parallèles.
+### Plusieurs conversations standard
 
-Cycle de vie :
-
-```text
-start -> assign scoped lanes -> monitor -> verify terminal tasks -> shutdown
-```
-
-Commandes opérationnelles :
+Une session standard possède un pointeur d’écriture sous son root OMX. Pour d’autres conversations, utilisez des roots distincts :
 
 ```bash
-omx team <args>
+omx
+OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
+```
+
+Un `OMX_ROOT` explicite est littéral : deux sessions utilisant le même root entrent en conflit. Des checkouts séparés ont des roots par défaut distincts.
+
+### Sécurité de Madmax et des worktrees
+
+`--madmax` est l’alias de `--dangerously-bypass-approvals-and-sandbox` : il supprime les protections normales. Réservez-le aux dépôts et environnements fiables ; depuis Git, préférez un worktree nommé :
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
+`--high` et `--xhigh` règlent `model_reasoning_effort`. Chaque session Madmax concurrente doit utiliser un worktree différent. L’option `--worktree` est consommée par OMX et n’est pas transmise à Codex. OMX avertit si le worktree cible est déjà modifié ; vérifiez-le avant de vous y fier.
+
+Pour un lancement ponctuel sans tmux/HUD OMX, utilisez `--direct` :
+
+```bash
+omx --direct --yolo
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+Les politiques possibles sont `direct|tmux|detached-tmux|auto`. Les options CLI ont priorité sur la variable `OMX_LAUNCH_POLICY`.
+
+## Modèle mental simple
+
+OMX ne remplace pas Codex :
+- **Codex** effectue le travail de l’agent ;
+- **les rôles OMX** rendent les rôles utiles réutilisables ;
+- **les skills OMX** réutilisent les workflows courants ;
+- **`.omx/`** contient plans, journaux, mémoire et état d’exécution.
+
+## Commencer ici si vous découvrez OMX
+
+1. Installez ou mettez à jour OMX ; installez Codex CLI séparément si nécessaire.
+2. Lancez `omx setup --scope project --merge-agents` dans le dépôt cible ou `omx setup --scope user` pour la configuration utilisateur.
+3. Vérifiez avec `omx doctor`.
+4. Vérifiez l’authentification et l’exécution réelle avec `codex login status` et `omx exec`.
+5. Depuis un dépôt Git, lancez un worktree nommé.
+6. Utilisez `$deep-interview` pour clarifier les exigences, `$ralplan` pour approuver le plan, puis `$ultragoal` pour l’exécuter durablement.
+7. Utilisez `$team` lorsqu’une story bénéficie d’une coordination parallèle ; ajoutez `/goal` si des objectifs et checkpoints explicites sont nécessaires.
+
+## Workflow recommandé
+
+`$autopilot` est l’orchestrateur canonique pour `$deep-interview -> $ralplan -> $ultragoal` ; chaque étape peut aussi être invoquée séparément si ses entrées sont déjà disponibles.
+
+1. **`$deep-interview`** — clarifie progressivement exigences, limites et non-objectifs.
+2. **`$ralplan`** — synthétise architecture, faisabilité et consensus.
+3. **`$ultragoal`** — exécute à l’aide d’objectifs et checkpoints durables.
+4. **`$team`** — coordonne plusieurs agents lorsque la story le justifie.
+
+Chargez 2 à 5 skills pertinentes par défaut. Un catalogue trop vaste gaspille le budget de contexte et l’attention.
+
+## Surfaces courantes en session
+
+| Surface | Utilisation |
+| --- | --- |
+| `$plan` | Planification légère et clarification facultative |
+| `$ultragoal` | Exécution durable en plusieurs objectifs |
+| `$team` | Exécution parallèle coordonnée |
+| `/skills` | Parcourir les skills |
+| `/goal ...` | Objectifs et checkpoints durables |
+| `omx mission` | Exécuter une checklist de prompts dans l’ordre |
+
+## Surfaces avancées et opérateur
+
+### Mission queue runner
+
+`omx mission plan ./mission.md` valide une mission ; `omx mission run ./mission.md -- <args>` l’exécute. `status`, `resume`, `mark` et `rerun` servent aux missions interrompues. Voir la [documentation Mission](../mission.md).
+
+### Exporter une session
+
+Utilisez `omx session search "phrase"` puis `omx session export <session-id> --output conversation.md`. JSON, arguments/résultats d’outils et sélection d’un `--codex-home` sont optionnels. Par défaut, seules les conversations User/Assistant sont exportées ; instructions système/développeur et raisonnements sont exclus, mais le texte n’est pas expurgé. Voir [export de session](../session-export.md).
+
+### Consulter l’usage des tokens
+
+`omx session usage --since 7d --sort tokens` montre les compteurs cumulatifs enregistrés. Ajoutez filtres, `--json` ou `--codex-home`. `--since` filtre selon la dernière activité, pas la consommation facturée ; les valeurs manquantes restent inconnues. Voir [usage des sessions](../session-usage.md).
+
+### Diagnostiquer la chronologie
+
+`omx session timeline <session-id>` montre les outils, frontières de tours, durées observées et erreurs sans exporter le texte de conversation. Une durée inconnue reste inconnue ; un résultat sans erreur explicite ne prouve pas la réussite. Voir [timeline de session](../session-timeline.md).
+
+### Runtime Team
+
+`omx team` sert à une coordination durable via tmux/worktrees, et non à chaque petite tâche. Les workers rapportent statut et preuves ; l’Ultragoal reste géré par le leader. Les petites tâches peuvent limiter automatiquement le nombre de workers.
+
+```bash
+omx team 3:executor "fix the failing tests with verification"
 omx team status <team-name>
 omx team resume <team-name>
 omx team shutdown <team-name>
 ```
 
-Règle importante : n'arrêtez pas tant que des tâches sont encore `in_progress`, sauf en cas d'abandon.
+Dans Codex App ou une session hors tmux, `omx team` est une surface shell/tmux et non un workflow directement disponible dans l’application.
 
-### Team shutdown policy
+### Setup, doctor et HUD
 
-Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
+Le setup scoped installe ou actualise prompts, skills, AGENTS, configuration et runtime. `omx update` vérifie npm, installe le dernier build global puis relance le parcours de setup. `omx doctor` vérifie l’installation et le câblage local, mais ne prouve pas qu’un vrai appel de modèle fonctionne.
 
-Sélection du CLI worker pour les workers d'équipe :
+En mode plugin, les skills et hooks sont fournis par le cache du plugin, mais le `AGENTS.md` de scope doit rester présent. `omx setup --disable-hooks` désactive les hooks gérés par OMX puis s’arrête avant l’installation normale des assets/configurations.
 
-```bash
-OMX_TEAM_WORKER_CLI=auto    # par défaut ; utilise claude quand worker --model contient "claude"
-OMX_TEAM_WORKER_CLI=codex   # forcer les workers Codex CLI
-OMX_TEAM_WORKER_CLI=claude  # forcer les workers Claude CLI
-OMX_TEAM_WORKER_CLI_MAP=codex,codex,claude,claude  # mix CLI par worker (longueur=1 ou nombre de workers)
-OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # optionnel : désactiver le fallback adaptatif queue->resend
-```
+Pour les sessions hors Team, les hooks natifs Codex sont le cycle de vie canonique : `plugins/oh-my-codex/hooks/hooks.json` pour le plugin et `.codex/hooks.json` pour le mode legacy/fallback. Voir [mapping des hooks natifs Codex](../codex-native-hooks.md).
 
-Notes :
-- Les arguments de lancement des workers sont toujours partagés via `OMX_TEAM_WORKER_LAUNCH_ARGS`.
-- `OMX_TEAM_WORKER_CLI_MAP` remplace `OMX_TEAM_WORKER_CLI` pour la sélection par worker.
-- La soumission de déclencheurs utilise par défaut des tentatives adaptatives (queue/submit, puis fallback sécurisé clear-line+resend si nécessaire).
-- En mode worker Claude, OMX lance les workers en tant que simple `claude` (pas d'arguments de lancement supplémentaires) et ignore les surcharges explicites `--model` / `--config` / `--effort` pour que Claude utilise le `settings.json` par défaut.
+### Dépanner une disponibilité trompeuse
 
-## Ce que `omx setup` écrit
+Un `omx doctor` vert ne garantit pas une exécution réelle :
+- vérifiez `codex login status` et `omx exec` dans le même profil/shell ;
+- avec un HOME personnalisé, un conteneur ou un service, vérifiez le `CODEX_HOME` réellement utilisé ;
+- avec un proxy compatible OpenAI, vérifiez `openai_base_url` dans la configuration active ;
+- confirmez qu’un état Team est réellement abandonné avant de forcer son arrêt.
 
-- `.omx/setup-scope.json` (scope de setup persisté)
-- Installations dépendantes du scope :
-  - `user` : `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project` : `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
-- Comportement au lancement : si le scope persisté est `project`, le lancement `omx` utilise automatiquement `CODEX_HOME=./.codex` (sauf si `CODEX_HOME` est déjà défini).
-- Les instructions de lancement fusionnent `~/.codex/AGENTS.md` (ou `CODEX_HOME/AGENTS.md` s'il est redéfini) avec `./AGENTS.md` du projet, puis ajoutent l'overlay d'exécution.
-- Les fichiers `AGENTS.md` existants ne sont jamais écrasés silencieusement : en TTY interactif, setup demande avant de remplacer ; en non-interactif, le remplacement est ignoré sauf avec `--force` (les vérifications de sécurité de session active s'appliquent toujours).
-- Mises à jour de `config.toml` (pour les deux scopes) :
-  - `notify = ["node", "..."]`
-  - `model_reasoning_effort = "medium"`
-  - `developer_instructions = "..."`
-  - `[features] multi_agent = true` (quand présent)
-  - Entrées de serveurs MCP (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (serveur wiki du dépôt), `omx_hermes` (pont borné d’état et de coordination des sessions))
-  - `[tui] status_line`
-- `AGENTS.md` spécifique au scope
-- Répertoires d'exécution `.omx/` et configuration HUD
+### Sparkshell
 
-## Agents et Skills
-
-- Prompts : `prompts/*.md` (installés dans `~/.codex/prompts/` pour `user`, `./.codex/prompts/` pour `project`)
-- Skills : `skills/*/SKILL.md` (installés dans `~/.codex/skills/` pour `user`, `./.codex/skills/` pour `project`)
-
-Exemples :
-- Agents : `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skills : `autopilot`, `plan`, `team`, `ultragoal`, `cancel`
-
-## Structure du projet
-
-```text
-oh-my-codex/
-  bin/omx.js
-  src/
-    cli/
-    team/
-    mcp/
-    hooks/
-    hud/
-    config/
-    modes/
-    notifications/
-    verification/
-  prompts/
-  skills/
-  templates/
-  scripts/
-```
-
-## Développement
+`omx sparkshell <command>` sert à l’inspection shell et à la vérification bornée :
 
 ```bash
-git clone https://github.com/Yeachan-Heo/oh-my-codex.git
-cd oh-my-codex
-npm install
-npm run build
-npm test
+omx sparkshell git status
+omx sparkshell --tmux-pane %12 --tail-lines 400
 ```
+
+Pour la recherche read-only ordinaire dans un dépôt, utilisez les outils de dépôt habituels plutôt qu’un ancien Explore.
+
+### Wiki
+
+`omx wiki` est l’interface CLI-first JSON. Les données Wiki résident sous `omx_wiki/` en Markdown ; la recherche est textuelle et orientée Markdown, pas vectorielle.
+
+```bash
+omx wiki list --json
+omx wiki query --input '{"query":"session-start lifecycle"}' --json
+omx wiki lint --json
+omx wiki refresh --json
+```
+
+### Notes de plateforme pour Team
+
+Team fonctionne au mieux sur macOS/Linux avec `tmux`. Windows natif est secondaire ; WSL2 est généralement préférable. Le chemin Windows natif accepte `psmux` comme exécutable compatible tmux.
+
+| Plateforme | Installation |
+| --- | --- |
+| macOS | `brew install tmux` |
+| Ubuntu/Debian | `sudo apt install tmux` |
+| Fedora | `sudo dnf install tmux` |
+| Arch | `sudo pacman -S tmux` |
+| Windows | `winget install psmux` |
+| Windows (WSL2) | `sudo apt install tmux` |
+
+## Problèmes connus
+
+### Mac Intel : CPU `syspolicyd` / `trustd` élevé au démarrage
+
+Sur certains Mac Intel, Gatekeeper peut fortement solliciter `syspolicyd` / `trustd` lorsqu’il vérifie de nombreux processus simultanés. Réduisez la concurrence ou ajustez les autorisations Developer Tools de macOS. Ne retirez les attributs de quarantaine que si vous avez vérifié l’origine et la sécurité du binaire.
 
 ## Documentation
 
-- **[Documentation complète](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** — Guide complet
-- **[Référence CLI](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** — Toutes les commandes `omx`, flags et outils
-- **[Guide des notifications](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** — Configuration Discord, Telegram, Slack et webhooks
-- **[Workflows recommandés](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** — Chaînes de skills éprouvées pour les tâches courantes
-- **[Notes de version](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#release-notes)** — Nouveautés de chaque version
-
-## Notes
-
-- Journal des modifications complet : `CHANGELOG.md`
-- Guide de migration (post-v0.4.4 mainline) : `docs/migration-mainline-post-v0.4.4.md`
-- Notes de couverture et parité : `COVERAGE.md`
-- Workflow d'extension hooks : `docs/hooks-extension.md`
-- Détails de configuration et contribution : `CONTRIBUTING.md`
-
-## Remerciements
-
-Inspiré par [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode), adapté pour Codex CLI.
+- [Bien démarrer](../getting-started.html)
+- [Guide de démo](../../DEMO.md)
+- [Fonction Wiki](../wiki-feature.md)
+- [Catalogue des agents](../agents.html)
+- [Référence des skills](../skills.html)
+- [Mapping des hooks natifs Codex](../codex-native-hooks.md)
+- [Identité GitHub / PR / package](../pipeline/github-pr-package-identity.md)
+- [Intégrations](../integrations.html)
+- [Dépannage](../troubleshooting.md)
+- [Guide OpenClaw / passerelle de notifications](../openclaw-integration.fr.md)
+- [Contribution](../../CONTRIBUTING.md)
+- [Journal des modifications](../../CHANGELOG.md)
 
 ## Langues
 
@@ -278,6 +329,25 @@ Inspiré par [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode)
 - [Українська](./README.uk.md)
 - [Bahasa Indonesia](./README.id.md)
 
+## Contributeurs
+
+| Rôle | Nom | GitHub |
+| --- | --- | --- |
+| Créateur et responsable | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Mainteneur | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Mainteneur | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Yeachan-Heo/oh-my-codex&type=date&legend=top-left)](https://www.star-history.com/#Yeachan-Heo/oh-my-codex&type=date&legend=top-left)
+
 ## Licence
 
 MIT
+
+## Benchmark de visibilité GEO
+
+OMX inclut une spécification produit [geobench](https://github.com/NomaDamas/geobench) pour mesurer le taux de réussite, le MRR, la part de voix et les citations LLM.
+
+- Spécification : [geobench/oh-my-codex.yaml](../../geobench/oh-my-codex.yaml)
+- Guide d’exécution : [geobench.md](../geobench.md)
