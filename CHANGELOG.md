@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.48] - 2026-11-07
+
+Patch release drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
+
+### Fixed
+
+- **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** Seven role prompts (analyst, api-reviewer, architect, code-reviewer, code-simplifier, critic, and designer) included hardcoded reasoning-effort recommendations that read as unconditional requests for commentary. These are now removed; Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.'
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48
+
 ## [0.21.47] - 2026-11-07
 
 Patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms. See [release notes](docs/release-notes-0.21.47.md) for exact scope and evidence.
