@@ -236,7 +236,7 @@ function git(args) {
   const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
-if (process.cwd() === fs.realpathSync(${JSON.stringify(worker)}) && args[0] === 'rebase' && args[1] === '-X' && !fs.existsSync(${JSON.stringify(injected)})) {
+if (process.cwd() === fs.realpathSync(${JSON.stringify(worker)}) && args[0] === 'rebase' && args[1] !== '--abort' && !fs.existsSync(${JSON.stringify(injected)})) {
   fs.writeFileSync(${JSON.stringify(join(worker, 'late.txt'))}, 'late unpublished output\\n');
   git(['add', 'late.txt']);
   git(['commit', '-m', 'late clean commit before actual rebase']);
