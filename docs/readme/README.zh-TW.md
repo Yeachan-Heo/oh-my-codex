@@ -81,6 +81,7 @@ omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
 PowerShell：`$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"`  
@@ -216,6 +217,98 @@ Team 在 macOS/Linux 搭配 tmux 最合適。原生 Windows 是次要路徑，�
 ## 語言
 
 - [English](../../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md) · [Türkçe](README.tr.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Italiano](README.it.md) · [Ελληνικά](README.el.md) · [Polski](README.pl.md) · [Українська](README.uk.md) · [Bahasa Indonesia](README.id.md)
+
+## 更多啟動範例
+
+### 目標與工作流程
+
+```text
+# 適用於長期工作的持久目標與檢查點：
+/goal 制定並實作安全的驗證重構計畫，並驗證登入、登出及 refresh token 行為。
+
+$deep-interview "釐清驗證變更"
+$ralplan "核准驗證計畫並檢視取捨"
+$ultragoal "將核准的計畫作為持久 Codex 目標執行"
+```
+
+```bash
+omx --worktree=feat/task --madmax --xhigh
+```
+
+### 多工作階段與 worktree 範例
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
+```
+
+### 直接啟動與 launch policy
+
+```bash
+omx --direct --yolo
+```
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+CLI policy 旗標優先於環境變數；`--` 之前最後出現的 policy 旗標會生效。
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+### Checkout 修復的持久目標
+
+```text
+# 可直接複製使用的持久目標範例：
+/goal 修正 checkout 問題，並為重現、實作、回歸測試與最終驗證設定檢查點。
+
+$plan "核准 checkout 修正計畫並檢視取捨"
+$ultragoal "附上檢查點證據執行已核准的 checkout 修正"
+```
+
+反例：
+
+```text
+omx --madmax --xhigh
+# 在說明任務之前就「以防萬一」載入 20 個 skill。
+# 這會擴大 context，讓模型把注意力耗在不相關的工作流程上。
+```
+
+### 清理已停止的 Team
+
+只有在確認 Team 已停止或刻意放棄後，才使用強制關閉。
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+### 額外的 Sparkshell pane 檢查
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
 
 ## 貢獻者
 
