@@ -1,262 +1,249 @@
 # oh-my-codex (OMX)
 
 <p align="center">
-  <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex character" width="280">
+  <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex karakteri" width="280">
   <br>
-  <em>Codex'iniz yalnız değil.</em>
+  <em>Codex'i güçlü bir başlangıçla açın; iş büyüdükçe daha iyi promptlar, workflow'lar ve runtime yardımı OMX eklesin.</em>
 </p>
 
 [![npm version](https://img.shields.io/npm/v/oh-my-codex)](https://www.npmjs.com/package/oh-my-codex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/wSyUQYfhAw)
 
-> **[Website](https://yeachan-heo.github.io/oh-my-codex-website/)** | **[Documentation](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** | **[CLI Reference](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** | **[Workflows](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** | **[OpenClaw Entegrasyon Kılavuzu](../openclaw-integration.tr.md)** | **[GitHub](https://github.com/Yeachan-Heo/oh-my-codex)** | **[npm](https://www.npmjs.com/package/oh-my-codex)**
+**Web sitesi:** https://yeachan-heo.github.io/oh-my-codex-website/  
+**Belgeler:** [Başlangıç](../getting-started.html) · [Ajanlar](../agents.html) · [Skill'ler](../skills.html) · [Entegrasyonlar](../integrations.html) · [Demo](../../DEMO.md) · [OpenClaw rehberi](../openclaw-integration.tr.md)  
+**Topluluk:** [Discord](https://discord.gg/wSyUQYfhAw) — oh-my-codex, [gajae-code](https://github.com/Yeachan-Heo/gajae-code) ve ilgili araçlar için ortak Gajae sunucusu.
 
-[OpenAI Codex CLI](https://github.com/openai/codex) için çok ajanlı orkestrasyon katmanı.
+## Resmî proje ve paket
 
-## v0.9.0 için geçmiş sürüm notları — Spark Initiative
+Resmî/orijinal OMX projesi bu depodur: [Yeachan-Heo/oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex). Resmî npm paketi [oh-my-codex](https://www.npmjs.com/package/oh-my-codex); kurulum için `npm install -g oh-my-codex` kullanın. README veya belgeler açıkça belirtmedikçe “OMX v2” gibi adlar taşıyan üçüncü taraf projeler resmî devam, değiştirme veya sürüm hattı değildir.
 
-Spark Initiative, OMX içindeki native keşif ve inceleme yolunu güçlendiren sürümdür.
+OMX, [OpenAI Codex CLI](https://github.com/openai/codex) için bir workflow katmanıdır. Codex yürütme motoru olarak kalır; OMX daha güçlü bir oturum başlatır, gereksinim netleştirmeden tamamlamaya tutarlı akış sağlar, beceri/rol yönlendirmesini tekrar kullanılabilir kılar ve proje talimatları ile durumu `.omx/` altında tutar. Öncelikli ve aktif olarak iyileştirilen yol macOS/Linux + Codex CLI'dır; yerel Windows ve Codex App daha az desteklenen ikincil seçeneklerdir.
 
-- **`omx explore` için native harness** — salt okunur depo keşfini Rust tabanlı daha hızlı ve daha sıkı bir yol üzerinden çalıştırır.
-- **`omx sparkshell`** — uzun çıktıları özetleyen ve açık tmux pane yakalama desteği veren operatör odaklı native inceleme yüzeyidir.
-- **Çapraz platform native release varlıkları** — `omx-explore-harness`, `omx-sparkshell` ve `native-release-manifest.json` için hydration yolu artık release pipeline'ın parçasıdır.
-- **Güçlendirilmiş CI/CD** — `build` job'ına açık Rust toolchain kurulumu ile birlikte `cargo fmt --check` ve `cargo clippy -- -D warnings` eklendi.
+OMX fazla kapsamlı geliyorsa [gajae-code](https://github.com/Yeachan-Heo/gajae-code) SDK tabanlı, daha hafif bir alternatif sunar ve Codex OAuth'ı OpenClaw, Hermes, Grokbot ve başka entegrasyonlar için kullanır.
 
-Ayrıntılar için [v0.9.0 release notları](../release-notes-0.9.0.md) ve [release body](../release-body-0.9.0.md) dosyalarına bakın.
+## Ana Maintainer'lar
 
-## İlk Oturum
+| Rol | İsim | GitHub |
+| --- | --- | --- |
+| Oluşturan ve lider | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Maintainer | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Maintainer | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
 
-Codex içinde:
+## Elçiler
+
+| İsim | GitHub |
+| --- | --- |
+| Sigrid Jin | [@sigridjineth](https://github.com/sigridjineth) |
+
+## Öne çıkan katkıcılar
+
+| İsim | GitHub |
+| --- | --- |
+| Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Junho Yeo | [@junhoyeo](https://github.com/junhoyeo) |
+| JiHongKim98 | [@JiHongKim98](https://github.com/JiHongKim98) |
+| Lor | [@gobylor](https://github.com/gobylor) |
+| HyunjunJeon | [@HyunjunJeon](https://github.com/HyunjunJeon) |
+
+## Önerilen varsayılan akış
+
+Tek bir kurulum yolu seçin. Codex CLI zaten yüklüyse:
+
+```bash
+codex --version
+npm install -g oh-my-codex
+# Codex'in düzenleyeceği git projesinde, göreve özel bir ad seçin
+omx --worktree=feat/task --madmax --xhigh
+```
+
+Codex CLI yoksa ve npm'in yönetmesini istiyorsanız:
+
+```bash
+npm install -g @openai/codex
+npm install -g oh-my-codex
+```
+
+Homebrew tarafından yönetilen mevcut `codex` ikilisinin üzerine `@openai/codex` ve OMX'i birlikte kurmayın; npm aynı ikiliyi oluşturmaya çalışırken `EEXIST` verebilir. OMX'in ihtiyacı, `PATH` üzerinde çalışan ve kimlik doğrulaması yapılmış bir `codex` komutudur. Gerçek OMX sürüm yükseltmesinden sonra global npm kurulumu otomatik setup çalıştırmak yerine hatırlatma gösterir; hazır olduğunuzda `omx setup` veya `omx update` kullanın. Başlangıçtaki npm güncelleme denetimi aralıklıdır ve oturum sonrasında güncelleme planlamadan önce sorar. `OMX_AUTO_UPDATE=0` denetimi kapatır; `OMX_AUTO_UPDATE=defer` onaysız olarak ertelenmiş güncelleme planlar.
+
+Setup kapsamını bilinçli seçin:
+- Proje repo'sunda `omx setup --scope project --merge-agents`, kalıcı `AGENTS.md` rehberliğini o proje yönetsin diye kullanılır.
+- Kullanıcı düzeyinde kurulum için `omx setup --scope user` seçin.
+- Home gibi geniş bir dizini gerçekten proje olarak incelemiyorsanız proje setup'ını oradan çalıştırmayın.
+
+### AGENTS merge politikasını kaydetme
+
+`--merge-agents`, `--no-merge-agents` ve `--clear-merge-agents-policy` tek geçerli politika seçicileridir; `=value` yazımı kullanmayın. Açık seçim, geçerli işlem kökündeki `./.omx/setup-scope.json` içine kaydedilir; global kullanıcı tercihi değildir. `true` mevcut merge dalını, `false` yalnızca o dalın bastırılmasını seçer; yeni koruma veya değiştirme garantisi vermez. Clear seçimi her zaman kaydedilmiş politikayı kaldırır ve set seçimiyle birleştirilemez. `--force` geçicidir, kaydedilmez ve açık politikayı geçersiz kılmaz. Başarılı setup tamamlanmadan seçim yazılmaz. Eski OMX sürümleri bu alanı güvenle yok sayabilir, ancak bilinen ayarları yeniden yazarken silebilir.
+
+**Codex plugin kurulumu:** depoda `plugins/oh-my-codex` altında resmî Codex plugin paketi de bulunur. Paketli skill'ler, companion metadata ve resmi Codex yaşam döngüsü hook'ları sağlar; global `omx` CLI'ın yerine geçmez. Her iki setup modu da normalde native agent TOML dosyaları kurar. Plugin modu için kullanıcı veya proje scope'unda kalıcı `AGENTS.md` gerekir. Sahiplik kuralları için [Plugin bundle SSOT](../plugin-bundle-ssot.md) belgesine bakın. `omx setup --disable-hooks` OMX hook kayıtlarını kapatır.
+
+Uzun görevlerde kalıcı hedef ve checkpoint kullanabilirsiniz:
 
 ```text
-$deep-interview "clarify the auth change"
-$ralplan "approve the auth plan and review tradeoffs"
-$ultragoal "carry the approved plan to completion"
-$team 3:executor "execute the approved plan in parallel"
+/goal Kimlik doğrulama refactor'ünü planla, uygula ve login, logout, token yenilemeyi doğrula.
+
+$deep-interview "kimlik doğrulama değişikliğini netleştir"
+$ralplan "planı ve ödünleşimleri onayla"
+$ultragoal "planı kalıcı Codex hedeflerine dönüştür"
 ```
 
-Terminalden:
+Çalışma ortamını hazır saymadan önce `omx doctor` ve gerçek istek yapan smoke testi çalıştırın: `codex login status` ve `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`. Team'i yalnızca Ultragoal içindeki belirli bir iş koordinasyondan yararlanacaksa kullanın.
+
+## OMX ne işe yarar
+
+Codex'i seviyorsanız ama günlük runtime'ı güçlendirmek istiyorsanız OMX'i kullanın:
+- standart `$deep-interview` → `$ralplan` → `$ultragoal` akışı;
+- sıradan resmi/upstream araştırma için `$best-practice-research`, doğrulayıcıyla sınırlı araştırma çıktıları için `$autoresearch`;
+- `.omx/ultragoal` checkpoint'leriyle kalıcı çok hedefli görev aktarımı;
+- uzman roller, yeniden kullanılabilir skill'ler ve scope'lu `AGENTS.md`;
+- `.omx/` altında plan, log, bellek ve çalışma durumu.
+
+Ek workflow katmanı istemiyorsanız OMX'e ihtiyacınız olmayabilir.
+
+## Hızlı başlangıç
+
+### Gereksinimler
+- Node.js 20+
+- Yüklü, doğrulanmış ve kimliği açılmış Codex CLI (`codex --version`)
+- OMX'i başlatan shell profilinde görünür Codex kimlik doğrulaması
+- Önerilen kalıcı Team runtime'ı için macOS/Linux'ta `tmux`; yerel Windows Team yolu için `psmux`
+
+### İyi bir ilk oturum
 
 ```bash
-omx team 4:executor "parallelize a multi-module refactor"
-omx team status <team-name>
-omx team shutdown <team-name>
+omx doctor
+codex login status
+omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"
+omx --worktree=feat/task --madmax --xhigh
 ```
 
-## Önerilen iş akışı
+`omx doctor` dosyaları, hook'ları ve önkoşulları kontrol eder. Gerçek smoke testi auth, profil ve sağlayıcı ayarlarını gerçek bir Codex isteğiyle doğrular.
 
-1. `$deep-interview` — kapsam veya sınırlar hâlâ net değilse.
-2. `$ralplan` — netleşen kapsamı onaylanmış bir mimari ve uygulama planına dönüştürmek için.
-3. `$team` veya `$ultragoal` — koordineli paralel yürütme için `$team`, işi tamamlanana kadar kalıcı hedef takibi için `$ultragoal` kullanın.
+### Birden çok standart konuşma
 
-## Temel Model
-
-OMX şu katmanları kurar ve bağlar:
-
-```text
-User
-  -> Codex CLI
-    -> AGENTS.md (orkestrasyon beyni)
-    -> ~/.codex/prompts/*.md (ajan prompt kataloğu)
-    -> ~/.codex/skills/*/SKILL.md (skill kataloğu)
-    -> ~/.codex/config.toml (özellikler, bildirimler, MCP)
-    -> .omx/ (çalışma zamanı durumu, bellek, planlar, günlükler)
-```
-
-## Ana Komutlar
+Standart başlatma seçilen `OMX_ROOT` altında tek bir yazılabilir session pointer'a sahiptir; aynı checkout'tan ikinci sıradan `omx` başlatması fail-closed olur. Her ek konuşmaya ayrı kök verin:
 
 ```bash
-omx                # Codex'i başlat (tmux'ta HUD ile birlikte)
-omx setup          # Prompt/skill/config'i kapsama göre kur + proje .omx + kapsama özel AGENTS.md
-omx doctor         # Kurulum/çalışma zamanı tanılamaları
-omx doctor --team  # Team/swarm tanılamaları
-omx team ...       # tmux takım çalışanlarını başlat/durum/devam et/kapat
-omx status         # Aktif modları göster
-omx cancel         # Aktif çalışma modlarını iptal et
-omx reasoning <mode> # low|medium|high|xhigh
-omx tmux-hook ...  # init|status|validate|test
-omx hooks ...      # init|status|validate|test (eklenti uzantı iş akışı)
-omx hud ...        # --watch|--json|--preset
-omx help
+omx
+OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
 ```
 
-## Hooks Uzantısı (Ek Yüzey)
+PowerShell'de `$env:OMX_ROOT`, cmd'de `%USERPROFILE%` kullanın. Aynı açık root ile iki çalıştırma sahiplik çakışmasıdır; farklı checkout'lar varsayılan root'larını ayırır.
 
-OMX artık eklenti iskelesi ve doğrulaması için `omx hooks` içerir.
+### Madmax ve worktree güvenliği
 
-- `omx tmux-hook` desteklenmeye devam eder ve değişmemiştir.
-- `omx hooks` ek niteliktedir ve tmux-hook iş akışlarını değiştirmez.
-- Eklenti dosyaları `.omx/hooks/*.mjs` konumunda bulunur.
-- Eklentiler varsayılan olarak kapalıdır; `OMX_HOOK_PLUGINS=1` ile etkinleştirin.
-
-Tam uzantı iş akışı ve olay modeli için `docs/hooks-extension.md` dosyasına bakın.
-
-## Başlatma Bayrakları
+`--madmax`, `--dangerously-bypass-approvals-and-sandbox` seçeneğinin kısa yazımıdır; normal onay ve sandbox korumalarını kaldırır. Yalnızca güvenilir repo ve ortamlarda kullanın. Git repo'sunda özellikle eşzamanlı işler için isimli worktree tercih edin:
 
 ```bash
---yolo
---high
---xhigh
---madmax
---force
---dry-run
---verbose
---scope <user|project>  # yalnızca setup
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
-`--madmax`, Codex `--dangerously-bypass-approvals-and-sandbox` ile eşlenir.
-Yalnızca güvenilir/harici sandbox ortamlarında kullanın.
+`--worktree` ayrı git checkout açar; isimsiz biçim detached geçici worktree oluşturur. Kirli worktree'de uyarı verir ama başlatır. `--direct`, tmux/HUD yönetimi olmadan tek seferlik başlatır; `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` kalıcı tercih belirler, CLI bayrakları önce gelir. Bu iterasyon config dosyasına yeni ayar eklemez.
 
-### MCP workingDirectory politikası (isteğe bağlı sertleştirme)
+### /goal ve skill seçimi
 
-Varsayılan olarak, MCP durum/bellek/trace araçları çağıranın sağladığı `workingDirectory` değerini kabul eder.
-Bunu kısıtlamak için bir izin listesi belirleyin:
+`omx --madmax --xhigh` ile başlatın; git içinde `--worktree=<task>` ekleyin. Kalıcı hedef/checkpoint için `/goal`, plan için `$plan`, paralel koordinasyon için `$team`, çok aşamalı kalıcı yürütme için `$ultragoal` kullanın. Varsayılan olarak yalnızca ilgili 2–5 skill'i yükleyin.
+
+## Basit zihinsel model
+
+OMX, Codex'in yerini almaz:
+- **Codex** gerçek işi yürütür.
+- **OMX rol keyword'leri** tekrar kullanılabilir uzman rolleri sağlar.
+- **OMX skill'leri** workflow'ları tekrar kullanılabilir kılar.
+- **`.omx/`** planları, logları, belleği ve runtime durumunu saklar.
+
+OMX'i komut yüzeyi yerine daha iyi yönlendirme, workflow ve runtime katmanı olarak düşünün.
+
+## Yeni başlayanlar için
+
+1. Codex CLI'ı doğrulayın veya kurun, ardından `oh-my-codex` yükleyin.
+2. Kurulum veya gerçek OMX sürüm yükseltmesi sonrası scope'a göre `omx setup --scope project --merge-agents` ya da `omx setup --scope user` çalıştırın; `omx update` npm'i de güncelleyebilir.
+3. `omx doctor` çalıştırın.
+4. `codex login status` ve gerçek `omx exec` smoke testiyle doğrulayın.
+5. Git repo'sunda isimli worktree kullanın; paralel Madmax oturumlarını ayırın.
+6. Belirsizliği `$deep-interview` ile giderin.
+7. Planı `$ralplan` ile değerlendirin.
+8. Kalıcı veya paralel işte `$ultragoal`/`$team`, açık checkpoint için `/goal` kullanın.
+
+## Önerilen workflow
+
+`$autopilot` aşamalı resmi orkestratördür: `$deep-interview` → `$ralplan` → `$ultragoal`. Gereksinimler önceden hazırsa her aşama bağımsız da çağrılabilir.
+
+1. `$deep-interview` — belirsizliği çözer, uygulanabilir gereksinim çıkarır.
+2. `$ralplan` — mimari, yapılabilirlik ve ortak kararı değerlendirir.
+3. `$ultragoal` — `.omx/ultragoal` kayıtlarıyla çok hedefli yürütme sağlar.
+4. `$team` — yalnızca gerçekten paralel koordinasyon gerekirse.
+
+Planlama skill'leri plan üretir, uygulama yapmaz. Task'e göre `$plan`, `$code-review` ve `$ultraqa` da bağımsız kullanılabilir.
+
+## Oturum içi yaygın yüzeyler
+
+| Yüzey | Kullanım |
+| --- | --- |
+| `$plan` | isteğe bağlı planlama ve netleştirme |
+| `$ultragoal` | onaylı plandan sonra kalıcı çok hedefli tamamlama |
+| `$team` | koordineli paralel uygulama |
+| `/skills` | kurulu skill kataloğunu görme |
+| `/goal` | tur geçişleri boyunca uzlaşılması gereken kalıcı hedef |
+| `omx mission <file>` | sırayla çalışan prompt/checklist ve `.omx/missions/` artefaktları |
+
+## Gelişmiş ve operatör yüzeyleri
+
+- `omx mission plan ./mission.md` ve `--dry-run` planı doğrular; `run`, `status`, `resume`, `mark` ve `rerun` işleri yönetir. [Mission rehberi](../mission.md).
+- `omx session search` / `export` önceki konuşmaları bulur ve dışa aktarır; `--format json`, `--include-tools` ve `--codex-home` desteklenir. Varsayılan dışa aktarım yalnızca user/assistant mesajlarını içerir; sistem talimatları ve akıl yürütme dışarıda kalır, metin redakte edilmez.
+- `omx session usage --since 7d --sort tokens` yerel oturumların kayıtlı kümülatif kullanımını gösterir; dönem faturası değildir. Aynı oturum aynaları bir kez sayılır; eksik ölçüm bilinmiyor kalır.
+- `omx session timeline <id>` tool çağrılarını, sonuçları, süreleri ve compaction'ları gösterir; hata belirtilmemesi başarılı olduğu anlamına gelmez.
+- `omx team` tmux/worktree koordinasyon runtime'ıdır. Codex App veya tmux dışındaki oturumlarda uygulama içi workflow değil, shell yüzeyidir. `team status` salt okunur; durumu değiştirmez.
+- `omx setup` scoped varlık/config kurar; `omx update` npm'i kontrol edip aynı refresh yolunu çalıştırır. `omx doctor` gerçek model auth çağrısını kanıtlamaz; `omx hud --watch` izleme yüzeyidir.
+- Plugin cache `${CODEX_HOME:-~/.codex}/plugins/cache/...` altına kurulabilir; plugin lifecycle hook'ları taşır ama runtime için `omx` CLI gerekir. `omx setup --disable-hooks` OMX hook kurulumunu kapatır. [Hook eşlemesi](../codex-native-hooks.md).
+- `.omx-config.json` model/env routing ayarları için kullanılır; yalnızca kurulu sürümün desteklediği anahtarları yazın: [şema](../reference/omx-config-schema-routing.md). Guardex HUD için proje yerel `.omx/hud-config.json` dosyasına `"guardex": { "enabled": true }` ekleyin.
+- «Yeşil ama çalışmıyor» durumunda aynı shell'de `codex login status`, `CODEX_HOME` ve varsa `openai_base_url` değerlerini kontrol edin. Zorla Team kapatmayı yalnızca doğrulanmış ölü/terk edilmiş ekip için kullanın.
+- `omx sparkshell` shell inceleme ve sınırlı doğrulama içindir; repo aramasında normal Codex araçları tercih edilir. `omx wiki`, `omx_wiki/` içindeki Markdown bilgi tabanı için CLI-first JSON yüzeyidir.
 
 ```bash
-export OMX_MCP_WORKDIR_ROOTS="/path/to/project:/path/to/another-root"
+omx sparkshell git status
+omx sparkshell --tmux-pane %12 --tail-lines 400
+omx wiki list --json
+omx wiki lint --json
 ```
 
-Ayarlandığında, bu kökler dışındaki `workingDirectory` değerleri reddedilir.
+### Team için platform notları
 
-## Codex-First Prompt Kontrolü
+Team, macOS/Linux + `tmux` ile en iyi çalışır. Yerel Windows ikinci plandadır; çoğunlukla WSL2 daha uygundur. Windows'ta mevcut tmux uyumlu yollar `psmux` kabul eder.
 
-Varsayılan olarak, OMX şunu enjekte eder:
+| Platform | Kurulum |
+| --- | --- |
+| macOS | `brew install tmux` |
+| Ubuntu/Debian | `sudo apt install tmux` |
+| Fedora | `sudo dnf install tmux` |
+| Arch | `sudo pacman -S tmux` |
+| Windows | `winget install psmux` |
+| Windows (WSL2) | `sudo apt install tmux` |
 
-```text
--c model_instructions_file="<cwd>/.omx/state/sessions/<session-id>/AGENTS.md"
-```
+## Bilinen sorunlar
 
-Bu üretilen dosya yalnızca OMX çalışma zamanı kaplamasını içerir (`<!-- OMX:RUNTIME:START -->` ile `<!-- OMX:RUNTIME:END -->` arası). `CODEX_HOME/AGENTS.md` ve proje `AGENTS.md` dosyalarındaki kalıcı yönlendirme buraya kopyalanmaz; Codex bunları kendi doğal AGENTS keşfiyle bir kez yükler. Team workerları kendi talimatlarını oluşturmaya devam eder.
-Codex davranışını genişletir, ancak Codex çekirdek sistem politikalarını değiştirmez/atlamaz.
+### Intel Mac'te başlangıç sırasında yüksek `syspolicyd` / `trustd` CPU kullanımı
 
-Kontroller:
+Bazı Intel Mac'lerde Gatekeeper, özellikle `--madmax --high` ile çok sayıda süreç açılırken CPU kullanımını yükseltebilir. `xattr -dr com.apple.quarantine $(which omx)`, Terminal uygulamasını Developer Tools izin listesine ekleme veya eşzamanlılığı azaltma seçeneklerini deneyin.
 
-```bash
-OMX_BYPASS_DEFAULT_SYSTEM_PROMPT=0 omx     # AGENTS.md enjeksiyonunu devre dışı bırak
-OMX_MODEL_INSTRUCTIONS_FILE=/path/to/instructions.md omx
-```
+tmux oturumunda Shift+Enter davranışıyla ilgili sorunlar için [Troubleshooting](../troubleshooting.md#shiftenter-submits-instead-of-inserting-a-newline-in-tmux-backed-omx-sessions) sayfasına bakın.
 
-## Takım Modu
+## Belgeler
 
-Paralel çalışanlardan fayda sağlayan geniş kapsamlı işler için takım modunu kullanın.
-
-Yaşam döngüsü:
-
-```text
-start -> assign scoped lanes -> monitor -> verify terminal tasks -> shutdown
-```
-
-Operasyonel komutlar:
-
-```bash
-omx team <args>
-omx team status <team-name>
-omx team resume <team-name>
-omx team shutdown <team-name>
-```
-
-Önemli kural: İptal etmiyorsanız, görevler hâlâ `in_progress` durumundayken kapatmayın.
-
-### Team shutdown policy
-
-Use `omx team shutdown <team-name>` after the team reaches a terminal state.
-Team cleanup now follows one standalone path; legacy linked-Ralph shutdown handling is no longer a separate public workflow.
-
-Takım çalışanları için Worker CLI seçimi:
-
-```bash
-OMX_TEAM_WORKER_CLI=auto    # varsayılan; worker --model "claude" içeriyorsa claude kullanır
-OMX_TEAM_WORKER_CLI=codex   # Codex CLI çalışanlarını zorla
-OMX_TEAM_WORKER_CLI=claude  # Claude CLI çalışanlarını zorla
-OMX_TEAM_WORKER_CLI_MAP=codex,codex,claude,claude  # çalışan başına CLI karışımı (uzunluk=1 veya çalışan sayısı)
-OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # isteğe bağlı: adaptif queue->resend geri dönüşünü devre dışı bırak
-```
-
-Notlar:
-- Worker başlatma argümanları hâlâ `OMX_TEAM_WORKER_LAUNCH_ARGS` aracılığıyla paylaşılır.
-- `OMX_TEAM_WORKER_CLI_MAP`, çalışan başına seçim için `OMX_TEAM_WORKER_CLI`'yi geçersiz kılar.
-- Tetikleyici gönderimi varsayılan olarak adaptif yeniden denemeler kullanır (queue/submit, ardından gerektiğinde güvenli clear-line+resend geri dönüşü).
-- Claude worker modunda, OMX çalışanları düz `claude` olarak başlatır (ekstra başlatma argümanı yok) ve açık `--model` / `--config` / `--effort` geçersiz kılmalarını yok sayar, böylece Claude varsayılan `settings.json` kullanır.
-
-## `omx setup` Ne Yazar
-
-- `.omx/setup-scope.json` (kalıcı kurulum kapsamı)
-- Kapsama bağlı kurulumlar:
-  - `user`: `~/.codex/prompts/`, `~/.codex/skills/`, `~/.codex/config.toml`, `~/.omx/agents/`, `~/.codex/AGENTS.md`
-  - `project`: `./.codex/prompts/`, `./.codex/skills/`, `./.codex/config.toml`, `./.omx/agents/`, `./AGENTS.md`
-- Başlatma davranışı: kalıcı kapsam `project` ise, `omx` başlatma otomatik olarak `CODEX_HOME=./.codex` kullanır (`CODEX_HOME` zaten ayarlanmadıysa).
-- Başlatma talimatları `~/.codex/AGENTS.md` (veya geçersiz kılındıysa `CODEX_HOME/AGENTS.md`) ile proje `./AGENTS.md` dosyasını birleştirir ve ardından çalışma zamanı kaplamasını ekler.
-- Mevcut `AGENTS.md` dosyaları sessizce üzerine yazılmaz: etkileşimli TTY'de setup değiştirmeden önce sorar; etkileşimsiz çalıştırmada ise `--force` yoksa değiştirme atlanır (aktif oturum güvenlik kontrolleri hâlâ geçerlidir).
-- `config.toml` güncellemeleri (her iki kapsam için):
-  - `notify = ["node", "..."]`
-  - `model_reasoning_effort = "medium"`
-  - `developer_instructions = "..."`
-  - `[features] multi_agent = true` (mevcut olduğunda)
-  - MCP sunucu girişleri (`omx_state`, `omx_memory`, `omx_code_intel`, `omx_trace`, `omx_wiki` (repository wiki sunucusu), `omx_hermes` (sınırlı oturum durumu/koordinasyon köprüsü))
-  - `[tui] status_line`
-- Kapsama özel `AGENTS.md`
-- `.omx/` çalışma zamanı dizinleri ve HUD yapılandırması
-
-## Ajanlar ve Skill'ler
-
-- Prompt'lar: `prompts/*.md` (`user` için `~/.codex/prompts/`'a, `project` için `./.codex/prompts/`'a kurulur)
-- Skill'ler: `skills/*/SKILL.md` (`user` için `~/.codex/skills/`'a, `project` için `./.codex/skills/`'a kurulur)
-
-Örnekler:
-- Ajanlar: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
-- Skill'ler: `deep-interview`, `ralplan`, `team`, `ultragoal`, `plan`, `cancel`
-
-## Proje Yapısı
-
-```text
-oh-my-codex/
-  bin/omx.js
-  src/
-    cli/
-    team/
-    mcp/
-    hooks/
-    hud/
-    config/
-    modes/
-    notifications/
-    verification/
-  prompts/
-  skills/
-  templates/
-  scripts/
-```
-
-## Geliştirme
-
-```bash
-git clone https://github.com/Yeachan-Heo/oh-my-codex.git
-cd oh-my-codex
-npm install
-npm run build
-npm test
-```
-
-## Dokümantasyon
-
-- **[Tam Dokümantasyon](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** — Eksiksiz kılavuz
-- **[CLI Referansı](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** — Tüm `omx` komutları, bayraklar ve araçlar
-- **[Bildirim Kılavuzu](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** — Discord, Telegram, Slack ve webhook kurulumu
-- **[Önerilen İş Akışları](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** — Yaygın görevler için savaşta test edilmiş skill zincirleri
-- **[Sürüm Notları](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#release-notes)** — Her sürümdeki yenilikler
-
-## Notlar
-
-- Tam değişiklik günlüğü: `CHANGELOG.md`
-- Geçiş rehberi (v0.4.4 sonrası mainline): `docs/migration-mainline-post-v0.4.4.md`
-- Kapsam ve eşitlik notları: `COVERAGE.md`
-- Hook uzantı iş akışı: `docs/hooks-extension.md`
-- Kurulum ve katkı detayları: `CONTRIBUTING.md`
-
-## Teşekkürler
-
-[oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode)'dan ilham alınmıştır, Codex CLI için uyarlanmıştır.
+- [Başlangıç](../getting-started.html)
+- [Demo](../../DEMO.md)
+- [Wiki özelliği](../wiki-feature.md)
+- [Ajan kataloğu](../agents.html)
+- [Skill başvurusu](../skills.html)
+- [Codex native hook eşlemesi](../codex-native-hooks.md)
+- [GitHub/PR/paket kimlik hattı](../pipeline/github-pr-package-identity.md)
+- [Entegrasyonlar](../integrations.html)
+- [Troubleshooting](../troubleshooting.md)
+- [OpenClaw/bildirim rehberi](../openclaw-integration.tr.md)
+- [Katkıda bulunma](../../CONTRIBUTING.md)
+- [Değişiklik günlüğü](../../CHANGELOG.md)
 
 ## Diller
 
@@ -278,6 +265,25 @@ npm test
 - [Українська](./README.uk.md)
 - [Bahasa Indonesia](./README.id.md)
 
+## Katkıda bulunanlar
+
+| Rol | İsim | GitHub |
+| --- | --- | --- |
+| Oluşturan ve lider | Yeachan Heo | [@Yeachan-Heo](https://github.com/Yeachan-Heo) |
+| Maintainer | Doyun Ha | [@HaD0Yun](https://github.com/HaD0Yun) |
+| Maintainer | Valeriy Pavlovich | [@iqdoctor](https://github.com/iqdoctor) |
+
+## Yıldız geçmişi
+
+[![Star History](https://api.star-history.com/svg?repos=Yeachan-Heo/oh-my-codex&type=date&legend=top-left)](https://www.star-history.com/#Yeachan-Heo/oh-my-codex&type=date)
+
 ## Lisans
 
 MIT
+
+## GEO görünürlük kıyaslaması
+
+OMX, LLM hit rate, MRR, share of voice ve alıntıları ölçmek için [geobench](https://github.com/NomaDamas/geobench) ürün spesifikasyonu içerir.
+
+- Spesifikasyon: [geobench/oh-my-codex.yaml](../../geobench/oh-my-codex.yaml)
+- Çalıştırma rehberi: [geobench.md](../geobench.md)
