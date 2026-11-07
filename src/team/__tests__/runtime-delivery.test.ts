@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { monitorTeam } from '../runtime.js';
 import {
-  initTeamState, createTask, readTeamConfig, saveTeamConfig, writeAtomic,
-  readMonitorSnapshot, writeMonitorSnapshot, writeWorkerStatus,
+  initTeamState, createTask, readTeamConfig, saveTeamConfig, claimTask, transitionTaskStatus,
+  readMonitorSnapshot, writeMonitorSnapshot, writeWorkerStatus, updateTask, readTask,
 } from '../state.js';
 
 const team = 'delivery-gate';
@@ -29,19 +30,16 @@ describe('monitorTeam code delivery success gate', () => {
     git(repo, 'init');
     git(repo, 'config', 'user.email', 'test@example.com');
     git(repo, 'config', 'user.name', 'Test');
+    await writeFile(join(repo, '.git/info/exclude'), '.omx/\n');
     await commit(repo, 'README.md');
     git(repo, 'worktree', 'add', '-b', 'worker-delivery', worker, 'HEAD');
     await initTeamState(team, 'code delivery', 'executor', 1, repo);
     const config = (await readTeamConfig(team, repo))!;
-    config.workers[0] = { ...config.workers[0], assigned_tasks: ['1'], worktree_path: worker, worktree_repo_root: repo };
+    config.workers[0] = { ...config.workers[0], assigned_tasks: ['1'], working_dir: worker, worktree_path: worker, worktree_repo_root: repo };
     await saveTeamConfig(config, repo);
-    const task = await createTask(team, {
-      subject: 'delivered work', description: 'work', status: 'completed', owner: 'worker-1',
-      // No requires_code_change flag: existing/legacy tasks still have delivery debt.
+    await createTask(team, {
+      subject: 'delivered work', description: 'work', status: 'pending', owner: 'worker-1',
     }, repo);
-    await writeAtomic(join(repo, '.omx/state/team', team, 'tasks', `task-${task.id}.json`), JSON.stringify({
-      ...task, result: 'Verification:\n- PASS build: `npm run build`\n- PASS tests: `node --test tests.js`',
-    }));
     await writeFile(join(repo, '.omx/state/team-state.json'), JSON.stringify({ active: true, current_phase: 'team-exec', team_name: team }));
   });
   afterEach(async () => {
@@ -54,11 +52,35 @@ describe('monitorTeam code delivery success gate', () => {
     return JSON.parse(await readFile(join(repo, '.omx/state/team-state.json'), 'utf8'));
   }
 
-  it('keeps pending delivery in verify on read-only monitor without mutating state', async () => {
+  async function completeTask(taskId = '1', requiresCodeChange = true) {
+    await updateTask(team, taskId, { requires_code_change: requiresCodeChange }, repo);
+    const claim = await claimTask(team, taskId, 'worker-1', null, repo);
+    assert.ok(claim.ok, JSON.stringify(claim));
+    assert.equal(git(worker, 'status', '--porcelain', '--untracked-files=all'), '');
+    let result = 'Verification: PASS `git status --porcelain --untracked-files=all` for no-change research.';
+    if (requiresCodeChange) {
+      const verifiedHead = git(worker, 'rev-parse', 'HEAD');
+      await mkdir(join(worker, '.omx/evidence'), { recursive: true });
+      const evidencePath = `.omx/evidence/task-${taskId}.json`;
+      await writeFile(join(worker, evidencePath), JSON.stringify({
+        teamName: team, taskId, claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+        verifiedHead, summary: 'Verified committed worker output',
+        verification: [{ command: 'git status --porcelain --untracked-files=all', result: 'passed', output: 'Clean worktree' }],
+        unverified: [],
+      }));
+      result = `Verification: PASS \`git status --porcelain --untracked-files=all\` for committed worker output.\nEVIDENCE_RECORDED: ${evidencePath}`;
+    }
+    const completed = await transitionTaskStatus(team, taskId, 'in_progress', 'completed', claim.claimToken, repo, { result });
+    assert.ok(completed.ok, JSON.stringify(completed));
+    await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
+  }
+
+  it('keeps unverified pending delivery nonterminal on read-only monitor without mutating state', async () => {
     await commit(worker, 'feature.txt');
     const head = git(repo, 'rev-parse', 'HEAD');
     const snapshot = await monitorTeam(team, repo, { readOnly: true });
-    assert.equal(snapshot?.phase, 'team-verify');
+    assert.equal(snapshot?.phase, 'team-exec');
+    assert.equal((await readTask(team, '1', repo))?.status, 'pending');
     assert.equal((await rootState()).active, true);
     assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
     assert.equal(await readMonitorSnapshot(team, repo), null);
@@ -67,6 +89,7 @@ describe('monitorTeam code delivery success gate', () => {
 
   it('completes after successful integration and on subsequent contained read-only delivery', async () => {
     await commit(worker, 'feature.txt');
+    await completeTask();
     const snapshot = await monitorTeam(team, repo);
     assert.equal(snapshot?.phase, 'complete');
     assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
@@ -78,8 +101,7 @@ describe('monitorTeam code delivery success gate', () => {
     await commit(worker, 'feature.txt');
     const workerHead = git(worker, 'rev-parse', 'HEAD');
     await commit(repo, 'leader.txt');
-    // A working status prevents the unrelated idle cross-rebase path.
-    await writeWorkerStatus(team, 'worker-1', { state: 'working', updated_at: new Date().toISOString() }, repo);
+    await completeTask();
     assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
     const delivery = (await readMonitorSnapshot(team, repo))?.integrationByWorker?.['worker-1'];
     assert.equal(delivery?.last_integrated_head, workerHead);
@@ -91,22 +113,26 @@ describe('monitorTeam code delivery success gate', () => {
     await commit(worker, 'feature.txt');
     await commit(repo, 'leader.txt');
     const beforeDelivery = git(repo, 'rev-parse', 'HEAD');
-    const taskPath = join(repo, '.omx/state/team', team, 'tasks/task-1.json');
-    const task = JSON.parse(await readFile(taskPath, 'utf8'));
-    await writeAtomic(taskPath, JSON.stringify({ ...task, status: 'in_progress' }));
-    await writeWorkerStatus(team, 'worker-1', { state: 'working', updated_at: new Date().toISOString() }, repo);
+    await completeTask();
+    const sentinel = await createTask(team, {
+      subject: 'final delivery verification', description: 'Keep the team active during the history rewrite', status: 'pending',
+    }, repo);
     await monitorTeam(team, repo);
+    assert.equal((await readTask(team, sentinel.id, repo))?.owner, undefined);
     const proof = (await readMonitorSnapshot(team, repo))!.integrationByWorker!['worker-1'].delivery_leader_commit;
     assert.equal(proof, git(repo, 'rev-parse', 'HEAD'));
-    git(repo, 'reset', '--hard', beforeDelivery);
-    // Read-only must distrust the old receipt even when every task is terminal.
-    await writeAtomic(taskPath, JSON.stringify(task));
-    assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'team-verify');
+    assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
     assert.equal((await rootState()).active, true);
-    // Mutating poll before completion must either restore delivery or leave honest debt.
-    await writeAtomic(taskPath, JSON.stringify({ ...task, status: 'in_progress' }));
-    await monitorTeam(team, repo);
-    await writeAtomic(taskPath, JSON.stringify(task));
+    git(repo, 'reset', '--hard', beforeDelivery);
+    // The unowned sentinel keeps the team nonterminal without blocking worker handoff.
+    assert.notEqual((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
+    assert.equal((await rootState()).active, true);
+    await assert.rejects(readFile(join(repo, 'feature.txt')), { code: 'ENOENT' });
+    // An intervening poll must restore delivery or leave honest debt, never reuse the lost receipt.
+    assert.notEqual((await monitorTeam(team, repo))?.phase, 'complete');
+    assert.equal((await rootState()).active, true);
+    // Verify the current source again if cross-rebase changed it during the first delivery.
+    await completeTask(sentinel.id);
     const readOnly = await monitorTeam(team, repo, { readOnly: true });
     if (readOnly?.phase === 'complete') assert.equal(await readFile(join(repo, 'feature.txt'), 'utf8'), 'feature.txt\n');
     assert.equal((await monitorTeam(team, repo))?.phase, 'complete');
@@ -116,7 +142,7 @@ describe('monitorTeam code delivery success gate', () => {
   it('vetoes terminal success on cross-rebase index.lock failure and retries on a quiet second poll', async () => {
     await commit(worker, 'feature.txt');
     await commit(repo, 'leader.txt');
-    await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
+    await completeTask();
     const lock = git(worker, 'rev-parse', '--git-path', 'index.lock');
     await writeFile(lock, 'held by regression test');
     const first = await monitorTeam(team, repo);
@@ -135,10 +161,12 @@ describe('monitorTeam code delivery success gate', () => {
     assert.equal(resolved.pending_rebase_leader_head, undefined);
     assert.equal(resolved.rebase_error, undefined);
     assert.equal(resolved.last_rebased_leader_head, leaderHead);
+    assert.equal(resolved.delivery_leader_commit, leaderHead);
     assert.equal((await rootState()).active, false);
   });
 
   it('allows genuinely no-change research worktrees to complete', async () => {
+    await completeTask('1', false);
     assert.equal((await monitorTeam(team, repo, { readOnly: true }))?.phase, 'complete');
   });
 
@@ -150,7 +178,7 @@ describe('monitorTeam code delivery success gate', () => {
     await commit(worker, 'other.txt');
     git(worker, 'merge', '--no-ff', '-m', 'worker merge commit', 'worker-side');
     await commit(repo, 'leader.txt');
-    await writeWorkerStatus(team, 'worker-1', { state: 'done', updated_at: new Date().toISOString() }, repo);
+    await completeTask();
     const snapshot = await monitorTeam(team, repo);
     assert.equal(snapshot?.phase, 'team-fix');
     const persisted = (await readMonitorSnapshot(team, repo))!;
@@ -166,12 +194,19 @@ describe('monitorTeam code delivery success gate', () => {
   });
 
   it('persisted integration_failed vetoes read-only success even when worker head is contained', async () => {
-    await monitorTeam(team, repo);
+    await commit(worker, 'feature.txt');
+    await completeTask();
+    const sentinel = await createTask(team, {
+      subject: 'final research check', description: 'Keep the team active before the persisted failure',
+      status: 'pending', requires_code_change: false,
+    }, repo);
+    assert.notEqual((await monitorTeam(team, repo))?.phase, 'complete');
+    assert.equal((await rootState()).active, true);
+    git(repo, 'merge-base', '--is-ancestor', git(worker, 'rev-parse', 'HEAD'), 'HEAD');
     const persisted = (await readMonitorSnapshot(team, repo))!;
     persisted.integrationByWorker!['worker-1'].status = 'integration_failed';
     await writeMonitorSnapshot(team, persisted, repo);
-    const rootPath = join(repo, '.omx/state/team-state.json');
-    await writeFile(rootPath, JSON.stringify({ active: true, current_phase: 'team-exec', team_name: team }));
+    await completeTask(sentinel.id, false);
     const result = await monitorTeam(team, repo, { readOnly: true });
     assert.equal(result?.phase, 'team-fix');
     assert.equal((await rootState()).active, true);
