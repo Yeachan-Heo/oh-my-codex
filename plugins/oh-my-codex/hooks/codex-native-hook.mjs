@@ -1281,7 +1281,7 @@ function writePendingSessionPin(pluginRoot, sessionId, stableSessionMarker = fal
     if (!pinState || pinState.version !== target.version || pinState.cacheBase !== target.cacheBase || !livePinRootMatches(pinState)) return null;
     const pinDir = pinState.path;
     try {
-      mkdirSync(pinDir, { mode: 0o700 });
+      mkdirSync(pinDir, { recursive: true, mode: 0o700 });
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
     }
