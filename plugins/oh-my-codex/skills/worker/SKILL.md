@@ -24,10 +24,11 @@ Use only when the session was started as an OMX Team worker. Read `AGENTS.md#dur
    ```
 2. Read `<team_state_root>/team/<teamName>/workers/<workerName>/inbox.md` and take the first unblocked assignment.
 3. Read `<team_state_root>/team/<teamName>/tasks/task-<id>.json`; APIs use the bare numeric `task_id` (for example `"1"`).
-4. Claim before editing:
+4. Claim an unclaimed task before editing:
    ```bash
    omx team api claim-task --input '{"team_name":"<teamName>","task_id":"<id>","worker":"<workerName>"}' --json
    ```
+   If the leader already claimed the task for you, do not re-claim it. Use the inbox handoff's current claim token, version, and lease; verify they match the task file. If they differ or the lease has expired, stop and ask the leader for a current assignment.
 5. Do the assigned work. Do not write task lifecycle fields directly.
 6. Complete or fail through the lifecycle API, from `in_progress` to `completed` or `failed`:
    ```bash
