@@ -194,6 +194,9 @@ omx
 
 ```bash
 omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
 omx --worktree=fix/flaky-tests --madmax --xhigh
 ```
 
@@ -213,7 +216,17 @@ omx --direct --yolo
 OMX_LAUNCH_POLICY=direct omx --yolo
 ```
 
-Вернитесь к стандартному поведению через `unset OMX_LAUNCH_POLICY`. CLI-политики важнее переменных окружения; до `--` действует последняя CLI-политика. Допустимые значения: `direct|tmux|detached-tmux|auto`; файловой настройки в этой версии нет. Если `--direct` запущен из существующей tmux-панели, OMX не создаёт HUD-разделения, не включает mouse mode и обработку extended keys, но процесс остаётся в этой панели.
+Вернитесь к стандартному поведению через:
+
+```bash
+unset OMX_LAUNCH_POLICY
+``` Флаги CLI имеют приоритет над окружением. Этот пример принудительно включает tmux, даже если в окружении задано `direct`:
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+До `--` действует последняя CLI-политика. Допустимые значения: `direct|tmux|detached-tmux|auto`; файловой настройки в этой версии нет. Если `--direct` запущен из существующей tmux-панели, OMX не создаёт HUD-разделения, не включает mouse mode и обработку extended keys, но процесс остаётся в этой панели.
 
 Попробуйте канонический процесс:
 
