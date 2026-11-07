@@ -81,6 +81,7 @@ macOS/Linux で tmux が使える場合、OMX は通常リーダーを OMX 管�
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
+OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
 PowerShell: `$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"`  
@@ -216,6 +217,98 @@ Team は macOS/Linux + tmux が最適です。ネイティブ Windows は二次�
 ## 言語
 
 - [English](../../README.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [Tiếng Việt](README.vi.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md) · [Türkçe](README.tr.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Italiano](README.it.md) · [Ελληνικά](README.el.md) · [Polski](README.pl.md) · [Українська](README.uk.md) · [Bahasa Indonesia](README.id.md)
+
+## 追加の起動例
+
+### 目標とワークフロー
+
+```text
+# 長い作業向けの永続目標とチェックポイント:
+/goal 安全な認証リファクタリング計画を作成・実装し、ログイン、ログアウト、refresh token の動作を検証する。
+
+$deep-interview "認証変更を明確にする"
+$ralplan "認証計画を承認し、トレードオフを確認する"
+$ultragoal "承認済み計画を永続的な Codex 目標として実行する"
+```
+
+```bash
+omx --worktree=feat/task --madmax --xhigh
+```
+
+### 複数会話と worktree の例
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+```
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
+```
+
+### direct 起動と launch policy
+
+```bash
+omx --direct --yolo
+```
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+CLI の policy flag は環境変数より優先され、`--` より前の最後の policy flag が適用されます。
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+```
+
+### checkout 修正の永続目標
+
+```text
+# コピーして使える永続目標の例:
+/goal 再現、実装、回帰テスト、最終確認のチェックポイントを設けて checkout のバグを修正する。
+
+$plan "checkout バグ修正計画を承認し、トレードオフを確認する"
+$ultragoal "チェックポイントの証拠を残しながら承認済み修正を実行する"
+```
+
+避けるべきパターン:
+
+```text
+omx --madmax --xhigh
+# タスクを述べる前に「念のため」スキルを20個読み込む。
+# コンテキストを膨らませ、無関係なワークフローに注意を使ってしまう。
+```
+
+### 中断した Team の整理
+
+Team が停止済み、または意図的に放棄されたと確認した場合に限り、強制 shutdown を使ってください。
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+### Sparkshell の追加 pane 検査
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
 
 ## コントリビューター
 
