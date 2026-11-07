@@ -19,7 +19,7 @@ export async function renewWorkerTaskLease(
     status = JSON.parse(await readFile(join(stateRoot, 'team', teamName, 'workers', workerName, 'status.json'), 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) return null;
-    throw error;
+    return { ok: false, error: `renewal_error:${String(error)}` };
   }
   if (!status) return null;
   if (status.state !== 'working' || typeof status.current_task_id !== 'string' || typeof status.current_claim_token !== 'string'
