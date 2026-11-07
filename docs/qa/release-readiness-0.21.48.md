@@ -2,7 +2,7 @@
 
 **Release Date:** 2026-11-07<br>
 **Released By:** gaebal-gajae (autonomous release)<br>
-**Pinned dev source:** `3dc87dfaa8b6142922ea67294587895ee367d2f7`<br>
+**Pinned source (tag v0.21.48):** `a153daee49a0931788c3f3ac5e53f5f1a393aeb2`<br>
 **Range:** [`v0.21.47...v0.21.48`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48)
 
 ## Summary
@@ -25,16 +25,15 @@ The pinned source already reads `0.21.48` across every release-coupled version s
 | `Cargo.lock` six OMX workspace crates | `0.21.48` |
 | `plugins/oh-my-codex/.codex-plugin/plugin.json` | `0.21.48` |
 
-## Local gates
+## Release CI gates
 
-- `npm ci` — passed; 172 packages installed and lifecycle hooks completed.
-- `npm run build` — passed.
-- `npm test` — passed on the subsequent full run: runtime build, all 475 Node test files, generated catalog check, and prompt-inventory check completed.
-- `npm run check:no-unused` — passed.
-- `npm run lint` — passed across 900 files. Biome emitted the existing `linter.rules.recommended` deprecation notice; no lint fixes were applied.
-- Focused native-config regression tests — passed: 36 passed, 0 failed.
-- Focused `codex-hooks.test.js` regression suite — passed: 74 passed, 1 skipped, 0 failed.
-- Version synchronization checks — passed as listed above.
+Release workflow [42416497142](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42416497142) ran on a153daee and completed successfully. The workflow includes:
+- TypeScript compilation
+- Native builds for macOS arm64/x64, Linux x64, and portable bundles
+- npm publish provenance verification
+- All release-asset postinstall hydration gates
+
+Version synchronization checks passed as listed above.
 
 ## Release PR and main gates
 
@@ -47,12 +46,13 @@ The pinned source already reads `0.21.48` across every release-coupled version s
 - GitHub Release: published non-draft at 2026-11-07 21:47:40Z with 57 assets (native builds for macOS arm64/x64, Linux x64, and portable bundles).
 - npm publish (job ID workflow_dispatch run 42419468636): Completed successfully at 2026-11-07 22:26:16Z. Published `oh-my-codex@0.21.48` with identical source and provenance.
 - npm `dist-tags.latest`: `0.21.48`.
-- npm `oh-my-codex@0.21.48` `gitHead`: `3dc87dfaa8b6142922ea67294587895ee367d2f7` (matches the pinned dev source).
+- npm `oh-my-codex@0.21.48` `gitHead`: `a153daee49a0931788c3f3ac5e53f5f1a393aeb2` (matches the pinned source tag).
 - GitHub Release body generated from template and includes `## Contributors` section and full `## Compatibility` and `## Verification` sections.
 
 ## Back-merge and version bump
 
-Pending.
+- Version bump: PR #4029 'chore(dev): bump version to 0.21.49' merged to dev as f890ea7829c5873795e82aff3f8892431ad158fb.
+- Back-merge: PR #4028 'back-merge/main-to-dev-0.21.48' pending, merges origin/main (a153daee) and origin/dev (f890ea78) to dev after version bump. Keep dev's 0.21.49 versions. Merge with merge method once CI checks pass.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*

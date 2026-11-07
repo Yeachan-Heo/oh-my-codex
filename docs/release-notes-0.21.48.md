@@ -4,6 +4,7 @@
 
 ## Fixed
 
+- **LIVE PINS OUTSIDE CODEX PLUGIN FINGERPRINT ROOT (#4010, fixes #3898):** Codex hook approval repeatedly invalidated Codex plugin pins because they were stored in the Codex plugin cache root and invalidated on plugin refreshes. Live pins are now stored in a separate OMX-managed directory outside the plugin fingerprint, persisting across plugin updates and cache maintenance. OMX's `omx_pins` hook registration ensures the registration survives host Codex app-server versions without cached plugin interference (reviewers: @iqdoctor; reporter: @AkiraLan).
 - **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** Seven role prompts (analyst, api-reviewer, architect, code-reviewer, code-simplifier, critic, and designer) included hardcoded reasoning-effort recommendations that read as unconditional requests for commentary, conflicting with their documented success criteria. These recommendations are now removed; Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.' The modification ensures all role prompts correctly follow their extraction-only or analysis-only mandates unless reassessment is genuinely warranted.
 
 ## Compatibility
@@ -12,7 +13,7 @@ No breaking API changes. Release-coupled metadata was synchronized to `0.21.48` 
 
 ## Included scope
 
-The pinned source is `3dc87dfaa8b6142922ea67294587895ee367d2f7`. The source-only diff from `v0.21.47` to that commit includes the reasoning-effort fixes (#4021), test fix (#4018), generation-release-body enforcement (#4019), and README locale refreshes (#4011–#4014). No commits after the pinned source are included.
+The pinned source is `a153daee49a0931788c3f3ac5e53f5f1a393aeb2` (tag v0.21.48). The source-only diff from `v0.21.47` to that commit includes the live-pins fix (#4010), reasoning-effort fixes (#4021), test fix (#4018), generation-release-body enforcement (#4019), and README locale refreshes (#4011–#4014). No commits after the pinned source are included.
 
 **Full Changelog**: [`v0.21.47...v0.21.48`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48)
 

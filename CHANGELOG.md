@@ -6,10 +6,11 @@ All notable changes to this project are documented in this file.
 
 ## [0.21.48] - 2026-11-07
 
-Patch release drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
+Patch release stores live Codex pins outside the plugin fingerprint root to fix invalidation on plugin refresh, and drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
 
 ### Fixed
 
+- **LIVE PINS OUTSIDE CODEX PLUGIN FINGERPRINT ROOT (#4010, fixes #3898):** Codex hook approval repeatedly invalidated Codex plugin pins because they were stored in the Codex plugin cache root and invalidated on plugin refreshes. Live pins are now stored in a separate OMX-managed directory outside the plugin fingerprint, persisting across plugin updates and cache maintenance (#4010; reporter: @AkiraLan; reviewer: @iqdoctor).
 - **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** Seven role prompts (analyst, api-reviewer, architect, code-reviewer, code-simplifier, critic, and designer) included hardcoded reasoning-effort recommendations that read as unconditional requests for commentary. These are now removed; Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.'
 
 **Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48
