@@ -105,6 +105,18 @@ Ce dépôt fournit aussi une disposition de plugin Codex sous `plugins/oh-my-cod
 Le mode plugin nécessite toujours un `AGENTS.md` durable au scope choisi : `~/.codex/AGENTS.md` pour le scope utilisateur ou `./AGENTS.md` pour le scope projet. Les fichiers AGENTS propres à une session ne font qu’ajouter des overlays d’exécution.
 
 ## À quoi sert OMX
+Pour un objectif durable explicite, combinez `/goal` avec des checkpoints appropriés :
+
+```text
+# Objectif durable avec checkpoints :
+/goal Préparer un plan de refactorisation d’authentification sûre, le mettre en œuvre et vérifier la connexion, la déconnexion et les jetons de renouvellement.
+
+$deep-interview "clarify the authentication change"
+$ralplan "approve the auth plan and review tradeoffs"
+$ultragoal "turn the approved plan into durable Codex goals"
+```
+
+
 
 OMX s’adresse aux personnes qui aiment Codex et veulent un workflow plus cohérent, des rôles et skills réutilisables, des consignes durables et un état de runtime dans `.omx/`. Si vous préférez Codex sans couche de workflow supplémentaire, OMX n’est probablement pas nécessaire.
 
@@ -146,6 +158,20 @@ OMX_ROOT="$HOME/.omx/instances/third-conversation" omx
 ```
 
 Un `OMX_ROOT` explicite est littéral : deux sessions utilisant le même root entrent en conflit. Des checkouts séparés ont des roots par défaut distincts.
+PowerShell :
+
+```powershell
+$env:OMX_ROOT = "$HOME/.omx/instances/second-conversation"
+omx
+```
+
+Invite de commandes Windows :
+
+```bat
+set "OMX_ROOT=%USERPROFILE%\.omx\instances\second-conversation"
+omx
+```
+
 
 ### Sécurité de Madmax et des worktrees
 
@@ -154,14 +180,39 @@ Un `OMX_ROOT` explicite est littéral : deux sessions utilisant le même root en
 ```bash
 omx --worktree=feature/auth --madmax --xhigh
 ```
+Pour des sessions Madmax parallèles, donnez à chacune un worktree nommé distinct :
+
+```bash
+omx --worktree=feature/auth --madmax --xhigh
+omx --worktree=fix/flaky-tests --madmax --xhigh
+```
+
 
 `--high` et `--xhigh` règlent `model_reasoning_effort`. Chaque session Madmax concurrente doit utiliser un worktree différent. L’option `--worktree` est consommée par OMX et n’est pas transmise à Codex. OMX avertit si le worktree cible est déjà modifié ; vérifiez-le avant de vous y fier.
 
 Pour un lancement ponctuel sans tmux/HUD OMX, utilisez `--direct` :
 
+
 ```bash
 omx --direct --yolo
+```
+
+Comme préférence de shell ou de profil :
+
+```bash
 OMX_LAUNCH_POLICY=direct omx --yolo
+```
+
+Revenir au comportement automatique par défaut :
+
+```bash
+unset OMX_LAUNCH_POLICY
+```
+
+Les options CLI priment ; si plusieurs politiques sont données, la dernière gagne :
+
+```bash
+OMX_LAUNCH_POLICY=direct omx --tmux --yolo
 ```
 
 Les politiques possibles sont `direct|tmux|detached-tmux|auto`. Les options CLI ont priorité sur la variable `OMX_LAUNCH_POLICY`.
@@ -183,6 +234,24 @@ OMX ne remplace pas Codex :
 5. Depuis un dépôt Git, lancez un worktree nommé.
 6. Utilisez `$deep-interview` pour clarifier les exigences, `$ralplan` pour approuver le plan, puis `$ultragoal` pour l’exécuter durablement.
 7. Utilisez `$team` lorsqu’une story bénéficie d’une coordination parallèle ; ajoutez `/goal` si des objectifs et checkpoints explicites sont nécessaires.
+Exemple prêt à copier :
+
+```text
+# Objectif durable à copier avec checkpoints :
+/goal Livrer le correctif du bug de checkout avec des objectifs et checkpoints durables pour la reproduction, l’implémentation, les tests de régression et la vérification finale.
+
+$plan "approve the checkout bug-fix plan and review tradeoffs"
+$ultragoal "execute the approved checkout fix with checkpoint evidence"
+```
+
+Chargez normalement seulement 2 à 5 skills pertinents. Évitez de charger un grand catalogue « au cas où » :
+
+```text
+omx --madmax --xhigh
+# Puis charger immédiatement 20 skills « au cas où » avant même d'énoncer la tâche.
+# Cela gonfle le contexte et détourne l'attention vers du contenu non pertinent.
+```
+
 
 ## Workflow recommandé
 
@@ -244,6 +313,18 @@ Le setup scoped installe ou actualise prompts, skills, AGENTS, configuration et 
 En mode plugin, les skills et hooks sont fournis par le cache du plugin, mais le `AGENTS.md` de scope doit rester présent. `omx setup --disable-hooks` désactive les hooks gérés par OMX puis s’arrête avant l’installation normale des assets/configurations.
 
 Pour les sessions hors Team, les hooks natifs Codex sont le cycle de vie canonique : `plugins/oh-my-codex/hooks/hooks.json` pour le plugin et `.codex/hooks.json` pour le mode legacy/fallback. Voir [mapping des hooks natifs Codex](../codex-native-hooks.md).
+
+
+Après avoir confirmé qu’une équipe est réellement morte ou abandonnée :
+
+```bash
+omx team shutdown <team-name> --force --confirm-issues
+omx cancel
+omx doctor --team
+```
+
+
+Le HUD Team affiche le nom de l’équipe, le nombre de workers et, pour chacun, l’état, la task-ID, le rôle, le pane et l’âge de la mise à jour. Les données absentes ou mal formées s’affichent comme `unknown` et ne prouvent pas qu’un processus est vivant ; le roster est lu en mode read-only. Guardex est facultatif : `{ "guardex": { "enabled": true } }` dans le `.omx/hud-config.json` du projet l’active.
 
 ### Dépanner une disponibilité trompeuse
 
