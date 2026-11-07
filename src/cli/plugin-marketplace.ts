@@ -1273,49 +1273,53 @@ async function isLivePinOwnerAlive(record: OmxPluginCacheLivePinRecord): Promise
 }
 
 async function hasLiveSessionPinRecord(
-	cacheBase: string,
+	cacheBaseRef: DirectoryRef,
 	version: string,
 	ownerPid: number,
 	sessionHash: string,
 	snapshotRef?: DirectoryRef,
 ): Promise<boolean> {
-	// Check external pin directory
+	// Check external pin directory using anchored opening to prevent symlink escapes (invariant: I1).
 	let pinDirectoryRef: DirectoryRef | undefined;
 	try {
-		const pinPath = omxPluginCacheLivePinDirectory(cacheBase, version);
-		const pinDirExists = await lstat(pinPath).catch(() => null);
-		if (pinDirExists?.isDirectory()) {
-			pinDirectoryRef = await openDirectoryRef(pinPath);
-			if (!(await livePinRetirementGateExists(pinDirectoryRef))) {
-				for (const entry of await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true })) {
-					if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith("pin-")) continue;
-					const path = join(pinDirectoryRef.operationPath, entry.name);
-					const stats = await lstat(path);
-					if (
-						!stats.isFile() ||
-						stats.isSymbolicLink() ||
-						stats.nlink !== 1 ||
-						stats.size <= 0 ||
-						stats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
-					)
-						continue;
-					const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: pinDirectoryRef.operationPath });
-					if (bytes === null) continue;
-					let parsed: unknown;
-					try {
-						parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
-					} catch {
-						continue;
-					}
-					const record = parseOmxPluginCacheLivePinRecord(parsed);
-					if (
-						record?.pid === ownerPid &&
-						record.sessionHash === sessionHash &&
-						entry.name === `pin-${record.pid}-${sessionHash.slice(0, 24)}-${record.processStartHash ?? "unknown"}.json` &&
-						(await isLivePinOwnerAlive(record))
-					)
-						return true;
+		try {
+			pinDirectoryRef = await openExternalLivePinDirectory(cacheBaseRef, version);
+		} catch (error) {
+			if (isMissingPathError(error)) {
+				// External pin directory doesn't exist; skip to legacy pin check
+			} else {
+				throw error;
+			}
+		}
+		if (pinDirectoryRef && !(await livePinRetirementGateExists(pinDirectoryRef))) {
+			for (const entry of await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true })) {
+				if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith("pin-")) continue;
+				const path = join(pinDirectoryRef.operationPath, entry.name);
+				const stats = await lstat(path);
+				if (
+					!stats.isFile() ||
+					stats.isSymbolicLink() ||
+					stats.nlink !== 1 ||
+					stats.size <= 0 ||
+					stats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
+				)
+					continue;
+				const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: pinDirectoryRef.operationPath });
+				if (bytes === null) continue;
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(bytes.toString("utf-8")) as unknown;
+				} catch {
+					continue;
 				}
+				const record = parseOmxPluginCacheLivePinRecord(parsed);
+				if (
+					record?.pid === ownerPid &&
+					record.sessionHash === sessionHash &&
+					entry.name === `pin-${record.pid}-${sessionHash.slice(0, 24)}-${record.processStartHash ?? "unknown"}.json` &&
+					(await isLivePinOwnerAlive(record))
+				)
+					return true;
 			}
 		}
 	} finally {
@@ -1473,10 +1477,9 @@ async function sweepExpiredOmxPluginCacheLivePinIntents(
 		await hasLivePinIntent(cacheBaseRef, version, mutationLockContent, intentLockContent);
 		let pinDirectoryRef: DirectoryRef | undefined;
 		try {
-			const pinDirPath = omxPluginCacheLivePinDirectory(cacheBaseRef.path, version);
-			const pinDirStats = await lstat(pinDirPath).catch(() => null);
-			if (!pinDirStats?.isDirectory()) return;
-			pinDirectoryRef = await openDirectoryRef(pinDirPath);
+			// Anchor the external pin directory to cacheBase to prevent symlink escapes.
+			// This ensures pin mutations stay within the intended cache hierarchy (invariant: I1).
+			pinDirectoryRef = await openExternalLivePinDirectory(cacheBaseRef, version);
 		} catch {
 			return;
 		}
@@ -1595,27 +1598,15 @@ async function isLivePinnedSnapshot(
 ): Promise<boolean> {
 	if (await hasLivePinIntent(cacheBaseRef, version, mutationLockContent, intentLockContent)) return true;
 	if (await isPrePinManagedSnapshot(snapshotRef, version)) return true;
-	// Check the external pin directory
-	// Use the cacheBase from the passed cacheBaseRef instead of re-deriving from codexHome()
-	const pinDirPath = omxPluginCacheLivePinDirectory(cacheBaseRef.path, version);
-	let pinDirStats: Stats;
+	// Check the external pin directory using anchored opening to prevent symlink escapes (invariant: I1).
+	let pinDirectoryRef: DirectoryRef;
 	try {
-		pinDirStats = await lstat(pinDirPath);
+		pinDirectoryRef = await openExternalLivePinDirectory(cacheBaseRef, version);
 	} catch (error) {
 		if (isMissingPathError(error)) {
 			// External pin dir missing; check legacy in-snapshot pins
 			return await hasLegacyInSnapshotLivePin(snapshotRef);
 		}
-		return true;
-	}
-	if (pinDirStats.isSymbolicLink()) return true;
-	if (pinDirStats.isFile()) return true;
-	if (!pinDirStats.isDirectory()) return true;
-
-	let pinDirectoryRef: DirectoryRef;
-	try {
-		pinDirectoryRef = await openDirectoryRef(pinDirPath);
-	} catch {
 		return true;
 	}
 	try {
@@ -1926,7 +1917,7 @@ export async function registerOmxPluginCacheLivePin(
 				!(await hasRegularPublicationMarker(snapshotRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))
 			)
 				return false;
-			return await hasLiveSessionPinRecord(cacheBase, version, ownerPid, sessionHash, snapshotRef);
+			return await hasLiveSessionPinRecord(cacheBaseRef, version, ownerPid, sessionHash, snapshotRef);
 		}
 		const [canonicalRoot, canonicalExpected] = await Promise.all([
 			canonicalRealpath(rootPath),
