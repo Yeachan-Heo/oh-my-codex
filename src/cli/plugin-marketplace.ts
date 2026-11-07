@@ -1813,9 +1813,8 @@ async function removeLivePinRetirementGate(cacheBaseRef: DirectoryRef, version: 
 					let pinParentRef: DirectoryRef | undefined;
 					try {
 						pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
-						const versionDirStats = await pinDirectoryRef.handle.stat();
 						// Remove the version directory through its parent by name (not through fd path)
-						const removed = await removeChild(pinParentRef, version, {
+						await removeChild(pinParentRef, version, {
 							recursive: false,
 							force: false,
 						});
