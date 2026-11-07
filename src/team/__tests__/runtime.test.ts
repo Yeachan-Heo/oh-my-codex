@@ -7019,6 +7019,32 @@ esac
 
 
 
+  it('monitorTeam does not reactivate an ordinary completed root from pending task counts alone without worktrees', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-root-counts-only-'));
+    const teamName = 'team-root-counts-only';
+    try {
+      await initTeamState(teamName, 'counts-only root sync', 'executor', 1, cwd);
+      const config = await readTeamConfig(teamName, cwd);
+      assert.ok(config?.workers.every((worker) => !worker.worktree_path && !worker.worktree_repo_root));
+      const task = await createTask(teamName, { subject: 'initial work', description: 'pending', status: 'pending' }, cwd);
+      const phase = await readTeamPhase(teamName, cwd);
+      assert.ok(phase);
+      await writeTeamPhase(teamName, { ...phase, current_phase: 'complete' }, cwd);
+      const rootStatePath = join(cwd, '.omx/state/team-state.json');
+      const rootBefore = JSON.stringify({
+        active: false, current_phase: 'complete', team_name: teamName, completed_at: new Date().toISOString(),
+      });
+      await writeFile(rootStatePath, rootBefore);
+      assert.equal((await monitorTeam(teamName, cwd, { readOnly: true }))?.phase, 'team-exec');
+      assert.equal(await readFile(rootStatePath, 'utf8'), rootBefore);
+      assert.equal((await monitorTeam(teamName, cwd))?.phase, 'team-exec');
+      assert.equal(await readFile(rootStatePath, 'utf8'), rootBefore);
+      assert.equal((await readTask(teamName, task.id, cwd))?.status, 'pending');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam deactivates root team-state.json when the local phase becomes terminal', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-root-team-state-'));
     try {

@@ -255,11 +255,12 @@ export interface TeamSnapshot {
 async function syncRootTeamModeStateForMonitor(
   teamName: string,
   phaseState: TeamPhaseState,
+  hasDeliveryDebt: boolean,
   cwd: string,
 ): Promise<void> {
   const phase = phaseState.current_phase;
   const terminal = isTerminalPhase(phase);
-  if (!terminal && phaseState.terminal_epoch) return;
+  if (!terminal && (!hasDeliveryDebt || phaseState.terminal_epoch)) return;
 
   try {
     const localStatePath = join(resolve(cwd), '.omx', 'state', 'team-state.json');
@@ -4905,7 +4906,7 @@ export async function monitorTeam(
     const next = reconcilePhaseStateForMonitor(persistedPhase, deliveryGatedTarget);
     if (!readOnly) {
       await writeTeamPhaseState(sanitized, next, cwd);
-      await syncRootTeamModeStateForMonitor(sanitized, next, cwd);
+      await syncRootTeamModeStateForMonitor(sanitized, next, integrationPending || integrationFailed, cwd);
     }
     return next;
   };
