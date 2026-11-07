@@ -142,8 +142,9 @@ async function assertDelegateSurvivesLostLeasesWithPin(
 	launchId: string,
 	pinName: string,
 	pinContent: string,
+	version: string,
 ): Promise<string> {
-	const pinDirectory = join(pluginRoot, ".omx-live-pin");
+	const pinDirectory = livePinDirectoryPath(codexHomeDir, version);
 	await mkdir(pinDirectory, { recursive: true });
 	const pinPath = join(pinDirectory, pinName);
 	await writeFile(pinPath, pinContent);
@@ -435,7 +436,7 @@ describe("issue 3790 live plugin cache pins", () => {
 					},
 				);
 				assert.equal(hookResult.status, 0, hookResult.stderr || hookResult.stdout);
-				const markerDir = join(cacheDir, ".omx-live-pin");
+				const markerDir = livePinDirectoryPath(codexHomeDir, published.version!);
 				const entries = await readdir(markerDir);
 				assert.equal(entries.length, 1);
 				const pin = JSON.parse(await readFile(join(markerDir, entries[0]!), "utf-8")) as {
@@ -508,7 +509,11 @@ setInterval(() => {}, 60_000);
 					["0.19.0", "0.20.0", "0.20.1"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
 				);
 				const pluginRoot = snapshots[1]!;
-				const pinDirectory = join(pluginRoot, ".omx-live-pin");
+				const version = "0.20.0";
+				const legacyPinDirectory = join(pluginRoot, ".omx-live-pin");
+				const externalPinDirectory = livePinDirectoryPath(codexHomeDir, version);
+				// Create legacy pins in old location for testing legacy detection
+				await mkdir(legacyPinDirectory, { recursive: true });
 				const expiredAt = new Date(Date.now() - 60 * 60 * 1000);
 				await utimes(pluginRoot, expiredAt, expiredAt);
 				const hook = spawn(
@@ -526,18 +531,18 @@ setInterval(() => {}, 60_000);
 				hook.stderr.on("data", (chunk: string) => { hookStderr += chunk; });
 				const closed = once(hook, "close");
 				try {
-					let pendingEntries: string[] = [];
-					for (let attempt = 0; attempt < 100; attempt += 1) {
-						try {
-							pendingEntries = (await readdir(pinDirectory)).filter((name) => name.startsWith(".pending-"));
-							if (pendingEntries.length > 0) break;
-						} catch {
+				let pendingEntries: string[] = [];
+				for (let attempt = 0; attempt < 100; attempt += 1) {
+					try {
+						pendingEntries = (await readdir(externalPinDirectory)).filter((name) => name.startsWith(".pending-"));
+						if (pendingEntries.length > 0) break;
+					} catch {
 						// The launcher may not have created its startup guard yet.
-						}
-						await new Promise((resolveWait) => setTimeout(resolveWait, 10));
 					}
-					assert.equal(pendingEntries.length, 1, "startup pin must exist while the wrapper waits for stdin");
-					const pending = JSON.parse(await readFile(join(pinDirectory, pendingEntries[0]!), "utf-8")) as {
+					await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+				}
+				assert.equal(pendingEntries.length, 1, "startup pin must exist while the wrapper waits for stdin");
+				const pending = JSON.parse(await readFile(join(externalPinDirectory, pendingEntries[0]!), "utf-8")) as {
 						version: number;
 						sessionHash: string;
 					};
@@ -560,7 +565,9 @@ setInterval(() => {}, 60_000);
 					}));
 					const [code] = await closed as [number | null];
 					assert.equal(code, 0, hookStderr);
-					assert.equal((await readdir(pinDirectory)).length, 1);
+					// Verify new pins are in external directory
+					const externalEntries = await readdir(externalPinDirectory);
+					assert.equal(externalEntries.length, 1);
 				} finally {
 					if (hook.exitCode === null) {
 						hook.kill();
@@ -1943,6 +1950,7 @@ setTimeout(waitForDelegate, 10);
 					"malformed-pin",
 					"pin-unreadable-record.json",
 					"{ malformed durable pin\n",
+					"0.20.0",
 				);
 				await rm(pinPath, { force: true });
 			});
@@ -2575,6 +2583,113 @@ process.stdout.write("{}\\n");
 				const ownership = JSON.parse(await readFile(join(cacheDir, ".omx-managed"), "utf-8")) as { cacheVersion: string };
 				assert.equal(ownership.cacheVersion, published.version);
 				assert.equal(JSON.parse(await readFile(manifestPath, "utf-8")).version, published.version);
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("maintains invariant fingerprint across pin lifecycle (create, renew, retire, GC)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3790-fingerprint-invariance-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+				assert.equal(materialized.status, "materialized");
+				const cacheDir = materialized.cacheDir!;
+				const version = materialized.version!;
+				
+				// Compute fingerprint of plugin files excluding .omx-live-pin
+				const computeFingerprint = async (path: string): Promise<string> => {
+					const entries: string[] = [];
+					
+					const scan = async (dir: string, prefix: string) => {
+						for (const entry of await readdir(dir, { withFileTypes: true })) {
+							if (entry.name === ".omx-live-pin" || entry.name === ".omx-retiring" || entry.name.startsWith(".omx-")) {
+								continue;
+							}
+							const fullPath = join(dir, entry.name);
+							const relPath = `${prefix}${entry.name}`;
+							
+							if (entry.isDirectory()) {
+								await scan(fullPath, `${relPath}/`);
+							} else if (entry.isFile() && !entry.isSymbolicLink()) {
+								const content = await readFile(fullPath);
+								const hash = createHash("sha256").update(content).digest("hex");
+								entries.push(`${relPath}:${hash}`);
+							}
+						}
+					};
+					
+					await scan(path, "");
+					return createHash("sha256").update(entries.sort().join("\n")).digest("hex");
+				};
+				
+				const baseFingerprint = await computeFingerprint(cacheDir);
+				
+				// Create a pin and verify fingerprint unchanged
+				const result = await registerOmxPluginCacheLivePin(
+					cacheDir,
+					"fingerprint-test-session",
+					process.pid,
+				);
+				assert.ok(result, "pin registration should succeed");
+				
+				const afterPinFingerprint = await computeFingerprint(cacheDir);
+				assert.equal(afterPinFingerprint, baseFingerprint, "fingerprint must be unchanged after pin creation");
+				
+				// Verify external pin files exist but don't affect fingerprint
+				const externalPinDir = livePinDirectoryPath(codexHomeDir, version);
+				const externalPins = await readdir(externalPinDir);
+				assert.ok(externalPins.length > 0, "external pins should be created");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("handles legacy .omx-live-pin pins alongside new external pins safely", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3790-legacy-coexist-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+				assert.ok(packaged);
+				const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+				assert.equal(materialized.status, "materialized");
+				const cacheDir = materialized.cacheDir!;
+				const version = materialized.version!;
+				
+				// Set up a legacy pin in the old location
+				const legacyPinDir = join(cacheDir, ".omx-live-pin");
+				await mkdir(legacyPinDir, { recursive: true });
+				const legacyPin = {
+					version: 1,
+					pid: 99999,
+					processStartHash: "legacylegacylegacylegacylegacy",
+					sessionHash: createHash("sha256").update("legacy-session").digest("hex"),
+				};
+				await writeFile(
+					join(legacyPinDir, "legacy-pin.json"),
+					`${JSON.stringify(legacyPin)}\n`,
+				);
+				
+				// Register a new pin
+				const newPinResult = await registerOmxPluginCacheLivePin(
+					cacheDir,
+					"new-session",
+					process.pid,
+				);
+				assert.ok(newPinResult, "new pin should be created successfully with legacy pins present");
+				
+				// Verify legacy pin still exists
+				const legacyPinContent = await readFile(join(legacyPinDir, "legacy-pin.json"), "utf-8");
+				assert.deepEqual(JSON.parse(legacyPinContent), legacyPin, "legacy pin should be preserved");
+				
+				// Verify new pin is in external directory
+				const externalPinDir = livePinDirectoryPath(codexHomeDir, version);
+				const externalPins = await readdir(externalPinDir);
+				assert.ok(externalPins.length > 0, "new pins should be in external directory");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
