@@ -7,7 +7,7 @@
 
 ## Summary
 
-This patch release keeps generated native-agent instructions within the assigned scope and clarifies Git Master's task authority for history and remote writes. The release process experienced a Sigstore transient failure during the first npm publish attempt, which was resolved on a subsequent rerun.
+This patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms. The release process experienced a Sigstore transient failure during the first npm publish attempt, which was resolved on a subsequent rerun.
 
 ## Included scope
 
@@ -40,13 +40,13 @@ The pinned source already reads `0.21.46` across every release-coupled version s
 
 ## Release PR and main gates
 
-- Release commit 931f8589c177574d7068d2701d25eded9d2d310c pushed to main at 2026-11-07 14:25:54Z.
+- Release commit 931f8589c177574d7068d2701d25eded9d2d310c pushed to main at 2026-11-07 13:58:45Z.
 - Main push CI run [42380613095](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42380613095) completed successfully.
 
 ## Publication evidence
 
 - Annotated tag: `v0.21.47` at `931f8589c177574d7068d2701d25eded9d2d310c`.
-- GitHub Release: published non-draft at 2026-11-07 14:25:54Z with 57 assets (native builds for macOS arm64/x64, Linux x64, and portable bundles).
+- GitHub Release: published non-draft at 2026-11-07 14:25:54Z (approximately 27 minutes after main PR merge) with 57 assets (native builds for macOS arm64/x64, Linux x64, and portable bundles).
 - **First npm publish attempt (job ID 128427245548):** Failed in the Sigstore entry creation step with `TLOG_CREATE_ENTRY_ERROR` (Sigstore server HTTP 500 error). No npm package was published from this attempt.
 - **Rerun npm publish (job ID 128442102217):** Completed successfully at 2026-11-07 15:21:58Z. The rerun published `oh-my-codex@0.21.47` with identical source and provenance.
 - npm `dist-tags.latest`: `0.21.47`.
