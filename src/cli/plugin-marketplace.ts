@@ -1797,7 +1797,13 @@ async function removeLivePinRetirementGate(cacheBaseRef: DirectoryRef, version: 
 			return false;
 		}
 		const gatePath = join(pinDirectoryRef.operationPath, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER);
-		const stats = await lstat(gatePath);
+		let stats;
+		try {
+			stats = await lstat(gatePath);
+		} catch (error) {
+			if (isMissingPathError(error)) return false;
+			throw error;
+		}
 		const bytes = await readOmxPluginCacheFileNoFollow(gatePath, { anchorDir: pinDirectoryRef.operationPath });
 		if (bytes?.toString("utf-8") !== gateContent) return false;
 		const gateRemoved = await removeChildIfIdentity(pinDirectoryRef, OMX_PLUGIN_LIVE_PIN_RETIRING_MARKER, stats, { force: true });
@@ -1806,36 +1812,48 @@ async function removeLivePinRetirementGate(cacheBaseRef: DirectoryRef, version: 
 		// to prevent it from blocking subsequent repairs within the lease window.
 		// Remove through the anchored parent (.omx-pins) by name to avoid TOCTOU issues.
 		if (gateRemoved) {
-			try {
-				const entries = await readdir(pinDirectoryRef.operationPath, { withFileTypes: true });
-				if (entries.length === 0) {
-					// Directory is empty; get anchored parent and remove by name
-					let pinParentRef: DirectoryRef | undefined;
-					try {
-						pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
-						// Remove the version directory through its parent by name (not through fd path)
-						// Only swallow ENOTEMPTY and ENOENT errors; other errors indicate real problems
-						await removeChild(pinParentRef, version, {
-							recursive: false,
-							force: false,
-						}).catch((error: unknown) => {
-							const code = (error as NodeJS.ErrnoException).code;
-							// ENOTEMPTY and ENOENT are expected; ignore them
-							if (code !== "ENOTEMPTY" && code !== "ENOENT") {
-								throw error;
-							}
-						});
-					} finally {
-						if (pinParentRef) await pinParentRef.handle.close().catch(() => undefined);
+			const entries = await readdir(pinDirectoryRef.operationPath, { withFileTypes: true });
+			if (entries.length === 0) {
+				// Directory is empty; get anchored parent and remove by name
+				let pinParentRef: DirectoryRef | undefined;
+				try {
+					pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
+					// Remove the version directory through its parent by name (not through fd path)
+					await removeChild(pinParentRef, version, {
+						emptyDirectory: true,
+						force: false,
+					});
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					// Only ENOTEMPTY and ENOENT are expected (race with new pins, or directory not present).
+					// All other errors (permission, I/O, etc.) should be reported and re-thrown.
+					if (code !== "ENOTEMPTY" && code !== "ENOENT") {
+						console.error(
+							`[omx plugin cache] Unexpected error removing empty version directory ${version} during gate cleanup: ${code} - ${(error as Error).message}`,
+						);
+						throw error;
 					}
+					// Log expected errors for visibility in troubleshooting
+					if (code === "ENOTEMPTY") {
+						console.warn(`[omx plugin cache] Empty version directory ${version} was recreated or contains new pins during cleanup`);
+					}
+				} finally {
+					if (pinParentRef) await pinParentRef.handle.close().catch(() => undefined);
 				}
-			} catch {
-				// Ignore errors from directory removal attempt (best-effort cleanup)
 			}
 		}
 		
 		return gateRemoved;
-	} catch {
+	} catch (error) {
+		// Errors here (beyond expected missing path) indicate unexpected I/O, permission, or logical issues.
+		// Convert to false but report for visibility; if this is called in the context of snapshot removal,
+		// the caller (removeChildIfIdentity) will handle the failure appropriately.
+		if (!(error as NodeJS.ErrnoException).code || !isMissingPathError(error)) {
+			const code = (error as NodeJS.ErrnoException).code;
+			console.error(
+				`[omx plugin cache] Unexpected error in removeLivePinRetirementGate for version ${version}: ${code} - ${(error as Error).message}`,
+			);
+		}
 		return false;
 	} finally {
 		if (pinDirectoryRef) await pinDirectoryRef.handle.close().catch(() => undefined);

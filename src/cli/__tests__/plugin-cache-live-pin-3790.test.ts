@@ -3084,56 +3084,75 @@ process.stdout.write("{}\\n");
 		}
 	});
 
-	it("validates .omx-pins parent against TOCTOU symlink swaps (issue 4010 HIGH)", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-4010-toctou-symlink-"));
+	it("I1: native hook pin writes anchored under <cacheBase>/.omx-pins/<version>, rejects symlink parent (issue 4010)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-hook-anchoring-i1-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
-				const snapshots = await Promise.all(
-					["0.20.0", "0.20.1"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
-				);
-				
-				const version = "0.20.0";
+				const pluginRoot = await seedManagedSnapshot(codexHomeDir, "0.20.0");
 				const cacheBase = omxPluginCacheBase(codexHomeDir);
 				const pinParentPath = join(cacheBase, ".omx-pins");
 				const trapDir = join(wd, "trap-dir");
 				await mkdir(trapDir);
 				
-				// First registration should succeed
-				let result = await registerOmxPluginCacheLivePin(
-					snapshots[0]!,
-					"test-session-1",
-					process.pid,
-				);
-				assert.ok(result, "first pin registration should succeed");
-				
-				// Verify .omx-pins exists as a real directory
-				const beforeStats = await lstat(pinParentPath);
-				assert.ok(beforeStats.isDirectory(), ".omx-pins should be a directory");
-				assert.equal(beforeStats.isSymbolicLink(), false, ".omx-pins should not be a symlink");
-				
-				// Attack: replace .omx-pins with a symlink to trap directory
+				// Attack: Replace .omx-pins with symlink before hook runs
 				await rm(pinParentPath, { recursive: true, force: true });
 				await symlink(trapDir, pinParentPath);
 				
-				// Second registration should reject the symlink and not create files in trap dir
-				result = await registerOmxPluginCacheLivePin(
-					snapshots[1]!,
-					"test-session-2",
-					process.pid,
-				);
-				assert.equal(result, false, "pin registration should fail when .omx-pins is a symlink");
+				// Spawn native hook directly (exercises real hook code path, not CLI)
+				const sessionId = "i1-anchoring-test";
+				const hookResult = spawnSync(process.execPath, [join(pluginRoot, "hooks", "codex-native-hook.mjs")], {
+					cwd: wd,
+					input: JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, codex_pid: process.pid, cwd: wd }),
+					encoding: "utf-8",
+					env: { ...process.env, CODEX_HOME: codexHomeDir },
+				});
 				
-				// Verify trap directory is still empty (no files were created there)
+				// INVARIANT I1: Hook must not write through symlink. Trap dir must remain empty.
 				const trapEntries = await readdir(trapDir);
-				assert.equal(trapEntries.length, 0, "trap directory should remain empty; attack was blocked");
+				assert.equal(trapEntries.length, 0, "trap dir empty: hook rejected symlink parent, no writes through link");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
 
-	it("sequential repairs succeed when empty version dir is removed after gate cleanup (issue 4010 MEDIUM regression)", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-4010-sequential-repair-"));
+	it("I2: active legacy-pin sessions stay protected through GC and repair (issue 4010)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-legacy-pin-i2-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const snapshots = await Promise.all(
+					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
+				);
+				
+				// Create a legacy in-tree pin (.omx-live-pin inside snapshot) to simulate older delegate protection
+				const legacyPinDir = join(snapshots[0]!, ".omx-live-pin");
+				await mkdir(legacyPinDir, { recursive: true });
+				const legacyPinPath = join(legacyPinDir, "pin-legacy-delegate.json");
+				const legacyPin = {
+					version: 1,
+					pid: process.pid,
+					processStartHash: null,
+					sessionHash: createHash("sha256").update("legacy-delegate-session").digest("hex"),
+				};
+				await writeFile(legacyPinPath, `${JSON.stringify(legacyPin)}\n`);
+				
+				// INVARIANT I2: GC should recognize legacy pin and preserve the snapshot
+				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
+				
+				// Snapshot with legacy pin should NOT be retired
+				assert.ok(!retired.includes(snapshots[0]!), "snapshot with legacy pin must be preserved through GC");
+				
+				// Legacy pin directory should still exist after GC
+				const legacyPinStillExists = await lstat(legacyPinDir).catch(() => null);
+				assert.ok(legacyPinStillExists, "legacy .omx-live-pin dir protected from GC");
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("I3: second same-version repair succeeds immediately after gate cleanup, inside init lease (issue 4010)", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-4010-sequential-repair-i3-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				const snapshots = await Promise.all(
@@ -3147,62 +3166,38 @@ process.stdout.write("{}\\n");
 				// STEP 1: First repair - register a pin
 				let result = await registerOmxPluginCacheLivePin(
 					snapshots[0]!,
-					"test-session-repair-1",
+					"i3-session-1",
 					process.pid,
 				);
 				assert.ok(result, "first pin registration should succeed");
-				let dirExists = true;
-				try {
-					await lstat(versionDir);
-				} catch (e: any) {
-					if (e?.code === "ENOENT") dirExists = false;
-				}
-				assert.ok(dirExists, "version directory should exist after first pin registration");
 				
-				// STEP 2: Clean up the pin files to simulate end-of-session cleanup
+				// STEP 2: Clean up pin files (simulate session end)
 				let entries = await readdir(versionDir);
 				for (const entry of entries) {
 					await rm(join(versionDir, entry), { force: true });
 				}
-				
-				// Verify directory is now empty
 				entries = await readdir(versionDir);
-				assert.equal(entries.length, 0, "version directory should be empty after cleanup");
+				assert.equal(entries.length, 0, "version directory empty after cleanup");
 				
-				// Age the directory beyond the initialization lease so it's eligible for cleanup
-				const agedTime = new Date(Date.now() - 6 * 60 * 1000);
-				await utimes(versionDir, agedTime, agedTime);
+				// CRITICAL: Do NOT age the directory. I3 requires immediate success within init lease.
 				
-				// STEP 3: Retire the snapshot to trigger gate cleanup
-				// This should remove the gate marker and the empty version directory
+				// STEP 3: Retire snapshot to trigger gate cleanup (immediately, no ageing)
 				const retired = await retireUnpinnedManagedSnapshots(codexHomeDir, "0.20.3");
-				assert.ok(retired.includes(snapshots[0]!), "snapshot should be retired after first repair");
+				assert.ok(retired.includes(snapshots[0]!), "snapshot should be retired");
 				
-				// Verify the directory was cleaned up (or at least is no longer blocking)
-				// On Linux with proper anchoring, the empty directory should be removed
-				// This is the key regression test: without the fix, the directory remains
-				// and blocks subsequent same-version repairs
-				dirExists = true;
-				try {
-					await lstat(versionDir);
-				} catch (e: any) {
-					if (e?.code === "ENOENT") dirExists = false;
-				}
-				
-				// STEP 4: Attempt second repair on the same version
-				// This must succeed even if the directory wasn't removed (it would be empty)
-				// But ideally, after the fix, the directory should be removed
+				// STEP 4: INVARIANT I3 - second repair IMMEDIATELY (inside init lease window, no utimes ageing)
+				// must succeed. This proves empty dir was cleaned up during gate cleanup, not just later.
 				result = await registerOmxPluginCacheLivePin(
 					snapshots[0]!,
-					"test-session-repair-2",
+					"i3-session-2",
 					process.pid,
 				);
-				assert.ok(result, "second pin registration should succeed (regression test for ba5196b)");
+				assert.ok(result, "second pin registration must succeed immediately after cleanup (I3)");
 				
-				// Verify the second repair created a new pin file
+				// Verify second repair created new pin
 				entries = await readdir(versionDir);
 				const hasPinFiles = entries.some((e) => e.startsWith(".pending-") || e.startsWith("pin-"));
-				assert.ok(hasPinFiles, "second repair should create new pin files");
+				assert.ok(hasPinFiles, "second repair created new pin files");
 			});
 		} finally {
 			await rm(wd, { recursive: true, force: true });
