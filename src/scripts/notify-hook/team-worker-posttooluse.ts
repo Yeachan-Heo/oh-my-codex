@@ -399,9 +399,6 @@ export async function handleTeamWorkerPostToolUseSuccess(
 ): Promise<TeamWorkerPostToolUseResult> {
   try {
     if (readHookEvent(payload) !== 'PostToolUse') return { handled: false, status: 'skipped', reason: 'not_posttooluse', operationKinds: [] };
-    if (readToolName(payload) !== 'Bash') return { handled: false, status: 'skipped', reason: 'not_bash', operationKinds: [] };
-    if (readExitCode(payload) !== 0) return { handled: false, status: 'skipped', reason: 'nonzero_exit', operationKinds: [] };
-
     const parsedWorker = parseTeamWorkerEnv(env.OMX_TEAM_INTERNAL_WORKER ?? env.OMX_TEAM_WORKER);
     if (!parsedWorker) return { handled: false, status: 'skipped', reason: 'missing_worker_env', operationKinds: [] };
 
@@ -434,6 +431,10 @@ export async function handleTeamWorkerPostToolUseSuccess(
       const stopMessage = await reportWorkerTaskLeaseLoss(stateRoot, teamName, workerName, renewal.error);
       return { handled: true, status: 'skipped', reason: `lease_lost:${renewal.error}`, stopMessage, teamName, workerName, stateRoot, worktreePath, operationKinds: [] };
     }
+
+    // Tool activity renews the claim; only explicit Bash success authorizes checkpointing.
+    if (readToolName(payload) !== 'Bash') return { handled: false, status: 'skipped', reason: 'not_bash', operationKinds: [] };
+    if (readExitCode(payload) !== 0) return { handled: false, status: 'skipped', reason: 'nonzero_exit', operationKinds: [] };
 
     const config = await readTeamConfig(stateRoot, teamName);
     const leaderArtifactCwd = readLeaderArtifactCwd(config, cwd);

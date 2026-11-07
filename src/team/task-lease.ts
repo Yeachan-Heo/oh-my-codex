@@ -41,7 +41,9 @@ export const TASK_LEASE_SHELL_FUNCTION = `with_task_lease() (
     [ "$exit_status" -ne 0 ] || case "$lease_status" in 0|137|143) ;; *) exit_status=1 ;; esac
     exit "$exit_status"
   }
-  lease_owner_pid=$BASHPID
+  # exec makes Node's parent this wrapper subshell, including on Bash 3.2.
+  lease_owner_pid=$(exec node -p process.ppid) || exit 1
+  case "$lease_owner_pid" in ''|0*|*[!0-9]*) exit 1 ;; esac
   trap cleanup EXIT
   trap 'exit 1' USR1
   trap 'exit 130' INT

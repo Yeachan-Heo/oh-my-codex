@@ -1,12 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, chmod, rm } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TASK_LEASE_INSTRUCTIONS, TASK_LEASE_SHELL_FUNCTION } from '../task-lease.js';
 
-async function runWrapper(mode: string, work: string) {
+async function runWrapper(mode: string, work: string, shell = 'bash', nounset = false) {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-lease-shell-'));
   try {
     await writeFile(join(cwd, 'omx'), `#!/bin/sh
@@ -28,11 +28,12 @@ echo '{"ok":true,"data":{"ok":true}}'
     await writeFile(join(cwd, 'sleep'), '#!/bin/sh\necho $$ >> "$LEASE_TEST_DIR/sleep-pids"\nexec /bin/sleep "$@"\n');
     await chmod(join(cwd, 'sleep'), 0o755);
     const wrapper = TASK_LEASE_SHELL_FUNCTION.replace('sleep 300', 'sleep 0.05')
-      .replace('with_task_lease() (', 'with_task_lease() (\n  echo lease-wrapper-pid:$BASHPID')
+      .replace('with_task_lease() (', 'with_task_lease() (\n  echo lease-wrapper-pid:$(exec node -p process.ppid)')
       .replace('renew_check_pid=$!', 'renew_check_pid=$!; echo "$renew_check_pid" >> "$LEASE_TEST_DIR/check-pids"')
       .replace('wait "$work_pid";', 'echo lease-child-pid:$lease_pid; wait "$work_pid";');
-    const script = `set -e\n${wrapper}\nwith_task_lease '{}' node -e '${work.replaceAll("'", "'\\''")}'\n`;
-    const child = spawn('bash', ['-c', script], { cwd, env: {
+    const workScript = `console.log("work-parent-pid:"+process.ppid);${work}`;
+    const script = `set -e${nounset ? 'u' : ''}\ntrap 'echo wrong-parent-signal; exit 99' USR1\necho lease-parent-pid:$$\n${wrapper}\nwith_task_lease '{}' node -e '${workScript.replaceAll("'", "'\\''")}'\n`;
+    const child = spawn(shell, ['-c', script], { cwd, env: {
       ...process.env, PATH: `${cwd}:${process.env.PATH}`, LEASE_TEST_DIR: cwd, LEASE_TEST_MODE: mode,
     }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
@@ -53,6 +54,14 @@ echo '{"ok":true,"data":{"ok":true}}'
     });
     clearTimeout(timeout);
     const count = Number(await readFile(join(cwd, 'count'), 'utf8'));
+    const parentPid = /lease-parent-pid:(\d+)/.exec(output);
+    const ownerPid = /lease-wrapper-pid:(\d+)/.exec(output);
+    const workParentPid = /work-parent-pid:(\d+)/.exec(output);
+    if (workParentPid) {
+      assert.equal(workParentPid[1], ownerPid?.[1], 'captured PID must be the direct work parent');
+      assert.notEqual(ownerPid?.[1], parentPid?.[1], 'wrapper PID must not be the enclosing shell PID');
+    }
+    assert.doesNotMatch(output, /wrong-parent-signal/);
     const match = /work-pid:(\d+)/.exec(output);
     if (match) assert.throws(() => process.kill(Number(match[1]), 0), /ESRCH/, 'wrapper must not leave its work child alive');
     const leasePid = /lease-child-pid:(\d+)/.exec(output);
@@ -82,6 +91,22 @@ describe('generated task lease Bash wrapper', () => {
     assert.doesNotMatch(TASK_LEASE_INSTRUCTIONS, /After claiming|returned claimToken/);
   });
 
+  it('rejects noncanonical wrapper PIDs before starting work', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-lease-pid-'));
+    try {
+      await writeFile(join(cwd, 'node'), '#!/bin/sh\nprintf "%s\\n" "$LEASE_TEST_PID"\n', { mode: 0o755 });
+      for (const pid of ['', '0', '01', '-1', 'abc', '1 2']) {
+        const result = spawnSync('/bin/bash', ['-uc', `${TASK_LEASE_SHELL_FUNCTION}\nwith_task_lease '{}' /bin/echo work-started`], {
+          env: { ...process.env, PATH: `${cwd}:${process.env.PATH}`, LEASE_TEST_PID: pid }, encoding: 'utf8', timeout: 3000,
+        });
+        assert.equal(result.status, 1, `PID ${JSON.stringify(pid)}: ${result.stderr}`);
+        assert.doesNotMatch(result.stdout, /work-started/);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('renews before and during work, then cleans up its sleeping renewer', async () => {
     const result = await runWrapper('success', `
 console.log('work-pid:' + process.pid);
@@ -103,6 +128,15 @@ setTimeout(() => process.exit(2), 5000).unref();
       assert.notEqual(result.code, 0, result.output);
       assert.equal(result.count, 2);
       assert.doesNotMatch(result.output, /finished/);
+    });
+  }
+  for (const nounset of [false, true]) {
+    it(`fails closed on renewal rejection under explicit /bin/bash${nounset ? ' with nounset' : ''} without signaling its parent`, async () => {
+      const result = await runWrapper('catch-term', 'console.log("work-pid:"+process.pid);require("node:fs").writeFileSync(process.env.LEASE_TEST_DIR+"/ready","");setTimeout(()=>console.log("finished"),3000)', '/bin/bash', nounset);
+      assert.equal(result.code, 1, result.output);
+      assert.equal(result.count, 2);
+      assert.match(result.output, /work-pid:/);
+      assert.doesNotMatch(result.output, /finished|wrong-parent-signal/);
     });
   }
   it('propagates renewal failure even when work catches TERM and exits successfully', async () => {

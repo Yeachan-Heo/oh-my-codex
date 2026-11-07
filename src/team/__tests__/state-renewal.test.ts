@@ -15,6 +15,11 @@ import { handleTeamWorkerPostToolUseSuccess } from '../../scripts/notify-hook/te
 import { renewWorkerTaskLease, reportWorkerTaskLeaseLoss } from '../../scripts/notify-hook/team-worker-lease.js';
 
 const team = 'lease-renewal';
+const livenessTools = [
+  { name: 'plain-string response without an exit code', tool_name: 'Bash', tool_response: 'plain stdout/stderr\n{"exit_code":0}' },
+  { name: 'explicit failed Bash command', tool_name: 'Bash', tool_response: { exit_code: 7 } },
+  { name: 'non-Bash tool activity', tool_name: 'Read', tool_response: 'file contents' },
+];
 describe('task claim renewal', () => {
   let cwd: string;
   let previousRoot: string | undefined;
@@ -81,6 +86,61 @@ describe('task claim renewal', () => {
     }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
     assert.equal((await readTask(team, claim.task.id, cwd))?.version, claim.task.version + 1);
   });
+
+  for (const tool of livenessTools) {
+    for (const outcome of ['live', 'expired', 'wrong-token'] as const) {
+      it(`${tool.name} ${outcome === 'live' ? 'renews' : 'stops'} a ${outcome} claim without checkpoint, ledger or dedupe`, async () => {
+        const claim = await claimed();
+        const stateRoot = join(cwd, '.omx/state');
+        const workerRoot = join(stateRoot, 'team', team, 'workers/worker-1');
+        await writeAtomic(join(workerRoot, 'identity.json'), JSON.stringify({ name: 'worker-1', team_state_root: stateRoot, worktree_path: cwd }));
+        await writeWorkerStatus(team, 'worker-1', {
+          state: 'working', current_task_id: claim.task.id,
+          current_claim_token: outcome === 'wrong-token' ? 'wrong-captured-token' : claim.claimToken,
+          updated_at: new Date().toISOString(),
+        }, cwd);
+        const git = (args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+        git(['init']);
+        git(['config', 'user.email', 'test@example.com']);
+        git(['config', 'user.name', 'Test User']);
+        await writeFile(join(cwd, 'work.txt'), 'before\n');
+        git(['add', 'work.txt']);
+        git(['commit', '-m', 'initial']);
+        const head = git(['rev-parse', 'HEAD']);
+        await writeFile(join(cwd, 'work.txt'), 'unverified output\n');
+        if (outcome === 'expired') await expire(claim.task.id);
+        const before = await readTask(team, claim.task.id, cwd);
+        const statusBefore = await readFile(join(workerRoot, 'status.json'), 'utf8');
+        Date.now = () => realNow() + 10 * 60_000;
+        const result = await handleTeamWorkerPostToolUseSuccess({
+          hook_event_name: 'PostToolUse', tool_name: tool.tool_name, tool_response: tool.tool_response,
+          tool_input: { command: 'printf output; exit 7' }, tool_use_id: 'real-wire-tool',
+        }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
+        const after = await readTask(team, claim.task.id, cwd);
+        if (outcome === 'live') {
+          assert.equal(result.stopMessage, undefined);
+          assert.equal(result.reason, tool.tool_name === 'Bash' ? 'nonzero_exit' : 'not_bash');
+          assert.equal(after!.version, claim.task.version + 1);
+          assert.ok(Date.parse(after!.claim!.leased_until) > Date.parse(before!.claim!.leased_until));
+          assert.equal(after!.claim!.token, before!.claim!.token);
+          const heartbeat = JSON.parse(await readFile(join(workerRoot, 'heartbeat.json'), 'utf8'));
+          assert.equal(heartbeat.source, 'posttooluse');
+        } else {
+          assert.match(result.stopMessage!, outcome === 'expired' ? /lease_expired.*STOP editing/ : /claim_conflict.*STOP editing/);
+          assert.deepEqual(after, before);
+        }
+        assert.deepEqual(result.operationKinds, []);
+        assert.equal(result.checkpointCommit, undefined);
+        assert.equal(result.dedupeKey, undefined);
+        assert.equal(existsSync(join(workerRoot, 'posttooluse-dedupe.json')), false);
+        assert.equal(existsSync(join(cwd, '.omx/reports/team-commit-hygiene', `${team}.ledger.json`)), false);
+        assert.equal(git(['rev-parse', 'HEAD']), head);
+        assert.equal(git(['diff', '--cached']), '');
+        assert.equal(await readFile(join(cwd, 'work.txt'), 'utf8'), 'unverified output\n');
+        assert.equal(await readFile(join(workerRoot, 'status.json'), 'utf8'), statusBefore);
+      });
+    }
+  }
 
   it('explicit CLI API renewal validates inputs, owner and token', async () => {
     const claim = await claimed();
@@ -170,7 +230,7 @@ describe('task claim renewal', () => {
       const heartbeat = await updateWorkerHeartbeat(stateRoot, team, 'worker-1');
       assert.ok(heartbeat?.ok && 'terminalHandoff' in heartbeat);
       const postTool = await handleTeamWorkerPostToolUseSuccess({
-        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { exit_code: 0 }, tool_use_id: 'terminal-handoff',
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'handoff complete\n', tool_use_id: 'terminal-handoff',
       }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot });
       assert.equal(postTool.reason, 'terminal_handoff');
       assert.equal(postTool.stopMessage, undefined);
@@ -239,7 +299,7 @@ describe('task claim renewal', () => {
       // Call outside the barrier callback: inherited ALS ownership would bypass contention.
       const [postTool, heartbeat] = await Promise.all([
         handleTeamWorkerPostToolUseSuccess({
-          hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: { exit_code: 0 }, tool_use_id: 'timeout-tool',
+          hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_response: 'plain stdout/stderr\n', tool_use_id: 'timeout-tool',
         }, cwd, { ...process.env, OMX_TEAM_WORKER: `${team}/worker-1`, OMX_TEAM_STATE_ROOT: stateRoot }),
         updateWorkerHeartbeat(stateRoot, team, 'worker-1'),
       ]);
