@@ -3606,7 +3606,7 @@ esac
     const applyMatch = source.match(
       /applyCreatedInteractiveSessionToConfig\(\s*config,\s*createdSession,\s*workerPaneIds\s*\);/m,
     );
-    const saveMatch = source.match(/await saveTeamConfig\(config, leaderCwd\);/m);
+    const saveMatch = source.match(/await persistStartupTransport\(\);/m);
     const readyMatch = source.match(/waitForWorkerReadyAsync\(/m);
 
     const applyIndex = applyMatch?.index ?? -1;
@@ -4205,154 +4205,355 @@ esac
     }
   });
 
-  it('startTeam preserves released assignments when ownership changes during concurrent startup', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-generation-'));
-    const teamName = 'team-startup-generation';
-    try {
-      await withMockTmuxFixture(
-        {
-          dirPrefix: 'omx-runtime-startup-generation-bin-',
-          tmuxScript: (tmuxLogPath) => `#!/bin/sh
-set -eu
-${tmuxOwnerProofShim}
-printf '%s\n' "$*" >> "${tmuxLogPath}"
-case "$1" in
-  -V)
-    echo "tmux 3.4"
-    exit 0
-    ;;
-  display-message)
-    case "$*" in
-      *"#{window_width}"*) echo "120" ;;
-      *) echo "leader:0 %1" ;;
-    esac
-    exit 0
-    ;;
-  list-panes)
-    case "$*" in
-      *"-a -F #{pane_id}"*)
-        printf "%%1\t0\t2000004141\n"
-        if [ -f "${cwd}/startup-generation-w1" ]; then printf "%%2\t0\t2000004242\n"; fi
-        if [ -f "${cwd}/startup-generation-w2" ]; then printf "%%3\t0\t2000004343\n"; fi
-        if [ -f "${cwd}/startup-generation-hud" ]; then printf "%%4\t0\t2000004444\n"; fi
-        ;;
-      *"pane_current_command"*)
-        printf "%%1\tnode\t'codex'\n"
-        if [ -f "${cwd}/startup-generation-w1" ]; then printf "%%2\tcodex\tcodex\n"; fi
-        if [ -f "${cwd}/startup-generation-w2" ]; then printf "%%3\tcodex\tcodex\n"; fi
-        if [ -f "${cwd}/startup-generation-hud" ]; then printf "%%4\tnode\thud --watch\n"; fi
-        ;;
-      *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
-      *"#{pane_dead}"*) echo "0" ;;
-      *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
-      *"-t %3"*"#{pane_pid}"*) echo "2000004343" ;;
-      *"#{pane_pid}"*) echo "2000004141" ;;
-      *) exit 0 ;;
-    esac
-    exit 0
-    ;;
-  capture-pane)
-    printf 'OpenAI Codex\nmodel: test\n› \n'
-    exit 0
-    ;;
-  split-window)
-    count_file="${cwd}/startup-generation-split-count"
-    count=0
-    if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
-    count=$((count + 1))
-    printf '%s' "$count" > "$count_file"
-    case "$count" in
-      1) : > "${cwd}/startup-generation-w1"; echo "%2" ;;
-      2) : > "${cwd}/startup-generation-w2"; echo "%3" ;;
-      *) : > "${cwd}/startup-generation-hud"; echo "%4" ;;
-    esac
-    exit 0
-    ;;
-  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane|kill-session|resize-pane)
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-`,
-          binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
-          env: {
-            TMUX: undefined,
-            TMUX_PANE: '%1',
-            OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
-            OMX_TEAM_WORKER_CLI: 'codex',
-            OMX_TEAM_READY_TIMEOUT_MS: '500',
-            OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS: '50',
-            OMX_TEAM_STARTUP_DISPATCH_RETRIES: '1',
+  for (const partialFailure of [false, true]) {
+    it(`startTeam preserves early Gemini ownership changes ${partialFailure ? 'with partial-create proof debt' : 'before transport publication'}`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-early-startup-'));
+      try {
+        await withMockTmuxFixture(
+          {
+            dirPrefix: 'omx-runtime-early-startup-bin-',
+            tmuxScript: (tmuxLogPath) => `#!/bin/sh
+  set -eu
+  ${tmuxOwnerProofShim}
+  printf '%s\n' "$*" >> "${tmuxLogPath}"
+  case "$1" in
+    -V)
+      echo "tmux 3.4"
+      exit 0
+      ;;
+    display-message)
+      case "$*" in
+        *"#{window_width}"*) echo "120" ;;
+        *) echo "leader:0 %1" ;;
+      esac
+      exit 0
+      ;;
+    list-panes)
+      case "$*" in
+        *"-a -F #{pane_id}"*)
+          if [ -f "${cwd}/partial-proof-failure" ]; then printf 'malformed-pane-snapshot\n'; exit 0; fi
+          printf "%%1\t0\t2000004141\n"
+          if [ -f "${cwd}/early-startup-w1" ]; then printf "%%2\t0\t2000004242\n"; fi
+          if [ -f "${cwd}/early-startup-w2" ]; then printf "%%3\t0\t2000004343\n"; fi
+          if [ -f "${cwd}/early-startup-hud" ]; then printf "%%4\t0\t2000004444\n"; fi
+          ;;
+        *"pane_current_command"*)
+          printf "%%1\tnode\t'codex'\n"
+          if [ -f "${cwd}/early-startup-w1" ]; then printf "%%2\tcodex\tcodex\n"; fi
+          if [ -f "${cwd}/early-startup-w2" ]; then printf "%%3\tcodex\tcodex\n"; fi
+          if [ -f "${cwd}/early-startup-hud" ]; then printf "%%4\tnode\thud --watch\n"; fi
+          ;;
+        *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
+        *"#{pane_dead}"*) echo "0" ;;
+        *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
+        *"-t %3"*"#{pane_pid}"*) echo "2000004343" ;;
+        *"#{pane_pid}"*) echo "2000004141" ;;
+        *) exit 0 ;;
+      esac
+      exit 0
+      ;;
+    capture-pane)
+      printf 'OpenAI Codex\nmodel: test\n› \n'
+      exit 0
+      ;;
+    split-window)
+      count_file="${cwd}/early-startup-split-count"
+      count=0
+      if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+      count=$((count + 1))
+      printf '%s' "$count" > "$count_file"
+      case "$count" in
+        1)
+          : > "${cwd}/early-startup-w1"
+          gemini
+          echo "%2"
+          ;;
+        2) : > "${cwd}/early-startup-w2"; echo "%3" ;;
+        *)
+          : > "${cwd}/early-startup-hud"
+          ${partialFailure ? `: > "${cwd}/partial-proof-failure"` : ':'}
+          echo "%4"
+          ;;
+      esac
+      exit 0
+      ;;
+    set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane|kill-session|resize-pane)
+      exit 0
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+  `,
+            binaries: [{ name: 'gemini', content: `#!/usr/bin/env node
+  if (process.argv.includes('--version')) { console.log('gemini test'); process.exit(0); }
+  (async () => {
+    const { readdir, readFile, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { readTeamConfig, claimTask, releaseTaskClaim, createTask } = await import(${JSON.stringify(new URL('../state.js', import.meta.url).href)});
+    const cwd = ${JSON.stringify(cwd)};
+    const [name] = await readdir(join(cwd, '.omx/state/team'));
+    const before = await readTeamConfig(name, cwd);
+    const identities = await Promise.all(before.workers.map(async (worker) => {
+      try { return JSON.parse(await readFile(join(cwd, '.omx/state/team', name, 'workers', worker.name, 'identity.json'), 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    }));
+    const claim = await claimTask(name, '1', 'worker-1', null, cwd);
+    if (!claim.ok) throw new Error('early_claim_failed');
+    if (!(await releaseTaskClaim(name, '1', claim.claimToken, 'worker-1', cwd)).ok) throw new Error('early_release_failed');
+    const created = await createTask(name, { subject: 'early followup', description: 'preserve task counter', status: 'pending' }, cwd);
+    const released = await readTeamConfig(name, cwd);
+    await writeFile(join(cwd, 'early-ownership.json'), JSON.stringify({ before, identities, released, created }));
+  })().catch((error) => { console.error(error); process.exitCode = 1; });
+  ` }],
+            env: {
+              TMUX: undefined,
+              TMUX_PANE: '%1',
+              OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
+              OMX_TEAM_WORKER_CLI: 'gemini',
+            },
           },
-        },
-        async ({ tmuxLogPath }) => {
-          let settled = false;
-          const startup = withoutTeamWorkerEnv(() => startTeam(
-            teamName, 'ownership changes during startup', 'executor', 2,
-            [
-              { subject: 'w1', description: 'worker one', owner: 'worker-1' },
-              { subject: 'w2', description: 'worker two', owner: 'worker-2' },
-            ], cwd,
-          ));
-          void startup.then(() => { settled = true; }, () => { settled = true; });
-          try {
-            // Keep worker-2's hook receipt pending while worker-1 starts and releases its task.
-            const deadline = Date.now() + 10_000;
-            while (true) {
-              const requests = await listDispatchRequests(await resolveRuntimeTeamName(cwd, teamName), cwd);
-              if (['worker-1', 'worker-2'].every((worker) => requests.some((request) =>
-                request.to_worker === worker && request.inbox_correlation_key === `startup:${worker}`
-                && request.status === 'pending'))) break;
-              assert.equal(settled, false, 'startup must still be waiting for dispatch');
-              assert.ok(Date.now() < deadline, 'both workers must reach startup dispatch');
-              await new Promise((resolve) => setTimeout(resolve, 20));
+          async ({ tmuxLogPath }) => {
+            const startup = withoutTeamWorkerEnv(() => startTeam(
+              'team-early-startup', 'initial prompt ownership changes', 'executor', 2,
+              [
+                { subject: 'w1', description: 'worker one', owner: 'worker-1' },
+                { subject: 'w2', description: 'worker two', owner: 'worker-2' },
+              ], cwd,
+            ));
+            let teamName: string;
+            if (partialFailure) {
+              await assert.rejects(startup, (error: unknown) => {
+                assert.ok(error instanceof Error);
+                assert.match(error.message, /startup_rollback_pane_proof_unavailable:.*malformed_snapshot/);
+                assert.match(error.message, /during startup_rollback of: create_team_session_cleanup_incomplete/);
+                assert.doesNotMatch(error.message, /stale_generation/);
+                assert.ok(error.cause instanceof Error);
+                assert.match(error.cause.message, /create_team_session_cleanup_incomplete/);
+                return true;
+              });
+              teamName = await resolveRuntimeTeamName(cwd, 'team-early-startup');
+            } else {
+              const runtime = await startup;
+              teamName = runtime.teamName;
+              assert.deepEqual(runtime.config, await readTeamConfig(teamName, cwd));
             }
-            const canonicalName = await resolveRuntimeTeamName(cwd, teamName);
-            await markPendingInboxDispatchesDelivered(canonicalName, cwd, { toWorker: 'worker-1' });
-            const beforeRelease = await readTeamConfig(canonicalName, cwd);
-            assert.ok(beforeRelease);
-            const taskId = beforeRelease.workers[0]!.assigned_tasks[0]!;
-            const claim = await claimTask(canonicalName, taskId, 'worker-1', null, cwd);
-            assert.ok(claim.ok);
-            assert.ok((await releaseTaskClaim(canonicalName, taskId, claim.claimToken, 'worker-1', cwd)).ok);
-            const releasedConfig = await readTeamConfig(canonicalName, cwd);
-            assert.ok(releasedConfig);
-            assert.ok(releasedConfig.config_generation! > beforeRelease.config_generation!);
-            assert.equal(settled, false, 'worker-2 dispatch must hold startup open through release');
-            assert.ok((await listDispatchRequests(canonicalName, cwd)).some((request) =>
-              request.to_worker === 'worker-2' && request.status === 'pending'));
+            const { before, identities, released, created } = JSON.parse(await readFile(join(cwd, 'early-ownership.json'), 'utf8'));
+            assert.deepEqual(before.workers.map((worker: { assigned_tasks: string[] }) => worker.assigned_tasks), [['1'], ['2']]);
+            assert.deepEqual(identities.map((worker: { assigned_tasks: string[] }) => worker.assigned_tasks), [['1'], ['2']]);
+            assert.ok(released.config_generation > before.config_generation);
+            const canonical = await readTeamConfig(teamName, cwd);
+            const manifest = await readTeamManifestV2(teamName, cwd);
+            assert.ok(canonical);
+            assert.deepEqual(canonical.workers.map((worker) => worker.assigned_tasks), [[], ['2']]);
+            assert.equal(canonical.next_task_id, Number(created.id) + 1);
+            assert.equal(canonical.next_task_id, released.next_task_id);
+            assert.deepEqual(manifest?.workers, canonical.workers);
+            assert.equal(manifest?.next_task_id, canonical.next_task_id);
+            assert.equal(manifest?.config_generation, canonical.config_generation);
+            assert.equal((await readTask(teamName, '1', cwd))?.owner, undefined);
+            assert.equal((await readTask(teamName, created.id, cwd))?.subject, 'early followup');
+            if (partialFailure) {
+              assert.equal(canonical.workers[0]?.pane_id, '%2');
+              assert.equal(canonical.hud_pane_id, '%4');
+              assert.ok((await readTeamEvents(teamName, cwd)).some((event) =>
+                event.reason?.startsWith('startup_create_session_cleanup_debt:')));
+            } else {
+              assert.doesNotMatch(await readFile(tmuxLogPath, 'utf8'), /^(?:kill-pane|kill-session|set-hook -u)\b/m);
+            }
+            for (const marker of ['early-startup-w1', 'early-startup-w2', 'early-startup-hud']) {
+              assert.ok(existsSync(join(cwd, marker)));
+            }
+          },
+        );
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 
-            await markPendingInboxDispatchesDelivered(canonicalName, cwd, { toWorker: 'worker-2' });
-            const runtime = await startup;
-            const canonical = await readTeamConfig(runtime.teamName, cwd);
-            const manifest = await readTeamManifestV2(runtime.teamName, cwd);
-            assert.deepEqual(runtime.config, canonical);
-            assert.deepEqual(canonical, releasedConfig, 'startup must not rewrite canonical membership');
-            assert.deepEqual(canonical?.workers.map((worker) => worker.assigned_tasks), [[], beforeRelease.workers[1]!.assigned_tasks]);
-            assert.deepEqual(manifest?.workers, canonical?.workers);
-            assert.equal(manifest?.config_generation, canonical?.config_generation);
-            const releasedTask = await readTask(runtime.teamName, taskId, cwd);
-            assert.equal(releasedTask?.status, 'pending');
-            assert.equal(releasedTask?.owner, undefined);
-            assert.equal(releasedTask?.claim, undefined);
-            for (const worker of runtime.config.workers) {
-              assert.ok(existsSync(join(cwd, '.omx/state/team', runtime.teamName, 'workers', worker.name, 'identity.json')));
+  for (const failStartup of [false, true]) {
+    it(failStartup
+      ? 'startTeam preserves ownership and rollback proof debt after concurrent startup failure'
+      : 'startTeam preserves released assignments when ownership changes during concurrent startup', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-startup-generation-'));
+      const teamName = 'team-startup-generation';
+      try {
+        await withMockTmuxFixture(
+          {
+            dirPrefix: 'omx-runtime-startup-generation-bin-',
+            tmuxScript: (tmuxLogPath) => `#!/bin/sh
+  set -eu
+  ${tmuxOwnerProofShim}
+  printf '%s\n' "$*" >> "${tmuxLogPath}"
+  case "$1" in
+    -V)
+      echo "tmux 3.4"
+      exit 0
+      ;;
+    display-message)
+      case "$*" in
+        *"#{window_width}"*) echo "120" ;;
+        *) echo "leader:0 %1" ;;
+      esac
+      exit 0
+      ;;
+    list-panes)
+      case "$*" in
+        *"-a -F #{pane_id}"*)
+          if [ -f "${cwd}/rollback-proof-failure" ]; then printf 'malformed-pane-snapshot\n'; exit 0; fi
+          printf "%%1\t0\t2000004141\n"
+          if [ -f "${cwd}/startup-generation-w1" ]; then printf "%%2\t0\t2000004242\n"; fi
+          if [ -f "${cwd}/startup-generation-w2" ]; then printf "%%3\t0\t2000004343\n"; fi
+          if [ -f "${cwd}/startup-generation-hud" ]; then printf "%%4\t0\t2000004444\n"; fi
+          ;;
+        *"pane_current_command"*)
+          printf "%%1\tnode\t'codex'\n"
+          if [ -f "${cwd}/startup-generation-w1" ]; then printf "%%2\tcodex\tcodex\n"; fi
+          if [ -f "${cwd}/startup-generation-w2" ]; then printf "%%3\tcodex\tcodex\n"; fi
+          if [ -f "${cwd}/startup-generation-hud" ]; then printf "%%4\tnode\thud --watch\n"; fi
+          ;;
+        *"#{pane_dead} #{pane_pid}"*) echo "0 2000004242" ;;
+        *"#{pane_dead}"*) echo "0" ;;
+        *"-t %2"*"#{pane_pid}"*) echo "2000004242" ;;
+        *"-t %3"*"#{pane_pid}"*) echo "2000004343" ;;
+        *"#{pane_pid}"*) echo "2000004141" ;;
+        *) exit 0 ;;
+      esac
+      exit 0
+      ;;
+    capture-pane)
+      printf 'OpenAI Codex\nmodel: test\n› \n'
+      exit 0
+      ;;
+    split-window)
+      count_file="${cwd}/startup-generation-split-count"
+      count=0
+      if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+      count=$((count + 1))
+      printf '%s' "$count" > "$count_file"
+      case "$count" in
+        1) : > "${cwd}/startup-generation-w1"; echo "%2" ;;
+        2) : > "${cwd}/startup-generation-w2"; echo "%3" ;;
+        *) : > "${cwd}/startup-generation-hud"; echo "%4" ;;
+      esac
+      exit 0
+      ;;
+    set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane|kill-session|resize-pane)
+      exit 0
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+  `,
+            binaries: [{ name: 'codex', content: fakeCodexNodeScript('process.stdin.resume();\n') }],
+            env: {
+              TMUX: undefined,
+              TMUX_PANE: '%1',
+              OMX_TEAM_WORKER_LAUNCH_MODE: 'interactive',
+              OMX_TEAM_WORKER_CLI: 'codex',
+              OMX_TEAM_READY_TIMEOUT_MS: '500',
+              OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS: '50',
+              OMX_TEAM_STARTUP_DISPATCH_RETRIES: '1',
+            },
+          },
+          async ({ tmuxLogPath }) => {
+            let settled = false;
+            const startup = withoutTeamWorkerEnv(() => startTeam(
+              teamName, 'ownership changes during startup', 'executor', 2,
+              [
+                { subject: 'w1', description: 'worker one', owner: 'worker-1' },
+                { subject: 'w2', description: 'worker two', owner: 'worker-2' },
+              ], cwd,
+            ));
+            void startup.then(() => { settled = true; }, () => { settled = true; });
+            try {
+              // Keep worker-2's hook receipt pending while worker-1 starts and releases its task.
+              const deadline = Date.now() + 10_000;
+              while (true) {
+                const requests = await listDispatchRequests(await resolveRuntimeTeamName(cwd, teamName), cwd);
+                if (['worker-1', 'worker-2'].every((worker) => requests.some((request) =>
+                  request.to_worker === worker && request.inbox_correlation_key === `startup:${worker}`
+                  && request.status === 'pending'))) break;
+                assert.equal(settled, false, 'startup must still be waiting for dispatch');
+                assert.ok(Date.now() < deadline, 'both workers must reach startup dispatch');
+                await new Promise((resolve) => setTimeout(resolve, 20));
+              }
+              const canonicalName = await resolveRuntimeTeamName(cwd, teamName);
+              await markPendingInboxDispatchesDelivered(canonicalName, cwd, { toWorker: 'worker-1' });
+              const beforeRelease = await readTeamConfig(canonicalName, cwd);
+              assert.ok(beforeRelease);
+              const taskId = beforeRelease.workers[0]!.assigned_tasks[0]!;
+              const claim = await claimTask(canonicalName, taskId, 'worker-1', null, cwd);
+              assert.ok(claim.ok);
+              assert.ok((await releaseTaskClaim(canonicalName, taskId, claim.claimToken, 'worker-1', cwd)).ok);
+              const releasedConfig = await readTeamConfig(canonicalName, cwd);
+              assert.ok(releasedConfig);
+              assert.ok(releasedConfig.config_generation! > beforeRelease.config_generation!);
+              assert.equal(settled, false, 'worker-2 dispatch must hold startup open through release');
+              assert.ok((await listDispatchRequests(canonicalName, cwd)).some((request) =>
+                request.to_worker === 'worker-2' && request.status === 'pending'));
+
+              if (failStartup) {
+                const worker2Dispatch = (await listDispatchRequests(canonicalName, cwd)).find((request) =>
+                  request.to_worker === 'worker-2' && request.status === 'pending');
+                assert.ok(worker2Dispatch);
+                await writeFile(join(cwd, 'rollback-proof-failure'), '');
+                await transitionDispatchRequest(canonicalName, worker2Dispatch.request_id, 'pending', 'failed', {
+                  last_reason: 'hook_failed:test_startup_failure',
+                }, cwd);
+                await assert.rejects(startup, (error: unknown) => {
+                  assert.ok(error instanceof Error);
+                  assert.match(error.message, /startup_rollback_pane_proof_unavailable:%2:malformed_snapshot/);
+                  assert.doesNotMatch(error.message, /stale_generation/);
+                  return true;
+                });
+                const preserved = await readTeamConfig(canonicalName, cwd);
+                const manifest = await readTeamManifestV2(canonicalName, cwd);
+                assert.ok(preserved);
+                assert.deepEqual(preserved.workers.map((worker) => worker.assigned_tasks), [[], beforeRelease.workers[1]!.assigned_tasks]);
+                assert.equal(preserved.next_task_id, releasedConfig.next_task_id);
+                assert.equal(preserved.workers[0]?.pane_id, '%2');
+                assert.equal(preserved.hud_pane_id, '%4');
+                assert.ok(preserved.resize_hook_name);
+                assert.deepEqual(manifest?.workers, preserved.workers);
+                assert.equal(manifest?.config_generation, preserved.config_generation);
+                assert.ok(preserved.config_generation! > releasedConfig.config_generation!);
+                assert.equal((await readTask(canonicalName, taskId, cwd))?.owner, undefined);
+                assert.doesNotMatch(await readFile(tmuxLogPath, 'utf8'), /^(?:kill-pane|kill-session)\b/m);
+                return;
+              }
+              await markPendingInboxDispatchesDelivered(canonicalName, cwd, { toWorker: 'worker-2' });
+              const runtime = await startup;
+              const canonical = await readTeamConfig(runtime.teamName, cwd);
+              const manifest = await readTeamManifestV2(runtime.teamName, cwd);
+              assert.deepEqual(runtime.config, canonical);
+              assert.deepEqual(canonical, releasedConfig, 'startup must not rewrite canonical membership');
+              assert.deepEqual(canonical?.workers.map((worker) => worker.assigned_tasks), [[], beforeRelease.workers[1]!.assigned_tasks]);
+              assert.deepEqual(manifest?.workers, canonical?.workers);
+              assert.equal(manifest?.config_generation, canonical?.config_generation);
+              const releasedTask = await readTask(runtime.teamName, taskId, cwd);
+              assert.equal(releasedTask?.status, 'pending');
+              assert.equal(releasedTask?.owner, undefined);
+              assert.equal(releasedTask?.claim, undefined);
+              for (const worker of runtime.config.workers) {
+                assert.ok(existsSync(join(cwd, '.omx/state/team', runtime.teamName, 'workers', worker.name, 'identity.json')));
+              }
+              for (const marker of ['startup-generation-w1', 'startup-generation-w2', 'startup-generation-hud']) {
+                assert.ok(existsSync(join(cwd, marker)), 'created pane resources must remain');
+              }
+              assert.doesNotMatch(await readFile(tmuxLogPath, 'utf-8'), /^(?:kill-pane|kill-session|set-hook -u)\b/m);
+            } finally {
+              await startup.catch(() => {});
             }
-            for (const marker of ['startup-generation-w1', 'startup-generation-w2', 'startup-generation-hud']) {
-              assert.ok(existsSync(join(cwd, marker)), 'created pane resources must remain');
-            }
-            assert.doesNotMatch(await readFile(tmuxLogPath, 'utf-8'), /^(?:kill-pane|kill-session|set-hook -u)\b/m);
-          } finally {
-            await startup.catch(() => {});
-          }
-        },
-      );
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
+          },
+        );
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('startTeam starts worker-2 readiness before delayed worker-1 readiness settles', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-parallel-ready-'));

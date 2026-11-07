@@ -3713,6 +3713,34 @@ export async function startTeam(
 
 
   let config: TeamConfig | null = null;
+  // Only transport/debt fields belong to startup after workers can execute.
+  const persistStartupTransport = async (): Promise<void> => {
+    const startup = config;
+    if (!startup) throw new Error(`team_config_missing:${sanitized}`);
+    config = await withTeamTaskMembershipBarrier(sanitized, leaderCwd, async () => {
+      const current = await readTeamConfig(sanitized, leaderCwd);
+      if (!current) throw new Error(`team_config_missing:${sanitized}`);
+      current.tmux_session = startup.tmux_session;
+      current.tmux_session_id = startup.tmux_session_id;
+      current.tmux_session_created = startup.tmux_session_created;
+      current.tmux_pane_owner_id = startup.tmux_pane_owner_id;
+      current.leader_pane_id = startup.leader_pane_id;
+      current.leader_pane_pid = startup.leader_pane_pid;
+      current.hud_pane_id = startup.hud_pane_id;
+      current.hud_pane_pid = startup.hud_pane_pid;
+      current.resize_hook_name = startup.resize_hook_name;
+      current.resize_hook_target = startup.resize_hook_target;
+      current.startup_cleanup_panes = startup.startup_cleanup_panes;
+      current.workers = current.workers.flatMap((worker) => {
+        const transport = startup.workers.find((candidate) => candidate.name === worker.name);
+        return transport ? [{ ...worker, pane_id: transport.pane_id, pid: transport.pid }]
+          : worker.index <= workerCount ? [] : [worker];
+      });
+      current.worker_count = current.workers.length;
+      await saveTeamConfig(current, leaderCwd);
+      return current;
+    });
+  };
   const workerPaneIds = Array.from({ length: workerCount }, () => undefined as string | undefined);
   const workerReadyTimeoutMs = resolveWorkerReadyTimeoutMs(launchEnv);
   const workerStartupEvidenceTimeoutMs = resolveWorkerStartupEvidenceTimeoutMs(
@@ -3981,7 +4009,7 @@ export async function startTeam(
         index: workerIndex,
         role: bootstrapPlan.workerRole,
         worker_cli: bootstrapPlan.workerCli,
-        assigned_tasks: bootstrapPlan.workerTasks.map((task) => task.id),
+        assigned_tasks: config?.workers[workerIndex - 1]?.assigned_tasks ?? [],
         working_dir: workerWorkspace.cwd,
         worktree_repo_root: workerWorkspace.worktreeRepoRoot,
         worktree_path: workerWorkspace.worktreePath,
@@ -4012,7 +4040,6 @@ export async function startTeam(
         config.workers[workerIndex - 1].pane_id = paneId;
         config.workers[workerIndex - 1].role = bootstrapPlan.workerRole;
         config.workers[workerIndex - 1].worker_cli = bootstrapPlan.workerCli;
-        config.workers[workerIndex - 1].assigned_tasks = bootstrapPlan.workerTasks.map((task) => task.id);
         config.workers[workerIndex - 1].working_dir = workerWorkspace.cwd;
         config.workers[workerIndex - 1].worktree_repo_root = workerWorkspace.worktreeRepoRoot;
         config.workers[workerIndex - 1].worktree_path = workerWorkspace.worktreePath;
@@ -4044,6 +4071,22 @@ export async function startTeam(
     });
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
     let workerStartupArgs: ReadonlyArray<ReadonlyArray<string>> | undefined;
+
+    // Initial prompts can execute during pane/process creation, before it returns.
+    config = await withTeamTaskMembershipBarrier(sanitized, leaderCwd, async () => {
+      const current = await readTeamConfig(sanitized, leaderCwd);
+      if (!current) throw new Error(`team_config_missing:${sanitized}`);
+      config = current;
+      const startupTasks = await listTasks(sanitized, leaderCwd);
+      for (let i = 1; i <= workerCount; i++) {
+        const plan = workerBootstrapPlans[i - 1]!;
+        current.workers[i - 1]!.assigned_tasks = startupTasks
+          .filter((task) => task.owner === plan.workerName).map((task) => task.id);
+        await materializeWorkerStartupState(plan, i, undefined);
+      }
+      await saveTeamConfig(current, leaderCwd);
+      return current;
+    });
 
     if (workerLaunchMode === 'interactive') {
       const createdSession = createTeamSession(
@@ -4109,8 +4152,9 @@ export async function startTeam(
       }
     }
 
-    // Materialize durable startup state for every worker before any per-worker
-    // readiness wait or startup-evidence gate can block later workers.
+    await persistStartupTransport();
+
+    // Add frozen transport identities without restoring bootstrap task assignments.
     for (let i = 1; i <= workerCount; i++) {
       const bootstrapPlan = workerBootstrapPlans[i - 1];
       if (!bootstrapPlan) {
@@ -4119,7 +4163,6 @@ export async function startTeam(
       await materializeWorkerStartupState(bootstrapPlan, i, workerPaneIds[i - 1]);
       startupTiming.mark('identity_inbox_written', { worker: bootstrapPlan.workerName, pane_id: workerPaneIds[i - 1] });
     }
-    await saveTeamConfig(config, leaderCwd);
 
     // 7. Start all safe per-worker readiness/dispatch attempts concurrently.
     // Pane creation and worktree provisioning above remain dependency-bound and
@@ -4362,7 +4405,7 @@ export async function startTeam(
       createdWorkerPaneIds.push(...partialSession.workerPaneIds);
       createdLeaderPaneId = partialSession.leaderPaneId;
       applyCreatedInteractiveSessionToConfig(config, partialSession, workerPaneIds);
-      await saveTeamConfig(config, leaderCwd);
+      await persistStartupTransport();
       const cleanupDebt = [
         ...error.cleanupErrors,
         ...error.proofUnavailable.map((proof) => `pane_proof_unavailable:${proof.paneId}:${proof.reason}`),
@@ -4392,7 +4435,7 @@ export async function startTeam(
           : [];
       });
       if (startupCleanupDebt.length > 0) {
-        await saveTeamConfig(config, leaderCwd);
+        await persistStartupTransport();
         await appendTeamEvent(sanitized, {
           type: 'team_leader_nudge',
           worker: 'leader-fixed',
@@ -4444,7 +4487,7 @@ export async function startTeam(
         }
 
         if (paneProcessProofUnavailable.length > 0) {
-          if (config) await saveTeamConfig(config, leaderCwd);
+          if (config) await persistStartupTransport();
           assertPaneTeardownProofsAvailable('startup_rollback', paneProcessProofUnavailable);
         }
         const rollbackPanePids = Object.fromEntries((config?.workers ?? [])
@@ -4477,7 +4520,7 @@ export async function startTeam(
         if (rollbackPaneTeardown.proofUnavailable.length > 0) {
           if (config) {
             try {
-              await saveTeamConfig(config, leaderCwd);
+              await persistStartupTransport();
             } catch (cleanupError) {
               rollbackErrors.push(`saveTeamConfig(preserve rollback state): ${String(cleanupError)}`);
             }
@@ -4485,7 +4528,7 @@ export async function startTeam(
           assertPaneTeardownProofsAvailable('startup_rollback', rollbackPaneTeardown.proofUnavailable);
         }
         if (rollbackPaneTeardown.kill.failed > 0) {
-          if (config) await saveTeamConfig(config, leaderCwd);
+          if (config) await persistStartupTransport();
           const originalMessage = error instanceof Error ? error.message : String(error);
           throw new Error(`${originalMessage}; rollback encountered errors: paneTeardown:${rollbackPaneTeardown.kill.failedPaneIds.join(',')}`);
         }
