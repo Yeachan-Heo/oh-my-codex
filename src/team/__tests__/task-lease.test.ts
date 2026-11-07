@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TASK_LEASE_SHELL_FUNCTION } from '../task-lease.js';
+import { TASK_LEASE_INSTRUCTIONS, TASK_LEASE_SHELL_FUNCTION } from '../task-lease.js';
 
 async function runWrapper(mode: string, work: string) {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-lease-shell-'));
@@ -64,6 +64,13 @@ echo '{"ok":true,"data":{"ok":true}}'
 
 const work = 'console.log("work-pid:"+process.pid);setTimeout(()=>console.log("finished"),450)';
 describe('generated task lease Bash wrapper', () => {
+  it('accepts fresh claims and validated leader handoffs without requiring another claim', () => {
+    assert.match(TASK_LEASE_INSTRUCTIONS, /freshly claimed token.*current claim token from a leader handoff/);
+    assert.match(TASK_LEASE_INSTRUCTIONS, /validate the task file owner, claim token, version, and unexpired lease/);
+    assert.match(TASK_LEASE_INSTRUCTIONS, /do not claim again just to renew a valid handoff/);
+    assert.doesNotMatch(TASK_LEASE_INSTRUCTIONS, /After claiming|returned claimToken/);
+  });
+
   it('renews before and during work, then cleans up its sleeping renewer', async () => {
     const result = await runWrapper('success', work);
     assert.equal(result.code, 0, result.output);
