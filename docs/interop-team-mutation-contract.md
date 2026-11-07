@@ -27,13 +27,16 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
 
 Tasks explicitly marked `requires_code_change: true` must supply a JSON evidence
 report before transitioning from `in_progress` to `completed`. This validates the
-report's format and association with the current claim; it does not authenticate
+report's format, current claim, and clean committed worker HEAD; it does not authenticate
 whether the reported commands actually ran. Existing claim, lease, delegation and
 coordination checks still apply.
 
-After claiming, write the report under `.omx/evidence/` in the worker's assigned
-`working_dir`. If that directory is not configured, paths resolve from the API
-call's working directory. Use a path without whitespace, for example
+After claiming, commit the code and verify that exact commit. Leave the Git
+worktree clean, then write the report under `.omx/evidence/` in the worker's
+assigned `worktree_path`, falling back to `working_dir` or the API call's working
+directory. Keep `.omx/` runtime state ignored by Git (for example in the repository's
+local `info/exclude`); do not commit runtime evidence or raw claim tokens.
+Use a path without whitespace, for example
 `.omx/evidence/task-1.json`:
 
 ```json
@@ -41,6 +44,7 @@ call's working directory. Use a path without whitespace, for example
   "teamName": "my-team",
   "taskId": "1",
   "claimTokenSha256": "<SHA-256 hex digest of the current claim token>",
+  "verifiedHead": "<full git rev-parse HEAD SHA of the verified commit>",
   "summary": "Fix addition and verify positive and negative inputs",
   "verification": [
     {
@@ -81,7 +85,11 @@ the worker's `.omx/evidence/` directory. Symlinked files or directories beneath
 the working directory are rejected. Its
 modification time must be at or after the current claim's `claimed_at`, and its
 `teamName`, string `taskId` and `claimTokenSha256` must match the task and claim.
-After releasing and reclaiming, regenerate the report with the new token's hash;
+`verifiedHead` must equal the full current Git HEAD SHA and the worktree must be
+clean, including untracked files and submodules. Completion records this SHA as
+authoritative `verified_head`; clients cannot set it through create/update-task.
+Git commit timestamps are not evidence identity. After releasing and reclaiming,
+regenerate the report with the new token's hash;
 refreshing only the old report's modification time is insufficient.
 
 A rejected report returns `data.ok: false`, `data.error: "invalid_completion_evidence"`
@@ -128,6 +136,20 @@ compatibility rules below.
   report, retain the structured verification summary, and handle
   `invalid_completion_evidence`; neither plain-text verification nor a report
   marker alone is sufficient.
+- Code clients must commit before verifying and include `verifiedHead`; dirty or
+  different-HEAD reports are rejected. Monitoring no longer stages or auto-commits
+  worker changes. Integration requires idle/done, completed associated tasks, a
+  clean worktree, and a code-task `verified_head` matching its current HEAD.
+  Completed `requires_code_change:false` research needs no code verification and
+  does not veto a separate verified code handoff, but cannot authorize one alone.
+- Legacy completed tasks without `verified_head` are not silently treated as
+  verified Git handoffs. Their completion records remain unchanged, but cannot
+  authorize integration. To migrate, create a new `requires_code_change:true` task
+  for that worker (start a continuation first if the team is already terminal),
+  claim it, verify the committed current HEAD, and complete it
+  with fresh evidence; do not backfill a SHA from old result text or timestamps.
+  After any later edit or different HEAD (including a rebase), repeat this verified
+  handoff before publishing further output.
 - Once `requires_code_change` is `true`, `update-task` cannot set it to `false`,
   including while pending or after releasing a claim. This returns outer
   `ok: false` with `error.code: "operation_failed"`. Choose the flag when defining

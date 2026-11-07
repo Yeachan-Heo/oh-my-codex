@@ -213,6 +213,7 @@ export interface TeamTask {
   description: string;
   status: 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed';
   requires_code_change?: boolean;
+  verified_head?: string; // Set only by validated code completion.
   role?: string; // agent role for this task (e.g., 'executor', 'test-engineer', 'designer')
   owner?: string; // worker name
   result?: string; // completion summary
@@ -1821,6 +1822,7 @@ export async function createTask(
       }),
       id: nextId,
       status: task.status ?? 'pending',
+      verified_head: undefined,
       depends_on: task.depends_on ?? task.blocked_by ?? [],
       version: 1,
     };
@@ -1871,6 +1873,7 @@ export async function updateTask(
         throw new Error(`Invalid task status: ${updates.status}`);
       }
 
+      if ('verified_head' in updates) throw new Error('Use transition-task-status to record a verified handoff.');
       if (updates.requires_code_change === true && existing.requires_code_change !== true && isTerminalTaskStatus(existing.status)) {
         throw new Error('Cannot enable completion evidence for a terminal task.');
       }

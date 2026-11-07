@@ -2037,9 +2037,14 @@ export async function scaleDown(
         }
       }
     }
+    const drainStatusArtifacts = new Map<string, string>();
     const restorePriorWorkerStatuses = async (workers: readonly WorkerInfo[]): Promise<void> => {
       await Promise.all(workers.map(async (worker) => {
         const statusPath = join(teamStateRoot, 'team', sanitized, 'workers', worker.name, 'status.json');
+        const requested = drainStatusArtifacts.get(worker.name);
+        if (!requested) return;
+        const current = await readFile(statusPath, 'utf8').catch(() => null);
+        if (current !== requested) return;
         const priorArtifact = priorWorkerStatusArtifacts.get(worker.name);
         if (priorArtifact?.exists) {
           await writeFile(statusPath, priorArtifact.raw);
@@ -2056,12 +2061,14 @@ export async function scaleDown(
     for (const w of targetWorkers) {
       const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
       if (status.state === 'idle' || status.state === 'done') continue;
-      await writeWorkerStatus(sanitized, w.name, {
+      const drainStatus = {
         ...status,
         state: 'draining',
         reason: 'scale_down requested by leader',
         updated_at: new Date().toISOString(),
-      }, leaderCwd);
+      } as const;
+      drainStatusArtifacts.set(w.name, JSON.stringify(drainStatus, null, 2));
+      await writeWorkerStatus(sanitized, w.name, drainStatus, leaderCwd);
     }
 
     if (!force) {
@@ -2107,6 +2114,10 @@ export async function scaleDown(
             const statuses = await Promise.all(removableWorkers.map((w) => readWorkerStatus(sanitized, w.name, leaderCwd)));
             if (!statuses.every((status) => status.state === 'idle' || status.state === 'done')) {
               throw new Error('scale_down_worker_not_drained');
+            }
+            if (lockedTasks.some((task) => task.status !== 'completed' && task.status !== 'failed'
+              && (removableWorkerNames.has(task.owner ?? '') || removableWorkerNames.has(task.claim?.owner ?? '')))) {
+              throw new Error('scale_down_worker_has_active_tasks');
             }
             assertScaleDownWorktreesPreserved(removableWorkers, leaderCwd);
           }

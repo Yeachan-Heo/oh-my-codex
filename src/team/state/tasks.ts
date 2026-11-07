@@ -48,7 +48,7 @@ export async function computeTaskReadiness(
 interface ClaimTaskDeps extends TaskReadDeps {
   teamName: string;
   cwd: string;
-  readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string; working_dir?: string }> } | null>;
+  readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string; working_dir?: string; worktree_path?: string }> } | null>;
   withTaskClaimLock: <T>(teamName: string, taskId: string, cwd: string, fn: () => Promise<T>) => Promise<{ ok: true; value: T } | { ok: false }>;
   normalizeTask: (task: TeamTask) => TeamTaskV2;
   isTerminalTaskStatus: (status: TeamTaskStatus) => boolean;
@@ -231,11 +231,13 @@ export async function transitionTaskStatus(
       return { ok: false as const, error: 'missing_coordination_compliance_evidence' as const };
     }
 
+    let verifiedHead: string | undefined;
     if (to === 'completed' && v.requires_code_change === true) {
       try {
         const config = await deps.readTeamConfig(deps.teamName, deps.cwd);
-        const evidenceCwd = config?.workers.find((worker) => worker.name === v.owner)?.working_dir || deps.evidenceCwd;
-        await validateCompletionEvidence(evidenceCwd, deps.teamName, v, normalizedResult);
+        const worker = config?.workers.find((worker) => worker.name === v.owner);
+        const evidenceCwd = worker?.worktree_path || worker?.working_dir || deps.evidenceCwd;
+        verifiedHead = await validateCompletionEvidence(evidenceCwd, deps.teamName, v, normalizedResult);
       } catch (error) {
         return { ok: false as const, error: 'invalid_completion_evidence' as const,
           reason: error instanceof Error ? error.message : String(error) };
@@ -245,6 +247,7 @@ export async function transitionTaskStatus(
     const updated: TeamTaskV2 = {
       ...v,
       status: to,
+      verified_head: verifiedHead,
       completed_at: new Date().toISOString(),
       result: to === 'completed' ? normalizedResult : undefined,
       error: to === 'failed' ? normalizedError : undefined,

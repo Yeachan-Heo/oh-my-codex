@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import {
   initTeamState,
   createTask,
+  claimTask,
+  transitionTaskStatus,
   listMailboxMessages,
   readMonitorSnapshot,
   readTask,
@@ -62,10 +64,22 @@ async function configureWorkers(
   for (const worker of cfg.workers) {
     const task = await createTask(teamName, {
       subject: `Verified output from ${worker.name}`, description: 'Ready for integration',
-      status: 'completed', owner: worker.name, requires_code_change: true,
-      result: 'Verification: PASS `npm test` for worker output.',
+      status: 'pending', owner: worker.name, requires_code_change: true,
     }, repo);
     assert.deepEqual(worker.assigned_tasks, [task.id]);
+    const claim = await claimTask(teamName, task.id, worker.name, null, repo);
+    assert.ok(claim.ok);
+    const workerCwd = worker.worktree_path!;
+    await mkdir(join(workerCwd, '.omx/evidence'), { recursive: true });
+    await writeFile(join(workerCwd, '.omx/evidence/handoff.json'), JSON.stringify({
+      teamName, taskId: task.id, claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+      verifiedHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerCwd, encoding: 'utf8' }).trim(),
+      summary: 'Verified worker output', verification: [{ command: 'npm test', result: 'passed', output: 'Tests passed' }], unverified: [],
+    }));
+    const completed = await transitionTaskStatus(teamName, task.id, 'in_progress', 'completed', claim.claimToken, repo, {
+      result: 'Verification: PASS `npm test` for worker output.\nEVIDENCE_RECORDED: .omx/evidence/handoff.json',
+    });
+    assert.ok(completed.ok, JSON.stringify(completed));
     await writeWorkerStatus(teamName, worker.name, { state: 'done', updated_at: new Date().toISOString() }, repo);
   }
 }

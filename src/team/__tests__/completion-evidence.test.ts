@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,6 +9,18 @@ import { claimTask, createTask, initTeamState, readMonitorSnapshot, readTask, re
 import { executeTeamApiOperation } from '../api-interop.js';
 import { monitorTeam } from '../runtime.js';
 import { buildTeamExecutionPlan } from '../../cli/team.js';
+
+async function initEvidenceRepo(cwd: string): Promise<string> {
+  await mkdir(cwd, { recursive: true });
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd });
+  await writeFile(join(cwd, '.git/info/exclude'), '.omx/\n');
+  await writeFile(join(cwd, 'code.txt'), 'verified code\n');
+  execFileSync('git', ['add', 'code.txt'], { cwd });
+  execFileSync('git', ['commit', '-m', 'verified code'], { cwd, stdio: 'ignore' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+}
 
 describe('worker completion evidence', () => {
   it('enforces report output evidence while allowing labeled analysis and evaluated options', async () => {
@@ -272,11 +285,13 @@ describe('worker completion evidence', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-completion-evidence-'));
     try {
       await initTeamState('proof', 'implement', 'executor', 1, cwd);
-      const task = await createTask('proof', { subject: 'code', description: 'implement', status: 'pending', requires_code_change: true }, cwd);
+      const task = await createTask('proof', { subject: 'code', description: 'implement', status: 'pending', requires_code_change: true, verified_head: '0'.repeat(40) }, cwd);
+      assert.equal(task.verified_head, undefined);
       const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
       assert.ok(claim.ok);
       await mkdir(join(cwd, '.omx/evidence'), { recursive: true });
       await writeFile(join(cwd, '.omx/evidence/test-results.json'), JSON.stringify({
+        verifiedHead: await initEvidenceRepo(cwd),
         teamName: 'proof', taskId: task.id,
         claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
         summary: 'Fix addition and exercise positive and negative inputs',
@@ -292,6 +307,7 @@ describe('worker completion evidence', () => {
       }
       const completed = await transitionTaskStatus('proof', task.id, 'in_progress', 'completed', claim.claimToken, cwd, { result: `Verification:\n- PASS node --test: 2 tests passed\n${marker}` });
       assert.equal(completed.ok, true);
+      assert.equal((await readTask('proof', task.id, cwd))?.verified_head, execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim());
       assert.ok(await updateTask('proof', task.id, { requires_code_change: true }, cwd));
       for (let poll = 0; poll < 2; poll += 1) {
         const snapshot = await monitorTeam('proof', cwd);
@@ -343,6 +359,7 @@ describe('worker completion evidence', () => {
       const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
       assert.ok(claim.ok);
       const evidence = {
+        verifiedHead: await initEvidenceRepo(workerCwd),
         teamName: 'proof', taskId: task.id,
         claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
         summary: 'Implement multiplication',
@@ -384,6 +401,7 @@ describe('worker completion evidence', () => {
       const path = '.omx/evidence/task.json';
       await mkdir(join(callerCwd, '.omx/evidence'), { recursive: true });
       await writeFile(join(callerCwd, path), JSON.stringify({
+        verifiedHead: await initEvidenceRepo(callerCwd),
         teamName: 'proof', taskId: task.id,
         claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
         summary: 'Implement division',
@@ -413,6 +431,7 @@ describe('worker completion evidence', () => {
       const claim = await claimTask('proof', task.id, 'worker-1', null, cwd);
       assert.ok(claim.ok);
       const evidence = {
+        verifiedHead: await initEvidenceRepo(cwd),
         teamName: 'proof', taskId: task.id,
         claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
         summary: 'Implement addition and exercise negative numbers',
@@ -451,7 +470,19 @@ describe('worker completion evidence', () => {
       await reject('EVIDENCE_RECORDED: .omx/evidence/linked-dir/outside.json');
       await assert.rejects(updateTask('proof', task.id, { status: 'completed' }, cwd), /transition-task-status/);
       await assert.rejects(updateTask('proof', task.id, { requires_code_change: false }, cwd), /Cannot disable/);
+      await writeFile(join(cwd, path), JSON.stringify({ ...evidence, verifiedHead: undefined }));
+      await reject(`EVIDENCE_RECORDED: ${path}`);
+      await writeFile(join(cwd, path), JSON.stringify({ ...evidence, verifiedHead: '0'.repeat(40) }));
+      await reject(`EVIDENCE_RECORDED: ${path}`);
       await writeFile(join(cwd, path), JSON.stringify(evidence));
+      await writeFile(join(cwd, 'code.txt'), 'later unverified bytes\n');
+      await reject(`EVIDENCE_RECORDED: ${path}`);
+      execFileSync('git', ['add', 'code.txt'], { cwd });
+      execFileSync('git', ['commit', '-m', 'later unverified commit'], { cwd, stdio: 'ignore' });
+      await reject(`EVIDENCE_RECORDED: ${path}`);
+      evidence.verifiedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+      await writeFile(join(cwd, path), JSON.stringify(evidence));
+      await assert.rejects(updateTask('proof', task.id, { verified_head: evidence.verifiedHead }, cwd), /transition-task-status/);
       assert.equal((await complete(`Verification: PASS\nEVIDENCE_RECORDED: ${path}`)).ok, true);
       assert.equal((await readTask('proof', task.id, cwd))?.status, 'completed');
       assert.match((await readFile(teamEventLogPath('proof', cwd), 'utf8')), /task_completed/);

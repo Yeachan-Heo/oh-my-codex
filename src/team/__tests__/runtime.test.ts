@@ -90,6 +90,7 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  await writeFile(join(cwd, '.git/info/exclude'), '.omx/\n');
   await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
   execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
@@ -108,10 +109,21 @@ async function handOffVerifiedIntegrationTasks(teamName: string, cwd: string): P
   for (const worker of config.workers) {
     const task = await createTask(teamName, {
       subject: `Verified output from ${worker.name}`, description: 'Ready for integration',
-      status: 'completed', owner: worker.name, requires_code_change: true,
-      result: 'Verification: PASS `npm test` for worker output.',
+      status: 'pending', owner: worker.name, requires_code_change: true,
     }, cwd);
-    assert.deepEqual(worker.assigned_tasks, [task.id]);
+    const claim = await claimTask(teamName, task.id, worker.name, null, cwd);
+    assert.ok(claim.ok);
+    const workerCwd = worker.worktree_path!;
+    await mkdir(join(workerCwd, '.omx/evidence'), { recursive: true });
+    await writeFile(join(workerCwd, '.omx/evidence/handoff.json'), JSON.stringify({
+      teamName, taskId: task.id, claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+      verifiedHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerCwd, encoding: 'utf8' }).trim(),
+      summary: 'Verified worker output', verification: [{ command: 'npm test', result: 'passed', output: 'Tests passed' }], unverified: [],
+    }));
+    const completed = await transitionTaskStatus(teamName, task.id, 'in_progress', 'completed', claim.claimToken, cwd, {
+      result: 'Verification: PASS `npm test` for worker output.\nEVIDENCE_RECORDED: .omx/evidence/handoff.json',
+    });
+    assert.ok(completed.ok, JSON.stringify(completed));
     await writeWorkerStatus(teamName, worker.name, { state: 'done', updated_at: new Date().toISOString() }, cwd);
   }
 }
@@ -7087,57 +7099,95 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('monitorTeam checkpoints verified, explicitly handed-off worker output before integration', async () => {
+  for (const mutation of ['tracked-edit', 'untracked-file', 'different-head', 'research-only', 'legacy-completion'] as const) {
+    it(`monitorTeam refuses publication without a matching clean code handoff (${mutation})`, async () => {
+      const repo = await initRepo();
+      let workerPath = '';
+      try {
+        const team = 'team-handoff-identity';
+        workerPath = await addWorktree(repo, 'handoff-identity-worker', 'omx-runtime-handoff-identity-');
+        await writeFile(join(workerPath, 'code.txt'), 'verified worker code\n');
+        execFileSync('git', ['add', 'code.txt'], { cwd: workerPath });
+        execFileSync('git', ['commit', '-m', 'verified worker commit'], { cwd: workerPath, stdio: 'ignore' });
+        await initTeamState(team, 'handoff identity test', 'executor', 1, repo);
+        const config = await readTeamConfig(team, repo);
+        assert.ok(config);
+        Object.assign(config.workers[0]!, { worktree_repo_root: repo, worktree_path: workerPath, worktree_branch: 'handoff-identity-worker' });
+        await saveTeamConfig(config, repo);
+        if (mutation === 'research-only') {
+          const research = await createTask(team, { subject: 'research', description: 'read only', status: 'pending', requires_code_change: false }, repo);
+          const claim = await claimTask(team, research.id, 'worker-1', null, repo);
+          assert.ok(claim.ok);
+          assert.ok((await transitionTaskStatus(team, research.id, 'in_progress', 'completed', claim.claimToken, repo, { result: 'Research complete; no code changes requested.' })).ok);
+          await writeWorkerStatus(team, 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, repo);
+        } else if (mutation === 'legacy-completion') {
+          // Persisted legacy completions have no authoritative Git identity.
+          await createTask(team, { subject: 'legacy code', description: 'old completion', status: 'completed', owner: 'worker-1', requires_code_change: true, result: 'Verification: PASS `npm test`.' }, repo);
+          await writeWorkerStatus(team, 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, repo);
+        } else {
+          await handOffVerifiedIntegrationTasks(team, repo);
+          if (mutation === 'untracked-file') {
+            await writeFile(join(workerPath, 'later.txt'), 'unverified untracked content\n');
+          } else {
+            await writeFile(join(workerPath, 'code.txt'), 'later unverified tracked bytes\n');
+            if (mutation === 'different-head') {
+              execFileSync('git', ['add', 'code.txt'], { cwd: workerPath });
+              execFileSync('git', ['commit', '-m', 'later unverified commit'], { cwd: workerPath, stdio: 'ignore' });
+            }
+          }
+        }
+        const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+        if (mutation === 'legacy-completion' || mutation === 'different-head') {
+          await createTask(team, { subject: 'leader follow-up', description: 'keep execution open for re-verification', status: 'pending' }, repo);
+        }
+        const leaderHead = git(repo, ['rev-parse', 'HEAD']);
+        const workerHead = git(workerPath, ['rev-parse', 'HEAD']);
+        const workerStatus = git(workerPath, ['status', '--porcelain']);
+        await monitorTeam(team, repo);
+        assert.equal(git(repo, ['rev-parse', 'HEAD']), leaderHead);
+        assert.equal(git(workerPath, ['rev-parse', 'HEAD']), workerHead);
+        assert.equal(git(workerPath, ['status', '--porcelain']), workerStatus);
+        assert.equal(existsSync(join(repo, 'code.txt')), false);
+        if (mutation === 'tracked-edit' || mutation === 'different-head') assert.equal(await readFile(join(workerPath, 'code.txt'), 'utf8'), 'later unverified tracked bytes\n');
+        const events = await readTeamEvents(team, repo, { wakeableOnly: false });
+        assert.equal(events.some((event) => ['worker_auto_commit', 'worker_merge_applied', 'worker_cherry_pick_applied', 'worker_cross_rebase_applied'].includes(event.type)), false);
+        if (mutation === 'legacy-completion' || mutation === 'different-head') {
+          // A fresh verified code task is the supported migration/reverification path.
+          await handOffVerifiedIntegrationTasks(team, repo);
+          await monitorTeam(team, repo);
+          assert.equal(await readFile(join(repo, 'code.txt'), 'utf8'), mutation === 'different-head' ? 'later unverified tracked bytes\n' : 'verified worker code\n');
+        }
+      } finally {
+        if (workerPath) await rm(workerPath, { recursive: true, force: true });
+        await rm(repo, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('monitorTeam integrates verified code after exempt historical research completion', async () => {
     const repo = await initRepo();
     let workerPath = '';
     try {
-      workerPath = await addWorktree(repo, 'wk1-ac-branch', 'omx-runtime-wk1-auto-commit-');
-
-      // Add uncommitted file (dirty worktree — no git commit)
-      await writeFile(join(workerPath, 'dirty.txt'), 'uncommitted content\n', 'utf-8');
-
-      await initTeamState('team-auto-commit', 'auto-commit test', 'executor', 1, repo);
-      const cfg = await readTeamConfig('team-auto-commit', repo);
-      assert.ok(cfg);
-      if (!cfg) throw new Error('missing config');
-      cfg.leader_pane_id = '';
-      cfg.workers[0] = {
-        ...cfg.workers[0],
-        assigned_tasks: ['1'],
-        worktree_repo_root: repo,
-        worktree_path: workerPath,
-        worktree_branch: 'wk1-ac-branch',
-        worktree_detached: false,
-        worktree_created: false,
-      };
-      await saveTeamConfig(cfg, repo);
-      await handOffVerifiedIntegrationTasks('team-auto-commit', repo);
-
-      await monitorTeam('team-auto-commit', repo);
-
-      // Verify worktree is no longer dirty (auto-commit was made)
-      const status = execFileSync('git', ['status', '--porcelain'], { cwd: workerPath, encoding: 'utf-8' }).trim();
-      assert.equal(status, '', 'worktree should be clean after auto-commit');
-
-      // Verify the commit message matches the auto-checkpoint pattern
-      const log = execFileSync('git', ['log', '--format=%s'], { cwd: workerPath, encoding: 'utf-8' }).trim();
-      assert.match(log, /omx\(team\): auto-checkpoint worker-1 \[1\]/, 'history should contain the ready output checkpoint after cross-rebase');
-
-      // Verify worker's changes are integrated into leader
-      const snapshot = await readMonitorSnapshot('team-auto-commit', repo);
-      assert.ok(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, 'auto-committed changes should be integrated');
-
-      const ledgerPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-auto-commit.ledger.json');
-      assert.equal(existsSync(ledgerPath), true, 'commit hygiene ledger should be written for runtime operational commits');
-      const ledger = JSON.parse(await readFile(ledgerPath, 'utf-8')) as {
-        entries: Array<{ operation: string; operational_commit?: string | null }>;
-      };
-      assert.equal(ledger.entries.some((entry) => entry.operation === 'auto_checkpoint'), true);
-      assert.equal(ledger.entries.some((entry) => entry.operation === 'integration_merge'), true);
+      const team = 'team-research-code';
+      workerPath = await addWorktree(repo, 'research-code-worker', 'omx-runtime-research-code-');
+      await initTeamState(team, 'research then code', 'executor', 1, repo);
+      const config = await readTeamConfig(team, repo);
+      assert.ok(config);
+      Object.assign(config.workers[0]!, { worktree_repo_root: repo, worktree_path: workerPath, worktree_branch: 'research-code-worker' });
+      await saveTeamConfig(config, repo);
+      const research = await createTask(team, { subject: 'research', description: 'read only', status: 'pending', requires_code_change: false }, repo);
+      const claim = await claimTask(team, research.id, 'worker-1', null, repo);
+      assert.ok(claim.ok);
+      assert.ok((await transitionTaskStatus(team, research.id, 'in_progress', 'completed', claim.claimToken, repo, { result: 'Research findings delivered.' })).ok);
+      await writeFile(join(workerPath, 'code.txt'), 'separately verified code\n');
+      execFileSync('git', ['add', 'code.txt'], { cwd: workerPath });
+      execFileSync('git', ['commit', '-m', 'verified code after research'], { cwd: workerPath, stdio: 'ignore' });
+      await handOffVerifiedIntegrationTasks(team, repo);
+      await monitorTeam(team, repo);
+      assert.equal(await readFile(join(repo, 'code.txt'), 'utf8'), 'separately verified code\n');
+      assert.ok((await readMonitorSnapshot(team, repo))?.integrationByWorker?.['worker-1']?.last_integrated_head);
     } finally {
-      if (workerPath) {
-        await rm(workerPath, { recursive: true, force: true });
-      }
+      if (workerPath) await rm(workerPath, { recursive: true, force: true });
       await rm(repo, { recursive: true, force: true });
     }
   });
@@ -7153,7 +7203,6 @@ process.on('SIGTERM', () => process.exit(0));
           await writeFile(join(workerPath, 'committed.txt'), 'not yet handed off\n');
           execFileSync('git', ['add', 'committed.txt'], { cwd: workerPath });
           execFileSync('git', ['commit', '-m', 'unfinished worker commit'], { cwd: workerPath, stdio: 'ignore' });
-          if (dirty) await writeFile(join(workerPath, 'dirty.txt'), 'half-written output\n');
           await initTeamState(team, 'unsafe integration regression', 'executor', 1, repo);
           const task = await createTask(team, {
             subject: 'worker output', description: 'not safe until completed and verified',
@@ -7172,6 +7221,8 @@ process.on('SIGTERM', () => process.exit(0));
             worktree_repo_root: repo, worktree_path: workerPath, worktree_branch: 'not-ready-worker',
           });
           await saveTeamConfig(config, repo);
+          if (scenario !== 'idle-unverified') await handOffVerifiedIntegrationTasks(team, repo);
+          if (dirty) await writeFile(join(workerPath, 'dirty.txt'), 'half-written output\n');
           await writeWorkerStatus(team, 'worker-1', {
             state: scenario === 'working' ? 'working' : 'idle',
             ...(scenario === 'idle-unfinished-current' ? { current_task_id: extraTask!.id } : {}),
@@ -7210,8 +7261,9 @@ process.on('SIGTERM', () => process.exit(0));
 
       workerPath = await addWorktree(repo, 'wk1-agents-branch', 'omx-runtime-wk1-agents-');
 
-      // Add uncommitted change in worker
       await writeFile(join(workerPath, 'work.txt'), 'worker output\n', 'utf-8');
+      execFileSync('git', ['add', 'work.txt'], { cwd: workerPath });
+      execFileSync('git', ['commit', '-m', 'verified worker output'], { cwd: workerPath, stdio: 'ignore' });
 
       await initTeamState('team-agents-check', 'agents regression test', 'executor', 1, repo);
       const cfg = await readTeamConfig('team-agents-check', repo);
@@ -7236,20 +7288,10 @@ process.on('SIGTERM', () => process.exit(0));
       const leaderAgentsAfter = await readFile(join(repo, 'AGENTS.md'), 'utf-8');
       assert.equal(leaderAgentsAfter, originalAgents, 'leader AGENTS.md should not be modified by team operations');
 
-      // Verify the auto-checkpoint and merge commits do NOT modify AGENTS.md
-      const log = execFileSync('git', ['log', '--oneline', '-10'], { cwd: repo, encoding: 'utf-8' });
-      assert.match(log, /auto-checkpoint|merge/, 'should have team commits');
-
-      // Verify auto-checkpoint commit does not include AGENTS.md
-      const autoCheckpointCommit = execFileSync('git', ['log', '--oneline', '--all'], { cwd: workerPath, encoding: 'utf-8' })
-        .split('\n')
-        .find((line: string) => line.includes('auto-checkpoint'));
-      assert.ok(autoCheckpointCommit, 'auto-checkpoint commit should exist');
-      if (autoCheckpointCommit) {
-        const commitSha = autoCheckpointCommit.split(' ')[0];
-        const diff = execFileSync('git', ['diff', `${commitSha}^..${commitSha}`, '--name-only'], { cwd: workerPath, encoding: 'utf-8' });
-        assert.doesNotMatch(diff, /AGENTS\.md/, 'auto-checkpoint should not include AGENTS.md');
-      }
+      assert.equal(await readFile(join(repo, 'work.txt'), 'utf8'), 'worker output\n');
+      const log = execFileSync('git', ['log', '--format=%s'], { cwd: repo, encoding: 'utf8' });
+      assert.match(log, /merge/);
+      assert.doesNotMatch(log, /auto-checkpoint/);
     } finally {
       if (workerPath) {
         await rm(workerPath, { recursive: true, force: true });
