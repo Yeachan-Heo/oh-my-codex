@@ -34,6 +34,7 @@ import {
   teamListTasks,
   teamUpdateTask,
   teamClaimTask,
+  teamRenewTaskClaim,
   teamTransitionTaskStatus,
   teamReleaseTaskClaim,
   teamCleanup,
@@ -108,6 +109,7 @@ export const TEAM_API_OPERATIONS = [
   'list-tasks',
   'update-task',
   'claim-task',
+  'renew-task-claim',
   'transition-task-status',
   'release-task-claim',
   'read-config',
@@ -900,6 +902,17 @@ export async function executeTeamApiOperation(
           },
           fallbackCwd,
         );
+        return { ok: true, operation, data: result as unknown as Record<string, unknown> };
+      }
+      case 'renew-task-claim': {
+        const teamName = String(opArgs.team_name || '').trim();
+        const taskId = String(opArgs.task_id || '').trim();
+        const claimToken = String(opArgs.claim_token || '').trim();
+        const worker = String(opArgs.worker || '').trim();
+        if (!teamName || !taskId || !claimToken || !worker) {
+          return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name, task_id, claim_token, worker are required' } };
+        }
+        const result = await teamRenewTaskClaim(teamName, taskId, worker, claimToken, cwd);
         return { ok: true, operation, data: result as unknown as Record<string, unknown> };
       }
       case 'release-task-claim': {

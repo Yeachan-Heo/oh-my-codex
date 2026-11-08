@@ -22866,10 +22866,16 @@ export async function dispatchCodexNativeHook(
         await markTeamTransportFailure(cwd, payload);
       }
       if (hasCanonicalInternalTeamWorkerDeclaration()) {
-        await handleTeamWorkerPostToolUseSuccess(payload, cwd);
+        const workerResult = await handleTeamWorkerPostToolUseSuccess(payload, cwd);
+        if (workerResult.stopMessage) {
+          outputJson = {
+            systemMessage: workerResult.stopMessage,
+            hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: workerResult.stopMessage },
+          };
+        }
       }
     }
-    outputJson = buildNativePostToolUseOutput(payload);
+    outputJson ??= buildNativePostToolUseOutput(payload);
   } else if (hookEventName === "Stop") {
     if (declaredTeamWorkerStopOnly) {
       outputJson = await buildStopHookOutput(payload, cwd, stateDir, { teamWorkerOnly: true });

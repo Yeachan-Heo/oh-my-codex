@@ -3,7 +3,8 @@
  * Team worker: heartbeat, idle detection, and leader notification.
  */
 
-import { readFile, writeFile, mkdir, appendFile, rename, stat, readdir } from 'fs/promises';
+import { renewWorkerTaskLease, reportWorkerTaskLeaseLoss } from './team-worker-lease.js';
+import { readFile, writeFile, mkdir, appendFile, rename, stat, readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { resolveWorkerNotifyTeamStateRootPath } from '../../team/state-root.js';
@@ -342,10 +343,20 @@ export async function updateWorkerHeartbeat(stateDir, teamName, workerName) {
     turn_count: turnCount + 1,
     alive: true,
   };
-  // Atomic write: tmp + rename
+  // Best-effort heartbeat telemetry must not bypass authoritative renewal.
   const tmpPath = heartbeatPath + '.tmp.' + process.pid;
-  await writeFile(tmpPath, JSON.stringify(heartbeat, null, 2));
-  await rename(tmpPath, heartbeatPath);
+  try {
+    await writeFile(tmpPath, JSON.stringify(heartbeat, null, 2));
+    await rename(tmpPath, heartbeatPath);
+  } catch {
+    await rm(tmpPath, { force: true }).catch(() => {});
+  }
+  const renewal = await renewWorkerTaskLease(stateDir, teamName, workerName);
+  if (renewal && !renewal.ok) {
+    const stopMessage = await reportWorkerTaskLeaseLoss(stateDir, teamName, workerName, renewal.error);
+    return { ok: false, error: renewal.error, stopMessage };
+  }
+  return renewal;
 }
 
 export async function maybeNotifyLeaderAllWorkersIdle({ cwd, stateDir, logsDir, parsedTeamWorker }) {

@@ -219,7 +219,7 @@ describe('resolveTeamApiOperation', () => {
     assert.equal(resolveTeamApiOperation('  SEND_MESSAGE  '), 'send-message');
   });
 
-  it('resolves all 33 operations from the operation list', () => {
+  it('resolves all 34 operations from the operation list', () => {
     for (const op of TEAM_API_OPERATIONS) {
       assert.equal(resolveTeamApiOperation(op), op);
     }
@@ -261,8 +261,8 @@ describe('LEGACY_TEAM_MCP_TOOLS', () => {
 });
 
 describe('TEAM_API_OPERATIONS', () => {
-  it('contains 33 operations', () => {
-    assert.equal(TEAM_API_OPERATIONS.length, 33);
+  it('contains 34 operations', () => {
+    assert.equal(TEAM_API_OPERATIONS.length, 34);
   });
 
   it('all use kebab-case', () => {

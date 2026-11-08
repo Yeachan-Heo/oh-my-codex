@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-08
+
+Minor release ships the Herdr team runtime backend Phase 2 with worker capacity management and task claim renewal, improves conflict handling in team operations, and adds session execution comparisons and regression gates for reliable task tracking. See [release notes](docs/release-notes-0.22.0.md) for exact scope and evidence.
+
+### Added
+
+- **SESSION EXECUTION COMPARISONS AND REGRESSION GATES (#3915):** Capture execution snapshots during session transitions, compare sessions against baselines, and gate further work when regressions are detected. This enables robust regression detection during multi-agent workflows and task execution validation.
+
+### Fixed
+
+- **HERDR TEAM RUNTIME BACKEND PHASE 2 (#4006):** Implement the Herdr team runtime backend continuation, including native session pane coordination, detached-launch design notes, and improved tmux integration patterns. This solidifies the team runtime foundation with enhanced reliability and design clarity.
+- **RESERVE WORKER CAPACITY, RENEW TASK CLAIMS, AND GATE DELIVERY COMPLETION (#4036):** Fix followup bounds, implement claim renewal, gate delivery success, close lease gaps, recover pending receipts, bound lease shutdown, surface renewal errors, and recognize terminal handoffs. Support system Bash and renewal on tool activity; fix scope root reactivation to delivery debt and renew leases despite heartbeat persistence failures. Reserve worker capacity before assignment and compare persisted assignment snapshots for validation.
+- **FAIL CLOSED ON GIT CONFLICTS AND HAND OFF PERSISTED TASK CLAIMS (#4035):** Remove automatic conflict resolution strategies (-X theirs/-X ours), make conflicts visible and require manual resolution, preserve conflict state during integration retries, align task assignment protocol with leader's atomic preclaim, and expand conflict-scenario test coverage.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.48...v0.22.0
+
 ## [0.21.48] - 2026-11-07
 
 Patch release stores live Codex pins outside the plugin fingerprint root so live-pin writes no longer change the fingerprint Codex approved, and drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.

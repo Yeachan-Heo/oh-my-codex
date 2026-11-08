@@ -4805,3 +4805,361 @@ describe('forced scale-down worktree rollback', () => {
     }
   });
 });
+
+// ── Herdr backend scaling ────────────────────────────────────────────────────
+
+interface FakeHerdrStubOptions {
+  /** `agent start` answers this error envelope on stderr (exit 1). */
+  failAgentStartCode?: string;
+  /** `pane close` answers pane_not_found on stderr (exit 1). */
+  paneCloseNotFound?: boolean;
+}
+
+/**
+ * Fake herdr binary answering the JSON-envelope CLI contract (success on
+ * stdout, error envelope on stderr with exit 1). Every invocation is logged.
+ * Tests pin it via HERDR_BIN_PATH (the trust-pin resolveHerdrBinary honors).
+ */
+async function writeFakeHerdrStub(
+  fakeBinDir: string,
+  herdrLogPath: string,
+  options: FakeHerdrStubOptions = {},
+): Promise<string> {
+  const herdrStubPath = join(fakeBinDir, 'herdr');
+  const agentStartBranch = options.failAgentStartCode
+    ? [
+      `printf '%s' '{"error":{"code":"${options.failAgentStartCode}","message":"stub injected failure"}}' >&2`,
+      'exit 1',
+    ].join('\n')
+    : [
+      `printf '%s\\n' '{"id":"cli:agent:start","result":{"agent":{"agent_status":"idle"}}}'`,
+      'exit 0',
+    ].join('\n');
+  const paneCloseBranch = options.paneCloseNotFound
+    ? [
+      `printf '%s' '{"error":{"code":"pane_not_found","message":"pane already closed"}}' >&2`,
+      'exit 1',
+    ].join('\n')
+    : [
+      `printf '%s\\n' '{"id":"cli:pane:close","result":{"type":"ok"}}'`,
+      'exit 0',
+    ].join('\n');
+  await writeFile(
+    herdrStubPath,
+    [
+      '#!/bin/sh',
+      `printf '%s\\n' "$*" >> "${herdrLogPath}"`,
+      'cmd="${1:-}"',
+      'sub="${2:-}"',
+      'case "$cmd:$sub" in',
+      '  --version:)',
+      '    printf \'%s\\n\' "herdr 0.9.5-stub"',
+      '    exit 0',
+      '    ;;',
+      '  workspace:list)',
+      `    printf '%s\\n' '{"id":"cli:workspace:list","result":{"workspaces":[],"type":"workspace_list"}}'`,
+      '    exit 0',
+      '    ;;',
+      '  tab:create)',
+      `    printf '%s\\n' '{"id":"cli:tab:create","result":{"tab":{"tab_id":"w5:t9"},"root_pane":{"pane_id":"w5:p9"}}}'`,
+      '    exit 0',
+      '    ;;',
+      '  agent:start)',
+      `    ${agentStartBranch}`,
+      '    ;;',
+      '  agent:prompt|agent:get|agent:send-keys|agent:wait)',
+      `    printf '%s\\n' '{"id":"cli:agent:result","result":{"agent":{}}}'`,
+      '    exit 0',
+      '    ;;',
+      '  agent:list)',
+      `    printf '%s\\n' '{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}'`,
+      '    exit 0',
+      '    ;;',
+      '  pane:close)',
+      `    ${paneCloseBranch}`,
+      '    ;;',
+      '  pane:read)',
+      '    printf \'%s\\n\' "› "',
+      '    exit 0',
+      '    ;;',
+      '  *)',
+      `    printf '%s\\n' '{"id":"cli:unknown","result":{}}'`,
+      '    exit 0',
+      '    ;;',
+      'esac',
+      '',
+    ].join('\n'),
+  );
+  execFileSync('sh', ['-n', herdrStubPath], { stdio: 'pipe' });
+  await chmod(herdrStubPath, 0o755);
+  await writeFile(herdrLogPath, '');
+  return herdrStubPath;
+}
+
+async function readHerdrStubLog(herdrLogPath: string): Promise<string[]> {
+  const content = await readFile(herdrLogPath, 'utf-8');
+  const trimmed = content.trim();
+  return trimmed === '' ? [] : trimmed.split('\n');
+}
+
+async function configureHerdrScaleTeam(
+  teamName: string,
+  cwd: string,
+  workerPaneIds: string[],
+  dispatchMode: 'transport_direct' | 'hook_preferred_with_fallback' = 'transport_direct',
+): Promise<void> {
+  const config = await readTeamConfig(teamName, cwd);
+  assert.ok(config);
+  if (!config) throw new Error(`missing team config for ${teamName}`);
+  config.worker_launch_mode = 'herdr';
+  config.tmux_session = `herdr-${teamName}`;
+  config.leader_pane_id = null;
+  config.hud_pane_id = null;
+  config.tmux_pane_owner_id = undefined;
+  config.workers.forEach((worker, index) => {
+    worker.pane_id = workerPaneIds[index];
+    worker.pid = undefined;
+  });
+  await saveTeamConfig(config, cwd);
+
+  const manifestPath = join(cwd, '.omx', 'state', 'team', teamName, 'manifest.v2.json');
+  if (!existsSync(manifestPath)) {
+    await mkdir(join(cwd, '.omx', 'state', 'team', teamName), { recursive: true });
+    await writeFile(manifestPath, `${JSON.stringify({ version: 2, policy: {} }, null, 2)}\n`);
+  }
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as { policy?: Record<string, unknown> };
+  manifest.policy = {
+    ...(manifest.policy ?? {}),
+    dispatch_mode: dispatchMode,
+  };
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+describe('scaling on herdr', () => {
+  it('scaleUp spawns a herdr tab+agent in the team workspace and dispatches via agent prompt', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-up-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-up-bin-'));
+    const herdrLogPath = join(fakeBinDir, 'herdr.log');
+    try {
+      const herdrBin = await writeFakeHerdrStub(fakeBinDir, herdrLogPath);
+      await initTeamState('scale-herdr-up', 'task', 'executor', 1, cwd, DEFAULT_MAX_WORKERS, {
+        OMX_TEAM_WORKER_LAUNCH_MODE: 'herdr',
+      });
+      await configureHerdrScaleTeam('scale-herdr-up', cwd, ['w5:p2']);
+
+      const result = await scaleUp(
+        'scale-herdr-up',
+        1,
+        'executor',
+        [{ subject: 'new task', description: 'new task', owner: 'worker-2' }],
+        cwd,
+        {
+          OMX_TEAM_SCALING_ENABLED: '1',
+          OMX_MULTIPLEXER: 'herdr',
+          HERDR_BIN_PATH: herdrBin,
+        },
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      if (!result.ok) return;
+      assert.equal(result.newWorkerCount, 2);
+      assert.equal(result.nextWorkerIndex, 3);
+      assert.equal(result.addedWorkers[0]?.pane_id, 'w5:p9');
+      assert.equal(result.addedWorkers[0]?.pid, undefined);
+
+      const config = await readTeamConfig('scale-herdr-up', cwd);
+      assert.ok(config);
+      assert.equal(config?.workers.length, 2);
+      assert.equal(config?.workers[1]?.pane_id, 'w5:p9');
+      assert.equal(config?.workers[1]?.pid, undefined);
+      assert.equal(config?.next_worker_index, 3);
+      const identity = JSON.parse(await readFile(
+        join(cwd, '.omx', 'state', 'team', 'scale-herdr-up', 'workers', 'worker-2', 'identity.json'),
+        'utf-8',
+      )) as { pane_id?: string };
+      assert.equal(identity.pane_id, 'w5:p9');
+
+      const commands = await readHerdrStubLog(herdrLogPath);
+      const tabCreate = commands.find((command) => command.startsWith('tab create '));
+      assert.ok(tabCreate, 'worker spawns through herdr tab create');
+      assert.ok(tabCreate!.includes('--workspace w5'), 'tab create pins the derived team workspace');
+      assert.ok(tabCreate!.includes('--cwd '), 'tab create pins the worker cwd');
+      assert.ok(tabCreate!.includes('--env OMX_TEAM_STATE_ROOT='), 'worker env injected via tab create --env');
+      const agentStart = commands.find((command) => command.startsWith('agent start '));
+      assert.ok(agentStart, 'worker agent started');
+      assert.ok(agentStart!.includes('--kind codex'), 'agent kind derived from the launch plan');
+      assert.ok(agentStart!.includes('--pane w5:p9'), 'agent pinned to the created pane');
+      const agentPrompt = commands.find((command) => command.startsWith('agent prompt w5:p9 '));
+      assert.ok(agentPrompt, 'bootstrap trigger dispatched through herdr agent prompt');
+      // No tmux authority was consulted anywhere in the herdr path.
+      assert.equal(commands.some((command) => command.startsWith('agent list')), true, 'server liveness checked via agent list');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scaleUp on herdr rolls back the created pane, task, and worker state when the agent start fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-fail-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-fail-bin-'));
+    const herdrLogPath = join(fakeBinDir, 'herdr.log');
+    try {
+      const herdrBin = await writeFakeHerdrStub(fakeBinDir, herdrLogPath, { failAgentStartCode: 'agent_not_found' });
+      await initTeamState('scale-herdr-fail', 'task', 'executor', 1, cwd, DEFAULT_MAX_WORKERS, {
+        OMX_TEAM_WORKER_LAUNCH_MODE: 'herdr',
+      });
+      await configureHerdrScaleTeam('scale-herdr-fail', cwd, ['w5:p2']);
+
+      const result = await scaleUp(
+        'scale-herdr-fail',
+        1,
+        'executor',
+        [{ subject: 'new task', description: 'new task', owner: 'worker-2' }],
+        cwd,
+        {
+          OMX_TEAM_SCALING_ENABLED: '1',
+          OMX_MULTIPLEXER: 'herdr',
+          HERDR_BIN_PATH: herdrBin,
+        },
+      );
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /scale_up_herdr_spawn_failed:worker-2:herdr_agent_not_found/);
+
+      const commands = await readHerdrStubLog(herdrLogPath);
+      assert.ok(
+        commands.some((command) => command === 'pane close w5:p9'),
+        'the spawn helper closes its own pane on failure',
+      );
+
+      const config = await readTeamConfig('scale-herdr-fail', cwd);
+      assert.ok(config);
+      assert.equal(config?.workers.length, 1);
+      assert.equal(config?.workers[0]?.pane_id, 'w5:p2');
+      assert.equal(config?.next_worker_index, 2);
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'scale-herdr-fail', 'workers', 'worker-2')), false);
+      assert.deepEqual(await readScaleUpTaskPayloads('scale-herdr-fail', cwd), []);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scaleUp returns a clear error when the herdr backend is selected but the binary is missing', async () => {
+    const result = await scaleUp(
+      'scale-herdr-missing',
+      1,
+      'executor',
+      [],
+      '/tmp',
+      {
+        OMX_TEAM_SCALING_ENABLED: '1',
+        OMX_MULTIPLEXER: 'herdr',
+        PATH: '',
+      },
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /herdr binary is not callable/);
+  });
+
+  it('scaleDown closes the herdr pane and commits the membership removal', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-down-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-down-bin-'));
+    const herdrLogPath = join(fakeBinDir, 'herdr.log');
+    const previousHerdrBinPath = process.env.HERDR_BIN_PATH;
+    try {
+      const herdrBin = await writeFakeHerdrStub(fakeBinDir, herdrLogPath);
+      // The final cleanup-debt reconcile resolves the binary from the ambient
+      // env, so pin the stub there too (not only in the scaleDown env param).
+      process.env.HERDR_BIN_PATH = herdrBin;
+      await initTeamState('scale-herdr-down', 'task', 'executor', 2, cwd, DEFAULT_MAX_WORKERS, {
+        OMX_TEAM_WORKER_LAUNCH_MODE: 'herdr',
+      });
+      await configureHerdrScaleTeam('scale-herdr-down', cwd, ['w5:p2', 'w5:p3']);
+
+      const result = await scaleDown(
+        'scale-herdr-down',
+        cwd,
+        { workerNames: ['worker-2'] },
+        {
+          OMX_TEAM_SCALING_ENABLED: '1',
+          OMX_MULTIPLEXER: 'herdr',
+          HERDR_BIN_PATH: herdrBin,
+        },
+      );
+      assert.deepEqual(result, { ok: true, removedWorkers: ['worker-2'], newWorkerCount: 1 });
+
+      const commands = await readHerdrStubLog(herdrLogPath);
+      assert.ok(
+        commands.some((command) => command === 'pane close w5:p3'),
+        'the removed worker pane is closed through herdr',
+      );
+
+      const config = await readTeamConfig('scale-herdr-down', cwd);
+      assert.ok(config);
+      assert.equal(config?.workers.length, 1);
+      assert.equal(config?.workers[0]?.pane_id, 'w5:p2');
+      assert.equal(existsSync(join(cwd, '.omx', 'state', 'team', 'scale-herdr-down', '.scale-down-cleanup-debt.json')), false);
+    } finally {
+      if (typeof previousHerdrBinPath === 'string') process.env.HERDR_BIN_PATH = previousHerdrBinPath;
+      else delete process.env.HERDR_BIN_PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconcileScaleDownCleanupDebt resolves herdr pane debt, treating pane_not_found as converged', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-debt-'));
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-debt-bin-'));
+    const previousHerdrBinPath = process.env.HERDR_BIN_PATH;
+    try {
+      await initTeamState('scale-herdr-debt', 'task', 'executor', 1, cwd, DEFAULT_MAX_WORKERS, {
+        OMX_TEAM_WORKER_LAUNCH_MODE: 'herdr',
+      });
+      await configureHerdrScaleTeam('scale-herdr-debt', cwd, ['w5:p2']);
+      const config = await readTeamConfig('scale-herdr-debt', cwd);
+      assert.ok(config);
+
+      const debtPath = join(cwd, '.omx', 'state', 'team', 'scale-herdr-debt', '.scale-down-cleanup-debt.json');
+      const debt = {
+        schema_version: 1,
+        operation: 'scale_down',
+        status: 'unresolved',
+        created_at: new Date().toISOString(),
+        removed_worker_names: ['worker-2'],
+        workers: [{ name: 'worker-2', index: 2, pane_id: 'w5:p9', pid: null }],
+        resource_workers: [{ name: 'worker-2' }],
+      };
+      await writeFile(debtPath, JSON.stringify(debt, null, 2));
+
+      // A herdr pane recorded with a PID is malformed: herdr panes carry none.
+      const malformedBin = await writeFakeHerdrStub(fakeBinDir, join(fakeBinDir, 'malformed.log'));
+      process.env.HERDR_BIN_PATH = malformedBin;
+      await writeFile(debtPath, JSON.stringify({ ...debt, workers: [{ name: 'worker-2', index: 2, pane_id: 'w5:p9', pid: 4242 }] }, null, 2));
+      const malformed = await reconcileScaleDownCleanupDebt('scale-herdr-debt', cwd, config);
+      assert.equal(malformed.ok, false);
+      if (!malformed.ok) assert.match(malformed.error, /scale_down_cleanup_debt_malformed/);
+
+      // Still-open pane: close it and converge.
+      const openBin = await writeFakeHerdrStub(fakeBinDir, join(fakeBinDir, 'open.log'), { paneCloseNotFound: false });
+      process.env.HERDR_BIN_PATH = openBin;
+      await writeFile(debtPath, JSON.stringify(debt, null, 2));
+      const openOutcome = await reconcileScaleDownCleanupDebt('scale-herdr-debt', cwd, config);
+      assert.deepEqual(openOutcome, { ok: true });
+      assert.equal(existsSync(debtPath), false, 'converged debt is removed');
+
+      // Already-closed pane: pane_not_found answers prove convergence.
+      const goneBin = await writeFakeHerdrStub(fakeBinDir, join(fakeBinDir, 'gone.log'), { paneCloseNotFound: true });
+      process.env.HERDR_BIN_PATH = goneBin;
+      await writeFile(debtPath, JSON.stringify(debt, null, 2));
+      const goneOutcome = await reconcileScaleDownCleanupDebt('scale-herdr-debt', cwd, config);
+      assert.deepEqual(goneOutcome, { ok: true });
+      assert.equal(existsSync(debtPath), false);
+    } finally {
+      if (typeof previousHerdrBinPath === 'string') process.env.HERDR_BIN_PATH = previousHerdrBinPath;
+      else delete process.env.HERDR_BIN_PATH;
+      await rm(cwd, { recursive: true, force: true });
+      await rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+});

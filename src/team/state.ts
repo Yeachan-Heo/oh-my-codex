@@ -9,6 +9,7 @@ import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestra
 import {
   computeTaskReadiness as computeTaskReadinessImpl,
   claimTask as claimTaskImpl,
+  renewTaskClaim as renewTaskClaimImpl,
   transitionTaskStatus as transitionTaskStatusImpl,
   releaseTaskClaim as releaseTaskClaimImpl,
   reclaimExpiredTaskClaim as reclaimExpiredTaskClaimImpl,
@@ -90,7 +91,7 @@ export interface TeamConfig {
   name: string;
   task: string;
   agent_type: string;
-  worker_launch_mode: 'interactive' | 'prompt';
+  worker_launch_mode: 'interactive' | 'prompt' | 'herdr';
   lifecycle_profile: 'default';
   worker_count: number;
   max_workers: number; // default 20, configurable up to 20
@@ -157,6 +158,7 @@ export interface WorkerHeartbeat {
 export interface WorkerStatus {
   state: 'idle' | 'working' | 'blocked' | 'done' | 'failed' | 'draining' | 'unknown';
   current_task_id?: string;
+  current_claim_token?: string;
   reason?: string;
   updated_at: string;
 }
@@ -253,7 +255,7 @@ export interface TeamLeader {
 
 export interface TeamPolicy {
   display_mode: 'split_pane' | 'auto';
-  worker_launch_mode: 'interactive' | 'prompt';
+  worker_launch_mode: 'interactive' | 'prompt' | 'herdr';
   dispatch_mode: 'hook_preferred_with_fallback' | 'transport_direct';
   dispatch_ack_timeout_ms: number;
 }
@@ -443,6 +445,10 @@ export type ClaimTaskResult =
   | { ok: true; task: TeamTaskV2; claimToken: string }
   | { ok: false; error: 'claim_conflict' | 'blocked_dependency' | 'task_not_found' | 'already_terminal' | 'worker_not_found'; dependencies?: string[] };
 
+export type RenewTaskClaimResult =
+  | { ok: true; task: TeamTaskV2 }
+  | { ok: false; error: 'claim_conflict' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'worker_not_found' };
+
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
   | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' | 'missing_coordination_compliance_evidence' | 'invalid_completion_evidence'; reason?: string };
@@ -572,7 +578,9 @@ export function normalizeTeamPolicy(
     : 'hook_preferred_with_fallback';
 
   return {
-    worker_launch_mode: policy?.worker_launch_mode === 'prompt' ? 'prompt' : base.worker_launch_mode,
+    worker_launch_mode: policy?.worker_launch_mode === 'prompt' || policy?.worker_launch_mode === 'herdr'
+      ? policy.worker_launch_mode
+      : base.worker_launch_mode,
     display_mode: policy?.display_mode === 'split_pane' ? 'split_pane' : base.display_mode,
     dispatch_mode: dispatchMode,
     dispatch_ack_timeout_ms: clampDispatchAckTimeoutMs(policy?.dispatch_ack_timeout_ms),
@@ -630,7 +638,8 @@ function resolveWorkerLaunchModeFromEnv(env: NodeJS.ProcessEnv): TeamPolicy['wor
   const raw = readEnvValue(env, ['OMX_TEAM_WORKER_LAUNCH_MODE']);
   if (!raw || raw === 'interactive') return 'interactive';
   if (raw === 'prompt') return 'prompt';
-  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt`);
+  if (raw === 'herdr') return 'herdr';
+  throw new Error(`Invalid OMX_TEAM_WORKER_LAUNCH_MODE value "${raw}". Expected: interactive, prompt, herdr`);
 }
 
 function resolvePermissionsSnapshot(env: NodeJS.ProcessEnv): PermissionsSnapshot {
@@ -1323,7 +1332,9 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
 function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
   const normalizedPolicy = normalizeTeamPolicy(manifest.policy, {
     display_mode: manifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
-    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' || manifest.policy?.worker_launch_mode === 'herdr'
+      ? manifest.policy.worker_launch_mode
+      : 'interactive',
   });
   const workerLaunchMode = normalizedPolicy.worker_launch_mode;
   return {
@@ -1457,7 +1468,9 @@ export async function writeTeamManifestV2(manifest: TeamManifestV2, cwd: string)
   await withTeamTaskBarrier(manifest.name, cwd, async () => {
   const normalizedPolicy = normalizeTeamPolicy(manifest.policy, {
     display_mode: manifest.policy?.display_mode === 'split_pane' ? 'split_pane' : 'auto',
-    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
+    worker_launch_mode: manifest.policy?.worker_launch_mode === 'prompt' || manifest.policy?.worker_launch_mode === 'herdr'
+      ? manifest.policy.worker_launch_mode
+      : 'interactive',
   });
   const normalizedGovernance = normalizeTeamGovernance(
     manifest.governance,
@@ -1934,6 +1947,29 @@ export async function claimTask(
   return await withTeamTaskBarrier(teamName, cwd, async () => {
     await recoverTeamMembershipTaskTransaction(teamName, cwd);
     return await claimTaskImpl(taskId, workerName, expectedVersion, {
+      teamName,
+      cwd,
+      readTask,
+      readTeamConfig,
+      withTaskClaimLock,
+      normalizeTask,
+      isTerminalTaskStatus,
+      taskFilePath,
+      writeAtomic,
+    });
+  });
+}
+
+export async function renewTaskClaim(
+  teamName: string,
+  taskId: string,
+  workerName: string,
+  claimToken: string,
+  cwd: string
+): Promise<RenewTaskClaimResult> {
+  return await withTeamTaskBarrier(teamName, cwd, async () => {
+    await recoverTeamMembershipTaskTransaction(teamName, cwd);
+    return await renewTaskClaimImpl(taskId, workerName, claimToken, {
       teamName,
       cwd,
       readTask,
@@ -2768,6 +2804,9 @@ export async function readShutdownAck(
 export interface TeamWorkerIntegrationState {
   last_seen_head?: string;
   last_integrated_head?: string;
+  delivery_leader_commit?: string;
+  pending_rebase_leader_head?: string;
+  rebase_error?: string;
   last_leader_head?: string;
   last_rebased_leader_head?: string;
   status?: TeamWorkerIntegrationStatus;

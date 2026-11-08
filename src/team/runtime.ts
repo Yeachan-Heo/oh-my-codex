@@ -45,6 +45,17 @@ import {
   listTeamSessions,
   resolveSharedSessionShutdownTopology,
 } from './tmux-session.js';
+import {
+  createHerdrTeam,
+  destroyHerdrTeam,
+  herdrWorkspaceIdFromPaneId,
+  interruptHerdrWorker,
+  isHerdrBinaryCallable,
+  isHerdrWorkerAlive,
+  submitToHerdrWorker,
+  teardownHerdrWorker,
+  type HerdrWorkerSpawnPlan,
+} from './herdr-session.js';
 import { readExactPaneProofSync, readExactPaneProofsSync, type ExactPaneProof } from './exact-pane.js';
 import { reconcileScaleDownCleanupDebt } from './scaling.js';
 import {
@@ -252,12 +263,15 @@ export interface TeamSnapshot {
   };
 }
 
-async function syncRootTeamModeStateOnTerminalPhase(
+async function syncRootTeamModeStateForMonitor(
   teamName: string,
-  phase: TeamPhase | TerminalPhase,
+  phaseState: TeamPhaseState,
+  hasDeliveryDebt: boolean,
   cwd: string,
 ): Promise<void> {
-  if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
+  const phase = phaseState.current_phase;
+  const terminal = isTerminalPhase(phase);
+  if (!terminal && (!hasDeliveryDebt || phaseState.terminal_epoch)) return;
 
   try {
     const localStatePath = join(resolve(cwd), '.omx', 'state', 'team-state.json');
@@ -269,6 +283,17 @@ async function syncRootTeamModeStateOnTerminalPhase(
 
     const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
     if (stateTeamName && stateTeamName !== teamName) return;
+    if (!terminal) {
+      if (stateTeamName !== teamName || teamState.active !== false
+        || teamState.current_phase !== 'complete' || teamState.terminal_epoch) return;
+      const updates = { active: true, current_phase: phase, completed_at: undefined };
+      if (localTeamState) {
+        await writeFile(localStatePath, JSON.stringify({ ...localTeamState, ...updates }, null, 2), 'utf-8');
+      } else {
+        await updateModeState('team', updates, cwd);
+      }
+      return;
+    }
 
     const alreadySynced = teamState.active === false
       && teamState.current_phase === phase
@@ -882,6 +907,17 @@ async function reconcileDetachedSessionDestroyReceipt(teamName: string, cwd: str
 
 async function destroyConfiguredDetachedTeamSession(teamName: string, cwd: string, config: TeamConfig): Promise<void> {
   if (!config.tmux_session) return;
+  if (config.worker_launch_mode === 'herdr') {
+    // Herdr teams have no tmux session authority to converge; the workspace
+    // itself is the session.
+    const firstHerdrPane = config.workers
+      .map((worker) => worker.pane_id)
+      .find((paneId): paneId is string => typeof paneId === 'string' && paneId !== '');
+    if (firstHerdrPane) {
+      await destroyHerdrTeam(herdrWorkspaceIdFromPaneId(firstHerdrPane));
+    }
+    return;
+  }
   await withDetachedSessionDestroyLock(teamName, cwd, async () => {
     const canonical = await readTeamConfig(teamName, cwd);
     if (!canonical) throw new Error(`detached_session_destroy_authorization_unavailable:${config.tmux_session}`);
@@ -1180,7 +1216,6 @@ async function recordIntegrationFailure(
     leaderHeadBefore: string;
     leaderHeadAfter: string | null;
     worktreePath: string;
-    strategy: '-X theirs';
   },
   cwd: string,
 ): Promise<void> {
@@ -1204,7 +1239,6 @@ async function recordIntegrationFailure(
   appendIntegrationReport(teamName, {
     workerName: worker.name,
     operation: details.operation,
-    strategy: details.strategy,
     files: [],
     detail: `${details.operation} reported success for ${sourceShort}, but leader HEAD did not advance from ${leaderShort}; not marking worker as integrated.`,
   }, cwd);
@@ -1260,7 +1294,6 @@ function appendIntegrationReport(
   entry: {
     workerName: string;
     operation: 'merge' | 'cherry-pick' | 'rebase';
-    strategy: '-X theirs' | '-X ours';
     files: string[];
     detail: string;
   },
@@ -1272,7 +1305,7 @@ function appendIntegrationReport(
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   const timestamp = new Date().toISOString();
-  const line = `- [${timestamp}] ${entry.workerName}: ${entry.operation} conflict auto-resolved (${entry.strategy}) on files: ${entry.files.join(', ') || 'unknown'}. ${entry.detail}\n`;
+  const line = `- [${timestamp}] ${entry.workerName}: ${entry.operation} on files: ${entry.files.join(', ') || 'unknown'}. ${entry.detail}\n`;
 
   appendFileSync(reportPath, existsSync(reportPath) ? line : `# Integration Report\n\n${line}`);
 }
@@ -1285,6 +1318,13 @@ function resolveWorkerMergeRef(branchResult: CommandResult, workerHead: string):
 
 function leaderContainsCommit(repoRoot: string, cwd: string, commit: string): boolean {
   return runGitCommand(repoRoot, ['merge-base', '--is-ancestor', commit, 'HEAD'], cwd).ok;
+}
+
+function worktreeHasUnfinishedRebase(repoRoot: string, worktreePath: string): boolean {
+  return ['rebase-merge', 'rebase-apply'].some((name) => {
+    const path = runGitCommand(repoRoot, ['rev-parse', '--git-path', name], worktreePath);
+    return !path.ok || existsSync(resolve(worktreePath, path.stdout.trim()));
+  });
 }
 
 async function integrateWorkerCommitsIntoLeader(params: {
@@ -1303,6 +1343,8 @@ async function integrateWorkerCommitsIntoLeader(params: {
   // ── Phase A: Auto-commit dirty worktrees ──
   for (const worker of config.workers) {
     if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
+    if (next[worker.name]?.pending_rebase_leader_head
+      || worktreeHasUnfinishedRebase(resolve(worker.worktree_repo_root), resolve(worker.worktree_path))) continue;
     const { committed, commitHash } = autoCommitDirtyWorktree(worker);
     if (committed) {
       await appendIntegrationEvent(teamName, 'worker_auto_commit', worker, {
@@ -1329,21 +1371,49 @@ async function integrateWorkerCommitsIntoLeader(params: {
     if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
     const repoRoot = resolve(worker.worktree_repo_root);
     const worktreePath = resolve(worker.worktree_path);
+    const previousState = next[worker.name] ?? {};
+    // Orig-head/onto do not prove ownership: a manual rebase can recreate the same operation.
+    if (worktreeHasUnfinishedRebase(repoRoot, worktreePath)) {
+      next[worker.name] = {
+        ...previousState, status: 'rebase_conflict',
+        rebase_error: 'Unfinished rebase preserved. Finish or abort it manually before retrying integration.',
+      };
+      continue;
+    }
+    if (previousState.pending_rebase_leader_head) {
+      if (previousState.delivery_leader_commit && leaderContainsCommit(repoRoot, cwd, previousState.delivery_leader_commit)) continue;
+      const workerStatus = await readWorkerStatus(teamName, worker.name, cwd);
+      if (workerStatus.state !== 'idle' && workerStatus.state !== 'done') continue;
+      const status = runGitCommand(repoRoot, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worktreePath);
+      if (!status.ok || status.stdout.trim()
+        || !previousState.last_integrated_head || resolveWorkerHead(worktreePath) !== previousState.last_integrated_head) continue;
+      // Phase A already skipped this pending worker: redeliver the clean source normally, never checkpoint it here.
+      next[worker.name] = {
+        ...previousState, last_integrated_head: undefined, delivery_leader_commit: undefined,
+        pending_rebase_leader_head: undefined, rebase_error: undefined,
+        conflict_commit: undefined, conflict_files: undefined, status: 'idle',
+      };
+    }
     const leaderHead = resolveLeaderHead(repoRoot, cwd);
     const workerHead = resolveWorkerHead(worktreePath);
-    const previousState = next[worker.name] ?? {};
-    const state: TeamWorkerIntegrationState = { ...previousState, last_leader_head: leaderHead ?? previousState.last_leader_head };
+    const state: TeamWorkerIntegrationState = { ...next[worker.name], last_leader_head: leaderHead ?? previousState.last_leader_head };
     if (!workerHead || !leaderHead) {
       next[worker.name] = state;
       continue;
     }
 
+    // A source baseline is reusable only while its actual leader delivery survives.
+    if (!state.delivery_leader_commit || !leaderContainsCommit(repoRoot, cwd, state.delivery_leader_commit)) {
+      state.last_integrated_head = undefined;
+      state.delivery_leader_commit = undefined;
+    }
     state.last_seen_head = workerHead;
     const alreadyMerged = runGitCommand(repoRoot, ['merge-base', '--is-ancestor', workerHead, 'HEAD'], cwd).ok;
     if (alreadyMerged) {
-      state.last_integrated_head = workerHead;
+      Object.assign(state, { last_integrated_head: workerHead, delivery_leader_commit: workerHead });
       state.status = 'idle';
       state.updated_at = new Date().toISOString();
+      integratedWorkerNames.add(worker.name);
       next[worker.name] = state;
       continue;
     }
@@ -1352,10 +1422,10 @@ async function integrateWorkerCommitsIntoLeader(params: {
     const workerIsAheadOfLeader = runGitCommand(repoRoot, ['merge-base', '--is-ancestor', leaderHead, workerHead], cwd).ok;
 
     if (workerIsAheadOfLeader) {
-      // Worker is cleanly ahead → merge --no-ff -X theirs
+      // Worker is cleanly ahead → merge without choosing sides on conflicts
       const workerBranch = runGitCommand(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD'], worktreePath);
       const branchRef = resolveWorkerMergeRef(workerBranch, workerHead);
-      const merge = runGitCommand(repoRoot, ['merge', '--no-ff', '-X', 'theirs', '-m', `omx(team): merge ${worker.name}`, branchRef], cwd);
+      const merge = runGitCommand(repoRoot, ['merge', '--no-ff', '-m', `omx(team): merge ${worker.name}`, branchRef], cwd);
 
       if (merge.ok) {
         const newLeaderHead = resolveLeaderHead(repoRoot, cwd) ?? leaderHead;
@@ -1367,10 +1437,10 @@ async function integrateWorkerCommitsIntoLeader(params: {
             leaderHeadBefore: leaderHead,
             leaderHeadAfter: newLeaderHead,
             worktreePath,
-            strategy: '-X theirs',
           }, cwd);
         } else if (workerIntegrated) {
           state.last_integrated_head = workerHead;
+          state.delivery_leader_commit = newLeaderHead;
           state.last_leader_head = newLeaderHead;
           state.status = 'integrated';
           state.conflict_commit = undefined;
@@ -1383,7 +1453,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
             leader_head_before: leaderHead,
             leader_head_after: newLeaderHead,
             worktree_path: worktreePath,
-            summary: `merged ${worker.name} into leader via --no-ff -X theirs`,
+            summary: `merged ${worker.name} into leader via --no-ff`,
           }, cwd);
           await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATED: merged ${worker.name} (${workerHead.slice(0, 12)}) into leader HEAD ${newLeaderHead.slice(0, 12)} via merge --no-ff.`, cwd);
           commitHygieneEntries.push({
@@ -1406,7 +1476,6 @@ async function integrateWorkerCommitsIntoLeader(params: {
           appendIntegrationReport(teamName, {
             workerName: worker.name,
             operation: 'merge',
-            strategy: '-X theirs',
             files: [],
             detail: `merge reported success but leader HEAD did not advance cleanly (leader_before=${leaderHead.slice(0, 12)}, leader_after=${newLeaderHead.slice(0, 12)}, worker_integrated=${workerIntegrated}, merge_ref=${branchRef}).`,
           }, cwd);
@@ -1426,7 +1495,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
           });
         }
       } else {
-        // Merge failed even with -X theirs (e.g. binary conflict) — abort and log
+        // Abort without changing either side; leave resolution to the leader.
         const conflictFiles = listConflictFiles(repoRoot, cwd);
         runGitCommand(repoRoot, ['merge', '--abort'], cwd);
         state.status = 'cherry_pick_conflict';
@@ -1440,24 +1509,24 @@ async function integrateWorkerCommitsIntoLeader(params: {
           worktree_path: worktreePath,
           conflict_files: conflictFiles,
           stderr: merge.stderr || merge.stdout,
-          summary: `merge conflict for ${worker.name} (auto-resolve failed)`,
+          summary: `merge conflict for ${worker.name} (aborted; manual resolution required)`,
         }, cwd);
         appendIntegrationReport(teamName, {
           workerName: worker.name,
           operation: 'merge',
-          strategy: '-X theirs',
           files: conflictFiles,
-          detail: `merge --no-ff -X theirs failed; aborted. stderr: ${(merge.stderr || '').slice(0, 200)}`,
+          detail: `merge --no-ff failed; aborted; originals preserved. stderr: ${(merge.stderr || '').slice(0, 200)}`,
         }, cwd);
-        await sendIntegrationMessageToLeader(teamName, worker, `CONFLICT AUTO-RESOLVED FAILED: ${worker.name}'s merge resolved with -X theirs failed on files: ${conflictFiles.join(', ') || 'unknown'}. Consider steering ${worker.name} to review these areas.`, cwd);
+        await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATION CONFLICT: ${worker.name}'s merge was aborted on files: ${conflictFiles.join(', ') || 'unknown'}. Leader and worker originals are preserved. Resolve the conflict in ${worktreePath} before retrying integration.`, cwd);
       }
     } else {
-      // Diverged → cherry-pick individual commits with -X theirs
+      // Diverged → cherry-pick individual commits without choosing conflict sides
       const baseline = state.last_integrated_head && runGitCommand(repoRoot, ['rev-parse', '--verify', state.last_integrated_head], worktreePath).ok
         ? state.last_integrated_head
         : leaderHead;
       const commits = listCommitRange(repoRoot, baseline, workerHead, worktreePath);
       if (commits.length === 0) {
+        if (state.last_integrated_head === workerHead) integratedWorkerNames.add(worker.name);
         next[worker.name] = state;
         continue;
       }
@@ -1473,9 +1542,9 @@ async function integrateWorkerCommitsIntoLeader(params: {
           summary: `detected worker commit ${commit.slice(0, 12)}`,
         }, cwd);
 
-        const pick = runGitCommand(repoRoot, ['cherry-pick', '--allow-empty', '-X', 'theirs', commit], cwd);
+        const pick = runGitCommand(repoRoot, ['cherry-pick', '--allow-empty', commit], cwd);
         if (!pick.ok) {
-          // Even -X theirs failed (binary conflict etc.) — abort this commit, log, continue
+          // Abort this commit and stop; do not rebase unintegrated changes.
           const conflictFiles = listConflictFiles(repoRoot, cwd);
           runGitCommand(repoRoot, ['cherry-pick', '--abort'], cwd);
           state.status = 'cherry_pick_conflict';
@@ -1489,16 +1558,15 @@ async function integrateWorkerCommitsIntoLeader(params: {
             worktree_path: worktreePath,
             conflict_files: conflictFiles,
             stderr: pick.stderr || pick.stdout,
-            summary: `cherry-pick conflict for ${worker.name} at ${commit.slice(0, 12)} (auto-resolve failed)`,
+            summary: `cherry-pick conflict for ${worker.name} at ${commit.slice(0, 12)} (aborted; manual resolution required)`,
           }, cwd);
           appendIntegrationReport(teamName, {
             workerName: worker.name,
             operation: 'cherry-pick',
-            strategy: '-X theirs',
             files: conflictFiles,
-            detail: `cherry-pick -X theirs ${commit.slice(0, 12)} failed; aborted. stderr: ${(pick.stderr || '').slice(0, 200)}`,
+            detail: `cherry-pick ${commit.slice(0, 12)} failed; aborted; originals preserved. stderr: ${(pick.stderr || '').slice(0, 200)}`,
           }, cwd);
-          await sendIntegrationMessageToLeader(teamName, worker, `CONFLICT AUTO-RESOLVED FAILED: ${worker.name}'s cherry-pick ${commit.slice(0, 12)} with -X theirs failed on files: ${conflictFiles.join(', ') || 'unknown'}. Consider steering ${worker.name} to review these areas.`, cwd);
+          await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATION CONFLICT: ${worker.name}'s cherry-pick ${commit.slice(0, 12)} was aborted on files: ${conflictFiles.join(', ') || 'unknown'}. Leader and worker originals are preserved. Resolve the conflict in ${worktreePath} before retrying integration.`, cwd);
           allPicked = false;
           break;
         }
@@ -1511,13 +1579,13 @@ async function integrateWorkerCommitsIntoLeader(params: {
             leaderHeadBefore: leaderHead,
             leaderHeadAfter: newLeaderHead,
             worktreePath,
-            strategy: '-X theirs',
           }, cwd);
           allPicked = false;
           break;
         }
 
         state.last_integrated_head = commit;
+        state.delivery_leader_commit = newLeaderHead;
         state.last_leader_head = newLeaderHead;
         state.status = 'integrated';
         state.conflict_commit = undefined;
@@ -1529,9 +1597,9 @@ async function integrateWorkerCommitsIntoLeader(params: {
           leader_head_before: leaderHead,
           leader_head_after: newLeaderHead,
           worktree_path: worktreePath,
-          summary: `cherry-picked ${commit.slice(0, 12)} from ${worker.name} with -X theirs`,
+          summary: `cherry-picked ${commit.slice(0, 12)} from ${worker.name}`,
         }, cwd);
-        await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATED: cherry-picked ${commit.slice(0, 12)} from ${worker.name} into leader HEAD ${newLeaderHead.slice(0, 12)} (-X theirs).`, cwd);
+        await sendIntegrationMessageToLeader(teamName, worker, `INTEGRATED: cherry-picked ${commit.slice(0, 12)} from ${worker.name} into leader HEAD ${newLeaderHead.slice(0, 12)}.`, cwd);
         commitHygieneEntries.push({
           recorded_at: new Date().toISOString(),
           operation: 'integration_cherry_pick',
@@ -1557,14 +1625,32 @@ async function integrateWorkerCommitsIntoLeader(params: {
 
   // ── Phase C: Cross-worker rebase (idle/done/failed workers onto new leader) ──
   const newLeaderHead = resolveLeaderHead(resolve(config.workers[0]?.worktree_repo_root ?? cwd), cwd);
-  if (newLeaderHead && leaderHeadAtCycleStart && newLeaderHead !== leaderHeadAtCycleStart) {
+  if (newLeaderHead) {
     for (const worker of config.workers) {
+      const state = next[worker.name] ?? {};
+      const leaderAdvanced = leaderHeadAtCycleStart && newLeaderHead !== leaderHeadAtCycleStart;
+      if (!leaderAdvanced && !state.pending_rebase_leader_head) continue;
       if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
-      // Note: do NOT skip integratedWorkerNames here — cherry-picked workers need
-      // rebase to pick up other workers' changes that landed on leader in the same cycle.
+      // Never rewrite worker history while its source delivery is unresolved.
+      if (state.status === 'cherry_pick_conflict' || state.status === 'integration_failed'
+        || (!integratedWorkerNames.has(worker.name) && !state.pending_rebase_leader_head)) {
+        await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
+          worker_name: worker.name,
+          reason: 'unintegrated_changes',
+          leader_head: newLeaderHead,
+          worktree_path: resolve(worker.worktree_path),
+          summary: `skipped cross-rebase for ${worker.name} (unintegrated changes; resolve integration first)`,
+        }, cwd);
+        continue;
+      }
 
       const repoRoot = resolve(worker.worktree_repo_root);
       const worktreePath = resolve(worker.worktree_path);
+      const sourceHead = resolveWorkerHead(worktreePath);
+      const sourceDelivered = sourceHead && (leaderContainsCommit(repoRoot, cwd, sourceHead)
+        || (state.last_integrated_head === sourceHead && state.delivery_leader_commit
+          && leaderContainsCommit(repoRoot, cwd, state.delivery_leader_commit)));
+      if (!sourceDelivered) continue;
 
       // Only rebase idle/done/failed workers to avoid race conditions
       const workerStatus = await readWorkerStatus(teamName, worker.name, cwd);
@@ -1580,9 +1666,15 @@ async function integrateWorkerCommitsIntoLeader(params: {
         continue;
       }
 
-      // Skip if worktree is dirty (will auto-commit next cycle, then rebase)
-      const statusCheck = runGitCommand(repoRoot, ['status', '--porcelain'], worktreePath);
-      if (statusCheck.ok && statusCheck.stdout.trim()) {
+      if (worktreeHasUnfinishedRebase(repoRoot, worktreePath)) {
+        next[worker.name] = {
+          ...state, status: 'rebase_conflict',
+          rebase_error: 'Unfinished rebase preserved. Finish or abort it manually before retrying integration.',
+        };
+        continue;
+      }
+      const statusCheck = runGitCommand(repoRoot, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worktreePath);
+      if (!statusCheck.ok || statusCheck.stdout.trim()) {
         await appendIntegrationEvent(teamName, 'worker_cross_rebase_skipped', worker, {
           worker_name: worker.name,
           reason: 'dirty_worktree',
@@ -1593,13 +1685,14 @@ async function integrateWorkerCommitsIntoLeader(params: {
         continue;
       }
 
-      // Rebase with -X ours (in rebase context, "ours" = upstream = leader wins)
+      // Rebase without silently dropping conflicting worker changes.
       const workerHeadBeforeRebase = resolveWorkerHead(worktreePath);
-      const rebase = runGitCommand(repoRoot, ['rebase', '-X', 'ours', newLeaderHead], worktreePath);
+      const rebase = runGitCommand(repoRoot, ['rebase', newLeaderHead], worktreePath);
       if (rebase.ok) {
         const workerHeadAfterRebase = resolveWorkerHead(worktreePath);
-        const state = next[worker.name] ?? {};
         state.last_rebased_leader_head = newLeaderHead;
+        state.pending_rebase_leader_head = undefined;
+        state.rebase_error = undefined;
         state.status = 'idle';
         state.conflict_commit = undefined;
         state.conflict_files = undefined;
@@ -1609,7 +1702,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
           worker_name: worker.name,
           leader_head: newLeaderHead,
           worktree_path: worktreePath,
-          summary: `cross-rebased ${worker.name} onto ${newLeaderHead.slice(0, 12)} (-X ours)`,
+          summary: `cross-rebased ${worker.name} onto ${newLeaderHead.slice(0, 12)}`,
         }, cwd);
         commitHygieneEntries.push({
           recorded_at: new Date().toISOString(),
@@ -1627,23 +1720,31 @@ async function integrateWorkerCommitsIntoLeader(params: {
       } else {
         // Rebase failed — abort to restore worktree, log for retry next cycle
         const conflictFiles = listConflictFiles(repoRoot, worktreePath);
-        runGitCommand(repoRoot, ['rebase', '--abort'], worktreePath);
+        const abortResult = runGitCommand(repoRoot, ['rebase', '--abort'], worktreePath);
+        state.status = 'rebase_conflict';
+        state.pending_rebase_leader_head = newLeaderHead;
+        state.rebase_error = `${rebase.stderr || rebase.stdout}; abort: ${abortResult.ok ? 'ok' : abortResult.stderr || abortResult.stdout}`;
+        state.conflict_commit = workerHeadBeforeRebase ?? undefined;
+        state.conflict_files = conflictFiles;
+        state.updated_at = new Date().toISOString();
+        next[worker.name] = state;
         await appendIntegrationEvent(teamName, 'worker_cross_rebase_conflict', worker, {
           worker_name: worker.name,
           leader_head: newLeaderHead,
           worktree_path: worktreePath,
           conflict_files: conflictFiles,
           stderr: rebase.stderr || rebase.stdout,
-          summary: `cross-rebase conflict for ${worker.name} onto ${newLeaderHead.slice(0, 12)} (aborted, will retry)`,
+          abort_ok: abortResult.ok,
+          abort_stderr: abortResult.stderr,
+          summary: `cross-rebase conflict for ${worker.name} onto ${newLeaderHead.slice(0, 12)} (abort ${abortResult.ok ? 'succeeded' : 'failed'}, will retry)`,
         }, cwd);
         appendIntegrationReport(teamName, {
           workerName: worker.name,
           operation: 'rebase',
-          strategy: '-X ours',
           files: conflictFiles,
-          detail: `rebase -X ours onto ${newLeaderHead.slice(0, 12)} failed; aborted. Will retry next cycle.`,
+          detail: `rebase onto ${newLeaderHead.slice(0, 12)} failed; abort ${abortResult.ok ? 'succeeded' : 'failed'}. Will retry next cycle. ${state.rebase_error}`,
         }, cwd);
-        await sendIntegrationMessageToLeader(teamName, worker, `CONFLICT AUTO-RESOLVED FAILED: ${worker.name}'s rebase onto ${newLeaderHead.slice(0, 12)} with -X ours failed on files: ${conflictFiles.join(', ') || 'unknown'}. Consider steering ${worker.name} to review these areas.`, cwd);
+        await sendIntegrationMessageToLeader(teamName, worker, `REBASE CONFLICT: ${worker.name}'s rebase onto ${newLeaderHead.slice(0, 12)} was aborted on files: ${conflictFiles.join(', ') || 'unknown'}. Original worker HEAD is preserved. Resolve the conflict in ${worktreePath} before retrying.`, cwd);
       }
     }
   }
@@ -3687,7 +3788,11 @@ export async function startTeam(
       launchEnv,
     );
   }
-  if (workerLaunchMode === 'interactive') {
+  if (workerLaunchMode === 'herdr') {
+    if (!(await isHerdrBinaryCallable())) {
+      throw new Error('Team mode herdr backend requires the herdr binary. Install from https://herdr.dev (curl -fsSL https://herdr.dev/install.sh | sh, or brew install herdr) and retry.');
+    }
+  } else if (workerLaunchMode === 'interactive') {
     if (!isTmuxAvailable()) {
       throw new Error('Team mode requires tmux. Install with: apt install tmux / brew install tmux');
     }
@@ -4072,6 +4177,8 @@ export async function startTeam(
       writeWarning: options.writeCleanupWarning,
     });
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
+    // Set by the interactive ready-wait or the herdr agent-start settle below.
+    let startupReadyPromptObserved = false;
     let workerStartupArgs: ReadonlyArray<ReadonlyArray<string>> | undefined;
 
     if (workerLaunchMode === 'interactive') {
@@ -4106,6 +4213,55 @@ export async function startTeam(
 
       for (const [index, paneId] of createdSession.workerPaneIds.entries()) {
         startupTiming.mark('split_returned', { worker: `worker-${index + 1}`, pane_id: paneId });
+      }
+    } else if (workerLaunchMode === 'herdr') {
+      const herdrPlans: HerdrWorkerSpawnPlan[] = [];
+      for (let i = 1; i <= workerCount; i++) {
+        const startup = workerStartups[i - 1];
+        const workerLaunchPolicy = workerLaunchPolicyPlan[i - 1];
+        if (!startup || !workerLaunchPolicy) {
+          throw new Error(`missing worker launch plan for worker-${i}`);
+        }
+        const spec = buildWorkerProcessLaunchSpec(
+          sanitized,
+          i,
+          startup.launchArgs,
+          startup.cwd,
+          startup.env,
+          startup.workerCli,
+          startup.initialPrompt,
+          startup.workerRole,
+        );
+        herdrPlans.push({
+          kind: spec.workerCli,
+          agentArgs: spec.args,
+          env: spec.env,
+          cwd: startup.cwd,
+          initialPrompt: startup.initialPrompt,
+        });
+      }
+      const herdrTeam = await createHerdrTeam(sanitized, leaderCwd, herdrPlans, { env: launchEnv });
+      // createHerdrTeam returns only after every agent reached an idle,
+      // promptable state (agent-start readiness + settle polling): that is
+      // the herdr equivalent of observing a ready prompt in a tmux pane.
+      startupReadyPromptObserved = true;
+      sessionName = herdrTeam.name;
+      sessionCreated = true;
+      config.tmux_session = herdrTeam.name;
+      config.leader_pane_id = null;
+      config.hud_pane_id = null;
+      config.leader_pane_pid = null;
+      config.hud_pane_pid = null;
+      config.resize_hook_name = null;
+      config.resize_hook_target = null;
+      for (const worker of herdrTeam.workers) {
+        if (config.workers[worker.index - 1]) {
+          config.workers[worker.index - 1].pane_id = worker.paneId;
+          config.workers[worker.index - 1].pid = undefined;
+        }
+        workerPaneIds[worker.index - 1] = worker.paneId;
+        createdWorkerPaneIds.push(worker.paneId);
+        startupTiming.mark('split_returned', { worker: `worker-${worker.index}`, pane_id: worker.paneId });
       }
     } else {
       config.tmux_session = `prompt-${sanitized}`;
@@ -4215,7 +4371,6 @@ export async function startTeam(
         };
       }
 
-      let startupReadyPromptObserved = false;
       if (workerLaunchMode === 'interactive' && !skipWorkerReadyWait && !initialPrompt && !startupDirectOutcome?.ok) {
         startupTiming.mark('ready_wait_start', { worker: workerName, pane_id: paneId });
         let readinessIncompatibility: string | null = null;
@@ -4661,9 +4816,7 @@ export async function monitorTeam(
   const workerScanStartMs = performance.now();
   const workerSignals = await Promise.all(
     config.workers.map(async (worker) => {
-      const alive = config.worker_launch_mode === 'prompt'
-        ? isPromptWorkerAlive(config, worker)
-        : isWorkerAlive(sessionName, worker.index, worker.pane_id, worker.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
+      const alive = await isTeamWorkerAliveForMode(config, sessionName, worker);
       const [status, heartbeat] = await Promise.all([
         readWorkerStatus(sanitized, worker.name, cwd),
         readWorkerHeartbeat(sanitized, worker.name, cwd),
@@ -4777,29 +4930,11 @@ export async function monitorTeam(
 
   const allTasksTerminal = taskCounts.pending === 0 && taskCounts.blocked === 0 && taskCounts.in_progress === 0;
   const deadWorkerStall =
-    config.worker_launch_mode === 'prompt'
+    config.worker_launch_mode !== 'interactive'
     && config.workers.length > 0
     && deadWorkers.length >= config.workers.length
     && !allTasksTerminal;
 
-  const persistedPhase = await readTeamPhaseState(sanitized, cwd);
-  const targetPhase = deadWorkerStall
-    ? 'failed'
-    : inferPhaseTargetFromTaskCounts(taskCounts, {
-      verificationPending: verificationPendingTasks.length > 0,
-    });
-  const phaseState: TeamPhaseState = reconcilePhaseStateForMonitor(persistedPhase, targetPhase);
-  if (!readOnly) await writeTeamPhaseState(sanitized, phaseState, cwd);
-  const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
-  if (!readOnly) await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
-
-  if (deadWorkerStall) {
-    recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');
-  }
-
-  if (!readOnly) {
-    await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
-  }
   const integrationByWorker = readOnly
     ? (previousSnapshot?.integrationByWorker ?? {})
     : await integrateWorkerCommitsIntoLeader({
@@ -4808,6 +4943,62 @@ export async function monitorTeam(
         previous: previousSnapshot,
         cwd,
       });
+  const deliveryWorkers = config.workers.filter((worker) => worker.worktree_path && worker.worktree_repo_root);
+  let integrationPending = false;
+  let integrationFailed = false;
+  for (const worker of deliveryWorkers) {
+    const delivery = integrationByWorker[worker.name];
+    if (delivery?.status === 'cherry_pick_conflict' || delivery?.status === 'integration_failed' || delivery?.status === 'rebase_conflict' || delivery?.pending_rebase_leader_head) {
+      integrationFailed = true;
+      recommendations.push(`Integration unresolved for ${worker.name}; resolve delivery failure before terminal success`);
+      continue;
+    }
+    if (worktreeHasUnfinishedRebase(worker.worktree_repo_root!, worker.worktree_path!)) {
+      integrationFailed = true;
+      recommendations.push(`Integration unresolved for ${worker.name}; unfinished rebase preserved before terminal success`);
+      continue;
+    }
+    const workerHead = resolveWorkerHead(worker.worktree_path!);
+    const status = runGitCommand(worker.worktree_repo_root!, ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], worker.worktree_path!);
+    const contained = workerHead && leaderContainsCommit(worker.worktree_repo_root!, cwd, workerHead);
+    const delivered = workerHead && delivery?.last_integrated_head === workerHead
+      && delivery.delivery_leader_commit && leaderContainsCommit(worker.worktree_repo_root!, cwd, delivery.delivery_leader_commit);
+    if (!workerHead || !status.ok || status.stdout.trim() || (!contained && !delivered)) {
+      integrationPending = true;
+      recommendations.push(`Integration pending for ${worker.name}; verify code delivery before terminal success`);
+    }
+  }
+
+  const targetPhase = deadWorkerStall
+    ? 'failed'
+    : inferPhaseTargetFromTaskCounts(taskCounts, {
+      verificationPending: verificationPendingTasks.length > 0 || integrationPending,
+    });
+  const deliveryGatedTarget = targetPhase === 'complete' || targetPhase === 'team-verify'
+    ? integrationFailed ? 'team-fix' : targetPhase
+    : targetPhase;
+  const reconcileMonitorPhase = async (): Promise<TeamPhaseState> => {
+    const persistedPhase = await readTeamPhaseState(sanitized, cwd);
+    const next = reconcilePhaseStateForMonitor(persistedPhase, deliveryGatedTarget);
+    if (!readOnly) {
+      await writeTeamPhaseState(sanitized, next, cwd);
+      await syncRootTeamModeStateForMonitor(sanitized, next, integrationPending || integrationFailed, cwd);
+    }
+    return next;
+  };
+  // Shutdown publishes its epoch under this barrier; never reopen root from a stale phase read.
+  const phaseState = readOnly
+    ? await reconcileMonitorPhase()
+    : await withTeamTaskMembershipBarrier(sanitized, cwd, reconcileMonitorPhase);
+  const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
+
+  if (deadWorkerStall) {
+    recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');
+  }
+
+  if (!readOnly) {
+    await emitMonitorDerivedEvents(sanitized, taskView, workers, previousSnapshot, config.worker_launch_mode, cwd);
+  }
   const mailboxDeliveryStartMs = performance.now();
   const mailboxNotifiedByMessageId = phaseState.terminal_epoch
     ? {}
@@ -4923,6 +5114,13 @@ export async function assignTask(
   if (!workerInfo) throw new Error(`Worker ${workerName} not found in team`);
   const dispatchPolicy = resolveDispatchPolicy(manifest?.policy, config.worker_launch_mode);
 
+  const outstandingTask = (await listTasks(sanitized, cwd)).find((current) =>
+    current.id !== taskId && current.owner === workerName
+    && (current.status === 'pending' || current.status === 'in_progress'));
+  if (outstandingTask) {
+    throw new Error(`Worker ${workerName} already owns outstanding task ${outstandingTask.id}`);
+  }
+
   const claim = await claimTask(sanitized, taskId, workerName, task.version ?? 1, cwd);
   if (!claim.ok) {
     if (claim.error === 'blocked_dependency') {
@@ -4955,11 +5153,11 @@ export async function assignTask(
       : synthesizeCoordinationPlan(task);
     const hasCurrentCoordination = task.coordination?.source === 'explicit' || coordinationPlansEqual(task.coordination, currentCoordinationPlan);
     const taskForInbox = task.delegation && hasCurrentCoordination
-      ? task
+      ? claim.task
       : (await updateTask(sanitized, taskId, {
           delegation: task.delegation ?? synthesizeDelegationPlan(task),
           coordination: task.coordination?.source === 'explicit' ? task.coordination : currentCoordinationPlan,
-        }, cwd)) ?? task;
+        }, cwd)) ?? claim.task;
     const inbox = generateTaskAssignmentInbox(workerName, sanitized, taskForInbox, { approvedContextSection });
     const maxAssignRetries = 2;
     const assignRetryDelayS = 2;
@@ -5281,21 +5479,19 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
         throw new Error(`shutdown_rejected:${detail}`);
       }
 
-      const anyAlive = config!.workers.some((w) => (
-        config!.worker_launch_mode === 'prompt'
-          ? isPromptWorkerAlive(config!, w)
-          : isWorkerAlive(sessionName, w.index, w.pane_id, w.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)
-      ));
+      const anyAliveSignals = await Promise.all(
+        config!.workers.map((w) => isTeamWorkerAliveForMode(config!, sessionName, w)),
+      );
+      const anyAlive = anyAliveSignals.some(Boolean);
       if (!anyAlive) break;
       // Sleep 2s
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    const anyAliveAfterWait = config!.workers.some((w) => (
-      config!.worker_launch_mode === 'prompt'
-        ? isPromptWorkerAlive(config!, w)
-        : isWorkerAlive(sessionName, w.index, w.pane_id, w.pid, config!.tmux_pane_owner_id ?? undefined, config!.hud_pane_id ?? undefined)
-    ));
+    const anyAliveAfterWaitSignals = await Promise.all(
+      config!.workers.map((w) => isTeamWorkerAliveForMode(config!, sessionName, w)),
+    );
+    const anyAliveAfterWait = anyAliveAfterWaitSignals.some(Boolean);
     if (anyAliveAfterWait && !force) {
       // Workers may have accepted shutdown but not exited (Codex TUI requires explicit exit).
       // In this case, proceed to force kill panes (next step) rather than failing and leaving state around.
@@ -5726,6 +5922,36 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     if (workerTeardown.kill.failed > 0) {
       throw new Error(`shutdown_pane_teardown_failed:${workerTeardown.kill.failedPaneIds.join(',')}`);
     }
+  } else if (config.worker_launch_mode === 'herdr') {
+    const herdrTeardownFailures: string[] = [];
+    let herdrWorkspaceClosed = false;
+    for (const w of config.workers) {
+      if (typeof w.pane_id !== 'string' || w.pane_id === '') continue;
+      try {
+        await interruptHerdrWorker(w.pane_id);
+      } catch {
+        // Best-effort interrupt: teardown below still removes the pane.
+      }
+      try {
+        await teardownHerdrWorker(w.pane_id);
+      } catch (error) {
+        herdrTeardownFailures.push(`${w.name}:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const firstHerdrPane = config.workers
+      .map((w) => w.pane_id)
+      .find((paneId): paneId is string => typeof paneId === 'string' && paneId !== '');
+    if (firstHerdrPane) {
+      try {
+        await destroyHerdrTeam(herdrWorkspaceIdFromPaneId(firstHerdrPane));
+        herdrWorkspaceClosed = true;
+      } catch (error) {
+        herdrTeardownFailures.push(`workspace:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (herdrTeardownFailures.length > 0 && !herdrWorkspaceClosed) {
+      console.warn(`[team shutdown] ${sanitized}: herdr teardown issues: ${herdrTeardownFailures.join(',')}`);
+    }
   } else if (config.worker_launch_mode === 'prompt') {
     const promptTeardownFailures: string[] = [];
     const promptTeardownResults: Map<string, { terminated: boolean }> = new Map();
@@ -5939,7 +6165,14 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
       `approved_execution_binding_stale:${approvedExecutionState.binding.prd_path}:${approvedExecutionState.binding.task}`,
     );
   }
-  if (config.worker_launch_mode === 'prompt') {
+  if (config.worker_launch_mode === 'herdr') {
+    const aliveSignals = await Promise.all(
+      config.workers
+        .filter((worker) => typeof worker.pane_id === 'string' && worker.pane_id !== '')
+        .map((worker) => isHerdrWorkerAlive(worker.pane_id as string)),
+    );
+    if (!aliveSignals.some(Boolean)) return null;
+  } else if (config.worker_launch_mode === 'prompt') {
     const handleTeamConfig = { ...config, name: sanitized };
     const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(handleTeamConfig, worker));
     if (!hasLivePromptWorker) return null;
@@ -5983,8 +6216,7 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
   const root = teamRuntimeTeamsRoot(cwd);
   if (!existsSync(root)) return [];
   const listedSessions = listTeamSessions();
-  if (listedSessions === null) throw new Error('tmux_session_query_unavailable');
-  const sessions = new Set(listedSessions);
+  const sessions = listedSessions !== null ? new Set(listedSessions) : null;
 
   const entries = await readdir(root, { withFileTypes: true });
   const active: string[] = [];
@@ -6009,6 +6241,21 @@ async function findActiveTeams(cwd: string, leaderSessionId: string): Promise<st
       }
       continue;
     }
+    if (workerLaunchMode === 'herdr') {
+      const herdrAlive = await Promise.all(
+        (cfg?.workers ?? [])
+          .filter((worker) => typeof worker.pane_id === 'string' && worker.pane_id !== '')
+          .map((worker) => isHerdrWorkerAlive(worker.pane_id as string)),
+      );
+      if (herdrAlive.some(Boolean)) {
+        active.push(teamName);
+      }
+      continue;
+    }
+    if (sessions === null) {
+      // An interactive (tmux) team exists but tmux cannot be queried.
+      throw new Error('tmux_session_query_unavailable');
+    }
     if (sessions.has(tmuxSession)) active.push(teamName);
   }
   return active;
@@ -6023,10 +6270,21 @@ async function detectAndCleanStaleTeam(
   const stateDir = teamRuntimeTeamRoot(teamName, leaderCwd);
   if (!existsSync(stateDir)) return;
 
-  const listedSessions = listTeamSessions();
-  if (listedSessions === null) return;
-  const sessions = new Set(listedSessions);
-  if (sessions.has(`omx-team-${teamName}`)) return;
+  const existingConfig = await readTeamConfig(teamName, leaderCwd);
+  if (existingConfig?.worker_launch_mode === 'herdr') {
+    // Herdr teams have no tmux session; liveness comes from their panes.
+    const herdrAlive = await Promise.all(
+      (existingConfig.workers ?? [])
+        .filter((worker) => typeof worker.pane_id === 'string' && worker.pane_id !== '')
+        .map((worker) => isHerdrWorkerAlive(worker.pane_id as string)),
+    );
+    if (herdrAlive.some(Boolean)) return;
+  } else {
+    const listedSessions = listTeamSessions();
+    if (listedSessions === null) return;
+    const sessions = new Set(listedSessions);
+    if (sessions.has(`omx-team-${teamName}`)) return;
+  }
 
   const repoRootResult = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd: leaderCwd, encoding: 'utf-8', windowsHide: true,
@@ -6189,9 +6447,41 @@ async function emitMonitorDerivedEvents(
   }
 }
 
+/** Backend-aware worker liveness: prompt children, herdr panes, or tmux panes. */
+async function isTeamWorkerAliveForMode(
+  config: TeamConfig,
+  sessionName: string,
+  worker: TeamConfig['workers'][number],
+): Promise<boolean> {
+  if (config.worker_launch_mode === 'prompt') {
+    return isPromptWorkerAlive(config, worker);
+  }
+  if (config.worker_launch_mode === 'herdr') {
+    if (typeof worker.pane_id !== 'string' || worker.pane_id === '') return false;
+    return isHerdrWorkerAlive(worker.pane_id);
+  }
+  return isWorkerAlive(sessionName, worker.index, worker.pane_id, worker.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
+}
+
 async function notifyWorkerOutcome(config: TeamConfig, workerIndex: number, message: string, workerPaneId?: string): Promise<DispatchOutcome> {
   const worker = config.workers.find((candidate) => candidate.index === workerIndex);
   if (!worker) return { ok: false, transport: 'none', reason: 'worker_not_found' };
+
+  if (config.worker_launch_mode === 'herdr') {
+    if (typeof worker.pane_id !== 'string' || worker.pane_id === '') {
+      return { ok: false, transport: 'herdr_prompt', reason: 'herdr_pane_id_missing' };
+    }
+    try {
+      await submitToHerdrWorker(worker.pane_id, message);
+      return { ok: true, transport: 'herdr_prompt', reason: 'herdr_prompt_sent' };
+    } catch (error) {
+      return {
+        ok: false,
+        transport: 'herdr_prompt',
+        reason: `herdr_prompt_failed:${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
 
   if (config.worker_launch_mode === 'prompt') {
     const handle = getPromptWorkerHandle(config.name, worker.name);
