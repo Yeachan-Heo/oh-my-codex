@@ -984,4 +984,40 @@ esac
     }
   });
 
+  it('exits with exit code 1 and clear error when stdin is closed in --ui mode', async () => {
+    const cwd = await makeRepo();
+    const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
+    const recordPath = join(questionsDir, 'question-test.json');
+    const record = {
+      kind: 'omx.question/v1',
+      question_id: 'test-q',
+      session_id: 'sess-q',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      status: 'prompting',
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+      allow_other: false,
+      multi_select: false,
+      type: 'single-answerable',
+    };
+    await writeFile(recordPath, JSON.stringify(record, null, 2));
+
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [omxBin, 'question', '--ui', '--state-path', recordPath], {
+        cwd,
+        env: makeQuestionCliEnv(cwd, { OMX_AUTO_UPDATE: '0', OMX_QUESTION_RETURN_PANE: '%999' }),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+
+    assert.equal(result.code, 1, `Expected exit code 1, got ${result.code}. stderr=${result.stderr}; stdout=${result.stdout}`);
+    assert.match(result.stderr, /Standard input closed/, `Expected error message about closed stdin. stderr=${result.stderr}`);
+  });
+
 });

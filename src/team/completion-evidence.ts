@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -11,7 +12,7 @@ function text(value: unknown): value is string {
 
 export async function validateCompletionEvidence(
   cwd: string, teamName: string, task: TeamTask, result: string | undefined,
-): Promise<void> {
+): Promise<string> {
   const path = /^\s*EVIDENCE_RECORDED:\s*(\S+)\s*$/m.exec(result ?? '')?.[1];
   if (!path) throw new Error('Include EVIDENCE_RECORDED: .omx/evidence/<file>.json in the completion result.');
   const target = resolve(cwd, path);
@@ -45,4 +46,11 @@ export async function validateCompletionEvidence(
   if (!hasStructuredVerificationEvidence(verificationSummary)) {
     throw new Error('Include a Verification: section with PASS/FAIL checks or command references in the completion result.');
   }
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(evidence.verifiedHead ?? '') || evidence.verifiedHead !== head) {
+    throw new Error('Evidence verifiedHead must match the current committed worker HEAD.');
+  }
+  const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'], { cwd, encoding: 'utf8' });
+  if (dirty.trim()) throw new Error('Commit worker changes before verifying and completing the task; the worktree must be clean.');
+  return head;
 }

@@ -327,8 +327,8 @@ When marking completion, include structured verification evidence in your task r
 - \`Verification:\`
 - One or more PASS/FAIL checks with command/output references
 - Tasks marked \`requires_code_change:true\` must include both the structured \`Verification:\` summary above and \`EVIDENCE_RECORDED: .omx/evidence/<file>.json\` on its own line before completing; a marker alone is rejected.
-- Write that JSON in your assigned working directory with \`teamName\`, \`taskId\`, \`claimTokenSha256\` (SHA-256 of the current claim token), \`summary\`, \`verification:[{command,result:"passed",output}]\`, and \`unverified:[]\` (list any checks not run).
-- Create/update the file after claiming. Missing, stale, mismatched, placeholder or symlinked evidence is rejected; it checks the report, not whether the commands actually ran.
+- Commit the code, verify that exact commit, and leave the worktree clean before completion. Write that JSON in your assigned worktree (or working directory) with \`teamName\`, \`taskId\`, \`claimTokenSha256\` (SHA-256 of the current claim token), \`verifiedHead\` (full \`git rev-parse HEAD\` SHA that was verified), \`summary\`, \`verification:[{command,result:"passed",output}]\`, and \`unverified:[]\` (list any checks not run).
+- Create/update the file after claiming. Missing, stale, mismatched, placeholder or symlinked evidence is rejected; the reported SHA must match the clean current HEAD. Later edits or a different HEAD require a new verified code-task handoff; research-only completion cannot authorize integration. It checks the report, not whether the commands actually ran.
 `;
 }
 
