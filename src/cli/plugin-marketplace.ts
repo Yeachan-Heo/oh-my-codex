@@ -273,16 +273,21 @@ async function openDirectoryRef(path: string): Promise<DirectoryRef> {
  * Opens the external live-pin directory for a given version (read-only).
  * Anchors .omx-pins as a child of cacheBase to prevent symlink escapes.
  * Does not create directories if they don't exist.
+ * WARNING: The parent .omx-pins directory handle is kept open by this function
+ * because closing it can cause issues with descriptor-relative paths on Linux.
+ * This is a known resource leak that must be addressed by proper handle lifecycle
+ * management when this function is integrated into hasLiveSessionPinRecord.
  */
 async function openExternalLivePinDirectoryReadOnly(cacheBaseRef: DirectoryRef, version: string): Promise<DirectoryRef> {
 	// First, open .omx-pins as a child of cacheBase (anchored, no creation)
 	const pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
-	try {
-		// Then open the version directory under .omx-pins
-		return await openDirectoryChild(pinParentRef, version);
-	} finally {
-		await pinParentRef.handle.close().catch(() => undefined);
-	}
+	// Then open the version directory under .omx-pins
+	const versionDir = await openDirectoryChild(pinParentRef, version);
+	// NOTE: Intentionally NOT closing pinParentRef here.
+	// Closing the parent while the child directory handle is in use can cause
+	// descriptor-relative path resolution to fail on Linux, where operationPath
+	// may use /proc/self/fd paths that reference the parent handle.
+	return versionDir;
 }
 
 /**
