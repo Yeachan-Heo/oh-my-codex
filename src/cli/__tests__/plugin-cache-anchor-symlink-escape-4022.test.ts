@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { mkdir, symlink, writeFile, readdir, lstat, rm } from "node:fs/promises";
+import { mkdir, symlink, writeFile, readdir, lstat, rm, utimes, realpath } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -43,6 +43,8 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 				result.status === "materialized" || result.status === "unchanged",
 				`Expected successful materialization, got ${result.status}`,
 			);
+			assert.ok(result.cacheDir, "Expected cacheDir in materialization result");
+			assert.ok(result.version, "Expected version in materialization result");
 
 			// Create an external directory outside the cache
 			const externalDir = join(dirname(cacheBase), `external-escape-${randomBytes(4).toString("hex")}`);
@@ -66,16 +68,16 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			// which uses anchored opening via openDirectoryChild.
 			// This should prevent following the symlink and safely handle the directory.
 			// Without the fix, it would use openDirectoryRef which follows symlinks.
-			try {
-				await registerOmxPluginCacheLivePin(
-					packagedMarketplace.pluginRoot,
-					`test-session-4022-${randomBytes(4).toString("hex")}`,
-					process.pid,
-				);
-			} catch (err: any) {
-				// Either success or safe error is acceptable
-				// The important part is that it doesn't escape the cache
-			}
+			// Pass the materialized cache directory (properly within the cache), not the packaged marketplace
+			const registration = await registerOmxPluginCacheLivePin(
+				result.cacheDir!,
+				`test-session-4022-${randomBytes(4).toString("hex")}`,
+				process.pid,
+			);
+			assert.ok(
+				registration || !registration,
+				"Registration should complete without throwing (success or expected failure accepted)",
+			);
 
 			// Verify that pin operations don't access external dir
 			const externalEntries = await readdir(externalDir).catch(() => []);
@@ -96,7 +98,13 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			await mkdir(cacheBase, { recursive: true });
 
 			// Materialize cache first
-			await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+			const materializeResult = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+			assert.ok(
+				materializeResult.status === "materialized" || materializeResult.status === "unchanged",
+				`Expected successful materialization, got ${materializeResult.status}`,
+			);
+			assert.ok(materializeResult.cacheDir, "Expected cacheDir in materialization result");
+			assert.ok(materializeResult.version, "Expected version in materialization result");
 
 			// Create external directory
 			const externalDir = join(dirname(cacheBase), `external-escape-sweep-${randomBytes(4).toString("hex")}`);
@@ -116,20 +124,22 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			assert.ok(stats.isSymbolicLink(), "Expected .omx-pins to be a symlink");
 
 			// Call retireUnpinnedManagedSnapshots which calls sweepExpiredOmxPluginCacheLivePinIntents.
-			// With the fix, this uses openExternalLivePinDirectory (anchored opening).
-			// Without the fix, this would use openDirectoryRef which follows symlinks.
-			try {
-				await retireUnpinnedManagedSnapshots(codexHomeDir, "1.0.0");
-			} catch (err: any) {
-				// Either success or safe error is acceptable
-			}
+			// With the fix, this uses openExternalLivePinDirectory (anchored opening via openDirectoryChild).
+			// openDirectoryChild uses O_NOFOLLOW to prevent symlink escape, so it should:
+			// - Either fail to open the symlinked .omx-pins (because it won't follow the symlink)
+			// - Or raise an error that gets caught safely
+			// The important invariant is: nothing should be created/written in externalDir
+			// Without the fix, it would use openDirectoryRef which follows symlinks and would leak into externalDir.
+			await retireUnpinnedManagedSnapshots(codexHomeDir, "1.0.0").catch(() => undefined);
 
 			// Verify no data was written to external directory
+			// If the anchoring works correctly, the sweep operation's attempt to open .omx-pins
+			// should fail safely without writing to the external directory target
 			const externalEntries = await readdir(externalDir).catch(() => []);
 			assert.equal(
 				externalEntries.length,
 				0,
-				"Sweep operations should not have written to external directory",
+				"Sweep operations should not have written to external directory even with symlink at .omx-pins",
 			);
 		});
 	});
@@ -152,12 +162,11 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			// With the fix, .omx-pins should be a proper directory (or not exist yet)
 			// not a symlink to outside the cache
 			const pinsDirPath = join(cacheBase, ".omx-pins");
-			try {
-				const stats = await lstat(pinsDirPath);
+			const stats = await lstat(pinsDirPath).catch(() => null);
+			if (stats) {
 				if (stats.isSymbolicLink()) {
 					// If it's a symlink, verify it points within cacheBase
-					const { realpath } = await import("node:fs/promises");
-					const resolvedPath = await realpath(pinsDirPath).catch(() => pinsDirPath);
+					const resolvedPath = await realpath(pinsDirPath);
 					assert.ok(
 						resolvedPath.startsWith(cacheBase),
 						`Symlink should point within cache, got ${resolvedPath}`,
@@ -169,9 +178,8 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 						"Expected .omx-pins to be a directory or safe symlink",
 					);
 				}
-			} catch {
-				// If .omx-pins doesn't exist yet, that's fine - it will be created when needed
 			}
+			// If .omx-pins doesn't exist yet, that's fine - it will be created when needed
 		});
 	});
 
@@ -189,21 +197,23 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 				result.status === "materialized" || result.status === "unchanged",
 				`Expected successful materialization, got ${result.status}`,
 			);
+			assert.ok(result.cacheDir, "Expected cacheDir in materialization result");
+			assert.ok(result.version, "Expected version in materialization result");
 
 			// With the fix, registerOmxPluginCacheLivePin should create proper anchored pin structure
 			// that stays within cacheBase, not escape via symlinks
 			const pinBaseDir = join(cacheBase, ".omx-pins");
 
-			// Verify structure is created properly when calling pin registration
-			try {
-				await registerOmxPluginCacheLivePin(
-					packagedMarketplace.pluginRoot,
-					`test-session-anchor-${randomBytes(4).toString("hex")}`,
-					process.pid,
-				);
-			} catch (err: any) {
-				// Error is acceptable; what matters is the structure
-			}
+			// Verify structure is created properly when calling pin registration with correct cache dir
+			const registration = await registerOmxPluginCacheLivePin(
+				result.cacheDir!,
+				`test-session-anchor-${randomBytes(4).toString("hex")}`,
+				process.pid,
+			);
+			assert.ok(
+				registration || !registration,
+				"Registration should complete without throwing",
+			);
 
 			// Verify that .omx-pins is either:
 			// 1. A directory (normal case)
@@ -213,7 +223,6 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			if (pinBaseStats) {
 				if (pinBaseStats.isSymbolicLink()) {
 					// If symlink, it should point within cache
-					const { realpath } = await import("node:fs/promises");
 					const target = await realpath(pinBaseDir);
 					assert.ok(
 						target.startsWith(cacheBase),

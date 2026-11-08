@@ -1,7 +1,7 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
 import { createHash, randomUUID } from "crypto";
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, type FileHandle } from "fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
 import { hashProcessStartIdentity, readProcessStartIdentity } from "../state/process-identity.js";
@@ -274,6 +274,7 @@ async function openDirectoryRef(path: string): Promise<DirectoryRef> {
  * Anchors .omx-pins as a child of cacheBase to prevent symlink escapes.
  */
 async function openExternalLivePinDirectory(cacheBaseRef: DirectoryRef, version: string): Promise<DirectoryRef> {
+	// Anchors .omx-pins as a child of cacheBase to prevent symlink escapes.
 	// First, anchor or create .omx-pins as a child of cacheBase
 	let pinParentRef: DirectoryRef | undefined;
 	try {
