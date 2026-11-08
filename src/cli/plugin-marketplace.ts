@@ -1,7 +1,7 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
 import { createHash, randomUUID } from "crypto";
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, type FileHandle } from "fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
 import { hashProcessStartIdentity, readProcessStartIdentity } from "../state/process-identity.js";
