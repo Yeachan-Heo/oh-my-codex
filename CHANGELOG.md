@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-11-08
+
+Patch release ships a team-runtime safety fix: integration and cleanup now preserve manual Git operations, corrupted task state, and completion evidence instead of aborting, dropping, or deleting them. See [release notes](docs/release-notes-0.22.2.md) for exact scope and evidence.
+
+### Fixed
+
+- **PRESERVE WORK AND STATE ACROSS TEAM INTEGRATION AND CLEANUP (#4053):** Team integration and shutdown no longer abort a manual Git operation (rebase, merge, cherry-pick, revert, bisect) in the leader or a worker worktree; they stop and report it, and only abort a merge or cherry-pick they started themselves. A malformed, id-mismatched or unreadable task file now fails with `team_task_read_failed` instead of silently vanishing from completion and cleanup gates. Valid ignored completion-evidence reports are archived under the git common dir (`omx-completion-evidence/`) before worktree removal, so cleanup no longer refuses or deletes them; unknown files still block removal.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.1...v0.22.2
+
 ## [0.22.1] - 2026-11-08
 
 Patch release ships critical fixes for the omx question command when stdin is closed, adds readline close event handling for EOF detection, reapplies verified handoffs and safe drains after v0.22.0, accepts aliased Codex homes for external live pins, and addresses three Codex findings from the v0.22.0 release review. See [release notes](docs/release-notes-0.22.1.md) for exact scope and evidence.
