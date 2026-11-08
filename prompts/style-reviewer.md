@@ -44,7 +44,8 @@ Do not ask for style preferences. Read config files (.eslintrc, .prettierrc, etc
 </success_criteria>
 
 <verification_loop>
-- Default effort: low (fast feedback, concise output).
+- Recommend a supported reasoning effort from task demands, remaining uncertainty, available proof, and resource limits; briefly compare plausible alternatives without a role-based default.
+- Preserve explicit effort requirements and the leader's selected effort. Report justified changes to the caller; do not change runtime settings.
 - Stop when all changed files are reviewed for style consistency.
 - Continue through clear, low-risk next steps automatically; ask only when the next step materially changes scope or requires user preference.
 </verification_loop>

@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.48] - 2026-11-07
+
+Patch release stores live Codex pins outside the plugin fingerprint root so live-pin writes no longer change the fingerprint Codex approved, and drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
+
+### Fixed
+
+- **LIVE PINS OUTSIDE CODEX PLUGIN FINGERPRINT ROOT (#4010, fixes #3898):** OMX wrote mutable live-pin files inside Codex's fingerprinted plugin-version directory, so every pin write changed the plugin fingerprint and Codex repeatedly invalidated hook approval. Live pins now live in `<cacheBase>/.omx-pins/<version>`, outside the fingerprint root, so pin writes no longer change the approved plugin fingerprint (#4010; reporter: @AkiraLan; reviewer: @iqdoctor).
+- **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** #4021 replaced fixed 'Default effort: low/medium' role defaults with task-based effort recommendations that preserve the leader's selected effort. Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.' The modification ensures all role prompts correctly preserve extraction-only output and deference to leader effort selection.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48
+
+## [0.21.47] - 2026-11-07
+
+Patch release keeps psmux worker panes alive on native Windows by embedding the split receipt safely in tmux commands for all platforms. See [release notes](docs/release-notes-0.21.47.md) for exact scope and evidence.
+
+### Fixed
+
+- **PSMUX WINDOWS WORKER LAUNCH (#4008, fixes #4007):** On native Windows with psmux, `omx team` workers exited at launch because OMX appended a `# omx_source_...` receipt to the worker command. The receipt is now appended as a final '; # <receipt>' statement inside the PowerShell script before -EncodedCommand encoding; POSIX keeps ' # <receipt>' inside the sh -c string; and paneHasReceipt decodes encoded commands for ambiguous-split reconciliation.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.46...v0.21.47
+
 ## [0.21.46] - 2026-11-02
 
 Patch release preserves assignment scope in generated native-agent overlays and bounds Git Master's history and write authority. See [release notes](docs/release-notes-0.21.46.md) for exact scope and evidence.

@@ -976,6 +976,15 @@ export function generateTaskAssignmentInbox(
     : taskOrId;
   const taskId = task.id;
   const taskDescription = task.description;
+  const handedOffClaim = typeof taskOrId !== "string"
+    && taskOrId.status === "in_progress"
+    && taskOrId.claim?.owner === workerName
+    ? taskOrId.claim
+    : undefined;
+  const claimInstruction = handedOffClaim && typeof taskOrId !== "string"
+    ? `The leader already claimed this task for you. Do NOT re-claim it. Use the current handoff: \`claim_token: "${handedOffClaim.token}"\`, \`version: ${taskOrId.version}\`, \`leased_until: "${handedOffClaim.leased_until}"\`. Include this \`claim_token\` in lifecycle transitions and rollback. If the lease has expired or the task file no longer matches, stop and ask the leader for a current assignment.`
+    : "Request a claim via CLI interop (`omx team api claim-task --json`)";
+
   const workerGoalSection = typeof taskOrId === "string"
     ? ""
     : renderTeamWorkerGoalInstruction({
@@ -1013,7 +1022,7 @@ ${workerGoalSection}
 1. Resolve canonical team state root and read the task file at \`<team_state_root>/team/${teamName}/tasks/task-${taskId}.json\`
 2. Task id format:
    - State/MCP APIs use \`task_id: "${taskId}"\` (not \`"task-${taskId}"\`).
-3. Request a claim via CLI interop (\`omx team api claim-task --json\`)
+3. ${claimInstruction}
    ${TASK_LEASE_INSTRUCTIONS}
 4. Complete the work
 5. After completing work, commit your changes before reporting completion:

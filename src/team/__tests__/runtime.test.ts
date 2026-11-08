@@ -93,6 +93,7 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd, stdio: 'ignore' });
+  await writeFile(join(cwd, '.git/info/exclude'), '.omx/\n');
   await writeFile(join(cwd, 'README.md'), 'hello\n', 'utf-8');
   execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
@@ -103,6 +104,31 @@ async function addWorktree(repo: string, branchName: string, pathPrefix: string)
   const worktreePath = await mkdtemp(join(tmpdir(), pathPrefix));
   execFileSync('git', ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD'], { cwd: repo, stdio: 'ignore' });
   return worktreePath;
+}
+
+async function handOffVerifiedIntegrationTasks(teamName: string, cwd: string): Promise<void> {
+  const config = await readTeamConfig(teamName, cwd);
+  assert.ok(config);
+  for (const worker of config.workers) {
+    const task = await createTask(teamName, {
+      subject: `Verified output from ${worker.name}`, description: 'Ready for integration',
+      status: 'pending', owner: worker.name, requires_code_change: true,
+    }, cwd);
+    const claim = await claimTask(teamName, task.id, worker.name, null, cwd);
+    assert.ok(claim.ok);
+    const workerCwd = worker.worktree_path!;
+    await mkdir(join(workerCwd, '.omx/evidence'), { recursive: true });
+    await writeFile(join(workerCwd, '.omx/evidence/handoff.json'), JSON.stringify({
+      teamName, taskId: task.id, claimTokenSha256: createHash('sha256').update(claim.claimToken).digest('hex'),
+      verifiedHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerCwd, encoding: 'utf8' }).trim(),
+      summary: 'Verified worker output', verification: [{ command: 'npm test', result: 'passed', output: 'Tests passed' }], unverified: [],
+    }));
+    const completed = await transitionTaskStatus(teamName, task.id, 'in_progress', 'completed', claim.claimToken, cwd, {
+      result: 'Verification: PASS `npm test` for worker output.\nEVIDENCE_RECORDED: .omx/evidence/handoff.json',
+    }, workerCwd);
+    assert.ok(completed.ok, JSON.stringify(completed));
+    await writeWorkerStatus(teamName, worker.name, { state: 'done', updated_at: new Date().toISOString() }, cwd);
+  }
 }
 
 function computeGitBlobSha1(content: string): string {
@@ -7624,7 +7650,7 @@ exec "${realGit}" "$@"
     }
   });
 
-  it('monitorTeam auto-resolves conflicts with -X theirs (worker wins on leader)', async () => {
+  it('monitorTeam fails closed on same-line leader/worker conflicts', async () => {
     const repo = await initRepo();
     let workerPath = '';
     try {
@@ -7656,20 +7682,21 @@ exec "${realGit}" "$@"
       };
       await saveTeamConfig(cfg, repo);
 
+      await handOffVerifiedIntegrationTasks('team-conflict-resolve', repo);
       await monitorTeam('team-conflict-resolve', repo);
 
-      // Verify worker's version wins on leader (-X theirs = worker wins)
-      const leaderContent = await readFile(join(repo, 'README.md'), 'utf-8');
-      assert.equal(leaderContent, 'worker version\n', 'worker content should win with -X theirs');
-
-      // Verify integration was not blocked
+      assert.equal(await readFile(join(repo, 'README.md'), 'utf-8'), 'leader version\n');
+      assert.equal(await readFile(join(workerPath, 'README.md'), 'utf-8'), 'worker version\n');
+      assert.equal(execFileSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: repo, encoding: 'utf-8' }), '');
       const snapshot = await readMonitorSnapshot('team-conflict-resolve', repo);
-      assert.notEqual(snapshot?.integrationByWorker?.['worker-1']?.status, 'cherry_pick_conflict',
-        'integration should not be permanently blocked');
-
-      // Note: -X theirs resolves conflicts silently — git cherry-pick succeeds,
-      // so the integration report is only written when -X theirs itself fails (e.g. binary conflicts).
-      // The key assertion above is that worker content wins on leader.
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.status, 'cherry_pick_conflict');
+      assert.deepEqual(snapshot?.integrationByWorker?.['worker-1']?.conflict_files, ['README.md']);
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, undefined);
+      const events = await readTeamEvents('team-conflict-resolve', repo, { wakeableOnly: true });
+      assert.equal(events.some((event) => event.type === 'worker_cherry_pick_conflict'), true);
+      const mailbox = await listMailboxMessages('team-conflict-resolve', 'leader-fixed', repo);
+      assert.equal(mailbox.some((message) => /INTEGRATION CONFLICT:.*Resolve the conflict/.test(message.body)), true);
+      assert.equal(mailbox.some((message) => /INTEGRATED:/.test(message.body)), false);
     } finally {
       if (workerPath) {
         await rm(workerPath, { recursive: true, force: true });
@@ -7738,7 +7765,7 @@ exec "${realGit}" "$@"
     }
   });
 
-  it('monitorTeam preserves failed integration without attempting cross-rebase', async () => {
+  it('monitorTeam skips cross-rebase after integration conflict and preserves the worker', async () => {
     const repo = await initRepo();
     let worker1Path = '';
     let worker2Path = '';
@@ -7789,6 +7816,7 @@ exec "${realGit}" "$@"
       // Set worker-2 status to idle (eligible for rebase attempt)
       await writeWorkerStatus('team-rebase-fail', 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
 
+      await handOffVerifiedIntegrationTasks('team-rebase-fail', repo);
       await monitorTeam('team-rebase-fail', repo);
 
       // Verify worker-1's changes landed on leader
@@ -7806,8 +7834,11 @@ exec "${realGit}" "$@"
       assert.equal(integration?.last_rebased_leader_head, undefined);
       const reportPath = join(repo, '.omx', 'state', 'team', 'team-rebase-fail', 'integration-report.md');
       const report = await readFile(reportPath, 'utf-8');
-      assert.match(report, /cherry-pick/);
+      assert.match(report, /cherry-pick.*aborted/, 'report should mention the aborted integration');
       assert.doesNotMatch(report, /rebase -X/);
+      const events = await readTeamEvents('team-rebase-fail', repo, { wakeableOnly: false });
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_skipped' && event.metadata?.reason === 'unintegrated_changes'), true);
+      assert.equal(events.some((event) => event.type === 'worker_cross_rebase_applied' && event.worker === 'worker-2'), false);
     } finally {
       if (worker1Path) {
         await rm(worker1Path, { recursive: true, force: true });
@@ -13610,6 +13641,61 @@ esac
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  for (const existingPlans of [false, true]) {
+    it(`assignTask hands off the current claim for lifecycle completion (existing plans: ${existingPlans})`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-claim-handoff-'));
+      const team = 'team-claim-handoff';
+      try {
+        await initTeamState(team, 'claim handoff', 'executor', 1, cwd);
+        const manifestPath = teamStateTestPath(cwd, 'team', team, 'manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+        manifest.policy = { ...(manifest.policy || {}), dispatch_ack_timeout_ms: 250 };
+        await writeFile(manifestPath, JSON.stringify(manifest));
+        const task = await createTask(team, {
+          subject: 'Fix typo', description: 'Fix one typo', status: 'pending',
+          ...(existingPlans ? {
+            delegation: { mode: 'none' as const },
+            coordination: { mode: 'lightweight' as const, source: 'explicit' as const, activation_reasons: [] },
+          } : {}),
+        }, cwd);
+        const assignment = assignTask(team, 'worker-1', task.id, cwd);
+        const deadline = Date.now() + 2_000;
+        let delivered = false;
+        while (Date.now() < deadline && !delivered) {
+          const requests = await listDispatchRequests(team, cwd, { kind: 'inbox', to_worker: 'worker-1' });
+          if (requests.some((request) => request.status === 'pending')) {
+            await markPendingInboxDispatchesDelivered(team, cwd, { toWorker: 'worker-1', lastReason: 'test_delivered_receipt' });
+            delivered = true;
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        }
+        await assignment;
+        assert.ok(delivered);
+        const current = await readTask(team, task.id, cwd);
+        assert.ok(current?.claim);
+        assert.equal(current.status, 'in_progress');
+        const inbox = await readFile(join(cwd, '.omx', 'state', 'team', team, 'workers', 'worker-1', 'inbox.md'), 'utf-8');
+        assert.match(inbox, /Do NOT re-claim/);
+        assert.doesNotMatch(inbox, /Request a claim/);
+        assert.match(inbox, /with_task_lease/);
+        assert.match(inbox, /current_claim_token/);
+        assert.ok(inbox.includes(`claim_token: "${current.claim.token}"`));
+        assert.ok(inbox.includes(`version: ${current.version}`));
+        assert.ok(inbox.includes(`leased_until: "${current.claim.leased_until}"`));
+        const duplicate = await claimTask(team, task.id, 'worker-1', current.version ?? null, cwd);
+        assert.deepEqual(duplicate, { ok: false, error: 'claim_conflict' });
+        const handedOffToken = inbox.match(/claim_token: "([^"]+)"/)?.[1];
+        assert.ok(handedOffToken);
+        const completed = await transitionTaskStatus(team, task.id, 'in_progress', 'completed', handedOffToken, cwd, { result: 'PASS: findings reported' });
+        assert.equal(completed.ok, true, JSON.stringify(completed));
+        assert.equal((await readTask(team, task.id, cwd))?.status, 'completed');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('assignTask injects approved handoff context when the persisted approved binding remains ready', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-approved-followup-'));

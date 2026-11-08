@@ -43,6 +43,7 @@ import {
 	resolvePackagedOmxMarketplace,
 	computeOmxPluginCacheClaimDigest,
 	setPluginCacheMutationHooksForTest,
+	omxPluginCacheBase,
 } from "../plugin-marketplace.js";
 import {
 	buildManagedCodexHookTrustState,
@@ -1528,6 +1529,7 @@ describe("omx setup install mode behavior", () => {
 					const initial = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
 					assert.equal(initial.status, "materialized");
 					const cacheDir = initial.cacheDir!;
+				const version = initial.version!;
 					const launcherPath = join(cacheDir, "hooks", "omx-command.json");
 					await writeFile(launcherPath, `${JSON.stringify({ command: "/stale/node", argsPrefix: ["/stale/omx.js"] })}\n`);
 					await writeBoundCompletionMarker(cacheDir);
@@ -1555,6 +1557,11 @@ describe("omx setup install mode behavior", () => {
 					assert.match(pinnedOutput, /close that session before repairing it/);
 					assert.equal((JSON.parse(await readFile(launcherPath, "utf-8")) as { command: string }).command, "/stale/node");
 
+					// Remove the external live pins directory (pins are now stored outside the cache)
+					const cacheBase = omxPluginCacheBase(codexHomeDir);
+					const externalPinDir = join(cacheBase, ".omx-pins", version);
+					await rm(externalPinDir, { recursive: true, force: true });
+					// Also remove legacy in-tree marker if it exists (for backward compatibility)
 					await rm(join(cacheDir, ".omx-live-pin"), { recursive: true, force: true });
 					const repairedOutput = await captureConsoleOutput(async () => {
 						await setup({
