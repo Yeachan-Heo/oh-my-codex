@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-11-08
+
+Patch release ships routing-surface alignment for Plan and Ralplan skills to document their correct execution-admission gates. See [release notes](docs/release-notes-0.22.3.md) for exact scope and evidence.
+
+### Fixed
+
+- **ALIGN PLAN AND RALPLAN WITH AVAILABLE ROUTING SURFACES (#3998):** Plan and Ralplan skills now document their correct execution-admission gates in alignment with available GJC routing surfaces and handoff contracts. Updated guidance clarifies the skills' execution boundaries and integration points without changing production behavior or regressions across capability contracts.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.2...v0.22.3
+
 ## [0.22.2] - 2026-11-08
 
 Patch release ships a team-runtime safety fix: integration and cleanup now preserve manual Git operations, corrupted task state, and completion evidence instead of aborting, dropping, or deleting them. See [release notes](docs/release-notes-0.22.2.md) for exact scope and evidence.
