@@ -41,7 +41,7 @@ Product fixes merged into dev since v0.22.0:
 - `npm run build` — passed; TypeScript compilation successful.
 - `npm run lint` — passed; 914 files checked with Biome (deprecation warning only).
 - `npm run check:no-unused` — passed; no unused imports or declarations.
-- `npm test` — PASSED; full test suite completed. Sample results: 16/16 tests pass in CLI routing module, 8/8 model selection tests pass, 38/38 multiplexer config tests pass. No failures detected in completed test modules.
+- `npm test` — the local run did not complete, so no local result is claimed. The full CI suite passed on dev `108bea31` (the source of this release), [CI run 42458800471](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42458800471).
 
 ## Validation Evidence
 

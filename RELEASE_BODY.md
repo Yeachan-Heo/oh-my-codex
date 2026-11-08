@@ -19,13 +19,13 @@ No breaking API changes. Release-coupled metadata (`package.json`, `package-lock
 
 - `npm ci` — passed; packages installed and lifecycle hooks completed.
 - `npm run build` — passed.
-- `npm test` — passed on the full test run.
+- `npm test` — the local run did not complete, so no local result is claimed. The full CI suite passed on dev `108bea31` (the source of this release), [CI run 42458800471](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42458800471).
 - `npm run lint` — passed. No lint fixes required.
 - `npm run check:no-unused` — passed. No unused imports or declarations.
 
 ## Contributors
 
-[@ev78394](https://github.com/ev78394), [@shenyankm](https://github.com/shenyankm), [@Yeachan-Heo](https://github.com/Yeachan-Heo)
+[@ev78394](https://github.com/ev78394), [@shenyankm](https://github.com/shenyankm), [@Yeachan-Heo](https://github.com/Yeachan-Heo), and [@iqdoctor](https://github.com/iqdoctor) (reported #4043)
 
 **Full Changelog**: [`v0.22.0...v0.22.1`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.0...v0.22.1)
 
