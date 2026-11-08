@@ -215,6 +215,7 @@ export interface TeamTask {
   description: string;
   status: 'pending' | 'blocked' | 'in_progress' | 'completed' | 'failed';
   requires_code_change?: boolean;
+  verified_head?: string; // Set only by validated code completion.
   role?: string; // agent role for this task (e.g., 'executor', 'test-engineer', 'designer')
   owner?: string; // worker name
   result?: string; // completion summary
@@ -1834,6 +1835,7 @@ export async function createTask(
       }),
       id: nextId,
       status: task.status ?? 'pending',
+      verified_head: undefined,
       depends_on: task.depends_on ?? task.blocked_by ?? [],
       version: 1,
     };
@@ -1884,6 +1886,10 @@ export async function updateTask(
         throw new Error(`Invalid task status: ${updates.status}`);
       }
 
+      if ('owner' in updates || 'claim' in updates) {
+        throw new Error('Task ownership and claims must use claim/release/reclaim APIs.');
+      }
+      if ('verified_head' in updates) throw new Error('Use transition-task-status to record a verified handoff.');
       if (updates.requires_code_change === true && existing.requires_code_change !== true && isTerminalTaskStatus(existing.status)) {
         throw new Error('Cannot enable completion evidence for a terminal task.');
       }
@@ -1937,6 +1943,38 @@ export async function computeTaskReadiness(teamName: string, taskId: string, cwd
   return await computeTaskReadinessImpl(teamName, taskId, cwd, { readTask });
 }
 
+// Ownership and capacity metadata share the existing task/membership commit boundary.
+async function persistTaskOwnership(teamName: string, task: TeamTaskV2, cwd: string): Promise<void> {
+  const config = await readTeamConfig(teamName, cwd);
+  if (!config) throw new Error(`team_config_missing:${teamName}`);
+  let assignmentsChanged = false;
+  const workers = config.workers.map((worker) => {
+    const assignedTasks = worker.name === task.owner
+      ? worker.assigned_tasks.includes(task.id) ? worker.assigned_tasks : [...worker.assigned_tasks, task.id]
+      : worker.assigned_tasks.filter((id) => id !== task.id);
+    if (assignedTasks.length === worker.assigned_tasks.length
+      && assignedTasks.every((id, index) => id === worker.assigned_tasks[index])) return worker;
+    assignmentsChanged = true;
+    return { ...worker, assigned_tasks: assignedTasks };
+  });
+  const newTaskBytes = JSON.stringify(task, null, 2);
+  if (!assignmentsChanged) {
+    await writeAtomic(taskFilePath(teamName, task.id, cwd), newTaskBytes);
+    return;
+  }
+  const configBytes = await readFile(teamConfigPath(teamName, cwd), 'utf8');
+  const manifest = await readTeamManifestV2Raw(teamName, cwd);
+  await commitTeamMembershipTaskTransaction(teamName, cwd, {
+    baseGeneration: config.config_generation ?? 0,
+    tasks: [{ taskId: task.id, oldBytes: await readFile(taskFilePath(teamName, task.id, cwd), 'utf8'), newBytes: newTaskBytes }],
+    config: { oldBytes: configBytes, newBytes: JSON.stringify({ ...config, workers }, null, 2) },
+    ...(manifest ? { manifest: {
+      oldBytes: await readFile(teamManifestV2Path(teamName, cwd), 'utf8'),
+      newBytes: JSON.stringify({ ...manifest, workers }, null, 2),
+    } } : {}),
+  });
+}
+
 export async function claimTask(
   teamName: string,
   taskId: string,
@@ -1956,6 +1994,7 @@ export async function claimTask(
       isTerminalTaskStatus,
       taskFilePath,
       writeAtomic,
+      persistTaskOwnership: (task) => persistTaskOwnership(teamName, task, cwd),
     });
   });
 }
@@ -1979,6 +2018,7 @@ export async function renewTaskClaim(
       isTerminalTaskStatus,
       taskFilePath,
       writeAtomic,
+      persistTaskOwnership: (task) => persistTaskOwnership(teamName, task, cwd),
     });
   });
 }
@@ -2007,6 +2047,7 @@ export async function transitionTaskStatus(
       canTransitionTaskStatus,
       taskFilePath,
       writeAtomic,
+      persistTaskOwnership: (task) => persistTaskOwnership(teamName, task, cwd),
       appendTeamEvent,
       readMonitorSnapshot,
       writeMonitorSnapshot,
@@ -2033,6 +2074,7 @@ export async function releaseTaskClaim(
       isTerminalTaskStatus,
       taskFilePath,
       writeAtomic,
+      persistTaskOwnership: (task) => persistTaskOwnership(teamName, task, cwd),
     });
   });
 }
@@ -2054,6 +2096,7 @@ export async function reclaimExpiredTaskClaim(
       isTerminalTaskStatus,
       taskFilePath,
       writeAtomic,
+      persistTaskOwnership: (task) => persistTaskOwnership(teamName, task, cwd),
     });
   });
 }
