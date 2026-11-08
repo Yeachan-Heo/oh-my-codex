@@ -460,24 +460,20 @@ async function promptForQuestionWithNumbers(question: NormalizedQuestionItem, de
     
     let selections: number[] | null = null;
     while (!selections) {
+      // Race the question against readline closing (e.g., due to stdin EOF)
+      let closeHandler: (() => void) | null = null;
+      const closePromise = new Promise<never>((_, reject) => {
+        closeHandler = () => {
+          reject(new Error('Standard input closed before response received.'));
+        };
+        rl.once('close', closeHandler);
+      });
       try {
-        // Race the question against readline closing (e.g., due to stdin EOF)
-        let closeHandler: (() => void) | null = null;
-        const closePromise = new Promise<never>((_, reject) => {
-          closeHandler = () => {
-            reject(new Error('Standard input closed before response received.'));
-          };
-          rl.once('close', closeHandler);
-        });
-        try {
-          const answer = await Promise.race([rl.question(prompt), closePromise]);
-          selections = parseSelection(answer, optionCount, isMultiAnswerableQuestion(question));
-          if (!selections) output.write('Invalid selection. Please try again.\n');
-        } finally {
-          if (closeHandler) rl.off('close', closeHandler);
-        }
-      } catch (error) {
-        throw error;
+        const answer = await Promise.race([rl.question(prompt), closePromise]);
+        selections = parseSelection(answer, optionCount, isMultiAnswerableQuestion(question));
+        if (!selections) output.write('Invalid selection. Please try again.\n');
+      } finally {
+        if (closeHandler) rl.off('close', closeHandler);
       }
     }
     return selections;
@@ -492,26 +488,22 @@ async function promptForOtherText(label: string, deps: QuestionUiDeps = {}): Pro
   const rl = createPromptInterface({ input: input as NodeJS.ReadableStream, output: output as NodeJS.WritableStream });
   try {
     while (true) {
+      // Race the question against readline closing (e.g., due to stdin EOF)
+      let closeHandler: (() => void) | null = null;
+      const closePromise = new Promise<never>((_, reject) => {
+        closeHandler = () => {
+          reject(new Error('Standard input closed before response received.'));
+        };
+        rl.once('close', closeHandler);
+      });
       try {
-        // Race the question against readline closing (e.g., due to stdin EOF)
-        let closeHandler: (() => void) | null = null;
-        const closePromise = new Promise<never>((_, reject) => {
-          closeHandler = () => {
-            reject(new Error('Standard input closed before response received.'));
-          };
-          rl.once('close', closeHandler);
-        });
-        try {
-          const candidate = (await Promise.race([rl.question(`${label}: `), closePromise])).trim();
-          if (candidate) {
-            return candidate;
-          }
-          output.write('Please enter a response.\n');
-        } finally {
-          if (closeHandler) rl.off('close', closeHandler);
+        const candidate = (await Promise.race([rl.question(`${label}: `), closePromise])).trim();
+        if (candidate) {
+          return candidate;
         }
-      } catch (error) {
-        throw error;
+        output.write('Please enter a response.\n');
+      } finally {
+        if (closeHandler) rl.off('close', closeHandler);
       }
     }
   } finally {

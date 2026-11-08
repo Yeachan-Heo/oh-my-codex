@@ -264,9 +264,13 @@ describe('question ui arrow navigation', () => {
 
       const runPromise = runQuestionUi(recordPath, { input, output });
       input.write('1\n');
-      input.end();
-
       await runPromise;
+
+      // End the stream only after the prompt resolved: a prompt that strips
+      // foreign 'end' listeners on success would leave this one unfired.
+      input.resume();
+      input.end();
+      await new Promise((resolve) => setImmediate(resolve));
       const loaded = await readQuestionRecord(recordPath);
       assert.equal(loaded?.answer?.value, 'ralplan');
       assert.match(rendered, /1\. Plan first\n\s+Need architecture and test-shape review before execution/);
@@ -609,9 +613,13 @@ describe('question ui batch wizard', () => {
 
       const runPromise = runQuestionUi(recordPath, { input, output });
       input.write('1\n');
-      input.end();
-
       await runPromise;
+
+      // End the stream only after the prompt resolved: a prompt that strips
+      // foreign 'end' listeners on success would leave this one unfired.
+      input.resume();
+      input.end();
+      await new Promise((resolve) => setImmediate(resolve));
       const loaded = await readQuestionRecord(recordPath);
       assert.equal(loaded?.answer?.value, 'a', 'prompt should have captured the answer');
       assert.equal(endListenerCalled, true, 'pre-existing end listener on input stream should have been called and not removed');
