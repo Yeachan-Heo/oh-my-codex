@@ -2,7 +2,7 @@ import { validateCompletionEvidence } from '../completion-evidence.js';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { readFile, readdir } from 'fs/promises';
+import { readFile, readdir, lstat } from 'fs/promises';
 import type { TeamTaskStatus } from '../contracts.js';
 import type {
   TeamTask,
@@ -403,14 +403,21 @@ export async function listTasks(
     normalizeTask: (task: TeamTask) => TeamTaskV2;
   },
 ): Promise<TeamTask[]> {
-  const tasksRoot = join(deps.teamDir(teamName, cwd), 'tasks');
-  if (!existsSync(tasksRoot)) return [];
+  const root = deps.teamDir(teamName, cwd);
+  const tasksRoot = join(root, 'tasks');
+  try {
+    const stat = await lstat(tasksRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('not_regular_directory');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(root)) return [];
+    throw new Error(`team_task_read_failed:${teamName}/tasks`, { cause });
+  }
 
   const entries = await readdir(tasksRoot, { withFileTypes: true });
   const matched = entries.flatMap((entry) => {
-    if (!entry.isFile()) return [];
     const match = /^task-(\d+)\.json$/.exec(entry.name);
     if (!match) return [];
+    if (!entry.isFile()) throw new Error(`team_task_read_failed:${teamName}/${entry.name}:not_regular_file`);
     return [{ id: match[1], fileName: entry.name }];
   });
 
@@ -419,20 +426,15 @@ export async function listTasks(
       try {
         const raw = await readFile(join(tasksRoot, fileName), 'utf8');
         const parsed = JSON.parse(raw) as unknown;
-        if (!deps.isTeamTask(parsed)) return null;
+        if (!deps.isTeamTask(parsed)) throw new Error('invalid_task_shape');
         const normalized = deps.normalizeTask(parsed);
-        if (normalized.id !== id) return null;
+        if (normalized.id !== id) throw new Error('task_id_mismatch');
         return normalized;
-      } catch {
-        return null;
+      } catch (cause) {
+        throw new Error(`team_task_read_failed:${teamName}/${fileName}`, { cause });
       }
     }),
   );
 
-  const tasks: TeamTaskV2[] = [];
-  for (const task of loaded) {
-    if (task) tasks.push(task);
-  }
-  tasks.sort((a, b) => Number(a.id) - Number(b.id));
-  return tasks;
+  return loaded.sort((a, b) => Number(a.id) - Number(b.id));
 }
