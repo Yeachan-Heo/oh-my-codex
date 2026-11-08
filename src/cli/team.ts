@@ -333,6 +333,7 @@ const TEAM_API_OPERATION_REQUIRED_FIELDS: Record<TeamApiOperation, string[]> = {
   'list-tasks': ['team_name'],
   'update-task': ['team_name', 'task_id'],
   'claim-task': ['team_name', 'task_id', 'worker'],
+  'renew-task-claim': ['team_name', 'task_id', 'worker', 'claim_token'],
   'transition-task-status': ['team_name', 'task_id', 'from', 'to', 'claim_token'],
   'release-task-claim': ['team_name', 'task_id', 'claim_token', 'worker'],
   'read-config': ['team_name'],
@@ -376,6 +377,7 @@ const TEAM_API_OPERATION_OPTIONAL_FIELDS: Partial<Record<TeamApiOperation, strin
 };
 
 const TEAM_API_OPERATION_NOTES: Partial<Record<TeamApiOperation, string>> = {
+  'renew-task-claim': 'Renew an unexpired claim to at least 15 minutes from now using its current owner and token; expired claims cannot be revived.',
   'update-task': 'Only non-lifecycle task metadata can be updated.',
   'release-task-claim': 'Use this only for rollback/requeue to pending (not for completion).',
   'transition-task-status': 'Lifecycle flow is claim-safe and typically transitions in_progress -> completed|failed.',

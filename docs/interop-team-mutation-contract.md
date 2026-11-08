@@ -19,7 +19,7 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
    - `omx team api read-task --json`
 2. Claim with optimistic version:
    - `omx team api claim-task --json`
-3. Transition terminal state with claim token:
+3. During work, renew the current unexpired token using `omx team api renew-task-claim --json` (see Task claim renewal below), then transition terminal state with claim token:
    - `omx team api transition-task-status --json` (`in_progress -> completed|failed`)
 4. Use `omx team api release-task-claim --json` only for rollback/requeue-to-pending flows.
 
@@ -216,3 +216,9 @@ When brokers inspect team events via `read-events` / `await-event`:
 - `release-task-claim` intentionally resets the task to `pending`; it is not a completion operation.
 - `update-task` only accepts `subject`, `description`, `blocked_by`, and `requires_code_change` as mutable fields.
 - `append-event.type` and `write-task-approval.status` enforce strict enum validation.
+
+### Task claim renewal
+
+Claims have a 15-minute lease. `omx team api renew-task-claim --input '{"team_name":"my-team","task_id":"1","worker":"worker-1","claim_token":"<claimToken>"}' --json` renews an unexpired claim to at least 15 minutes from now. Renew at least every 5 minutes while working. For blocking commands/tool waits, generated worker instructions include an executable `with_task_lease` Bash wrapper: it renews immediately before starting, then every 5 minutes while its work child lives; validates command exit, JSON, outer `ok` and inner `data.ok`; stops its work child and returns failure on renewal rejection/crash; and cleans up its own direct work/renewer children on exit/signals. Descendant processes beyond those direct children remain the command's responsibility. Renewal retains the token and original `claimed_at`, increments task version, and uses the membership barrier and task claim lock. Only an existing member with the matching task owner and token may renew; expired/terminal/reclaimed claims cannot be resurrected.
+
+Workers record `state: "working"`, `current_task_id`, and `current_claim_token` (the returned claim token) in their worker `status.json`. The notify and successful Bash PostToolUse heartbeat hooks automatically renew that captured token; heartbeats/status alone never renew a token read from the task. Missing hooks or a single tool lasting past the lease require explicit periodic renewal. On renewal failure, stop work and report to the leader rather than overwriting/reclaiming the task.

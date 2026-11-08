@@ -31,7 +31,8 @@ function isWorkerAvailable(worker: RebalanceWorkerInput): boolean {
 
 export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceDecision[] {
   const taskById = new Map(input.tasks.map((task) => [task.id, task] as const));
-  const liveWorkers = input.workers.filter(isWorkerAvailable);
+  const busyOwners = new Set(input.tasks.filter((task) => (task.status === 'pending' || task.status === 'in_progress')).map((task) => task.owner));
+  const liveWorkers = input.workers.filter((worker) => isWorkerAvailable(worker) && !busyOwners.has(worker.name));
   if (liveWorkers.length === 0) return [];
 
   const unownedPendingTasks = input.tasks
@@ -52,6 +53,7 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
   const claimedTaskIds = new Set<string>();
 
   for (const task of unownedPendingTasks) {
+    if (liveWorkers.length === 0) break;
     if (claimedTaskIds.has(task.id)) continue;
     const decision = chooseTaskOwner(task, liveWorkers, inFlightAssignments);
     decisions.push({
@@ -62,7 +64,7 @@ export function buildRebalanceDecisions(input: RebalancePolicyInput): RebalanceD
         ? `reclaimed work is ready; ${decision.reason}`
         : `idle worker pickup; ${decision.reason}`,
     });
-    inFlightAssignments.push({ owner: decision.owner, role: task.role });
+    liveWorkers.splice(liveWorkers.findIndex((worker) => worker.name === decision.owner), 1);
     claimedTaskIds.add(task.id);
   }
 

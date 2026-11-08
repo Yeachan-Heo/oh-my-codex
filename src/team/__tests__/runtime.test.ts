@@ -18,6 +18,7 @@ import {
   listMailboxMessages,
   sendDirectMessage,
   listDispatchRequests,
+  listTasks,
   transitionDispatchRequest,
   updateWorkerHeartbeat,
   writeAtomic,
@@ -36,6 +37,7 @@ import {
   resumeTeam,
   startTeam,
   assignTask,
+  reassignTask,
   sendWorkerMessage,
   applyCreatedInteractiveSessionToConfig,
   reconcileStartupCleanupPanes,
@@ -63,6 +65,7 @@ import { buildInternalTeamName, resolveTeamIdentityScope } from '../team-identit
 import { writePersistedApprovedTeamExecutionBinding } from '../approved-execution.js';
 import { planWorktreeTarget } from '../worktree.js';
 import { scaleDown } from '../scaling.js';
+import { buildRebalanceDecisions } from '../rebalance-policy.js';
 import { registerTeamNotice, teamNoticeLedgerPath, teamNoticeTargetKey } from '../notice-ledger.js';
 
 const coverageRun = process.env.NODE_V8_COVERAGE ? true : false;
@@ -6839,6 +6842,82 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('monitorTeam preserves an owned pending startup inbox before the first claim', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-pending-inbox-'));
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-pending-inbox-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState('pending-inbox', 'startup', 'executor', 1, cwd);
+        const initial = await createTask('pending-inbox', { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+        const overflow = await createTask('pending-inbox', { subject: 'overflow', description: 'work', status: 'pending' }, cwd);
+        await writeWorkerInbox('pending-inbox', 'worker-1', `Initial Task ${initial.id}`, cwd);
+        await writeWorkerStatus('pending-inbox', 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, cwd);
+        await monitorTeam('pending-inbox', cwd);
+        assert.equal(await readFile(join(cwd, '.omx/state/team/pending-inbox/workers/worker-1/inbox.md'), 'utf8'), `Initial Task ${initial.id}`);
+        assert.equal((await readTask('pending-inbox', overflow.id, cwd))?.owner, undefined);
+        assert.equal((await readTask('pending-inbox', initial.id, cwd))?.status, 'pending');
+        assert.equal((await listDispatchRequests('pending-inbox', cwd)).length, 0);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('monitorTeam leaves overflow pending and preserves the only inbox while its claim is outstanding', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-rebalance-inbox-'));
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-rebalance-inbox-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState('team-one-inbox', 'followups', 'executor', 1, cwd);
+        const tasks = await Promise.all(Array.from({ length: 3 }, (_, i) => createTask('team-one-inbox', {
+          subject: `followup ${i}`, description: 'work', status: 'pending',
+        }, cwd)));
+        const manifestPath = join(cwd, '.omx/state/team/team-one-inbox/manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        manifest.policy.dispatch_mode = 'transport_direct';
+        manifest.tmux_session = 'omx-team-one-inbox';
+        await writeAtomic(manifestPath, JSON.stringify(manifest));
+        await writeWorkerStatus('team-one-inbox', 'worker-1', { state: 'idle', updated_at: new Date().toISOString() }, cwd);
+        const first = await monitorTeam('team-one-inbox', cwd);
+        assert.equal(first?.tasks.in_progress, 1, JSON.stringify(first?.recommendations));
+        assert.equal(first?.tasks.pending, 2);
+        const inboxPath = join(cwd, '.omx/state/team/team-one-inbox/workers/worker-1/inbox.md');
+        const inbox = await readFile(inboxPath, 'utf8');
+        const claimed = (await Promise.all(tasks.map((task) => readTask('team-one-inbox', task.id, cwd)))).find((task) => task?.status === 'in_progress')!;
+        assert.match(inbox, new RegExp(`Task ${claimed.id}`));
+        assert.equal((await listDispatchRequests('team-one-inbox', cwd)).filter((request) => request.kind === 'inbox').length, 1);
+        // The worker has not updated its idle status yet; the live claim still excludes it.
+        await monitorTeam('team-one-inbox', cwd);
+        assert.equal(await readFile(inboxPath, 'utf8'), inbox);
+        assert.equal((await listDispatchRequests('team-one-inbox', cwd)).filter((request) => request.kind === 'inbox').length, 1);
+        assert.equal((await Promise.all(tasks.map((task) => readTask('team-one-inbox', task.id, cwd)))).filter((task) => task?.status === 'pending').length, 2);
+        const done = await transitionTaskStatus('team-one-inbox', claimed.id, 'in_progress', 'completed', claimed.claim!.token, cwd);
+        assert.equal(done.ok, true);
+        const next = await monitorTeam('team-one-inbox', cwd);
+        assert.equal(next?.tasks.in_progress, 1);
+        assert.equal(next?.tasks.pending, 1, 'overflow becomes available on a later monitor');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam surfaces reclaimed work pickup attempts when an idle worker is available', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-reassign-reclaimed-'));
     const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
@@ -6968,6 +7047,32 @@ process.on('SIGTERM', () => process.exit(0));
   });
 
 
+
+  it('monitorTeam does not reactivate an ordinary completed root from pending task counts alone without worktrees', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-root-counts-only-'));
+    const teamName = 'team-root-counts-only';
+    try {
+      await initTeamState(teamName, 'counts-only root sync', 'executor', 1, cwd);
+      const config = await readTeamConfig(teamName, cwd);
+      assert.ok(config?.workers.every((worker) => !worker.worktree_path && !worker.worktree_repo_root));
+      const task = await createTask(teamName, { subject: 'initial work', description: 'pending', status: 'pending' }, cwd);
+      const phase = await readTeamPhase(teamName, cwd);
+      assert.ok(phase);
+      await writeTeamPhase(teamName, { ...phase, current_phase: 'complete' }, cwd);
+      const rootStatePath = join(cwd, '.omx/state/team-state.json');
+      const rootBefore = JSON.stringify({
+        active: false, current_phase: 'complete', team_name: teamName, completed_at: new Date().toISOString(),
+      });
+      await writeFile(rootStatePath, rootBefore);
+      assert.equal((await monitorTeam(teamName, cwd, { readOnly: true }))?.phase, 'team-exec');
+      assert.equal(await readFile(rootStatePath, 'utf8'), rootBefore);
+      assert.equal((await monitorTeam(teamName, cwd))?.phase, 'team-exec');
+      assert.equal(await readFile(rootStatePath, 'utf8'), rootBefore);
+      assert.equal((await readTask(teamName, task.id, cwd))?.status, 'pending');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 
   it('monitorTeam deactivates root team-state.json when the local phase becomes terminal', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-root-team-state-'));
@@ -7677,7 +7782,7 @@ exec "${realGit}" "$@"
       execFileSync('git', ['mv', 'original.txt', 'renamed-by-w1.txt'], { cwd: worker1Path, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'worker-1 renames original'], { cwd: worker1Path, stdio: 'ignore' });
 
-      // Worker-2 renames original.txt → renamed-by-w2.txt (will conflict on rebase)
+      // Worker-2 renames original.txt → renamed-by-w2.txt (will conflict during integration)
       execFileSync('git', ['mv', 'original.txt', 'renamed-by-w2.txt'], { cwd: worker2Path, stdio: 'ignore' });
       execFileSync('git', ['commit', '-m', 'worker-2 renames original'], { cwd: worker2Path, stdio: 'ignore' });
 
@@ -7717,18 +7822,20 @@ exec "${realGit}" "$@"
       // Verify worker-1's changes landed on leader
       assert.equal(existsSync(join(repo, 'renamed-by-w1.txt')), true, 'leader should have worker-1 renamed file');
 
-      // Verify worker-2 worktree is NOT in a broken rebase state (rebase --abort was called)
+      // Failed source integration must not be followed by a history rewrite.
       const worker2HeadAfter = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worker2Path, encoding: 'utf-8' }).trim();
-      assert.equal(worker2HeadAfter, worker2HeadBefore, 'worker-2 HEAD should revert to pre-rebase state after abort');
+      assert.equal(worker2HeadAfter, worker2HeadBefore, 'worker-2 HEAD should remain unchanged after failed integration');
       // Verify no rebase-in-progress markers
       const gitStatusOutput = execFileSync('git', ['status'], { cwd: worker2Path, encoding: 'utf-8' });
       assert.doesNotMatch(gitStatusOutput, /rebase in progress/, 'worktree should not have rebase in progress');
 
-      // Verify integration report logged the failure
+      const integration = (await readMonitorSnapshot('team-rebase-fail', repo))?.integrationByWorker?.['worker-2'];
+      assert.equal(integration?.status, 'cherry_pick_conflict');
+      assert.equal(integration?.last_rebased_leader_head, undefined);
       const reportPath = join(repo, '.omx', 'state', 'team', 'team-rebase-fail', 'integration-report.md');
-      assert.equal(existsSync(reportPath), true, 'integration report should exist after rebase failure');
       const report = await readFile(reportPath, 'utf-8');
       assert.match(report, /cherry-pick.*aborted/, 'report should mention the aborted integration');
+      assert.doesNotMatch(report, /rebase -X/);
       const events = await readTeamEvents('team-rebase-fail', repo, { wakeableOnly: false });
       assert.equal(events.some((event) => event.type === 'worker_cross_rebase_skipped' && event.metadata?.reason === 'unintegrated_changes'), true);
       assert.equal(events.some((event) => event.type === 'worker_cross_rebase_applied' && event.worker === 'worker-2'), false);
@@ -12538,6 +12645,126 @@ esac
     }
   });
 
+  it('assignTask rejects a stale rebalance plan without changing the outstanding claim or inbox', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-stale-assignment-'));
+    const teamName = 'team-stale-assignment';
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-stale-assignment-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState(teamName, 'stale assignment', 'executor', 2, cwd);
+        const dependency = await createTask(teamName, { subject: 'dependency', description: 'work', status: 'pending' }, cwd);
+        const first = await createTask(teamName, { subject: 'blocked first', description: 'work', status: 'pending', depends_on: [dependency.id] }, cwd);
+        const second = await createTask(teamName, { subject: 'ready second', description: 'work', status: 'pending' }, cwd);
+        const dependencyClaim = await claimTask(teamName, dependency.id, 'worker-2', dependency.version, cwd);
+        assert.ok(dependencyClaim.ok);
+        const manifestPath = join(cwd, '.omx/state/team', teamName, 'manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        manifest.policy.dispatch_mode = 'transport_direct';
+        await writeAtomic(manifestPath, JSON.stringify(manifest));
+        const workers = [{ name: 'worker-1', role: 'executor', alive: true, status: { state: 'idle' as const, updated_at: new Date().toISOString() } }];
+        const stalePlan = buildRebalanceDecisions({ tasks: await listTasks(teamName, cwd), workers, reclaimedTaskIds: [] });
+        assert.equal(stalePlan[0]?.taskId, second.id);
+        assert.equal((await transitionTaskStatus(teamName, dependency.id, 'in_progress', 'completed', dependencyClaim.claimToken, cwd)).ok, true);
+        const freshPlan = buildRebalanceDecisions({ tasks: await listTasks(teamName, cwd), workers, reclaimedTaskIds: [] });
+        assert.equal(freshPlan[0]?.taskId, first.id);
+        await assignTask(teamName, freshPlan[0]!.workerName!, first.id, cwd);
+        const claimed = await readTask(teamName, first.id, cwd);
+        assert.equal(claimed?.status, 'in_progress');
+        assert.equal(claimed?.owner, 'worker-1');
+        assert.ok(claimed?.claim);
+        const pending = await readTask(teamName, second.id, cwd);
+        assert.equal(pending?.status, 'pending');
+        assert.equal(pending?.version, second.version);
+        assert.equal(pending?.owner, undefined);
+        assert.equal(pending?.claim, undefined);
+        const inboxPath = join(cwd, '.omx/state/team', teamName, 'workers/worker-1/inbox.md');
+        const inbox = await readFile(inboxPath);
+        assert.match(inbox.toString(), new RegExp(`Task ${first.id}`));
+        const dispatches = await listDispatchRequests(teamName, cwd);
+        assert.equal(dispatches.length, 1);
+        await assert.rejects(() => assignTask(teamName, stalePlan[0]!.workerName!, second.id, cwd), /already owns outstanding task/);
+        assert.deepEqual(await readTask(teamName, first.id, cwd), claimed, 'first version, owner, token and lease stay unchanged');
+        assert.deepEqual(await readTask(teamName, second.id, cwd), pending, 'second stays unclaimed at its original version');
+        assert.deepEqual(await readFile(inboxPath), inbox, 'rejection must not write an assignment or cancellation');
+        assert.deepEqual(await listDispatchRequests(teamName, cwd), dispatches, 'no second dispatch');
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask and reassignTask preserve another owned pending startup reservation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-assignment-reservation-'));
+    const teamName = 'team-assignment-reservation';
+    try {
+      await initTeamState(teamName, 'pending reservation', 'executor', 1, cwd);
+      const reserved = await createTask(teamName, { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+      const selected = await createTask(teamName, { subject: 'queued', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+      const reservedBefore = await readTask(teamName, reserved.id, cwd);
+      const selectedBefore = await readTask(teamName, selected.id, cwd);
+      assert.ok(reservedBefore);
+      assert.ok(selectedBefore);
+      await writeWorkerInbox(teamName, 'worker-1', 'Original startup handoff', cwd);
+      const inboxPath = join(cwd, '.omx/state/team', teamName, 'workers/worker-1/inbox.md');
+      const inbox = await readFile(inboxPath);
+      await assert.rejects(() => assignTask(teamName, 'worker-1', selected.id, cwd), /already owns outstanding task/);
+      await assert.rejects(() => reassignTask(teamName, selected.id, 'worker-2', 'worker-1', cwd), /already owns outstanding task/);
+      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reservedBefore);
+      assert.deepEqual(await readTask(teamName, selected.id, cwd), selectedBefore);
+      assert.deepEqual(await readFile(inboxPath), inbox);
+      assert.equal((await listDispatchRequests(teamName, cwd)).length, 0);
+      // Bootstrap may claim an owned queue directly; only assignment owns the fixed-inbox capacity rule.
+      assert.equal((await claimTask(teamName, selected.id, 'worker-1', selected.version, cwd)).ok, true);
+      assert.deepEqual(await readTask(teamName, reserved.id, cwd), reservedBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('assignTask permits the selected owned pending reservation when no other work is outstanding', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-assign-own-pending-'));
+    const teamName = 'team-assign-own-pending';
+    try {
+      await withMockTmuxFixture({
+        dirPrefix: 'omx-own-pending-tmux-',
+        tmuxScript: () => `#!/bin/sh
+case "$1" in
+  -V) echo 'tmux 3.4' ;;
+  list-panes) echo '0 ${process.pid}' ;;
+  capture-pane) echo 'working' ;;
+esac
+`,
+      }, async () => {
+        await initTeamState(teamName, 'own pending assignment', 'executor', 1, cwd);
+        const task = await createTask(teamName, { subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1' }, cwd);
+        const finished = await createTask(teamName, { subject: 'finished', description: 'work', status: 'pending' }, cwd);
+        const claim = await claimTask(teamName, finished.id, 'worker-1', finished.version, cwd);
+        assert.ok(claim.ok);
+        assert.equal((await transitionTaskStatus(teamName, finished.id, 'in_progress', 'completed', claim.claimToken, cwd)).ok, true);
+        const manifestPath = join(cwd, '.omx/state/team', teamName, 'manifest.v2.json');
+        const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+        manifest.policy.dispatch_mode = 'transport_direct';
+        await writeAtomic(manifestPath, JSON.stringify(manifest));
+        await assignTask(teamName, 'worker-1', task.id, cwd);
+        const assigned = await readTask(teamName, task.id, cwd);
+        assert.equal(assigned?.status, 'in_progress');
+        assert.equal(assigned?.owner, 'worker-1');
+        assert.ok(assigned?.claim);
+        assert.equal((await listDispatchRequests(teamName, cwd)).length, 1);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('assignTask enforces delegation_only policy for leader-fixed worker', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-'));
     try {
@@ -13452,6 +13679,8 @@ esac
         const inbox = await readFile(join(cwd, '.omx', 'state', 'team', team, 'workers', 'worker-1', 'inbox.md'), 'utf-8');
         assert.match(inbox, /Do NOT re-claim/);
         assert.doesNotMatch(inbox, /Request a claim/);
+        assert.match(inbox, /with_task_lease/);
+        assert.match(inbox, /current_claim_token/);
         assert.ok(inbox.includes(`claim_token: "${current.claim.token}"`));
         assert.ok(inbox.includes(`version: ${current.version}`));
         assert.ok(inbox.includes(`leased_until: "${current.claim.leased_until}"`));

@@ -29,6 +29,11 @@ Use only when the session was started as an OMX Team worker. Read `AGENTS.md#dur
    omx team api claim-task --input '{"team_name":"<teamName>","task_id":"<id>","worker":"<workerName>"}' --json
    ```
    If the leader already claimed the task for you, do not re-claim it. Use the inbox handoff's current claim token, version, and lease; verify they match the task file. If they differ or the lease has expired, stop and ask the leader for a current assignment.
+   Save the current `claimToken` and write `{"state":"working","current_task_id":"<id>","current_claim_token":"<claimToken>","updated_at":"<ISO timestamp>"}` to your worker `status.json`. Notify/PostToolUse heartbeats renew that unexpired token automatically. Renew at least every 5 minutes while working:
+   ```bash
+   omx team api renew-task-claim --input '{"team_name":"<teamName>","task_id":"<id>","worker":"<workerName>","claim_token":"<claimToken>"}' --json
+   ```
+   For commands/tool waits over 5 minutes, use the executable `with_task_lease` Bash wrapper in your generated inbox instructions: it renews before starting and periodically while the command runs, validates both API success layers, propagates renewal failure, and cleans up its own direct children. Commands spawning grandchildren must manage their own descendants. If renewal fails, stop editing and contact the leader; expired claims cannot be revived.
 5. Do the assigned work. Do not write task lifecycle fields directly.
 6. Complete or fail through the lifecycle API, from `in_progress` to `completed` or `failed`:
    ```bash
