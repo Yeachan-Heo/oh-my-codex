@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-08
+
+Patch release ships critical fixes for the omx question command when stdin is closed, adds readline close event handling for EOF detection, reapplies verified handoffs and safe drains after v0.22.0, accepts aliased Codex homes for external live pins, and addresses three Codex findings from the v0.22.0 release review. See [release notes](docs/release-notes-0.22.1.md) for exact scope and evidence.
+
+### Fixed
+
+- **ACCEPT ALIASED CODEX HOMES FOR EXTERNAL LIVE PINS (#3939):** Accept either spelling of the configured Codex home when validating live pin cache paths, enabling external Codex home links and symlinks to resolve correctly while maintaining no-follow traversal security. This fixes live pin resolution when Codex homes are aliased or redirected.
+- **FIX EOF DETECTION FOR CLOSED STDIN IN OMX QUESTION --UI (#4048, #4046):** Replaced input stream listeners with readline close event for more reliable EOF detection when stdin is closed. Handle closed stdin in `omx question --ui` with proper error handling to prevent crashes when the command is invoked without stdin.
+- **REAPPLY VERIFIED HANDOFFS AND SAFE DRAINS (#4034):** Reapply the reviewed 73afb142..2fd0e063 delta onto dev, preserving herdr startup and team member consistency across worker upgrades. Fixes scope root reactivation and drains that were omitted from v0.22.0.
+- **ADDRESS CODEX FINDINGS FROM v0.22.0 RELEASE REVIEW (#4047):** Fixes for issues identified in Codex review of release PR #4042. Updates include: scale-up now uses persisted team worker_launch_mode instead of checking current env backend; startupReadyPromptObserved is now scoped per-worker instead of shared across concurrent startups. All 126 scaling tests and 212 runtime tests pass.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.0...v0.22.1
+
 ## [0.22.0] - 2026-11-08
 
 Minor release ships the Herdr team runtime backend Phase 2 with worker capacity management and task claim renewal, improves conflict handling in team operations, and adds session execution comparisons and regression gates for reliable task tracking. See [release notes](docs/release-notes-0.22.0.md) for exact scope and evidence.
