@@ -7,7 +7,7 @@
 
 ## Summary
 
-This patch release drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. Release-coupled metadata was pre-synchronized to `0.21.48` on dev by #4017, so the release branch does not bump these values again.
+This patch release stores live Codex pins outside the plugin fingerprint root to fix invalidation on plugin refresh (#4010, fixes #3898), and drops role-based reasoning-effort defaults from seven role prompts (#4021), ensuring Vision stays extraction-only unless reassessment is justified. Release-coupled metadata was pre-synchronized to `0.21.48` on dev by #4017, so the release branch does not bump these values again.
 
 ## Included scope
 
@@ -30,7 +30,6 @@ The pinned source already reads `0.21.48` across every release-coupled version s
 Release workflow [42416497142](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42416497142) ran on a153daee and completed successfully. The workflow includes:
 - TypeScript compilation
 - Native builds for macOS arm64/x64, Linux x64, and portable bundles
-- npm publish provenance verification
 - All release-asset postinstall hydration gates
 
 Version synchronization checks passed as listed above.
@@ -38,7 +37,7 @@ Version synchronization checks passed as listed above.
 ## Release PR and main gates
 
 - Release commit e74b1e212bcb0f7d7e881d8ba0c3addc8ba97b45 pushed to main at 2026-11-07 21:13:26Z via PR #4025.
-- Main push CI run [42416497142](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42416497142) (Release workflow) completed successfully at 2026-11-07 21:57:52Z.
+- Main push CI run [42416476573](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42416476573) (CI workflow) completed successfully at 2026-11-07 21:34:07Z.
 
 ## Publication evidence
 
@@ -52,7 +51,7 @@ Version synchronization checks passed as listed above.
 ## Back-merge and version bump
 
 - Version bump: PR #4029 'chore(dev): bump version to 0.21.49' merged to dev as f890ea7829c5873795e82aff3f8892431ad158fb.
-- Back-merge: PR #4028 'back-merge/main-to-dev-0.21.48' pending, merges origin/main (a153daee) and origin/dev (f890ea78) to dev after version bump. Keep dev's 0.21.49 versions. Merge with merge method once CI checks pass.
+- Back-merge: PR #4028 'back-merge/main-to-dev-0.21.48' merged to dev.
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
