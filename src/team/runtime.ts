@@ -4177,8 +4177,9 @@ export async function startTeam(
       writeWarning: options.writeCleanupWarning,
     });
     const startupTiming = createStartupTimingRecorder(sanitized, leaderCwd);
-    // Set by the interactive ready-wait or the herdr agent-start settle below.
-    let startupReadyPromptObserved = false;
+    // For herdr mode, all workers are ready after createHerdrTeam returns.
+    // For interactive/prompt modes, readiness is determined per-worker.
+    let herdrTeamReady = false;
     let workerStartupArgs: ReadonlyArray<ReadonlyArray<string>> | undefined;
 
     if (workerLaunchMode === 'interactive') {
@@ -4244,7 +4245,7 @@ export async function startTeam(
       // createHerdrTeam returns only after every agent reached an idle,
       // promptable state (agent-start readiness + settle polling): that is
       // the herdr equivalent of observing a ready prompt in a tmux pane.
-      startupReadyPromptObserved = true;
+      herdrTeamReady = true;
       sessionName = herdrTeam.name;
       sessionCreated = true;
       config.tmux_session = herdrTeam.name;
@@ -4322,6 +4323,9 @@ export async function startTeam(
           error: new Error(`missing bootstrap plan for worker-${workerIndex}`),
         };
       }
+
+      // Each worker has its own readiness state; don't leak evidence from other workers.
+      let startupReadyPromptObserved = herdrTeamReady || workerLaunchMode === 'herdr';
 
       const workerName = bootstrapPlan.workerName;
       const paneId = workerPaneIds[workerIndex - 1];
@@ -5950,7 +5954,10 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       }
     }
     if (herdrTeardownFailures.length > 0 && !herdrWorkspaceClosed) {
-      console.warn(`[team shutdown] ${sanitized}: herdr teardown issues: ${herdrTeardownFailures.join(',')}`);
+      throw new Error(`shutdown_herdr_teardown_failed:${herdrTeardownFailures.join(',')}`);
+    }
+    if (herdrTeardownFailures.length > 0 && herdrWorkspaceClosed) {
+      console.warn(`[team shutdown] ${sanitized}: herdr pane teardown issues: ${herdrTeardownFailures.join(',')}`);
     }
   } else if (config.worker_launch_mode === 'prompt') {
     const promptTeardownFailures: string[] = [];
