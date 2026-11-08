@@ -19,7 +19,7 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
    - `omx team api read-task --json`
 2. Claim with optimistic version:
    - `omx team api claim-task --json`
-3. Transition terminal state with claim token:
+3. During work, renew the current unexpired token using `omx team api renew-task-claim --json` (see Task claim renewal below), then transition terminal state with claim token:
    - `omx team api transition-task-status --json` (`in_progress -> completed|failed`)
 4. Use `omx team api release-task-claim --json` only for rollback/requeue-to-pending flows.
 
@@ -27,13 +27,16 @@ Direct writes to `.omx/state/team/...` are unsupported and may violate runtime i
 
 Tasks explicitly marked `requires_code_change: true` must supply a JSON evidence
 report before transitioning from `in_progress` to `completed`. This validates the
-report's format and association with the current claim; it does not authenticate
+report's format, current claim, and clean committed worker HEAD; it does not authenticate
 whether the reported commands actually ran. Existing claim, lease, delegation and
 coordination checks still apply.
 
-After claiming, write the report under `.omx/evidence/` in the worker's assigned
-`working_dir`. If that directory is not configured, paths resolve from the API
-call's working directory. Use a path without whitespace, for example
+After claiming, commit the code and verify that exact commit. Leave the Git
+worktree clean, then write the report under `.omx/evidence/` in the worker's
+assigned `worktree_path`, falling back to `working_dir` or the API call's working
+directory. Keep `.omx/` runtime state ignored by Git (for example in the repository's
+local `info/exclude`); do not commit runtime evidence or raw claim tokens.
+Use a path without whitespace, for example
 `.omx/evidence/task-1.json`:
 
 ```json
@@ -41,6 +44,7 @@ call's working directory. Use a path without whitespace, for example
   "teamName": "my-team",
   "taskId": "1",
   "claimTokenSha256": "<SHA-256 hex digest of the current claim token>",
+  "verifiedHead": "<full git rev-parse HEAD SHA of the verified commit>",
   "summary": "Fix addition and verify positive and negative inputs",
   "verification": [
     {
@@ -81,7 +85,11 @@ the worker's `.omx/evidence/` directory. Symlinked files or directories beneath
 the working directory are rejected. Its
 modification time must be at or after the current claim's `claimed_at`, and its
 `teamName`, string `taskId` and `claimTokenSha256` must match the task and claim.
-After releasing and reclaiming, regenerate the report with the new token's hash;
+`verifiedHead` must equal the full current Git HEAD SHA and the worktree must be
+clean, including untracked files and submodules. Completion records this SHA as
+authoritative `verified_head`; clients cannot set it through create/update-task.
+Git commit timestamps are not evidence identity. After releasing and reclaiming,
+regenerate the report with the new token's hash;
 refreshing only the old report's modification time is insufficient.
 
 A rejected report returns `data.ok: false`, `data.error: "invalid_completion_evidence"`
@@ -121,6 +129,29 @@ compatibility rules below.
 
 ### Compatibility
 
+- Task enumeration rejects unreadable, malformed, non-regular, or ID-mismatched
+  task files, and missing or symlinked task directories in an existing Team,
+  with `team_task_read_failed`. Monitoring and shutdown retain the
+  Team state instead of counting those records as absent or completed.
+- Monitoring and shutdown preserve existing Git operations. A
+  `git_operation_in_progress` error requires finishing or aborting that operation
+  manually before retrying. Integration aborts only a merge/cherry-pick whose
+  operation marker matches its source commit.
+- Worker Git-operation blockers are recorded per worker without discarding
+  other workers' integration progress. Completed Git delivery receipts are
+  saved at the integration boundary, before later phase or mailbox operations
+  can fail. Concurrent task completions retain their completion markers and
+  do not cause a second monitor-derived completion event.
+  Forced shutdown stops owned workers before checking Git cleanup blockers;
+  an unresolved operation retains its worktree and Team state for recovery.
+  Guarded removal rechecks Git operation state after asynchronous preparation,
+  and shutdown does not suppress task-read failures after its preflight.
+  Leader-stop observations keep unreadable task state actionable and request
+  attention with `task_state_unavailable` rather than reporting finished work.
+- Before guarded worktree removal, ignored, untracked completion reports with
+  the recognized evidence schema are archived in the Git common directory's
+  `omx-completion-evidence/` directory. Other ignored files, unrecognized reports,
+  tracked reports and symlinks remain protected and can still block removal.
 - Tasks with `requires_code_change: false` or an absent flag retain their existing
   completion behavior. Transitions to `failed` do not require this report. Already
   completed task records are not revalidated.
@@ -128,6 +159,20 @@ compatibility rules below.
   report, retain the structured verification summary, and handle
   `invalid_completion_evidence`; neither plain-text verification nor a report
   marker alone is sufficient.
+- Code clients must commit before verifying and include `verifiedHead`; dirty or
+  different-HEAD reports are rejected. Monitoring no longer stages or auto-commits
+  worker changes. Integration requires idle/done, completed associated tasks, a
+  clean worktree, and a code-task `verified_head` matching its current HEAD.
+  Completed `requires_code_change:false` research needs no code verification and
+  does not veto a separate verified code handoff, but cannot authorize one alone.
+- Legacy completed tasks without `verified_head` are not silently treated as
+  verified Git handoffs. Their completion records remain unchanged, but cannot
+  authorize integration. To migrate, create a new `requires_code_change:true` task
+  for that worker (start a continuation first if the team is already terminal),
+  claim it, verify the committed current HEAD, and complete it
+  with fresh evidence; do not backfill a SHA from old result text or timestamps.
+  After any later edit or different HEAD (including a rebase), repeat this verified
+  handoff before publishing further output.
 - Once `requires_code_change` is `true`, `update-task` cannot set it to `false`,
   including while pending or after releasing a claim. This returns outer
   `ok: false` with `error.code: "operation_failed"`. Choose the flag when defining
@@ -216,3 +261,9 @@ When brokers inspect team events via `read-events` / `await-event`:
 - `release-task-claim` intentionally resets the task to `pending`; it is not a completion operation.
 - `update-task` only accepts `subject`, `description`, `blocked_by`, and `requires_code_change` as mutable fields.
 - `append-event.type` and `write-task-approval.status` enforce strict enum validation.
+
+### Task claim renewal
+
+Claims have a 15-minute lease. `omx team api renew-task-claim --input '{"team_name":"my-team","task_id":"1","worker":"worker-1","claim_token":"<claimToken>"}' --json` renews an unexpired claim to at least 15 minutes from now. Renew at least every 5 minutes while working. For blocking commands/tool waits, generated worker instructions include an executable `with_task_lease` Bash wrapper: it renews immediately before starting, then every 5 minutes while its work child lives; validates command exit, JSON, outer `ok` and inner `data.ok`; stops its work child and returns failure on renewal rejection/crash; and cleans up its own direct work/renewer children on exit/signals. Descendant processes beyond those direct children remain the command's responsibility. Renewal retains the token and original `claimed_at`, increments task version, and uses the membership barrier and task claim lock. Only an existing member with the matching task owner and token may renew; expired/terminal/reclaimed claims cannot be resurrected.
+
+Workers record `state: "working"`, `current_task_id`, and `current_claim_token` (the returned claim token) in their worker `status.json`. The notify and successful Bash PostToolUse heartbeat hooks automatically renew that captured token; heartbeats/status alone never renew a token read from the task. Missing hooks or a single tool lasting past the lease require explicit periodic renewal. On renewal failure, stop work and report to the leader rather than overwriting/reclaiming the task.

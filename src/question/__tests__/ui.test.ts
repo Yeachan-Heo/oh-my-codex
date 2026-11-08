@@ -264,9 +264,13 @@ describe('question ui arrow navigation', () => {
 
       const runPromise = runQuestionUi(recordPath, { input, output });
       input.write('1\n');
-      input.end();
-
       await runPromise;
+
+      // End the stream only after the prompt resolved: a prompt that strips
+      // foreign 'end' listeners on success would leave this one unfired.
+      input.resume();
+      input.end();
+      await new Promise((resolve) => setImmediate(resolve));
       const loaded = await readQuestionRecord(recordPath);
       assert.equal(loaded?.answer?.value, 'ralplan');
       assert.match(rendered, /1\. Plan first\n\s+Need architecture and test-shape review before execution/);
@@ -576,6 +580,49 @@ describe('question ui batch wizard', () => {
 
       await runPromise;
       assert.deepEqual(injected, [{ paneId: '%11', values: ['a', 'd'] }]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves pre-existing end listener on input stream during successful prompt', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-question-ui-preserve-listener-'));
+    try {
+      const { recordPath } = await createQuestionRecord(
+        cwd,
+        {
+          question: 'Pick one',
+          options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+          allow_other: false,
+          other_label: 'Other',
+          multi_select: false,
+          type: 'single-answerable',
+        },
+        'sess-ui-listener-preserve',
+      );
+
+      const input = new PassThrough() as PassThrough & { isTTY: boolean };
+      input.isTTY = false;
+      const output = new PassThrough() as PassThrough & { isTTY: boolean };
+      output.isTTY = false;
+
+      let endListenerCalled = false;
+      input.on('end', () => {
+        endListenerCalled = true;
+      });
+
+      const runPromise = runQuestionUi(recordPath, { input, output });
+      input.write('1\n');
+      await runPromise;
+
+      // End the stream only after the prompt resolved: a prompt that strips
+      // foreign 'end' listeners on success would leave this one unfired.
+      input.resume();
+      input.end();
+      await new Promise((resolve) => setImmediate(resolve));
+      const loaded = await readQuestionRecord(recordPath);
+      assert.equal(loaded?.answer?.value, 'a', 'prompt should have captured the answer');
+      assert.equal(endListenerCalled, true, 'pre-existing end listener on input stream should have been called and not removed');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

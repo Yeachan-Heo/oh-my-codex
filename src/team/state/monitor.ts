@@ -35,6 +35,9 @@ interface TeamSummarySnapshot {
 export interface TeamWorkerIntegrationState {
   last_seen_head?: string;
   last_integrated_head?: string;
+  delivery_leader_commit?: string;
+  pending_rebase_leader_head?: string;
+  rebase_error?: string;
   last_leader_head?: string;
   last_rebased_leader_head?: string;
   status?: TeamWorkerIntegrationStatus;
@@ -107,6 +110,9 @@ function normalizeWorkerIntegrationState(value: unknown): TeamWorkerIntegrationS
     last_seen_head: typeof raw.last_seen_head === 'string' && raw.last_seen_head !== '' ? raw.last_seen_head : undefined,
     last_integrated_head:
       typeof raw.last_integrated_head === 'string' && raw.last_integrated_head !== '' ? raw.last_integrated_head : undefined,
+    delivery_leader_commit: typeof raw.delivery_leader_commit === 'string' ? raw.delivery_leader_commit : undefined,
+    pending_rebase_leader_head: typeof raw.pending_rebase_leader_head === 'string' ? raw.pending_rebase_leader_head : undefined,
+    rebase_error: typeof raw.rebase_error === 'string' ? raw.rebase_error : undefined,
     last_leader_head: typeof raw.last_leader_head === 'string' && raw.last_leader_head !== '' ? raw.last_leader_head : undefined,
     last_rebased_leader_head:
       typeof raw.last_rebased_leader_head === 'string' && raw.last_rebased_leader_head !== '' ? raw.last_rebased_leader_head : undefined,

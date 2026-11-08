@@ -1,32 +1,33 @@
-# oh-my-codex v0.21.45
+# oh-my-codex v0.22.1
 
 ## Summary
 
-This patch release fixes `omx doctor` falsely reporting an unsafe trust migration for an unchanged foreign Codex hook group whose matcher is the empty string (#3984).
+This patch release ships critical fixes for the omx question command when stdin is closed, adds readline close event handling for EOF detection, reapplies verified handoffs and safe drains after v0.22.0, accepts aliased Codex homes for external live pins, and addresses three Codex findings from the v0.22.0 release review.
 
 ## Fixed
 
-- **EMPTY FOREIGN HOOK MATCHER TRUST (#3985, fixes #3984):** Preserve any string matcher, including `""`, in the foreign hook trust hash input. Previously the truthiness check omitted an empty matcher, causing the calculated hash to differ from Codex's stored trust hash and `omx doctor` to report `unsafe_managed_removal` for an unchanged trusted hook group.
-
-The fix targets the empty-matcher hash mismatch. The separately reported SessionEnd outlier is not addressed.
+- **ACCEPT ALIASED CODEX HOMES FOR EXTERNAL LIVE PINS (#3939):** Accept either spelling of the configured Codex home when validating live pin cache paths, enabling external Codex home links and symlinks to resolve correctly while maintaining no-follow traversal security. This fixes live pin resolution when Codex homes are aliased or redirected.
+- **FIX EOF DETECTION FOR CLOSED STDIN IN OMX QUESTION --UI (#4048, #4046):** Replaced input stream listeners with readline close event for more reliable EOF detection when stdin is closed. Handle closed stdin in `omx question --ui` with proper error handling to prevent crashes when the command is invoked without stdin.
+- **PRESERVE NON-FORCE DRAINS AND REQUIRE VERIFIED CODE HANDOFF (#4034):** Non-force team drains no longer interrupt in-flight worker Git operations, and worker code handoff to the leader requires verified evidence before integration. This change was held out of v0.22.0.
+- **ADDRESS CODEX FINDINGS FROM v0.22.0 RELEASE REVIEW (#4047):** Fixes for issues identified in Codex review of release PR #4042. Herdr team shutdown now fails closed when workspace teardown fails, so team state and worktrees are preserved instead of removed while workers may still run. Scale-up honors a team's persisted Herdr launch mode, and startup readiness evidence is tracked per worker instead of leaking across concurrent startups.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata was already synchronized to `0.21.45` on dev by #3982; the release does not bump those surfaces again.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.1` at the pinned source.
 
 ## Verification
 
-- `npm ci` — passed.
+- `npm ci` — passed; packages installed and lifecycle hooks completed.
 - `npm run build` — passed.
-- `npm test` — passed, including runtime build/tests, all 475 Node test files, generated catalog checks, and prompt-invariant checks.
-- `npm run check:no-unused` — passed.
-- `npm run lint` — passed across 900 files; Biome reported the existing `linter.rules.recommended` deprecation notice.
+- `npm test` — the local run did not complete, so no local result is claimed. The full CI suite passed on dev `108bea31` (the source of this release), [CI run 42458800471](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42458800471).
+- `npm run lint` — passed. No lint fixes required.
+- `npm run check:no-unused` — passed. No unused imports or declarations.
 
 ## Contributors
 
-Thanks to @Kelvinkim for reporting the empty-matcher trust-hash issue and to the contributors who shipped the fix.
+[@ev78394](https://github.com/ev78394), [@shenyankm](https://github.com/shenyankm), [@Yeachan-Heo](https://github.com/Yeachan-Heo), and [@iqdoctor](https://github.com/iqdoctor) (reported #4043)
 
-**Full Changelog**: [`v0.21.44...v0.21.45`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.44...v0.21.45)
+**Full Changelog**: [`v0.22.0...v0.22.1`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.0...v0.22.1)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*

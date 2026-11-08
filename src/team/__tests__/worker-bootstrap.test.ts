@@ -308,6 +308,7 @@ describe("worker bootstrap", () => {
       /<team_state_root>\/team\/team-inbox\/tasks\/task-<id>\.json/,
     );
     assert.match(inbox, /omx team api claim-task/);
+    assert.doesNotMatch(inbox, /Do NOT re-claim|claim_token:/);
     assert.match(inbox, /omx team api transition-task-status/);
     assert.match(inbox, /omx team api release-task-claim/);
     assert.match(
@@ -927,6 +928,7 @@ describe("worker bootstrap", () => {
     assert.match(inbox, /team_state_root/);
     assert.match(inbox, /team\/team-followup\/tasks\/task-42\.json/);
     assert.match(inbox, /omx team api claim-task/);
+    assert.doesNotMatch(inbox, /Do NOT re-claim|claim_token:/);
     assert.match(inbox, /omx team api transition-task-status/);
     assert.match(inbox, /omx team api release-task-claim/);
     assert.doesNotMatch(

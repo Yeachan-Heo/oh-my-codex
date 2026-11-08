@@ -104,7 +104,7 @@ Choose the setup scope deliberately:
 `--force` is independent and transient: it is neither recorded nor replayed, and does not override an explicit merge policy. Setup atomically commits explicit set or clear intent only after all setup work succeeds, including when active-session or plugin-symlink safeguards skip the current `AGENTS.md` write, so the next refresh can honor the requested policy. This does not make merge the default or revive the rejected #2892 merge-by-default approach. Older OMX versions safely ignore the field, but may erase it when rewriting their known setup preferences.
 
 
-**Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for official Codex lifecycle hooks, optional MCP compatibility servers, and apps. It is still **not** a replacement for the global `oh-my-codex` CLI plus scoped setup: plugin-scoped hooks launch the installed `omx` CLI, legacy setup mode installs native agents and prompts, and plugin setup mode relies on plugin discovery for bundled skills while archiving/removing legacy OMX-managed prompts/native-agent TOMLs so stale role files cannot shadow plugin behavior. Plugin mode still needs a persistent scope `AGENTS.md` (`~/.codex/AGENTS.md` for user setup or `./AGENTS.md` for project setup) as the durable orchestration guidance layer; session-scoped AGENTS files only compose that durable guidance with runtime overlays and are not a replacement.
+**Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for official Codex lifecycle hooks, optional MCP compatibility servers, and apps. It is still **not** a replacement for the global `oh-my-codex` CLI plus scoped setup: plugin-scoped hooks launch the installed `omx` CLI, and both setup modes normally install setup-owned native agent TOMLs for `agent_type` routing. In either mode, `omx setup --disable-hooks` disables OMX-owned hook registrations and related enablement, then returns before normal asset installation, configuration, `AGENTS.md`, HUD, and state setup. Legacy mode also installs prompt and skill copies. Plugin mode uses plugin discovery for bundled skills, archives/removes legacy OMX-managed prompt copies, and removes stale generated/non-installable native-agent files. Plugin setup without `--force` preserves user-authored or ambiguous role files, except that disabling Team (`--disable-team` or persisted `teamMode: "disabled"`) backs up and removes `team-executor.toml` regardless of ownership. See [Plugin bundle SSOT](docs/plugin-bundle-ssot.md) for these ownership rules. Plugin mode still needs a persistent scope `AGENTS.md` (`~/.codex/AGENTS.md` for user setup or `./AGENTS.md` for project setup) as the durable orchestration guidance layer; session-scoped AGENTS files only compose that durable guidance with runtime overlays and are not a replacement.
 
 Then work normally inside Codex:
 
@@ -394,6 +394,21 @@ The command supports exact IDs or unique prefixes, active and archived sessions,
 Unknown durations remain unknown, and a recorded result without an explicit error
 does not prove success. See [session timeline](./docs/session-timeline.md) for
 supported records, status meanings, and examples.
+
+### Compare two sessions
+
+Use `omx session compare <baseline-id> <candidate-id>` to compare execution counts,
+explicit failures, and namespace-aware tool timing after a workflow change.
+The report distinguishes added and removed tools, preserves unknown measurements,
+and reports absolute and percentage changes. Use `--sort duration` to find the
+largest mean-latency increases, or `--json --output comparison.json` to save a report.
+
+For automation, `--fail-on-regression` exits 2 on observed regressions and 3 on
+inconclusive evidence. `--max-duration-increase 10` changes the default 20% mean
+tool latency threshold; latency checks require complete timing coverage on both
+sides. Display filters never change the whole-session assessment. Compare
+similar workloads and see [session comparison](./docs/session-compare.md) for
+cross-home selection, evidence gaps, and exit-code semantics.
 
 ### Team runtime
 

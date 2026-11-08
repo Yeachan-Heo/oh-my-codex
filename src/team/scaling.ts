@@ -7,19 +7,34 @@
  * Key design decisions:
  * - Monotonic worker index counter (next_worker_index in config) ensures unique names
  * - File-based scaling lock prevents concurrent scale operations
- * - 'draining' worker status for graceful transitions during scale_down
+ * - Worker-published idle/done status for graceful scale_down
  */
 
 import { randomUUID } from 'crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { mkdir, readFile, realpath, rm, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
+import { readMultiplexerConfig } from '../config/multiplexer.js';
+import {
+  HerdrError,
+  ensureHerdrServer,
+  herdrWorkspaceIdFromPaneId,
+  isHerdrBinaryCallable,
+  isHerdrPaneId,
+  isHerdrWorkerAlive,
+  resolveHerdrBinary,
+  spawnOneHerdrWorker,
+  submitToHerdrWorker,
+  teardownHerdrWorker,
+  type HerdrWorkerSpawnPlan,
+} from './herdr-session.js';
 import {
   sanitizeTeamName,
   isTmuxAvailable,
   waitForWorkerReady,
   dismissTrustPromptIfPresent,
   isWorkerAlive,
+  buildWorkerProcessLaunchSpec,
   buildWorkerStartupCommand,
   trustWorkerMiseConfigIfAvailable,
   writeWorkerStartupScriptCommand,
@@ -38,7 +53,6 @@ import {
   teamReadManifest as readTeamManifestV2,
   teamNormalizePolicy as normalizeTeamPolicy,
   teamReadWorkerStatus as readWorkerStatus,
-  teamWriteWorkerStatus as writeWorkerStatus,
   teamWithScalingLock as withScalingLock,
   teamWithTaskMembershipBarrier as withTaskMembershipBarrier,
   recoverTeamMembershipTaskTransaction,
@@ -57,7 +71,6 @@ import {
   type TeamConfig,
   type TeamTask,
   type WorkerInfo,
-  type WorkerStatus,
 } from './team-ops.js';
 import {
   queueInboxInstruction,
@@ -87,6 +100,7 @@ import {
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import {
+  archiveIgnoredCompletionEvidence,
   ensureWorktree,
   planWorktreeTarget,
   rollbackProvisionedWorktrees,
@@ -164,8 +178,9 @@ type ScalePaneInstance = {
 };
 
 type ScaleUpWorkerInfo = WorkerInfo & {
-  session_id: string;
-  window_id: string;
+  /** tmux-only pane identities; herdr workers are addressed by pane_id. */
+  session_id?: string;
+  window_id?: string;
 };
 
 const SCALE_PANE_INSTANCE_FORMAT = '#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{window_id}\t#{@omx_team_pane_owner_id}';
@@ -591,12 +606,23 @@ export async function scaleUp(
     return { ok: false, error: `count must be a positive integer (got ${count})` };
   }
 
-  if (!isTmuxAvailable()) {
-    return { ok: false, error: 'tmux is not available' };
-  }
-
   const sanitized = sanitizeTeamName(teamName);
   const leaderCwd = resolve(cwd);
+
+  // Try to read team config early to use its persisted backend instead of env backend.
+  // If team doesn't exist yet, we'll validate backends based on env and fail later with
+  // a clearer "Team not found" message in the locking phase.
+  const existingConfig = await readTeamConfig(sanitized, leaderCwd).catch(() => null);
+  const backend = existingConfig?.worker_launch_mode === 'herdr' ? 'herdr' : readMultiplexerConfig({ env }).backend;
+  if (backend === 'herdr' && !(await isHerdrBinaryCallable(resolveHerdrBinary(env), env))) {
+    return {
+      ok: false,
+      error: 'herdr backend is selected but the herdr binary is not callable. Install from https://herdr.dev and retry.',
+    };
+  }
+  if (backend !== 'herdr' && !isTmuxAvailable()) {
+    return { ok: false, error: 'tmux is not available' };
+  }
 
   return await withScalingLock(sanitized, leaderCwd, async (): Promise<ScaleUpResult | ScaleError> => {
     return await withTaskMembershipBarrier(sanitized, leaderCwd, async () => {
@@ -679,11 +705,38 @@ export async function scaleUp(
       approvedExecutionGate.approvedContextSection,
       renderLeaderOwnedUltragoalContextSection(persistedUltragoalContext),
     );
+    // Herdr teams scale inside the existing workspace: no tmux split target,
+    // owner tag, or pane-PID proof applies (herdr pane ids are never reused,
+    // so the recorded pane id is itself the stable address).
+    const herdrBackend = config.worker_launch_mode === 'herdr';
+    const herdrWorkspacePane = herdrBackend
+      ? config.workers.find((worker) => typeof worker.pane_id === 'string' && isHerdrPaneId(worker.pane_id))
+      : undefined;
+    const herdrWorkspaceId = herdrWorkspacePane?.pane_id
+      ? herdrWorkspaceIdFromPaneId(herdrWorkspacePane.pane_id as string)
+      : null;
+    if (herdrBackend && !herdrWorkspaceId) {
+      return {
+        ok: false,
+        error: `scale_up_herdr_workspace_unavailable:${sanitized}:no worker pane id to derive the herdr workspace from`,
+      };
+    }
+    if (herdrBackend) {
+      try {
+        await ensureHerdrServer({ env: launchEnv });
+      } catch (error) {
+        return {
+          ok: false,
+          error: `scale_up_herdr_server_unavailable:${sanitized}:${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
     const initialSplitTargetCandidate = config.workers[config.workers.length - 1];
     const initialSplitTargetWorker = initialSplitTargetCandidate?.pane_id?.trim()
       ? initialSplitTargetCandidate
       : undefined;
     const initialSplitTarget = initialSplitTargetWorker?.pane_id ?? config.leader_pane_id ?? '';
+    if (!herdrBackend) {
     const initialSplitTargetOwnerId = typeof config.tmux_pane_owner_id === 'string'
       ? config.tmux_pane_owner_id.trim()
       : '';
@@ -760,6 +813,7 @@ export async function scaleUp(
         ok: false,
         error: `scale_up_split_target_pid_changed:${initialSplitTarget}:${initialExpectedSplitTargetPid}:${initialSplitTargetProof.pid}`,
       };
+    }
     }
 
     const effectiveWorktreeMode = config.worktree_mode ?? resolveScaleUpWorktreeMode(config);
@@ -846,13 +900,31 @@ export async function scaleUp(
       const rollbackPaneIds = [...new Set([
         ...rollbackWorkers.map((worker) => worker.pane_id),
         context.paneId,
-      ].filter((paneId): paneId is string => typeof paneId === 'string' && paneId.trim().startsWith('%')))];
+      ].filter((paneId): paneId is string => typeof paneId === 'string'
+        && (paneId.trim().startsWith('%') || isHerdrPaneId(paneId.trim()))))];
       const resolvedPaneIds = new Set<string>();
       const unresolvedPaneIds = new Set<string>();
+      // Herdr pane ids are unique for the pane's whole lifetime (never
+      // recycled), so the recorded id is itself teardown authority — close the
+      // pane directly; a pane_not_found answer proves it is already gone.
+      for (const paneId of rollbackPaneIds.filter((paneId) => isHerdrPaneId(paneId))) {
+        try {
+          await teardownHerdrWorker(paneId, { env });
+          resolvedPaneIds.add(paneId);
+        } catch (error) {
+          if (error instanceof HerdrError && error.code === 'pane_not_found') {
+            resolvedPaneIds.add(paneId);
+            continue;
+          }
+          unresolvedPaneIds.add(paneId);
+          cleanupDebt.push(`herdr_pane_teardown_failed:${paneId}:${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      const tmuxRollbackPaneIds = rollbackPaneIds.filter((paneId) => paneId.startsWith('%'));
       const requiredTeamOwnerId = config.tmux_pane_owner_id?.trim();
       const authorizedRollbackPaneIds = new Set<string>();
       const rollbackInstances = new Map<string, ScalePaneInstance>();
-      for (const paneId of rollbackPaneIds) {
+      for (const paneId of tmuxRollbackPaneIds) {
         const matchingWorkers = rollbackWorkers.filter((worker) => worker.pane_id === paneId);
         const worker = matchingWorkers.length === 1 ? matchingWorkers[0] : undefined;
         const expectedPanePid = worker?.pid;
@@ -1068,27 +1140,35 @@ export async function scaleUp(
       } = workerLaunchPlan;
       // Freeze the split target and its identity before preparing any artifacts.
       // Later proof must establish that this exact pane process still owns the
-      // target; a recycled pane ID must never become split authority.
-      const splitTargetCandidate = config.workers[config.workers.length - 1];
-      const splitTargetWorker = splitTargetCandidate?.pane_id?.trim() ? splitTargetCandidate : undefined;
-      const splitTarget = splitTargetWorker?.pane_id ?? config.leader_pane_id ?? '';
-      const expectedSplitTargetPid = splitTargetWorker
-        ? splitTargetWorker.pid
-        : config.leader_pane_pid;
-      const expectedSplitTargetOwnerId = typeof config.tmux_pane_owner_id === 'string'
-        ? config.tmux_pane_owner_id.trim()
-        : '';
-      if (
-        typeof expectedSplitTargetPid !== 'number'
-        || !Number.isSafeInteger(expectedSplitTargetPid)
-        || expectedSplitTargetPid <= 0
-      ) {
-        return await rollbackScaleUp(`scale_up_split_target_pid_missing:${splitTarget}`);
+      // target; a recycled pane ID must never become split authority. Herdr
+      // teams skip this: workers spawn as new tabs pinned to the workspace id,
+      // not splits of an existing tmux pane.
+      let splitTarget = '';
+      let expectedSplitTargetPid: number | undefined;
+      let expectedSplitTargetOwnerId = '';
+      let splitDirection = '-v';
+      if (!herdrBackend) {
+        const splitTargetCandidate = config.workers[config.workers.length - 1];
+        const splitTargetWorker = splitTargetCandidate?.pane_id?.trim() ? splitTargetCandidate : undefined;
+        splitTarget = splitTargetWorker?.pane_id ?? config.leader_pane_id ?? '';
+        expectedSplitTargetPid = (splitTargetWorker
+          ? splitTargetWorker.pid
+          : config.leader_pane_pid) ?? undefined;
+        expectedSplitTargetOwnerId = typeof config.tmux_pane_owner_id === 'string'
+          ? config.tmux_pane_owner_id.trim()
+          : '';
+        if (
+          typeof expectedSplitTargetPid !== 'number'
+          || !Number.isSafeInteger(expectedSplitTargetPid)
+          || expectedSplitTargetPid <= 0
+        ) {
+          return await rollbackScaleUp(`scale_up_split_target_pid_missing:${splitTarget}`);
+        }
+        if (!expectedSplitTargetOwnerId) {
+          return await rollbackScaleUp(`scale_up_split_target_owner_unavailable:${splitTarget}`);
+        }
+        splitDirection = splitTarget === (config.leader_pane_id ?? '') ? '-h' : '-v';
       }
-      if (!expectedSplitTargetOwnerId) {
-        return await rollbackScaleUp(`scale_up_split_target_owner_unavailable:${splitTarget}`);
-      }
-      const splitDirection = splitTarget === (config.leader_pane_id ?? '') ? '-h' : '-v';
 
       nextIndex = workerIndex + 1;
       if (workerLaunchPlan.mixedTaskRoles.length > 1) {
@@ -1109,6 +1189,7 @@ export async function scaleUp(
       let workerWorkspace: EnsureWorktreeResult | null = null;
       let workerCwd = leaderCwd;
       let cmd: string;
+      let extraEnv: Record<string, string> = {};
       let rawRolePromptContent: string | null = null;
       try {
         preparedWorkerDirectoryOwner.set(workerDirPath, workerName);
@@ -1174,7 +1255,7 @@ export async function scaleUp(
           : rolePromptContent
             ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, runtimeRole, rolePromptContent)
             : teamInstructionsPath;
-        const extraEnv: Record<string, string> = {
+        extraEnv = {
           OMX_TEAM_STATE_ROOT: teamStateRoot,
           OMX_TEAM_LEADER_CWD: leaderCwd,
           OMX_MODEL_INSTRUCTIONS_FILE: instructionsFilePath,
@@ -1188,27 +1269,33 @@ export async function scaleUp(
           extraEnv.OMX_TEAM_WORKTREE_DETACHED = workerWorkspace.detached ? '1' : '0';
         }
         trustWorkerMiseConfigIfAvailable(workerCwd);
-        preparedStartupScriptOwner.set(startupScriptPath, workerName);
-        const startupCommand = writeWorkerStartupScriptCommand(
-          sanitized,
-          workerIndex,
-          workerLaunchArgs,
-          workerCwd,
-          extraEnv,
-          workerCli,
-          undefined,
-          runtimeRole,
-        );
-        cmd = startupCommand ?? buildWorkerStartupCommand(
-          sanitized,
-          workerIndex,
-          workerLaunchArgs,
-          workerCwd,
-          extraEnv,
-          workerCli,
-          undefined,
-          runtimeRole,
-        );
+        if (herdrBackend) {
+          // Herdr workers launch through `agent start` in a fresh tab — the
+          // tmux startup script never runs there, so skip writing it.
+          cmd = '';
+        } else {
+          preparedStartupScriptOwner.set(startupScriptPath, workerName);
+          const startupCommand = writeWorkerStartupScriptCommand(
+            sanitized,
+            workerIndex,
+            workerLaunchArgs,
+            workerCwd,
+            extraEnv,
+            workerCli,
+            undefined,
+            runtimeRole,
+          );
+          cmd = startupCommand ?? buildWorkerStartupCommand(
+            sanitized,
+            workerIndex,
+            workerLaunchArgs,
+            workerCwd,
+            extraEnv,
+            workerCli,
+            undefined,
+            runtimeRole,
+          );
+        }
       } catch (error) {
         return await rollbackScaleUp(
           `scale_up_worker_preparation_failed:${workerName}:${error instanceof Error ? error.message : String(error)}`,
@@ -1216,74 +1303,120 @@ export async function scaleUp(
         );
       }
 
-      // Freeze and validate the full source-pane incarnation. The server owns
-      // the final comparison and split, so a recycled pane ID cannot become a
-      // split target between client-side proof and the topology mutation.
-      const splitTargetProof = readExactPaneProofSync(splitTarget);
-      const splitTargetInstance = splitTargetProof.status === 'live'
-        ? readScalePaneInstance(splitTargetProof.paneId)
-        : null;
-      if (!splitTargetInstance) {
-        return await rollbackScaleUp(
-          `scale_up_split_target_proof_unavailable:${splitTarget}`,
-          { workerName, worktreePath: workerWorkspace?.worktreePath },
-        );
-      }
-      if (splitTargetInstance.pid !== expectedSplitTargetPid) {
-        return await rollbackScaleUp(
-          `scale_up_split_target_pid_changed:${splitTarget}:${expectedSplitTargetPid}:${splitTargetInstance.pid}`,
-          { workerName, worktreePath: workerWorkspace?.worktreePath },
-        );
-      }
-      if (splitTargetInstance.sessionName !== sessionName
-        || (config.tmux_session_id && splitTargetInstance.sessionId !== config.tmux_session_id)
-        || splitTargetInstance.teamOwnerId !== expectedSplitTargetOwnerId) {
-        return await rollbackScaleUp(
-          `scale_up_split_target_authority_changed:${splitTargetInstance.paneId}`,
-          { workerName, worktreePath: workerWorkspace?.worktreePath },
-        );
-      }
+      let paneId: string;
+      let workerInfo: ScaleUpWorkerInfo;
+      if (herdrBackend) {
+        // Spawn one tab + agent in the live team workspace. The spawn helper
+        // proves the agent promptable (first-run trust dialogs dismissed) and
+        // closes its own pane on failure, so a failed spawn is pure rollback.
+        let spawned;
+        try {
+          const spec = buildWorkerProcessLaunchSpec(
+            sanitized,
+            workerIndex,
+            workerLaunchArgs,
+            workerCwd,
+            extraEnv,
+            workerCli,
+          );
+          const herdrSpawnPlan: HerdrWorkerSpawnPlan = {
+            kind: spec.workerCli,
+            agentArgs: spec.args,
+            env: spec.env,
+            cwd: workerCwd,
+          };
+          spawned = await spawnOneHerdrWorker(sanitized, herdrWorkspaceId!, workerIndex, herdrSpawnPlan, { env: launchEnv });
+        } catch (error) {
+          return await rollbackScaleUp(
+            `scale_up_herdr_spawn_failed:${workerName}:${error instanceof Error ? error.message : String(error)}`,
+            { workerName, worktreePath: workerWorkspace?.worktreePath },
+          );
+        }
+        paneId = spawned.paneId;
+        workerInfo = {
+          name: workerName,
+          index: workerIndex,
+          role: runtimeRole,
+          worker_cli: workerCli,
+          assigned_tasks: [],
+          pid: undefined,
+          pane_id: paneId,
+          working_dir: workerCwd,
+          worktree_repo_root: workerWorkspace ? workerWorkspace.repoRoot : undefined,
+          worktree_path: workerWorkspace ? workerWorkspace.worktreePath : undefined,
+          worktree_branch: workerWorkspace ? (workerWorkspace.branchName ?? undefined) : undefined,
+          worktree_detached: workerWorkspace ? workerWorkspace.detached : undefined,
+          worktree_created: workerWorkspace ? workerWorkspace.created : undefined,
+          team_state_root: teamStateRoot,
+        };
+      } else {
+        // Freeze and validate the full source-pane incarnation. The server owns
+        // the final comparison and split, so a recycled pane ID cannot become a
+        // split target between client-side proof and the topology mutation.
+        const splitTargetProof = readExactPaneProofSync(splitTarget);
+        const splitTargetInstance = splitTargetProof.status === 'live'
+          ? readScalePaneInstance(splitTargetProof.paneId)
+          : null;
+        if (!splitTargetInstance) {
+          return await rollbackScaleUp(
+            `scale_up_split_target_proof_unavailable:${splitTarget}`,
+            { workerName, worktreePath: workerWorkspace?.worktreePath },
+          );
+        }
+        if (splitTargetInstance.pid !== expectedSplitTargetPid) {
+          return await rollbackScaleUp(
+            `scale_up_split_target_pid_changed:${splitTarget}:${expectedSplitTargetPid}:${splitTargetInstance.pid}`,
+            { workerName, worktreePath: workerWorkspace?.worktreePath },
+          );
+        }
+        if (splitTargetInstance.sessionName !== sessionName
+          || (config.tmux_session_id && splitTargetInstance.sessionId !== config.tmux_session_id)
+          || splitTargetInstance.teamOwnerId !== expectedSplitTargetOwnerId) {
+          return await rollbackScaleUp(
+            `scale_up_split_target_authority_changed:${splitTargetInstance.paneId}`,
+            { workerName, worktreePath: workerWorkspace?.worktreePath },
+          );
+        }
 
-      const createdPane = splitWorkerPaneWithScaleAuthority(
-        splitTargetInstance,
-        splitDirection,
-        workerCwd,
-        cmd,
-      );
-      if (!createdPane) {
-        return await rollbackScaleUp(
-          `scale_up_split_target_authority_lost:${splitTargetInstance.paneId}`,
-          { workerName, worktreePath: workerWorkspace?.worktreePath },
+        const createdPane = splitWorkerPaneWithScaleAuthority(
+          splitTargetInstance,
+          splitDirection,
+          workerCwd,
+          cmd,
         );
+        if (!createdPane) {
+          return await rollbackScaleUp(
+            `scale_up_split_target_authority_lost:${splitTargetInstance.paneId}`,
+            { workerName, worktreePath: workerWorkspace?.worktreePath },
+          );
+        }
+        paneId = createdPane.paneId;
+        workerInfo = {
+          name: workerName,
+          index: workerIndex,
+          role: runtimeRole,
+          worker_cli: workerCli,
+          assigned_tasks: [],
+          pid: createdPane.pid,
+          pane_id: paneId,
+          session_id: createdPane.sessionId,
+          window_id: createdPane.windowId,
+          working_dir: workerCwd,
+          worktree_repo_root: workerWorkspace ? workerWorkspace.repoRoot : undefined,
+          worktree_path: workerWorkspace ? workerWorkspace.worktreePath : undefined,
+          worktree_branch: workerWorkspace ? (workerWorkspace.branchName ?? undefined) : undefined,
+          worktree_detached: workerWorkspace ? workerWorkspace.detached : undefined,
+          worktree_created: workerWorkspace ? workerWorkspace.created : undefined,
+          team_state_root: teamStateRoot,
+        };
+        const taggedPane = config.tmux_pane_owner_id
+          ? tagScalePaneWithAuthority(createdPane, config.tmux_pane_owner_id.trim())
+          : null;
+        if (!taggedPane) {
+          return await rollbackScaleUp(`scale_up_created_pane_owner_tag_authority_lost:${paneId}`, { paneId, worker: workerInfo });
+        }
+        rollbackTaggedPaneOwnerIds.set(paneId, taggedPane.teamOwnerId);
       }
-      const paneId = createdPane.paneId;
-      const workerInfo: ScaleUpWorkerInfo = {
-        name: workerName,
-        index: workerIndex,
-        role: runtimeRole,
-        worker_cli: workerCli,
-        assigned_tasks: [],
-        pid: createdPane.pid,
-        pane_id: paneId,
-        session_id: createdPane.sessionId,
-        window_id: createdPane.windowId,
-        working_dir: workerCwd,
-        worktree_repo_root: workerWorkspace ? workerWorkspace.repoRoot : undefined,
-        worktree_path: workerWorkspace ? workerWorkspace.worktreePath : undefined,
-        worktree_branch: workerWorkspace ? (workerWorkspace.branchName ?? undefined) : undefined,
-        worktree_detached: workerWorkspace ? workerWorkspace.detached : undefined,
-        worktree_created: workerWorkspace ? workerWorkspace.created : undefined,
-        team_state_root: teamStateRoot,
-      };
-
-
-      const taggedPane = config.tmux_pane_owner_id
-        ? tagScalePaneWithAuthority(createdPane, config.tmux_pane_owner_id.trim())
-        : null;
-      if (!taggedPane) {
-        return await rollbackScaleUp(`scale_up_created_pane_owner_tag_authority_lost:${paneId}`, { paneId, worker: workerInfo });
-      }
-      rollbackTaggedPaneOwnerIds.set(paneId, taggedPane.teamOwnerId);
 
       // Intentionally avoid forcing `select-layout tiled` here.
       // Tiled relayout reflows leader/HUD panes and breaks team window layout.
@@ -1295,15 +1428,35 @@ export async function scaleUp(
       throwIfScaleUpFailureInjected(env, 'identity');
 
 
-      // Wait for worker readiness
+      // Wait for worker readiness. Herdr spawn already proves the agent
+      // promptable (agent-start readiness + settle polling), so the tmux
+      // ready-wait does not apply.
       const readyTimeoutMs = resolveWorkerReadyTimeoutMs(env);
-      const skipReadyWait = env.OMX_TEAM_SKIP_READY_WAIT === '1';
+      const skipReadyWait = env.OMX_TEAM_SKIP_READY_WAIT === '1' || herdrBackend;
       if (!skipReadyWait) {
         const ready = waitForWorkerReady(sessionName, workerIndex, readyTimeoutMs, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
         if (!ready) {
           console.log(`[omx:scaling] Warning: worker ${workerName} did not become ready within timeout`);
         }
       }
+
+      // Backend-aware pane notification: herdr prompts the pane's agent,
+      // tmux proves session/window authority and sends keys.
+      const notifyPane = async (message: string): Promise<DispatchOutcome> => {
+        if (herdrBackend) {
+          try {
+            await submitToHerdrWorker(paneId, message, { env: launchEnv });
+            return { ok: true, transport: 'herdr_prompt', reason: 'herdr_prompt_sent' };
+          } catch (error) {
+            return {
+              ok: false,
+              transport: 'herdr_prompt',
+              reason: `herdr_prompt_failed:${error instanceof Error ? error.message : String(error)}`,
+            };
+          }
+        }
+        return await notifyWorkerPaneOutcome(sessionName, message, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, workerInfo.session_id, workerInfo.window_id);
+      };
 
       // Get assigned tasks for this worker
       const workerTasks = materializedTasks.filter(t => t.owner === workerName);
@@ -1341,7 +1494,7 @@ export async function scaleUp(
           if (dispatchPolicy.dispatch_mode === 'hook_preferred_with_fallback') {
             return { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' };
           }
-          return await notifyWorkerPaneOutcome(sessionName, message, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, workerInfo.session_id, workerInfo.window_id);
+          return await notifyPane(message);
         },
       });
       let outcome = queued;
@@ -1353,7 +1506,7 @@ export async function scaleUp(
         if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
           outcome = { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
         } else {
-          const fallback = await notifyWorkerPaneOutcome(sessionName, triggerDirective.text, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, workerInfo.session_id, workerInfo.window_id);
+          const fallback = await notifyPane(triggerDirective.text);
           if (receipt?.status === 'failed') {
             if (fallback.ok) {
               await transitionDispatchRequest(
@@ -1431,9 +1584,10 @@ export async function scaleUp(
         }
       }
       // Retry dispatch once if a trust prompt is blocking the worker pane (fixes #393).
-      if (!outcome.ok && dismissTrustPromptIfPresent(sessionName, workerIndex, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined)) {
+      // Herdr spawns dismiss trust dialogs during agent start, so the retry is tmux-only.
+      if (!outcome.ok && !herdrBackend && dismissTrustPromptIfPresent(sessionName, workerIndex, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined)) {
         waitForWorkerReady(sessionName, workerIndex, readyTimeoutMs, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
-        const retry = await notifyWorkerPaneOutcome(sessionName, triggerDirective.text, paneId, workerInfo.pid, config.tmux_pane_owner_id ?? undefined, workerInfo.session_id, workerInfo.window_id);
+        const retry = await notifyPane(triggerDirective.text);
         if (retry.ok) {
           outcome = retry;
         }
@@ -1525,6 +1679,7 @@ interface ScaleDownCleanupDebt {
   resource_workers?: ScaleDownCleanupDebtResource[];
   reasons?: string[];
   removed_worker_names?: string[];
+  force?: boolean;
 }
 
 interface PathContainmentSemantics {
@@ -1617,11 +1772,41 @@ async function validateScaleDownCleanupResources(
   }
 }
 
+async function assertScaleDownWorktreesPreserved(
+  workers: readonly ScaleDownCleanupDebtResource[],
+  leaderCwd: string,
+): Promise<void> {
+  for (const worker of workers) {
+    if (!worker.worktree_path || !existsSync(worker.worktree_path)) continue;
+    const git = (args: string[], cwd = worker.worktree_path!) => spawnSync('git', args, {
+      cwd, encoding: 'utf8', windowsHide: true,
+    });
+    // ORIG_HEAD and COMMIT_EDITMSG survive completed operations; only active state vetoes removal.
+    if (['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_START'].some((marker) => {
+      const path = git(['rev-parse', '--git-path', marker]);
+      return path.status !== 0 || !path.stdout.trim()
+        || existsSync(resolve(worker.worktree_path!, path.stdout.trim()));
+    })) {
+      throw new Error(`scale_down_worktree_not_preserved:${worker.name}`);
+    }
+    await archiveIgnoredCompletionEvidence(worker.worktree_path);
+    const head = git(['rev-parse', 'HEAD']);
+    const status = git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
+    if (head.status !== 0 || status.status !== 0 || status.stdout.trim()
+      || git(['merge-base', '--is-ancestor', head.stdout.trim(), 'HEAD'], leaderCwd).status !== 0) {
+      throw new Error(`scale_down_worktree_not_preserved:${worker.name}`);
+    }
+  }
+}
+
 async function cleanupScaleDownResources(
   teamName: string,
   teamStateRoot: string,
   workers: readonly ScaleDownCleanupDebtResource[],
+  leaderCwd: string,
+  force: boolean,
 ): Promise<void> {
+  if (!force) await assertScaleDownWorktreesPreserved(workers, leaderCwd);
   for (const worker of workers) {
     // An absent exact worktree means a prior cleanup completed before crashing.
     // Do not replay a restoration or git removal against a replacement path.
@@ -1657,7 +1842,7 @@ async function cleanupScaleDownResources(
       // branch rather than deleting one that may have predated this worker.
       createdBranch: false,
     }));
-  if (worktrees.length > 0) await rollbackProvisionedWorktrees(worktrees, { force: true });
+  if (worktrees.length > 0) await rollbackProvisionedWorktrees(worktrees, { force });
   await Promise.all(workers.map(async (worker) => {
     await rm(join(teamStateRoot, 'team', teamName, 'workers', worker.name), { recursive: true, force: true });
   }));
@@ -1705,9 +1890,14 @@ function asScaleDownDebtPanes(
     if (!pane || typeof pane.name !== 'string' || !expectedNames.has(pane.name) || !resourceNames.has(pane.name)
       || typeof pane.index !== 'number' || !Number.isInteger(pane.index) || pane.index <= 0
       || pane.index !== Number(pane.name.slice('worker-'.length))
-      || typeof pane.pane_id !== 'string' || !/^%\d+$/.test(pane.pane_id)
+      || typeof pane.pane_id !== 'string'
+      || !(/^%\d+$/.test(pane.pane_id) || isHerdrPaneId(pane.pane_id))
       || pane.pane_id === normalizedLeaderPaneId || pane.pane_id === normalizedHudPaneId
-      || (pane.pid !== null && (!Number.isSafeInteger(pane.pid) || pane.pid <= 0))) return false;
+      // Herdr records carry no pane PID (ids are never reused, so there is
+      // nothing to pin); tmux records keep the positive-PID invariant.
+      || (isHerdrPaneId(pane.pane_id)
+        ? pane.pid !== null
+        : (pane.pid !== null && (!Number.isSafeInteger(pane.pid) || pane.pid <= 0)))) return false;
     const canonical = canonicalByName.get(pane.name);
     if (requireCanonicalMatch) {
       return canonical !== undefined
@@ -1777,7 +1967,8 @@ export async function reconcileScaleDownCleanupDebt(
     } catch (error) {
       return { ok: false, error: `scale_down_cleanup_debt_unreadable:${String(error)}` };
     }
-    if (debt.schema_version !== 1 || debt.operation !== 'scale_down') {
+    if (debt.schema_version !== 1 || debt.operation !== 'scale_down'
+      || (debt.force !== undefined && typeof debt.force !== 'boolean')) {
       return { ok: false, error: 'scale_down_cleanup_debt_malformed' };
     }
     const removedWorkerNames = Array.isArray(debt.removed_worker_names)
@@ -1828,6 +2019,22 @@ export async function reconcileScaleDownCleanupDebt(
       ? config.tmux_pane_owner_id.trim()
       : '';
     for (const pane of panes) {
+      // Herdr pane ids are unique for the pane's whole lifetime: the committed
+      // debt record is itself teardown authority, and a pane_not_found answer
+      // proves convergence. No tmux PID/owner proof applies.
+      if (isHerdrPaneId(pane.pane_id)) {
+        try {
+          await teardownHerdrWorker(pane.pane_id);
+          resolvedPaneIds.add(pane.pane_id);
+        } catch (error) {
+          if (error instanceof HerdrError && error.code === 'pane_not_found') {
+            resolvedPaneIds.add(pane.pane_id);
+          } else {
+            reasons.push(`${pane.pane_id}:herdr_teardown_failed:${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        continue;
+      }
       // Legacy PID-less records can establish convergence from an authoritative
       // global absence/dead proof, but can never authorize a live-pane effect.
       const freshProof = readExactPaneProofSync(pane.pane_id);
@@ -1901,7 +2108,7 @@ export async function reconcileScaleDownCleanupDebt(
       return { ok: false, error: `scale_down_cleanup_debt_unresolved:${unresolvedPanes.map((pane) => pane.pane_id).join(',')}` };
     }
     try {
-      await cleanupScaleDownResources(sanitized, teamStateRoot, resources);
+      await cleanupScaleDownResources(sanitized, teamStateRoot, resources, leaderCwd, debt.force === true);
     } catch (error) {
       await writeAtomic(cleanupDebtPath, JSON.stringify({
         ...debt,
@@ -1921,8 +2128,8 @@ export async function reconcileScaleDownCleanupDebt(
 /**
  * Remove workers from a running team.
  *
- * Sets targeted workers to 'draining' status, waits for them to finish
- * current work (or force kills), then removes tmux panes and updates config.
+ * Waits for targeted workers to publish idle/done (unless forced), then removes
+ * tmux panes and updates config without mutating worker-owned status files.
  */
 export async function scaleDown(
   teamName: string,
@@ -1936,6 +2143,9 @@ export async function scaleDown(
   const leaderCwd = resolve(cwd);
   const force = options.force === true;
   const drainTimeoutMs = options.drainTimeoutMs ?? 30_000;
+  if (!Number.isFinite(drainTimeoutMs) || drainTimeoutMs < 0) {
+    return { ok: false, error: 'drainTimeoutMs must be a non-negative finite number' };
+  }
 
   return await withScalingLock(sanitized, leaderCwd, async (): Promise<ScaleDownResult | ScaleError> => {
     const config = await withTaskMembershipBarrier(sanitized, leaderCwd, async () => {
@@ -1969,7 +2179,7 @@ export async function scaleDown(
       const idleWorkers: WorkerInfo[] = [];
       for (const w of config.workers) {
         const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
-        if (status.state === 'idle' || status.state === 'done' || status.state === 'unknown') {
+        if (status.state === 'idle' || status.state === 'done') {
           idleWorkers.push(w);
         }
       }
@@ -1998,65 +2208,24 @@ export async function scaleDown(
       return { ok: false, error: 'Cannot remove all workers — at least 1 must remain' };
     }
 
-    const sessionName = config.tmux_session;
     const removedNames: string[] = [];
-    const priorWorkerStatusArtifacts = new Map<string, { exists: true; raw: Buffer } | { exists: false }>();
-    for (const worker of targetWorkers) {
-      const statusPath = join(teamStateRoot, 'team', sanitized, 'workers', worker.name, 'status.json');
-      try {
-        priorWorkerStatusArtifacts.set(worker.name, { exists: true, raw: await readFile(statusPath) });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          priorWorkerStatusArtifacts.set(worker.name, { exists: false });
-        } else {
-          throw error;
-        }
-      }
-    }
-    const restorePriorWorkerStatuses = async (workers: readonly WorkerInfo[]): Promise<void> => {
-      await Promise.all(workers.map(async (worker) => {
-        const statusPath = join(teamStateRoot, 'team', sanitized, 'workers', worker.name, 'status.json');
-        const priorArtifact = priorWorkerStatusArtifacts.get(worker.name);
-        if (priorArtifact?.exists) {
-          await writeFile(statusPath, priorArtifact.raw);
-        } else {
-          await rm(statusPath, { force: true });
-        }
-      }));
-    };
-
-
-
-    // Phase 1: Set workers to 'draining' status
-    for (const w of targetWorkers) {
-      const drainingStatus: WorkerStatus = {
-        state: 'draining',
-        reason: 'scale_down requested by leader',
-        updated_at: new Date().toISOString(),
-      };
-      await writeWorkerStatus(sanitized, w.name, drainingStatus, leaderCwd);
-    }
-
-    // Phase 2: Wait for draining workers to finish or timeout
     if (!force) {
       const deadline = Date.now() + drainTimeoutMs;
-      while (Date.now() < deadline) {
-        const allDrained = await Promise.all(
-          targetWorkers.map(async (w) => {
-            const status = await readWorkerStatus(sanitized, w.name, leaderCwd);
-            return status.state === 'idle' || status.state === 'done' ||
-                   status.state === 'draining' || !isWorkerAlive(
-                     sessionName,
-                     w.index,
-                     w.pane_id,
-                     w.pid,
-                     config.tmux_pane_owner_id ?? undefined,
-                     config.hud_pane_id ?? undefined,
-                   );
-          }),
-        );
-        if (allDrained.every(Boolean)) break;
-        await new Promise(r => setTimeout(r, 2_000));
+      while (true) {
+        const statuses = await Promise.all(targetWorkers.map((w) => readWorkerStatus(sanitized, w.name, leaderCwd)));
+        if (statuses.every((status) => status.state === 'idle' || status.state === 'done')) break;
+        // A dead process cannot acknowledge a drain; liveness never authorizes removal.
+        const alive = await Promise.all(targetWorkers.map((worker, index) => {
+          if (statuses[index]!.state === 'idle' || statuses[index]!.state === 'done' || !worker.pane_id) return true;
+          return isHerdrPaneId(worker.pane_id)
+            ? isHerdrWorkerAlive(worker.pane_id, { env })
+            : isWorkerAlive(config.tmux_session, worker.index, worker.pane_id, worker.pid,
+              config.tmux_pane_owner_id ?? undefined, config.hud_pane_id ?? undefined);
+        }));
+        if (alive.some((value) => !value) || Date.now() >= deadline) {
+          return { ok: false, error: 'scale_down_drain_timeout' };
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
       }
     }
 
@@ -2086,6 +2255,17 @@ export async function scaleDown(
           .map((task) => task.id);
         await withTaskClaimLocks(sanitized, candidateTaskIds, leaderCwd, async () => {
           const lockedTasks = await listTasks(sanitized, leaderCwd);
+          if (!force) {
+            const statuses = await Promise.all(removableWorkers.map((w) => readWorkerStatus(sanitized, w.name, leaderCwd)));
+            if (!statuses.every((status) => status.state === 'idle' || status.state === 'done')) {
+              throw new Error('scale_down_worker_not_drained');
+            }
+            if (lockedTasks.some((task) => task.status !== 'completed' && task.status !== 'failed'
+              && (removableWorkerNames.has(task.owner ?? '') || removableWorkerNames.has(task.claim?.owner ?? '')))) {
+              throw new Error('scale_down_worker_has_active_tasks');
+            }
+            await assertScaleDownWorktreesPreserved(removableWorkers, leaderCwd);
+          }
           const configPath = join(teamStateRoot, 'team', sanitized, 'config.json');
           const configSnapshot = await readFile(configPath);
           const manifestPath = join(teamStateRoot, 'team', sanitized, 'manifest.v2.json');
@@ -2143,12 +2323,14 @@ export async function scaleDown(
           const cleanupDebtBase = {
             schema_version: 1,
             operation: 'scale_down',
+            force,
             status: 'pending_teardown',
             created_at: new Date().toISOString(),
             removed_worker_names: removableWorkers.map((worker) => worker.name),
             workers: removableWorkers
               .filter((worker): worker is WorkerInfo & { pane_id: string } => (
-                typeof worker.pane_id === 'string' && /^%\d+$/.test(worker.pane_id)
+                typeof worker.pane_id === 'string'
+                && (/^%\d+$/.test(worker.pane_id) || isHerdrPaneId(worker.pane_id))
               ))
               .map((worker) => ({
                 name: worker.name,
@@ -2178,6 +2360,29 @@ export async function scaleDown(
             const reconciled = await readTask(sanitized, task.id, leaderCwd);
             if (reconciled && (removableWorkerNames.has(reconciled.owner ?? '') || removableWorkerNames.has(reconciled.claim?.owner ?? ''))) {
               throw new Error(`canonical_scale_down_task_verification_failed:${task.id}`);
+            }
+          }
+
+          // Herdr panes close directly: ids are never reused, so the recorded
+          // pane id is itself teardown authority and a pane_not_found answer
+          // proves the pane is already gone.
+          const herdrPaneWorkers = removableWorkers.filter((worker): worker is WorkerInfo & {
+            pane_id: string;
+          } => (
+            typeof worker.pane_id === 'string' && isHerdrPaneId(worker.pane_id)
+          ));
+          const herdrResolvedPaneIds = new Set<string>();
+          const herdrProofDebt: string[] = [];
+          for (const worker of herdrPaneWorkers) {
+            try {
+              await teardownHerdrWorker(worker.pane_id, { env });
+              herdrResolvedPaneIds.add(worker.pane_id);
+            } catch (error) {
+              if (error instanceof HerdrError && error.code === 'pane_not_found') {
+                herdrResolvedPaneIds.add(worker.pane_id);
+                continue;
+              }
+              herdrProofDebt.push(`${worker.pane_id}:herdr_teardown_failed:${error instanceof Error ? error.message : String(error)}`);
             }
           }
 
@@ -2227,6 +2432,7 @@ export async function scaleDown(
             },
           });
           const resolvedPaneIds = new Set([
+            ...herdrResolvedPaneIds,
             ...unpinnedResolvedPaneIds,
             ...paneTeardown.provenGonePaneIds,
             ...paneTeardown.killedPaneIds,
@@ -2235,8 +2441,11 @@ export async function scaleDown(
             typeof worker.pane_id === 'string' && !resolvedPaneIds.has(worker.pane_id)
           ));
           if (unresolvedWorkers.length > 0) {
-            await restorePriorWorkerStatuses(unresolvedWorkers);
-            const proofDebt = [...unpinnedProofDebt, ...paneTeardown.proofUnavailable.map((proof) => `${proof.paneId}:${proof.reason}`)];
+            const proofDebt = [
+              ...herdrProofDebt,
+              ...unpinnedProofDebt,
+              ...paneTeardown.proofUnavailable.map((proof) => `${proof.paneId}:${proof.reason}`),
+            ];
             const killDebt = paneTeardown.kill.failedPaneIds.map((paneId) => `${paneId}:kill_failed`);
             await writeAtomic(cleanupDebtPath, JSON.stringify({
               ...cleanupDebtBase,
@@ -2272,7 +2481,6 @@ export async function scaleDown(
         });
       });
     } catch (error) {
-      await restorePriorWorkerStatuses(removableWorkers);
       return { ok: false, error: `scale_down_task_reconciliation_failed:${String(error)}` };
     }
     if (teardownFailure) return teardownFailure;

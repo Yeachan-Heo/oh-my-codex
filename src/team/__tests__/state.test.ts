@@ -1449,6 +1449,7 @@ exit 1
         isTerminalTaskStatus: (status) => status === 'completed' || status === 'failed',
         taskFilePath: (_teamName, taskId, _cwd) => join(cwd, '.omx', 'state', 'team', teamName, 'tasks', `task-${taskId}.json`),
         writeAtomic,
+        persistTaskOwnership: async () => { assert.fail('removed worker must not persist ownership'); },
       });
 
       assert.deepEqual(claim, { ok: false, error: 'worker_not_found' });
@@ -1485,6 +1486,7 @@ exit 1
         isTerminalTaskStatus: (status) => status === 'completed' || status === 'failed',
         taskFilePath: (_teamName, taskId, _cwd) => join(cwd, '.omx', 'state', 'team', teamName, 'tasks', `task-${taskId}.json`),
         writeAtomic,
+        persistTaskOwnership: async () => { assert.fail('removed worker must not persist ownership'); },
       });
 
       assert.deepEqual(claim, { ok: false, error: 'worker_not_found' });
@@ -2016,6 +2018,118 @@ exit 1
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  for (const claimed of [false, true]) {
+    it(`updateTask rejects ownership metadata changes without disturbing assignments (${claimed ? 'claimed' : 'bootstrap'})`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-assignment-metadata-'));
+      try {
+        const team = 'assignment-metadata';
+        await initTeamState(team, 't', 'executor', 2, cwd);
+        const task = await createTask(team, { subject: 'A', description: 'authoritative ownership', status: 'pending', owner: 'worker-1' }, cwd);
+        const config = await readTeamConfig(team, cwd);
+        assert.ok(config);
+        config.workers[0]!.assigned_tasks = [task.id];
+        await saveTeamConfig(config, cwd);
+        if (claimed) assert.ok((await claimTask(team, task.id, 'worker-1', null, cwd)).ok);
+        const beforeTask = await readTask(team, task.id, cwd);
+        const beforeConfig = await readTeamConfig(team, cwd);
+        const beforeManifest = await readTeamManifestV2(team, cwd);
+        for (const updates of [{ owner: 'worker-2' }, { owner: undefined }, { claim: undefined }]) {
+          await assert.rejects(updateTask(team, task.id, updates, cwd), /ownership and claims must use claim\/release\/reclaim APIs/);
+          assert.deepEqual(await readTask(team, task.id, cwd), beforeTask);
+          assert.deepEqual(await readTeamConfig(team, cwd), beforeConfig);
+          assert.deepEqual(await readTeamManifestV2(team, cwd), beforeManifest);
+        }
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const transfer of ['release', 'reclaim', 'expired-claim'] as const) {
+    it(`task ownership keeps config and manifest assignments current (${transfer})`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-task-assignment-transfer-'));
+      try {
+        const team = 'assignment-transfer';
+        await initTeamState(team, 't', 'executor', 2, cwd);
+        const task = await createTask(team, { subject: 'A', description: 'transfer me', status: 'pending' }, cwd);
+        const config = await readTeamConfig(team, cwd);
+        assert.ok(config);
+        // Only this task's assignments may be repaired; unrelated inconsistencies remain fail-closed.
+        config.workers[0]!.assigned_tasks = [task.id, 'missing'];
+        config.workers[1]!.assigned_tasks = [task.id];
+        await saveTeamConfig(config, cwd);
+        const assertAssignments = async (expected: string[][]) => {
+          assert.deepEqual((await readTeamConfig(team, cwd))?.workers.map((worker) => worker.assigned_tasks), expected);
+          assert.deepEqual((await readTeamManifestV2(team, cwd))?.workers.map((worker) => worker.assigned_tasks), expected);
+        };
+        const first = await claimTask(team, task.id, 'worker-1', null, cwd);
+        assert.ok(first.ok);
+        await assertAssignments([[task.id, 'missing'], []]);
+        const rejected = await claimTask(team, task.id, 'worker-2', null, cwd);
+        assert.equal(rejected.ok, false);
+        await assertAssignments([[task.id, 'missing'], []]);
+        if (transfer === 'release') {
+          assert.ok((await releaseTaskClaim(team, task.id, first.claimToken, 'worker-1', cwd)).ok);
+        } else {
+          const taskPath = join(cwd, '.omx/state/team', team, 'tasks', `task-${task.id}.json`);
+          const expired = { ...first.task, claim: { ...first.task.claim!, leased_until: new Date(0).toISOString() } };
+          await writeFile(taskPath, JSON.stringify(expired));
+          if (transfer === 'reclaim') assert.ok((await reclaimExpiredTaskClaim(team, task.id, cwd)).ok);
+        }
+        if (transfer !== 'expired-claim') await assertAssignments([['missing'], []]);
+        const second = await claimTask(team, task.id, 'worker-2', null, cwd);
+        assert.ok(second.ok);
+        await assertAssignments([['missing'], [task.id]]);
+        assert.ok((await transitionTaskStatus(team, task.id, 'in_progress', 'completed', second.claimToken, cwd)).ok);
+        await assertAssignments([['missing'], [task.id]]);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const operation of ['claim', 'release', 'reclaim'] as const) {
+    it(`recovers task and assignment metadata together after ${operation} publication fails`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-assignment-recovery-'));
+      try {
+        const team = 'assignment-recovery';
+        await initTeamState(team, 't', 'executor', 1, cwd);
+        const task = await createTask(team, { subject: 'A', description: 'recover together', status: 'pending' }, cwd);
+        const teamRoot = join(cwd, '.omx/state/team', team);
+        let token = '';
+        if (operation !== 'claim') {
+          const claimed = await claimTask(team, task.id, 'worker-1', null, cwd);
+          assert.ok(claimed.ok);
+          token = claimed.claimToken;
+          if (operation === 'reclaim') {
+            await writeFile(join(teamRoot, 'tasks', `task-${task.id}.json`), JSON.stringify({
+              ...claimed.task, claim: { ...claimed.task.claim!, leased_until: new Date(0).toISOString() },
+            }));
+          }
+        }
+        const beforeTask = await readTask(team, task.id, cwd);
+        const beforeConfig = await readTeamConfig(team, cwd);
+        const beforeManifest = await readTeamManifestV2(team, cwd);
+        setWriteAtomicRenameForTests(async (from, to) => {
+          if (to === join(teamRoot, 'manifest.v2.json')) throw new Error('injected_assignment_publish_failure');
+          await rename(from, to);
+        });
+        await assert.rejects(() => operation === 'claim'
+          ? claimTask(team, task.id, 'worker-1', null, cwd)
+          : operation === 'release' ? releaseTaskClaim(team, task.id, token, 'worker-1', cwd)
+          : reclaimExpiredTaskClaim(team, task.id, cwd), /injected_assignment_publish_failure/);
+        resetWriteAtomicRenameForTests();
+        assert.deepEqual(await readTask(team, task.id, cwd), beforeTask);
+        assert.deepEqual(await readTeamConfig(team, cwd), beforeConfig);
+        assert.deepEqual(await readTeamManifestV2(team, cwd), beforeManifest);
+        assert.equal(existsSync(join(teamRoot, '.membership-task-transaction.json')), false);
+      } finally {
+        resetWriteAtomicRenameForTests();
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('releaseTaskClaim reverts a claimed task back to pending under claim lock', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-release-'));
@@ -4314,13 +4428,13 @@ exit 1
     }
   });
 
-  it('listTasks ignores malformed and id-mismatched task payloads', async () => {
+  it('listTasks rejects malformed and id-mismatched task payloads', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-list-validate-'));
     try {
       await initTeamState('team-list-validate', 't', 'executor', 1, cwd);
       await createTask('team-list-validate', { subject: 'ok', description: 'd', status: 'pending' }, cwd);
 
-      // Internal payload id mismatches filename id -> should be ignored.
+      // A mismatched record cannot disappear from completion and cleanup gates.
       await writeFile(
         join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-2.json'),
         JSON.stringify({
@@ -4332,12 +4446,16 @@ exit 1
         }, null, 2),
       );
 
-      // Malformed payload -> should be ignored.
+      await assert.rejects(listTasks('team-list-validate', cwd), /team_task_read_failed/);
+      await rm(join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-2.json'));
+
       await writeFile(
         join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-3.json'),
         JSON.stringify({ nope: true }, null, 2),
       );
 
+      await assert.rejects(listTasks('team-list-validate', cwd), /team_task_read_failed/);
+      await rm(join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-3.json'));
       const tasks = await listTasks('team-list-validate', cwd);
       assert.equal(tasks.length, 1);
       assert.equal(tasks[0].id, '1');
@@ -4376,14 +4494,14 @@ exit 1
       await initTeamState('team-7', 't', 'executor', 1, cwd);
       const created = await createTask(
         'team-7',
-        { subject: 's', description: 'd', status: 'pending', owner: undefined },
+        { subject: 's', description: 'd', status: 'pending', owner: 'worker-1' },
         cwd
       );
 
       const updated = await updateTask(
         'team-7',
         created.id,
-        { status: 'completed', owner: 'worker-1', result: 'done', completed_at: new Date().toISOString() },
+        { status: 'completed', result: 'done', completed_at: new Date().toISOString() },
         cwd
       );
 

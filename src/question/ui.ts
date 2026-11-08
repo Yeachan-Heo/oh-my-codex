@@ -457,10 +457,24 @@ async function promptForQuestionWithNumbers(question: NormalizedQuestionItem, de
     output.write(`${renderOptions(question).join('\n')}\n\n`);
     const optionCount = question.options.length + (question.allow_other ? 1 : 0);
     const prompt = isMultiAnswerableQuestion(question) ? 'Choose one or more options by number (comma-separated): ' : 'Choose an option by number: ';
+    
     let selections: number[] | null = null;
     while (!selections) {
-      selections = parseSelection(await rl.question(prompt), optionCount, isMultiAnswerableQuestion(question));
-      if (!selections) output.write('Invalid selection. Please try again.\n');
+      // Race the question against readline closing (e.g., due to stdin EOF)
+      let closeHandler: (() => void) | null = null;
+      const closePromise = new Promise<never>((_, reject) => {
+        closeHandler = () => {
+          reject(new Error('Standard input closed before response received.'));
+        };
+        rl.once('close', closeHandler);
+      });
+      try {
+        const answer = await Promise.race([rl.question(prompt), closePromise]);
+        selections = parseSelection(answer, optionCount, isMultiAnswerableQuestion(question));
+        if (!selections) output.write('Invalid selection. Please try again.\n');
+      } finally {
+        if (closeHandler) rl.off('close', closeHandler);
+      }
     }
     return selections;
   } finally {
@@ -474,9 +488,23 @@ async function promptForOtherText(label: string, deps: QuestionUiDeps = {}): Pro
   const rl = createPromptInterface({ input: input as NodeJS.ReadableStream, output: output as NodeJS.WritableStream });
   try {
     while (true) {
-      const candidate = (await rl.question(`${label}: `)).trim();
-      if (candidate) return candidate;
-      output.write('Please enter a response.\n');
+      // Race the question against readline closing (e.g., due to stdin EOF)
+      let closeHandler: (() => void) | null = null;
+      const closePromise = new Promise<never>((_, reject) => {
+        closeHandler = () => {
+          reject(new Error('Standard input closed before response received.'));
+        };
+        rl.once('close', closeHandler);
+      });
+      try {
+        const candidate = (await Promise.race([rl.question(`${label}: `), closePromise])).trim();
+        if (candidate) {
+          return candidate;
+        }
+        output.write('Please enter a response.\n');
+      } finally {
+        if (closeHandler) rl.off('close', closeHandler);
+      }
     }
   } finally {
     rl.close();

@@ -2328,6 +2328,15 @@ describe('teamCommand api', () => {
       assert.equal(typeof claimToken, 'string');
 
       await teamCommand([
+        'api', 'renew-task-claim', '--input',
+        JSON.stringify({ team_name: 'lifecycle-team', task_id: taskId, worker: 'worker-1', claim_token: claimToken }),
+        '--json',
+      ]);
+      const renewed = JSON.parse(logs.at(-1) ?? '{}') as { ok?: boolean; data?: { ok?: boolean } };
+      assert.equal(renewed.ok, true);
+      assert.equal(renewed.data?.ok, true);
+
+      await teamCommand([
         'api',
         'transition-task-status',
         '--input',

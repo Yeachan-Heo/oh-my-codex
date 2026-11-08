@@ -21,7 +21,7 @@ export interface TeamNotifierTarget {
   paneId?: string;
 }
 
-export type DispatchTransport = 'hook' | 'prompt_stdin' | 'tmux_send_keys' | 'mailbox' | 'none';
+export type DispatchTransport = 'hook' | 'prompt_stdin' | 'tmux_send_keys' | 'herdr_prompt' | 'mailbox' | 'none';
 
 export interface DispatchOutcome {
   ok: boolean;
@@ -138,12 +138,11 @@ async function markLeaderPaneMissingDeferred(params: {
   ).catch(() => {});
 }
 
-interface QueueInboxParams {
+interface QueueInboxNotificationParams {
   teamName: string;
   workerName: string;
   workerIndex: number;
   paneId?: string;
-  inbox: string;
   triggerMessage: string;
   intent?: TeamReminderIntent;
   cwd: string;
@@ -153,8 +152,13 @@ interface QueueInboxParams {
   notify: TeamNotifier;
 }
 
-export async function queueInboxInstruction(params: QueueInboxParams): Promise<DispatchOutcome> {
+export async function queueInboxInstruction(params: QueueInboxNotificationParams & { inbox: string }): Promise<DispatchOutcome> {
   await writeWorkerInbox(params.teamName, params.workerName, params.inbox, params.cwd);
+  return await queueInboxNotification(params);
+}
+
+// Startup has already published its inbox before providers can execute.
+export async function queueInboxNotification(params: QueueInboxNotificationParams): Promise<DispatchOutcome> {
   const queued = await enqueueDispatchRequest(
     params.teamName,
     {

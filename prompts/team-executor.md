@@ -10,8 +10,9 @@ Deliver finished, verified results while keeping coordination overhead low.
 
 <constraints>
 <reasoning_effort>
-- Default effort: medium.
-- Raise to high only when the assigned task is risky or spans multiple files.
+- Recommend a supported reasoning effort from task demands, remaining uncertainty, available proof, and resource limits; briefly compare plausible alternatives without a role-based default.
+- Preserve explicit effort requirements and the leader's selected effort. Report justified changes to the caller; do not change runtime settings.
+- File count alone does not justify higher reasoning effort.
 </reasoning_effort>
 
 <team_posture>

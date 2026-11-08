@@ -2,7 +2,7 @@ import { validateCompletionEvidence } from '../completion-evidence.js';
 import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { readFile, readdir } from 'fs/promises';
+import { readFile, readdir, lstat } from 'fs/promises';
 import type { TeamTaskStatus } from '../contracts.js';
 import type {
   TeamTask,
@@ -13,6 +13,7 @@ import type {
   ClaimTaskResult,
   TransitionTaskResult,
   ReleaseTaskClaimResult,
+  RenewTaskClaimResult,
   ReclaimTaskResult,
   TeamMonitorSnapshotState,
 } from './types.js';
@@ -48,12 +49,13 @@ export async function computeTaskReadiness(
 interface ClaimTaskDeps extends TaskReadDeps {
   teamName: string;
   cwd: string;
-  readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string; working_dir?: string }> } | null>;
+  readTeamConfig: (teamName: string, cwd: string) => Promise<{ workers: Array<{ name: string; working_dir?: string; worktree_path?: string }> } | null>;
   withTaskClaimLock: <T>(teamName: string, taskId: string, cwd: string, fn: () => Promise<T>) => Promise<{ ok: true; value: T } | { ok: false }>;
   normalizeTask: (task: TeamTask) => TeamTaskV2;
   isTerminalTaskStatus: (status: TeamTaskStatus) => boolean;
   taskFilePath: (teamName: string, taskId: string, cwd: string) => string;
   writeAtomic: (path: string, data: string) => Promise<void>;
+  persistTaskOwnership: (task: TeamTaskV2) => Promise<void>;
 }
 
 export async function claimTask(
@@ -110,12 +112,43 @@ export async function claimTask(
       version: v.version + 1,
     };
 
-    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    await deps.persistTaskOwnership(updated);
     return { ok: true as const, task: updated, claimToken };
   });
 
   if (!lock.ok) return { ok: false, error: 'claim_conflict' };
   return lock.value;
+}
+
+export async function renewTaskClaim(
+  taskId: string,
+  workerName: string,
+  claimToken: string,
+  deps: ClaimTaskDeps,
+): Promise<RenewTaskClaimResult> {
+  const lock = await deps.withTaskClaimLock(deps.teamName, taskId, deps.cwd, async () => {
+    const current = await deps.readTask(deps.teamName, taskId, deps.cwd);
+    if (!current) return { ok: false as const, error: 'task_not_found' as const };
+    const task = deps.normalizeTask(current);
+    if (deps.isTerminalTaskStatus(task.status)) return { ok: false as const, error: 'already_terminal' as const };
+    const config = await deps.readTeamConfig(deps.teamName, deps.cwd);
+    if (!config?.workers.some((worker) => worker.name === workerName)) {
+      return { ok: false as const, error: 'worker_not_found' as const };
+    }
+    if (task.status !== 'in_progress' || task.owner !== workerName || task.claim?.owner !== workerName || task.claim.token !== claimToken) {
+      return { ok: false as const, error: 'claim_conflict' as const };
+    }
+    const now = Date.now();
+    if (!(Date.parse(task.claim.leased_until) > now)) return { ok: false as const, error: 'lease_expired' as const };
+    const updated: TeamTaskV2 = {
+      ...task,
+      claim: { ...task.claim, leased_until: new Date(Math.max(Date.parse(task.claim.leased_until), now + 15 * 60 * 1000)).toISOString() },
+      version: task.version + 1,
+    };
+    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    return { ok: true as const, task: updated };
+  });
+  return lock.ok ? lock.value : { ok: false, error: 'claim_conflict' };
 }
 
 function extractDelegationComplianceEvidence(
@@ -231,11 +264,13 @@ export async function transitionTaskStatus(
       return { ok: false as const, error: 'missing_coordination_compliance_evidence' as const };
     }
 
+    let verifiedHead: string | undefined;
     if (to === 'completed' && v.requires_code_change === true) {
       try {
         const config = await deps.readTeamConfig(deps.teamName, deps.cwd);
-        const evidenceCwd = config?.workers.find((worker) => worker.name === v.owner)?.working_dir || deps.evidenceCwd;
-        await validateCompletionEvidence(evidenceCwd, deps.teamName, v, normalizedResult);
+        const worker = config?.workers.find((worker) => worker.name === v.owner);
+        const evidenceCwd = worker?.worktree_path || worker?.working_dir || deps.evidenceCwd;
+        verifiedHead = await validateCompletionEvidence(evidenceCwd, deps.teamName, v, normalizedResult);
       } catch (error) {
         return { ok: false as const, error: 'invalid_completion_evidence' as const,
           reason: error instanceof Error ? error.message : String(error) };
@@ -245,6 +280,7 @@ export async function transitionTaskStatus(
     const updated: TeamTaskV2 = {
       ...v,
       status: to,
+      verified_head: verifiedHead,
       completed_at: new Date().toISOString(),
       result: to === 'completed' ? normalizedResult : undefined,
       error: to === 'failed' ? normalizedError : undefined,
@@ -321,7 +357,7 @@ export async function releaseTaskClaim(
       claim: undefined,
       version: v.version + 1,
     };
-    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    await deps.persistTaskOwnership(updated);
     return { ok: true as const, task: updated };
   });
 
@@ -350,7 +386,7 @@ export async function reclaimExpiredTaskClaim(
       claim: undefined,
       version: v.version + 1,
     };
-    await deps.writeAtomic(deps.taskFilePath(deps.teamName, taskId, deps.cwd), JSON.stringify(updated, null, 2));
+    await deps.persistTaskOwnership(updated);
     return { ok: true as const, task: updated, reclaimed: true };
   });
 
@@ -367,14 +403,21 @@ export async function listTasks(
     normalizeTask: (task: TeamTask) => TeamTaskV2;
   },
 ): Promise<TeamTask[]> {
-  const tasksRoot = join(deps.teamDir(teamName, cwd), 'tasks');
-  if (!existsSync(tasksRoot)) return [];
+  const root = deps.teamDir(teamName, cwd);
+  const tasksRoot = join(root, 'tasks');
+  try {
+    const stat = await lstat(tasksRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('not_regular_directory');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(root)) return [];
+    throw new Error(`team_task_read_failed:${teamName}/tasks`, { cause });
+  }
 
   const entries = await readdir(tasksRoot, { withFileTypes: true });
   const matched = entries.flatMap((entry) => {
-    if (!entry.isFile()) return [];
     const match = /^task-(\d+)\.json$/.exec(entry.name);
     if (!match) return [];
+    if (!entry.isFile()) throw new Error(`team_task_read_failed:${teamName}/${entry.name}:not_regular_file`);
     return [{ id: match[1], fileName: entry.name }];
   });
 
@@ -383,20 +426,15 @@ export async function listTasks(
       try {
         const raw = await readFile(join(tasksRoot, fileName), 'utf8');
         const parsed = JSON.parse(raw) as unknown;
-        if (!deps.isTeamTask(parsed)) return null;
+        if (!deps.isTeamTask(parsed)) throw new Error('invalid_task_shape');
         const normalized = deps.normalizeTask(parsed);
-        if (normalized.id !== id) return null;
+        if (normalized.id !== id) throw new Error('task_id_mismatch');
         return normalized;
-      } catch {
-        return null;
+      } catch (cause) {
+        throw new Error(`team_task_read_failed:${teamName}/${fileName}`, { cause });
       }
     }),
   );
 
-  const tasks: TeamTaskV2[] = [];
-  for (const task of loaded) {
-    if (task) tasks.push(task);
-  }
-  tasks.sort((a, b) => Number(a.id) - Number(b.id));
-  return tasks;
+  return loaded.sort((a, b) => Number(a.id) - Number(b.id));
 }
