@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-11-08
+
+Patch release ships Plan and Ralplan skill guidance that matches the tools the host actually exposes. See [release notes](docs/release-notes-0.22.3.md) for exact scope and evidence.
+
+### Fixed
+
+- **ALIGN PLAN AND RALPLAN WITH AVAILABLE HOST TOOLS (#3998):** The Plan and Ralplan skills no longer reference unavailable `ask_codex` syntax or a nonexistent `$plan` consensus mode. Plan asks questions through `omx question` in attached tmux (with the return pane preserved) and through native structured input elsewhere, uses only the host's exposed reviewer subagents, and reports a missing independent review instead of claiming approval. A "skip planning" request now continues through direct execution while keeping active workflow gates, instead of always handing off to `$ultragoal`. Ralplan owns the consensus sequence and its quality gates.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.2...v0.22.3
+
 ## [0.22.2] - 2026-11-08
 
 Patch release ships a team-runtime safety fix: integration and cleanup now preserve manual Git operations, corrupted task state, and completion evidence instead of aborting, dropping, or deleting them. See [release notes](docs/release-notes-0.22.2.md) for exact scope and evidence.
