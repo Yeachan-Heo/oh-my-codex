@@ -7,7 +7,7 @@
 
 ## Summary
 
-This patch release stores live Codex pins outside the plugin fingerprint root to fix invalidation on plugin refresh (#4010, fixes #3898), and drops role-based reasoning-effort defaults from seven role prompts (#4021), ensuring Vision stays extraction-only unless reassessment is justified. Release-coupled metadata was pre-synchronized to `0.21.48` on dev by #4017, so the release branch does not bump these values again.
+This patch release stores live Codex pins outside the plugin fingerprint root so live-pin writes no longer change the fingerprint Codex approved (#4010, fixes #3898), and drops role-based reasoning-effort defaults from seven role prompts (#4021), ensuring Vision stays extraction-only unless reassessment is justified. Release-coupled metadata was pre-synchronized to `0.21.48` on dev by #4017, so the release branch does not bump these values again.
 
 ## Included scope
 
