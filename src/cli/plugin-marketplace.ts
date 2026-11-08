@@ -271,23 +271,29 @@ async function openDirectoryRef(path: string): Promise<DirectoryRef> {
 
 /**
  * Opens the external live-pin directory for a given version (read-only).
- * Anchors .omx-pins as a child of cacheBase to prevent symlink escapes.
+ * Returns both the version directory and parent .omx-pins directory handles.
+ * Anchors .omx-pins as a child of cacheBase to prevent symlink escapes (invariant: I1).
  * Does not create directories if they don't exist.
- * WARNING: The parent .omx-pins directory handle is kept open by this function
- * because closing it can cause issues with descriptor-relative paths on Linux.
- * This is a known resource leak that must be addressed by proper handle lifecycle
- * management when this function is integrated into hasLiveSessionPinRecord.
+ * 
+ * The caller MUST close both returned handles in a finally block:
+ * 1. Close the child (version directory) handle first
+ * 2. Close the parent (.omx-pins) handle second
+ * 
+ * On Linux, closing the parent while the child is open can cause EBADF errors
+ * because child paths may use /proc/self/fd references to the parent.
  */
-async function openExternalLivePinDirectoryReadOnly(cacheBaseRef: DirectoryRef, version: string): Promise<DirectoryRef> {
+async function openExternalLivePinDirectoryReadOnly(cacheBaseRef: DirectoryRef, version: string): Promise<{ child: DirectoryRef; parent: DirectoryRef }> {
 	// First, open .omx-pins as a child of cacheBase (anchored, no creation)
 	const pinParentRef = await openDirectoryChild(cacheBaseRef, ".omx-pins");
-	// Then open the version directory under .omx-pins
-	const versionDir = await openDirectoryChild(pinParentRef, version);
-	// NOTE: Intentionally NOT closing pinParentRef here.
-	// Closing the parent while the child directory handle is in use can cause
-	// descriptor-relative path resolution to fail on Linux, where operationPath
-	// may use /proc/self/fd paths that reference the parent handle.
-	return versionDir;
+	try {
+		// Then open the version directory under .omx-pins
+		const versionDir = await openDirectoryChild(pinParentRef, version);
+		return { child: versionDir, parent: pinParentRef };
+	} catch (error) {
+		// If child open fails, close parent and rethrow
+		await pinParentRef.handle.close().catch(() => undefined);
+		throw error;
+	}
 }
 
 /**
@@ -1300,12 +1306,12 @@ async function hasLiveSessionPinRecord(
 	sessionHash: string,
 	snapshotRef?: DirectoryRef,
 ): Promise<boolean> {
-	// Check external pin directory using anchored opening to prevent symlink escapes (invariant: I1).
-	let pinDirectoryRef: DirectoryRef | undefined;
+	// Check external pin directory using anchored, read-only opening to prevent symlink escapes (invariant: I1).
+	let dirs: { child: DirectoryRef; parent: DirectoryRef } | undefined;
 	try {
 		try {
 			// Use read-only variant to check for existing pins without creating directories
-			pinDirectoryRef = await openExternalLivePinDirectoryReadOnly(cacheBaseRef, version);
+			dirs = await openExternalLivePinDirectoryReadOnly(cacheBaseRef, version);
 		} catch (error) {
 			if (isMissingPathError(error)) {
 				// External pin directory doesn't exist; skip to legacy pin check
@@ -1313,10 +1319,10 @@ async function hasLiveSessionPinRecord(
 				throw error;
 			}
 		}
-		if (pinDirectoryRef && !(await livePinRetirementGateExists(pinDirectoryRef))) {
-			for (const entry of await readdir(pinDirectoryRef.scanOperationPath, { withFileTypes: true })) {
+		if (dirs && !(await livePinRetirementGateExists(dirs.child))) {
+			for (const entry of await readdir(dirs.child.scanOperationPath, { withFileTypes: true })) {
 				if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith("pin-")) continue;
-				const path = join(pinDirectoryRef.operationPath, entry.name);
+				const path = join(dirs.child.operationPath, entry.name);
 				const stats = await lstat(path);
 				if (
 					!stats.isFile() ||
@@ -1326,7 +1332,7 @@ async function hasLiveSessionPinRecord(
 					stats.size > OMX_PLUGIN_LIVE_PIN_RECORD_MAX_BYTES
 				)
 					continue;
-				const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: pinDirectoryRef.operationPath });
+				const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: dirs.child.operationPath });
 				if (bytes === null) continue;
 				let parsed: unknown;
 				try {
@@ -1345,7 +1351,11 @@ async function hasLiveSessionPinRecord(
 			}
 		}
 	} finally {
-		if (pinDirectoryRef) await pinDirectoryRef.handle.close().catch(() => undefined);
+		if (dirs) {
+			// Close child first, then parent
+			await dirs.child.handle.close().catch(() => undefined);
+			await dirs.parent.handle.close().catch(() => undefined);
+		}
 	}
 
 	// Check legacy in-snapshot pin directory (read-only)
@@ -1620,24 +1630,29 @@ async function isLivePinnedSnapshot(
 ): Promise<boolean> {
 	if (await hasLivePinIntent(cacheBaseRef, version, mutationLockContent, intentLockContent)) return true;
 	if (await isPrePinManagedSnapshot(snapshotRef, version)) return true;
-	// Check the external pin directory using anchored opening to prevent symlink escapes (invariant: I1).
-	let pinDirectoryRef: DirectoryRef;
+	// Check the external pin directory using anchored, read-only opening to prevent symlink escapes
+	// and avoid mutating state during checks (invariant: I1). Never create directories during checks.
+	let dirs: { child: DirectoryRef; parent: DirectoryRef } | undefined;
 	try {
-		pinDirectoryRef = await openExternalLivePinDirectory(cacheBaseRef, version);
-	} catch (error) {
-		if (isMissingPathError(error)) {
-			// External pin dir missing; check legacy in-snapshot pins
-			return await hasLegacyInSnapshotLivePin(snapshotRef);
+		try {
+			dirs = await openExternalLivePinDirectoryReadOnly(cacheBaseRef, version);
+		} catch (error) {
+			if (isMissingPathError(error)) {
+				// External pin dir missing; check legacy in-snapshot pins
+				return await hasLegacyInSnapshotLivePin(snapshotRef);
+			}
+			return true;
 		}
-		return true;
-	}
-	try {
-		return (await hasLivePinDirectoryEntries(pinDirectoryRef, retirementGateContent, true)) ||
+		return (await hasLivePinDirectoryEntries(dirs.child, retirementGateContent, false)) ||
 			(await hasLegacyInSnapshotLivePin(snapshotRef));
 	} catch {
 		return true;
 	} finally {
-		await pinDirectoryRef.handle.close();
+		if (dirs) {
+			// Close child first, then parent (parent handles child's /proc/self/fd references)
+			await dirs.child.handle.close().catch(() => undefined);
+			await dirs.parent.handle.close().catch(() => undefined);
+		}
 	}
 }
 

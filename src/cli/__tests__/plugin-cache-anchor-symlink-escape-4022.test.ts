@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { mkdir, symlink, writeFile, readdir, lstat, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import {
@@ -62,16 +62,20 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			const stats = await lstat(pinsDirPath);
 			assert.ok(stats.isSymbolicLink(), "Expected .omx-pins to be a symlink");
 
-			// With the fix, registerOmxPluginCacheLivePin should use openExternalLivePinDirectory
-			// which uses anchored opening via openDirectoryChild.
+			// With the fix, registerOmxPluginCacheLivePin should use openExternalLivePinDirectoryReadOnly
+			// which uses anchored, read-only opening via openDirectoryChild.
 			// This should prevent following the symlink and safely handle the directory.
-			// Without the fix, it would use openDirectoryRef which follows symlinks.
+			// Without the fix, it would create directories during checks, mutating state.
 			try {
-				await registerOmxPluginCacheLivePin(
-					packagedMarketplace.pluginRoot,
-					`test-session-4022-${randomBytes(4).toString("hex")}`,
-					process.pid,
-				);
+				const materializedVersion = result.version || (result.cacheDir ? basename(result.cacheDir) : undefined);
+				if (materializedVersion) {
+					const materializedCacheDir = join(cacheBase, materializedVersion);
+					await registerOmxPluginCacheLivePin(
+						materializedCacheDir,
+						`test-session-4022-${randomBytes(4).toString("hex")}`,
+						process.pid,
+					);
+				}
 			} catch (err: any) {
 				// Either success or safe error is acceptable
 				// The important part is that it doesn't escape the cache
@@ -116,8 +120,8 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 			assert.ok(stats.isSymbolicLink(), "Expected .omx-pins to be a symlink");
 
 			// Call retireUnpinnedManagedSnapshots which calls sweepExpiredOmxPluginCacheLivePinIntents.
-			// With the fix, this uses openExternalLivePinDirectory (anchored opening).
-			// Without the fix, this would use openDirectoryRef which follows symlinks.
+			// With the fix, this uses openExternalLivePinDirectoryReadOnly (anchored, read-only opening).
+			// Without the fix, this would create directories, mutating state and blocking GC.
 			try {
 				await retireUnpinnedManagedSnapshots(codexHomeDir, "1.0.0");
 			} catch (err: any) {
@@ -196,11 +200,15 @@ describe("issue 4022 symlink escape prevention (anchor external pin directory)",
 
 			// Verify structure is created properly when calling pin registration
 			try {
-				await registerOmxPluginCacheLivePin(
-					packagedMarketplace.pluginRoot,
-					`test-session-anchor-${randomBytes(4).toString("hex")}`,
-					process.pid,
-				);
+				const materializedVersion = result.version || (result.cacheDir ? basename(result.cacheDir) : undefined);
+				if (materializedVersion) {
+					const materializedCacheDir = join(cacheBase, materializedVersion);
+					await registerOmxPluginCacheLivePin(
+						materializedCacheDir,
+						`test-session-anchor-${randomBytes(4).toString("hex")}`,
+						process.pid,
+					);
+				}
 			} catch (err: any) {
 				// Error is acceptable; what matters is the structure
 			}
