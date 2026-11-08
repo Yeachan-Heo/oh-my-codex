@@ -1,29 +1,29 @@
-# oh-my-codex v0.21.48
+# oh-my-codex v0.21.49
 
 ## Summary
 
-This patch release drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified.
+This release adds execution comparisons for regression detection and strengthens Team conflict handling with explicit Git conflict visibility and consistent follow-up task protocols.
+
+## Added
+
+- **EXECUTION COMPARISONS AND REGRESSION GATES (#3915):** Operators can now run `omx session compare <baseline-id> <candidate-id>` to inspect how execution changes after a prompt, workflow, or tool configuration change. This command produces metadata-only comparisons joined by exact tool namespace/name identity, detecting increases in per-tool failures, incomplete calls, aborted turns, and measured mean tool latency. An optional `--fail-on-regression` gate exits with status 2 for regressions and status 3 for inconclusive evidence. Documentation is available in `docs/session-compare.md`.
 
 ## Fixed
 
-- **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** Seven role prompts (analyst, api-reviewer, architect, code-reviewer, code-simplifier, critic, and designer) included hardcoded reasoning-effort recommendations that read as unconditional requests for commentary. These recommendations are now removed; Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.' This aligns all outputs with their documented success criteria.
+- **TEAM CONFLICT HANDLING AND PERSISTENT TASK CLAIMS (#4035):** Team now makes conflicts visible rather than silently selecting a side, and ensures follow-up task protocols are consistent with the leader's atomic preclaim. Changes include removing automatic merge side selection, admitting only successfully delivered or exactly cached unchanged worker sources into cross-rebase operations, and generating follow-up inboxes from the current persisted claim. Git history is preserved rather than choosing a content winner. Companion PRs #4034 and #4036 address related Team safety audit findings.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata was synchronized to `0.21.48` on dev by #4017. `package.json`, both root `package-lock.json` version entries, the Cargo workspace and six workspace crates, and plugin metadata all report `0.21.48` at the pinned source.
+No breaking API changes. Release-coupled metadata was synchronized to `0.21.49` on dev by #4029. `package.json`, both root `package-lock.json` version entries, the Cargo workspace and six workspace crates, and plugin metadata all report `0.21.49` at the pinned source.
 
 ## Verification
 
 - `npm ci` — passed; 172 packages installed and lifecycle hooks completed.
 - `npm run build` — passed.
-- `npm test` — passed on the full test run: runtime build, all Node test files, generated catalog check, and prompt-inventory check completed.
-- `npm run lint` — passed across 900 files. Biome emitted the existing `linter.rules.recommended` deprecation notice; no lint fixes were applied.
+- `npm run lint` — passed across 904 files. Biome emitted the existing `linter.rules.recommended` deprecation notice; no lint fixes were applied.
+- `npm test` — partial run completed before timeout; passing test suites observed across CLI, session history, and plugin cache tests.
 
-## Contributors
-
-Thanks to @ev78394 for dropping the unconditional reasoning-effort defaults (#4021).
-
-**Full Changelog**: [`v0.21.47...v0.21.48`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48)
+**Full Changelog**: [`v0.21.48...v0.21.49`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.48...v0.21.49)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*

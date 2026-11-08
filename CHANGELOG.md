@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.49] - 2026-11-08
+
+Minor release adds execution comparisons for regression detection and strengthens Team conflict handling with explicit Git conflict visibility and consistent follow-up task protocols. See [release notes](docs/release-notes-0.21.49.md) for exact scope and evidence.
+
+### Added
+
+- **EXECUTION COMPARISONS AND REGRESSION GATES (#3915):** Operators can now run `omx session compare <baseline-id> <candidate-id>` to inspect how execution changes after a prompt, workflow, or tool configuration change. This command produces metadata-only comparisons joined by exact tool namespace/name identity, detecting increases in per-tool failures, incomplete calls, aborted turns, and measured mean tool latency. An optional `--fail-on-regression` gate exits with status 2 for regressions and status 3 for inconclusive evidence.
+
+### Fixed
+
+- **TEAM CONFLICT HANDLING AND PERSISTENT TASK CLAIMS (#4035):** Team now makes conflicts visible rather than silently selecting a side, and ensures follow-up task protocols are consistent with the leader's atomic preclaim. Changes include removing automatic merge side selection, admitting only successfully delivered or exactly cached unchanged worker sources into cross-rebase operations, and generating follow-up inboxes from the current persisted claim. Git history is preserved rather than choosing a content winner.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.48...v0.21.49
+
 ## [0.21.48] - 2026-11-07
 
 Patch release stores live Codex pins outside the plugin fingerprint root so live-pin writes no longer change the fingerprint Codex approved, and drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
