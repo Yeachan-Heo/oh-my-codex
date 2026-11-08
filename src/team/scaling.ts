@@ -607,7 +607,14 @@ export async function scaleUp(
     return { ok: false, error: `count must be a positive integer (got ${count})` };
   }
 
-  const backend = readMultiplexerConfig({ env }).backend;
+  const sanitized = sanitizeTeamName(teamName);
+  const leaderCwd = resolve(cwd);
+
+  // Try to read team config early to use its persisted backend instead of env backend.
+  // If team doesn't exist yet, we'll validate backends based on env and fail later with
+  // a clearer "Team not found" message in the locking phase.
+  const existingConfig = await readTeamConfig(sanitized, leaderCwd).catch(() => null);
+  const backend = existingConfig?.worker_launch_mode === 'herdr' ? 'herdr' : readMultiplexerConfig({ env }).backend;
   if (backend === 'herdr' && !(await isHerdrBinaryCallable(resolveHerdrBinary(env), env))) {
     return {
       ok: false,
@@ -617,9 +624,6 @@ export async function scaleUp(
   if (backend !== 'herdr' && !isTmuxAvailable()) {
     return { ok: false, error: 'tmux is not available' };
   }
-
-  const sanitized = sanitizeTeamName(teamName);
-  const leaderCwd = resolve(cwd);
 
   return await withScalingLock(sanitized, leaderCwd, async (): Promise<ScaleUpResult | ScaleError> => {
     return await withTaskMembershipBarrier(sanitized, leaderCwd, async () => {
