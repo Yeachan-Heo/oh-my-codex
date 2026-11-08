@@ -3043,15 +3043,15 @@ async function deriveLeaderStopAttentionState(
 >> {
   const [config, tasks, snapshot, mailbox] = await Promise.all([
     readTeamConfig(teamName, cwd),
-    listTasks(teamName, cwd).catch(() => [] as TeamTask[]),
+    listTasks(teamName, cwd).catch(() => null),
     readMonitorSnapshot(teamName, cwd),
     listMailboxMessages(teamName, 'leader-fixed', cwd).catch(() => [] as TeamMailboxMessage[]),
   ]);
 
-  const pendingCount = tasks.filter((task) => task.status === 'pending').length;
-  const blockedCount = tasks.filter((task) => task.status === 'blocked').length;
-  const inProgressCount = tasks.filter((task) => task.status === 'in_progress').length;
-  const workRemaining = pendingCount + blockedCount + inProgressCount > 0;
+  const pendingCount = tasks?.filter((task) => task.status === 'pending').length ?? 0;
+  const blockedCount = tasks?.filter((task) => task.status === 'blocked').length ?? 0;
+  const inProgressCount = tasks?.filter((task) => task.status === 'in_progress').length ?? 0;
+  const workRemaining = tasks === null || pendingCount + blockedCount + inProgressCount > 0;
 
   const workerNames = config?.workers.map((worker) => worker.name) ?? Object.keys(snapshot?.workerStateByName ?? {});
   const workerStates = workerNames
@@ -3062,19 +3062,23 @@ async function deriveLeaderStopAttentionState(
     && workerStates.every((state) => state === 'idle' || state === 'done');
 
   const leaderDecisionState: TeamLeaderDecisionState =
-    pendingCount === 0 && blockedCount === 0 && inProgressCount === 0 && allWorkersIdle
-      ? 'done_waiting_on_leader'
-      : blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && allWorkersIdle
-        ? 'stuck_waiting_on_leader'
-        : existing?.leader_decision_state ?? 'still_actionable';
+    tasks === null
+      ? 'still_actionable'
+      : pendingCount === 0 && blockedCount === 0 && inProgressCount === 0 && allWorkersIdle
+        ? 'done_waiting_on_leader'
+        : blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && allWorkersIdle
+          ? 'stuck_waiting_on_leader'
+          : existing?.leader_decision_state ?? 'still_actionable';
 
   const unreadLeaderMessageCount = mailbox.filter((message) => {
     const deliveredAt = typeof message.delivered_at === 'string' ? message.delivered_at.trim() : '';
     return deliveredAt.length === 0;
   }).length;
   const attentionReasons = new Set(existing?.attention_reasons ?? []);
+  if (tasks === null) attentionReasons.add('task_state_unavailable');
   const leaderAttentionPending =
-    leaderDecisionState !== 'still_actionable'
+    tasks === null
+    || leaderDecisionState !== 'still_actionable'
     || unreadLeaderMessageCount > 0
     || existing?.leader_attention_pending === true;
   if (leaderAttentionPending) {

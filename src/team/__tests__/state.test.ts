@@ -4428,13 +4428,13 @@ exit 1
     }
   });
 
-  it('listTasks ignores malformed and id-mismatched task payloads', async () => {
+  it('listTasks rejects malformed and id-mismatched task payloads', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-list-validate-'));
     try {
       await initTeamState('team-list-validate', 't', 'executor', 1, cwd);
       await createTask('team-list-validate', { subject: 'ok', description: 'd', status: 'pending' }, cwd);
 
-      // Internal payload id mismatches filename id -> should be ignored.
+      // A mismatched record cannot disappear from completion and cleanup gates.
       await writeFile(
         join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-2.json'),
         JSON.stringify({
@@ -4446,12 +4446,16 @@ exit 1
         }, null, 2),
       );
 
-      // Malformed payload -> should be ignored.
+      await assert.rejects(listTasks('team-list-validate', cwd), /team_task_read_failed/);
+      await rm(join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-2.json'));
+
       await writeFile(
         join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-3.json'),
         JSON.stringify({ nope: true }, null, 2),
       );
 
+      await assert.rejects(listTasks('team-list-validate', cwd), /team_task_read_failed/);
+      await rm(join(cwd, '.omx', 'state', 'team', 'team-list-validate', 'tasks', 'task-3.json'));
       const tasks = await listTasks('team-list-validate', cwd);
       assert.equal(tasks.length, 1);
       assert.equal(tasks[0].id, '1');

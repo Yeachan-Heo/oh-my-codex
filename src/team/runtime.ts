@@ -207,6 +207,7 @@ import {
 } from '../hooks/session.js';
 
 import {
+  archiveIgnoredCompletionEvidence,
   assertCleanLeaderWorkspaceForWorkerWorktrees,
   ensureWorktree,
   isGitRepository,
@@ -1294,11 +1295,34 @@ function leaderContainsCommit(repoRoot: string, cwd: string, commit: string): bo
   return runGitCommand(repoRoot, ['merge-base', '--is-ancestor', commit, 'HEAD'], cwd).ok;
 }
 
-function worktreeHasUnfinishedRebase(repoRoot: string, worktreePath: string): boolean {
-  return ['rebase-merge', 'rebase-apply'].some((name) => {
-    const path = runGitCommand(repoRoot, ['rev-parse', '--git-path', name], worktreePath);
-    return !path.ok || existsSync(resolve(worktreePath, path.stdout.trim()));
-  });
+function gitOperationError(repoRoot: string, cwd: string): Error | null {
+  const gitDir = runGitCommand(repoRoot, ['rev-parse', '--absolute-git-dir'], cwd);
+  if (!gitDir.ok || !gitDir.stdout) return new Error(`git_operation_state_unavailable:${cwd}`);
+  for (const marker of ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_START']) {
+    if (existsSync(join(gitDir.stdout, marker))) return new Error(`git_operation_in_progress:${cwd}:${marker}. Finish or abort it manually before retrying.`);
+  }
+  return null;
+}
+
+function assertNoActiveGitOperation(repoRoot: string, cwd: string): void {
+  const error = gitOperationError(repoRoot, cwd);
+  if (error) throw error;
+}
+
+function assertShutdownGitOperationsIdle(config: TeamConfig, cwd: string): void {
+  if (config.workers.some((worker) => worker.worktree_repo_root && worker.worktree_path) && isGitRepository(cwd)) {
+    assertNoActiveGitOperation(cwd, cwd);
+  }
+  for (const worker of config.workers) {
+    if (!worker.worktree_repo_root || !worker.worktree_path || !existsSync(worker.worktree_path)) continue;
+    assertNoActiveGitOperation(worker.worktree_repo_root, worker.worktree_path);
+  }
+}
+
+function abortOwnedIntegration(repoRoot: string, cwd: string, operation: 'merge' | 'cherry-pick', sourceCommit: string): void {
+  const marker = operation === 'merge' ? 'MERGE_HEAD' : 'CHERRY_PICK_HEAD';
+  const head = runGitCommand(repoRoot, ['rev-parse', '--verify', '--quiet', marker], cwd);
+  if (head.ok && head.stdout === sourceCommit) runGitCommand(repoRoot, [operation, '--abort'], cwd);
 }
 
 async function readVerifiedWorkerHandoff(teamName: string, worker: WorkerInfo, cwd: string): Promise<string | null> {
@@ -1319,18 +1343,50 @@ async function readVerifiedWorkerHandoff(teamName: string, worker: WorkerInfo, c
     && task.verified_head === workerHead && hasStructuredVerificationEvidence(task.result)) ? workerHead : null;
 }
 
-async function integrateWorkerCommitsIntoLeader(params: {
+interface WorkerIntegrationParams {
   teamName: string;
   config: TeamConfig;
   previous: TeamMonitorSnapshotState | null;
   cwd: string;
-}): Promise<Record<string, TeamWorkerIntegrationState>> {
-  const { teamName, config, previous, cwd } = params;
-  const next: Record<string, TeamWorkerIntegrationState> = { ...(previous?.integrationByWorker ?? {}) };
+}
+
+async function integrateWorkerCommitsIntoLeader(params: WorkerIntegrationParams): Promise<Record<string, TeamWorkerIntegrationState>> {
+  const { teamName, previous, cwd } = params;
+  const next = { ...(previous?.integrationByWorker ?? {}) };
+  const entries: TeamOperationalCommitEntry[] = [];
+  let finished = false;
+  try {
+    try {
+      const result = await applyWorkerIntegrations(params, next, entries);
+      finished = true;
+      return result;
+    } finally {
+      if (entries.length > 0) await appendTeamCommitHygieneEntries(teamName, entries, resolveTeamCommitHygieneArtifactCwd(params.config, cwd));
+    }
+  } finally {
+    // Commit receipts must survive failures in the rest of monitorTeam; idle polls need no extra write.
+    if (!finished || entries.length > 0) {
+      await withTeamTaskMembershipBarrier(teamName, cwd, async () => {
+        const latest = await readMonitorSnapshot(teamName, cwd) ?? previous ?? {
+          taskStatusById: {}, workerAliveByName: {}, workerStateByName: {}, workerTurnCountByName: {},
+          workerTaskIdByName: {}, mailboxNotifiedByMessageId: {}, completedEventTaskIds: {},
+        };
+        await writeMonitorSnapshot(teamName, {
+          ...latest, integrationByWorker: { ...latest.integrationByWorker, ...next },
+        }, cwd);
+      });
+    }
+  }
+}
+
+async function applyWorkerIntegrations(
+  params: WorkerIntegrationParams,
+  next: Record<string, TeamWorkerIntegrationState>,
+  commitHygieneEntries: TeamOperationalCommitEntry[],
+): Promise<Record<string, TeamWorkerIntegrationState>> {
+  const { teamName, config, cwd } = params;
   const leaderHeadAtCycleStart = resolveLeaderHead(resolve(config.workers[0]?.worktree_repo_root ?? cwd), cwd);
   const integratedWorkerNames = new Set<string>();
-  const commitHygieneEntries: TeamOperationalCommitEntry[] = [];
-  const artifactCwd = resolveTeamCommitHygieneArtifactCwd(config, cwd);
 
   // ── Phase B: Integrate worker commits to leader (hybrid strategy) ──
   for (const worker of config.workers) {
@@ -1338,11 +1394,11 @@ async function integrateWorkerCommitsIntoLeader(params: {
     const repoRoot = resolve(worker.worktree_repo_root);
     const worktreePath = resolve(worker.worktree_path);
     const previousState = next[worker.name] ?? {};
-    // Orig-head/onto do not prove ownership: a manual rebase can recreate the same operation.
-    if (worktreeHasUnfinishedRebase(repoRoot, worktreePath)) {
+    const blocker = gitOperationError(repoRoot, worktreePath);
+    if (blocker) {
       next[worker.name] = {
         ...previousState, status: 'rebase_conflict',
-        rebase_error: 'Unfinished rebase preserved. Finish or abort it manually before retrying integration.',
+        rebase_error: blocker.message,
       };
       continue;
     }
@@ -1367,6 +1423,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
     const leaderHead = resolveLeaderHead(repoRoot, cwd);
     const workerHead = resolveWorkerHead(worktreePath);
     const state: TeamWorkerIntegrationState = { ...next[worker.name], last_leader_head: leaderHead ?? previousState.last_leader_head };
+    next[worker.name] = state;
     if (!workerHead || workerHead !== verifiedHead || !leaderHead) {
       next[worker.name] = state;
       continue;
@@ -1382,6 +1439,9 @@ async function integrateWorkerCommitsIntoLeader(params: {
     if (alreadyMerged) {
       Object.assign(state, { last_integrated_head: workerHead, delivery_leader_commit: workerHead });
       state.status = 'idle';
+      state.rebase_error = undefined;
+      state.conflict_commit = undefined;
+      state.conflict_files = undefined;
       state.updated_at = new Date().toISOString();
       integratedWorkerNames.add(worker.name);
       next[worker.name] = state;
@@ -1394,6 +1454,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
     if (workerIsAheadOfLeader) {
       // Publish the immutable verified commit without choosing sides on conflicts.
       const branchRef = verifiedHead;
+      assertNoActiveGitOperation(repoRoot, cwd);
       const merge = runGitCommand(repoRoot, ['merge', '--no-ff', '-m', `omx(team): merge ${worker.name}`, branchRef], cwd);
 
       if (merge.ok) {
@@ -1466,7 +1527,7 @@ async function integrateWorkerCommitsIntoLeader(params: {
       } else {
         // Abort without changing either side; leave resolution to the leader.
         const conflictFiles = listConflictFiles(repoRoot, cwd);
-        runGitCommand(repoRoot, ['merge', '--abort'], cwd);
+        abortOwnedIntegration(repoRoot, cwd, 'merge', branchRef);
         state.status = 'cherry_pick_conflict';
         state.conflict_commit = workerHead;
         state.conflict_files = conflictFiles;
@@ -1511,11 +1572,12 @@ async function integrateWorkerCommitsIntoLeader(params: {
           summary: `detected worker commit ${commit.slice(0, 12)}`,
         }, cwd);
 
+        assertNoActiveGitOperation(repoRoot, cwd);
         const pick = runGitCommand(repoRoot, ['cherry-pick', '--allow-empty', commit], cwd);
         if (!pick.ok) {
           // Abort this commit and stop; do not rebase unintegrated changes.
           const conflictFiles = listConflictFiles(repoRoot, cwd);
-          runGitCommand(repoRoot, ['cherry-pick', '--abort'], cwd);
+          abortOwnedIntegration(repoRoot, cwd, 'cherry-pick', commit);
           state.status = 'cherry_pick_conflict';
           state.conflict_commit = commit;
           state.conflict_files = conflictFiles;
@@ -1634,10 +1696,11 @@ async function integrateWorkerCommitsIntoLeader(params: {
         continue;
       }
 
-      if (worktreeHasUnfinishedRebase(repoRoot, worktreePath)) {
+      const blocker = gitOperationError(repoRoot, worktreePath);
+      if (blocker) {
         next[worker.name] = {
           ...state, status: 'rebase_conflict',
-          rebase_error: 'Unfinished rebase preserved. Finish or abort it manually before retrying integration.',
+          pending_rebase_leader_head: newLeaderHead, rebase_error: blocker.message,
         };
         continue;
       }
@@ -1717,10 +1780,6 @@ async function integrateWorkerCommitsIntoLeader(params: {
         await sendIntegrationMessageToLeader(teamName, worker, `REBASE CONFLICT: ${worker.name}'s rebase onto ${newLeaderHead.slice(0, 12)} was aborted on files: ${conflictFiles.join(', ') || 'unknown'}. Original worker HEAD is preserved. Resolve the conflict in ${worktreePath} before retrying.`, cwd);
       }
     }
-  }
-
-  if (commitHygieneEntries.length > 0) {
-    await appendTeamCommitHygieneEntries(teamName, commitHygieneEntries, artifactCwd)
   }
 
   return next;
@@ -1870,6 +1929,7 @@ async function prepareShutdownMergeReport(
 
   const worktreePath = resolve(worker.worktree_path);
   const repoRoot = resolve(worker.worktree_repo_root);
+  assertNoActiveGitOperation(repoRoot, worktreePath);
   await removeGeneratedShutdownReport(repoRoot, worktreePath);
   
   // Replay any pending submodule recovery journals before any git operations.
@@ -1952,6 +2012,7 @@ async function prepareShutdownMergeReport(
       mergeOutcome = 'noop';
       mergeDetail = 'source already reachable from leader HEAD';
     } else {
+      assertNoActiveGitOperation(repoRoot, leaderCwd);
       const mergeResult = runGitCommand(repoRoot, ['merge', '--no-ff', '--no-edit', sourceRef], leaderCwd);
       if (mergeResult.ok) {
         mergeOutcome = 'merged';
@@ -1960,7 +2021,7 @@ async function prepareShutdownMergeReport(
       } else {
         mergeOutcome = 'conflict';
         mergeDetail = mergeResult.stderr || mergeResult.stdout || 'merge failed';
-        runGitCommand(repoRoot, ['merge', '--abort'], leaderCwd);
+        abortOwnedIntegration(repoRoot, leaderCwd, 'merge', sourceRef);
         leaderHeadAfter = resolveLeaderHead(repoRoot, leaderCwd) ?? leaderHeadBefore;
       }
     }
@@ -4969,9 +5030,9 @@ export async function monitorTeam(
       recommendations.push(`Integration unresolved for ${worker.name}; resolve delivery failure before terminal success`);
       continue;
     }
-    if (worktreeHasUnfinishedRebase(worker.worktree_repo_root!, worker.worktree_path!)) {
+    if (gitOperationError(worker.worktree_repo_root!, worker.worktree_path!)) {
       integrationFailed = true;
-      recommendations.push(`Integration unresolved for ${worker.name}; unfinished rebase preserved before terminal success`);
+      recommendations.push(`Integration unresolved for ${worker.name}; unfinished Git operation or unavailable state preserved before terminal success`);
       continue;
     }
     const workerHead = resolveWorkerHead(worker.worktree_path!);
@@ -5050,8 +5111,10 @@ export async function monitorTeam(
 
   const updatedAt = new Date().toISOString();
   const totalMs = performance.now() - monitorStartMs;
-  if (!readOnly) await writeMonitorSnapshot(
-    sanitized,
+  if (!readOnly) await withTeamTaskMembershipBarrier(sanitized, cwd, async () => {
+    const latest = await readMonitorSnapshot(sanitized, cwd);
+    await writeMonitorSnapshot(
+      sanitized,
       {
         taskStatusById: Object.fromEntries(taskView.map((t) => [t.id, t.status])),
         workerAliveByName: Object.fromEntries(workers.map((w) => [w.name, w.alive])),
@@ -5059,7 +5122,7 @@ export async function monitorTeam(
         workerTurnCountByName: Object.fromEntries(workers.map((w) => [w.name, w.heartbeat?.turn_count ?? 0])),
         workerTaskIdByName: Object.fromEntries(workers.map((w) => [w.name, w.status.current_task_id ?? ''])),
         mailboxNotifiedByMessageId,
-        completedEventTaskIds: previousSnapshot?.completedEventTaskIds ?? {},
+        completedEventTaskIds: { ...previousSnapshot?.completedEventTaskIds, ...latest?.completedEventTaskIds },
         integrationByWorker,
         monitorTimings: {
           list_tasks_ms: Number(listTasksMs.toFixed(2)),
@@ -5070,7 +5133,8 @@ export async function monitorTeam(
         },
       },
       cwd
-  );
+    );
+  });
 
   return {
     teamName: sanitized,
@@ -5354,6 +5418,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   );
 
   const classification = await withTeamTaskMembershipBarrier(sanitized, cwd, async () => {
+    if (!force) assertShutdownGitOperationsIdle(config!, cwd);
     const current = await classifyShutdown({
       teamName: sanitized,
       cwd,
@@ -6002,6 +6067,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     }
   }
 
+  assertShutdownGitOperationsIdle(config, cwd);
   const shutdownReports = await prepareWorkerWorktreeShutdownReports(config, cwd);
   const provisionedWorktrees = collectProvisionedShutdownWorktrees(config);
 
@@ -6042,7 +6108,7 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   }
 
   const artifactCwd = resolveTeamCommitHygieneArtifactCwd(config, cwd);
-  const taskView = await listTasks(sanitized, cwd).catch(() => [])
+  const taskView = await listTasks(sanitized, cwd)
   const internalLedger = await appendTeamCommitHygieneEntries(sanitized, commitHygieneEntries, artifactCwd)
   const commitHygieneArtifactTeamNames = resolveCommitHygieneArtifactTeamNames(config, sanitized);
   let commitHygieneArtifacts: TeamCommitHygieneArtifactPaths | null = null;
@@ -6093,12 +6159,14 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     const head = runGitCommand(worktree.repoRoot, ['rev-parse', 'HEAD'], worktree.worktreePath);
     const saved = head.ok && runGitCommand(worktree.repoRoot, ['merge-base', '--is-ancestor', head.stdout, 'HEAD'], cwd).ok;
     await removeGeneratedShutdownReport(worktree.repoRoot, worktree.worktreePath);
+    await archiveIgnoredCompletionEvidence(worktree.worktreePath);
     const status = runGitCommand(worktree.repoRoot, ['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none'], worktree.worktreePath);
     if (!saved || !status.ok || status.stdout) {
       throw new Error(`shutdown_worktree_preservation_failed:${worktree.worktreePath}:worktree changed or could not be verified; worktree and team state retained`);
     }
   }
   if (provisionedWorktrees.length > 0) {
+    assertShutdownGitOperationsIdle(config, cwd);
     // Keep recovery state if removal itself fails, including after a partial cleanup.
     await rollbackProvisionedWorktrees(provisionedWorktrees, {
       force: false,
@@ -6379,24 +6447,32 @@ async function emitMonitorDerivedEvents(
   workerLaunchMode: TeamConfig['worker_launch_mode'],
   cwd: string,
 ): Promise<void> {
-  for (const task of tasks) {
-    const prevStatus = previous?.taskStatusById[task.id];
-    if (prevStatus && prevStatus !== 'completed' && task.status === 'completed') {
-      // Skip if a task_completed event was already emitted by transitionTaskStatus (issue #161).
-      if (previous?.completedEventTaskIds?.[task.id]) continue;
-      await appendTeamEvent(
-        teamName,
-        {
-          type: 'task_completed',
-          worker: task.owner || 'unknown',
-          task_id: task.id,
-          message_id: null,
-          reason: undefined,
-        },
-        cwd
-      );
+  await withTeamTaskMembershipBarrier(teamName, cwd, async () => {
+    const latest = await readMonitorSnapshot(teamName, cwd) ?? previous;
+    const completedEventTaskIds = { ...previous?.completedEventTaskIds, ...latest?.completedEventTaskIds };
+    let changed = false;
+    for (const task of tasks) {
+      const prevStatus = previous?.taskStatusById[task.id];
+      if (prevStatus && prevStatus !== 'completed' && task.status === 'completed') {
+        // Skip if a task_completed event was already emitted by transitionTaskStatus (issue #161).
+        if (completedEventTaskIds[task.id]) continue;
+        await appendTeamEvent(
+          teamName,
+          {
+            type: 'task_completed',
+            worker: task.owner || 'unknown',
+            task_id: task.id,
+            message_id: null,
+            reason: undefined,
+          },
+          cwd
+        );
+        completedEventTaskIds[task.id] = true;
+        changed = true;
+      }
     }
-  }
+    if (changed && latest) await writeMonitorSnapshot(teamName, { ...latest, completedEventTaskIds }, cwd);
+  });
 
   for (const worker of workers) {
     const prevAlive = previous?.workerAliveByName[worker.name];
