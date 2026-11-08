@@ -1,33 +1,27 @@
-# oh-my-codex v0.22.1
+# oh-my-codex v0.22.2
 
 ## Summary
 
-This patch release ships critical fixes for the omx question command when stdin is closed, adds readline close event handling for EOF detection, reapplies verified handoffs and safe drains after v0.22.0, accepts aliased Codex homes for external live pins, and addresses three Codex findings from the v0.22.0 release review.
+This patch release ships a team-runtime safety fix: integration and cleanup now preserve manual Git operations, corrupted task state, and completion evidence instead of aborting, dropping, or deleting them.
 
 ## Fixed
 
-- **ACCEPT ALIASED CODEX HOMES FOR EXTERNAL LIVE PINS (#3939):** Accept either spelling of the configured Codex home when validating live pin cache paths, enabling external Codex home links and symlinks to resolve correctly while maintaining no-follow traversal security. This fixes live pin resolution when Codex homes are aliased or redirected.
-- **FIX EOF DETECTION FOR CLOSED STDIN IN OMX QUESTION --UI (#4048, #4046):** Replaced input stream listeners with readline close event for more reliable EOF detection when stdin is closed. Handle closed stdin in `omx question --ui` with proper error handling to prevent crashes when the command is invoked without stdin.
-- **PRESERVE NON-FORCE DRAINS AND REQUIRE VERIFIED CODE HANDOFF (#4034):** Non-force team drains no longer interrupt in-flight worker Git operations, and worker code handoff to the leader requires verified evidence before integration. This change was held out of v0.22.0.
-- **ADDRESS CODEX FINDINGS FROM v0.22.0 RELEASE REVIEW (#4047):** Fixes for issues identified in Codex review of release PR #4042. Herdr team shutdown now fails closed when workspace teardown fails, so team state and worktrees are preserved instead of removed while workers may still run. Scale-up honors a team's persisted Herdr launch mode, and startup readiness evidence is tracked per worker instead of leaking across concurrent startups.
+- **PRESERVE WORK AND STATE ACROSS TEAM INTEGRATION AND CLEANUP (#4053):** Team integration and shutdown no longer abort a manual Git operation (rebase, merge, cherry-pick, revert, bisect) in the leader or a worker worktree; they stop and report it, and only abort a merge or cherry-pick they started themselves. A malformed, id-mismatched or unreadable task file now fails with `team_task_read_failed` instead of silently vanishing from completion and cleanup gates. Valid ignored completion-evidence reports are archived under the git common dir (`omx-completion-evidence/`) before worktree removal, so cleanup no longer refuses or deletes them; unknown files still block removal.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.1` at the pinned source.
+No breaking API changes. Teams with a corrupted task file now get an explicit `team_task_read_failed` error instead of a silently shorter task list. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.2`.
 
 ## Verification
 
-- `npm ci` — passed; packages installed and lifecycle hooks completed.
-- `npm run build` — passed.
-- `npm test` — the local run did not complete, so no local result is claimed. The full CI suite passed on dev `108bea31` (the source of this release), [CI run 42458800471](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42458800471).
-- `npm run lint` — passed. No lint fixes required.
-- `npm run check:no-unused` — passed. No unused imports or declarations.
+- Full CI passed on dev `09fc2b47` (the source of this release), [CI run 42501034833](https://github.com/Yeachan-Heo/oh-my-codex/actions/runs/42501034833).
+- PR #4053 CI passed 26/26 on its merged head `240492a3`, including the 30 new `p1-safety` team tests.
 
 ## Contributors
 
-[@ev78394](https://github.com/ev78394), [@shenyankm](https://github.com/shenyankm), [@Yeachan-Heo](https://github.com/Yeachan-Heo), and [@iqdoctor](https://github.com/iqdoctor) (reported #4043)
+[@shenyankm](https://github.com/shenyankm) and [@Yeachan-Heo](https://github.com/Yeachan-Heo)
 
-**Full Changelog**: [`v0.22.0...v0.22.1`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.0...v0.22.1)
+**Full Changelog**: [`v0.22.1...v0.22.2`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.1...v0.22.2)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
