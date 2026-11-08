@@ -100,6 +100,7 @@ import {
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
 import {
+  archiveIgnoredCompletionEvidence,
   ensureWorktree,
   planWorktreeTarget,
   rollbackProvisionedWorktrees,
@@ -1771,10 +1772,10 @@ async function validateScaleDownCleanupResources(
   }
 }
 
-function assertScaleDownWorktreesPreserved(
+async function assertScaleDownWorktreesPreserved(
   workers: readonly ScaleDownCleanupDebtResource[],
   leaderCwd: string,
-): void {
+): Promise<void> {
   for (const worker of workers) {
     if (!worker.worktree_path || !existsSync(worker.worktree_path)) continue;
     const git = (args: string[], cwd = worker.worktree_path!) => spawnSync('git', args, {
@@ -1788,6 +1789,7 @@ function assertScaleDownWorktreesPreserved(
     })) {
       throw new Error(`scale_down_worktree_not_preserved:${worker.name}`);
     }
+    await archiveIgnoredCompletionEvidence(worker.worktree_path);
     const head = git(['rev-parse', 'HEAD']);
     const status = git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
     if (head.status !== 0 || status.status !== 0 || status.stdout.trim()
@@ -1804,7 +1806,7 @@ async function cleanupScaleDownResources(
   leaderCwd: string,
   force: boolean,
 ): Promise<void> {
-  if (!force) assertScaleDownWorktreesPreserved(workers, leaderCwd);
+  if (!force) await assertScaleDownWorktreesPreserved(workers, leaderCwd);
   for (const worker of workers) {
     // An absent exact worktree means a prior cleanup completed before crashing.
     // Do not replay a restoration or git removal against a replacement path.
@@ -2262,7 +2264,7 @@ export async function scaleDown(
               && (removableWorkerNames.has(task.owner ?? '') || removableWorkerNames.has(task.claim?.owner ?? '')))) {
               throw new Error('scale_down_worker_has_active_tasks');
             }
-            assertScaleDownWorktreesPreserved(removableWorkers, leaderCwd);
+            await assertScaleDownWorktreesPreserved(removableWorkers, leaderCwd);
           }
           const configPath = join(teamStateRoot, 'team', sanitized, 'config.json');
           const configSnapshot = await readFile(configPath);

@@ -2,6 +2,8 @@ import { execFile as execFileCb, execFileSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, promises as fsPromises } from 'fs';
 import { basename, dirname, join, posix, resolve, win32 } from 'path';
 import { promisify } from 'util';
+import { randomUUID } from 'crypto';
+import { isCompletionEvidenceReport } from './completion-evidence.js';
 import {
   assertCurrentTaskBranchAvailable,
   upsertCurrentTaskBaseline,
@@ -507,22 +509,48 @@ interface SubmoduleRecovery {
   originalCheckouts?: string[];
 }
 
+export async function archiveIgnoredCompletionEvidence(worktreePath: string): Promise<void> {
+  const git = async (args: string[]): Promise<string> => (await execFilePromise('git', args, {
+    cwd: worktreePath, encoding: 'utf8',
+  })).stdout;
+  const files = (await git(['ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--', '.omx/evidence/'])).split('\0').filter(Boolean);
+  for (const file of files) {
+    if (!file.startsWith('.omx/evidence/')) continue;
+    let path = worktreePath;
+    let symlink = false;
+    for (const part of file.split('/')) {
+      path = join(path, part);
+      if ((await fsPromises.lstat(path)).isSymbolicLink()) { symlink = true; break; }
+    }
+    if (symlink) continue;
+    const stat = await fsPromises.lstat(path);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 1024 * 1024) continue;
+    let report: unknown;
+    try { report = JSON.parse(await fsPromises.readFile(path, 'utf8')); } catch (error) {
+      if (error instanceof SyntaxError) continue;
+      throw error;
+    }
+    if (!isCompletionEvidenceReport(report)) continue;
+    // Keep reports outside removable worktrees; unknown, tracked and symlinked files stay protected.
+    const archive = resolve(worktreePath, (await git(['rev-parse', '--git-common-dir'])).trim(), 'omx-completion-evidence');
+    await fsPromises.mkdir(archive, { recursive: true });
+    await fsPromises.rename(path, join(archive, `${randomUUID()}.json`));
+    for (let dir = dirname(path); dir !== join(worktreePath, '.omx'); dir = dirname(dir)) {
+      try { await fsPromises.rmdir(dir); } catch (error) {
+        if (['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) break;
+        throw error;
+      }
+    }
+  }
+}
+
 async function prepareSubmodulesForWorktreeRemoval(worktreePath: string, recovery: SubmoduleRecovery): Promise<void> {
   const git = async (args: string[]): Promise<string> => (await execFilePromise('git', args, {
     cwd: worktreePath, encoding: 'utf8',
   })).stdout;
   const mkdir = fsPromises.mkdir;
-  const rm = fsPromises.rm;
   
-  // Only remove untracked OMX evidence files. If .omx/evidence is tracked or staged,
-  // preserve it to avoid destroying work that git add would checkpoint.
-  const evidencePath = join(worktreePath, '.omx/evidence');
-  const headStatus = await git(['status', '--porcelain', '--', '.omx/evidence']).catch(() => '');
-  const isTracked = (await git(['ls-files', '--cached', '.omx/evidence']).catch(() => '')).trim().length > 0;
-  if (!headStatus.trim() && !isTracked) {
-    // Only remove if it's not tracked or staged
-    await rm(evidencePath, { recursive: true, force: true }).catch(() => {});
-  }
+  await archiveIgnoredCompletionEvidence(worktreePath);
   
   const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
   if (status.trim()) throw new Error(`worktree_has_unpreserved_files:${worktreePath}`);
@@ -721,6 +749,13 @@ export async function recheckSubmodulePlaceholdersBeforeRemoval(
   }
 }
 
+function assertWorktreeGitOperationsIdle(worktreePath: string): void {
+  const gitDir = readGit(worktreePath, ['rev-parse', '--absolute-git-dir']);
+  for (const marker of ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_START']) {
+    if (existsSync(join(gitDir, marker))) throw new Error(`git_operation_in_progress:${worktreePath}:${marker}`);
+  }
+}
+
 export async function rollbackProvisionedWorktrees(
   results: Array<EnsureWorktreeResult | { enabled: false }>,
   options: RollbackWorktreeOptions = {},
@@ -734,13 +769,17 @@ export async function rollbackProvisionedWorktrees(
   for (const result of created) {
     const submodules: SubmoduleRecovery = { moved: [] };
     try {
-      if (options.force === false) await prepareSubmodulesForWorktreeRemoval(result.worktreePath, submodules);
+      if (options.force === false) {
+        assertWorktreeGitOperationsIdle(result.worktreePath);
+        await prepareSubmodulesForWorktreeRemoval(result.worktreePath, submodules);
+      }
       // Recheck all submodule placeholders immediately before removal.
       // A watcher may have repopulated a submodule path after the placeholder was created.
       // Pass the original checkouts list because after moves, git submodule foreach returns no paths.
       if (options.force === false && submodules.originalCheckouts) {
         await recheckSubmodulePlaceholdersBeforeRemoval(result.worktreePath, submodules.originalCheckouts);
       }
+      if (options.force === false) assertWorktreeGitOperationsIdle(result.worktreePath);
       await execFilePromise('git', ['worktree', 'remove', ...(options.force === false ? [] : ['--force']), result.worktreePath], {
         cwd: result.repoRoot,
         encoding: 'utf-8',

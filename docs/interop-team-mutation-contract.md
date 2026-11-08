@@ -129,6 +129,29 @@ compatibility rules below.
 
 ### Compatibility
 
+- Task enumeration rejects unreadable, malformed, non-regular, or ID-mismatched
+  task files, and missing or symlinked task directories in an existing Team,
+  with `team_task_read_failed`. Monitoring and shutdown retain the
+  Team state instead of counting those records as absent or completed.
+- Monitoring and shutdown preserve existing Git operations. A
+  `git_operation_in_progress` error requires finishing or aborting that operation
+  manually before retrying. Integration aborts only a merge/cherry-pick whose
+  operation marker matches its source commit.
+- Worker Git-operation blockers are recorded per worker without discarding
+  other workers' integration progress. Completed Git delivery receipts are
+  saved at the integration boundary, before later phase or mailbox operations
+  can fail. Concurrent task completions retain their completion markers and
+  do not cause a second monitor-derived completion event.
+  Forced shutdown stops owned workers before checking Git cleanup blockers;
+  an unresolved operation retains its worktree and Team state for recovery.
+  Guarded removal rechecks Git operation state after asynchronous preparation,
+  and shutdown does not suppress task-read failures after its preflight.
+  Leader-stop observations keep unreadable task state actionable and request
+  attention with `task_state_unavailable` rather than reporting finished work.
+- Before guarded worktree removal, ignored, untracked completion reports with
+  the recognized evidence schema are archived in the Git common directory's
+  `omx-completion-evidence/` directory. Other ignored files, unrecognized reports,
+  tracked reports and symlinks remain protected and can still block removal.
 - Tasks with `requires_code_change: false` or an absent flag retain their existing
   completion behavior. Transitions to `failed` do not require this report. Already
   completed task records are not revalidated.
