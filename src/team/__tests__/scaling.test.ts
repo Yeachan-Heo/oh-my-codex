@@ -9,12 +9,14 @@ import { existsSync, readFileSync, realpathSync } from 'fs';
 import {
   initTeamState,
   createTask,
+  transitionTaskStatus,
   claimTask,
   readTask,
   readTeamConfig,
   saveTeamConfig,
   readWorkerStatus,
   writeWorkerStatus,
+  writeWorkerIdentity,
   withScalingLock,
   recoverTeamMembershipTaskTransaction,
   commitTeamMembershipTaskTransaction,
@@ -3378,6 +3380,9 @@ describe('scaleDown', () => {
         current_task_id: 't-2',
         updated_at: new Date().toISOString(),
       }, cwd);
+      const teamRoot = join(cwd, '.omx/state/team/busy-test');
+      const artifactPaths = ['config.json', 'manifest.v2.json', 'workers/worker-1/status.json', 'workers/worker-2/status.json'];
+      const before = await Promise.all(artifactPaths.map((path) => readFile(join(teamRoot, path), 'utf8')));
       const result = await scaleDown(
         'busy-test', cwd,
         { count: 1 },
@@ -3387,6 +3392,8 @@ describe('scaleDown', () => {
       if (!result.ok) {
         assert.match(result.error, /Not enough idle workers/);
       }
+      assert.deepEqual(await Promise.all(artifactPaths.map((path) => readFile(join(teamRoot, path), 'utf8'))), before);
+      assert.equal(existsSync(join(teamRoot, '.scale-down-cleanup-debt.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -4783,6 +4790,310 @@ case "$1" in list-panes) exit 0 ;; kill-pane) exit 99 ;; esac
   });
 });
 
+describe('nonforce scale-down worktree preservation', () => {
+  it('vetoes stale idle with a live claim using the locked task snapshot', async () => {
+    const repo = await initRepo();
+    try {
+      const team = 'stale-idle';
+      await initTeamState(team, 'task', 'executor', 2, repo);
+      const config = await readTeamConfig(team, repo);
+      assert.ok(config);
+      const worktree = join(repo, '.omx/team', team, 'worktrees/worker-2');
+      execFileSync('git', ['worktree', 'add', '--detach', worktree], { cwd: repo, stdio: 'ignore' });
+      Object.assign(config.workers[1]!, { worktree_path: worktree, worktree_repo_root: repo, worktree_created: true, pane_id: undefined, pid: undefined });
+      await saveTeamConfig(config, repo);
+      await writeWorkerStatus(team, 'worker-2', { state: 'idle', updated_at: new Date(0).toISOString() }, repo);
+      const task = await createTask(team, { subject: 'new work', description: 'claimed after idle', status: 'pending' }, repo);
+      const claim = await claimTask(team, task.id, 'worker-2', null, repo);
+      assert.ok(claim.ok);
+      const stateDir = join(repo, '.omx/state/team', team);
+      const beforeConfig = await readFile(join(stateDir, 'config.json'), 'utf8');
+      const beforeTask = await readTask(team, task.id, repo);
+      const result = await scaleDown(team, repo, { workerNames: ['worker-2'], drainTimeoutMs: 100 }, { OMX_TEAM_SCALING_ENABLED: '1' });
+      assert.ok(!result.ok && /scale_down_worker_has_active_tasks/.test(result.error));
+      assert.equal(await readFile(join(stateDir, 'config.json'), 'utf8'), beforeConfig);
+      assert.deepEqual(await readTask(team, task.id, repo), beforeTask);
+      assert.equal(existsSync(worktree), true);
+      assert.equal(existsSync(join(stateDir, '.scale-down-cleanup-debt.json')), false);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('never writes worker status while waiting, including acknowledgment during another worker timeout', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-drain-partial-timeout-'));
+    try {
+      const team = 'partial-timeout';
+      await initTeamState(team, 'task', 'executor', 3, cwd);
+      const task = await createTask(team, { subject: 'finishing', description: 'worker 2 finishes', status: 'pending' }, cwd);
+      const claim = await claimTask(team, task.id, 'worker-2', null, cwd);
+      assert.ok(claim.ok);
+      const before = { state: 'working' as const, current_task_id: task.id, updated_at: new Date(0).toISOString() };
+      for (const name of ['worker-2', 'worker-3']) await writeWorkerStatus(team, name, before, cwd);
+      const stateDir = join(cwd, '.omx/state/team', team);
+      const configBytes = await readFile(join(stateDir, 'config.json'), 'utf8');
+      const manifestBytes = await readFile(join(stateDir, 'manifest.v2.json'), 'utf8');
+      const inboxPath = join(stateDir, 'workers/worker-2/inbox.md');
+      await writeFile(inboxPath, 'Keep working on assigned task A.\n');
+      const removal = scaleDown(team, cwd, { workerNames: ['worker-2', 'worker-3'], drainTimeoutMs: 500 }, { OMX_TEAM_SCALING_ENABLED: '1' });
+      // scaleDown is only a reader: the worker's working status stays authoritative.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      for (const name of ['worker-2', 'worker-3']) assert.deepEqual(await readWorkerStatus(team, name, cwd), before);
+      assert.ok((await transitionTaskStatus(team, task.id, 'in_progress', 'completed', claim.claimToken, cwd)).ok);
+      const acknowledgment = { state: 'done' as const, updated_at: new Date().toISOString() };
+      await writeWorkerStatus(team, 'worker-2', acknowledgment, cwd);
+      assert.deepEqual(await removal, { ok: false, error: 'scale_down_drain_timeout' });
+      assert.deepEqual(await readWorkerStatus(team, 'worker-2', cwd), acknowledgment);
+      assert.deepEqual(await readWorkerStatus(team, 'worker-3', cwd), before);
+      assert.equal((await readTask(team, task.id, cwd))?.status, 'completed');
+      assert.equal((await readTeamConfig(team, cwd))?.workers.length, 3);
+      assert.equal(await readFile(join(stateDir, 'config.json'), 'utf8'), configBytes);
+      assert.equal(await readFile(join(stateDir, 'manifest.v2.json'), 'utf8'), manifestBytes);
+      assert.equal(await readFile(inboxPath, 'utf8'), 'Keep working on assigned task A.\n');
+      assert.equal(existsSync(join(stateDir, '.scale-down-cleanup-debt.json')), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const scenario of ['busy-timeout', 'dirty-ack', 'unintegrated-ack', 'clean-ack'] as const) {
+    it(`requires a real drain acknowledgment and preserves unsafe work (${scenario})`, async () => {
+      const repo = await initRepo();
+      try {
+        const team = 'safe-drain';
+        await initTeamState(team, 'task', 'executor', 2, repo);
+        const config = await readTeamConfig(team, repo);
+        assert.ok(config);
+        const worktree = join(repo, '.omx', 'team', team, 'worktrees', 'worker-2');
+        execFileSync('git', ['worktree', 'add', '--detach', worktree], { cwd: repo, stdio: 'ignore' });
+        Object.assign(config.workers[1]!, { worktree_path: worktree, worktree_repo_root: repo, worktree_created: true, worktree_detached: true, pane_id: undefined, pid: undefined });
+        await saveTeamConfig(config, repo);
+        const task = await createTask(team, {
+          subject: 'ongoing work', description: 'must survive failed removal', status: 'pending', owner: 'worker-2',
+        }, repo);
+        const claim = await claimTask(team, task.id, 'worker-2', null, repo);
+        assert.ok(claim.ok);
+        const originalStatus = { state: 'working' as const, current_task_id: task.id, updated_at: new Date().toISOString() };
+        await writeWorkerStatus(team, 'worker-2', originalStatus, repo);
+        if (scenario !== 'clean-ack') await writeFile(join(worktree, 'unsaved.txt'), 'worker output');
+        if (scenario === 'unintegrated-ack') {
+          execFileSync('git', ['add', 'unsaved.txt'], { cwd: worktree });
+          execFileSync('git', ['commit', '-m', 'not integrated'], { cwd: worktree, stdio: 'ignore' });
+        }
+        const stateDir = join(repo, '.omx', 'state', 'team', team);
+        const beforeConfig = await readFile(join(stateDir, 'config.json'), 'utf8');
+        const beforeManifest = await readFile(join(stateDir, 'manifest.v2.json'), 'utf8');
+        const beforeTask = await readTask(team, task.id, repo);
+        const startedAt = Date.now();
+        const removal = scaleDown(team, repo, { workerNames: ['worker-2'], force: false, drainTimeoutMs: scenario === 'busy-timeout' ? 250 : 5_000 }, { OMX_TEAM_SCALING_ENABLED: '1' });
+        // The leader waits without replacing worker-owned status or task inboxes.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.deepEqual(await readWorkerStatus(team, 'worker-2', repo), originalStatus);
+        assert.equal((await readWorkerStatus(team, 'worker-2', repo)).current_task_id, task.id);
+        assert.equal(existsSync(worktree), true);
+        if (scenario !== 'busy-timeout') {
+          assert.ok((await transitionTaskStatus(team, task.id, 'in_progress', 'completed', claim.claimToken, repo)).ok);
+          await writeWorkerStatus(team, 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, repo);
+        }
+        const result = await removal;
+        if (scenario === 'clean-ack') {
+          assert.deepEqual(result, { ok: true, removedWorkers: ['worker-2'], newWorkerCount: 1 });
+          assert.equal(existsSync(worktree), false);
+        } else {
+          assert.equal(result.ok, false);
+          if (!result.ok) assert.match(result.error, scenario === 'busy-timeout' ? /scale_down_drain_timeout/ : /scale_down_worktree_not_preserved/);
+          if (scenario === 'busy-timeout') assert.ok(Date.now() - startedAt >= 250, 'busy status is not a drain acknowledgment');
+          assert.equal(await readFile(join(worktree, 'unsaved.txt'), 'utf8'), 'worker output');
+          assert.equal(await readFile(join(stateDir, 'config.json'), 'utf8'), beforeConfig);
+          assert.equal(await readFile(join(stateDir, 'manifest.v2.json'), 'utf8'), beforeManifest);
+          if (scenario === 'busy-timeout') {
+            assert.deepEqual(await readTask(team, task.id, repo), beforeTask);
+            assert.deepEqual(await readWorkerStatus(team, 'worker-2', repo), originalStatus);
+          } else {
+            assert.equal((await readTask(team, task.id, repo))?.status, 'completed');
+            assert.equal((await readWorkerStatus(team, 'worker-2', repo)).state, 'idle');
+          }
+          assert.equal(existsSync(join(stateDir, '.scale-down-cleanup-debt.json')), false);
+        }
+      } finally {
+        await rm(repo, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+describe('scale-down unfinished Git operation preservation', () => {
+  for (const [operation, recovery] of [
+    ['initial-break rebase', false], ['initial-break rebase', true],
+    ['clean no-commit merge', false], ['clean no-commit merge', true],
+  ] as const) {
+    it(`preserves an actual ${operation} ${recovery ? 'during cleanup debt recovery' : 'before membership and pane effects'}`, async () => {
+      const repo = await initRepo();
+      const previousPath = process.env.PATH;
+      try {
+        const isRebase = operation === 'initial-break rebase';
+        const team = isRebase ? 'initial-break' : 'no-commit-merge';
+        await initTeamState(team, 'task', 'executor', 2, repo);
+        await createTask(team, { subject: 'finished work', description: 'no active claim', status: 'completed', owner: 'worker-2' }, repo);
+        const config = await readTeamConfig(team, repo);
+        assert.ok(config);
+        const worktree = join(repo, '.omx', 'team', team, 'worktrees', 'worker-2');
+        const git = (args: string[], cwd = worktree, env = process.env): string =>
+          execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+        git(['worktree', 'add', '--detach', worktree], repo);
+        if (isRebase) {
+          await writeFile(join(worktree, 'unpublished.txt'), 'original worker commit\n');
+          git(['add', 'unpublished.txt']);
+        }
+        git(['commit', '--allow-empty', '-m', 'unpublished worker commit']);
+        const originalHead = git(['rev-parse', 'HEAD']);
+        if (isRebase) {
+          await writeFile(join(repo, 'leader.txt'), 'independent leader commit\n');
+          git(['add', 'leader.txt'], repo);
+        }
+        git(['commit', '--allow-empty', '-m', 'independent leader commit'], repo);
+        const leaderHead = git(['rev-parse', 'HEAD'], repo);
+        Object.assign(config.workers[1]!, {
+          worktree_path: worktree, worktree_repo_root: repo, worktree_created: true,
+          worktree_detached: true, pane_id: '%13', pid: 42413,
+        });
+        config.tmux_pane_owner_id = `team:${team}`;
+        await writeWorkerIdentity(team, 'worker-2', config.workers[1]!, repo);
+        if (recovery) {
+          config.workers = config.workers.slice(0, 1);
+          config.worker_count = 1;
+        }
+        await saveTeamConfig(config, repo);
+        await writeWorkerStatus(team, 'worker-2', { state: 'done', updated_at: new Date().toISOString() }, repo);
+        const stateDir = join(repo, '.omx/state/team', team);
+        const debtPath = join(stateDir, '.scale-down-cleanup-debt.json');
+        if (recovery) await writeFile(debtPath, JSON.stringify({
+          schema_version: 1, operation: 'scale_down', status: 'resource_cleanup_pending', force: false,
+          removed_worker_names: ['worker-2'], workers: [], unresolved_panes: [],
+          resource_workers: [{ name: 'worker-2', worktree_path: worktree, worktree_repo_root: repo, worktree_created: true, worktree_detached: true }],
+        }));
+        const beforeDebt = recovery ? JSON.parse(await readFile(debtPath, 'utf8')) : null;
+        const gitDir = git(['rev-parse', '--absolute-git-dir']);
+        const operationPath = join(gitDir, isRebase ? 'rebase-merge' : 'MERGE_HEAD');
+        const mergeMessage = 'Operator-edited merge message: retain this unfinished integration.\n';
+        if (isRebase) {
+          const editor = join(repo, '.git', 'initial-break-editor.sh');
+          await writeFile(editor, '#!/bin/sh\nset -eu\n{ printf "break\\n"; cat "$1"; } > "$1.new"\nmv "$1.new" "$1"\n');
+          await chmod(editor, 0o755);
+          git(['rebase', '-i', leaderHead], worktree, { ...process.env, GIT_SEQUENCE_EDITOR: editor });
+          assert.equal((await readFile(join(operationPath, 'orig-head'), 'utf8')).trim(), originalHead);
+          assert.match(await readFile(join(operationPath, 'git-rebase-todo'), 'utf8'), new RegExp(originalHead.slice(0, 7)));
+        } else {
+          assert.equal(git(['rev-parse', `${originalHead}^{tree}`]), git(['rev-parse', `${leaderHead}^{tree}`]));
+          assert.notEqual(git(['merge-base', originalHead, leaderHead]), originalHead);
+          git(['reset', '--hard', leaderHead]);
+          git(['merge', '--no-commit', '--no-ff', originalHead]);
+          assert.equal((await readFile(operationPath, 'utf8')).trim(), originalHead);
+          await writeFile(join(gitDir, 'MERGE_MSG'), mergeMessage);
+        }
+        assert.equal(git(['rev-parse', 'HEAD']), leaderHead);
+        git(['merge-base', '--is-ancestor', 'HEAD', leaderHead]);
+        assert.equal(git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']), '');
+        const bin = join(repo, '.git', 'fake-bin');
+        await mkdir(bin);
+        const tmuxLog = join(bin, 'tmux.log');
+        await writeFile(join(bin, 'tmux'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${tmuxLog}'\nexit 1\n`);
+        await chmod(join(bin, 'tmux'), 0o755);
+        process.env.PATH = `${bin}:${previousPath ?? ''}`;
+        const snapshot = async (root: string): Promise<Record<string, Buffer>> => {
+          const files: Record<string, Buffer> = {};
+          const visit = async (directory: string): Promise<void> => {
+            for (const entry of await readdir(directory, { withFileTypes: true })) {
+              const path = join(directory, entry.name);
+              if (entry.isDirectory()) await visit(path);
+              else files[relative(root, path)] = await readFile(path);
+            }
+          };
+          await visit(root);
+          return files;
+        };
+        const beforeGit = await snapshot(gitDir);
+        const beforeWorktree = await snapshot(worktree);
+        const beforeConfig = await readFile(join(stateDir, 'config.json'));
+        const beforeManifest = await readFile(join(stateDir, 'manifest.v2.json'));
+        const beforeIdentity = await readFile(join(stateDir, 'workers/worker-2/identity.json'));
+        const result = recovery
+          ? await reconcileScaleDownCleanupDebt(team, repo, config)
+          : await scaleDown(team, repo, { workerNames: ['worker-2'], force: false, drainTimeoutMs: 100 }, { OMX_TEAM_SCALING_ENABLED: '1' });
+        const observed = JSON.stringify({
+          result, members: (await readTeamConfig(team, repo))?.workers.map((worker) => worker.name),
+          worktreeExists: existsSync(worktree), operationExists: existsSync(operationPath),
+          tmuxCommands: existsSync(tmuxLog) ? await readFile(tmuxLog, 'utf8') : '',
+        });
+        assert.equal(result.ok, false, `unfinished ${operation} must veto removal: ${observed}`);
+        if (!result.ok) assert.match(result.error, /scale_down_worktree_not_preserved:worker-2/, observed);
+        assert.equal(existsSync(worktree), true);
+        assert.deepEqual(await snapshot(gitDir), beforeGit, 'all per-worktree Git metadata must remain byte-identical');
+        assert.deepEqual(await snapshot(worktree), beforeWorktree);
+        assert.deepEqual(await readFile(join(stateDir, 'config.json')), beforeConfig);
+        assert.deepEqual(await readFile(join(stateDir, 'manifest.v2.json')), beforeManifest);
+        assert.deepEqual(await readFile(join(stateDir, 'workers/worker-2/identity.json')), beforeIdentity);
+        assert.equal(git(['rev-parse', 'HEAD']), leaderHead);
+        if (!isRebase) assert.equal(await readFile(join(gitDir, 'MERGE_MSG'), 'utf8'), mergeMessage);
+        assert.equal(existsSync(tmuxLog), false, 'no pane probe or teardown is authorized');
+        assert.equal(existsSync(debtPath), recovery);
+        if (recovery) {
+          const debt = JSON.parse(await readFile(debtPath, 'utf8'));
+          assert.equal(debt.status, 'resource_cleanup_pending');
+          assert.match(debt.reasons[0], /scale_down_worktree_not_preserved:worker-2/);
+          delete debt.updated_at;
+          delete debt.reasons;
+          assert.deepEqual(debt, beforeDebt, 'cleanup authority and resource debt must be retained');
+        }
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        await rm(repo, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+describe('scale-down cleanup debt force policy', () => {
+  for (const force of [undefined, false, true]) {
+    it(`retains nonforce work after recovery unless force was explicitly recorded (${String(force)})`, async () => {
+      const repo = await initRepo();
+      try {
+        const team = 'debt-force-policy';
+        await initTeamState(team, 'task', 'executor', 2, repo);
+        const config = await readTeamConfig(team, repo);
+        assert.ok(config);
+        const worktree = join(repo, '.omx', 'team', team, 'worktrees', 'worker-2');
+        execFileSync('git', ['worktree', 'add', '--detach', worktree], { cwd: repo, stdio: 'ignore' });
+        await writeFile(join(worktree, 'unsaved.txt'), 'recovery must preserve this');
+        config.workers = config.workers.slice(0, 1);
+        config.worker_count = 1;
+        await saveTeamConfig(config, repo);
+        const debtPath = join(repo, '.omx', 'state', 'team', team, '.scale-down-cleanup-debt.json');
+        await writeFile(debtPath, JSON.stringify({
+          schema_version: 1, operation: 'scale_down', status: 'resource_cleanup_pending',
+          ...(force === undefined ? {} : { force }),
+          removed_worker_names: ['worker-2'], workers: [], unresolved_panes: [],
+          resource_workers: [{ name: 'worker-2', worktree_path: worktree, worktree_repo_root: repo, worktree_created: true, worktree_detached: true }],
+        }));
+        const result = await reconcileScaleDownCleanupDebt(team, repo, config);
+        if (force === true) {
+          assert.deepEqual(result, { ok: true });
+          assert.equal(existsSync(worktree), false);
+          assert.equal(existsSync(debtPath), false);
+        } else {
+          assert.equal(result.ok, false);
+          if (!result.ok) assert.match(result.error, /scale_down_worktree_not_preserved/);
+          assert.equal(await readFile(join(worktree, 'unsaved.txt'), 'utf8'), 'recovery must preserve this');
+          assert.equal(existsSync(debtPath), true);
+        }
+      } finally {
+        await rm(repo, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe('forced scale-down worktree rollback', () => {
   it('removes a busy worker with dirty files after explicit force authorization', async () => {
     const repo = await initRepo();
@@ -4813,6 +5124,7 @@ interface FakeHerdrStubOptions {
   failAgentStartCode?: string;
   /** `pane close` answers pane_not_found on stderr (exit 1). */
   paneCloseNotFound?: boolean;
+  livePaneIds?: string[];
 }
 
 /**
@@ -4872,7 +5184,7 @@ async function writeFakeHerdrStub(
       '    exit 0',
       '    ;;',
       '  agent:list)',
-      `    printf '%s\\n' '{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}'`,
+      `    printf '%s\\n' '{"id":"cli:agent:list","result":{"agents":${JSON.stringify((options.livePaneIds ?? []).map((pane_id) => ({ pane_id })))},"type":"agent_list"}}'`,
       '    exit 0',
       '    ;;',
       '  pane:close)',
@@ -5062,7 +5374,7 @@ describe('scaling on herdr', () => {
     assert.match(result.error, /herdr binary is not callable/);
   });
 
-  it('scaleDown closes the herdr pane and commits the membership removal', async () => {
+  it('scaleDown preserves non-idle herdr workers and retires an idle worker', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-down-'));
     const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-scale-herdr-down-bin-'));
     const herdrLogPath = join(fakeBinDir, 'herdr.log');
@@ -5076,17 +5388,44 @@ describe('scaling on herdr', () => {
         OMX_TEAM_WORKER_LAUNCH_MODE: 'herdr',
       });
       await configureHerdrScaleTeam('scale-herdr-down', cwd, ['w5:p2', 'w5:p3']);
-
-      const result = await scaleDown(
+      const statusPath = join(cwd, '.omx/state/team/scale-herdr-down/workers/worker-2/status.json');
+      const configBefore = await readTeamConfig('scale-herdr-down', cwd);
+      for (const state of ['working', 'draining', 'unknown'] as const) {
+        await writeWorkerStatus('scale-herdr-down', 'worker-2', { state, updated_at: new Date().toISOString() }, cwd);
+        const statusBefore = await readFile(statusPath, 'utf8');
+        const blocked = await scaleDown(
+          'scale-herdr-down', cwd, { workerNames: ['worker-2'], drainTimeoutMs: 0 },
+          { OMX_TEAM_SCALING_ENABLED: '1', OMX_MULTIPLEXER: 'herdr', HERDR_BIN_PATH: herdrBin },
+        );
+        assert.deepEqual(blocked, { ok: false, error: 'scale_down_drain_timeout' });
+        assert.deepEqual(await readTeamConfig('scale-herdr-down', cwd), configBefore);
+        assert.equal(await readFile(statusPath, 'utf8'), statusBefore);
+        const commands = await readHerdrStubLog(herdrLogPath);
+        assert.equal(commands.some((command) => command.startsWith('pane close ')), false);
+        assert.equal(commands.some((command) => command.startsWith('agent list')), true, 'drain checks use herdr liveness');
+      }
+      await writeFakeHerdrStub(fakeBinDir, herdrLogPath, { livePaneIds: ['w5:p3'] });
+      await writeWorkerStatus('scale-herdr-down', 'worker-2', { state: 'working', updated_at: new Date().toISOString() }, cwd);
+      const removal = scaleDown(
         'scale-herdr-down',
         cwd,
-        { workerNames: ['worker-2'] },
+        { workerNames: ['worker-2'], drainTimeoutMs: 5_000 },
         {
           OMX_TEAM_SCALING_ENABLED: '1',
           OMX_MULTIPLEXER: 'herdr',
           HERDR_BIN_PATH: herdrBin,
         },
       );
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if ((await readHerdrStubLog(herdrLogPath)).some((command) => command.startsWith('agent list'))) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const waitingCommands = await readHerdrStubLog(herdrLogPath);
+      assert.equal(waitingCommands.some((command) => command.startsWith('agent list')), true);
+      assert.equal(waitingCommands.some((command) => command.startsWith('pane close ')), false);
+      assert.equal((await readWorkerStatus('scale-herdr-down', 'worker-2', cwd)).state, 'working');
+      await writeWorkerStatus('scale-herdr-down', 'worker-2', { state: 'idle', updated_at: new Date().toISOString() }, cwd);
+      const result = await removal;
       assert.deepEqual(result, { ok: true, removedWorkers: ['worker-2'], newWorkerCount: 1 });
 
       const commands = await readHerdrStubLog(herdrLogPath);

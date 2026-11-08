@@ -117,6 +117,7 @@ export interface TeamTask {
   description: string;
   status: TeamTaskStatus;
   requires_code_change?: boolean;
+  verified_head?: string; // Set only by validated code completion.
   role?: string;
   owner?: string;
   result?: string;
