@@ -250,7 +250,13 @@ export async function questionCommand(args: string[]): Promise<void> {
 
   if (parsed.ui) {
     if (!parsed.statePath) throw new Error('--ui requires --state-path');
-    await runQuestionUi(parsed.statePath);
+    try {
+      await runQuestionUi(parsed.statePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Question UI failed: ${message}`);
+      process.exitCode = 1;
+    }
     return;
   }
 

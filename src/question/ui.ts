@@ -9,6 +9,8 @@ interface QuestionUiInput {
   isTTY?: boolean;
   on(event: 'keypress', listener: (str: string, key: KeyLike) => void): this;
   off(event: 'keypress', listener: (str: string, key: KeyLike) => void): this;
+  once?(event: string, listener: (arg?: unknown) => void): this;
+  removeAllListeners?(event?: string): this;
   resume?(): void;
   pause?(): void;
   setRawMode?(mode: boolean): void;
@@ -457,11 +459,33 @@ async function promptForQuestionWithNumbers(question: NormalizedQuestionItem, de
     output.write(`${renderOptions(question).join('\n')}\n\n`);
     const optionCount = question.options.length + (question.allow_other ? 1 : 0);
     const prompt = isMultiAnswerableQuestion(question) ? 'Choose one or more options by number (comma-separated): ' : 'Choose an option by number: ';
+    
+    // Handle stdin EOF by rejecting the question
+    const eofPromise = new Promise<never>((_, reject) => {
+      input.once?.('end', () => {
+        reject(new Error('Standard input closed before response received.'));
+      });
+      input.once?.('error', (err: unknown) => {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+    });
+    
     let selections: number[] | null = null;
     while (!selections) {
-      selections = parseSelection(await rl.question(prompt), optionCount, isMultiAnswerableQuestion(question));
-      if (!selections) output.write('Invalid selection. Please try again.\n');
+      try {
+        const answer = await Promise.race([rl.question(prompt), eofPromise]);
+        selections = parseSelection(answer, optionCount, isMultiAnswerableQuestion(question));
+        if (!selections) output.write('Invalid selection. Please try again.\n');
+      } catch (error) {
+        // Remove listeners before rethrowing
+        input.removeAllListeners?.('end');
+        input.removeAllListeners?.('error');
+        throw error;
+      }
     }
+    // Remove listeners on success
+    input.removeAllListeners?.('end');
+    input.removeAllListeners?.('error');
     return selections;
   } finally {
     rl.close();
@@ -473,10 +497,32 @@ async function promptForOtherText(label: string, deps: QuestionUiDeps = {}): Pro
   const output = deps.output ?? defaultOutput;
   const rl = createPromptInterface({ input: input as NodeJS.ReadableStream, output: output as NodeJS.WritableStream });
   try {
+    // Handle stdin EOF by rejecting the question
+    const eofPromise = new Promise<never>((_, reject) => {
+      input.once?.('end', () => {
+        reject(new Error('Standard input closed before response received.'));
+      });
+      input.once?.('error', (err: unknown) => {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+    });
+    
     while (true) {
-      const candidate = (await rl.question(`${label}: `)).trim();
-      if (candidate) return candidate;
-      output.write('Please enter a response.\n');
+      try {
+        const candidate = (await Promise.race([rl.question(`${label}: `), eofPromise])).trim();
+        if (candidate) {
+          // Remove listeners on success
+          input.removeAllListeners?.('end');
+          input.removeAllListeners?.('error');
+          return candidate;
+        }
+        output.write('Please enter a response.\n');
+      } catch (error) {
+        // Remove listeners before rethrowing
+        input.removeAllListeners?.('end');
+        input.removeAllListeners?.('error');
+        throw error;
+      }
     }
   } finally {
     rl.close();
