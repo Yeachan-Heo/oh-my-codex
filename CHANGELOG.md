@@ -6,11 +6,12 @@ All notable changes to this project are documented in this file.
 
 ## [0.21.48] - 2026-11-07
 
-Patch release drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
+Patch release stores live Codex pins outside the plugin fingerprint root so live-pin writes no longer change the fingerprint Codex approved, and drops role-based reasoning-effort defaults from seven role prompts, ensuring Vision stays extraction-only unless reassessment is justified. See [release notes](docs/release-notes-0.21.48.md) for exact scope and evidence.
 
 ### Fixed
 
-- **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** Seven role prompts (analyst, api-reviewer, architect, code-reviewer, code-simplifier, critic, and designer) included hardcoded reasoning-effort recommendations that read as unconditional requests for commentary. These are now removed; Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.'
+- **LIVE PINS OUTSIDE CODEX PLUGIN FINGERPRINT ROOT (#4010, fixes #3898):** OMX wrote mutable live-pin files inside Codex's fingerprinted plugin-version directory, so every pin write changed the plugin fingerprint and Codex repeatedly invalidated hook approval. Live pins now live in `<cacheBase>/.omx-pins/<version>`, outside the fingerprint root, so pin writes no longer change the approved plugin fingerprint (#4010; reporter: @AkiraLan; reviewer: @iqdoctor).
+- **ROLE-BASED REASONING-EFFORT DEFAULTS (#4020, #4021):** #4021 replaced fixed 'Default effort: low/medium' role defaults with task-based effort recommendations that preserve the leader's selected effort. Vision prompt is updated to make effort recommendations conditional: 'If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.' The modification ensures all role prompts correctly preserve extraction-only output and deference to leader effort selection.
 
 **Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.21.47...v0.21.48
 
