@@ -2,11 +2,11 @@
 
 ## Summary
 
-This patch release ships routing-surface alignment for Plan and Ralplan skills to document their correct execution-admission gates.
+This patch release ships Plan and Ralplan skill guidance that matches the tools the host actually exposes.
 
 ## Fixed
 
-- **ALIGN PLAN AND RALPLAN WITH AVAILABLE ROUTING SURFACES (#3998):** Plan and Ralplan skills now document their correct execution-admission gates in alignment with available GJC routing surfaces and handoff contracts. Updated guidance clarifies the skills' execution boundaries and integration points without changing production behavior or regressions across capability contracts.
+- **ALIGN PLAN AND RALPLAN WITH AVAILABLE HOST TOOLS (#3998):** The Plan and Ralplan skills no longer reference unavailable `ask_codex` syntax or a nonexistent `$plan` consensus mode. Plan asks questions through `omx question` in attached tmux (with the return pane preserved) and through native structured input elsewhere, uses only the host's exposed reviewer subagents, and reports a missing independent review instead of claiming approval. A "skip planning" request now continues through direct execution while keeping active workflow gates, instead of always handing off to `$ultragoal`. Ralplan owns the consensus sequence and its quality gates.
 
 ## Compatibility
 
@@ -19,7 +19,7 @@ No breaking API changes. Release-coupled metadata (`package.json`, `package-lock
 
 ## Contributors
 
-[@ev78394](https://github.com/ev78394) and [@Yeachan-Heo](https://github.com/Yeachan-Heo)
+[@lisrel-claw](https://github.com/lisrel-claw) and [@Yeachan-Heo](https://github.com/Yeachan-Heo)
 
 **Full Changelog**: [`v0.22.2...v0.22.3`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.2...v0.22.3)
 

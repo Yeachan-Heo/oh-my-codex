@@ -8,7 +8,7 @@
 
 ## PR Inventory
 
-1. **#3998** — ALIGN PLAN AND RALPLAN WITH AVAILABLE ROUTING SURFACES (fix, @ev78394)
+1. **#3998** — ALIGN PLAN AND RALPLAN WITH AVAILABLE HOST TOOLS (fix, @lisrel-claw)
    - Commit: `f7569d2b8`
 2. **#4055** — back-merge main into dev after 0.22.2 (infra)
 3. **#4056** — bump dev to 0.22.3 (infra)
