@@ -8,7 +8,7 @@
 
 ## Fixed
 
-- **TEAM CONFLICT HANDLING AND PERSISTENT TASK CLAIMS (#4035):** Team now makes conflicts visible rather than silently selecting a side, and ensures follow-up task protocols are consistent with the leader's atomic preclaim. Changes include removing automatic merge side selection, admitting only successfully delivered or exactly cached unchanged worker sources into cross-rebase operations, and generating follow-up inboxes from the current persisted claim. Git history is preserved rather than choosing a content winner. Companion PRs #4034 and #4036 address related Team safety audit findings.
+- **TEAM CONFLICT HANDLING AND PERSISTENT TASK CLAIMS (#4035):** Team now makes conflicts visible rather than silently selecting a side, and ensures follow-up task protocols are consistent with the leader's atomic preclaim. Changes include removing automatic merge side selection, admitting only successfully delivered or exactly cached unchanged worker sources into cross-rebase operations, and generating follow-up inboxes from the current persisted claim. Git history is preserved rather than choosing a content winner. Related Team audit fixes #4034 and #4036 are not part of this release.
 
 ## Compatibility
 
