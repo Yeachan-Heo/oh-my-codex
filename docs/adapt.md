@@ -56,4 +56,4 @@ Herdr follow-on behavior (issue #3241, Phase 1):
 - reports use a single monotonically increasing per-source `seq` so stale reports cannot win, and authority is released on terminal states
 - the bridge is best-effort and non-blocking: a Herdr socket/CLI failure never fails the OMX run, and there is no behavior change outside a Herdr pane
 
-See [`docs/herdr-bridge.md`](./herdr-bridge.md) for the full Phase 1 design and the Phase 2 (runtime backend) boundary.
+See [`docs/herdr-bridge.md`](./herdr-bridge.md) for the full Phase 1 design, and [`docs/herdr-runtime.md`](./herdr-runtime.md) for the Phase 2 team runtime backend (Herdr as a pluggable multiplexer).
