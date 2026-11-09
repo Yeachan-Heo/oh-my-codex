@@ -2348,6 +2348,46 @@ exit 0
     }
   });
 
+  it('refreshes a previous Team pane owner before launching a new direct session', async (t) => {
+    if (!skipUnlessPrivateRealTmux(t)) return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-pane-owner-'));
+    try {
+      await withTempTmuxSession(async (fixture) => {
+        const home = join(wd, 'home');
+        const bin = join(wd, 'bin');
+        const snapshot = join(wd, 'owner-snapshot');
+        await mkdir(home, { recursive: true });
+        await mkdir(bin, { recursive: true });
+        await fixture.createPathShim(bin);
+        await writeExecutable(join(bin, 'codex'), `#!/bin/sh
+printf '%s\\n' "$OMX_SESSION_ID" > "$OMX_TEST_INSTANCE_SNAPSHOT"
+tmux display-message -p -t "$TMUX_PANE" '#{@omx_instance_id}\t#{@omx_pane_instance_id}' >> "$OMX_TEST_INSTANCE_SNAPSHOT"
+`);
+        const pane = fixture.leaderPaneId;
+        const originalPid = fixture.run(['display-message', '-p', '-t', pane, '#{pane_pid}']);
+        fixture.run(['set-option', '-t', fixture.sessionName, '@omx_instance_id', 'previous-team-owner']);
+        fixture.run(['set-option', '-p', '-t', pane, '@omx_pane_instance_id', 'previous-team-owner']);
+        const result = runOmx(wd, ['--direct', '--version'], {
+          HOME: home,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          OMX_AUTO_UPDATE: '0',
+          OMX_NOTIFY_FALLBACK: '0',
+          OMX_HOOK_DERIVED_SIGNALS: '0',
+          OMX_TEST_INSTANCE_SNAPSHOT: snapshot,
+          ...fixture.env,
+        });
+        assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+        const [launchedOwner, tags] = (await readFile(snapshot, 'utf8')).trim().split('\n');
+        assert.ok(launchedOwner);
+        assert.notEqual(launchedOwner, 'previous-team-owner');
+        assert.equal(tags, `${launchedOwner}\t${launchedOwner}`, 'Codex must inherit the new pane and session ownership');
+        assert.equal(fixture.run(['display-message', '-p', '-t', pane, '#{pane_pid}']), originalPid);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    }
+  });
+
   it('launches directly with --direct and skips detached tmux bootstrap', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-launch-direct-'));
     try {

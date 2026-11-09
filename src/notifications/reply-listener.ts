@@ -24,12 +24,14 @@ import {
   analyzePaneContent,
   sendToPane,
   isTmuxAvailable,
+  readReplyPaneIdentity,
 } from './tmux-detector.js';
 import {
   lookupByMessageId,
   removeMessagesByPane,
   pruneStale,
 } from './session-registry.js';
+import type { SessionMapping } from './session-registry.js';
 import {
   NO_TRACKED_SESSION_MESSAGE,
   buildDiscordSessionStatusReply,
@@ -468,7 +470,16 @@ function injectReply(
   text: string,
   platform: string,
   config: ReplyListenerDaemonConfig,
+  mapping?: SessionMapping,
 ): boolean {
+  const identity = mapping?.tmuxIdentity;
+  const current = identity && mapping ? readReplyPaneIdentity(paneId, mapping.sessionId) : null;
+  if (!identity || !current || current.sessionName !== mapping?.tmuxSessionName
+    || Object.keys(current).some((key) => (key !== 'sessionOwner' || !current.paneInstanceId)
+      && identity[key as keyof typeof identity] !== current[key as keyof typeof current])) {
+    log(`WARN: Reply target ${paneId} has no matching pane/session identity. Skipping injection.`);
+    return false;
+  }
   const content = capturePaneContent(paneId, 15);
   const analysis = analyzePaneContent(content);
 
@@ -481,7 +492,7 @@ function injectReply(
   const prefix = config.includePrefix ? `[reply:${platform}] ` : '';
   const sanitized = sanitizeReplyInput(prefix + text);
   const truncated = sanitized.slice(0, config.maxMessageLength);
-  const success = sendToPane(paneId, truncated, true);
+  const success = sendToPane(paneId, truncated, true, { expectedIdentity: identity });
 
   if (success) {
     log(`Injected reply from ${platform} into pane ${paneId}: "${truncated.slice(0, 50)}${truncated.length > 50 ? '...' : ''}"`);
@@ -644,7 +655,7 @@ export async function pollDiscordOnce(
         continue;
       }
 
-      const success = injectReplyImpl(mapping.tmuxPaneId, msg.content, 'discord', config);
+      const success = injectReplyImpl(mapping.tmuxPaneId, msg.content, 'discord', config, mapping);
       if (success) {
         state.messagesInjected++;
         const acknowledgement = formatReplyAcknowledgement(captureReplyAcknowledgementSummaryImpl(mapping.tmuxPaneId));
@@ -810,7 +821,7 @@ export async function pollTelegramOnce(
       state.telegramLastUpdateId = update.update_id;
       writeDaemonStateImpl(state);
 
-      const success = injectReplyImpl(mapping.tmuxPaneId, text, 'telegram', config);
+      const success = injectReplyImpl(mapping.tmuxPaneId, text, 'telegram', config, mapping);
       if (success) {
         state.messagesInjected++;
         const acknowledgement = formatReplyAcknowledgement(captureReplyAcknowledgementSummaryImpl(mapping.tmuxPaneId));

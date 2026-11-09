@@ -329,6 +329,9 @@ export async function notifyLifecycle(
       void dispatchOpenClawLater();
     }
 
+    const { readReplyPaneIdentity } = await import('./tmux-detector.js');
+    const paneIdentity = payload.tmuxPaneId && options.persistScopedReceipts !== false ? readReplyPaneIdentity(payload.tmuxPaneId, payload.sessionId) : null;
+    const replyPaneIdentity = paneIdentity && (!payload.tmuxSession || paneIdentity.sessionName === payload.tmuxSession) ? paneIdentity : null;
     const result = await dispatchNotifications(config, event, payload);
     if (result.anySuccess && options.persistScopedReceipts !== false) {
       recordLifecycleNotificationSent(lifecycleStateDir, payload);
@@ -355,10 +358,11 @@ export async function notifyLifecycle(
               messageId: r.messageId,
               sessionId: payload.sessionId,
               tmuxPaneId: payload.tmuxPaneId,
-              tmuxSessionName: payload.tmuxSession || "",
+              tmuxSessionName: replyPaneIdentity?.sessionName || payload.tmuxSession || "",
               event: payload.event,
               createdAt: new Date().toISOString(),
               projectPath: payload.projectPath,
+              ...(replyPaneIdentity ? { tmuxIdentity: replyPaneIdentity } : {}),
             });
           }
         }

@@ -87,6 +87,7 @@ import {
   writeTeamLeaderAttention,
   writeTeamPhase,
 } from "../team/state.js";
+import { TEAM_TASK_STATUSES } from "../team/contracts.js";
 import { parseTeamNoticeLedgerPrompt, reconcileTeamNoticeLedger } from "../team/notice-ledger.js";
 import {
   canonicalizeComparablePath,
@@ -3011,17 +3012,30 @@ async function resolveTeamWorkerStopDecision(
   }
 
   const tasksDir = join(stateDir, "team", workerContext.teamName, "tasks");
-  if (existsSync(tasksDir)) {
-    const taskFiles = await readdir(tasksDir).catch(() => []);
-    for (const entry of taskFiles) {
-      if (!/^task-\d+\.json$/.test(entry)) continue;
-      const task = await readJsonIfExists(join(tasksDir, entry));
-      const taskOwner = safeString(task?.owner).trim();
-      const taskClaimOwner = safeString(safeObject(task?.claim).owner).trim();
-      if (taskOwner !== workerContext.workerName && taskClaimOwner !== workerContext.workerName) continue;
-      const idFromFile = /^task-(\d+)\.json$/.exec(entry)?.[1] ?? "";
-      const taskId = safeString(task?.id).trim() || idFromFile;
-      if (taskId) candidateTaskIds.add(taskId);
+  let taskFiles: string[];
+  try {
+    const info = await lstat(tasksDir);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("not_regular_directory");
+    taskFiles = await readdir(tasksDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && candidateTaskIds.size === 0) {
+      return blockWorkerStop("missing_task_assignment", "no current_task_id or assigned_tasks are recorded", stateDir);
+    }
+    return blockWorkerStop("unreadable_tasks", "task directory cannot be enumerated safely", stateDir);
+  }
+  for (const entry of taskFiles) {
+    const idFromFile = /^task-(\d+)\.json$/.exec(entry)?.[1];
+    if (!idFromFile) continue;
+    const taskPath = join(tasksDir, entry);
+    const info = await lstat(taskPath).catch(() => null);
+    const task = info?.isFile() && !info.isSymbolicLink() ? await readJsonIfExists(taskPath) : null;
+    if (!task || Array.isArray(task) || safeString(task.id) !== idFromFile || !(TEAM_TASK_STATUSES as readonly unknown[]).includes(task.status)) {
+      return blockWorkerStop(`unreadable_task_${idFromFile}`, `task ${idFromFile} has no trustworthy task state`, stateDir);
+    }
+    const taskOwner = safeString(task.owner).trim();
+    const taskClaimOwner = safeString(safeObject(task.claim).owner).trim();
+    if (taskOwner === workerContext.workerName || taskClaimOwner === workerContext.workerName) {
+      candidateTaskIds.add(idFromFile);
     }
   }
 
