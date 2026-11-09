@@ -111,6 +111,33 @@ describe('findLatestSession (backs `resume --last`)', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
+  it('worktree filter: filters by effective cwd when worktree path differs from launch cwd', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'omx-latest-worktree-'));
+    try {
+      await mkdir(join(home, 'sessions', '2026', '11', '09'), { recursive: true });
+      const path1 = join(home, 'sessions', '2026', '11', '09', 'rollout-1.jsonl');
+      const path2 = join(home, 'sessions', '2026', '11', '09', 'rollout-2.jsonl');
+      
+      // Write session from original launch cwd with older mtime
+      await writeFile(path1, `${JSON.stringify({ type: 'session_meta', payload: { id: 'session-launch', timestamp: 't', cwd: '/repo' } })}
+`);
+      await utimes(path1, 1000 / 1000, 1000 / 1000);
+      
+      // Write session from worktree cwd with newer mtime
+      await writeFile(path2, `${JSON.stringify({ type: 'session_meta', payload: { id: 'session-worktree', timestamp: 't', cwd: '/repo/.omx-worktrees/feat-x' } })}
+`);
+      await utimes(path2, 2000 / 1000, 2000 / 1000);
+      
+      // When filtering by worktree path (the effective cwd), should pick session-worktree
+      const worktreeFilter = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/repo/.omx-worktrees/feat-x' });
+      assert.equal(worktreeFilter?.session_id, 'session-worktree');
+      
+      // When filtering by launch cwd, should pick session-launch
+      const launchFilter = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/repo' });
+      assert.equal(launchFilter?.session_id, 'session-launch');
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('picks the newest of several sessions across homes', async () => {
     const a = await mkdtemp(join(tmpdir(), 'omx-latest-a-'));
     const b = await mkdtemp(join(tmpdir(), 'omx-latest-b-'));

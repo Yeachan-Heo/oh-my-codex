@@ -5825,6 +5825,8 @@ export async function launchWithHud(args: string[]): Promise<void> {
   let postLaunchHandledExternally = false;
   const resumeBlockStartedAtMs = Date.now() - 1000;
   const isResumeLaunch = isResumeCodexLaunch(normalizedArgs);
+  // Use the effective cwd that was actually passed to runCodex (worktree path if enabled, else launchCwd)
+  const effectiveCwdForSession = ensuredLaunchWorktree?.enabled ? ensuredLaunchWorktree.worktreePath : launchCwd;
   const printExitResumeBlock = async (): Promise<void> => {
     if (isResumeLaunch || (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach)) return;
     try {
@@ -5836,7 +5838,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       const latest = await findLatestSession({
         codexHomeDirs: searchHomes,
         modifiedSinceMs: resumeBlockStartedAtMs,
-        cwdFilter: launchCwd,
+        cwdFilter: effectiveCwdForSession,
       });
       process.stderr.write(formatResumeBlock({
         sessionId: latest?.session_id ?? null,
