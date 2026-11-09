@@ -5765,7 +5765,9 @@ export async function launchWithHud(args: string[]): Promise<void> {
   const sqliteHomeOverride = preparedCodexHome.sqliteHomeOverride;
   const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
   if (resumePrepared && resumeRequestsLast(normalizedArgs)) {
-    const newest = await findLatestSession({ codexHomeDirs: [codexHomeOverride ?? codexHome()] });
+    const newest = await findLatestSession({ 
+      codexHomeDirs: [codexHomeOverride ?? codexHome()],
+    });
     if (!newest) {
       await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup).catch(logCliOperationFailure);
       throw new Error("omx resume --last: no previous sessions found for this context. Start one with `omx`, or pass --codex-home <path> / drop --project to search elsewhere.");
@@ -5826,9 +5828,15 @@ export async function launchWithHud(args: string[]): Promise<void> {
   const printExitResumeBlock = async (): Promise<void> => {
     if (isResumeLaunch || (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach)) return;
     try {
+      // Search both runtime home and project's durable home (for detached cleanup case)
+      const searchHomes = [codexHomeOverride ?? codexHome()];
+      if (projectLocalCodexHomeForCleanup) {
+        searchHomes.push(projectLocalCodexHomeForCleanup);
+      }
       const latest = await findLatestSession({
-        codexHomeDirs: [codexHomeOverride ?? codexHome()],
+        codexHomeDirs: searchHomes,
         modifiedSinceMs: resumeBlockStartedAtMs,
+        cwdFilter: launchCwd,
       });
       process.stderr.write(formatResumeBlock({
         sessionId: latest?.session_id ?? null,
@@ -5838,7 +5846,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
         worktree: ensuredLaunchWorktree?.enabled
           ? { path: ensuredLaunchWorktree.worktreePath, name: parsedWorktree.mode.enabled ? parsedWorktree.mode.name : null }
           : undefined,
-        projectLocalHome: Boolean(projectLocalCodexHomeForCleanup),
+        projectLocalHome: false, // Don't add --project; session is persisted to durable home during cleanup
       }));
     } catch (err) {
       logCliOperationFailure(err);

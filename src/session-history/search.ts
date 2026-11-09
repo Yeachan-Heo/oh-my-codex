@@ -515,6 +515,7 @@ async function readFirstSessionMeta(filePath: string): Promise<SessionMeta | nul
 export async function findLatestSession(options: {
   codexHomeDirs: string[];
   modifiedSinceMs?: number;
+  cwdFilter?: string;
 }): Promise<LatestSessionInfo | null> {
   const sources = await normalizeExistingCodexHomeDirs(options.codexHomeDirs);
   const candidates: Array<{ path: string; mtimeMs: number }> = [];
@@ -530,6 +531,10 @@ export async function findLatestSession(options: {
   for (const candidate of candidates) {
     const meta = await readFirstSessionMeta(candidate.path);
     if (meta) {
+      // Filter by cwd if specified to avoid picking up concurrent sessions from other launches
+      if (options.cwdFilter != null && meta.cwd !== options.cwdFilter) {
+        continue;
+      }
       return { session_id: meta.sessionId, timestamp: meta.timestamp, cwd: meta.cwd, transcript_path: candidate.path };
     }
   }

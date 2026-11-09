@@ -938,4 +938,59 @@ if [ -d "$selected_codex_home/plugins/cache/oh-my-codex-local/oh-my-codex" ]; th
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('exit block avoids advertising concurrent sessions from different cwds', async () => {
+    // This test verifies that the exit resume block doesn't pick up sessions
+    // from concurrent Codex runs in different project directories.
+    // Since the exit block printing happens before cleanup, both sessions exist in the home.
+    // The cwdFilter ensures we pick the session from THIS launch, not a concurrent one.
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exit-block-concurrent-'));
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      const projectA = join(wd, 'project-a');
+      const projectB = join(wd, 'project-b');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+
+      await mkdir(projectA, { recursive: true });
+      await mkdir(projectB, { recursive: true });
+      await mkdir(join(codexHome, 'sessions', '2026', '11', '09'), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+
+      // Concurrent session from project-b with newer mtime
+      await writeFile(
+        join(codexHome, 'sessions', '2026', '11', '09', 'rollout-concurrent.jsonl'),
+        `${JSON.stringify({ type: 'session_meta', payload: { id: 'concurrent-session', timestamp: 't', cwd: projectB } })}\n`,
+      );
+      await utimes(join(codexHome, 'sessions', '2026', '11', '09', 'rollout-concurrent.jsonl'), 2000 / 1000, 2000 / 1000);
+
+      // Script that writes our session after a delay to ensure concurrent mtime is newer
+      await writeFile(fakeCodexPath, `#!/bin/sh
+set -eu
+selected_codex_home="${codexHome}"
+mkdir -p "$selected_codex_home/sessions/2026/11/09"
+# Write our session slightly after concurrent one to have newer mtime
+sleep 0.1
+printf '{"type":"session_meta","payload":{"id":"our-session","timestamp":"t","cwd":"${projectA}"}}\n' > "$selected_codex_home/sessions/2026/11/09/rollout-our-session.jsonl"
+`);
+      await chmod(fakeCodexPath, 0o755);
+
+      const result = runOmx(projectA, [], {
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_LAUNCH_POLICY: 'direct',
+      });
+
+      // Even though concurrent-session has newer mtime, we should advertise our-session
+      // because it matches our launch cwd
+      assert.match(result.stderr, /Session id: our-session/, `should advertise our-session, stderr: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /concurrent-session/, `should not advertise concurrent-session, stderr: ${result.stderr}`);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

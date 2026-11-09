@@ -48,7 +48,16 @@ describe('resume block formatting', () => {
     assert.match(out, new RegExp(`cd '/repo\\.omx-worktrees/feat x' && omx resume ${SID}`));
   });
 
-  it('re-emits model and project flags', () => {
+  it('re-emits model flag but omits project flag for durable homes', () => {
+    // When projectLocalHome is false (default after cleanup), --project should not be added
+    assert.equal(
+      buildResumeCommand({ sessionId: SID, launchArgs: ['--model', 'gpt-5'], launchCwd: '/p', projectLocalHome: false }),
+      `omx --model gpt-5 resume ${SID}`,
+    );
+  });
+
+  it('includes project flag only when explicitly requested (legacy support)', () => {
+    // When projectLocalHome is true, --project is added
     assert.equal(
       buildResumeCommand({ sessionId: SID, launchArgs: ['--model', 'gpt-5'], launchCwd: '/p', projectLocalHome: true }),
       `omx --model gpt-5 --project resume ${SID}`,
@@ -71,6 +80,37 @@ describe('findLatestSession (backs `resume --last`)', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
+  it('filters by cwd to avoid concurrent sessions from other launches', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'omx-latest-cwd-filter-'));
+    try {
+      await mkdir(join(home, 'sessions', '2026', '11', '09'), { recursive: true });
+      const path1 = join(home, 'sessions', '2026', '11', '09', 'rollout-1.jsonl');
+      const path2 = join(home, 'sessions', '2026', '11', '09', 'rollout-2.jsonl');
+      
+      // Write session from /project-a with older mtime
+      await writeFile(path1, `${JSON.stringify({ type: 'session_meta', payload: { id: 'session-a', timestamp: 't', cwd: '/project-a' } })}
+`);
+      await utimes(path1, 1000 / 1000, 1000 / 1000);
+      
+      // Write session from /project-b with newer mtime
+      await writeFile(path2, `${JSON.stringify({ type: 'session_meta', payload: { id: 'session-b', timestamp: 't', cwd: '/project-b' } })}
+`);
+      await utimes(path2, 2000 / 1000, 2000 / 1000);
+      
+      // Without filter, should pick newest (session-b)
+      const noFilter = await findLatestSession({ codexHomeDirs: [home] });
+      assert.equal(noFilter?.session_id, 'session-b');
+      
+      // With filter for /project-a, should pick session-a even though it's older
+      const withFilter = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/project-a' });
+      assert.equal(withFilter?.session_id, 'session-a');
+      
+      // With filter for non-existent cwd, should return null
+      const noMatch = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/project-c' });
+      assert.equal(noMatch, null);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
   it('picks the newest of several sessions across homes', async () => {
     const a = await mkdtemp(join(tmpdir(), 'omx-latest-a-'));
     const b = await mkdtemp(join(tmpdir(), 'omx-latest-b-'));
@@ -84,6 +124,26 @@ describe('findLatestSession (backs `resume --last`)', () => {
     } finally {
       await rm(a, { recursive: true, force: true });
       await rm(b, { recursive: true, force: true });
+    }
+  });
+
+  it('finds session persisted from runtime home to durable home', async () => {
+    const runtime = await mkdtemp(join(tmpdir(), 'omx-latest-runtime-'));
+    const durable = await mkdtemp(join(tmpdir(), 'omx-latest-durable-'));
+    try {
+      // Write session to runtime home
+      await writeRollout(runtime, 'sess1', 'sess1-id', 1_000_000);
+      assert.equal((await findLatestSession({ codexHomeDirs: [runtime, durable] }))?.session_id, 'sess1-id');
+      
+      // Remove from runtime (simulate cleanup) and add to durable with newer mtime
+      await rm(join(runtime, 'sessions'), { recursive: true, force: true });
+      await writeRollout(durable, 'sess1', 'sess1-id', 2_000_000);
+      
+      // Should still find it in durable home
+      assert.equal((await findLatestSession({ codexHomeDirs: [runtime, durable] }))?.session_id, 'sess1-id');
+    } finally {
+      await rm(runtime, { recursive: true, force: true });
+      await rm(durable, { recursive: true, force: true });
     }
   });
 });
@@ -163,6 +223,18 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       const r = run(['resume', '--last'], wd, fakeBin);
       assert.notEqual(r.status, 0);
       assert.match(r.stderr, /no previous sessions found/, r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('exit block for project-scoped launch does not include --project flag', async () => {
+    const { wd, fakeBin } = await setup(true);
+    try {
+      const r = run(['--project'], wd, fakeBin);
+      // Should print resume block
+      assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
+      // Should NOT include --project in the suggested resume command
+      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
+      assert.doesNotMatch(r.stderr, /omx.*--project.*resume/, r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 });
