@@ -6245,11 +6245,14 @@ async function resolvePreLaunchSessionPointerOptions(): Promise<{
   };
 }
 
-function tagTmuxSessionWithInstance(sessionName: string, sessionId: string): void {
+function tagTmuxSessionWithInstance(sessionName: string, sessionId: string, paneId?: string): void {
   const target = sessionName.trim();
   const instanceId = sessionId.trim();
   if (!target || !instanceId) return;
-  execFileSync("tmux", ["set-option", "-t", target, OMX_INSTANCE_OPTION, instanceId], {
+  const args = ["set-option", "-t", target, OMX_INSTANCE_OPTION, instanceId];
+  // Refresh Team's pane-level tag in the same command queue before the next Codex starts.
+  if (paneId) args.push(";", "set-option", "-p", "-t", paneId, "@omx_pane_instance_id", instanceId);
+  execFileSync("tmux", args, {
     stdio: ["ignore", "ignore", "ignore"],
     timeout: 2000,
   });
@@ -6267,7 +6270,7 @@ function tagCurrentTmuxSessionWithInstance(sessionId: string): void {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2000,
     }).trim();
-    if (sessionName) tagTmuxSessionWithInstance(sessionName, sessionId);
+    if (sessionName) tagTmuxSessionWithInstance(sessionName, sessionId, tmuxPaneTarget);
   } catch {
     // Best effort only: launch should not fail just because tmux tagging failed.
   }

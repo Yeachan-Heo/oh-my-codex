@@ -117,6 +117,7 @@ describe('VSCode direct session API', () => {
       assert.equal(handle.stop(), true);
 
       child.emit('exit', 0, null);
+      child.emit('close', 0, null);
       await log.waitForCompletion();
     });
   });
@@ -160,6 +161,7 @@ describe('VSCode direct session API', () => {
       assert.equal(handle.command, capturedCommand);
 
       child.emit('exit', 0, null);
+      child.emit('close', 0, null);
       await log.waitForCompletion();
     });
   });
@@ -184,12 +186,31 @@ describe('VSCode direct session API', () => {
       child.stdout?.emit('data', 'Authorization: Bearer sk-live-token\n');
       child.stderr?.emit('data', 'access_token=plain-secret\n');
       child.emit('exit', 0, null);
+      child.emit('close', 0, null);
 
       const contents = await log.read(logPath);
       assert.doesNotMatch(contents, /sk-live-token/);
       assert.doesNotMatch(contents, /plain-secret/);
       assert.match(contents, /\[REDACTED]/);
       assert.match(contents, /exited code=0 signal=null/);
+    });
+  });
+
+  it('redacts credentials split across independent stdout and stderr chunks and flushes final records', async () => {
+    await withTempDir(async (cwd) => {
+      const child = fakeChildProcess();
+      const log = captureSessionLog();
+      const handle = launchDirectSession({ cwd }, { spawn: () => child, createWriteStream: log.createWriteStream });
+      child.stdout?.emit('data', Buffer.from('{"access_'));
+      child.stderr?.emit('data', Buffer.from('refresh_'));
+      child.stdout?.emit('data', Buffer.from('token":"split-access-secret"}\nnormal output\n'));
+      child.emit('exit', 0, null);
+      child.stderr?.emit('data', Buffer.from('token=split-refresh-secret'));
+      child.emit('close', 0, null);
+      const contents = await log.read(handle.log_path);
+      assert.doesNotMatch(contents, /split-access-secret|split-refresh-secret/);
+      assert.match(contents, /normal output/);
+      assert.match(contents, /REDACTED/);
     });
   });
 
@@ -223,6 +244,7 @@ describe('VSCode direct session API', () => {
       child.stdout?.emit('data', 'Authorization: Bearer sk-delayed-token\n');
       child.stderr?.emit('data', 'access_token=delayed-secret\n');
       child.emit('exit', 0, null);
+      child.emit('close', 0, null);
 
       let readCompleted = false;
       const pendingRead = log.read(logPath).then((contents) => {

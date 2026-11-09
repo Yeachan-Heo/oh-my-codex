@@ -9,6 +9,39 @@ import { execFileSync, spawnSync } from 'child_process';
 import { sleepSync } from '../utils/sleep.js';
 import { resolveCommandPathForPlatform, resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { buildCapturePaneArgv as sharedBuildCapturePaneArgv } from '../scripts/tmux-hook-engine.js';
+import { readExactPaneProofSync } from '../team/exact-pane.js';
+import { shellEscapeSingle } from '../hud/tmux.js';
+
+export interface ReplyPaneIdentity {
+  panePid: number;
+  sessionId: string;
+  sessionCreated: string;
+  sessionName: string;
+  sessionOwner: string;
+  paneOwner: string;
+  paneInstanceId: string;
+}
+
+export function readReplyPaneIdentity(paneId: string, sessionId: string): ReplyPaneIdentity | null {
+  const proof = readExactPaneProofSync(paneId);
+  if (proof.status !== 'live') return null;
+  try {
+    const snapshot = execFileSync(resolveTmuxBinaryForPlatform() || 'tmux', [
+      'display-message', '-p', '-t', paneId,
+      '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{session_created}\t#{session_name}\t#{@omx_instance_id}\t#{@omx_team_pane_owner_id}\t#{@omx_pane_instance_id}\tEND',
+    ], { encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const fields = snapshot.split('\t');
+    if (fields.length !== 9 || fields[8] !== 'END' || fields[0] !== paneId
+      || Number(fields[1]) !== proof.pid || !/^\$\d+$/.test(fields[2]) || !/^\d+$/.test(fields[3])
+      || !fields[4] || !/^[A-Za-z0-9_.:/-]*$/.test(fields[5]) || !/^[A-Za-z0-9_.:/-]*$/.test(fields[6])
+      || !/^[A-Za-z0-9_.:/-]*$/.test(fields[7])) return null;
+    // Match managed-tmux's pane-first ownership rule; a live pane alone cannot authorize an old session's reply.
+    if (!sessionId || (fields[7] || fields[5]) !== sessionId) return null;
+    return { panePid: proof.pid, sessionId: fields[2], sessionCreated: fields[3], sessionName: fields[4], sessionOwner: fields[5], paneOwner: fields[6], paneInstanceId: fields[7] };
+  } catch {
+    return null;
+  }
+}
 
 export function isTmuxAvailable(): boolean {
   return resolveCommandPathForPlatform('tmux') !== null;
@@ -137,11 +170,12 @@ type SpawnSyncImpl = (
     encoding?: 'utf-8';
     windowsHide?: boolean;
   },
-) => { error?: Error; status: number | null };
+) => { error?: Error; status: number | null; stdout?: string | Buffer };
 
 interface SendToPaneDeps {
   spawnSyncImpl?: SpawnSyncImpl;
   sleepImpl?: (ms: number) => void;
+  expectedIdentity?: ReplyPaneIdentity;
 }
 
 export function sendToPane(
@@ -154,15 +188,32 @@ export function sendToPane(
   const sleepImpl = deps.sleepImpl ?? sleepSync;
   const argvs = buildSendPaneArgvs(paneId, text, pressEnter);
   const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
+  const expected = deps.expectedIdentity;
+  if (expected && (!/^%\d+$/.test(paneId) || !Number.isSafeInteger(expected.panePid) || expected.panePid <= 0
+    || !/^\$\d+$/.test(expected.sessionId) || !/^\d+$/.test(expected.sessionCreated)
+    || !/^[A-Za-z0-9_.:/-]*$/.test(expected.sessionOwner) || !/^[A-Za-z0-9_.:/-]*$/.test(expected.paneOwner)
+    || !/^[A-Za-z0-9_.:/-]*$/.test(expected.paneInstanceId))) return false;
+  const predicate = expected ? [
+    `#{==:#{pane_id},${paneId}}`, '#{==:#{pane_dead},0}',
+    `#{==:#{pane_pid},${expected.panePid}}`, `#{==:#{session_id},${expected.sessionId}}`,
+    `#{==:#{session_created},${expected.sessionCreated}}`,
+    ...(expected.paneInstanceId ? [] : [`#{==:#{@omx_instance_id},${expected.sessionOwner}}`]),
+    `#{==:#{@omx_team_pane_owner_id},${expected.paneOwner}}`,
+    `#{==:#{@omx_pane_instance_id},${expected.paneInstanceId}}`,
+  ].reduce((left, right) => `#{&&:${left},${right}}`) : '';
 
   for (const [index, argv] of argvs.entries()) {
-    const result = spawnSyncImpl(tmuxCommand, argv, {
+    const guardedArgv = expected ? [
+      'if-shell', '-F', '-t', paneId, predicate,
+      `${argv.map(shellEscapeSingle).join(' ')} ; display-message -p __omx_reply_sent__`, '',
+    ] : argv;
+    const result = spawnSyncImpl(tmuxCommand, guardedArgv, {
       timeout: 3000,
       stdio: ['pipe', 'pipe', 'pipe'],
       encoding: 'utf-8',
       windowsHide: process.platform === 'win32',
     });
-    if (result.error || result.status !== 0) return false;
+    if (result.error || result.status !== 0 || (expected && String(result.stdout).trim() !== '__omx_reply_sent__')) return false;
 
     const hasNextArgv = index < argvs.length - 1;
     if (!hasNextArgv) continue;

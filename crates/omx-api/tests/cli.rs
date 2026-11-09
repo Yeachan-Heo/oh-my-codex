@@ -374,6 +374,64 @@ fn binary_serve_status_and_stop_work_together() {
 }
 
 #[test]
+fn binary_keeps_serving_after_invalid_and_truncated_requests() {
+    let state_file = temp_state_file("bad-client-survival");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_omx-api"))
+        .args([
+            "serve",
+            "--port",
+            "0",
+            "--state-file",
+            state_file.to_str().unwrap(),
+        ])
+        .env("OMX_API_LOCAL_BEARER", "synthetic-local-bearer")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let state = wait_for_daemon_state(&state_file, &mut child);
+    for malformed in [
+        b"\xff\r\n".as_slice(),
+        b"POST /v1/responses HTTP/1.1\r\nContent-Length: 100\r\n\r\n{".as_slice(),
+    ] {
+        let mut stream = std::net::TcpStream::connect((&*state.host, state.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(malformed).unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = stream.read_to_end(&mut Vec::new());
+        let health = http_request_with_bearer(
+            &state.host,
+            state.port,
+            "GET",
+            "/health",
+            None,
+            Some("synthetic-local-bearer"),
+        )
+        .expect("a malformed client must not stop the API listener");
+        assert!(health.contains("200 OK"));
+    }
+    let stop = http_request_with_bearer(
+        &state.host,
+        state.port,
+        "POST",
+        "/__admin/stop",
+        None,
+        Some("synthetic-local-bearer"),
+    )
+    .unwrap();
+    assert!(stop.contains("200 OK"));
+    assert!(child
+        .wait_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap()
+        .success());
+    assert!(!state_file.exists());
+    assert!(!state_file.with_extension("token").exists());
+}
+
+#[test]
 fn binary_local_bearer_gate_rejects_missing_authorization() {
     let bin = env!("CARGO_BIN_EXE_omx-api");
     let state_file = temp_state_file("bearer-required");
