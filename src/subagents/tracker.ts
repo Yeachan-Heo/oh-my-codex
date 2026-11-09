@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, ftruncateSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fchmodSync, ftruncateSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -690,7 +690,7 @@ function crossProcessLockStagePath(resourcePath: string, token: string): string 
 }
 
 function createCrossProcessLockStage(stagePath: string): void {
-  const descriptor = openSync(stagePath, 'wx');
+  const descriptor = openSync(stagePath, 'wx', 0o600);
   closeSync(descriptor);
 }
 
@@ -798,6 +798,14 @@ export function withCrossProcessFileLockSync<T>(
           throw error;
         }
         try {
+          // Atomic replacement must retain the destination's permissions without exposing a private staged copy.
+          let mode = 0o600;
+          try {
+            mode = statSync(resourcePath).mode & 0o777;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
+          fchmodSync(descriptor, mode);
           ftruncateSync(descriptor, 0);
           writeSync(descriptor, contents);
         } finally {
