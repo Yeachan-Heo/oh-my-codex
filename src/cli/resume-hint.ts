@@ -15,20 +15,44 @@ export interface ResumeBlockInput {
 }
 
 export function shellQuote(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\''`)}'`;
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\'`)}'`;
+}
+
+/**
+ * Extract the -C/--cd directory override from Codex args.
+ * Codex uses -C or --cd to override the working directory.
+ */
+export function extractCodexDirectoryOverride(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === '-C' || arg === '--cd') {
+      if (args[i + 1]) {
+        return args[i + 1];
+      }
+    } else if (arg.startsWith('--cd=')) {
+      return arg.slice('--cd='.length);
+    }
+  }
+  return undefined;
 }
 
 /**
  * Compute the effective working directory where a session will be created.
  * When a worktree is enabled, the session cwd will be the worktree path.
+ * When a -C/--cd override is used, the session cwd will be the override directory.
  * Otherwise, it will be the launch cwd.
  */
 export function resolveEffectiveSessionCwd(
   launchCwd: string,
   worktreeEnabled: boolean,
   worktreePath?: string,
+  codexDirOverride?: string,
 ): string {
-  return worktreeEnabled && worktreePath ? worktreePath : launchCwd;
+  // Worktree takes precedence over -C override
+  if (worktreeEnabled && worktreePath) return worktreePath;
+  // -C/--cd override determines the actual cwd where Codex runs
+  if (codexDirOverride) return codexDirOverride;
+  return launchCwd;
 }
 
 function contextFlags(launchArgs: readonly string[]): string[] {
