@@ -731,9 +731,13 @@ fi | sort
       await chmod(fakeCodexPath, 0o755);
       await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
       await chmod(fakePsPath, 0o755);
+      const seededRollout = join(home, '.codex', 'sessions', '2026', '11', '09', 'rollout-seed.jsonl');
+      await mkdir(dirname(seededRollout), { recursive: true });
+      await writeFile(seededRollout, '{"type":"session_meta","payload":{"id":"seed-session"}}\n');
 
       const result = runOmx(wd, ['resume', '--last'], {
         HOME: home,
+        CODEX_HOME: join(home, '.codex'),
         PATH: `${fakeBin}:/usr/bin:/bin`,
         OMX_AUTO_UPDATE: '0',
         OMX_NOTIFY_FALLBACK: '0',

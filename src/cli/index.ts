@@ -168,7 +168,7 @@ import {
   isTmuxAvailable,
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
-import { codexConfigPath, omxRoot, rememberOmxLaunchContext, resolveOmxCliEntryPath } from "../utils/paths.js";
+import { codexConfigPath, codexHome, omxRoot, rememberOmxLaunchContext, resolveOmxCliEntryPath } from "../utils/paths.js";
 import { cleanCodexModelAvailabilityNuxIfNeeded, extractSharedMcpRegistryServersFromConfig, repairConfigIfNeeded, repairProjectScopeTrustStateForLaunch, syncProjectScopeTrustStateFromRuntime } from "../config/generator.js";
 import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
@@ -217,6 +217,8 @@ import {
 } from "../team/worktree.js";
 import { resolveVerifiedDetachedTeamContext, type VerifiedDetachedTeamContext } from "../team/state-root.js";
 import { ensureReusableNodeModules } from "../utils/repo-deps.js";
+import { findLatestSession } from "../session-history/search.js";
+import { formatResumeBlock } from "./resume-hint.js";
 import { resolveWorktreeToolContext, worktreeToolContextEnv } from "../utils/worktree-tool-context.js";
 import {
   OMX_NOTIFY_TEMP_CONTRACT_ENV,
@@ -2425,6 +2427,12 @@ export function isResumeCodexLaunch(args: string[]): boolean {
     return arg === "resume";
   }
   return false;
+}
+
+function resumeRequestsLast(args: string[]): boolean {
+  const { omxArgs } = splitOmxArgsAtEndOfOptions(args);
+  const resumeIndex = omxArgs.indexOf("resume");
+  return resumeIndex >= 0 && omxArgs.slice(resumeIndex + 1).includes("--last");
 }
 
 async function prepareResumeCodexHomeForLaunch(
@@ -5659,6 +5667,9 @@ export async function launchWithHud(args: string[]): Promise<void> {
   }
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
   activateMadmaxIsolationIfNeeded("launch", args, launchCwd, process.env);
+  const madmaxStateDirForResumeBlock = process.env.OMXBOX_ACTIVE === "1" && launchArgsRequestMadmaxIsolation(args)
+    ? process.env.OMX_ROOT
+    : undefined;
   const verifiedMadmaxLaunchContext = resolveVerifiedMadmaxDetachedContext(launchCwd, args, process.env);
   const persistentCodexHomeForLaunch = resolveCodexHomeForLaunch(launchCwd, process.env);
   const workerSparkModel = resolveWorkerSparkModel(
@@ -5753,6 +5764,13 @@ export async function launchWithHud(args: string[]): Promise<void> {
   const codexHomeOverride = preparedCodexHome.codexHomeOverride;
   const sqliteHomeOverride = preparedCodexHome.sqliteHomeOverride;
   const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
+  if (resumePrepared && resumeRequestsLast(normalizedArgs)) {
+    const newest = await findLatestSession({ codexHomeDirs: [codexHomeOverride ?? codexHome()] });
+    if (!newest) {
+      await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup).catch(logCliOperationFailure);
+      throw new Error("omx resume --last: no previous sessions found for this context. Start one with `omx`, or pass --codex-home <path> / drop --project to search elsewhere.");
+    }
+  }
   let insideTmuxControlPlane: DetachedLaunchControlPlane | undefined;
   if (launchPolicy === "inside-tmux") {
     let verifiedTeamContext: VerifiedDetachedTeamContext | undefined;
@@ -5803,6 +5821,33 @@ export async function launchWithHud(args: string[]): Promise<void> {
   }
 
   let postLaunchHandledExternally = false;
+  const resumeBlockStartedAtMs = Date.now() - 1000;
+  const isResumeLaunch = isResumeCodexLaunch(normalizedArgs);
+  const printExitResumeBlock = async (): Promise<void> => {
+    if (isResumeLaunch || (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach)) return;
+    try {
+      const latest = await findLatestSession({
+        codexHomeDirs: [codexHomeOverride ?? codexHome()],
+        modifiedSinceMs: resumeBlockStartedAtMs,
+      });
+      process.stderr.write(formatResumeBlock({
+        sessionId: latest?.session_id ?? null,
+        launchArgs: omxArgs,
+        launchCwd,
+        madmaxStateDir: madmaxStateDirForResumeBlock,
+        worktree: ensuredLaunchWorktree?.enabled
+          ? { path: ensuredLaunchWorktree.worktreePath, name: parsedWorktree.mode.enabled ? parsedWorktree.mode.name : null }
+          : undefined,
+        projectLocalHome: Boolean(projectLocalCodexHomeForCleanup),
+      }));
+    } catch (err) {
+      logCliOperationFailure(err);
+    }
+  };
+  // Ctrl-C reaches the whole foreground group; keep omx alive (Codex decides
+  // how to exit) so the resume block below still prints.
+  const swallowSigint = (): void => {};
+  process.on("SIGINT", swallowSigint);
   try {
     const notifyTempContractRaw = notifyTempResult.contract.active
       ? serializeNotifyTempContract(notifyTempResult.contract)
@@ -5833,6 +5878,9 @@ export async function launchWithHud(args: string[]): Promise<void> {
     if (error instanceof DetachedLaunchSafetyError) postLaunchHandledExternally = true;
     throw error;
   } finally {
+    // Capture the session id before cleanup removes the runtime Codex home.
+    process.off("SIGINT", swallowSigint);
+    await printExitResumeBlock();
     if (!postLaunchHandledExternally && launch) {
       try {
         await postLaunch(cwd, sessionId, launch.binding, codexHomeOverride, enableNotifyFallbackAuthority, projectLocalCodexHomeForCleanup);

@@ -484,3 +484,54 @@ export async function searchSessionHistory(options: SessionSearchOptions): Promi
     results: limitedResults,
   };
 }
+
+export interface LatestSessionInfo {
+  session_id: string;
+  timestamp: string | null;
+  cwd: string | null;
+  transcript_path: string;
+}
+
+async function readFirstSessionMeta(filePath: string): Promise<SessionMeta | null> {
+  const reader = createInterface({ input: createReadStream(filePath, 'utf-8'), crlfDelay: Infinity });
+  try {
+    for await (const line of reader) {
+      if (line.trim() === '') continue;
+      return extractSessionMeta(safeParseJson(line));
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    reader.close();
+  }
+}
+
+/**
+ * Newest session (by rollout mtime) across the given Codex homes. This backs
+ * both the exit-time resume block and the `omx resume --last` pre-check, so
+ * they agree with `searchSessionHistory` on what a session is.
+ */
+export async function findLatestSession(options: {
+  codexHomeDirs: string[];
+  modifiedSinceMs?: number;
+}): Promise<LatestSessionInfo | null> {
+  const sources = await normalizeExistingCodexHomeDirs(options.codexHomeDirs);
+  const candidates: Array<{ path: string; mtimeMs: number }> = [];
+  for (const source of sources) {
+    for (const path of await listRolloutFiles(join(source.dir, 'sessions'))) {
+      const info = await stat(path).catch(() => null);
+      if (!info) continue;
+      if (options.modifiedSinceMs != null && info.mtimeMs < options.modifiedSinceMs) continue;
+      candidates.push({ path, mtimeMs: info.mtimeMs });
+    }
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path));
+  for (const candidate of candidates) {
+    const meta = await readFirstSessionMeta(candidate.path);
+    if (meta) {
+      return { session_id: meta.sessionId, timestamp: meta.timestamp, cwd: meta.cwd, transcript_path: candidate.path };
+    }
+  }
+  return null;
+}

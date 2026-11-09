@@ -1,0 +1,168 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildResumeCommand, formatResumeBlock } from '../resume-hint.js';
+import { findLatestSession } from '../../session-history/search.js';
+
+const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
+
+async function writeRollout(home: string, name: string, id: string, mtime: number): Promise<void> {
+  const path = join(home, 'sessions', '2026', '11', '09', `rollout-${name}.jsonl`);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({ type: 'session_meta', payload: { id, timestamp: 't', cwd: '/x' } })}\n`);
+  await utimes(path, mtime / 1000, mtime / 1000);
+}
+
+describe('resume block formatting', () => {
+  it('plain launch uses only codex-native `resume <id>`', () => {
+    const out = formatResumeBlock({ sessionId: SID, launchArgs: [], launchCwd: '/p' });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, new RegExp(`^  omx resume ${SID}$`, 'm'));
+    assert.doesNotMatch(out, /--latest/);
+  });
+
+  it('madmax /exit prints isolated state line first, then a command that keeps --madmax/--high from the source cwd', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: ['--madmax', '--high'],
+      launchCwd: '/src/proj',
+      madmaxStateDir: '/home/u/.omx-runs/run-1',
+    });
+    const lines = out.trimEnd().split('\n');
+    assert.equal(lines[0], '[omx] madmax isolated state: /home/u/.omx-runs/run-1 (source: /src/proj)');
+    assert.equal(lines.at(-1), `  cd /src/proj && omx --madmax --high resume ${SID}`);
+  });
+
+  it('worktree variant names the worktree and cds into it', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: ['--worktree', 'feat-x'],
+      launchCwd: '/repo',
+      worktree: { path: '/repo.omx-worktrees/feat x', name: 'feat-x' },
+    });
+    assert.match(out, /\[omx\] worktree: feat-x \(\/repo\.omx-worktrees\/feat x\)/);
+    assert.match(out, new RegExp(`cd '/repo\\.omx-worktrees/feat x' && omx resume ${SID}`));
+  });
+
+  it('re-emits model and project flags', () => {
+    assert.equal(
+      buildResumeCommand({ sessionId: SID, launchArgs: ['--model', 'gpt-5'], launchCwd: '/p', projectLocalHome: true }),
+      `omx --model gpt-5 --project resume ${SID}`,
+    );
+  });
+
+  it('without a session id says so and prints no broken resume command', () => {
+    const out = formatResumeBlock({ sessionId: null, launchArgs: ['--madmax'], launchCwd: '/p' });
+    assert.match(out, /No Codex session id was captured/);
+    assert.doesNotMatch(out, /resume (null|undefined|'')/);
+    assert.equal(buildResumeCommand({ sessionId: null, launchArgs: [], launchCwd: '/p' }), null);
+  });
+});
+
+describe('findLatestSession (backs `resume --last`)', () => {
+  it('returns null when no sessions exist', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'omx-latest-empty-'));
+    try {
+      assert.equal(await findLatestSession({ codexHomeDirs: [home] }), null);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+
+  it('picks the newest of several sessions across homes', async () => {
+    const a = await mkdtemp(join(tmpdir(), 'omx-latest-a-'));
+    const b = await mkdtemp(join(tmpdir(), 'omx-latest-b-'));
+    try {
+      await writeRollout(a, '1-old', 'old', 1_000_000);
+      await writeRollout(a, '2-mid', 'mid', 2_000_000);
+      await writeRollout(b, '3-new', 'new', 3_000_000);
+      assert.equal((await findLatestSession({ codexHomeDirs: [a, b] }))?.session_id, 'new');
+      assert.equal((await findLatestSession({ codexHomeDirs: [a] }))?.session_id, 'mid');
+      assert.equal(await findLatestSession({ codexHomeDirs: [a, b], modifiedSinceMs: 4_000_000 }), null);
+    } finally {
+      await rm(a, { recursive: true, force: true });
+      await rm(b, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('omx launch exit output (fake codex, isolated HOME)', () => {
+  function run(args: string[], wd: string, fakeBin: string, extra: Record<string, string> = {}) {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    return spawnSync(process.execPath, [join(repoRoot, 'dist', 'cli', 'omx.js'), ...args], {
+      cwd: wd,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        HOME: join(wd, 'home'),
+        CODEX_HOME: join(wd, 'home', '.codex'),
+        OMX_RUNS_DIR: join(wd, 'runs'),
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+        OMX_LAUNCH_POLICY: 'direct',
+        ...extra,
+      },
+    });
+  }
+
+  async function setup(writeSession: boolean, exitCode = 0) {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-exit-block-'));
+    const fakeBin = join(wd, 'bin');
+    await mkdir(fakeBin, { recursive: true });
+    await mkdir(join(wd, 'home', '.codex'), { recursive: true });
+    const script = writeSession
+      ? `mkdir -p "$CODEX_HOME/sessions/2026/11/09"\nprintf '{"type":"session_meta","payload":{"id":"${SID}","cwd":"%s"}}\\n' "$PWD" > "$CODEX_HOME/sessions/2026/11/09/rollout-a.jsonl"\nexit ${exitCode}\n`
+      : `exit ${exitCode}\n`;
+    await writeFile(join(fakeBin, 'codex'), `#!/bin/sh\n${script}`, { mode: 0o755 });
+    return { wd, fakeBin };
+  }
+
+  it('normal /exit prints the resume block', async () => {
+    const { wd, fakeBin } = await setup(true);
+    try {
+      const r = run([], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
+      assert.match(r.stderr, new RegExp(`omx resume ${SID}`));
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('madmax /exit prints the block after the isolated-state line', async () => {
+    const { wd, fakeBin } = await setup(true);
+    try {
+      const r = run(['--madmax', '--high'], wd, fakeBin);
+      const stateAt = r.stderr.indexOf('[omx] madmax isolated state:');
+      const blockAt = r.stderr.indexOf('Session id:');
+      assert.ok(stateAt >= 0 && blockAt > stateAt, r.stderr);
+      assert.match(r.stderr, new RegExp(`omx --madmax --high resume ${SID}`));
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('abnormal child exit still prints the block when a session id is known', async () => {
+    const { wd, fakeBin } = await setup(true, 3);
+    try {
+      const r = run([], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('no captured session id says so', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const r = run([], wd, fakeBin);
+      assert.match(r.stderr, /No Codex session id was captured/, r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('resume --last with no sessions errors clearly and does not launch codex', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const r = run(['resume', '--last'], wd, fakeBin);
+      assert.notEqual(r.status, 0);
+      assert.match(r.stderr, /no previous sessions found/, r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+});
