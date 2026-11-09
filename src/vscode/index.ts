@@ -5,7 +5,7 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
-import { redactAuthSecrets } from '../auth/redact.js';
+import { createAuthStderrRedactor, redactAuthSecrets } from '../auth/redact.js';
 import { CODEX_BYPASS_FLAG, MADMAX_FLAG, MADMAX_SPARK_FLAG } from '../cli/constants.js';
 import {
   resolveCommandPathForPlatform,
@@ -265,12 +265,16 @@ export function launchDirectSession(
   const startedAt = now.toISOString();
   writeLog(logStream, `[${startedAt}] $ ${launched.spec.command} ${launched.spec.args.join(' ')}\n`);
 
-  child.stdout?.on('data', (chunk: Buffer | string) => writeLog(logStream, String(chunk)));
-  child.stderr?.on('data', (chunk: Buffer | string) => writeLog(logStream, String(chunk)));
+  const stdoutRedactor = createAuthStderrRedactor((text) => writeLog(logStream, text));
+  const stderrRedactor = createAuthStderrRedactor((text) => writeLog(logStream, text));
+  child.stdout?.on('data', (chunk: Buffer | string) => stdoutRedactor.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  child.stderr?.on('data', (chunk: Buffer | string) => stderrRedactor.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
   child.on('error', (error) => {
     writeLog(logStream, `\n[${new Date().toISOString()}] launch error: ${redactOmxLogLine(error)}\n`);
   });
-  child.on('exit', (code, signal) => {
+  child.on('close', (code, signal) => {
+    stdoutRedactor.end();
+    stderrRedactor.end();
     writeLog(logStream, `\n[${new Date().toISOString()}] exited code=${code ?? 'null'} signal=${signal ?? 'null'}\n`);
     logStream.end();
   });
