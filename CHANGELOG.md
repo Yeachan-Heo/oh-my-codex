@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.5] - 2026-11-09
+
+Patch release ships two critical team runtime safety improvements: fail-closed task-read error handling and memory/secrets/API preservation across state mutations. See [release notes](docs/release-notes-0.22.5.md) for exact scope and evidence.
+
+### Fixed
+
+- **FAIL CLOSED ON TASK READS AND STALE REPLY TARGETS (#4067):** Team runtime now fails closed on task read failures, handling corrupted task files and unresolvable reply targets instead of silently ignoring them. This prevents task loss and state inconsistency during malformed or id-mismatched operations.
+- **PRESERVE MEMORY WRITES, SECRETS, AND API AVAILABILITY (#4068):** Integration and worker operations now preserve memory writes, API availability state, and secret values across state mutations. Previous mutations could lose in-flight writes, reset API state during recovery, or drop configured secrets, causing workflows to restart or fail. This fix ensures state consistency across all operations.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.4...v0.22.5
+
 ## [0.22.4] - 2026-11-09
 
 Patch release ships three improvements to the resume command: exit-time resume hints for better workflow continuation, fixes for directory overrides in resume commands, and corrections to quote escaping. See [release notes](docs/release-notes-0.22.4.md) for exact scope and evidence.
