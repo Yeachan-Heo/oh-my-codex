@@ -218,7 +218,7 @@ import {
 import { resolveVerifiedDetachedTeamContext, type VerifiedDetachedTeamContext } from "../team/state-root.js";
 import { ensureReusableNodeModules } from "../utils/repo-deps.js";
 import { findLatestSession } from "../session-history/search.js";
-import { formatResumeBlock } from "./resume-hint.js";
+import { formatResumeBlock, resolveEffectiveSessionCwd } from "./resume-hint.js";
 import { resolveWorktreeToolContext, worktreeToolContextEnv } from "../utils/worktree-tool-context.js";
 import {
   OMX_NOTIFY_TEMP_CONTRACT_ENV,
@@ -5826,7 +5826,11 @@ export async function launchWithHud(args: string[]): Promise<void> {
   const resumeBlockStartedAtMs = Date.now() - 1000;
   const isResumeLaunch = isResumeCodexLaunch(normalizedArgs);
   // Use the effective cwd that was actually passed to runCodex (worktree path if enabled, else launchCwd)
-  const effectiveCwdForSession = ensuredLaunchWorktree?.enabled ? ensuredLaunchWorktree.worktreePath : launchCwd;
+  const effectiveCwdForSession = resolveEffectiveSessionCwd(
+    launchCwd,
+    ensuredLaunchWorktree?.enabled === true,
+    ensuredLaunchWorktree?.enabled === true ? ensuredLaunchWorktree.worktreePath : undefined,
+  );
   const printExitResumeBlock = async (): Promise<void> => {
     if (isResumeLaunch || (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach)) return;
     try {

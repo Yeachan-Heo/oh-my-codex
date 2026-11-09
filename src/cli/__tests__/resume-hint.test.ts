@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildResumeCommand, formatResumeBlock } from '../resume-hint.js';
+import { buildResumeCommand, formatResumeBlock, resolveEffectiveSessionCwd } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
@@ -111,8 +111,19 @@ describe('findLatestSession (backs `resume --last`)', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
-  it('worktree filter: filters by effective cwd when worktree path differs from launch cwd', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'omx-latest-worktree-'));
+  it('resolveEffectiveSessionCwd: returns worktree path when enabled, else launch cwd', () => {
+    // When worktree is disabled, should return launch cwd regardless of worktree path
+    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', false, '/worktree/path'), '/launch/cwd');
+    
+    // When worktree is enabled, should return worktree path
+    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', true, '/worktree/path'), '/worktree/path');
+    
+    // When worktree is disabled and worktree path is undefined, should return launch cwd
+    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', false, undefined), '/launch/cwd');
+  });
+
+  it('worktree filter: findLatestSession picks correct session when filtering by effective cwd', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'omx-worktree-effective-cwd-'));
     try {
       await mkdir(join(home, 'sessions', '2026', '11', '09'), { recursive: true });
       const path1 = join(home, 'sessions', '2026', '11', '09', 'rollout-1.jsonl');
@@ -123,18 +134,20 @@ describe('findLatestSession (backs `resume --last`)', () => {
 `);
       await utimes(path1, 1000 / 1000, 1000 / 1000);
       
-      // Write session from worktree cwd with newer mtime
+      // Write session from worktree cwd with newer mtime (simulates a worktree launch)
       await writeFile(path2, `${JSON.stringify({ type: 'session_meta', payload: { id: 'session-worktree', timestamp: 't', cwd: '/repo/.omx-worktrees/feat-x' } })}
 `);
       await utimes(path2, 2000 / 1000, 2000 / 1000);
       
-      // When filtering by worktree path (the effective cwd), should pick session-worktree
-      const worktreeFilter = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/repo/.omx-worktrees/feat-x' });
-      assert.equal(worktreeFilter?.session_id, 'session-worktree');
+      // Critical: If code reverts to using launchCwd instead of effectiveCwdForSession,
+      // it would find session-launch instead of the correct session-worktree
+      const effectiveCwd = resolveEffectiveSessionCwd('/repo', true, '/repo/.omx-worktrees/feat-x');
+      const found = await findLatestSession({ codexHomeDirs: [home], cwdFilter: effectiveCwd });
+      assert.equal(found?.session_id, 'session-worktree', 'must find session created in worktree cwd when filtering by effective cwd');
       
-      // When filtering by launch cwd, should pick session-launch
-      const launchFilter = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/repo' });
-      assert.equal(launchFilter?.session_id, 'session-launch');
+      // Verify the other case: when filtering by launch cwd, find the launch session
+      const launchSession = await findLatestSession({ codexHomeDirs: [home], cwdFilter: '/repo' });
+      assert.equal(launchSession?.session_id, 'session-launch', 'should find session-launch when filtering by launch cwd');
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 

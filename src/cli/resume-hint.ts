@@ -15,7 +15,20 @@ export interface ResumeBlockInput {
 }
 
 export function shellQuote(value: string): string {
-  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\''`)}'`;
+}
+
+/**
+ * Compute the effective working directory where a session will be created.
+ * When a worktree is enabled, the session cwd will be the worktree path.
+ * Otherwise, it will be the launch cwd.
+ */
+export function resolveEffectiveSessionCwd(
+  launchCwd: string,
+  worktreeEnabled: boolean,
+  worktreePath?: string,
+): string {
+  return worktreeEnabled && worktreePath ? worktreePath : launchCwd;
 }
 
 function contextFlags(launchArgs: readonly string[]): string[] {
