@@ -218,7 +218,7 @@ import {
 import { resolveVerifiedDetachedTeamContext, type VerifiedDetachedTeamContext } from "../team/state-root.js";
 import { ensureReusableNodeModules } from "../utils/repo-deps.js";
 import { findLatestSession } from "../session-history/search.js";
-import { formatResumeBlock, resolveEffectiveSessionCwd } from "./resume-hint.js";
+import { extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd } from "./resume-hint.js";
 import { resolveWorktreeToolContext, worktreeToolContextEnv } from "../utils/worktree-tool-context.js";
 import {
   OMX_NOTIFY_TEMP_CONTRACT_ENV,
@@ -5825,11 +5825,14 @@ export async function launchWithHud(args: string[]): Promise<void> {
   let postLaunchHandledExternally = false;
   const resumeBlockStartedAtMs = Date.now() - 1000;
   const isResumeLaunch = isResumeCodexLaunch(normalizedArgs);
-  // Use the effective cwd that was actually passed to runCodex (worktree path if enabled, else launchCwd)
+  // Use the effective cwd that was actually passed to runCodex
+  // (worktree path if enabled, else -C/--cd override if present, else launchCwd)
+  const codexDirOverride = extractCodexDirectoryOverride(normalizedArgs);
   const effectiveCwdForSession = resolveEffectiveSessionCwd(
     launchCwd,
     ensuredLaunchWorktree?.enabled === true,
     ensuredLaunchWorktree?.enabled === true ? ensuredLaunchWorktree.worktreePath : undefined,
+    codexDirOverride,
   );
   const printExitResumeBlock = async (): Promise<void> => {
     if (isResumeLaunch || (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach)) return;
@@ -5844,6 +5847,9 @@ export async function launchWithHud(args: string[]): Promise<void> {
         modifiedSinceMs: resumeBlockStartedAtMs,
         cwdFilter: effectiveCwdForSession,
       });
+      // Determine if we should add --project flag: when using a worktree with a project-local home,
+      // we need to preserve the home by adding --project so the resume command works from the worktree.
+      const shouldAddProjectFlag = !!(ensuredLaunchWorktree?.enabled && projectLocalCodexHomeForCleanup);
       process.stderr.write(formatResumeBlock({
         sessionId: latest?.session_id ?? null,
         launchArgs: omxArgs,
@@ -5852,7 +5858,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
         worktree: ensuredLaunchWorktree?.enabled
           ? { path: ensuredLaunchWorktree.worktreePath, name: parsedWorktree.mode.enabled ? parsedWorktree.mode.name : null }
           : undefined,
-        projectLocalHome: false, // Don't add --project; session is persisted to durable home during cleanup
+        projectLocalHome: shouldAddProjectFlag,
       }));
     } catch (err) {
       logCliOperationFailure(err);

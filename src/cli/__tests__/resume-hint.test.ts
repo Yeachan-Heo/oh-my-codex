@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildResumeCommand, formatResumeBlock, resolveEffectiveSessionCwd } from '../resume-hint.js';
+import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
@@ -111,12 +111,32 @@ describe('findLatestSession (backs `resume --last`)', () => {
     } finally { await rm(home, { recursive: true, force: true }); }
   });
 
-  it('resolveEffectiveSessionCwd: returns worktree path when enabled, else launch cwd', () => {
-    // When worktree is disabled, should return launch cwd regardless of worktree path
-    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', false, '/worktree/path'), '/launch/cwd');
+  it('extractCodexDirectoryOverride: extracts -C or --cd flags from args', () => {
+    // Should extract -C flag with value
+    assert.equal(extractCodexDirectoryOverride(['-C', '/other/dir', 'launch']), '/other/dir');
     
-    // When worktree is enabled, should return worktree path
-    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', true, '/worktree/path'), '/worktree/path');
+    // Should extract --cd flag with value
+    assert.equal(extractCodexDirectoryOverride(['--cd', '/override', 'launch']), '/override');
+    
+    // Should extract --cd=value syntax
+    assert.equal(extractCodexDirectoryOverride(['--cd=/path', 'launch']), '/path');
+    
+    // Should return undefined if no override
+    assert.equal(extractCodexDirectoryOverride(['launch']), undefined);
+    
+    // Should return undefined if flag has no value
+    assert.equal(extractCodexDirectoryOverride(['-C']), undefined);
+  });
+
+  it('resolveEffectiveSessionCwd: returns worktree path, then -C override, then launch cwd', () => {
+    // When worktree is disabled and no override, should return launch cwd
+    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', false, undefined, undefined), '/launch/cwd');
+    
+    // When -C override is used but no worktree, should return override path
+    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', false, undefined, '/override/dir'), '/override/dir');
+    
+    // When worktree is enabled, should return worktree path (takes precedence over -C)
+    assert.equal(resolveEffectiveSessionCwd('/launch/cwd', true, '/worktree/path', '/override/dir'), '/worktree/path');
     
     // When worktree is disabled and worktree path is undefined, should return launch cwd
     assert.equal(resolveEffectiveSessionCwd('/launch/cwd', false, undefined), '/launch/cwd');
