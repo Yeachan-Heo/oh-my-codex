@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd } from '../resume-hint.js';
+import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd, shellQuote } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
@@ -296,5 +296,32 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
       assert.doesNotMatch(r.stderr, /omx.*--project.*resume/, r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+});
+
+describe('shellQuote escaping (round-trip through bash)', () => {
+  function bashEvalRoundTrip(value: string): string {
+    const result = spawnSync('bash', ['-c', `printf %s ${shellQuote(value)}`], { encoding: 'utf-8' });
+    return result.stdout;
+  }
+
+  it('preserves path with apostrophe', () => {
+    const path = "/tmp/user's repo";
+    assert.equal(bashEvalRoundTrip(path), path);
+  });
+
+  it('preserves model name with apostrophe', () => {
+    const modelName = "gpt-4o-mini's variant";
+    assert.equal(bashEvalRoundTrip(modelName), modelName);
+  });
+
+  it('preserves plain value with apostrophe', () => {
+    const value = "don't forget this";
+    assert.equal(bashEvalRoundTrip(value), value);
+  });
+
+  it('preserves value with multiple apostrophes', () => {
+    const value = "it's what's best";
+    assert.equal(bashEvalRoundTrip(value), value);
   });
 });
