@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - Preserve the first question terminal state across API/UI answers, renderer replacement, and timeout handling. Submit locks are no longer deleted based on age; abandoned locks require manual recovery.
+- `omx cleanup` now preserves temporary directories and only reaps orphaned OMX MCP processes. A directory name and modification time do not establish ownership, and matching temporary directories may contain active projects or uncommitted work.
 
 ## [0.22.5] - 2026-11-09
 
