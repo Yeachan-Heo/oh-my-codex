@@ -275,7 +275,7 @@ Usage:
   omx list      List packaged OMX skills and native agent prompts (--json)
   omx quality-gates list --stage <deep-interview|ralplan|code-review> --json
                 List configured custom quality gates for a workflow stage
-  omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
+  omx cleanup   Kill orphaned OMX MCP server processes (preserves temporary directories)
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
   omx auth      Manage Codex OAuth auth slots (add|list|use)
