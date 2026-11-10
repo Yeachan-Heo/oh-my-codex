@@ -1,7 +1,7 @@
 import { emitKeypressEvents } from 'node:readline';
 import { createInterface as createPromptInterface } from 'node:readline/promises';
 import { stdin as defaultInput, stdout as defaultOutput } from 'node:process';
-import { markQuestionAnswered, markQuestionTerminalError, readQuestionRecord } from './state.js';
+import { isTerminalQuestionStatus, markQuestionAnswered, markQuestionTerminalError, readQuestionRecord } from './state.js';
 import { isMultiAnswerableQuestion } from './types.js';
 import type { NormalizedQuestionItem, QuestionAnswer, QuestionAnswerEntry, QuestionRecord } from './types.js';
 
@@ -525,8 +525,10 @@ async function promptForAnswersWithNumbers(record: QuestionRecord, deps: Questio
 export async function runQuestionUi(recordPath: string, deps: QuestionUiDeps = {}): Promise<void> {
   const record = await readQuestionRecord(recordPath);
   if (!record) throw new Error(`Question record not found: ${recordPath}`);
+  if (isTerminalQuestionStatus(record.status)) return;
   const input = deps.input ?? defaultInput;
   const output = deps.output ?? defaultOutput;
+  let submitting = false;
 
   try {
     const questions = recordQuestions(record);
@@ -546,12 +548,14 @@ export async function runQuestionUi(recordPath: string, deps: QuestionUiDeps = {
         ? await promptForAnswersWithArrows(record, { input, output })
         : await promptForAnswersWithNumbers(record, { input, output });
     }
+    submitting = true;
     await markQuestionAnswered(recordPath, answers, {
       injectAnswersToPane: deps.injectAnswersToPane,
       closeQuestionRenderer: deps.closeQuestionRenderer,
     });
   } catch (error) {
-    await markQuestionTerminalError(recordPath, 'error', 'question_ui_failed', error instanceof Error ? error.message : String(error));
+    const terminal = await markQuestionTerminalError(recordPath, 'error', 'question_ui_failed', error instanceof Error ? error.message : String(error));
+    if (!submitting && terminal.status === 'answered') return;
     throw error;
   }
 }

@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.6] - 2026-11-10
+
+Patch release ships three fixes: team lock recovery preservation, cleanup logic that protects active temporary directories, and question terminal state preservation for reliable answer handling. See [release notes](docs/release-notes-0.22.6.md) for exact scope and evidence.
+
+### Fixed
+
+- **PRESERVE SHARED LOCKS DURING RECOVERY (#4075):** Team membership, scaling, task-claim, mailbox, and shared dispatch locks now preserve stale locks and report `team_lock_recovery_required` instead of deleting another operation's replacement lock. After a crash, confirm all users of the lock have stopped before manually removing the reported directory; automatic crash recovery is intentionally disabled.
+- **PRESERVE ACTIVE TEMPORARY DIRECTORIES DURING CLEANUP (#4076):** `omx cleanup` now preserves temporary directories and only reaps orphaned OMX MCP processes. A directory name and modification time do not establish ownership, and matching temporary directories may contain active projects or uncommitted work.
+- **PRESERVE THE FIRST TERMINAL QUESTION STATE (#4077):** A stale question UI, renderer replacement, or timeout handler could overwrite an accepted answer or report it as a failure. Question state transitions are now serialized and the first terminal state is preserved across API, UI, error, and supersede paths. Only the winning answer runs answer side effects; terminal records survive late submissions and cancellation.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.5...v0.22.6
+
 ## [0.22.5] - 2026-11-09
 
 Patch release ships two critical team runtime safety improvements: fail-closed task-read error handling and memory/secrets/API preservation across state mutations. See [release notes](docs/release-notes-0.22.5.md) for exact scope and evidence.

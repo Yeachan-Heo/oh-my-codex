@@ -2,6 +2,10 @@
 
 Use this page when OMX appears installed but real Codex execution still fails.
 
+## Question submit lock requires recovery
+
+`question_submit_lock_recovery_required:<path>` means an abandoned question submit lock was preserved to avoid overwriting an in-flight answer. A live owner's lock is retained even when it is old. Confirm that no question command or renderer is using the reported lock, then remove that specific lock directory and retry. Do not remove a lock while its owner is still running.
+
 ## Install success vs real execution success
 
 `omx setup` and `omx doctor` validate OMX's local install surface: prompts, skills, AGENTS scaffolding, config files, hooks, and runtime prerequisites. They do not guarantee that the active Codex profile can authenticate and complete a model request.
@@ -85,6 +89,12 @@ omx doctor --team
 
 Do not force-shutdown a team that may still have useful live panes or worker state. Prefer `omx team status <team-name>` and `tmux ls` first when unsure.
 
+
+## Team operation reports `team_lock_recovery_required`
+
+Team membership, scaling, task-claim, mailbox, and shared dispatch locks are no longer deleted automatically based on age. Concurrent recovery could otherwise delete a replacement lock and silently overwrite task data. A live owner is preserved even when its lease timestamp is old.
+
+If an operation reports `team_lock_recovery_required:<path>`, stop retries and inspect the exact lock directory and its `owner` file. Confirm the recorded process and all operations using that team/state root have stopped before manually removing only that lock directory, then retry the operation. Unknown, malformed, or partially initialized owners require the same confirmation; an old timestamp alone is not proof that an operation has stopped. Process crashes can leave locks requiring this manual recovery.
 
 ## Stale session pointer blocks state writes (`session.json is present but unusable`)
 
