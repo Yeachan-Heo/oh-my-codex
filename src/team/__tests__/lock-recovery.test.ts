@@ -238,8 +238,37 @@ describe('team lock recovery safety', () => {
     const lockDir = join(dispatchDir, '.lock');
     await staleLock(lockDir, '99999999.0.dead');
     await assert.rejects(() => enqueueDispatchRequest('audit', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'ping' }, cwd), /team_lock_recovery_required:/);
-    await assert.rejects(() => drainPendingTeamDispatch({ cwd, stateDir, injector: async () => { assert.fail('stale dispatch lock must not inject'); } }), /team_lock_recovery_required:/);
+    const logsDir = join(cwd, '.omx/logs');
+    const drained = await drainPendingTeamDispatch({ cwd, stateDir, logsDir, injector: async () => { assert.fail('stale dispatch lock must not inject'); } });
+    assert.deepEqual(drained, { processed: 0, skipped: 0, failed: 1 });
+    const log = (await readdir(logsDir)).find((name) => name.startsWith('team-dispatch-'));
+    assert.ok(log, 'the hook reports the abandoned lock');
+    assert.match(await readFile(join(logsDir, log), 'utf8'), /"type":"dispatch_lock_recovery_required","team":"audit","reason":"team_lock_recovery_required:/);
     assert.equal(await readFile(join(dispatchDir, 'requests.json'), 'utf8'), before);
+    assert.equal(await readFile(join(lockDir, 'owner'), 'utf8'), '99999999.0.dead');
+  });
+
+  it('keeps draining other teams when one team needs dispatch lock recovery', async () => {
+    const cwd = await workspace();
+    await initTeamState('audit', 'abandoned dispatch lock', 'executor', 1, cwd);
+    await initTeamState('zeta', 'healthy team', 'executor', 1, cwd);
+    const stateDir = join(cwd, '.omx/state');
+    const healthy = await enqueueDispatchRequest('zeta', { kind: 'inbox', to_worker: 'worker-1', trigger_message: 'ping' }, cwd);
+    const lockDir = join(stateDir, 'team/audit/dispatch/.lock');
+    await staleLock(lockDir, '99999999.0.dead');
+    const injected: string[] = [];
+    const drained = await drainPendingTeamDispatch({
+      cwd,
+      stateDir,
+      logsDir: join(cwd, '.omx/logs'),
+      injector: async (request) => {
+        injected.push(String(request.request_id));
+        return { ok: true, reason: 'injected_for_test' };
+      },
+    });
+    assert.deepEqual(injected, [healthy.request.request_id]);
+    assert.equal(drained.processed, 1);
+    assert.equal(drained.failed, 1);
     assert.equal(await readFile(join(lockDir, 'owner'), 'utf8'), '99999999.0.dead');
   });
 
