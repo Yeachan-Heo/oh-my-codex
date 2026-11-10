@@ -5,7 +5,8 @@ import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createQuestionRecord, markQuestionPrompting, readQuestionRecord } from '../state.js';
+import { createQuestionRecord, markQuestionPrompting, readQuestionRecord, submitQuestionAnswerById } from '../state.js';
+import { readQuestionEvents } from '../events.js';
 import { normalizeQuestionInput } from '../types.js';
 import { formatQuestionAnswerForInjection } from '../renderer.js';
 import {
@@ -331,6 +332,85 @@ describe('question ui arrow navigation', () => {
       const loaded = await readQuestionRecord(recordPath);
       assert.equal(loaded?.status, 'answered');
       assert.equal(loaded?.renderer?.return_target, '%11');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const action of ['submit', 'cancel'] as const) {
+    it(`keeps the accepted API answer when a stale UI attempts to ${action}`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-question-ui-terminal-'));
+      try {
+        const { record, recordPath } = await createQuestionRecord(cwd, {
+          question: 'Pick one', options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+          allow_other: false, other_label: 'Other', multi_select: false,
+        });
+        await markQuestionPrompting(recordPath, {
+          renderer: 'tmux-pane', target: '%42', launched_at: new Date().toISOString(),
+          return_target: '%11', return_transport: 'tmux-send-keys',
+        });
+        const input = new FakeTtyInput();
+        const run = runQuestionUi(recordPath, {
+          input, output: new FakeTtyOutput(),
+          injectAnswersToPane: () => { assert.fail('Late UI must not inject an answer'); },
+          closeQuestionRenderer: () => { assert.fail('Late UI must not close a renderer again'); },
+        });
+        const deadline = Date.now() + 2000;
+        while (!input.rawMode) {
+          assert.ok(Date.now() < deadline, 'UI did not start');
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        await submitQuestionAnswerById(cwd, record.question_id, {
+          answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] },
+        }, { injectAnswersToPane: () => true, closeQuestionRenderer: () => true });
+        const accepted = await readQuestionRecord(recordPath);
+        assert.ok(accepted);
+        if (action === 'cancel') input.emit('keypress', '', { name: 'c', ctrl: true });
+        else {
+          input.emit('keypress', '', { name: 'down' });
+          input.emit('keypress', '', { name: 'enter' });
+        }
+        await run;
+        assert.equal(input.rawMode, false);
+        assert.deepEqual(await readQuestionRecord(recordPath), accepted);
+        assert.equal((await readQuestionEvents(cwd)).filter((event) => event.type === 'question-answered').length, 1);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('still reports transport failure after committing a UI answer and preserves that answer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-question-ui-transport-error-'));
+    try {
+      const { recordPath } = await createQuestionRecord(cwd, {
+        question: 'Pick one', options: [{ label: 'A', value: 'a' }],
+        allow_other: false, other_label: 'Other', multi_select: false,
+      });
+      await markQuestionPrompting(recordPath, {
+        renderer: 'tmux-pane', target: '%42', launched_at: new Date().toISOString(),
+        return_target: '%11', return_transport: 'tmux-send-keys',
+      });
+      const input = new FakeTtyInput();
+      let closed = 0;
+      const run = runQuestionUi(recordPath, {
+        input, output: new FakeTtyOutput(),
+        injectAnswersToPane: () => { throw new Error('inject failed'); },
+        closeQuestionRenderer: () => { closed += 1; return true; },
+      });
+      const rejected = assert.rejects(run, /inject failed/);
+      const deadline = Date.now() + 2000;
+      while (!input.rawMode) {
+        assert.ok(Date.now() < deadline, 'UI did not start');
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      input.emit('keypress', '', { name: 'enter' });
+      await rejected;
+      const record = await readQuestionRecord(recordPath);
+      assert.equal(record?.status, 'answered');
+      assert.equal(record?.answer?.value, 'a');
+      assert.equal(record?.error, undefined);
+      assert.equal(closed, 1);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
