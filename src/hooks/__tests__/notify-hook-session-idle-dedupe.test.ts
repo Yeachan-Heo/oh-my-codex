@@ -83,7 +83,7 @@ describe('notify-hook session-idle dedupe', () => {
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(hooksDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd: wd }, null, 2));
       await writeFile(join(hooksDir, 'session-idle-counter.mjs'), buildSessionIdlePlugin(pluginStatePath), 'utf-8');
 
       const first = runNotifyHook(repoRoot, wd, 'Waiting for your next instruction.', 'turn-idle-1');
@@ -113,7 +113,7 @@ describe('notify-hook session-idle dedupe', () => {
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(hooksDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd: wd }, null, 2));
       await writeFile(join(hooksDir, 'session-idle-counter.mjs'), buildSessionIdlePlugin(pluginStatePath), 'utf-8');
 
       const first = runNotifyHook(repoRoot, wd, 'Waiting on review.', 'turn-idle-3');
@@ -143,7 +143,7 @@ describe('notify-hook session-idle dedupe', () => {
 
       await mkdir(join(stateDir, 'sessions', forkSessionId), { recursive: true });
       await mkdir(hooksDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: canonicalSessionId }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: canonicalSessionId, cwd: wd }, null, 2));
       await writeFile(join(hooksDir, 'session-idle-counter.mjs'), buildSessionIdlePlugin(pluginStatePath), 'utf-8');
 
       const result = runNotifyHook(repoRoot, wd, 'Waiting on forked review.', 'turn-idle-fork', {
@@ -171,7 +171,7 @@ describe('notify-hook session-idle dedupe', () => {
 
       await mkdir(stateDir, { recursive: true });
       await mkdir(hooksDir, { recursive: true });
-      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID }, null, 2));
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: SESSION_ID, cwd: wd }, null, 2));
       await writeFile(join(hooksDir, 'session-idle-counter.mjs'), buildSessionIdlePlugin(pluginStatePath), 'utf-8');
 
       const first = runNotifyHook(repoRoot, wd, 'Waiting for your next instruction.', 'turn-idle-5', {
