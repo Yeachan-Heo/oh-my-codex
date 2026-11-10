@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
@@ -120,6 +120,49 @@ describe('omx question CLI', () => {
       assert.equal(events.some((event) => event.type === 'question-error'), false);
     });
   }
+
+  it('reports a structured failure and keeps an abandoned submit lock when the waiter times out', async () => {
+    const cwd = await makeRepo();
+    const cliModule = new URL('../question.js', import.meta.url).href;
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import fs from 'node:fs/promises';
+      import { syncBuiltinESMExports } from 'node:module';
+      const read = fs.readFile;
+      let locked = false;
+      fs.readFile = async (...args) => {
+        const contents = await read(...args);
+        const path = String(args[0]);
+        if (!locked && path.includes(${JSON.stringify(`${sep}questions${sep}`)}) && path.endsWith('.json')
+          && JSON.parse(contents).status === 'prompting') {
+          locked = true;
+          await fs.mkdir(path + '.submit.lock');
+          await fs.writeFile(path + '.submit.lock/owner', '99999999.0.dead');
+          process.env.LOCK_PATH = path + '.submit.lock';
+        }
+        return contents;
+      };
+      syncBuiltinESMExports();
+      const { questionCommand } = await import(${JSON.stringify(cliModule)});
+      await questionCommand(['--input', JSON.stringify({
+        session_id: 'sess-q', question: 'Pick one', options: [{label:'A',value:'a'}], allow_other: false,
+      }), '--json']);
+      process.stderr.write('LOCK=' + process.env.LOCK_PATH + '\\n');
+    `], {
+      cwd, encoding: 'utf8', timeout: 30_000,
+      env: makeQuestionCliEnv(cwd, { OMX_QUESTION_TEST_RENDERER: 'noop', OMX_QUESTION_WAIT_TIMEOUT_MS: '0' }),
+    });
+    assert.equal(run.status, 1, run.stderr);
+    const payload = JSON.parse(run.stdout);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error.code, 'question_runtime_failed');
+    assert.match(payload.error.message, /question_submit_lock_recovery_required:/);
+    const lockPath = /LOCK=(.*)/.exec(run.stderr)?.[1];
+    assert.ok(lockPath, run.stderr);
+    assert.equal(await readFile(join(lockPath, 'owner'), 'utf8'), '99999999.0.dead');
+    const events = (await readFile(join(cwd, '.omx/state/question-events.jsonl'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(events.filter((event) => event.type === 'question-error').length, 1);
+  });
 
   for (const lockAfterExit of ['released', 'replaced'] as const) {
     it(`returns the accepted answer after a normally exiting lock owner leaves its lock ${lockAfterExit}`, async () => {

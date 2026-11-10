@@ -18,6 +18,7 @@ import {
   markQuestionTerminalError,
   markQuestionPrompting,
   QuestionSubmitError,
+  readQuestionRecord,
   submitQuestionAnswerById,
   waitForQuestionTerminalState,
 } from '../question/state.js';
@@ -389,16 +390,25 @@ export async function questionCommand(args: string[]): Promise<void> {
       ),
     });
   } catch (error) {
-    const message = extractErrorMessage(error);
+    let message = extractErrorMessage(error);
     const code = error instanceof QuestionRendererLaunchError
       ? error.code
       : 'question_runtime_failed';
-    const errorRecord = await markQuestionTerminalError(
-      recordPath,
-      'error',
-      code,
-      message,
-    );
+    let errorRecord;
+    try {
+      errorRecord = await markQuestionTerminalError(
+        recordPath,
+        'error',
+        code,
+        message,
+      );
+    } catch (commitError) {
+      // The submit lock needs manual recovery: leave the lock and the record untouched,
+      // but still report the failure and release the deep-interview wait obligation.
+      const commitMessage = extractErrorMessage(commitError);
+      if (commitMessage !== message) message = `${message}; ${commitMessage}`;
+      errorRecord = (await readQuestionRecord(recordPath)) ?? record;
+    }
     if (waitingForAnswer && errorRecord.status === 'answered') {
       finalRecord = errorRecord;
     } else {
