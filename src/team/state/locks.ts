@@ -57,12 +57,18 @@ function lockOwnerToken(): string {
 }
 
 export async function assertTeamLockNotStale(lockDir: string, lockStaleMs: number): Promise<void> {
-  const token = await readFile(join(lockDir, 'owner'), 'utf8').catch(() => '');
+  const info = await stat(lockDir).catch(() => null);
+  if (!info) return;
+  const ownerPath = join(lockDir, 'owner');
+  const token = await readFile(ownerPath, 'utf8').catch(() => '');
   const pid = Number(/^(\d+)\./.exec(token.trim())?.[1]);
   if (Number.isSafeInteger(pid) && pid > 0) {
     try { process.kill(pid, 0); return; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return; }
   } else if (!await isStaleLock(lockDir, lockStaleMs)) return;
+  const currentToken = await readFile(ownerPath, 'utf8').catch(() => '');
+  const currentInfo = await stat(lockDir).catch(() => null);
+  if (currentToken !== token || currentInfo?.dev !== info.dev || currentInfo?.ino !== info.ino) return;
   // shortcut: crashed/unknown owners require manual recovery; auto-reclaim needs an OS lock or owner-fenced compare-and-delete.
   throw new Error(`team_lock_recovery_required:${lockDir}: stale lock requires manual recovery. Confirm no operation is using it before removing the directory.`);
 }

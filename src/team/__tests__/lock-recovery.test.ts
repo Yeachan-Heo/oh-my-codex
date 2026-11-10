@@ -100,6 +100,108 @@ describe('team lock recovery safety', () => {
     }
   });
 
+  it('retries when an owner releases and exits after its token was read', async () => {
+    const cwd = await workspace();
+    const lockModule = new URL('../state/locks.js', import.meta.url).href;
+    const owner = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { withTeamLock } from ${JSON.stringify(lockModule)};
+      import { once } from 'node:events';
+      await withTeamLock('audit', ${JSON.stringify(cwd)}, 60_000,
+        { teamDir: () => ${JSON.stringify(join(cwd, '.omx/state/team/audit'))} }, async () => {
+          process.send('locked');
+          await once(process, 'message');
+        });
+      process.disconnect();
+    `], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    let contender: ReturnType<typeof spawn> | undefined;
+    const signal = AbortSignal.timeout(10_000);
+    try {
+      await once(owner, 'message', { signal });
+      contender = spawn(process.execPath, ['--input-type=module', '-e', `
+        import fs from 'node:fs/promises';
+        import { syncBuiltinESMExports } from 'node:module';
+        import { once } from 'node:events';
+        const readFile = fs.readFile;
+        let delayed = false;
+        fs.readFile = async (...args) => {
+          const token = await readFile(...args);
+          if (!delayed && String(args[0]) === ${JSON.stringify(join(cwd, '.omx/state/.team-locks/audit.membership/owner'))}) {
+            delayed = true;
+            process.send('owner-read');
+            await once(process, 'message');
+          }
+          return token;
+        };
+        syncBuiltinESMExports();
+        const { withTeamLock } = await import(${JSON.stringify(lockModule)});
+        await withTeamLock('audit', ${JSON.stringify(cwd)}, 60_000,
+          { teamDir: () => ${JSON.stringify(join(cwd, '.omx/state/team/audit'))} }, async () => {});
+        process.disconnect();
+      `], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+      let stderr = '';
+      contender.stderr?.on('data', (data) => { stderr += String(data); });
+      const contenderExit = once(contender, 'exit', { signal });
+      await once(contender, 'message', { signal });
+      const ownerExit = once(owner, 'exit', { signal });
+      owner.send('release');
+      assert.deepEqual(await ownerExit, [0, null]);
+      contender.send('continue');
+      assert.deepEqual(await contenderExit, [0, null], stderr);
+    } finally {
+      for (const child of [owner, contender]) {
+        if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    }
+  });
+
+  it('rechecks owner initialization and directory replacement before requiring recovery', async () => {
+    const cwd = await workspace();
+    const lockModule = new URL('../state/locks.js', import.meta.url).href;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs/promises';
+      import { join } from 'node:path';
+      import { syncBuiltinESMExports } from 'node:module';
+      const stat = fs.stat;
+      const lockDir = ${JSON.stringify(join(cwd, 'lock'))};
+      const { assertTeamLockNotStale } = await import(${JSON.stringify(lockModule)});
+      for (const mode of ['initialize', 'replace']) {
+        await fs.mkdir(lockDir);
+        if (mode === 'replace') await fs.writeFile(join(lockDir, 'owner'), 'unrecognized-owner');
+        await fs.writeFile(join(lockDir, 'lease'), 'old');
+        const old = new Date(Date.now() - 600_000);
+        await fs.utimes(join(lockDir, 'lease'), old, old);
+        let changed = false;
+        fs.stat = async (...args) => {
+          const info = await stat(...args);
+          if (!changed && String(args[0]) === join(lockDir, 'lease')) {
+            changed = true;
+            if (mode === 'replace') {
+              await fs.rename(lockDir, lockDir + '.old');
+              await fs.mkdir(lockDir);
+              await fs.writeFile(join(lockDir, 'owner'), 'unrecognized-owner');
+            } else {
+              await fs.writeFile(join(lockDir, 'owner'), process.pid + '.0.initialized');
+            }
+          }
+          return info;
+        };
+        syncBuiltinESMExports();
+        await assertTeamLockNotStale(lockDir, 1);
+        assert.equal(changed, true);
+        assert.equal(await fs.readFile(join(lockDir, 'owner'), 'utf8'),
+          mode === 'replace' ? 'unrecognized-owner' : process.pid + '.0.initialized');
+        fs.stat = stat;
+        syncBuiltinESMExports();
+        await fs.rm(lockDir, { recursive: true });
+      }
+    `], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr?.on('data', (data) => { stderr += String(data); });
+    try { assert.deepEqual(await once(child, 'exit', { signal: AbortSignal.timeout(10_000) }), [0, null], stderr); }
+    finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }
+  });
+
   it('preserves a SIGKILLed owner lock and gives a recovery diagnostic', async () => {
     const cwd = await workspace();
     const lockModule = new URL('../state/locks.js', import.meta.url).href;
