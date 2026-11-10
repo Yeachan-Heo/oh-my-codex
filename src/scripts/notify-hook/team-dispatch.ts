@@ -8,6 +8,7 @@ import { safeString } from './utils.js';
 import { getDefaultBridge, isRuntimeTransportError, isStrictDispatchRecord, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
 import { readDispatchRequests } from '../../team/state.js';
+import { assertTeamLockNotStale } from '../../team/state/locks.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { hasUniqueScopedMailboxMatch, mailboxMessageContentMatches, mailboxMessageIdentity, mailboxRecordBelongsToTeam, normalizeBridgeMailboxMessage, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
@@ -298,15 +299,7 @@ async function withLockDirectory(lockDir, timeoutError, fn) {
       break;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs > DISPATCH_LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // best effort
-      }
+      await assertTeamLockNotStale(lockDir, DISPATCH_LOCK_STALE_MS);
       if (Date.now() > deadline) throw new Error(timeoutError);
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
     }

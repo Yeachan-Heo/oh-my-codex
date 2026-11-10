@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Team membership, scaling, task-claim, mailbox, and shared dispatch locks now preserve stale locks and report `team_lock_recovery_required` instead of deleting another operation's replacement lock. After a crash, confirm all users of the lock have stopped before manually removing the reported directory; automatic crash recovery is intentionally disabled.
+
 ## [0.22.5] - 2026-11-09
 
 Patch release ships two critical team runtime safety improvements: fail-closed task-read error handling and memory/secrets/API preservation across state mutations. See [release notes](docs/release-notes-0.22.5.md) for exact scope and evidence.

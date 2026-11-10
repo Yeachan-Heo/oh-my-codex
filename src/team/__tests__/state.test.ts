@@ -1498,7 +1498,7 @@ exit 1
     }
   });
 
-  it('claimTask recovers a stale task claim lock and proceeds', async () => {
+  it('claimTask preserves a stale task claim lock and requires manual recovery', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-claim-stale-lock-'));
     try {
       await initTeamState('team-stale-lock', 't', 'executor', 1, cwd);
@@ -1510,8 +1510,12 @@ exit 1
       const staleTs = new Date(Date.now() - 10 * 60_000);
       await utimes(staleLockDir, staleTs, staleTs);
 
-      const claim = await claimTask('team-stale-lock', t.id, 'worker-1', t.version ?? 1, cwd);
-      assert.equal(claim.ok, true);
+      await assert.rejects(
+        () => claimTask('team-stale-lock', t.id, 'worker-1', t.version ?? 1, cwd),
+        /team_lock_recovery_required:/,
+      );
+      assert.equal(await readFile(join(staleLockDir, 'owner'), 'utf8'), 'stale-owner');
+      assert.equal((await readTask('team-stale-lock', t.id, cwd))?.status, 'pending');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -5351,7 +5355,7 @@ exit 1
     }
   });
 
-  it('heartbeats live scaling and membership leases while reclaiming stale crashed locks', async () => {
+  it('heartbeats live scaling and membership leases while preserving stale unknown locks', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-lock-lease-'));
     const teamName = 'team-lock-lease';
     const staleMs = 90;
@@ -5400,8 +5404,9 @@ exit 1
         await utimes(join(lock.lockDir, 'lease'), staleTime, staleTime);
 
         let reclaimed = false;
-        await lock.acquire(async () => { reclaimed = true; });
-        assert.equal(reclaimed, true, `stale ${lock.label} lock must be reclaimed after its lease expires`);
+        await assert.rejects(() => lock.acquire(async () => { reclaimed = true; }), /team_lock_recovery_required:/);
+        assert.equal(reclaimed, false, `stale ${lock.label} lock requires confirmed manual recovery`);
+        assert.equal(await readFile(join(lock.lockDir, 'owner'), 'utf8'), 'crashed-owner');
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
