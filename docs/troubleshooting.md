@@ -90,6 +90,12 @@ omx doctor --team
 Do not force-shutdown a team that may still have useful live panes or worker state. Prefer `omx team status <team-name>` and `tmux ls` first when unsure.
 
 
+## Team operation reports `team_lock_recovery_required`
+
+Team membership, scaling, task-claim, mailbox, and shared dispatch locks are no longer deleted automatically based on age. Concurrent recovery could otherwise delete a replacement lock and silently overwrite task data. A live owner is preserved even when its lease timestamp is old.
+
+If an operation reports `team_lock_recovery_required:<path>`, stop retries and inspect the exact lock directory and its `owner` file. Confirm the recorded process and all operations using that team/state root have stopped before manually removing only that lock directory, then retry the operation. Unknown, malformed, or partially initialized owners require the same confirmation; an old timestamp alone is not proof that an operation has stopped. Process crashes can leave locks requiring this manual recovery.
+
 ## Stale session pointer blocks state writes (`session.json is present but unusable`)
 
 State writes fail closed with `Cannot resolve writable state scope: session.json is present but unusable.` when a stale-dead selected pointer lacks a valid `OMX_SESSION_ID` binding, when a live managed Codex daemon owns the pointer but is not an OMX runtime, or when the pointer is malformed, belongs to a different working directory, or has indeterminate identity without the bounded exact-session reconciliation described below. Malformed and foreign-working-directory pointers always fail closed; identity-indeterminate pointers have only the narrow exact-session recovery path described below. Durable Ultragoal mutations (`goals.json` story/goal transitions) perform point-in-time writable-authority checks at mutation entry and after lock acquisition; a later SessionStart publication can still interleave before filesystem writes.

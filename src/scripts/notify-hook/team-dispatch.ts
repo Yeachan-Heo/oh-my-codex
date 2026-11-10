@@ -8,6 +8,7 @@ import { safeString } from './utils.js';
 import { getDefaultBridge, isRuntimeTransportError, isStrictDispatchRecord, preflightRuntimeBridge, resolveBridgeStateDir, RuntimeBridgeError } from '../../runtime/bridge.js';
 import { hasRuntimeAuthority, hasRuntimeDispatchIdentity, recordRuntimeFinalization, reconcileRuntimeFinalizations } from '../../team/state/dispatch-recovery.js';
 import { readDispatchRequests } from '../../team/state.js';
+import { assertTeamLockNotStale } from '../../team/state/locks.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 import { hasUniqueScopedMailboxMatch, mailboxMessageContentMatches, mailboxMessageIdentity, mailboxRecordBelongsToTeam, normalizeBridgeMailboxMessage, readLegacyMailboxMessageIds } from '../../team/state/mailbox.js';
 
@@ -298,15 +299,7 @@ async function withLockDirectory(lockDir, timeoutError, fn) {
       break;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs > DISPATCH_LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // best effort
-      }
+      await assertTeamLockNotStale(lockDir, DISPATCH_LOCK_STALE_MS);
       if (Date.now() > deadline) throw new Error(timeoutError);
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
     }
@@ -1188,136 +1181,151 @@ export async function drainPendingTeamDispatch({
     const requestsPath = join(teamDirPath, 'dispatch', 'requests.json');
     const config = await readJson(existsSync(manifestPath) ? manifestPath : configPath, {});
     const claims = [];
-    await withDispatchLock(teamDirPath, async () => {
-      await reconcileRuntimeFinalizations(stateDir, teamName);
-      let authoritativeRecords;
-      if (hasRuntimeAuthority(stateDir)) {
-        if (process.env.OMX_RUNTIME_BRIDGE === '0') throw new Error('runtime dispatch authority requires an enabled bridge');
-        authoritativeRecords = await refreshDispatchProjection(stateDir);
-        if (!authoritativeRecords) {
-          const records = getDefaultBridge(stateDir).readCompatFile('dispatch.json')?.records;
-          if (Array.isArray(records)) authoritativeRecords = records;
-        }
-      }
-      const requests = await readBridgeDispatchRequests(stateDir, teamName, cwd, authoritativeRecords);
-      if (!Array.isArray(requests)) return;
-      if (requests.some((request) => request && typeof request === 'object' && !shouldSkipRequest(request))) {
-        preflightRuntimeBridge(stateDir);
-      }
-      const issueCooldownState = await readIssueCooldownState(teamDirPath);
-      const triggerCooldownState = await readTriggerCooldownState(teamDirPath);
-      const issueCooldownByIssue = issueCooldownState.by_issue || {};
-      const triggerCooldownByKey = triggerCooldownState.by_trigger || {};
-      const nowMs = Date.now();
-
-      let mutated = false;
-      for (const request of requests) {
-        if (processed + claims.length >= maxPerTick) break;
-        if (!request || typeof request !== 'object') continue;
-        if (shouldSkipRequest(request)) {
-          skipped += 1;
-          continue;
-        }
-
-        if (request.to_worker === 'leader-fixed' && !resolveLeaderPaneId(config) && !explicitPaneIdentity(request.pane_id).provided) {
-          const nowIso = new Date().toISOString();
-          const alreadyDeferred = safeString(request.last_reason).trim() === LEADER_PANE_MISSING_DEFERRED_REASON;
-          request.updated_at = nowIso;
-          request.last_reason = LEADER_PANE_MISSING_DEFERRED_REASON;
-          request.status = 'pending';
-          skipped += 1;
-          mutated = true;
-          if (!alreadyDeferred) {
-            await appendDispatchLog(logsDir, {
-              type: 'dispatch_deferred',
-              team: teamName,
-              request_id: request.request_id,
-              worker: request.to_worker,
-              to_worker: request.to_worker,
-              message_id: request.message_id || null,
-              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-              status: 'pending',
-              tmux_session: safeString(config?.tmux_session).trim() || null,
-              leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
-              tmux_injection_attempted: false,
-              pane_target: null,
-              pane_source: null,
-              readiness_evidence: null,
-              pane_current_command: null,
-            });
-            await appendDeliveryTelemetry(logsDir, {
-              event: 'dispatch_result',
-              team: teamName,
-              request_id: request.request_id,
-              message_id: request.message_id || null,
-              to_worker: request.to_worker,
-              transport: 'send-keys',
-              result: 'deferred',
-              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-            });
-            await appendLeaderNotificationDeferredEvent({
-              stateDir,
-              teamName,
-              request,
-              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
-              nowIso,
-              tmuxSession: safeString(config?.tmux_session).trim(),
-              leaderPaneId: safeString(config?.leader_pane_id).trim(),
-              sourceType: 'team_dispatch',
-            });
+    let lockAcquired = false;
+    try {
+      await withDispatchLock(teamDirPath, async () => {
+        lockAcquired = true;
+        await reconcileRuntimeFinalizations(stateDir, teamName);
+        let authoritativeRecords;
+        if (hasRuntimeAuthority(stateDir)) {
+          if (process.env.OMX_RUNTIME_BRIDGE === '0') throw new Error('runtime dispatch authority requires an enabled bridge');
+          authoritativeRecords = await refreshDispatchProjection(stateDir);
+          if (!authoritativeRecords) {
+            const records = getDefaultBridge(stateDir).readCompatFile('dispatch.json')?.records;
+            if (Array.isArray(records)) authoritativeRecords = records;
           }
-          continue;
         }
+        const requests = await readBridgeDispatchRequests(stateDir, teamName, cwd, authoritativeRecords);
+        if (!Array.isArray(requests)) return;
+        if (requests.some((request) => request && typeof request === 'object' && !shouldSkipRequest(request))) {
+          preflightRuntimeBridge(stateDir);
+        }
+        const issueCooldownState = await readIssueCooldownState(teamDirPath);
+        const triggerCooldownState = await readTriggerCooldownState(teamDirPath);
+        const issueCooldownByIssue = issueCooldownState.by_issue || {};
+        const triggerCooldownByKey = triggerCooldownState.by_trigger || {};
+        const nowMs = Date.now();
 
-        const issueKey = extractIssueKey(request.trigger_message);
-        if (issueCooldownMs > 0 && issueKey) {
-          const lastInjectedMs = Number(issueCooldownByIssue[issueKey]);
-          if (Number.isFinite(lastInjectedMs) && lastInjectedMs > 0 && nowMs - lastInjectedMs < issueCooldownMs) {
+        let mutated = false;
+        for (const request of requests) {
+          if (processed + claims.length >= maxPerTick) break;
+          if (!request || typeof request !== 'object') continue;
+          if (shouldSkipRequest(request)) {
             skipped += 1;
             continue;
           }
-        }
 
-        const triggerKey = normalizeTriggerKey(request.trigger_message);
-        if (triggerCooldownMs > 0 && triggerKey) {
-          const parsed = parseTriggerCooldownEntry(triggerCooldownByKey[triggerKey]);
-          const withinCooldown = Number.isFinite(parsed.at) && parsed.at > 0 && nowMs - parsed.at < triggerCooldownMs;
-          const sameRequestRetry = parsed.lastRequestId !== '' && parsed.lastRequestId === safeString(request.request_id).trim();
-          if (withinCooldown && !sameRequestRetry) {
+          if (request.to_worker === 'leader-fixed' && !resolveLeaderPaneId(config) && !explicitPaneIdentity(request.pane_id).provided) {
+            const nowIso = new Date().toISOString();
+            const alreadyDeferred = safeString(request.last_reason).trim() === LEADER_PANE_MISSING_DEFERRED_REASON;
+            request.updated_at = nowIso;
+            request.last_reason = LEADER_PANE_MISSING_DEFERRED_REASON;
+            request.status = 'pending';
+            skipped += 1;
+            mutated = true;
+            if (!alreadyDeferred) {
+              await appendDispatchLog(logsDir, {
+                type: 'dispatch_deferred',
+                team: teamName,
+                request_id: request.request_id,
+                worker: request.to_worker,
+                to_worker: request.to_worker,
+                message_id: request.message_id || null,
+                reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+                status: 'pending',
+                tmux_session: safeString(config?.tmux_session).trim() || null,
+                leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
+                tmux_injection_attempted: false,
+                pane_target: null,
+                pane_source: null,
+                readiness_evidence: null,
+                pane_current_command: null,
+              });
+              await appendDeliveryTelemetry(logsDir, {
+                event: 'dispatch_result',
+                team: teamName,
+                request_id: request.request_id,
+                message_id: request.message_id || null,
+                to_worker: request.to_worker,
+                transport: 'send-keys',
+                result: 'deferred',
+                reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+              });
+              await appendLeaderNotificationDeferredEvent({
+                stateDir,
+                teamName,
+                request,
+                reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+                nowIso,
+                tmuxSession: safeString(config?.tmux_session).trim(),
+                leaderPaneId: safeString(config?.leader_pane_id).trim(),
+                sourceType: 'team_dispatch',
+              });
+            }
+            continue;
+          }
+
+          const issueKey = extractIssueKey(request.trigger_message);
+          if (issueCooldownMs > 0 && issueKey) {
+            const lastInjectedMs = Number(issueCooldownByIssue[issueKey]);
+            if (Number.isFinite(lastInjectedMs) && lastInjectedMs > 0 && nowMs - lastInjectedMs < issueCooldownMs) {
+              skipped += 1;
+              continue;
+            }
+          }
+
+          const triggerKey = normalizeTriggerKey(request.trigger_message);
+          if (triggerCooldownMs > 0 && triggerKey) {
+            const parsed = parseTriggerCooldownEntry(triggerCooldownByKey[triggerKey]);
+            const withinCooldown = Number.isFinite(parsed.at) && parsed.at > 0 && nowMs - parsed.at < triggerCooldownMs;
+            const sameRequestRetry = parsed.lastRequestId !== '' && parsed.lastRequestId === safeString(request.request_id).trim();
+            if (withinCooldown && !sameRequestRetry) {
+              skipped += 1;
+              continue;
+            }
+          }
+
+          const lease = await tryAcquireDispatchRequestLease(teamDirPath, request.request_id);
+          if (!lease) {
             skipped += 1;
             continue;
           }
+          mutated = reserveDispatchCooldowns({
+            issueCooldownMs,
+            triggerCooldownMs,
+            issueCooldownByIssue,
+            triggerCooldownByKey,
+            issueKey,
+            triggerKey,
+            requestId: request.request_id,
+          }) || mutated;
+          claims.push({
+            request: { ...request },
+            authoritativeRecords,
+            lease,
+          });
         }
 
-        const lease = await tryAcquireDispatchRequestLease(teamDirPath, request.request_id);
-        if (!lease) {
-          skipped += 1;
-          continue;
+        if (mutated) {
+          issueCooldownState.by_issue = issueCooldownByIssue;
+          await writeJsonAtomic(issueCooldownStatePath(teamDirPath), issueCooldownState);
+          triggerCooldownState.by_trigger = triggerCooldownByKey;
+          await writeJsonAtomic(triggerCooldownStatePath(teamDirPath), triggerCooldownState);
+          await writeJsonAtomic(requestsPath, requests);
         }
-        mutated = reserveDispatchCooldowns({
-          issueCooldownMs,
-          triggerCooldownMs,
-          issueCooldownByIssue,
-          triggerCooldownByKey,
-          issueKey,
-          triggerKey,
-          requestId: request.request_id,
-        }) || mutated;
-        claims.push({
-          request: { ...request },
-          authoritativeRecords,
-          lease,
-        });
-      }
-
-      if (mutated) {
-        issueCooldownState.by_issue = issueCooldownByIssue;
-        await writeJsonAtomic(issueCooldownStatePath(teamDirPath), issueCooldownState);
-        triggerCooldownState.by_trigger = triggerCooldownByKey;
-        await writeJsonAtomic(triggerCooldownStatePath(teamDirPath), triggerCooldownState);
-        await writeJsonAtomic(requestsPath, requests);
-      }
-    });
+      });
+    } catch (error) {
+      // An abandoned dispatch lock needs manual recovery for this team only: keep the lock,
+      // report it, and let the other teams under the same state root drain.
+      if (lockAcquired || !safeString(error?.message).startsWith('team_lock_recovery_required:')) throw error;
+      failed += 1;
+      await appendDispatchLog(logsDir, {
+        type: 'dispatch_lock_recovery_required',
+        team: teamName,
+        reason: safeString(error.message),
+      });
+      continue;
+    }
 
     try {
       for (const claim of claims) {
