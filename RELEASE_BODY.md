@@ -1,29 +1,29 @@
-# oh-my-codex v0.22.5
+# oh-my-codex v0.22.6
 
 ## Summary
 
-This patch release ships two critical team runtime safety improvements: fail-closed task-read error handling and memory/secrets/API preservation across state mutations.
+This patch release ships two team runtime safety improvements: team lock recovery preservation and cleanup logic that protects active temporary directories.
 
 ## Fixed
 
-- **FAIL CLOSED ON TASK READS AND STALE REPLY TARGETS (#4067):** Team runtime now fails closed on task read failures, handling corrupted task files and unresolvable reply targets instead of silently ignoring them. This prevents task loss and state inconsistency during malformed or id-mismatched operations.
-- **PRESERVE MEMORY WRITES, SECRETS, AND API AVAILABILITY (#4068):** Integration and worker operations now preserve memory writes, API availability state, and secret values across state mutations. Previous mutations could lose in-flight writes, reset API state during recovery, or drop configured secrets, causing workflows to restart or fail. This fix ensures state consistency across all operations.
+- **PRESERVE SHARED LOCKS DURING RECOVERY (#4075):** Team membership, scaling, task-claim, mailbox, and shared dispatch locks now preserve stale locks and report `team_lock_recovery_required` instead of deleting another operation's replacement lock. After a crash, confirm all users of the lock have stopped before manually removing the reported directory; automatic crash recovery is intentionally disabled.
+- **PRESERVE ACTIVE TEMPORARY DIRECTORIES DURING CLEANUP (#4076):** `omx cleanup` now preserves temporary directories and only reaps orphaned OMX MCP processes. A directory name and modification time do not establish ownership, and matching temporary directories may contain active projects or uncommitted work.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.5`.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.6`.
 
 ## Verification
 
-- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.5.md)).
-- PR #4067 CI passed on its merged head.
-- PR #4068 CI passed on its merged head.
+- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.6.md)).
+- PR #4075 CI passed on its merged head.
+- PR #4076 CI passed on its merged head.
 
 ## Contributors
 
 Thanks to [@shenyankm](https://github.com/shenyankm) for contributing to this release.
 
-**Full Changelog**: [`v0.22.4...v0.22.5`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.4...v0.22.5)
+**Full Changelog**: [`v0.22.5...v0.22.6`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.5...v0.22.6)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
