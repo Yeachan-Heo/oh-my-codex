@@ -161,20 +161,23 @@ export async function markQuestionAnswered(
   answerOrAnswers: QuestionAnswer | QuestionAnswerEntry[],
   options: { injectAnswersToPane?: InjectQuestionAnswersToPane; closeQuestionRenderer?: CloseQuestionRenderer } = {},
 ): Promise<QuestionRecord> {
-  const updated = await withQuestionSubmitLock(recordPath, () => persistQuestionAnswered(recordPath, answerOrAnswers));
-  runAnsweredQuestionSideEffects(updated, options);
-  return updated;
+  const { record, answered } = await withQuestionSubmitLock(recordPath, () => persistQuestionAnswered(recordPath, answerOrAnswers));
+  if (answered) runAnsweredQuestionSideEffects(record, options);
+  return record;
 }
 
 async function persistQuestionAnswered(
   recordPath: string,
   answerOrAnswers: QuestionAnswer | QuestionAnswerEntry[],
-): Promise<QuestionRecord> {
+): Promise<{ record: QuestionRecord; answered: boolean }> {
+  let answered = false;
   const updated = await updateQuestionRecord(recordPath, (record) => {
+    if (isTerminalQuestionStatus(record.status)) return record;
     const answers = Array.isArray(answerOrAnswers)
       ? answerOrAnswers
       : [{ question_id: record.questions?.[0]?.id ?? 'q-1', index: 0, answer: answerOrAnswers }];
     const firstAnswer = answers[0]?.answer;
+    answered = true;
     return {
       ...record,
       status: 'answered',
@@ -184,7 +187,7 @@ async function persistQuestionAnswered(
       error: undefined,
     };
   });
-  return updated;
+  return { record: updated, answered };
 }
 
 function runAnsweredQuestionSideEffects(
@@ -241,16 +244,20 @@ function lockOwnerToken(): string {
   return `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
 }
 
-async function maybeRecoverStaleQuestionLock(lockDir: string): Promise<boolean> {
-  try {
-    const info = await stat(lockDir);
-    if (Date.now() - info.mtimeMs > QUESTION_SUBMIT_LOCK_STALE_MS) {
-      await rm(lockDir, { recursive: true, force: true });
-      return true;
-    }
-  } catch {
+async function assertQuestionSubmitLockNotStale(lockDir: string): Promise<void> {
+  const token = await readFile(join(lockDir, 'owner'), 'utf8').catch(() => '');
+  const pid = Number(/^(\d+)\./.exec(token.trim())?.[1]);
+  if (Number.isSafeInteger(pid) && pid > 0) {
+    try { process.kill(pid, 0); return; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return; }
+  } else {
+    try {
+      const info = await stat(lockDir);
+      if (Date.now() - info.mtimeMs <= QUESTION_SUBMIT_LOCK_STALE_MS) return;
+    } catch { return; }
   }
-  return false;
+  // shortcut: abandoned submit locks need manual recovery until owner-fenced reclamation is available.
+  throw new QuestionSubmitError('question_not_open', `question_submit_lock_recovery_required:${lockDir}: Confirm no operation is using this lock before manually removing it.`);
 }
 
 async function withQuestionSubmitLock<T>(recordPath: string, fn: () => Promise<T>): Promise<T> {
@@ -272,7 +279,7 @@ async function withQuestionSubmitLock<T>(recordPath: string, fn: () => Promise<T
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'EEXIST') throw error;
-      if (await maybeRecoverStaleQuestionLock(lockDir)) continue;
+      await assertQuestionSubmitLockNotStale(lockDir);
       if (Date.now() > deadline) {
         throw new QuestionSubmitError('question_not_open', `Timed out acquiring submit lock for ${recordPath}`);
       }
@@ -477,7 +484,7 @@ export async function submitQuestionAnswerById(
     } catch (error) {
       throw new QuestionSubmitError('question_invalid_answer', error instanceof Error ? error.message : String(error));
     }
-    const record = await persistQuestionAnswered(recordPath, answers);
+    const { record } = await persistQuestionAnswered(recordPath, answers);
     await appendQuestionAnsweredEventOnce(cwd, record, { recordPath, runId: options.runId });
     return { recordPath, record };
   });
@@ -491,16 +498,42 @@ export async function markQuestionTerminalError(
   code: string,
   message: string,
 ): Promise<QuestionRecord> {
-  return updateQuestionRecord(recordPath, (record) => ({
-    ...record,
-    status,
-    updated_at: new Date().toISOString(),
-    error: {
-      code,
-      message,
-      at: new Date().toISOString(),
-    },
-  }));
+  return await withQuestionSubmitLock(recordPath, () => updateQuestionRecord(recordPath, (record) => (
+    isTerminalQuestionStatus(record.status) ? record : {
+      ...record,
+      status,
+      updated_at: new Date().toISOString(),
+      error: {
+        code,
+        message,
+        at: new Date().toISOString(),
+      },
+    }
+  )));
+}
+
+export async function markQuestionSuperseded(
+  recordPath: string,
+  options: { nowIso?: string; closeQuestionRenderer?: CloseQuestionRenderer } = {},
+): Promise<QuestionRecord | null> {
+  return await withQuestionSubmitLock(recordPath, async () => {
+    const current = await readQuestionRecord(recordPath);
+    if (!current || (current.status !== 'pending' && current.status !== 'prompting')) return null;
+    const nowIso = options.nowIso ?? new Date().toISOString();
+    const record: QuestionRecord = {
+      ...current,
+      status: 'superseded',
+      updated_at: nowIso,
+      error: {
+        code: 'question_superseded',
+        message: 'Question was superseded by a newer omx question launch for the same session.',
+        at: nowIso,
+      },
+    };
+    await writeQuestionRecord(recordPath, record);
+    maybeCloseQuestionRenderer(record.renderer, options.closeQuestionRenderer);
+    return record;
+  });
 }
 
 export function isTerminalQuestionStatus(status: QuestionStatus): boolean {
@@ -524,14 +557,17 @@ export async function waitForQuestionTerminalState(
     const record = await readQuestionRecord(recordPath);
     if (!record) throw new Error(`Question record not found while waiting: ${recordPath}`);
     if (isTerminalQuestionStatus(record.status)) return record;
-    if (options.rendererAlive && !options.rendererAlive(record)) {
-      throw new Error(
-        options.rendererDeathMessage?.(record)
-          ?? `Question renderer ${record.renderer?.renderer ?? 'unknown'} exited before answering.`,
-      );
-    }
-    if (typeof timeoutMs === 'number' && timeoutMs >= 0 && Date.now() - startedAt > timeoutMs) {
-      throw new Error(`Timed out waiting for question answer after ${timeoutMs}ms`);
+    const rendererDead = options.rendererAlive && !options.rendererAlive(record);
+    const timedOut = typeof timeoutMs === 'number' && timeoutMs >= 0 && Date.now() - startedAt > timeoutMs;
+    if (rendererDead || timedOut) {
+      return await withQuestionSubmitLock(recordPath, async () => {
+        const current = await readQuestionRecord(recordPath);
+        if (current && isTerminalQuestionStatus(current.status)) return current;
+        throw new Error(rendererDead
+          ? options.rendererDeathMessage?.(record)
+            ?? `Question renderer ${record.renderer?.renderer ?? 'unknown'} exited before answering.`
+          : `Timed out waiting for question answer after ${timeoutMs}ms`);
+      });
     }
     await sleep(pollIntervalMs);
   }

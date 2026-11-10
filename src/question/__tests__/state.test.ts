@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -10,12 +11,15 @@ import {
   markQuestionAnswered,
   markQuestionPrompting,
   markQuestionTerminalError,
+  markQuestionSuperseded,
   QuestionSubmitError,
   readQuestionRecord,
   submitQuestionAnswerById,
   waitForQuestionTerminalState,
+  writeQuestionRecord,
 } from '../state.js';
 import { appendQuestionAnsweredEventOnce, appendQuestionEvent, readQuestionEvents } from '../events.js';
+import type { QuestionAnswerEntry } from '../types.js';
 
 const tempDirs: string[] = [];
 
@@ -173,6 +177,202 @@ describe('question state', () => {
       }, { sessionId: 'sess-submit' }),
       (error) => error instanceof QuestionSubmitError && error.code === 'question_unknown',
     );
+  });
+
+  it('preserves an API answer against late UI answers and errors without repeating side effects', async () => {
+    const cwd = await makeRepo();
+    const { record, recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one', options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+      allow_other: false, other_label: 'Other', multi_select: false,
+    }, 'sess-late-ui');
+    await markQuestionPrompting(recordPath, {
+      renderer: 'tmux-pane', target: '%42', launched_at: new Date().toISOString(),
+      return_target: '%11', return_transport: 'tmux-send-keys',
+    });
+    let injected = 0;
+    let closed = 0;
+    const effects = {
+      injectAnswersToPane: () => { injected += 1; return true; },
+      closeQuestionRenderer: () => { closed += 1; return true; },
+    };
+    await submitQuestionAnswerById(cwd, record.question_id, {
+      answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] },
+    }, { sessionId: 'sess-late-ui', ...effects });
+    const accepted = await readQuestionRecord(recordPath);
+    assert.ok(accepted);
+
+    assert.deepEqual(await markQuestionAnswered(recordPath, {
+      kind: 'option', value: 'b', selected_labels: ['B'], selected_values: ['b'],
+    }, effects), accepted);
+    assert.deepEqual(await markQuestionTerminalError(recordPath, 'error', 'question_ui_failed', 'cancelled'), accepted);
+    assert.equal(await markQuestionSuperseded(recordPath, effects), null);
+    assert.deepEqual(await readQuestionRecord(recordPath), accepted);
+    assert.equal(injected, 1);
+    assert.equal(closed, 1);
+    assert.equal((await readQuestionEvents(cwd)).filter((event) => event.type === 'question-answered').length, 1);
+  });
+
+  for (const status of ['aborted', 'error', 'superseded'] as const) {
+    it(`does not resurrect a ${status} question or repeat terminal side effects`, async () => {
+      const cwd = await makeRepo();
+      const { record, recordPath } = await createQuestionRecord(cwd, {
+        question: 'Pick one', options: [{ label: 'A', value: 'a' }],
+        allow_other: false, other_label: 'Other', multi_select: false,
+      });
+      const terminal = { ...record, status };
+      await writeQuestionRecord(recordPath, terminal);
+      const answer = { kind: 'option' as const, value: 'a', selected_labels: ['A'], selected_values: ['a'] };
+      const unchanged = await markQuestionAnswered(recordPath, answer, {
+        injectAnswersToPane: () => { assert.fail('Terminal question must not inject another answer'); },
+        closeQuestionRenderer: () => { assert.fail('Terminal question must not close a renderer again'); },
+      });
+      assert.deepEqual(unchanged, terminal);
+      assert.deepEqual(await markQuestionTerminalError(recordPath, 'error', 'late_error', 'late error'), terminal);
+      assert.equal(await markQuestionSuperseded(recordPath, {
+        closeQuestionRenderer: () => { assert.fail('Terminal question must not close a renderer again'); },
+      }), null);
+      assert.deepEqual(await readQuestionRecord(recordPath), terminal);
+      await assert.rejects(
+        submitQuestionAnswerById(cwd, record.question_id, { answer }),
+        (error) => error instanceof QuestionSubmitError && error.code === 'question_not_open',
+      );
+      assert.deepEqual(await readQuestionEvents(cwd), []);
+    });
+  }
+
+  it('serializes terminal errors with answers under the same submit lock', async () => {
+    const cwd = await makeRepo();
+    const { recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one', options: [{ label: 'A', value: 'a' }],
+      allow_other: false, other_label: 'Other', multi_select: false,
+    });
+    const lockDir = `${recordPath}.submit.lock`;
+    await mkdir(lockDir);
+    let errorFinished = false;
+    const error = markQuestionTerminalError(recordPath, 'error', 'cancelled', 'cancelled')
+      .then((record) => { errorFinished = true; return record; });
+    const answer = markQuestionAnswered(recordPath, {
+      kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'],
+    });
+    const supersede = markQuestionSuperseded(recordPath);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(errorFinished, false);
+      assert.equal((await readQuestionRecord(recordPath))?.status, 'pending');
+    } finally {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+    const terminal = await Promise.all([error, answer]);
+    const superseded = await supersede;
+    const persisted = await readQuestionRecord(recordPath);
+    for (const record of terminal) assert.deepEqual(JSON.parse(JSON.stringify(record)), persisted);
+    if (superseded) assert.deepEqual(JSON.parse(JSON.stringify(superseded)), persisted);
+  });
+
+  it('accepts only the first terminal answer when the API and UI submit concurrently', async () => {
+    const cwd = await makeRepo();
+    const { record, recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one', options: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+      allow_other: false, other_label: 'Other', multi_select: false,
+    });
+    await markQuestionPrompting(recordPath, {
+      renderer: 'tmux-pane', target: '%42', launched_at: new Date().toISOString(),
+      return_target: '%11', return_transport: 'tmux-send-keys',
+    });
+    const injected: Array<string | string[]> = [];
+    let closed = 0;
+    const effects = {
+      injectAnswersToPane: (_pane: string, answers: QuestionAnswerEntry[]) => {
+        injected.push(answers[0]!.answer.value);
+        return true;
+      },
+      closeQuestionRenderer: () => { closed += 1; return true; },
+    };
+    const [api, ui] = await Promise.allSettled([
+      submitQuestionAnswerById(cwd, record.question_id, {
+        answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] },
+      }, effects),
+      markQuestionAnswered(recordPath, {
+        kind: 'option', value: 'b', selected_labels: ['B'], selected_values: ['b'],
+      }, effects),
+    ]);
+    const terminal = await readQuestionRecord(recordPath);
+    assert.equal(terminal?.status, 'answered');
+    assert.equal(ui.status, 'fulfilled');
+    assert.equal(ui.status === 'fulfilled' ? ui.value.answer?.value : undefined, terminal?.answer?.value);
+    assert.deepEqual(injected, [terminal?.answer?.value]);
+    assert.equal(closed, 1);
+    if (api.status === 'rejected') {
+      assert.equal(api.reason instanceof QuestionSubmitError, true);
+      assert.equal(api.reason.code, 'question_not_open');
+    }
+    await appendQuestionAnsweredEventOnce(cwd, terminal!, { recordPath });
+    assert.equal((await readQuestionEvents(cwd)).filter((event) => event.type === 'question-answered').length, 1);
+  });
+
+  it('preserves an abandoned submit lock and the open question for manual recovery', async () => {
+    const cwd = await makeRepo();
+    const { record, recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one', options: [{ label: 'A', value: 'a' }], allow_other: false,
+      other_label: 'Other', multi_select: false,
+    });
+    const lockDir = `${recordPath}.submit.lock`;
+    await mkdir(lockDir);
+    await writeFile(join(lockDir, 'owner'), '99999999.0.dead');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockDir, old, old);
+    await assert.rejects(submitQuestionAnswerById(cwd, record.question_id, {
+      answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] },
+    }), /question_submit_lock_recovery_required:/);
+    assert.equal(await readFile(join(lockDir, 'owner'), 'utf8'), '99999999.0.dead');
+    assert.equal((await readQuestionRecord(recordPath))?.status, 'pending');
+  });
+
+  it('keeps a live submit lock even when its directory timestamp is old', async () => {
+    const cwd = await makeRepo();
+    const { recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one', options: [{ label: 'A', value: 'A' }], allow_other: false,
+      other_label: 'Other', multi_select: false,
+    });
+    const lockDir = `${recordPath}.submit.lock`;
+    await mkdir(lockDir);
+    const token = `${process.pid}.0.live`;
+    await writeFile(join(lockDir, 'owner'), token);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockDir, old, old);
+    let finished = false;
+    const attempt = markQuestionSuperseded(recordPath, { closeQuestionRenderer: () => true })
+      .then((result) => { finished = true; return result; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      assert.equal(finished, false);
+      assert.equal(await readFile(join(lockDir, 'owner'), 'utf8'), token);
+      assert.equal((await readQuestionRecord(recordPath))?.status, 'pending');
+    } finally {
+      await rm(lockDir, { recursive: true });
+    }
+    assert.equal((await attempt)?.status, 'superseded');
+  });
+
+  it('rechecks terminal state after a renderer-death observation', async () => {
+    const cwd = await makeRepo();
+    const { recordPath } = await createQuestionRecord(cwd, {
+      question: 'Pick one', options: [{ label: 'A', value: 'A' }], allow_other: false,
+      other_label: 'Other', multi_select: false,
+    });
+    const result = await waitForQuestionTerminalState(recordPath, {
+      rendererAlive: () => {
+        execFileSync(process.execPath, ['--input-type=module', '-e', `
+          import { markQuestionAnswered } from ${JSON.stringify(new URL('../state.js', import.meta.url).href)};
+          await markQuestionAnswered(${JSON.stringify(recordPath)}, {
+            kind: 'option', value: 'A', selected_labels: ['A'], selected_values: ['A'],
+          }, { closeQuestionRenderer: () => true });
+        `]);
+        return false;
+      },
+    });
+    assert.equal(result.status, 'answered');
+    assert.equal(result.answer?.value, 'A');
   });
 
   it('rejects submitted answers that do not match the prompt option schema', async () => {

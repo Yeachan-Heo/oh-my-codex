@@ -2,6 +2,10 @@
 
 Use this page when OMX appears installed but real Codex execution still fails.
 
+## Question submit lock requires recovery
+
+`question_submit_lock_recovery_required:<path>` means an abandoned question submit lock was preserved to avoid overwriting an in-flight answer. A live owner's lock is retained even when it is old. Confirm that no question command or renderer is using the reported lock, then remove that specific lock directory and retry. Do not remove a lock while its owner is still running.
+
 ## Install success vs real execution success
 
 `omx setup` and `omx doctor` validate OMX's local install surface: prompts, skills, AGENTS scaffolding, config files, hooks, and runtime prerequisites. They do not guarantee that the active Codex profile can authenticate and complete a model request.

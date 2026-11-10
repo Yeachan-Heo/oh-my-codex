@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -65,6 +65,61 @@ describe('omx question CLI', () => {
     originalProcessExitCode = process.exitCode;
     process.exitCode = undefined;
   });
+
+  for (const phase of ['poll', 'error-commit'] as const) {
+    it(`returns the accepted answer when timeout races at ${phase}`, async () => {
+      const cwd = await makeRepo();
+      const stateModule = new URL('../../question/state.js', import.meta.url).href;
+      const cliModule = new URL('../question.js', import.meta.url).href;
+      const output = execFileSync(process.execPath, ['--input-type=module', '-e', `
+        import fs from 'node:fs/promises';
+        import { syncBuiltinESMExports } from 'node:module';
+        const read = fs.readFile, remove = fs.rm;
+        let state, reads = 0, injected = false, record;
+        const answer = async () => {
+          injected = true;
+          await state.submitQuestionAnswerById(process.cwd(), record.question_id, {
+            answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] },
+          }, { sessionId: 'sess-q', closeQuestionRenderer: () => true });
+        };
+        fs.readFile = async (...args) => {
+          const contents = await read(...args);
+          if (String(args[0]).includes('/questions/') && String(args[0]).endsWith('.json')) {
+            const current = JSON.parse(contents);
+            if (current.status === 'prompting') {
+              record = current; reads += 1;
+              if (!injected && ${JSON.stringify(phase)} === 'poll' && reads === 1) await answer();
+              await new Promise(r => setTimeout(r, 2));
+            }
+          }
+          return contents;
+        };
+        fs.rm = async (...args) => {
+          const result = await remove(...args);
+          if (!injected && ${JSON.stringify(phase)} === 'error-commit' && reads >= 2
+            && String(args[0]).endsWith('.submit.lock')) await answer();
+          return result;
+        };
+        syncBuiltinESMExports();
+        state = await import(${JSON.stringify(stateModule)});
+        const { questionCommand } = await import(${JSON.stringify(cliModule)});
+        await questionCommand(['--input', JSON.stringify({
+          session_id: 'sess-q', question: 'Pick one', options: [{label:'A',value:'a'}], allow_other: false,
+        }), '--json']);
+        if (!injected) throw new Error('Race was not exercised');
+      `], {
+        cwd, encoding: 'utf8',
+        env: makeQuestionCliEnv(cwd, { OMX_QUESTION_TEST_RENDERER: 'noop', OMX_QUESTION_WAIT_TIMEOUT_MS: '0' }),
+      });
+      const payload = JSON.parse(output);
+      assert.equal(payload.ok, true);
+      assert.equal(payload.answer.value, 'a');
+      const events = (await readFile(join(cwd, '.omx/state/question-events.jsonl'), 'utf8'))
+        .trim().split('\n').map((line) => JSON.parse(line));
+      assert.equal(events.filter((event) => event.type === 'question-answered').length, 1);
+      assert.equal(events.some((event) => event.type === 'question-error'), false);
+    });
+  }
 
   it('hard-fails worker contexts before UI launch', async () => {
     const cwd = await makeRepo();

@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve the first question terminal state across API/UI answers, renderer replacement, and timeout handling. Submit locks are no longer deleted based on age; abandoned locks require manual recovery.
+
 ## [0.22.5] - 2026-11-09
 
 Patch release ships two critical team runtime safety improvements: fail-closed task-read error handling and memory/secrets/API preservation across state mutations. See [release notes](docs/release-notes-0.22.5.md) for exact scope and evidence.
