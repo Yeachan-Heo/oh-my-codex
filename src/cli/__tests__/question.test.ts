@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { questionCommand } from '../question.js';
@@ -84,7 +84,7 @@ describe('omx question CLI', () => {
         };
         fs.readFile = async (...args) => {
           const contents = await read(...args);
-          if (String(args[0]).includes('/questions/') && String(args[0]).endsWith('.json')) {
+          if (String(args[0]).includes(${JSON.stringify(`${sep}questions${sep}`)}) && String(args[0]).endsWith('.json')) {
             const current = JSON.parse(contents);
             if (current.status === 'prompting') {
               record = current; reads += 1;
@@ -109,6 +109,102 @@ describe('omx question CLI', () => {
         if (!injected) throw new Error('Race was not exercised');
       `], {
         cwd, encoding: 'utf8',
+        env: makeQuestionCliEnv(cwd, { OMX_QUESTION_TEST_RENDERER: 'noop', OMX_QUESTION_WAIT_TIMEOUT_MS: '0' }),
+      });
+      const payload = JSON.parse(output);
+      assert.equal(payload.ok, true);
+      assert.equal(payload.answer.value, 'a');
+      const events = (await readFile(join(cwd, '.omx/state/question-events.jsonl'), 'utf8'))
+        .trim().split('\n').map((line) => JSON.parse(line));
+      assert.equal(events.filter((event) => event.type === 'question-answered').length, 1);
+      assert.equal(events.some((event) => event.type === 'question-error'), false);
+    });
+  }
+
+  for (const lockAfterExit of ['released', 'replaced'] as const) {
+    it(`returns the accepted answer after a normally exiting lock owner leaves its lock ${lockAfterExit}`, async () => {
+      const cwd = await makeRepo();
+      const stateModule = new URL('../../question/state.js', import.meta.url).href;
+      const cliModule = new URL('../question.js', import.meta.url).href;
+      const writerCode = `
+        import fs from 'node:fs/promises';
+        import { syncBuiltinESMExports } from 'node:module';
+        const read = fs.readFile;
+        fs.readFile = async (...args) => {
+          const contents = await read(...args);
+          if (String(args[0]) === process.argv[1]) {
+            const released = new Promise(resolve => process.once('message', resolve));
+            process.send('locked');
+            await released;
+          }
+          return contents;
+        };
+        syncBuiltinESMExports();
+        const { markQuestionAnswered } = await import(${JSON.stringify(stateModule)});
+        await markQuestionAnswered(process.argv[1], {
+          kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'],
+        }, { closeQuestionRenderer: () => true });
+        process.disconnect();
+      `;
+      const output = execFileSync(process.execPath, ['--input-type=module', '-e', `
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs/promises';
+        import { spawn } from 'node:child_process';
+        import { once } from 'node:events';
+        import { syncBuiltinESMExports } from 'node:module';
+        import { join } from 'node:path';
+        const read = fs.readFile, remove = fs.rm;
+        let reads = 0, recordPath, writer, exercised = false;
+        fs.readFile = async (...args) => {
+          const contents = await read(...args);
+          const path = String(args[0]);
+          if (path.includes(${JSON.stringify(`${sep}questions${sep}`)}) && path.endsWith('.json')
+            && JSON.parse(contents).status === 'prompting') {
+            recordPath = path; reads += 1;
+            await new Promise(resolve => setTimeout(resolve, 2));
+          }
+          if (writer && !exercised && path === join(recordPath + '.submit.lock', 'owner')
+            && contents.startsWith(writer.pid + '.')) {
+            exercised = true;
+            const exited = once(writer, 'exit');
+            writer.send('release');
+            assert.deepEqual(await exited, [0, null]);
+            if (${JSON.stringify(lockAfterExit)} === 'replaced') {
+              const lock = recordPath + '.submit.lock';
+              await fs.mkdir(lock);
+              const token = process.pid + '.replacement';
+              await fs.writeFile(lock + '/owner', token);
+              setTimeout(async () => {
+                assert.equal(await read(lock + '/owner', 'utf8'), token);
+                await remove(lock, {recursive:true});
+              }, 75);
+            }
+          }
+          return contents;
+        };
+        fs.rm = async (...args) => {
+          const result = await remove(...args);
+          if (!writer && reads >= 2 && String(args[0]) === recordPath + '.submit.lock') {
+            writer = spawn(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(writerCode)}, recordPath], {
+              stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+            });
+            assert.deepEqual(await once(writer, 'message'), ['locked', undefined]);
+          }
+          return result;
+        };
+        syncBuiltinESMExports();
+        const { questionCommand } = await import(${JSON.stringify(cliModule)});
+        try {
+          await questionCommand(['--input', JSON.stringify({
+            session_id: 'sess-q', question: 'Pick one', options: [{label:'A',value:'a'}], allow_other:false,
+          }), '--json']);
+          assert.equal(exercised, true);
+          await assert.rejects(fs.stat(recordPath + '.submit.lock'), {code:'ENOENT'});
+        } finally {
+          if (writer && writer.exitCode === null) writer.kill('SIGKILL');
+        }
+      `], {
+        cwd, encoding: 'utf8', timeout: 30_000,
         env: makeQuestionCliEnv(cwd, { OMX_QUESTION_TEST_RENDERER: 'noop', OMX_QUESTION_WAIT_TIMEOUT_MS: '0' }),
       });
       const payload = JSON.parse(output);

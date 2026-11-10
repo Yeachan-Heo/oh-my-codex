@@ -245,6 +245,8 @@ function lockOwnerToken(): string {
 }
 
 async function assertQuestionSubmitLockNotStale(lockDir: string): Promise<void> {
+  const observedLock = await stat(lockDir).catch(() => null);
+  if (!observedLock) return;
   const token = await readFile(join(lockDir, 'owner'), 'utf8').catch(() => '');
   const pid = Number(/^(\d+)\./.exec(token.trim())?.[1]);
   if (Number.isSafeInteger(pid) && pid > 0) {
@@ -256,6 +258,10 @@ async function assertQuestionSubmitLockNotStale(lockDir: string): Promise<void> 
       if (Date.now() - info.mtimeMs <= QUESTION_SUBMIT_LOCK_STALE_MS) return;
     } catch { return; }
   }
+  const currentToken = await readFile(join(lockDir, 'owner'), 'utf8').catch(() => '');
+  const currentLock = await stat(lockDir).catch(() => null);
+  if (currentToken !== token || !currentLock
+    || currentLock.dev !== observedLock.dev || currentLock.ino !== observedLock.ino) return;
   // shortcut: abandoned submit locks need manual recovery until owner-fenced reclamation is available.
   throw new QuestionSubmitError('question_not_open', `question_submit_lock_recovery_required:${lockDir}: Confirm no operation is using this lock before manually removing it.`);
 }
