@@ -64,7 +64,7 @@ missing specialist coverage to their leader instead of delegating it.
 
 - `deep-worker`:
   - Best for implementation-heavy roles that should carry work to completion.
-  - Prioritizes direct execution, minimal diffs, and strict verification.
+  - Prioritizes complete, maintainable repairs within scope; correctness and clarity ahead of patch minimization. Includes strict verification.
   - Typical roles: `executor`, `debugger`, `test-engineer`, `build-fixer`.
 
 - `fast-lane`:
