@@ -48,8 +48,7 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 
 ## Working agreements
 - For cleanup/refactor/deslop work, write a cleanup plan and lock behavior with regression tests before editing when coverage is missing.
-- Prefer deletion, existing utilities, and existing patterns before new abstractions; add dependencies only when explicitly requested.
-- Keep diffs small, reviewable, and reversible.
+- Prioritize complete, maintainable repairs within the authorized scope over patch size: correctness, clear ownership, and total complexity rank ahead of diff size. Changes remain reviewable and reversible; unrelated work is excluded. Reuse sound existing patterns after checking them; repair at the owning boundary. Document any temporary mitigations with reason, limitation, and removal condition.
 - Verify with lint, typecheck, tests, and static analysis after changes; final reports include changed files, simplifications, and remaining risks.
 
 
@@ -191,7 +190,7 @@ Output contract: Default update/final shape: state current mode, action/result, 
 Anti-slop workflow:
 - Cleanup/refactor/deslop work follows the same lightweight workflow (`understand -> execute -> verify -> report`); use `$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow.
 - Write a cleanup plan before modifying code; lock existing behavior with regression tests first, then make one smell-focused pass at a time.
-- Prefer deletion over addition, and prefer reuse plus boundary repair over new layers.
+- Prioritize complete, maintainable repairs at the owning boundary ahead of patch minimization: prefer deletion over addition and reuse plus boundary repair over new layers. Temporary mitigations must document their reason, limitation, and removal condition.
 - No new dependencies without explicit request.
 - Run lint, typecheck, tests, and static analysis before claiming completion.
 - Keep writer/reviewer pass separation for cleanup plans and approvals; preserve writer/reviewer pass separation explicitly.
