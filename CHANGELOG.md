@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.7] - 2026-11-15
+
+Patch release ships updated agent guidance: prioritizing complete, maintainable repairs over minimal-diff patches. See [release notes](docs/release-notes-0.22.7.md) for exact scope and evidence.
+
+### Changed
+
+- **PRIORITIZE COMPLETE, MAINTAINABLE REPAIRS IN AGENT GUIDANCE (#4083):** Agent repair guidelines now emphasize choosing complete, correct solutions at natural ownership boundaries instead of minimizing diff size. This aligns agent behavior with maintainability practices: deletion over addition, boundary repair over new layers, and documented mitigations where appropriate. Updated guidance appears in system prompts, agent templates, and skill documentation. Fixes #4082.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.6...v0.22.7
+
 ## [0.22.6] - 2026-11-10
 
 Patch release ships three fixes: team lock recovery preservation, cleanup logic that protects active temporary directories, and question terminal state preservation for reliable answer handling. See [release notes](docs/release-notes-0.22.6.md) for exact scope and evidence.
