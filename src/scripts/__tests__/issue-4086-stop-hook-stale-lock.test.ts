@@ -70,33 +70,33 @@ describe('issue #4086: stop hook with stale team lock', () => {
         { cwd },
       );
 
-      // The Stop hook should return a response that does NOT instruct Codex to continue
-      // When team_lock_recovery_required is encountered, it should be treated as terminal
-      console.log("Stop hook result:", JSON.stringify(result, null, 2));
-
-      // The response should have a decision that properly blocks/terminates the stop
-      // NOT a message that says "Continue once more"
-      if (result.outputJson) {
-        assert.ok(
-          result.outputJson.stopReason !== "native_stop_dispatch_failure" ||
-          !String(result.outputJson.systemMessage).includes("Continue once more"),
-          "Stop hook should NOT tell Codex to continue when team_lock_recovery_required is encountered"
-        );
-
-        // Better: it should clearly indicate the lock issue and provide recovery path
-        const reason = String(result.outputJson.reason || result.outputJson.systemMessage || "");
-        if (result.outputJson.stopReason === "native_stop_dispatch_failure") {
-          // This is the current buggy behavior - we should see the lock error
-          assert.ok(
-            reason.includes("team_lock_recovery_required") || reason.includes("stale lock"),
-            "Should mention the stale lock error"
-          );
-          assert.ok(
-            reason.includes(lockDir),
-            "Should include the lock directory path for manual recovery"
-          );
-        }
-      }
+      // The Stop hook should return a terminal response with continue:false
+      // NOT continue:true or decision:block which would cause re-prompting
+      assert.ok(result.outputJson, "Stop hook should return output JSON");
+      const output = result.outputJson;
+      assert.strictEqual(
+        output.continue,
+        false,
+        "Stop hook must return continue:false for team_lock_recovery_required"
+      );
+      assert.strictEqual(
+        output.stopReason,
+        "team_lock_recovery_required",
+        "Stop hook must return stopReason:team_lock_recovery_required"
+      );
+      const systemMessage = String(output.systemMessage || "");
+      assert.ok(
+        systemMessage.includes("stale team lock"),
+        "System message should mention stale team lock"
+      );
+      assert.ok(
+        systemMessage.includes(lockDir),
+        "System message should include the lock directory path for manual recovery"
+      );
+      assert.ok(
+        !systemMessage.includes("Continue once more"),
+        "System message should NOT tell Codex to continue"
+      );
     } finally {
       process.env = originalEnv;
     }
