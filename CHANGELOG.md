@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.8] - 2026-11-16
+
+Patch release ships critical fixes for team lock recovery and Stop hook stability. The native Stop hook no longer loops on stale team membership locks, preventing Codex API quota exhaustion. See [release notes](docs/release-notes-0.22.8.md) for exact scope and evidence.
+
+### Fixed
+
+- **STOP HOOK STABILITY WITH TEAM LOCK RECOVERY (#4087, #4090):** Stop hook now properly detects `team_lock_recovery_required` errors and terminates cleanly with `continue:false` instead of looping. Stale team membership locks are correctly identified as terminal stops, preventing indefinite continuation attempts that could exhaust the Codex API quota. Fixes #4086.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.7...v0.22.8
+
 ## [0.22.7] - 2026-11-15
 
 Patch release ships updated agent guidance: prioritizing complete, maintainable repairs over minimal-diff patches. See [release notes](docs/release-notes-0.22.7.md) for exact scope and evidence.

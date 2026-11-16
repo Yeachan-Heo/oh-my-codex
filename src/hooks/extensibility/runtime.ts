@@ -6,8 +6,17 @@ async function handleNativeStopTeamLeaderAttention(input: HookRuntimeDispatchInp
   if (input.event.source !== 'native' || input.event.event !== 'stop') return;
   const sessionId = typeof input.event.session_id === 'string' ? input.event.session_id.trim() : '';
   if (!sessionId) return;
-  const { markOwnedTeamsLeaderStopObserved } = await import('../../team/state.js');
-  await markOwnedTeamsLeaderStopObserved(input.cwd, sessionId, input.event.timestamp, 'native_stop');
+  try {
+    const { markOwnedTeamsLeaderStopObserved } = await import('../../team/state.js');
+    await markOwnedTeamsLeaderStopObserved(input.cwd, sessionId, input.event.timestamp, 'native_stop');
+  } catch (err) {
+    // If team state access fails (e.g., stale lock), do not propagate.
+    // The main Stop hook dispatch will handle the error and return appropriate guidance.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('team_lock_recovery_required')) {
+      throw err;
+    }
+  }
 }
 
 

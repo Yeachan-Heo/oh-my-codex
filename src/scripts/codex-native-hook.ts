@@ -2933,9 +2933,18 @@ async function resolveTeamStateDirForWorkerContext(
   cwd: string,
   workerContext: { teamName: string; workerName: string },
 ): Promise<string | null> {
-  const resolved = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
-  if (resolved) return resolved;
-  return null;
+  try {
+    const resolved = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env);
+    if (resolved) return resolved;
+    return null;
+  } catch (error) {
+    // Re-throw team lock recovery errors so they're handled by the Stop hook error handler
+    if (error instanceof Error && error.message.includes('team_lock_recovery_required')) {
+      throw error;
+    }
+    // Suppress other errors (state root resolution failures)
+    return null;
+  }
 }
 
 async function isConfirmedTeamWorkerPromptSubmitPane(cwd: string): Promise<boolean> {
@@ -22891,41 +22900,51 @@ export async function dispatchCodexNativeHook(
     }
     outputJson ??= buildNativePostToolUseOutput(payload);
   } else if (hookEventName === "Stop") {
-    if (declaredTeamWorkerStopOnly) {
-      outputJson = await buildStopHookOutput(payload, cwd, stateDir, { teamWorkerOnly: true });
-    } else if (allowImplicitSessionSideEffects) {
-      const stopOutput = await buildStopHookOutput(payload, cwd, stateDir, {
-        canonicalSessionId: canonicalSessionId || undefined,
-        skipRalphStopBlock: isSubagentStop,
-        skipAutoNudge: isSubagentStop,
-        sessionScopedOnly: !allowGlobalSideEffects,
-      });
-      // Record bounded completion evidence for native subagent Stop events
-      if (isSubagentStop) {
-        const threadId = readPayloadThreadId(payload);
-        if (canonicalSessionId?.trim() && threadId?.trim()) {
-          await recordSubagentTurnForSession(cwd, {
-            sessionId: canonicalSessionId.trim(),
-            threadId: threadId.trim(),
-            turnId: readPayloadTurnId(payload) || undefined,
-            completed: true,
-            completionSource: 'native_stop_event',
-            timestamp: new Date().toISOString(),
-          }).catch(() => {});
+    try {
+      if (declaredTeamWorkerStopOnly) {
+        outputJson = await buildStopHookOutput(payload, cwd, stateDir, { teamWorkerOnly: true });
+      } else if (allowImplicitSessionSideEffects) {
+        const stopOutput = await buildStopHookOutput(payload, cwd, stateDir, {
+          canonicalSessionId: canonicalSessionId || undefined,
+          skipRalphStopBlock: isSubagentStop,
+          skipAutoNudge: isSubagentStop,
+          sessionScopedOnly: !allowGlobalSideEffects,
+        });
+        // Record bounded completion evidence for native subagent Stop events
+        if (isSubagentStop) {
+          const threadId = readPayloadThreadId(payload);
+          if (canonicalSessionId?.trim() && threadId?.trim()) {
+            await recordSubagentTurnForSession(cwd, {
+              sessionId: canonicalSessionId.trim(),
+              threadId: threadId.trim(),
+              turnId: readPayloadTurnId(payload) || undefined,
+              completed: true,
+              completionSource: 'native_stop_event',
+              timestamp: new Date().toISOString(),
+            }).catch(() => {});
+          }
         }
+        outputJson = stopOutput ?? (
+          allowGlobalSideEffects
+            ? await buildCompletedGoalCleanupStopOutput(payload, cwd)
+            : null
+        );
+      } else {
+        // Authorization failure never grants continuation authority. It also must not
+        // inject a repair request: the same provenance failure can deny every tool the
+        // model would need to repair it, turning a Stop denial into an unbounded loop.
+        // Returning no hook output permits termination while preserving the denial of
+        // all session-scoped and global side effects above.
+        outputJson = null;
       }
-      outputJson = stopOutput ?? (
-        allowGlobalSideEffects
-          ? await buildCompletedGoalCleanupStopOutput(payload, cwd)
-          : null
-      );
-    } else {
-      // Authorization failure never grants continuation authority. It also must not
-      // inject a repair request: the same provenance failure can deny every tool the
-      // model would need to repair it, turning a Stop denial into an unbounded loop.
-      // Returning no hook output permits termination while preserving the denial of
-      // all session-scoped and global side effects above.
-      outputJson = null;
+    } catch (err) {
+      // Handle errors from Stop hook processing, particularly manual recovery errors
+      // like team_lock_recovery_required that should not result in continuation
+      if (isTeamLockRecoveryRequiredError(err)) {
+        outputJson = buildTeamLockRecoveryStopOutput(err);
+      } else {
+        throw err;
+      }
     }
   }
 
@@ -23194,7 +23213,36 @@ function isPostCancelCommitTestTrigger(payload: CodexHookPayload, output: Record
 }
 
 
+function isTeamLockRecoveryRequiredError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes('team_lock_recovery_required');
+}
+
+function extractTeamLockDirFromError(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const match = error.message.match(/team_lock_recovery_required:([^:]+):/);
+  return match ? match[1] : null;
+}
+
+function buildTeamLockRecoveryStopOutput(error: unknown): Record<string, unknown> {
+  const lockDir = extractTeamLockDirFromError(error);
+  const systemMessage = lockDir
+    ? `OMX Stop terminal: stale team lock at ${lockDir} requires manual recovery. ` +
+      `Confirm no other operations are accessing the lock, then remove: rm -rf "${lockDir}"`
+    : `OMX Stop terminal: stale team lock requires manual recovery.`;
+  return {
+    continue: false,
+    stopReason: "team_lock_recovery_required",
+    systemMessage,
+  };
+}
+
 function buildStopDispatchFailureOutput(error: unknown): Record<string, unknown> {
+  // Check if this is a manual recovery error that should be treated as terminal
+  if (isTeamLockRecoveryRequiredError(error)) {
+    return buildTeamLockRecoveryStopOutput(error);
+  }
+
   const detail = error instanceof Error ? error.message : String(error);
   const reason =
     "OMX native Stop hook failed before normal continuation handling. Continue once more, preserve runtime state, inspect the hook logs, and retry with a valid Stop JSON response.";
