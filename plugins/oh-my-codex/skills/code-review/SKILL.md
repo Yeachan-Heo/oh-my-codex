@@ -29,6 +29,20 @@ git diff --stat
 git diff -- <scope>
 ```
 
+## Continuation Decision Table
+
+When a user requests `continue` or provides existing artifacts, check the source binding and decide the next step:
+
+| Condition | Action |
+|-----------|--------|
+| **Fresh Review** (no prior receipt, OR source/requirements/gates changed) | Launch both code-reviewer and architect lanes in parallel on clean contexts. Treat prior artifacts as context only; do not reuse evidence. |
+| **Resuming Missing Lane** (one lane has evidence, other missing, source/requirements/gates unchanged) | Re-launch the missing lane only. Carry prior evidence from the complete lane. |
+| **Resuming Missing Validation** (both lanes returned, validation incomplete, source/requirements/gates unchanged) | Collect missing validation inputs/results. Reuse lane evidence. |
+| **Repair Re-review** (implementation changed source after prior review, authorized repair owner confirmed) | Re-launch both lanes on the revised scope. Include prior findings as context; preserve dispositions unless new evidence justifies reopening. Carry repair authorization through the review. |
+| **Complete Evidence** (all lanes returned, all validation complete, source/requirements/gates unchanged) | Return the existing scoped result and stop. No re-review needed. |
+
+**Binding Rules**: A source-bound receipt tracks scope identity (commit, uncommitted changes, file hashes), requirements, configured gates, and lane results. Missing or unverifiable bindings (stale/unbound artifacts, changed source not signed by repair authorization) prevent evidence reuse. Invalidation triggers a fresh review; partial evidence loss triggers lane resumption, not full restart.
+
 ## Execution
 
 1. Identify changed files and review boundaries; do not silently widen the scope.
@@ -115,6 +129,76 @@ RECOMMENDATION: COMMENT
 
 Replace the illustrative counts and verdict with observed values. Include scope,
 lane evidence/artifact references, unresolved risks, and validation gaps.
+
+## Source-Bound Review Receipt
+
+When a review completes or a user requests continuation, record a source-bound receipt that binds the review result to its input context. This receipt is the basis for deciding whether to reuse evidence or perform a fresh review.
+
+**Receipt Structure**:
+
+```text
+SOURCE-BOUND REVIEW RECEIPT
+
+REVIEW SCOPE
+  Files Reviewed: <count>
+  Changed Lines: <+/->
+  Boundaries: <scope description>
+
+SOURCE IDENTITY
+  Base Commit: <commit hash>
+  Uncommitted Changes: <yes|no> [file hashes if present]
+  Source Binding: <valid|stale|unbound>
+
+REQUIREMENTS & GATES
+  Specification: [reference or summary]
+  Acceptance Criteria: [reference or summary]
+  Test/CI Evidence: [references]
+  Configured Quality Gates: [list of blocking/advisory gates]
+
+LANE RESULTS
+  code-reviewer:
+    Recommendation: APPROVE | REQUEST CHANGES | COMMENT
+    Finding Severity: CRITICAL (N) | HIGH (N) | MEDIUM (N) | LOW (N)
+    Artifact: [reference or hash]
+    Status: complete | unavailable
+  
+  architect:
+    Status: CLEAR | WATCH | BLOCK
+    Finding Severity: CRITICAL (N) | HIGH (N) | MEDIUM (N) | LOW (N)
+    Artifact: [reference or hash]
+    Status: complete | unavailable
+  
+  [custom gates]:
+    Gate Name: <skill name>
+    Mode: blocking | advisory
+    Verdict: pass | fail | unavailable
+    Artifact: [reference or hash]
+    Status: complete | unavailable
+
+VALIDATION
+  Inputs Recorded: [list of validation requirements met]
+  Validation Results: [status of each requirement]
+  Validation Status: complete | incomplete
+
+FINDINGS & GAPS
+  Unresolved High/Critical: [count and list]
+  Evidence Gaps: [any missing evidence from required lanes or gates]
+  Blockers: [any blocking conditions preventing approval]
+
+FINAL RECOMMENDATION
+  Recommendation: APPROVE | REQUEST CHANGES | COMMENT
+  Merge-Ready: yes | no
+  Binding Status: bound | unbound
+```
+
+**Invalidation Triggers**: The receipt becomes invalid if:
+- Base commit or uncommitted changes differ from the initial review (source changed)
+- Requirements or acceptance criteria are updated
+- Configured quality gates change (gates added, removed, or mode changed)
+- Validation inputs/results are unavailable or stale
+- Required lanes (code-reviewer or architect) are missing or unavailable
+
+**Reuse Rules**: Evidence may be reused across continuation requests only if all binding conditions match and the receipt status is `bound`. A `stale` or `unbound` receipt requires fresh review. Missing or unverifiable bindings never establish approval.
 
 ## Exit condition
 

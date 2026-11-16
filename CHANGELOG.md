@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.9] - 2026-11-17
+
+Minor release ships updated code-review skill with source-bound continuation and repair receipts. See [release notes](docs/release-notes-0.22.9.md) for exact scope and evidence.
+
+### Added
+
+- **CODE-REVIEW SKILL: SOURCE-BOUND CONTINUATION AND REPAIR RECEIPTS (#4098):** The code-review skill now captures source identity (commit, uncommitted changes, file hashes) in review receipts, tracks scope, requirements, gates, and validation results independently for each review lane, and prevents unverifiable approval of changed source or invalidated evidence. Receipt structure distinguishes fresh review, missing-lane resumption, missing-validation collection, repair re-review, and complete evidence termination cases. Fixes #4095.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.8...v0.22.9
+
 ## [0.22.8] - 2026-11-16
 
 Patch release ships critical fixes for team lock recovery and Stop hook stability. The native Stop hook no longer loops on stale team membership locks, preventing Codex API quota exhaustion. See [release notes](docs/release-notes-0.22.8.md) for exact scope and evidence.
