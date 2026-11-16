@@ -104,17 +104,30 @@ Each quality gate:
 
 The Ralplan skill places custom gates after Critic review. The current runtime further requires the Critic to return `approve` before running them; a Critic `iterate` or `reject` result skips custom gates for that draft. Gate feedback is therefore not available on every draft that needs revision.
 
-The quality-gate listing/configuration surface discovers and normalizes configuration. It does not run reviewers or enforce stage completion. Skill instructions and executable behavior also differ for unavailable Ralplan gates:
+The quality-gate listing/configuration surface discovers and normalizes configuration. It does not run reviewers or enforce stage completion.
 
-| Surface | Unavailable blocking gate |
-| --- | --- |
-| [Deep Interview](../../skills/deep-interview/SKILL.md) and [Code Review](../../skills/code-review/SKILL.md) skill guidance | Requires blocking evidence to approve; unavailable evidence prevents readiness or handoff. |
-| [Ralplan skill guidance](../../skills/ralplan/SKILL.md) | Also requires fail-closed handling before handoff. |
-| [Current Ralplan runtime](../../src/ralplan/runtime.ts) | Records `unavailable` and skips it, including in blocking mode. Consensus can complete when the other consensus requirements pass. |
+## Ralplan Gate Progression Policy: Warning and Skip
 
-Ralplan catches missing/failed executors or invalid native-review results as `unavailable`, then marks its configured gate-review loop complete. Its [quality-gate verdict tests](../../src/ralplan/__tests__/runtime.test.ts) explicitly expect an unavailable blocking gate not to block consensus. Blocking `iterate` or `reject` results still enter the revise loop within the iteration cap; advisory results and skipped unavailable results do not independently require another iteration.
+Ralplan uses a **warning-and-skip** availability policy for custom gates (both blocking and advisory modes). This policy was chosen in [#3955](https://github.com/Yeachan-Heo/oh-my-codex/issues/3955) and implemented in [#3956](https://github.com/Yeachan-Heo/oh-my-codex/pull/3956).
 
-**Known guidance/runtime mismatch:** the current Ralplan runtime does not enforce its skill's fail-closed requirement for unavailable gates. A completed consensus receipt alone does not prove that every configured blocking gate returned approving evidence. A fail-closed runtime policy needs maintainer confirmation and corresponding runtime/test changes.
+### Gate Verdicts and Progression
+
+| Verdict | Blocking Mode | Advisory Mode |
+| --- | --- | --- |
+| `approve` | Passes; progression continues. | Passes; progression continues. |
+| `iterate` | Enters revise loop (step 5); requires resubmission with revised plan. | Recorded as feedback; does not block progression. |
+| `reject` | Enters revise loop (step 5); requires resubmission with revised plan. | Recorded as feedback; does not block progression. |
+| `unavailable` | Recorded as a visible warning; does not block progression or require re-review. | Recorded as a visible warning; does not block progression or require re-review. |
+
+### Unavailable Gate Causes
+
+`unavailable` is recorded when a custom gate cannot supply valid review evidence due to:
+- **Missing or unresolvable skill**: The configured skill does not exist or cannot be found.
+- **Missing executor**: The native quality-gate executor is not available.
+- **Executor error**: The gate process fails (crash, exception, timeout, etc.).
+- **Invalid native-review evidence**: The executor returns a result that lacks required fields (`provenance_kind: 'native_subagent'`, valid `verdict`, valid `thread_id`) or has other schema violations.
+
+In all unavailable cases, the runtime records the error as the gate's summary and continues. A completed consensus receipt may contain unavailable gates; a completed receipt does not prove that every configured blocking gate returned approving evidence.
 
 ## Examples
 
