@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.10] - 2026-11-17
+
+Patch release ships updated ralplan skill guidance aligned with warn-and-skip runtime policy for unavailable custom gates. See [release notes](docs/release-notes-0.22.10.md) for exact scope and evidence.
+
+### Changed
+
+- **ALIGN RALPLAN CUSTOM-GATE GUIDANCE WITH WARN-AND-SKIP POLICY (#4097):** Ralplan skill guidance now documents that unavailable custom gates are warned about and skipped at runtime, not an error condition. The skill no longer references or requires missing custom gates in its examples or expected workflow paths. Fixes #4096.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.9...v0.22.10
+
 ## [0.22.9] - 2026-11-17
 
 Minor release ships updated code-review skill with source-bound continuation and repair receipts. See [release notes](docs/release-notes-0.22.9.md) for exact scope and evidence.
