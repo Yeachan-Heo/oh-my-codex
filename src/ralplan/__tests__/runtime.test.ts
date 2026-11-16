@@ -702,4 +702,86 @@ describe('ralplan advisory runtime', () => {
     assert.equal(gate.complete, true, 'blocking gate with unavailable verdict should NOT block consensus');
     assert.equal(gate.blocked_reason, null, 'unavailable verdict should not set a blocked reason');
   });
+
+  it('quality gate verdict: advisory gate with "reject" verdict does NOT block consensus', () => {
+    const architectReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'architect' };
+    const criticReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'critic' };
+    const gate = __buildRalplanConsensusGateForTests([architectReview], [criticReview], {
+      iteration: 1,
+      gateResults: [
+        { skill: 'advisory-gate', iteration: 1, verdict: 'reject' as const, summary: 'advisory feedback', mode: 'advisory' },
+      ],
+      qualityGatesComplete: true,
+      nativeEvidenceComplete: true,
+    });
+    assert.equal(gate.complete, true, 'advisory gate with reject verdict should NOT block consensus');
+    assert.equal(gate.blocked_reason, null, 'advisory verdict should not set a blocked reason');
+  });
+
+  it('quality gate verdict: advisory gate with "unavailable" verdict does NOT block consensus', () => {
+    const architectReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'architect' };
+    const criticReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'critic' };
+    const gate = __buildRalplanConsensusGateForTests([architectReview], [criticReview], {
+      iteration: 1,
+      gateResults: [
+        { skill: 'missing-advisory-gate', iteration: 1, verdict: 'unavailable', summary: 'executor not found', mode: 'advisory' },
+      ],
+      qualityGatesComplete: true,
+      nativeEvidenceComplete: true,
+    });
+    assert.equal(gate.complete, true, 'advisory gate with unavailable verdict should NOT block consensus');
+    assert.equal(gate.blocked_reason, null, 'advisory unavailable should not set a blocked reason');
+  });
+
+  it('quality gate verdict: mixed gates (blocking approve, advisory reject, blocking unavailable) do NOT block consensus', () => {
+    const architectReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'architect' };
+    const criticReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'critic' };
+    const gate = __buildRalplanConsensusGateForTests([architectReview], [criticReview], {
+      iteration: 1,
+      gateResults: [
+        { skill: 'design-audit', iteration: 1, verdict: 'approve' as const, summary: 'design ok', mode: 'blocking' },
+        { skill: 'advisory-lint', iteration: 1, verdict: 'reject' as const, summary: 'advisory feedback', mode: 'advisory' },
+        { skill: 'missing-security-check', iteration: 1, verdict: 'unavailable', summary: 'skill not found', mode: 'blocking' },
+      ],
+      qualityGatesComplete: true,
+      nativeEvidenceComplete: true,
+    });
+    assert.equal(gate.complete, true, 'mixed gates should allow consensus when no blocking gate rejects/iterates');
+    assert.equal(gate.blocked_reason, null, 'no blocker should be set');
+  });
+
+  it('quality gate verdict: blocking gate reject blocks even with other gates unavailable', () => {
+    const architectReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'architect' };
+    const criticReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'critic' };
+    const gate = __buildRalplanConsensusGateForTests([architectReview], [criticReview], {
+      iteration: 1,
+      gateResults: [
+        { skill: 'security-audit', iteration: 1, verdict: 'reject' as const, summary: 'security issue', mode: 'blocking' },
+        { skill: 'missing-compliance', iteration: 1, verdict: 'unavailable', summary: 'executor failed', mode: 'blocking' },
+      ],
+      qualityGatesComplete: true,
+      nativeEvidenceComplete: true,
+    });
+    assert.equal(gate.complete, false, 'blocking reject should block consensus even with other gates unavailable');
+    assert.equal(gate.blocked_reason, 'quality_gate_not_approved:security-audit');
+  });
+
+  it('quality gate verdict: unavailable gates remain visible in consensus gate result', () => {
+    const architectReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'architect' };
+    const criticReview: RalplanReviewResult = { verdict: 'approve', agent_role: 'critic' };
+    const gate = __buildRalplanConsensusGateForTests([architectReview], [criticReview], {
+      iteration: 1,
+      gateResults: [
+        { skill: 'missing-skill', iteration: 1, verdict: 'unavailable', summary: 'skill not found', mode: 'blocking' },
+        { skill: 'passing-gate', iteration: 1, verdict: 'approve' as const, summary: 'passed', mode: 'blocking' },
+      ],
+      qualityGatesComplete: true,
+      nativeEvidenceComplete: true,
+    });
+    assert.equal(gate.complete, true, 'consensus should complete with unavailable gate');
+    assert.deepEqual(gate.qualityGateResults, {
+      'missing-skill': { verdict: 'unavailable', summary: 'skill not found' },
+      'passing-gate': { verdict: 'approve', summary: 'passed' },
+    }, 'unavailable gate results should remain visible in the receipt');
+  });
 });
