@@ -1,6 +1,6 @@
 {
   "name": "oh-my-codex",
-  "version": "0.22.8-dev",
+  "version": "0.22.9-dev",
   "description": "Multi-agent orchestration layer for OpenAI Codex CLI",
   "author": {
     "name": "Yeachan Heo",

@@ -11,7 +11,7 @@ resolver = "2"
 
 [workspace.package]
 
-version = "0.22.8-dev"
+version = "0.22.9-dev"
 
 edition = "2021"
 rust-version = "1.73"
