@@ -2933,9 +2933,18 @@ async function resolveTeamStateDirForWorkerContext(
   cwd: string,
   workerContext: { teamName: string; workerName: string },
 ): Promise<string | null> {
-  const resolved = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
-  if (resolved) return resolved;
-  return null;
+  try {
+    const resolved = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env);
+    if (resolved) return resolved;
+    return null;
+  } catch (error) {
+    // Re-throw team lock recovery errors so they're handled by the Stop hook error handler
+    if (error instanceof Error && error.message.includes('team_lock_recovery_required')) {
+      throw error;
+    }
+    // Suppress other errors (state root resolution failures)
+    return null;
+  }
 }
 
 async function isConfirmedTeamWorkerPromptSubmitPane(cwd: string): Promise<boolean> {
