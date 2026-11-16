@@ -27,17 +27,13 @@ async function staleLock(lockDir: string, token?: string): Promise<void> {
 }
 
 describe('issue #4086: stop hook with stale team lock', () => {
-  it('stop hook with stale team lock should NOT tell Codex to continue', async () => {
+  it('stop hook with stale team lock should return continue:false (terminal)', async () => {
     const cwd = await workspace();
     const team = 'audit';
     const workerName = 'executor-1';
 
     // Initialize team state
     await initTeamState(team, 'stop hook lock test', 'executor', 1, cwd);
-
-    // Set up team worker context in environment
-    const stateDir = join(cwd, '.omx/state');
-    const teamDir = join(stateDir, 'team', team);
 
     // Write worker identity to make this appear as a team worker
     await writeWorkerIdentity(team, workerName, {
@@ -49,7 +45,8 @@ describe('issue #4086: stop hook with stale team lock', () => {
 
     // Create a stale team membership lock
     const lockDir = join(cwd, '.omx/state/.team-locks', `${team}.membership`);
-    await staleLock(lockDir, '99999999.0.dead');
+    const staleLockToken = '99999999.0.dead';
+    await staleLock(lockDir, staleLockToken);
 
     // Set up environment to identify as a team worker
     const originalEnv = process.env;
@@ -70,41 +67,53 @@ describe('issue #4086: stop hook with stale team lock', () => {
         { cwd },
       );
 
-      // The Stop hook should return a response that does NOT instruct Codex to continue
-      // When team_lock_recovery_required is encountered, it should be treated as terminal
-      console.log("Stop hook result:", JSON.stringify(result, null, 2));
-
-      // The response should have a decision that properly blocks/terminates the stop
-      // NOT a message that says "Continue once more"
-      if (result.outputJson) {
-        assert.ok(
-          result.outputJson.stopReason !== "native_stop_dispatch_failure" ||
-          !String(result.outputJson.systemMessage).includes("Continue once more"),
-          "Stop hook should NOT tell Codex to continue when team_lock_recovery_required is encountered"
-        );
-
-        // Better: it should clearly indicate the lock issue and provide recovery path
-        const reason = String(result.outputJson.reason || result.outputJson.systemMessage || "");
-        if (result.outputJson.stopReason === "native_stop_dispatch_failure") {
-          // This is the current buggy behavior - we should see the lock error
-          assert.ok(
-            reason.includes("team_lock_recovery_required") || reason.includes("stale lock"),
-            "Should mention the stale lock error"
-          );
-          assert.ok(
-            reason.includes(lockDir),
-            "Should include the lock directory path for manual recovery"
-          );
-        }
-      }
+      // Exact assertions for terminal output: continue:false, no decision, no reason
+      assert.ok(result.outputJson, 'outputJson must be present');
+      const outputJson = result.outputJson as Record<string, unknown>;
+      
+      assert.strictEqual(
+        outputJson.continue,
+        false,
+        'continue must be false to make Stop terminal'
+      );
+      
+      assert.strictEqual(
+        outputJson.decision,
+        undefined,
+        'decision must be undefined for terminal output (no decision property)'
+      );
+      
+      assert.strictEqual(
+        outputJson.reason,
+        undefined,
+        'reason must be undefined so model never receives recovery instructions'
+      );
+      
+      assert.strictEqual(
+        outputJson.stopReason,
+        'team_lock_recovery_required',
+        'stopReason must identify the lock recovery issue'
+      );
+      
+      // Recovery steps must be only in systemMessage, never exposed to model as decision/reason
+      const systemMessage = String(outputJson.systemMessage || '');
+      assert.ok(
+        systemMessage.length > 0,
+        'systemMessage must contain recovery instructions'
+      );
+      assert.ok(
+        systemMessage.includes('stale lock') || systemMessage.includes(lockDir),
+        'systemMessage must describe the stale lock location'
+      );
     } finally {
       process.env = originalEnv;
     }
   });
 
-  it('preserves lock state when stop hook encounters stale lock', async () => {
+  it('two consecutive Stop invocations are both terminal with lock preserved', async () => {
     const cwd = await workspace();
     const team = 'audit';
+    const workerName = 'executor-1';
 
     // Initialize team state
     await initTeamState(team, 'lock preservation test', 'executor', 1, cwd);
@@ -113,14 +122,7 @@ describe('issue #4086: stop hook with stale team lock', () => {
     const staleLockToken = '99999999.0.dead';
     await staleLock(lockDir, staleLockToken);
 
-    // Verify lock state before Stop hook
-    const beforeOwner = await readFile(join(lockDir, 'owner'), 'utf8');
-    const beforeLease = await readFile(join(lockDir, 'lease'), 'utf8');
-    assert.equal(beforeOwner, staleLockToken);
-    assert.equal(beforeLease, 'abandoned');
-
-    // Write worker identity to make this appear as a team worker
-    const workerName = 'executor-1';
+    // Write worker identity
     await writeWorkerIdentity(team, workerName, {
       name: workerName,
       index: 1,
@@ -135,22 +137,65 @@ describe('issue #4086: stop hook with stale team lock', () => {
     process.env.OMX_TEAM_WORKER_INTERNAL_CANONICAL = 'true';
 
     try {
-      // Invoke Stop hook
-      await dispatchCodexNativeHook(
+      // First Stop invocation
+      const result1 = await dispatchCodexNativeHook(
         {
           hook_event_name: "Stop",
           cwd,
-          session_id: "test-stop-hook",
+          session_id: "test-stop-hook-1",
           stop_hook_active: false,
         },
         { cwd },
       );
 
-      // Verify lock state is preserved (not auto-deleted)
-      const afterOwner = await readFile(join(lockDir, 'owner'), 'utf8');
-      const afterLease = await readFile(join(lockDir, 'lease'), 'utf8');
-      assert.equal(afterOwner, staleLockToken, "Lock owner should be preserved");
-      assert.equal(afterLease, 'abandoned', "Lock lease should be preserved");
+      assert.ok(result1.outputJson, 'First Stop result must have outputJson');
+      const output1 = result1.outputJson as Record<string, unknown>;
+      assert.strictEqual(
+        output1.continue,
+        false,
+        'First Stop must have continue:false (terminal)'
+      );
+      assert.strictEqual(
+        output1.stopReason,
+        'team_lock_recovery_required',
+        'First Stop must identify lock recovery reason'
+      );
+
+      // Verify lock state is preserved after first Stop
+      let owner = await readFile(join(lockDir, 'owner'), 'utf8');
+      let lease = await readFile(join(lockDir, 'lease'), 'utf8');
+      assert.strictEqual(owner, staleLockToken, 'Lock owner must be preserved after first Stop');
+      assert.strictEqual(lease, 'abandoned', 'Lock lease must be preserved after first Stop');
+
+      // Second Stop invocation (simulating operator retrying after fixing)
+      const result2 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "test-stop-hook-2",
+          stop_hook_active: false,
+        },
+        { cwd },
+      );
+
+      assert.ok(result2.outputJson, 'Second Stop result must have outputJson');
+      const output2 = result2.outputJson as Record<string, unknown>;
+      assert.strictEqual(
+        output2.continue,
+        false,
+        'Second Stop must have continue:false (terminal)'
+      );
+      assert.strictEqual(
+        output2.stopReason,
+        'team_lock_recovery_required',
+        'Second Stop must identify lock recovery reason'
+      );
+
+      // Verify lock state is still preserved
+      owner = await readFile(join(lockDir, 'owner'), 'utf8');
+      lease = await readFile(join(lockDir, 'lease'), 'utf8');
+      assert.strictEqual(owner, staleLockToken, 'Lock owner must be preserved after second Stop');
+      assert.strictEqual(lease, 'abandoned', 'Lock lease must be preserved after second Stop');
     } finally {
       process.env = originalEnv;
     }

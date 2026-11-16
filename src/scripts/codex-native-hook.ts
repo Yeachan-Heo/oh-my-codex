@@ -23226,15 +23226,14 @@ function extractTeamLockDirFromError(error: unknown): string | null {
 
 function buildTeamLockRecoveryStopOutput(error: unknown): Record<string, unknown> {
   const lockDir = extractTeamLockDirFromError(error);
-  const reason = lockDir
-    ? `OMX Stop blocked: stale team lock at ${lockDir} requires manual recovery. ` +
+  const systemMessage = lockDir
+    ? `OMX Stop terminal: stale team lock at ${lockDir} requires manual recovery. ` +
       `Confirm no other operations are accessing the lock, then remove: rm -rf "${lockDir}"`
-    : `OMX Stop blocked: stale team lock requires manual recovery.`;
+    : `OMX Stop terminal: stale team lock requires manual recovery.`;
   return {
-    decision: "block",
-    reason,
+    continue: false,
     stopReason: "team_lock_recovery_required",
-    systemMessage: reason,
+    systemMessage,
   };
 }
 
