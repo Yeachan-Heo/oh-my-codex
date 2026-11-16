@@ -1,27 +1,27 @@
-# oh-my-codex v0.22.9
+# oh-my-codex v0.22.10
 
 ## Summary
 
-This minor release ships updated code-review skill with source-bound continuation and repair receipts. Review receipts now capture and preserve source identity (commit hash, uncommitted changes, file hashes), track scope, requirements, gates, and validation results independently for each review lane, and enforce invalidation rules preventing unverifiable approval of changed source or invalidated evidence.
+This patch release ships updated ralplan skill guidance aligned with the warn-and-skip runtime policy for unavailable custom gates. The ralplan skill documentation now correctly reflects that custom gates unavailable in the host environment are warned about and skipped at runtime, not treated as error conditions. Skill examples and workflow paths no longer reference or require missing custom gates, fixing the documentation inconsistency reported in #4096.
 
-## Added
+## Changed
 
-- **CODE-REVIEW SKILL: SOURCE-BOUND CONTINUATION AND REPAIR RECEIPTS (#4098):** The code-review skill now captures source identity in review receipts, distinguishes review operation contexts (fresh review, missing-lane resumption, missing-validation collection, repair re-review, complete evidence termination), and prevents receipt reuse when source, requirements, gates, or validation change. Receipt-based invalidation rules ensure continuation always operates on verified scope and that repair re-review never substitutes lane results. First review runs both lanes in parallel on clean contexts; continuation never drops lanes. Standalone review stays read-only. Fixes #4095.
+- **ALIGN RALPLAN CUSTOM-GATE GUIDANCE WITH WARN-AND-SKIP POLICY (#4097):** Ralplan skill guidance now documents that unavailable custom gates are warned about and skipped at runtime. Skill examples and expected workflow paths are updated to remove references to missing custom gates, aligning skill documentation with actual runtime behavior. Fixes #4096.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.9`.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.10`.
 
 ## Verification
 
-- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.9.md)).
-- PR #4098 CI passed on merged head.
+- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.10.md)).
+- PR #4097 CI passed on merged head.
 
 ## Contributors
 
 Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo) for contributing to this release.
 
-**Full Changelog**: [`v0.22.8...v0.22.9`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.8...v0.22.9)
+**Full Changelog**: [`v0.22.9...v0.22.10`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.9...v0.22.10)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
