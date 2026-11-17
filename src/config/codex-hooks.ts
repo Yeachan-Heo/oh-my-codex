@@ -1,6 +1,5 @@
 import { createHash } from "crypto";
 import { readdir, realpath } from "fs/promises";
-import { realpathSync } from "fs";
 import { basename, dirname, join, relative, resolve, win32 } from "path";
 
 export const MANAGED_HOOK_EVENTS = [
@@ -187,23 +186,6 @@ export interface ManagedCodexHookOptions {
    * retain the historical canonical-builder fallback; null declares no final artifact.
    */
   hooksContent?: string | null;
-}
-
-/**
- * Canonicalize a hooks path to handle symlink aliases consistently.
- * When the hooks file exists, resolves through any symlinks.
- * For non-existent paths, returns the original path as-is to avoid
- * platform-specific path resolution issues.
- */
-function canonicalizeHooksPath(hooksPath: string): string {
-  try {
-    return realpathSync(hooksPath);
-  } catch {
-    // Path doesn't exist yet or is not reachable on this platform
-    // Return the original path unchanged to avoid platform-specific issues
-    // (e.g., Windows paths on Linux should remain unchanged for test compatibility)
-    return hooksPath;
-  }
 }
 
 function resolveManagedCodexHookOptions(
