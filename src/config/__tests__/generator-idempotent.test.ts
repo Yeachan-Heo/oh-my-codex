@@ -3039,6 +3039,129 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
+  it("refreshes previous OMX default developer_instructions on upgrade (issue #4105)", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      // Use an older OMX default value that differs from the current one
+      const olderOmxDefault =
+        'You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords.';
+      await writeFile(
+        configPath,
+        [
+          'model = "o3"',
+          `developer_instructions = "${olderOmxDefault}"`,
+          'model_reasoning_effort = "medium"',
+          "",
+          "[features]",
+          "multi_agent = true",
+          "",
+        ].join("\n"),
+      );
+
+      await mergeConfig(configPath, wd);
+      const merged = await readFile(configPath, "utf-8");
+
+      // Older OMX default should be replaced with current default
+      assert.doesNotMatch(
+        merged,
+        /You have oh-my-codex installed\. AGENTS\.md is your orchestration brain/,
+        "old OMX default should be replaced",
+      );
+      assert.match(
+        merged,
+        /developer_instructions = "You have oh-my-codex installed\. AGENTS\.md is the orchestration brain/,
+        "current OMX default should be present",
+      );
+      assert.match(merged, /^model = "o3"$/m, "model should be preserved");
+      assert.doesNotThrow(() => TOML.parse(merged));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves developer_instructions in multiline literal string format", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const customInstructions = `Custom multiline
+instructions\nwith newlines
+and special chars"quoted"`;
+      await writeFile(
+        configPath,
+        [
+          'model = "o3"',
+          `developer_instructions = '''${customInstructions}'''`,
+          'model_reasoning_effort = "medium"',
+          "",
+          "[features]",
+          "multi_agent = true",
+          "",
+        ].join("\n"),
+      );
+
+      await mergeConfig(configPath, wd);
+      const merged = await readFile(configPath, "utf-8");
+
+      // Custom value should be preserved
+      assert.match(
+        merged,
+        /developer_instructions = /,
+        "developer_instructions should be present",
+      );
+      // Should not contain OMX default marker text
+      assert.doesNotMatch(
+        merged,
+        /You have oh-my-codex installed\. AGENTS\.md is the orchestration brain/,
+        "should not contain OMX default",
+      );
+      assert.match(merged, /^model = "o3"$/m);
+      assert.doesNotThrow(() => TOML.parse(merged));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("maintains idempotency for developer_instructions across multiple setup runs", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const customInstructions = "My custom project-specific instructions";
+      const initialConfig = [
+        'model = "o3"',
+        `developer_instructions = "${customInstructions}"`,
+        'model_reasoning_effort = "medium"',
+        "",
+        "[features]",
+        "multi_agent = true",
+        "",
+      ].join("\n");
+      await writeFile(configPath, initialConfig);
+
+      // First run
+      await mergeConfig(configPath, wd);
+      const first = await readFile(configPath, "utf-8");
+
+      // Second run on the same config
+      await mergeConfig(configPath, wd);
+      const second = await readFile(configPath, "utf-8");
+
+      // Both should be identical
+      assert.equal(first, second, "multiple setup runs should be idempotent");
+      // And both should parse without errors
+      assert.doesNotThrow(() => TOML.parse(first));
+      assert.doesNotThrow(() => TOML.parse(second));
+      // Should have exactly one developer_instructions key
+      assert.equal(
+        (first.match(/^developer_instructions\s*=/gm) ?? []).length,
+        1,
+        "should have exactly one developer_instructions entry",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("repairConfigIfNeeded backfills launcher-backed MCP startup timeouts", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
