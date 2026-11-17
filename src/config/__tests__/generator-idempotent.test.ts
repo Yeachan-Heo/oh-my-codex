@@ -2988,12 +2988,11 @@ describe("config generator idempotency (#384)", () => {
     assert.match(merged, /^startup_timeout_sec = 15$/m);
   });
 
-  it("removes an existing multiline developer_instructions assignment as one root entry", () => {
+  it("preserves an existing custom multiline developer_instructions as one root entry", () => {
+    const customInstructions = `Custom instructions survive as valid TOML.\nThis line used to be orphaned by setup.\nThis closing line used to break parsing.`;
     const existing = [
       'model = "gpt-5.6-sol"',
-      'developer_instructions = """Custom instructions survive as valid TOML.',
-      'This line used to be orphaned by setup.',
-      'This closing line used to break parsing."""',
+      `developer_instructions = """${customInstructions}"""`,
       "",
       "[features]",
       "web_search = true",
@@ -3002,9 +3001,25 @@ describe("config generator idempotency (#384)", () => {
 
     const merged = buildMergedConfig(existing, "/tmp/omx");
 
-    assert.doesNotMatch(merged, /This line used to be orphaned/);
-    assert.doesNotMatch(merged, /This closing line used to break parsing/);
+    // Parse the merged TOML to extract the developer_instructions value
+    const parsedMerged = TOML.parse(merged) as Record<string, unknown>;
+    const preservedValue = parsedMerged.developer_instructions;
+
+    // Assert that the custom value is preserved exactly
+    assert.equal(
+      preservedValue,
+      customInstructions,
+      "custom developer_instructions should be preserved exactly",
+    );
+
+    // Assert that the orphaned lines are present (they should be preserved as part of the custom value)
+    assert.match(merged, /This line used to be orphaned/);
+    assert.match(merged, /This closing line used to break parsing/);
+
+    // Assert exactly one developer_instructions key exists
     assert.equal(count(merged, /^developer_instructions\s*=/gm), 1);
+
+    // Assert TOML parses successfully
     assert.doesNotThrow(() => TOML.parse(merged));
   });
 
