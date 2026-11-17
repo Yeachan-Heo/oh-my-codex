@@ -102,6 +102,22 @@ const OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER =
 
 export const OMX_DEVELOPER_INSTRUCTIONS =
   "You have oh-my-codex installed. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for skill/keyword routing, $name workflow invocation, and role-specialized subagents; when the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work. When it reports `role_routing_unavailable` and adapted Ralplan authority is requested, do not fabricate `agent_type`; run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`. Ordinary work remains under its own workflow gates. Never fake the role via a prompt label or infer authority from session/thread/pointer/transcript/cwd state. Use outcome-first, concise progress updates: state the target result, constraints, validation evidence, and stop condition before adding process detail. Native subagents live in .codex/agents and may handle independent parallel subtasks within one Codex session or team pane. Skills load from .codex/skills, not native-agent TOMLs. Treat installed prompts as narrower execution surfaces under AGENTS.md authority.";
+
+/**
+ * Historically shipped OMX developer_instructions values.
+ * When upgrading, any value matching one of these is treated as OMX-managed and refreshed
+ * to the current version. Only values NOT in this set are preserved as user-customizations.
+ * This allows users to get default updates across OMX releases while still preserving
+ * genuinely custom developer_instructions.
+ */
+const KNOWN_OMX_DEVELOPER_INSTRUCTIONS_VALUES: ReadonlySet<string> = new Set([
+  OMX_DEVELOPER_INSTRUCTIONS,
+  // Previous OMX versions before AGENTS.md orchestration guidance:
+  "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords.",
+  // Earlier version with simplified guidance
+  "You have oh-my-codex installed. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for skill/keyword routing and $name workflow invocation. When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work. When it reports `role_routing_unavailable` and adapted Ralplan authority is requested, do not fabricate `agent_type`; run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`. Ordinary work remains under its own workflow gates. Never fake the role via a prompt label or infer authority from session/thread/pointer/transcript/cwd state. Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed; native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works. User-installed skills may still live under ~/.codex/skills. Use outcome-first, concise progress updates: state the target result, constraints, validation evidence, and stop condition before adding process detail.",
+]);
+
 export const OMX_PLUGIN_DEVELOPER_INSTRUCTIONS =
   '<omx version="1">You have oh-my-codex installed through Codex plugin mode. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for skill/keyword routing and $name workflow invocation. When the native surface exposes `agent_type` role routing, set `agent_type` to an installed role and never omit it for OMX work. When it reports `role_routing_unavailable` and adapted Ralplan authority is requested, do not fabricate `agent_type`; run `omx ralplan preflight --json` and stop on `unsupported_documented_leader_proof`. Ordinary work remains under its own workflow gates. Never fake the role via a prompt label or infer authority from session/thread/pointer/transcript/cwd state. Registered Codex plugin marketplace surfaces supply OMX workflows and plugin-scoped companion resources when the plugin is installed; native agent roles are installed as setup-owned Codex agent TOML files in plugin mode so agent_type routing works. User-installed skills may still live under ~/.codex/skills. Use outcome-first, concise progress updates: state the target result, constraints, validation evidence, and stop condition before adding process detail.</omx>';
 const SHARED_MCP_REGISTRY_MARKER = "oh-my-codex (OMX) Shared MCP Registry Sync";
@@ -336,7 +352,29 @@ function stripLegacyOmxTeamRunTable(config: string): string {
 }
 
 function unwrapTomlString(value: string | undefined): string | undefined {
-  return value?.match(/^"(.*)"$/)?.[1];
+  if (!value) return undefined;
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1);
+  }
+  return undefined;
+}
+
+/**
+ * Properly parse a TOML-formatted string value to extract its actual string content.
+ * Handles basic strings (double-quoted), literal strings (single-quoted), and multiline variants.
+ * Uses TOML parser to ensure correct handling of escapes and special characters.
+ */
+function parseTomlStringValue(tomlValue: string): string | undefined {
+  if (!tomlValue) return undefined;
+  try {
+    // Create a temporary TOML document to parse the value correctly
+    // Use a unique key name to avoid collisions
+    const parsed = TOML.parse(`key = ${tomlValue}`) as Record<string, unknown>;
+    const val = parsed.key;
+    return typeof val === "string" ? val : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function getRootModelName(config: string): string | undefined {
@@ -582,6 +620,7 @@ function getOmxTopLevelLines(
   modelOverride?: string,
   notifyCommand: string[] | false = getDefaultNotifyCommand(pkgRoot),
   preservedReasoningEffort?: string,
+  preservedDeveloperInstructions?: string,
 ): string[] {
   const rootValues = parseRootKeyValues(existingConfig);
 
@@ -590,13 +629,19 @@ function getOmxTopLevelLines(
       ? `model_reasoning_effort = ${preservedReasoningEffort}`
       : 'model_reasoning_effort = "medium"';
 
+  // Preserve custom developer_instructions if provided, otherwise use OMX default
+  const developerInstructionsValue =
+    preservedDeveloperInstructions !== undefined
+      ? preservedDeveloperInstructions
+      : `"${escapeTomlString(OMX_DEVELOPER_INSTRUCTIONS)}"`;
+
   const lines = [
     "# oh-my-codex top-level settings (must be before any [table])",
     ...(notifyCommand === false
       ? []
       : [`notify = ${formatTomlStringArray(notifyCommand)}`]),
     reasoningEffortLine,
-    `developer_instructions = "${escapeTomlString(OMX_DEVELOPER_INSTRUCTIONS)}"`,
+    `developer_instructions = ${developerInstructionsValue}`,
   ];
 
   const existingModel = rootValues.get("model");
@@ -4340,12 +4385,29 @@ export function buildMergedConfig(
     options.preserveReasoningEffort === true
       ? parseRootKeyValues(existing).get("model_reasoning_effort")
       : undefined;
+  // Preserve custom developer_instructions only if it differs from ALL known OMX defaults.
+  // This allows users to get updates to the default guidance across OMX releases while
+  // preserving genuinely custom values.
+  const existingDeveloperInstructions = parseRootKeyValues(existing).get(
+    "developer_instructions",
+  );
+  let userDeveloperInstructionsToPreserve: string | undefined = undefined;
+  if (existingDeveloperInstructions) {
+    const parsedValue = parseTomlStringValue(existingDeveloperInstructions);
+    // Only preserve if the parsed value doesn't match any known OMX default
+    if (parsedValue && !KNOWN_OMX_DEVELOPER_INSTRUCTIONS_VALUES.has(parsedValue)) {
+      userDeveloperInstructionsToPreserve = existingDeveloperInstructions;
+    }
+  }
   existing = stripOmxTopLevelKeys(existing).trimStart();
   if (userNotifyToPreserve) {
     existing = `${`notify = ${formatTomlStringArray(userNotifyToPreserve)}`}\n${existing.trimStart()}`;
   }
   if (userReasoningEffortToPreserve !== undefined) {
     existing = stripRootLevelKeys(existing, ["model_reasoning_effort"]);
+  }
+  if (userDeveloperInstructionsToPreserve !== undefined) {
+    existing = stripRootLevelKeys(existing, ["developer_instructions"]);
   }
   existing = stripOrphanedManagedNotify(existing, pkgRoot).trimStart();
   const hookTrustStrip = stripManagedCodexHookTrustStateForRefresh(
@@ -4383,6 +4445,7 @@ export function buildMergedConfig(
     options.preserveReasoningEffort === true
       ? userReasoningEffortToPreserve
       : undefined,
+    userDeveloperInstructionsToPreserve,
   );
   const tablesBlock = getOmxTablesBlock(
     pkgRoot,
