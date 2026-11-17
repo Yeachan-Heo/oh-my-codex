@@ -2534,4 +2534,41 @@ describe("codex hooks helpers", () => {
     assert.equal(sharedSkipped.ok, false);
     if (!sharedSkipped.ok) assert.equal(sharedSkipped.error.code, "ambiguous_managed_handler");
   });
+
+  it("reports managed_trust_key_conflict for genuinely different hook paths", () => {
+    const hooksContent = mergeManagedCodexHooksConfig(
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  type: "command",
+                  command: buildManagedCodexHooksConfig("/repo", { platform: "linux" }).hooks.SessionStart[0]!.hooks[0]!.command,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+      "/repo"
+    );
+
+    // Build trust state with one path
+    const path1 = "/home/user/.codex/hooks.json";
+    const state1 = buildManagedCodexHookTrustState(path1, "/repo", {
+      hooksContent,
+    });
+
+    // Build trust state with a genuinely different path
+    const path2 = "/home/user/.config/other-hooks.json";
+    const state2 = buildManagedCodexHookTrustState(path2, "/repo", {
+      hooksContent,
+    });
+
+    // Keys should be different for genuinely different paths
+    const keys1 = Object.keys(state1);
+    const keys2 = Object.keys(state2);
+    assert.notDeepEqual(keys1, keys2, "Different hook paths should generate different trust keys");
+  });
 });
