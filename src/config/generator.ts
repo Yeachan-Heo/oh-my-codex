@@ -15,6 +15,7 @@ import { existsSync } from "fs";
 import { join, resolve } from "path";
 import TOML from "@iarna/toml";
 import { analyzeTomlSource, type TomlSourceLexicalAnalysis } from "../utils/toml-source.js";
+import { canonicalizeComparablePath } from "../utils/paths.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 import {
@@ -1932,6 +1933,24 @@ function isExactOmxPluginHookTrustRepresentation(
     /^sha256:[a-f0-9]{64}$/.test(value.trusted_hash);
 }
 
+/**
+ * Normalize a managed hook trust key by canonicalizing the hooksPath portion.
+ * This ensures that the same hooks accessed through different paths (alias vs canonical)
+ * generate equivalent keys for comparison purposes.
+ * @param key Trust key in format "<hooksPath>:<eventName>:<groupIndex>:<handlerIndex>"
+ * @returns Normalized key with canonicalized hooksPath
+ */
+function normalizeManagedhookTrustKey(key: string): string {
+  const match = /^(.*):([a-z_]+):(\d+):(\d+)$/.exec(key);
+  if (!match) return key;
+  const hooksPath = match[1];
+  const eventName = match[2];
+  const groupIndex = match[3];
+  const handlerIndex = match[4];
+  const canonicalPath = canonicalizeComparablePath(hooksPath);
+  return `${canonicalPath}:${eventName}:${groupIndex}:${handlerIndex}`;
+}
+
 function managedHookTrustStateExpectations(
   ...states: Array<ManagedCodexHookTrustStateMap | undefined>
 ): ManagedHookTrustStateExpectations {
@@ -1939,9 +1958,11 @@ function managedHookTrustStateExpectations(
   for (const state of states) {
     if (!state) continue;
     for (const [key, entry] of Object.entries(state)) {
-      const hashes = expectations.get(key) ?? new Set<string>();
+      // Normalize the key to handle symlink aliases and canonical paths equivalently
+      const normalizedKey = normalizeManagedhookTrustKey(key);
+      const hashes = expectations.get(normalizedKey) ?? new Set<string>();
       hashes.add(entry.trusted_hash);
-      expectations.set(key, hashes);
+      expectations.set(normalizedKey, hashes);
     }
   }
   return expectations;
@@ -1968,8 +1989,9 @@ function isForeignHookTrustCoordinateBeyondManagedFamily(
   expectations: ManagedHookTrustStateExpectations,
   key: string,
 ): boolean {
-  const candidate = managedHookTrustCoordinate(key);
-  if (!candidate || expectations.has(key)) return false;
+  const normalizedKey = normalizeManagedhookTrustKey(key);
+  const candidate = managedHookTrustCoordinate(normalizedKey);
+  if (!candidate || expectations.has(normalizedKey)) return false;
 
   let maxGroupIndex = -1;
   let maxHandlerIndex = -1;
@@ -1990,9 +2012,10 @@ function expectedManagedHookTrustHashes(
   key: string,
   allowCoordinateDrift: boolean,
 ): ReadonlySet<string> | undefined {
-  const exact = expectations.get(key);
+  const normalizedKey = normalizeManagedhookTrustKey(key);
+  const exact = expectations.get(normalizedKey);
   if (exact || !allowCoordinateDrift) return exact;
-  const coordinate = managedHookTrustCoordinate(key);
+  const coordinate = managedHookTrustCoordinate(normalizedKey);
   if (!coordinate) return undefined;
   const hashes = new Set<string>();
   let maxGroupIndex = -1;

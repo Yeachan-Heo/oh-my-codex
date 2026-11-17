@@ -2640,11 +2640,9 @@ export function scanManagedCodexHookTrustStateFromContent(
   hooksPath: string,
   options: ManagedCodexHookOptions = {},
 ): ManagedCodexHookTrustScanResult {
-  // Canonicalize hooksPath to handle symlink aliases consistently
-  const canonicalHooksPath = canonicalizeHooksPath(hooksPath);
   const validation = validateCodexHooksDocument(content, options);
   if (!("result" in validation)) return validation;
-  return trustFromDocument(validation, canonicalHooksPath, options);
+  return trustFromDocument(validation, hooksPath, options);
 }
 
 function hasExecutableForeignHandlerInUnknownEvent(
@@ -2736,18 +2734,16 @@ export function planManagedCodexHooksMerge(
   hooksPath: string,
   options: ManagedCodexHookOptions = {},
 ): ManagedCodexHooksPlanResult {
-  // Canonicalize hooksPath to handle symlink aliases consistently
-  const canonicalHooksPath = canonicalizeHooksPath(hooksPath);
-  const resolvedOptions = resolveManagedCodexHookOptions(options, canonicalHooksPath);
+  const resolvedOptions = resolveManagedCodexHookOptions(options, hooksPath);
   if (typeof existingContent !== "string") {
     const content = serializeCodexHooksConfig(jsonObjectFromUnknown(buildManagedCodexHooksConfig(pkgRoot, resolvedOptions)));
-    return finalizePlan(existingContent, content, 0, { safe: true }, {}, canonicalHooksPath, resolvedOptions, {});
+    return finalizePlan(existingContent, content, 0, { safe: true }, {}, hooksPath, resolvedOptions, {});
   }
   const prepared = prepareLegacyState(existingContent);
   if (!("content" in prepared)) return planFailure(prepared.error);
   const validation = validateCodexHooksDocument(prepared.content, resolvedOptions);
   if (!("result" in validation)) return planFailure(validation.error);
-  const priorScan = trustFromDocument(validation, canonicalHooksPath, resolvedOptions);
+  const priorScan = trustFromDocument(validation, hooksPath, resolvedOptions);
   if (!priorScan.ok) return planFailure(priorScan.error, validation.result.diagnostics);
   const ownership = inspectOwnership(validation, resolvedOptions);
   if (ownership instanceof ManagedCodexHooksPlanError) return planFailure(ownership, validation.result.diagnostics);
@@ -2831,7 +2827,7 @@ export function planManagedCodexHooksMerge(
     removeOwners.size,
     proof,
     prepared.legacyTrustState,
-    canonicalHooksPath,
+    hooksPath,
     resolvedOptions,
     priorScan.trustState,
     [],
@@ -2844,20 +2840,18 @@ export function planManagedCodexHooksRemoval(
   hooksPath: string,
   options: ManagedCodexHookOptions = {},
 ): ManagedCodexHooksPlanResult {
-  // Canonicalize hooksPath to handle symlink aliases consistently
-  const canonicalHooksPath = canonicalizeHooksPath(hooksPath);
-  const resolvedOptions = resolveManagedCodexHookOptions(options, canonicalHooksPath);
+  const resolvedOptions = resolveManagedCodexHookOptions(options, hooksPath);
   const prepared = prepareLegacyState(existingContent);
   if (!("content" in prepared)) return planFailure(prepared.error);
   const validation = validateCodexHooksDocument(prepared.content, resolvedOptions);
   if (!("result" in validation)) return planFailure(validation.error);
-  const priorScan = trustFromDocument(validation, canonicalHooksPath, resolvedOptions);
+  const priorScan = trustFromDocument(validation, hooksPath, resolvedOptions);
   if (!priorScan.ok) return planFailure(priorScan.error, validation.result.diagnostics);
   const ownership = inspectOwnership(validation, resolvedOptions);
   if (ownership instanceof ManagedCodexHooksPlanError) return planFailure(ownership, validation.result.diagnostics);
   const removeOwners = new Set(ownership.owners);
   const proof = removalProof(ownership, removeOwners);
-  const coordinateMoves = foreignHookCoordinateMoves(ownership, removeOwners, canonicalHooksPath, resolvedOptions);
+  const coordinateMoves = foreignHookCoordinateMoves(ownership, removeOwners, hooksPath, resolvedOptions);
   const proofOnlyReportsReorder = proof.shifted?.newCoordinate !== undefined;
   if (!proof.safe && !proofOnlyReportsReorder) {
     const moveSummary = coordinateMoves.length > 0
@@ -2885,7 +2879,7 @@ export function planManagedCodexHooksRemoval(
     removeOwners.size,
     { safe: true },
     prepared.legacyTrustState,
-    canonicalHooksPath,
+    hooksPath,
     resolvedOptions,
     priorScan.trustState,
     coordinateMoves,
@@ -2939,14 +2933,12 @@ export function buildManagedCodexHookTrustState(
   pkgRoot: string,
   options: ManagedCodexHookOptions = {},
 ): Record<string, ManagedCodexHookTrustState> {
-  // Canonicalize hooksPath to handle symlink aliases consistently
-  const canonicalHooksPath = canonicalizeHooksPath(hooksPath);
-  const resolvedOptions = resolveManagedCodexHookOptions(options, canonicalHooksPath);
+  const resolvedOptions = resolveManagedCodexHookOptions(options, hooksPath);
   if (options.hooksContent === null) return {};
   const content = typeof options.hooksContent === "string"
     ? options.hooksContent
     : serializeCodexHooksConfig(jsonObjectFromUnknown(buildManagedCodexHooksConfig(pkgRoot, resolvedOptions)));
-  const scan = scanManagedCodexHookTrustStateFromContent(content, canonicalHooksPath, resolvedOptions);
+  const scan = scanManagedCodexHookTrustStateFromContent(content, hooksPath, resolvedOptions);
   if (!scan.ok) throw scan.error;
   return scan.trustState;
 }
