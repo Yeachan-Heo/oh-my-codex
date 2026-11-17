@@ -12,7 +12,8 @@ import { fileURLToPath } from "url";
 
 /** Codex CLI home directory (~/.codex/) */
 export function codexHome(): string {
-  return process.env.CODEX_HOME || join(homedir(), ".codex");
+  const rawPath = process.env.CODEX_HOME || join(homedir(), ".codex");
+  return canonicalizeComparablePath(rawPath);
 }
 
 export const OMX_ENTRY_PATH_ENV = "OMX_ENTRY_PATH";
