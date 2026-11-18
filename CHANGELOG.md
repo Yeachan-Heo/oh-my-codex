@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.11] - 2026-11-18
+
+Patch release ships fixes for preserving custom developer instructions during setup and canonicalizing CODEX_HOME for symlink consistency. See [release notes](docs/release-notes-0.22.11.md) for exact scope and evidence.
+
+### Fixed
+
+- **PRESERVE CUSTOM DEVELOPER_INSTRUCTIONS DURING LEGACY SETUP (#4107):** Legacy setup mode now correctly preserves user-customized `developer_instructions` from existing configurations instead of overwriting them with defaults. Fixes #4105.
+- **CANONICALIZE CODEX_HOME FOR SYMLINK CONSISTENCY (#4108):** Doctor hook and setup logic now canonicalize `CODEX_HOME` paths to handle symlink aliases consistently, ensuring symlinked home directories are treated with uniform trust and identity. Fixes #4106.
+
+### Dependencies
+
+- @biomejs/biome updated from 2.6.6 to 2.6.7 (#4103)
+- @napi-rs/lzma updated from 1.4.1 to 1.4.5 (#4104)
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.10...v0.22.11
+
 ## [0.22.10] - 2026-11-17
 
 Patch release ships updated ralplan skill guidance aligned with warn-and-skip runtime policy for unavailable custom gates. See [release notes](docs/release-notes-0.22.10.md) for exact scope and evidence.
