@@ -897,6 +897,80 @@ interface OmxPluginCacheLivePinMutationLockState {
 	content: string | null;
 	record: OmxPluginCacheLivePinMutationLockRecord | null;
 	regular: boolean;
+	stageLinkName?: string;
+}
+
+function isOmxPluginCacheLivePinMutationLockStageQuarantine(name: string, stageName: string): boolean {
+	let currentName = name;
+	// removeChildIfIdentity() prepends a dot and appends a reclaim suffix before
+	// unlinking. If interrupted repeatedly, each attempt can leave another layer.
+	for (let depth = 0; depth < 32; depth += 1) {
+		if (currentName === stageName) return true;
+		if (!currentName.startsWith(".")) return false;
+		const previousName = currentName.slice(1).match(
+			/^(.*)\.reclaim-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+		);
+		if (!previousName) return false;
+		currentName = previousName[1]!;
+	}
+	return currentName === stageName;
+}
+
+async function findOmxPluginCacheLivePinMutationLockStageLink(
+	cacheBaseRef: DirectoryRef,
+	name: string,
+	stageName: string,
+	lockStats: Stats,
+): Promise<string | null> {
+	const stagePath = childOperationPath(cacheBaseRef, stageName);
+	const stageStats = await lstat(stagePath).catch((error) => {
+		if (isMissingPathError(error)) return null;
+		throw error;
+	});
+	if (stageStats) {
+		return stageStats.isFile() && !stageStats.isSymbolicLink() &&
+			stageStats.nlink === 2 && sameFileIdentity(lockStats, stageStats)
+			? stageName
+			: null;
+	}
+
+	// A crash after quarantine-rename but before unlink leaves the staged hard
+	// link under a .reclaim-* name. Recover only a unique, same-inode link with
+	// the exact quarantine naming chain produced by removeChildIfIdentity().
+	const candidates: string[] = [];
+	for (const candidateName of await readdir(cacheBaseRef.operationPath)) {
+		if (!isOmxPluginCacheLivePinMutationLockStageQuarantine(candidateName, stageName)) continue;
+		const candidateStats = await lstat(childOperationPath(cacheBaseRef, candidateName)).catch((error) => {
+			if (isMissingPathError(error)) return null;
+			throw error;
+		});
+		if (
+			candidateStats?.isFile() &&
+			!candidateStats.isSymbolicLink() &&
+			candidateStats.nlink === 2 &&
+			sameFileIdentity(lockStats, candidateStats)
+		) {
+			candidates.push(candidateName);
+		}
+	}
+	if (candidates.length !== 1) return null;
+
+	const [candidateName] = candidates;
+	const currentLockStats = await lstat(childOperationPath(cacheBaseRef, name)).catch((error) => {
+		if (isMissingPathError(error)) return null;
+		throw error;
+	});
+	const currentCandidateStats = await lstat(childOperationPath(cacheBaseRef, candidateName!)).catch((error) => {
+		if (isMissingPathError(error)) return null;
+		throw error;
+	});
+	return currentLockStats &&
+		currentLockStats.nlink === 2 &&
+		sameFileIdentity(lockStats, currentLockStats) &&
+		currentCandidateStats?.nlink === 2 &&
+		sameFileIdentity(lockStats, currentCandidateStats)
+		? candidateName!
+		: null;
 }
 
 async function readOmxPluginCacheLivePinMutationLock(
@@ -950,13 +1024,16 @@ async function readOmxPluginCacheLivePinMutationLock(
 	const record = parseOmxPluginCacheLivePinMutationLockRecord(parsed);
 	if (stats.nlink === 2 && record) {
 		const stageName = `${name}.stage-${record.pid}-${record.token}`;
-		const stageStats = await lstat(childOperationPath(cacheBaseRef, stageName)).catch((error) => {
-			if (isMissingPathError(error)) return null;
-			throw error;
-		});
-		if (!stageStats || !sameFileIdentity(stats, stageStats)) {
+		const stageLinkName = await findOmxPluginCacheLivePinMutationLockStageLink(
+			cacheBaseRef,
+			name,
+			stageName,
+			stats,
+		);
+		if (!stageLinkName) {
 			return { name, version, stats, content, record: null, regular: false };
 		}
+		return { name, version, stats, content, record, regular: true, stageLinkName };
 	}
 	return { name, version, stats, content, record, regular: true };
 }
@@ -966,8 +1043,8 @@ async function removeOmxPluginCacheLivePinMutationLockStageLink(
 	state: OmxPluginCacheLivePinMutationLockState,
 ): Promise<boolean> {
 	if (state.stats.nlink === 1) return true;
-	if (state.stats.nlink !== 2 || !state.record) return false;
-	const stageName = `${state.name}.stage-${state.record.pid}-${state.record.token}`;
+	if (state.stats.nlink !== 2 || !state.record || !state.stageLinkName) return false;
+	const stageName = state.stageLinkName;
 	const stageStats = await lstat(childOperationPath(cacheBaseRef, stageName)).catch((error) => {
 		if (isMissingPathError(error)) return null;
 		throw error;
