@@ -1631,7 +1631,10 @@ describe("omx setup install mode behavior", () => {
 									beforeRemoveSyscall: async (path: string) => {
 										// Simulate late-pin: create a live pin after the initial checks
 										// Run the hook only once, the first time it's called
-										if (!hookCalled) {
+										const snapshotName = basename(cacheDir);
+										const removalName = basename(path);
+										const targetsSnapshot = removalName === snapshotName || removalName.startsWith(`.${snapshotName}.reclaim-`);
+										if (!hookCalled && targetsSnapshot) {
 											hookCalled = true;
 											const { createHash } = await import("node:crypto");
 											const sessionHash = createHash("sha256").update("test-late-pin-session").digest("hex");
