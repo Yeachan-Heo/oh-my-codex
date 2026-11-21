@@ -1,33 +1,27 @@
-# oh-my-codex v0.22.11
+# oh-my-codex v0.22.12
 
 ## Summary
 
-This patch release ships two fixes for setup reliability: preserving custom `developer_instructions` during legacy setup mode and canonicalizing `CODEX_HOME` for consistent symlink handling. These changes improve setup robustness when users have customized configurations or symlinked home directories.
+This patch release ships a fix for recovering quarantined live-pin lock links from JSONL record streams in team state. The fix improves reliability of team lock recovery when processing stored JSONL records.
 
 ## Fixed
 
-- **PRESERVE CUSTOM DEVELOPER_INSTRUCTIONS DURING LEGACY SETUP (#4107):** Legacy setup mode now correctly preserves user-customized `developer_instructions` from existing configurations instead of overwriting them with default values. Fixes #4105.
-- **CANONICALIZE CODEX_HOME FOR SYMLINK CONSISTENCY (#4108):** Doctor hook and setup logic now canonicalize `CODEX_HOME` paths to handle symlink aliases consistently. Symlinked home directories are now treated with uniform trust and identity across all setup and runtime operations. Fixes #4106.
-
-## Dependencies
-
-- @biomejs/biome: 2.6.6 → 2.6.7 (#4103, dev dependency)
-- @napi-rs/lzma: 1.4.1 → 1.4.5 (#4104, runtime dependency)
+- **RECOVER QUARANTINED LIVE-PIN LOCK LINKS (#4112):** Fixed deserialization of live-pin tracking data from JSONL streams. Quarantined lock links in team state were not being properly recovered due to incomplete deserialization logic. Lock recovery now correctly processes all stored JSONL records. Fixes #4111.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.11`.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.12`.
 
 ## Verification
 
-- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.11.md)).
-- PR #4107 and #4108 CI passed on merged heads.
+- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.12.md)).
+- PR #4112 CI passed on merged head.
 
 ## Contributors
 
 Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo) for contributing to this release.
 
-**Full Changelog**: [`v0.22.10...v0.22.11`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.10...v0.22.11)
+**Full Changelog**: [`v0.22.11...v0.22.12`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.11...v0.22.12)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
