@@ -1792,12 +1792,16 @@ async function hasLegacyInSnapshotLivePin(snapshotRef: DirectoryRef): Promise<bo
 	try {
 		// First check for the simple file marker (pre-pin style)
 		const legacyPinMarkerPath = join(snapshotRef.operationPath, OMX_PLUGIN_LIVE_PIN_MARKER);
+		let markerStats: Stats | null = null;
 		try {
-			const markerStats = await lstat(legacyPinMarkerPath);
+			markerStats = await lstat(legacyPinMarkerPath);
 			if (!markerStats.isDirectory() || markerStats.isSymbolicLink()) return true;
 		} catch (error) {
-			return !isMissingPathError(error);
+			if (!isMissingPathError(error)) return true;
+			// Pin marker directory doesn't exist - no legacy pins
 		}
+
+		if (!markerStats) return false;
 
 		const legacyPinDir = await openDirectoryChild(snapshotRef, OMX_PLUGIN_LIVE_PIN_MARKER);
 		try {
@@ -1806,6 +1810,7 @@ async function hasLegacyInSnapshotLivePin(snapshotRef: DirectoryRef): Promise<bo
 			await legacyPinDir.handle.close().catch(() => undefined);
 		}
 	} catch {
+		// Err on the side of caution: if we can't verify, assume there might be a live pin
 		return true;
 	}
 }
