@@ -12,6 +12,12 @@ export interface ResumeBlockInput {
   worktree?: { path: string; name?: string | null };
   /** Session lives in the project-local Codex home. */
   projectLocalHome?: boolean;
+  /** Session owner process information (pid, platform, tmux session name). */
+  ownerInfo?: {
+    pid: number;
+    platform: NodeJS.Platform;
+    tmuxSessionName?: string;
+  };
 }
 
 export function shellQuote(value: string): string {
@@ -74,9 +80,37 @@ function contextFlags(launchArgs: readonly string[]): string[] {
   return flags;
 }
 
-/** Resume uses only Codex's own syntax: `resume <session-id>`. */
+/**
+ * Check if a process is alive using the same method as the pointer-owner checks.
+ * Uses process.kill(pid, 0) to test process existence.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a tmux attach command to reattach to a live session.
+ * When the session owner is still alive and has an active tmux session,
+ * suggest tmux attach instead of omx resume.
+ */
+function buildTmuxAttachCommand(tmuxSessionName: string): string {
+  return `tmux attach -t ${shellQuote(tmuxSessionName)}`;
+}
+
+/** Resume uses only Codex's own syntax: `resume <session-id>`, or tmux reattach if owner is alive. */
 export function buildResumeCommand(input: ResumeBlockInput): string | null {
   if (!input.sessionId) return null;
+  
+  // If the session owner is still alive and has a tmux session, suggest tmux reattach instead of omx resume
+  if (input.ownerInfo?.tmuxSessionName && isProcessAlive(input.ownerInfo.pid)) {
+    return buildTmuxAttachCommand(input.ownerInfo.tmuxSessionName);
+  }
+  
   const flags = contextFlags(input.launchArgs);
   if (input.projectLocalHome) flags.push('--project');
   const omx = ['omx', ...flags, 'resume', shellQuote(input.sessionId)].join(' ');

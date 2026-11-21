@@ -67,8 +67,70 @@ describe('resume block formatting', () => {
   it('without a session id says so and prints no broken resume command', () => {
     const out = formatResumeBlock({ sessionId: null, launchArgs: ['--madmax'], launchCwd: '/p' });
     assert.match(out, /No Codex session id was captured/);
-    assert.doesNotMatch(out, /resume (null|undefined|'')/);
+    assert.doesNotMatch(out, /resume (null|undefined|'')/);  
     assert.equal(buildResumeCommand({ sessionId: null, launchArgs: [], launchCwd: '/p' }), null);
+  });
+
+  it('when session owner is alive and has tmux session, suggests tmux reattach instead of omx resume', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,  // Current process is alive
+        platform: process.platform,
+        tmuxSessionName: 'omx-detached-session',
+      },
+    });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, /tmux attach -t omx-detached-session/);
+    assert.doesNotMatch(out, /omx resume/);
+  });
+
+  it('when session owner is alive but no tmux session, falls back to omx resume', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,  // Current process is alive
+        platform: process.platform,
+        // No tmuxSessionName
+      },
+    });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, new RegExp(`omx resume ${SID}`));
+    assert.doesNotMatch(out, /tmux attach/);
+  });
+
+  it('when session owner is dead, always suggests omx resume', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: 2147483647,  // Invalid PID that doesn't exist
+        platform: process.platform,
+        tmuxSessionName: 'omx-detached-session',
+      },
+    });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, new RegExp(`omx resume ${SID}`));
+    assert.doesNotMatch(out, /tmux attach/);
+  });
+
+  it('tmux session name with special characters is properly quoted', () => {
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        tmuxSessionName: "session-with-'apostrophe",
+      },
+    });
+    assert.equal(command, `tmux attach -t 'session-with-'\\''apostrophe'`);
   });
 });
 

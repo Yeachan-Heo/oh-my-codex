@@ -5888,6 +5888,22 @@ export async function launchWithHud(args: string[]): Promise<void> {
       // Determine if we should add --project flag: when using a worktree with a project-local home,
       // we need to preserve the home by adding --project so the resume command works from the worktree.
       const shouldAddProjectFlag = !!(ensuredLaunchWorktree?.enabled && projectLocalCodexHomeForCleanup);
+      
+      // Read full session state to check if owner is still alive and has tmux session
+      let ownerInfo: { pid: number; platform: NodeJS.Platform; tmuxSessionName?: string } | undefined;
+      try {
+        const sessionState = await readSessionState(cwd);
+        if (sessionState?.pid && sessionState?.platform && Number.isInteger(sessionState.pid) && sessionState.pid > 0) {
+          ownerInfo = {
+            pid: sessionState.pid,
+            platform: sessionState.platform,
+            tmuxSessionName: sessionState.tmux_session_name,
+          };
+        }
+      } catch {
+        // If we can't read session state, continue without owner info
+      }
+      
       process.stderr.write(formatResumeBlock({
         sessionId: latest?.session_id ?? null,
         launchArgs: omxArgs,
@@ -5897,6 +5913,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
           ? { path: ensuredLaunchWorktree.worktreePath, name: parsedWorktree.mode.enabled ? parsedWorktree.mode.name : null }
           : undefined,
         projectLocalHome: shouldAddProjectFlag,
+        ownerInfo,
       }));
     } catch (err) {
       logCliOperationFailure(err);
