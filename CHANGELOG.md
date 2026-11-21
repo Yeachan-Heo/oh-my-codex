@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.12] - 2026-11-21
+
+Patch release ships a fix for recovering quarantined live-pin lock links from JSONL record streams. See [release notes](docs/release-notes-0.22.12.md) for exact scope and evidence.
+
+### Fixed
+
+- **RECOVER QUARANTINED LIVE-PIN LOCK LINKS (#4112):** Fixed deserialization of live-pin tracking data from JSONL streams. Quarantined lock links in team state were not being properly recovered due to incomplete deserialization logic. Lock recovery now correctly processes all stored JSONL records. Fixes #4111.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.11...v0.22.12
+
 ## [0.22.11] - 2026-11-18
 
 Patch release ships fixes for preserving custom developer instructions during setup and canonicalizing CODEX_HOME for symlink consistency. See [release notes](docs/release-notes-0.22.11.md) for exact scope and evidence.
