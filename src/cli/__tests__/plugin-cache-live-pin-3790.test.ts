@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { once } from "node:events";
 import {
@@ -1461,6 +1461,51 @@ syncBuiltinESMExports();
 				await assert.rejects(lstat(lock.path), { code: "ENOENT" });
 				await assert.rejects(lstat(lock.stagePath), { code: "ENOENT" });
 				const sessionHash = createHash("sha256").update("dead-lock-recovery-session").digest("hex");
+				const pinDirectory = livePinDirectoryPath(codexHomeDir, "0.20.0");
+				const records = await Promise.all(
+					(await readdir(pinDirectory)).map(
+						async (name) => JSON.parse(await readFile(join(pinDirectory, name), "utf-8")) as { sessionHash: string },
+					),
+				);
+				assert.ok(records.some((record) => record.sessionHash === sessionHash));
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("recovers a dead-owner lock when its staged link was left in reclaim quarantine", {
+		skip: process.platform === "win32",
+	}, async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-3790-quarantined-mutation-lock-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				const snapshots = await Promise.all(
+					["0.20.0", "0.20.1", "0.20.2"].map((version) => seedManagedSnapshot(codexHomeDir, version)),
+				);
+				const lock = await writeLivePinMutationLock(codexHomeDir, "0.20.0", 2_147_483_647, "pin", true);
+				const unrecognizedLink = `${lock.stagePath}.held`;
+				await rename(lock.stagePath, unrecognizedLink);
+
+				// Do not unlink arbitrary same-inode links: only the quarantine naming
+				// pattern emitted by removeChildIfIdentity() is recoverable.
+				assert.equal(
+					await registerOmxPluginCacheLivePin(snapshots[0]!, "quarantined-lock-session", process.pid),
+					false,
+				);
+				await lstat(lock.path);
+				await lstat(unrecognizedLink);
+
+				const quarantineLink = `.${basename(lock.stagePath)}.reclaim-${process.pid}-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`;
+				await rename(unrecognizedLink, join(dirname(lock.path), quarantineLink));
+				assert.equal(
+					await registerOmxPluginCacheLivePin(snapshots[0]!, "quarantined-lock-session", process.pid),
+					true,
+				);
+
+				await assert.rejects(lstat(lock.path), { code: "ENOENT" });
+				await assert.rejects(lstat(join(dirname(lock.path), quarantineLink)), { code: "ENOENT" });
+				const sessionHash = createHash("sha256").update("quarantined-lock-session").digest("hex");
 				const pinDirectory = livePinDirectoryPath(codexHomeDir, "0.20.0");
 				const records = await Promise.all(
 					(await readdir(pinDirectory)).map(
