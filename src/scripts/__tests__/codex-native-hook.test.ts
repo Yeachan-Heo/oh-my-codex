@@ -703,6 +703,7 @@ async function writeActiveAutopilotSession(
 ): Promise<void> {
 	await writeJson(join(cwd, ".omx", "state", "session.json"), {
 		session_id: sessionId,
+    cwd,
 	});
 	await writeJson(
 		join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json"),
@@ -2872,7 +2873,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 			});
 
 			// Set native session as active FIRST so injectExecFollowup can find it
-			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId, cwd });
 
 			// Write an active ralplan skill state for this native session
 			await writeJson(
@@ -2908,7 +2909,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
 			// This triggers the ownerState logic in dispatchCodexNativeHook's Stop handler
 			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
-			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId, cwd });
 
 			// Dispatch Stop with native session ID (triggers sessionScopedOnly via ownerState)
 			const stopResult = await dispatchCodexNativeHook(
@@ -2953,7 +2954,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 			});
 
 			// Set native session as active FIRST so injectExecFollowup can find it
-			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId, cwd });
 
 			// Write an active ralplan skill state
 			await writeJson(
@@ -2988,7 +2989,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 
 			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
 			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
-			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId, cwd });
 
 			// First Stop dispatches and delivers the follow-up
 			const firstStop = await dispatchCodexNativeHook(
@@ -9426,6 +9427,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -9492,6 +9494,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -9586,6 +9589,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -9667,6 +9671,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -18957,7 +18962,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-skill"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19165,7 +19170,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-ralplan-canonical-root-no-cwd";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -19222,7 +19227,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-current-active-ralplan";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -19278,7 +19283,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-unscoped-root-current-active";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -19332,7 +19337,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-unscoped-root-no-plan-artifact";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -19452,7 +19457,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-ralplan-cross-worktree-root";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19513,7 +19518,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-ralplan-root-complete-no-cwd";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19634,7 +19639,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-session-ralplan-root-active";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19782,7 +19787,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-skill-subagent"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19845,7 +19850,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const now = new Date().toISOString();
       await mkdir(join(stateDir, "sessions", "sess-stop-skill-subagent-complete"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent-complete" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent-complete", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent-complete", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -20102,7 +20107,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -20154,7 +20159,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question-inactive"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-inactive" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-inactive", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question-inactive", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -20212,7 +20217,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionDir = join(stateDir, "sessions", sessionId);
       await mkdir(join(sessionDir, "questions"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -20295,7 +20300,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question-replay"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-replay" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-replay", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question-replay", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -20434,7 +20439,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question-next-round"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-next-round" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-next-round", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question-next-round", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -21992,6 +21997,7 @@ exit 0
       await writeJson(join(stateDir, "session.json"), {
         session_id: "omx-canonical",
         native_session_id: "codex-native",
+      cwd,
       });
 
       await dispatchCodexNativeHook(
@@ -22500,7 +22506,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-auto-inactive-mode"), { recursive: true });
       process.env.OMX_SESSION_ID = "sess-stop-auto-inactive-mode";
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-inactive-mode" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-inactive-mode", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-auto-inactive-mode", "deep-interview-state.json"), {
         active: false,
         mode: "deep-interview",
@@ -22543,7 +22549,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-terminal-ralplan";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
         active: false,
         mode: "ralplan",
@@ -22594,7 +22600,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-active-ultrawork";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "ultrawork-state.json"), {
         active: true,
         mode: "ultrawork",
@@ -22650,7 +22656,7 @@ exit 0
       const sourceStateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-boxed-ralplan";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
         active: false,
         mode: "ralplan",
@@ -22803,6 +22809,7 @@ exit 0
       await writeJson(join(stateDir, "session.json"), {
         session_id: "omx-canonical",
         native_session_id: "codex-native",
+      cwd,
       });
       await writeJson(join(stateDir, "sessions", "omx-canonical", "team-state.json"), {
         active: true,
@@ -22944,7 +22951,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-skill-repeat"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-repeat" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-repeat", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill-repeat", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -24023,7 +24030,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current", cwd });
       await writeJson(join(stateDir, "sessions", "sess-current", "team-state.json"), {
         active: true,
         current_phase: "starting",
@@ -24132,7 +24139,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current", cwd });
       await writeJson(join(stateDir, "sessions", "sess-current", "team-state.json"), {
         active: true,
         current_phase: "starting",
