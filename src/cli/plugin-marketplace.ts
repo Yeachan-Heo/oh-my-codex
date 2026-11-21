@@ -1030,10 +1030,11 @@ async function readOmxPluginCacheLivePinMutationLock(
 			stageName,
 			stats,
 		);
-		if (!stageLinkName) {
-			return { name, version, stats, content, record: null, regular: false };
+		if (stageLinkName) {
+			return { name, version, stats, content, record, regular: true, stageLinkName };
 		}
-		return { name, version, stats, content, record, regular: true, stageLinkName };
+		// Stage link not found (normal or quarantined): treat as single-link lock
+		// Fall through to return as if nlink === 1
 	}
 	return { name, version, stats, content, record, regular: true };
 }
