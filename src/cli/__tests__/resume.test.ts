@@ -32,6 +32,79 @@ function runOmx(
 }
 
 describe('omx resume', () => {
+  it('rejects malformed selected pointer before launching Codex and preserves its bytes', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-malformed-pointer-'));
+    const root = join(wd, 'selected-root');
+    const pointer = join(root, '.omx', 'state', 'session.json');
+    try {
+      await mkdir(dirname(pointer), { recursive: true });
+      const original = '{not valid json';
+      await writeFile(pointer, original);
+      const result = runOmx(wd, ['resume', 'some-thread'], {
+        HOME: join(wd, 'home'), OMX_ROOT: root, OMX_LAUNCH_POLICY: 'direct', OMX_AUTO_UPDATE: '0',
+      });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /selected session pointer is malformed/);
+      assert.equal(await readFile(pointer, 'utf8'), original);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+  it('does not quarantine a pointer with live or indeterminate ownership on resume', async () => {
+    if (process.platform !== 'linux') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-live-pointer-'));
+    const stateRoot = join(wd, 'omx-root');
+    const pointer = join(stateRoot, '.omx', 'state', 'session.json');
+    const fakeBin = join(wd, 'bin');
+    try {
+      await mkdir(dirname(pointer), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(fakeBin, 'codex'), '#!/bin/sh\necho fake-codex:$*\n');
+      await chmod(join(fakeBin, 'codex'), 0o755);
+      const bytes = JSON.stringify({
+        session_id: 'omx-occupied', started_at: new Date(0).toISOString(),
+        cwd: wd, state_root: join(stateRoot, '.omx', 'state'), pid: process.pid, platform: 'linux',
+      });
+      await writeFile(pointer, bytes);
+      const result = runOmx(wd, ['resume', 'another-thread'], {
+        HOME: join(wd, 'home'), OMX_ROOT: stateRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`, OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_LAUNCH_POLICY: 'direct',
+      });
+      assert.notEqual(result.status, 0, 'occupied root must not launch a second runtime');
+      assert.match(result.stderr, /resume cannot start a second OMX runtime/);
+      assert.doesNotMatch(result.stdout, /fake-codex:/);
+      assert.equal(await readFile(pointer, 'utf8'), bytes);
+      assert.equal((await readdir(dirname(pointer))).filter(name => name.startsWith('session.json.quarantine.')).length, 0);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+  it('recovers a verified-dead runtime pointer before direct resume without losing forensic bytes', async () => {
+    if (process.platform !== 'linux') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-dead-pointer-'));
+    const stateRoot = join(wd, 'omx-root');
+    const pointer = join(stateRoot, '.omx', 'state', 'session.json');
+    const fakeBin = join(wd, 'bin');
+    try {
+      await mkdir(dirname(pointer), { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(fakeBin, 'codex'), '#!/bin/sh\necho fake-codex:$*\n');
+      await chmod(join(fakeBin, 'codex'), 0o755);
+      const bytes = JSON.stringify({
+        session_id: 'omx-previous-dead', started_at: new Date(0).toISOString(),
+        cwd: wd, state_root: join(stateRoot, '.omx', 'state'), pid: 2147483646, platform: 'linux',
+      });
+      await writeFile(pointer, bytes);
+      const result = runOmx(wd, ['resume', 'previous-codex-thread'], {
+        HOME: join(wd, 'home'), OMX_ROOT: stateRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`, OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_LAUNCH_POLICY: 'direct',
+      });
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume previous-codex-thread/);
+      assert.match(result.stderr, /recovered verified-dead session pointer before resume/);
+      const quarantine = (await readdir(dirname(pointer))).find((name) => name.startsWith('session.json.quarantine.'));
+      assert.ok(quarantine);
+      assert.equal(await readFile(join(dirname(pointer), quarantine), 'utf8'), bytes);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
   it('runs project resume integration on Windows', async () => {
     if (process.platform !== 'win32') return;
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-windows-integration-'));
@@ -749,6 +822,89 @@ fi | sort
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  async function seedPointerRoot(prefix: string, pointerJson: (wd: string, stateRoot: string) => string) {
+    const wd = await mkdtemp(join(tmpdir(), prefix));
+    const stateRoot = join(wd, 'omx-root');
+    const pointer = join(stateRoot, '.omx', 'state', 'session.json');
+    const fakeBin = join(wd, 'bin');
+    await mkdir(dirname(pointer), { recursive: true });
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(join(fakeBin, 'codex'), '#!/bin/sh\necho fake-codex:$*\n');
+    await chmod(join(fakeBin, 'codex'), 0o755);
+    await writeFile(join(fakeBin, 'ps'), '#!/bin/sh\nexit 0\n');
+    await chmod(join(fakeBin, 'ps'), 0o755);
+    const bytes = pointerJson(wd, stateRoot);
+    await writeFile(pointer, bytes);
+    const env = {
+      HOME: join(wd, 'home'), CODEX_HOME: join(wd, 'home', '.codex'), OMX_ROOT: stateRoot,
+      PATH: `${fakeBin}:/usr/bin:/bin`, OMX_AUTO_UPDATE: '0',
+      OMX_NOTIFY_FALLBACK: '0', OMX_HOOK_DERIVED_SIGNALS: '0', OMX_LAUNCH_POLICY: 'direct',
+    };
+    const quarantines = async () => (await readdir(dirname(pointer))).filter((n) => n.startsWith('session.json.quarantine.'));
+    return { wd, pointer, bytes, env, quarantines };
+  }
+
+  it('refuses resume and preserves bytes for an indeterminate-identity or EPERM-owner pointer', async () => {
+    if (process.platform !== 'linux') return;
+    const variants: Array<[string, (wd: string, root: string) => string]> = [
+      ['identity-indeterminate', (wd, root) => JSON.stringify({
+        session_id: 'omx-indeterminate', started_at: new Date(0).toISOString(), cwd: wd,
+        state_root: join(root, '.omx', 'state'), pid: 2147483646, platform: 'linux', identity_schema_version: 99,
+      })],
+      // pid 1 is alive; unprivileged kill(1, 0) yields EPERM, root sees it alive. Neither is verified-dead.
+      ['eperm-owner', (wd, root) => JSON.stringify({
+        session_id: 'omx-eperm', started_at: new Date(0).toISOString(), cwd: wd,
+        state_root: join(root, '.omx', 'state'), pid: 1, platform: 'linux',
+      })],
+    ];
+    for (const [label, make] of variants) {
+      const t = await seedPointerRoot(`omx-resume-${label}-`, make);
+      try {
+        const result = runOmx(t.wd, ['resume', 'some-thread'], t.env);
+        assert.notEqual(result.status, 0, label);
+        assert.doesNotMatch(result.stdout, /fake-codex:/, label);
+        assert.doesNotMatch(result.stderr, /recovered verified-dead/, label);
+        assert.equal(await readFile(t.pointer, 'utf8'), t.bytes, label);
+        assert.deepEqual(await t.quarantines(), [], label);
+      } finally { await rm(t.wd, { recursive: true, force: true }); }
+    }
+  });
+
+  it('omx resume --last with no sessions errors without recovering a dead pointer', async () => {
+    if (process.platform !== 'linux') return;
+    const t = await seedPointerRoot('omx-resume-last-empty-', (wd, root) => JSON.stringify({
+      session_id: 'omx-previous-dead', started_at: new Date(0).toISOString(), cwd: wd,
+      state_root: join(root, '.omx', 'state'), pid: 2147483646, platform: 'linux',
+    }));
+    try {
+      await mkdir(join(t.wd, 'home', '.codex'), { recursive: true });
+      const result = runOmx(t.wd, ['resume', '--last'], t.env);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /no previous sessions found/);
+      assert.doesNotMatch(result.stderr, /recovered verified-dead/);
+      assert.equal(await readFile(t.pointer, 'utf8'), t.bytes);
+      assert.deepEqual(await t.quarantines(), []);
+    } finally { await rm(t.wd, { recursive: true, force: true }); }
+  });
+
+  it('after a crash (dead owner pid, no clean exit) `omx resume <session-id>` proceeds via recovery', async () => {
+    if (process.platform !== 'linux') return;
+    const sessionId = '01234567-89ab-4cde-8123-0123456789ab';
+    const t = await seedPointerRoot('omx-resume-crash-', (wd, root) => JSON.stringify({
+      session_id: 'omx-crashed-wrapper', native_session_id: sessionId, started_at: new Date(0).toISOString(), cwd: wd,
+      state_root: join(root, '.omx', 'state'), pid: 2147483646, platform: 'linux',
+    }));
+    try {
+      const result = runOmx(t.wd, ['resume', sessionId], t.env);
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, new RegExp(`fake-codex:resume ${sessionId}`));
+      assert.match(result.stderr, /recovered verified-dead session pointer before resume/);
+      const [quarantine] = await t.quarantines();
+      assert.ok(quarantine);
+      assert.equal(await readFile(join(dirname(t.pointer), quarantine), 'utf8'), t.bytes);
+    } finally { await rm(t.wd, { recursive: true, force: true }); }
   });
 
   it('prints read-only resume help without launching through a hostile incomplete pointer lock', async () => {

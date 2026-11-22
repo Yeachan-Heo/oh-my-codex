@@ -171,6 +171,8 @@ checkout, which is the safer default when using `--madmax`. Replace
 
 A standard launch owns one writable session pointer under its selected `OMX_ROOT`. A second ordinary `omx` launch from the same checkout therefore fails closed instead of sharing or silently changing that root. Give each additional conversation an explicit, distinct root:
 
+`omx resume` follows the same ownership rule. Malformed, uncertain, or live-owner pointers are preserved for diagnosis and resume is refused; a verified-dead pointer is recovered through the bounded session-pointer recovery path (forensic bytes preserved in quarantine) before resume continues.
+
 ```bash
 omx
 OMX_ROOT="$HOME/.omx/instances/second-conversation" omx
