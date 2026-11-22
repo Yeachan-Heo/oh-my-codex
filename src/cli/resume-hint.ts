@@ -109,7 +109,9 @@ export function buildResumeCommand(input: ResumeBlockInput): string | null {
   if (!input.sessionId) return null;
   
   // If the session owner state is available, classify its liveness properly.
-  if (input.ownerInfo?.state) {
+  // But skip live-owner handling if the owner pid is the current process itself,
+  // since this is a normal foreground launch that is about to exit.
+  if (input.ownerInfo?.state && input.ownerInfo.pid !== process.pid) {
     const liveness = classifySessionStateLiveness(input.ownerInfo.state);
     
     // Only 'usable' and 'identity-indeterminate' are candidates for tmux attach or omx doctor.
@@ -129,7 +131,7 @@ export function buildResumeCommand(input: ResumeBlockInput): string | null {
     return buildOmxResumeCommand(input.sessionId, input);
   }
   
-  // Fallback: without state, always use omx resume
+  // Fallback: without state, or when owner is current process, always use omx resume
   return buildOmxResumeCommand(input.sessionId, input);
 }
 
