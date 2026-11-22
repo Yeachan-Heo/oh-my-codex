@@ -2,7 +2,7 @@
   "kind": "omx_capabilities_lock",
   "surfaces": {
     "agents": {
-      "digest": "aa553ad3ea7977a87ade296f3015ace091c78e4fc5ea9c047d49ff42b062f5bb",
+      "digest": "739e555daac2faf356ae3b526e1a91b10501c2ce06ec7eb71a7276b5680cad3d",
       "files": [
         {
           "digest": "c4f74fb651155bb39281ea97fb582d22b6d5e8b33b45073633ec11baf1baa7f9",
@@ -125,7 +125,7 @@
           "path": "prompts/verifier.md"
         },
         {
-          "digest": "f573173f2087303305857c41ac09b04cc2111b95f994100b8245e1a394079f97",
+          "digest": "8870b69e15c6c94454ac26d8f63835eacf27ba6709ccef6c1f51138382a5d520",
           "path": "prompts/vision.md"
         },
         {
