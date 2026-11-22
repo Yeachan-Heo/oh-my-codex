@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.13] - 2026-11-22
+
+Patch release ships a fix for safely resuming verified OMX session owners. See [release notes](docs/release-notes-0.22.13.md) for exact scope and evidence.
+
+### Fixed
+
+- **SAFELY RESUME VERIFIED OMX SESSION OWNERS (#3965):** Fixed session resumption logic to safely handle verified session owners, preventing dead-pointer issues during session reactivation. Also updated notification fixtures to use the canonical session pointer contract. Fixes #3964.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.12...v0.22.13
+
 ## [0.22.12] - 2026-11-21
 
 Patch release ships a fix for recovering quarantined live-pin lock links from JSONL record streams. See [release notes](docs/release-notes-0.22.12.md) for exact scope and evidence.
