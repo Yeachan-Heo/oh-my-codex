@@ -1,27 +1,27 @@
-# oh-my-codex v0.22.13
+# oh-my-codex v0.22.15
 
 ## Summary
 
-This patch release ships a fix for safely resuming verified OMX session owners and updating notification fixtures to canonical cwd contracts.
+This patch release improves vision model guidance by requiring reliable viewport evidence for CSS advice, ensuring more accurate styling recommendations for responsive components.
 
-## Fixed
+## Improved
 
-- **SAFELY RESUME VERIFIED OMX SESSION OWNERS (#3965):** Fixed session resumption logic to safely handle verified session owners, preventing dead-pointer issues during session reactivation. Also updated notification fixtures to use the canonical session pointer contract. Fixes #3964.
+- **REQUIRE RELIABLE VIEWPORT EVIDENCE FOR CSS ADVICE (#4123):** Vision model styling recommendations now require reliable viewport evidence, preventing CSS advice on components when viewport context cannot be verified. This ensures recommendations reflect the actual rendering environment and reduces false-positive style suggestions.
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.13`.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.15`.
 
 ## Verification
 
-- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.13.md)).
-- PR #3965 CI passed on merged head.
+- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.15.md)).
+- Dev CI run 44987440579 passed all checks.
 
 ## Contributors
 
-Thanks to [@Yeachan-Heo](https://github.com/Yeachan-Heo) for contributing to this release.
+Thanks to [@ev78394](https://github.com/ev78394) for contributing to this release.
 
-**Full Changelog**: [`v0.22.12...v0.22.13`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.12...v0.22.13)
+**Full Changelog**: [`v0.22.14...v0.22.15`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.14...v0.22.15)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
