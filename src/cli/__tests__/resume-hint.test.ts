@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd, shellQuote } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
+import { type SessionState } from '../../hooks/session.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
 
@@ -15,6 +16,17 @@ async function writeRollout(home: string, name: string, id: string, mtime: numbe
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ type: 'session_meta', payload: { id, timestamp: 't', cwd: '/x' } })}\n`);
   await utimes(path, mtime / 1000, mtime / 1000);
+}
+
+function makeSessionState(overrides: Partial<SessionState> = {}): SessionState {
+  return {
+    session_id: 'test-session',
+    started_at: new Date(0).toISOString(),
+    cwd: '/test',
+    pid: process.pid,
+    platform: process.platform,
+    ...overrides,
+  };
 }
 
 describe('resume block formatting', () => {
@@ -67,8 +79,143 @@ describe('resume block formatting', () => {
   it('without a session id says so and prints no broken resume command', () => {
     const out = formatResumeBlock({ sessionId: null, launchArgs: ['--madmax'], launchCwd: '/p' });
     assert.match(out, /No Codex session id was captured/);
-    assert.doesNotMatch(out, /resume (null|undefined|'')/);
+    assert.doesNotMatch(out, /resume (null|undefined|'')/);  
     assert.equal(buildResumeCommand({ sessionId: null, launchArgs: [], launchCwd: '/p' }), null);
+  });
+
+  it('when session owner is alive and has tmux session, suggests tmux reattach instead of omx resume', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,  // Current process is alive
+        platform: process.platform,
+        tmuxSessionName: 'omx-detached-session',
+        state: makeSessionState(),  // Session state for liveness classification
+      },
+    });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, /tmux attach -t omx-detached-session/);
+    assert.doesNotMatch(out, /omx resume/);
+  });
+
+  it('when session owner is alive but no tmux session, suggests omx doctor', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,  // Current process is alive
+        platform: process.platform,
+        // No tmuxSessionName
+        state: makeSessionState(),  // Session state for liveness classification
+      },
+    });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, /omx doctor/);
+    assert.doesNotMatch(out, /omx resume/);
+    assert.doesNotMatch(out, /tmux attach/);
+  });
+
+  it('when session owner is dead, always suggests omx resume', () => {
+    const out = formatResumeBlock({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: 2147483647,  // Invalid PID that doesn't exist
+        platform: process.platform,
+        tmuxSessionName: 'omx-detached-session',
+        state: makeSessionState({ pid: 2147483647 }),  // Session state with dead pid
+      },
+    });
+    assert.match(out, new RegExp(`Session id: ${SID}`));
+    assert.match(out, new RegExp(`omx resume ${SID}`));
+    assert.doesNotMatch(out, /tmux attach/);
+  });
+
+  it('tmux session name with special characters is properly quoted', () => {
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        tmuxSessionName: "session-with-'apostrophe",
+        state: makeSessionState(),
+      },
+    });
+    // The command should have the tmux binary (possibly resolved to full path) and the session name properly quoted
+    assert.ok(command, 'command should not be null');
+    assert.match(command, /tmux attach -t 'session-with-'\\''apostrophe'/);
+  });
+
+  it('when session owner state classifies as dead, suggests omx resume', () => {
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: 2147483647,  // Invalid PID
+        platform: process.platform,
+        tmuxSessionName: 'omx-detached-session',
+        state: makeSessionState({ pid: 2147483647 }),  // Dead pid
+      },
+    });
+    assert.equal(command, `omx resume ${SID}`);
+  });
+
+  it('without ownerInfo state, falls back to omx resume', () => {
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        // No state provided - should fall back to omx resume
+      },
+    });
+    // Without state, should suggest omx resume
+    assert.equal(command, `omx resume ${SID}`);
+  });
+
+  it('uses psmux when tmux binary is not available on Windows', () => {
+    // Test that platform-command resolution works
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: 'win32',  // On Windows, may resolve to psmux
+        tmuxSessionName: 'omx-session',
+        state: makeSessionState({ platform: 'win32' }),
+      },
+    });
+    // On Windows, it should use either 'tmux' or 'psmux' depending on what's available
+    // At minimum, it should start with the resolved binary name and 'attach'
+    assert.ok(command, 'command should not be null');
+    assert.match(command, /(tmux|psmux) attach -t omx-session/);
+  });
+
+  it('usable owner without tmux session uses omx doctor', () => {
+    // usable without tmux should suggest omx doctor, not omx resume
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        // No tmuxSessionName
+        state: makeSessionState(),  // Default state - current process - will classify as usable
+      },
+    });
+    // usable without tmux should use omx doctor
+    assert.equal(command, 'omx doctor');
   });
 });
 
@@ -246,7 +393,9 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
     try {
       const r = run([], wd, fakeBin);
       assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
-      assert.match(r.stderr, new RegExp(`omx resume ${SID}`));
+      // When session owner is indeterminate (identity-indeterminate) and no tmux is available,
+      // suggest omx doctor for diagnosis rather than a potentially stale omx resume
+      assert.match(r.stderr, /omx doctor/);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
@@ -257,7 +406,8 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       const stateAt = r.stderr.indexOf('[omx] madmax isolated state:');
       const blockAt = r.stderr.indexOf('Session id:');
       assert.ok(stateAt >= 0 && blockAt > stateAt, r.stderr);
-      assert.match(r.stderr, new RegExp(`omx --madmax --high resume ${SID}`));
+      // When session owner is identity-indeterminate, suggest omx doctor instead
+      assert.match(r.stderr, /omx doctor/);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
@@ -265,7 +415,8 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
     const { wd, fakeBin } = await setup(true, 3);
     try {
       const r = run([], wd, fakeBin);
-      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
+      // Session owner is identity-indeterminate, so suggest omx doctor for diagnosis
+      assert.match(r.stderr, /omx doctor/, r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
@@ -292,9 +443,10 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       const r = run(['--project'], wd, fakeBin);
       // Should print resume block
       assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
-      // Should NOT include --project in the suggested resume command
-      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
-      assert.doesNotMatch(r.stderr, /omx.*--project.*resume/, r.stderr);
+      // Session owner is identity-indeterminate, so suggest omx doctor
+      assert.match(r.stderr, /omx doctor/, r.stderr);
+      // Should NOT include --project in the diagnostic command
+      assert.doesNotMatch(r.stderr, /--project/, r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 });
