@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.15] - 2026-11-22
+
+Patch release improves vision model guidance for CSS advice. See [release notes](docs/release-notes-0.22.15.md) for exact scope and evidence.
+
+### Improved
+
+- **REQUIRE RELIABLE VIEWPORT EVIDENCE FOR CSS ADVICE (#4123):** Vision model styling recommendations now require reliable viewport evidence, preventing CSS advice on components when viewport context cannot be verified. This ensures recommendations reflect the actual rendering environment and reduces false-positive style suggestions.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.14...v0.22.15
+
 ## [0.22.14] - 2026-11-22
 
 Patch release ships part A of exit-block improvements and a regression fix. See [release notes](docs/release-notes-0.22.14.md) for exact scope and evidence.
