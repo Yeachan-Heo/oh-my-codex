@@ -100,7 +100,7 @@ describe('resume block formatting', () => {
     assert.doesNotMatch(out, /omx resume/);
   });
 
-  it('when session owner is alive but no tmux session, falls back to omx resume', () => {
+  it('when session owner is alive but no tmux session, suggests omx doctor', () => {
     const out = formatResumeBlock({
       sessionId: SID,
       launchArgs: [],
@@ -109,14 +109,12 @@ describe('resume block formatting', () => {
         pid: process.pid,  // Current process is alive
         platform: process.platform,
         // No tmuxSessionName
-        state: makeSessionState({ 
-          // Add identity metadata so it can be verified as the current process
-          pid_start_ticks: 1,
-        }),  // Session state for liveness classification
+        state: makeSessionState(),  // Session state for liveness classification
       },
     });
     assert.match(out, new RegExp(`Session id: ${SID}`));
-    assert.match(out, new RegExp(`omx resume ${SID}`));
+    assert.match(out, /omx doctor/);
+    assert.doesNotMatch(out, /omx resume/);
     assert.doesNotMatch(out, /tmux attach/);
   });
 
@@ -201,6 +199,23 @@ describe('resume block formatting', () => {
     // At minimum, it should start with the resolved binary name and 'attach'
     assert.ok(command, 'command should not be null');
     assert.match(command, /(tmux|psmux) attach -t omx-session/);
+  });
+
+  it('usable owner without tmux session uses omx doctor', () => {
+    // usable without tmux should suggest omx doctor, not omx resume
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        // No tmuxSessionName
+        state: makeSessionState(),  // Default state - current process - will classify as usable
+      },
+    });
+    // usable without tmux should use omx doctor
+    assert.equal(command, 'omx doctor');
   });
 });
 

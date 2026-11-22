@@ -89,7 +89,7 @@ function contextFlags(launchArgs: readonly string[]): string[] {
  * suggest tmux attach instead of omx resume.
  */
 function buildTmuxAttachCommand(tmuxBinary: string, tmuxSessionName: string): string {
-  return `${tmuxBinary} attach -t ${shellQuote(tmuxSessionName)}`;
+  return `${shellQuote(tmuxBinary)} attach -t ${shellQuote(tmuxSessionName)}`;
 }
 
 /**
@@ -109,23 +109,24 @@ export function buildResumeCommand(input: ResumeBlockInput): string | null {
   if (!input.sessionId) return null;
   
   // If the session owner state is available, classify its liveness properly.
-  // This distinguishes between: live (usable/non-runtime-owner), dead (stale-dead), and indeterminate (identity-indeterminate).
   if (input.ownerInfo?.state) {
     const liveness = classifySessionStateLiveness(input.ownerInfo.state);
-    if (input.ownerInfo.tmuxSessionName) {
-      // If live or indeterminate (cannot prove dead), try tmux attach first
-      if (liveness === 'usable' || liveness === 'non-runtime-owner' || liveness === 'identity-indeterminate') {
+    
+    // Only 'usable' and 'identity-indeterminate' are candidates for tmux attach or omx doctor.
+    // 'non-runtime-owner' and 'stale-dead' always use omx resume.
+    if (liveness === 'usable' || liveness === 'identity-indeterminate') {
+      if (input.ownerInfo.tmuxSessionName) {
+        // Try tmux attach if session is active
         const tmuxBinary = resolveTmuxBinaryForPlatform(input.ownerInfo.platform) ?? 'tmux';
         return buildTmuxAttachCommand(tmuxBinary, input.ownerInfo.tmuxSessionName);
+      } else {
+        // No tmux session, suggest omx doctor to diagnose the owner state
+        return 'omx doctor';
       }
-    } else if (liveness === 'identity-indeterminate') {
-      // If indeterminate and no tmux session, suggest omx doctor to diagnose the owner state
-      return 'omx doctor';
     }
-    // If dead, always use omx resume
-    if (liveness === 'stale-dead') {
-      return buildOmxResumeCommand(input.sessionId, input);
-    }
+    
+    // 'non-runtime-owner' or 'stale-dead' always use omx resume
+    return buildOmxResumeCommand(input.sessionId, input);
   }
   
   // Fallback: without state, always use omx resume
