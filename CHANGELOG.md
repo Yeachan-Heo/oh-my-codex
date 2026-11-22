@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.14] - 2026-11-22
+
+Patch release ships part A of exit-block improvements and a regression fix. See [release notes](docs/release-notes-0.22.14.md) for exact scope and evidence.
+
+### Fixed
+
+- **EXIT-BLOCK REATTACH SUGGESTION FOR ACTIVE SESSION OWNERS (#4117 Part A):** Exit-block now suggests `tmux attach` or `psmux attach` when a detached session owner is still alive, reducing the need for manual session recovery. Part B (alternative attach paths) remains open. Fixes #4117 (partial).
+- **PRESERVE RESUME HINT FOR COMPLETED FOREGROUND LAUNCHES (#4120):** Fixed a regression from #4118 where the omx resume hint was being dropped for completed foreground launches. Resume hints are now correctly preserved throughout the launch lifecycle. Fixes #4119.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.13...v0.22.14
+
 ## [0.22.13] - 2026-11-22
 
 Patch release ships a fix for safely resuming verified OMX session owners. See [release notes](docs/release-notes-0.22.13.md) for exact scope and evidence.
