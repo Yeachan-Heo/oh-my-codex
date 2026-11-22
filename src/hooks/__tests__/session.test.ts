@@ -73,6 +73,27 @@ function makeState(overrides: Partial<SessionState> = {}): SessionState {
   };
 }
 
+describe('selected pointer cwd binding regression', () => {
+  for (const invalidCwd of [undefined, null, '', '   ', 42, {}]) {
+    it(`rejects invalid recorded cwd ${JSON.stringify(invalidCwd)} before liveness classification`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-pointer-cwd-binding-'));
+      try {
+        const context = resolveSessionPointerContext(cwd);
+        await mkdir(context.baseStateDir, { recursive: true });
+        const pointer = { ...makeState({ cwd }), cwd: invalidCwd, pid: process.pid };
+        await writeFile(context.sessionPath, JSON.stringify(pointer));
+        assert.equal((await readSessionPointer(context)).status, 'malformed');
+        assert.equal(await readUsableSessionState(cwd), null);
+        const recovery = await recoverDeadSessionPointer(cwd);
+        assert.equal(recovery.recovered, false);
+        assert.equal(existsSync(context.sessionPath), true);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 const TEST_TOKEN = 'transaction_token_123456';
 const FOREIGN_TOKEN = 'foreign_token_123456789';
 const SUCCESSOR_TOKEN = 'successor_token_123456789';

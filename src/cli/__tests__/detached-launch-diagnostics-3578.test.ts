@@ -133,6 +133,27 @@ describe('#3578 detached launch diagnostics', () => {
   });
 
   describe('detached session-pointer guidance', () => {
+    it('does not advise creating a separate root for an existing resume owner conflict', () => {
+      const carried = detachedLeaderFailureErrorForTest({ abortCode: 'session_pointer_owner_conflict' });
+      const captured: string[] = [];
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      (process.stderr as { write: (chunk: string) => boolean }).write = (chunk: string) => { captured.push(String(chunk)); return true; };
+      try { reportDetachedSessionPointerGuidance(carried, '/tmp', true); }
+      finally { (process.stderr as { write: (chunk: string) => boolean }).write = originalWrite; }
+      assert.match(captured.join(''), /resume conflicts with an existing OMX runtime owner/);
+      assert.doesNotMatch(captured.join(''), /POSIX: OMX_ROOT/);
+    });
+
+    it('provides bounded recovery diagnostics for a resume stale pointer', () => {
+      const carried = detachedLeaderFailureErrorForTest({ abortCode: 'session_pointer_unusable' });
+      const captured: string[] = [];
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      (process.stderr as { write: (chunk: string) => boolean }).write = (chunk: string) => { captured.push(String(chunk)); return true; };
+      try { reportDetachedSessionPointerGuidance(carried, '/tmp', true); }
+      finally { (process.stderr as { write: (chunk: string) => boolean }).write = originalWrite; }
+      assert.match(captured.join(''), /session pointer recover/);
+      assert.match(captured.join(''), /Do not delete the pointer/);
+    });
     it('prints the ordinary OMX_ROOT guidance for a carried owner conflict, gated on cwd-default', () => {
       const wd = mkdtempSync(join(tmpdir(), 'omx-3578-guidance-'));
       const cwd = join(wd, 'checkout');

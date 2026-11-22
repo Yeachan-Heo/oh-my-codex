@@ -1,5 +1,7 @@
 import { basename } from 'node:path';
 import { MADMAX_FLAG, HIGH_REASONING_FLAG, XHIGH_REASONING_FLAG } from './constants.js';
+import { classifySessionStateLiveness, type SessionState } from '../hooks/session.js';
+import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
 export interface ResumeBlockInput {
   /** Codex session id, or null when none was captured. */
@@ -12,6 +14,13 @@ export interface ResumeBlockInput {
   worktree?: { path: string; name?: string | null };
   /** Session lives in the project-local Codex home. */
   projectLocalHome?: boolean;
+  /** Session owner process information (pid, platform, tmux session name, and state for liveness classification). */
+  ownerInfo?: {
+    pid: number;
+    platform: NodeJS.Platform;
+    tmuxSessionName?: string;
+    state?: SessionState;
+  };
 }
 
 export function shellQuote(value: string): string {
@@ -74,15 +83,56 @@ function contextFlags(launchArgs: readonly string[]): string[] {
   return flags;
 }
 
-/** Resume uses only Codex's own syntax: `resume <session-id>`. */
-export function buildResumeCommand(input: ResumeBlockInput): string | null {
-  if (!input.sessionId) return null;
+/**
+ * Build a tmux attach command to reattach to a live session.
+ * When the session owner is still alive and has an active tmux session,
+ * suggest tmux attach instead of omx resume.
+ */
+function buildTmuxAttachCommand(tmuxBinary: string, tmuxSessionName: string): string {
+  return `${shellQuote(tmuxBinary)} attach -t ${shellQuote(tmuxSessionName)}`;
+}
+
+/**
+ * Build an omx resume command for a known-dead owner.
+ */
+function buildOmxResumeCommand(sessionId: string, input: ResumeBlockInput): string {
   const flags = contextFlags(input.launchArgs);
   if (input.projectLocalHome) flags.push('--project');
-  const omx = ['omx', ...flags, 'resume', shellQuote(input.sessionId)].join(' ');
+  const omx = ['omx', ...flags, 'resume', shellQuote(sessionId)].join(' ');
   const madmax = flags.includes(MADMAX_FLAG);
   const cdTarget = input.worktree?.path ?? (madmax ? input.launchCwd : undefined);
   return cdTarget ? `cd ${shellQuote(cdTarget)} && ${omx}` : omx;
+}
+
+/** Resume uses only Codex's own syntax: `resume <session-id>`, or tmux reattach if owner is alive. */
+export function buildResumeCommand(input: ResumeBlockInput): string | null {
+  if (!input.sessionId) return null;
+  
+  // If the session owner state is available, classify its liveness properly.
+  // But skip live-owner handling if the owner pid is the current process itself,
+  // since this is a normal foreground launch that is about to exit.
+  if (input.ownerInfo?.state && input.ownerInfo.pid !== process.pid) {
+    const liveness = classifySessionStateLiveness(input.ownerInfo.state);
+    
+    // Only 'usable' and 'identity-indeterminate' are candidates for tmux attach or omx doctor.
+    // 'non-runtime-owner' and 'stale-dead' always use omx resume.
+    if (liveness === 'usable' || liveness === 'identity-indeterminate') {
+      if (input.ownerInfo.tmuxSessionName) {
+        // Try tmux attach if session is active
+        const tmuxBinary = resolveTmuxBinaryForPlatform(input.ownerInfo.platform) ?? 'tmux';
+        return buildTmuxAttachCommand(tmuxBinary, input.ownerInfo.tmuxSessionName);
+      } else {
+        // No tmux session, suggest omx doctor to diagnose the owner state
+        return 'omx doctor';
+      }
+    }
+    
+    // 'non-runtime-owner' or 'stale-dead' always use omx resume
+    return buildOmxResumeCommand(input.sessionId, input);
+  }
+  
+  // Fallback: without state, or when owner is current process, always use omx resume
+  return buildOmxResumeCommand(input.sessionId, input);
 }
 
 export function formatResumeBlock(input: ResumeBlockInput): string {

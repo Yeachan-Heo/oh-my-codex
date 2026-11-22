@@ -20,6 +20,7 @@ import {
   resolveCliInvocation,
   parseResumeCodexHomeSelection,
   isResumeCodexLaunch,
+  findResumeCodexSubcommandIndex,
   CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE,
   isCodexVersionRequest,
   resolveUpdateChannelArg,
@@ -151,6 +152,19 @@ function expectedLowComplexityModel(codexHomeOverride?: string): string {
 
 afterEach(() => {
   mock.restoreAll();
+});
+
+it('finds the actual resume command rather than a global option value', () => {
+  assert.equal(findResumeCodexSubcommandIndex(['--model', 'resume', 'resume', '01234567-89ab-cdef-0123-456789abcdef']), 2);
+  assert.equal(findResumeCodexSubcommandIndex(['--model', 'resume', 'exec', 'resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['resume', '--', 'literal']), 0);
+});
+
+it('does not classify `omx --add-dir resume` as a resume launch (top-level handler uses findResumeCodexSubcommandIndex)', () => {
+  assert.equal(findResumeCodexSubcommandIndex(['--add-dir', 'resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['--add-dir=resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['--add-dir', 'resume', 'resume']), 2);
+  assert.equal(isResumeCodexLaunch(['--add-dir', 'resume']), false);
 });
 
 describe("madmax state isolation", () => {
