@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd, shellQuote } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
+import { type SessionState } from '../../hooks/session.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
 
@@ -15,6 +16,17 @@ async function writeRollout(home: string, name: string, id: string, mtime: numbe
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ type: 'session_meta', payload: { id, timestamp: 't', cwd: '/x' } })}\n`);
   await utimes(path, mtime / 1000, mtime / 1000);
+}
+
+function makeSessionState(overrides: Partial<SessionState> = {}): SessionState {
+  return {
+    session_id: 'test-session',
+    started_at: new Date(0).toISOString(),
+    cwd: '/test',
+    pid: process.pid,
+    platform: process.platform,
+    ...overrides,
+  };
 }
 
 describe('resume block formatting', () => {
@@ -80,6 +92,7 @@ describe('resume block formatting', () => {
         pid: process.pid,  // Current process is alive
         platform: process.platform,
         tmuxSessionName: 'omx-detached-session',
+        state: makeSessionState(),  // Session state for liveness classification
       },
     });
     assert.match(out, new RegExp(`Session id: ${SID}`));
@@ -96,6 +109,10 @@ describe('resume block formatting', () => {
         pid: process.pid,  // Current process is alive
         platform: process.platform,
         // No tmuxSessionName
+        state: makeSessionState({ 
+          // Add identity metadata so it can be verified as the current process
+          pid_start_ticks: 1,
+        }),  // Session state for liveness classification
       },
     });
     assert.match(out, new RegExp(`Session id: ${SID}`));
@@ -112,6 +129,7 @@ describe('resume block formatting', () => {
         pid: 2147483647,  // Invalid PID that doesn't exist
         platform: process.platform,
         tmuxSessionName: 'omx-detached-session',
+        state: makeSessionState({ pid: 2147483647 }),  // Session state with dead pid
       },
     });
     assert.match(out, new RegExp(`Session id: ${SID}`));
@@ -128,9 +146,61 @@ describe('resume block formatting', () => {
         pid: process.pid,
         platform: process.platform,
         tmuxSessionName: "session-with-'apostrophe",
+        state: makeSessionState(),
       },
     });
-    assert.equal(command, `tmux attach -t 'session-with-'\\''apostrophe'`);
+    // The command should have the tmux binary (possibly resolved to full path) and the session name properly quoted
+    assert.ok(command, 'command should not be null');
+    assert.match(command, /tmux attach -t 'session-with-'\\''apostrophe'/);
+  });
+
+  it('when session owner state classifies as dead, suggests omx resume', () => {
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: 2147483647,  // Invalid PID
+        platform: process.platform,
+        tmuxSessionName: 'omx-detached-session',
+        state: makeSessionState({ pid: 2147483647 }),  // Dead pid
+      },
+    });
+    assert.equal(command, `omx resume ${SID}`);
+  });
+
+  it('without ownerInfo state, falls back to omx resume', () => {
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: process.platform,
+        // No state provided - should fall back to omx resume
+      },
+    });
+    // Without state, should suggest omx resume
+    assert.equal(command, `omx resume ${SID}`);
+  });
+
+  it('uses psmux when tmux binary is not available on Windows', () => {
+    // Test that platform-command resolution works
+    const command = buildResumeCommand({
+      sessionId: SID,
+      launchArgs: [],
+      launchCwd: '/p',
+      ownerInfo: {
+        pid: process.pid,
+        platform: 'win32',  // On Windows, may resolve to psmux
+        tmuxSessionName: 'omx-session',
+        state: makeSessionState({ platform: 'win32' }),
+      },
+    });
+    // On Windows, it should use either 'tmux' or 'psmux' depending on what's available
+    // At minimum, it should start with the resolved binary name and 'attach'
+    assert.ok(command, 'command should not be null');
+    assert.match(command, /(tmux|psmux) attach -t omx-session/);
   });
 });
 

@@ -150,6 +150,7 @@ import {
   resetSessionMetrics,
   type LaunchSessionBinding,
   type EstablishmentCleanupEvidence,
+  type SessionState,
 } from "../hooks/session.js";
 
 import { probeActualTmuxInstanceEvidence, tmuxEvidenceBindsCandidate } from "../scripts/notify-hook/managed-tmux.js";
@@ -5890,7 +5891,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       const shouldAddProjectFlag = !!(ensuredLaunchWorktree?.enabled && projectLocalCodexHomeForCleanup);
       
       // Read full session state to check if owner is still alive and has tmux session
-      let ownerInfo: { pid: number; platform: NodeJS.Platform; tmuxSessionName?: string } | undefined;
+      let ownerInfo: { pid: number; platform: NodeJS.Platform; tmuxSessionName?: string; state?: SessionState } | undefined;
       try {
         const sessionState = await readSessionState(cwd);
         if (sessionState?.pid && sessionState?.platform && Number.isInteger(sessionState.pid) && sessionState.pid > 0) {
@@ -5898,6 +5899,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
             pid: sessionState.pid,
             platform: sessionState.platform,
             tmuxSessionName: sessionState.tmux_session_name,
+            state: sessionState,
           };
         }
       } catch {
