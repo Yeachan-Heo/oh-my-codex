@@ -393,7 +393,9 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
     try {
       const r = run([], wd, fakeBin);
       assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
-      assert.match(r.stderr, new RegExp(`omx resume ${SID}`));
+      // When session owner is indeterminate (identity-indeterminate) and no tmux is available,
+      // suggest omx doctor for diagnosis rather than a potentially stale omx resume
+      assert.match(r.stderr, /omx doctor/);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
@@ -404,7 +406,8 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       const stateAt = r.stderr.indexOf('[omx] madmax isolated state:');
       const blockAt = r.stderr.indexOf('Session id:');
       assert.ok(stateAt >= 0 && blockAt > stateAt, r.stderr);
-      assert.match(r.stderr, new RegExp(`omx --madmax --high resume ${SID}`));
+      // When session owner is identity-indeterminate, suggest omx doctor instead
+      assert.match(r.stderr, /omx doctor/);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
@@ -412,7 +415,8 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
     const { wd, fakeBin } = await setup(true, 3);
     try {
       const r = run([], wd, fakeBin);
-      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
+      // Session owner is identity-indeterminate, so suggest omx doctor for diagnosis
+      assert.match(r.stderr, /omx doctor/, r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
@@ -439,9 +443,10 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       const r = run(['--project'], wd, fakeBin);
       // Should print resume block
       assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
-      // Should NOT include --project in the suggested resume command
-      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
-      assert.doesNotMatch(r.stderr, /omx.*--project.*resume/, r.stderr);
+      // Session owner is identity-indeterminate, so suggest omx doctor
+      assert.match(r.stderr, /omx doctor/, r.stderr);
+      // Should NOT include --project in the diagnostic command
+      assert.doesNotMatch(r.stderr, /--project/, r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 });
