@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd, shellQuote } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
+import { extractExplicitResumeSessionId, findResumeCodexSubcommandIndex, parseResumeCodexHomeSelection } from '../index.js';
 import { type SessionState } from '../../hooks/session.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
@@ -74,6 +75,25 @@ describe('resume block formatting', () => {
       buildResumeCommand({ sessionId: SID, launchArgs: ['--model', 'gpt-5'], launchCwd: '/p', projectLocalHome: true }),
       `omx --model gpt-5 --project resume ${SID}`,
     );
+  });
+
+  it('keeps an explicit --codex-home (absolute) from a resume launch', () => {
+    assert.equal(
+      buildResumeCommand({ sessionId: SID, launchArgs: ['resume', '--codex-home', 'homes/custom', SID], launchCwd: '/p' }),
+      `omx resume --codex-home /p/homes/custom ${SID}`,
+    );
+    assert.equal(
+      buildResumeCommand({ sessionId: SID, launchArgs: ['resume', '--codex-home=/abs/h', SID], launchCwd: '/p' }),
+      `omx resume --codex-home /abs/h ${SID}`,
+    );
+  });
+
+  it('printed --codex-home resume command round-trips through the resume parser', () => {
+    const cmd = buildResumeCommand({ sessionId: SID, launchArgs: ['--madmax', 'resume', '--codex-home', '/abs/h', SID], launchCwd: '/p' })!;
+    const args = cmd.replace(/^cd \S+ && /, '').split(' ').slice(1);
+    assert.ok(findResumeCodexSubcommandIndex(args) >= 0, cmd);
+    assert.equal(parseResumeCodexHomeSelection(args).explicitCodexHome, '/abs/h');
+    assert.equal(extractExplicitResumeSessionId(args), SID);
   });
 
   it('without a session id says so and prints no broken resume command', () => {
@@ -475,6 +495,38 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
       const r = run(['resume', '--last'], wd, fakeBin);
       assert.notEqual(r.status, 0);
       assert.match(r.stderr, /no previous sessions found/, r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('omx resume <uuid> prints the resume block with that id', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const r = run(['resume', SID], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
+      assert.match(r.stderr, new RegExp(`^  omx resume ${SID}$`, 'm'), r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('omx --madmax resume <uuid> prints the madmax cd form', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const r = run(['--madmax', 'resume', SID], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`cd /[^ ]+ && omx --madmax resume ${SID}`), r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('omx resume --last prints the resolved session id', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const codexHome = join(wd, 'home', '.codex');
+      const rollout = join(codexHome, 'sessions', '2026', '11', '09', 'rollout-a.jsonl');
+      await mkdir(dirname(rollout), { recursive: true });
+      await writeFile(rollout, `${JSON.stringify({ type: 'session_meta', payload: { id: SID, cwd: wd } })}\n`);
+      // fake codex touches the rollout so it is newer than the launch start
+      await writeFile(join(fakeBin, 'codex'), `#!/bin/sh\ntouch "${rollout}"\nexit 0\n`, { mode: 0o755 });
+      const r = run(['resume', '--last'], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
+      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
