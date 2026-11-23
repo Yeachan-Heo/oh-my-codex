@@ -215,8 +215,8 @@ describe("getModelForMode", () => {
 
 	it("defaults team child model to the standard lane independent of frontier defaults", () => {
 		process.env.OMX_DEFAULT_FRONTIER_MODEL = "frontier-expensive";
-		assert.equal(DEFAULT_TEAM_CHILD_MODEL, "gpt-6-astra");
-		assert.equal(getTeamChildModel(), "gpt-6-astra");
+		assert.equal(DEFAULT_TEAM_CHILD_MODEL, "gpt-6.2-sol");
+		assert.equal(getTeamChildModel(), "gpt-6.2-sol");
 	});
 
 	it("uses OMX_TEAM_CHILD_MODEL shell override for team child model", () => {
@@ -263,12 +263,12 @@ describe("getModelForMode", () => {
 		assert.equal(getSparkDefaultModel(), "spark-canonical");
 	});
 
-	it("inherits from configured main model when no explicit spark override is set", async () => {
-		// When user configures a main model, spark should inherit it instead of using DEFAULT_SPARK_MODEL
-		// This prevents expensive models from being used in fast lanes when user chose a cheaper main model
+	it("does not inherit the configured main model for spark (luna is the cheapest default)", async () => {
 		await writeFile(join(tempDir, "config.toml"), 'model = "gpt-6.1-terra"\n');
-		assert.equal(getMainDefaultModel(), "gpt-6.1-terra");
-		assert.equal(getSparkDefaultModel(), "gpt-6.1-terra");
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-6.2-sol";
+		assert.equal(getMainDefaultModel(), "gpt-6.2-sol");
+		assert.equal(getSparkDefaultModel(), "gpt-6-luna");
+		assert.equal(getTeamLowComplexityModel(), "gpt-6-luna");
 	});
 
 	it("respects explicit spark override over inherited main model", async () => {
@@ -445,20 +445,25 @@ describe("getModelForMode", () => {
 		assert.equal(getAgentModelOverride("bad role"), undefined);
 	});
 
-	it("defaults every model tier to Astra", () => {
+	it("defaults frontier/standard to gpt-6.2-sol and spark to gpt-6-luna", () => {
 		for (const model of [
 			DEFAULT_FRONTIER_MODEL,
 			DEFAULT_STANDARD_MODEL,
-			DEFAULT_SPARK_MODEL,
 			getMainDefaultModel(),
 			getStandardDefaultModel(),
-			getSparkDefaultModel(),
 			getTeamChildModel(),
+		]) {
+			assert.equal(model, "gpt-6.2-sol");
+		}
+		for (const model of [
+			DEFAULT_SPARK_MODEL,
+			getSparkDefaultModel(),
 			getTeamLowComplexityModel(),
 		]) {
-			assert.equal(model, "gpt-6-astra");
+			assert.equal(model, "gpt-6-luna");
 		}
-		assert.equal(isKnownCodexModelAlias("gpt-6-astra"), true);
+		assert.equal(isKnownCodexModelAlias("gpt-6.2-astra"), true);
+		assert.equal(isKnownCodexModelAlias("gpt-6.2-sol"), true);
 	});
 
 	it("recognizes the GPT-6 family without inferring unannounced aliases", () => {

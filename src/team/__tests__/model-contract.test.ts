@@ -225,7 +225,7 @@ describe('team model contract', () => {
   });
 
   it('maps worker roles to default reasoning effort tiers', () => {
-    assert.equal(resolveAgentReasoningEffort('explore'), 'low');
+    assert.equal(resolveAgentReasoningEffort('explore'), 'medium');
     assert.equal(resolveAgentReasoningEffort('executor'), 'medium');
     assert.equal(resolveAgentReasoningEffort('architect'), 'xhigh');
     assert.equal(resolveAgentReasoningEffort('does-not-exist'), undefined);
@@ -244,7 +244,7 @@ describe('team model contract', () => {
 
       assert.equal(resolveAgentReasoningEffort('architect', codexHome), 'max');
       assert.equal(resolveAgentReasoningEffort('critic', codexHome), 'high');
-      assert.equal(resolveAgentReasoningEffort('explore', codexHome), 'low');
+      assert.equal(resolveAgentReasoningEffort('explore', codexHome), 'medium');
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -253,20 +253,28 @@ describe('team model contract', () => {
   it('maps worker roles to configured default model lanes', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
-      assert.equal(resolveAgentDefaultModel('writer'), 'gpt-6-astra');
-      assert.equal(resolveAgentDefaultModel('executor'), 'gpt-6-astra');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6-astra');
+      assert.equal(resolveAgentDefaultModel('writer'), 'gpt-6.2-sol');
+      assert.equal(resolveAgentDefaultModel('executor'), 'gpt-6.2-sol');
+      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6.2-astra');
       assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
     });
   });
-  it('honors exact model pins before frontier fallback routing', () => {
+  it('uses exact model pins when no frontier env default is configured', () => {
     withIsolatedDefaultModelEnv(() => {
-      process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.2-frontier';
+      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-6.2-astra');
+      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6.2-astra');
+      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-6.2-astra');
+      assert.equal(resolveAgentDefaultModel('critic'), 'gpt-6.2-sol');
+    });
+  });
 
-      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-6-astra');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6-astra');
-      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-6-astra');
-      assert.equal(resolveAgentDefaultModel('critic'), 'gpt-5.2-frontier');
+  it('lets OMX_DEFAULT_FRONTIER_MODEL override exact model pins so one setting is enough', () => {
+    withIsolatedDefaultModelEnv(() => {
+      process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-6.2-sol';
+
+      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-6.2-sol');
+      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6.2-sol');
+      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-6.2-sol');
     });
   });
 
@@ -290,7 +298,7 @@ describe('team model contract', () => {
   it('keeps assigned worker roles as their own runtime identity', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
-      assert.equal(resolveAgentReasoningEffort('explore'), 'low');
+      assert.equal(resolveAgentReasoningEffort('explore'), 'medium');
       assert.equal(resolveAgentDefaultModel('style-reviewer'), expectedLowComplexityModel());
       assert.equal(resolveAgentReasoningEffort('style-reviewer'), 'low');
     });
@@ -310,7 +318,7 @@ describe('team model contract', () => {
           '-c',
           'model_reasoning_effort="high"',
           '--model',
-          'gpt-6-astra',
+          'gpt-6.2-astra',
         ],
       );
     });
@@ -378,14 +386,14 @@ describe('team model contract', () => {
         }),
         {
           requestedAgentType: 'architect',
-          requestedDefaultModel: 'gpt-6-astra',
+          requestedDefaultModel: 'gpt-6.2-astra',
           requestedDefaultReasoning: 'xhigh',
-          actualModel: 'gpt-6-astra',
+          actualModel: 'gpt-6.2-astra',
           actualReasoning: 'xhigh',
           modelSource: 'fallback',
           reasoningSource: 'role-default',
           inheritedParentModel: false,
-          actualLaunchArgs: ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-6-astra'],
+          actualLaunchArgs: ['-c', 'model_reasoning_effort="xhigh"', '--model', 'gpt-6.2-astra'],
         },
       );
     });
@@ -407,7 +415,7 @@ describe('team model contract', () => {
       assert.equal(diagnostics.inheritedParentModel, true);
       assert.deepEqual(diagnostics.actualLaunchArgs, [
         '-c',
-        'model_reasoning_effort="low"',
+        'model_reasoning_effort="medium"',
         '--model',
         'parent-session-model',
       ]);

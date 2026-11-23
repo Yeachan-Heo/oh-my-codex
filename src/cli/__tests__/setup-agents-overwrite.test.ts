@@ -204,7 +204,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       );
       assert.match(
         agentsContent,
-        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
+        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| medium \\|`),
       );
       assert.match(
         agentsContent,
@@ -258,7 +258,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       );
       assert.match(
         agentsContent,
-        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
+        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| medium \\|`),
       );
       assert.doesNotMatch(agentsContent, /stale-frontier/);
       assert.doesNotMatch(agentsContent, /stale-spark/);

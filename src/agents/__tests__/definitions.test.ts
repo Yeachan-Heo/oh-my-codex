@@ -76,7 +76,7 @@ describe('agents/definitions', () => {
 
   it('keeps every built-in reasoning default unchanged', () => {
     const expectedReasoningEfforts = {
-      explore: 'low',
+      explore: 'medium',
       analyst: 'medium',
       planner: 'medium',
       architect: 'xhigh',
@@ -165,16 +165,16 @@ describe('agents/definitions', () => {
     }
   });
 
-  it('pins ralplan thesis and antithesis to exact gpt-6-astra with role-specific reasoning', () => {
-    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-6-astra');
+  it('pins ralplan thesis and antithesis to exact gpt-6.2-astra with role-specific reasoning', () => {
+    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-6.2-astra');
     assert.equal(AGENT_DEFINITIONS.planner.reasoningEffort, 'medium');
     assert.equal(AGENT_DEFINITIONS.planner.modelClass, 'frontier');
 
-    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-6-astra');
+    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-6.2-astra');
     assert.equal(AGENT_DEFINITIONS.architect.reasoningEffort, 'xhigh');
     assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
 
-    assert.equal(AGENT_DEFINITIONS.researcher.exactModel, 'gpt-6-astra');
+    assert.equal(AGENT_DEFINITIONS.researcher.exactModel, 'gpt-6.2-astra');
     assert.equal(AGENT_DEFINITIONS.researcher.reasoningEffort, 'high');
 
     assert.equal(AGENT_DEFINITIONS.critic.exactModel, undefined);

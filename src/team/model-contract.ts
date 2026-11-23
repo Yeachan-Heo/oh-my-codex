@@ -3,6 +3,7 @@ import {
   DEFAULT_SPARK_MODEL,
   getAgentModelOverride,
   getAgentReasoningOverride,
+  getEnvConfiguredMainDefaultModel,
   getMainDefaultModel,
   getSparkDefaultModel,
   getStandardDefaultModel,
@@ -669,7 +670,9 @@ export function resolveAgentDefaultModel(
   if (normalized.endsWith('-low')) return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
 
   const agent = getAgent(normalized);
-  if (agent?.exactModel) return agent.exactModel;
+  if (agent?.exactModel) {
+    return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride) ?? agent.exactModel;
+  }
   if (normalized === 'executor') return getMainDefaultModel(codexHomeOverride);
 
   switch (agent?.modelClass) {

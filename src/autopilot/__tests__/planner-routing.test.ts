@@ -44,11 +44,11 @@ describe('autopilot planner routing', () => {
     assert.equal(isCheapOrMiniModelName('dominican-router'), false);
   });
 
-  it('keeps default Astra planning on main', () => {
+  it('keeps default planning on main', () => {
     assert.deepEqual(resolveAutopilotPlannerRouting(tempDir), {
       owner: 'main',
-      mainModel: 'gpt-6-astra',
-      plannerModel: 'gpt-6-astra',
+      mainModel: 'gpt-6.2-sol',
+      plannerModel: 'gpt-6.2-astra',
       reason: 'main_not_cheap_or_mini',
       explicitPlannerOverride: false,
     });
@@ -60,7 +60,7 @@ describe('autopilot planner routing', () => {
     assert.deepEqual(resolveAutopilotPlannerRouting(tempDir), {
       owner: 'main',
       mainModel: 'gpt-5.6-sol',
-      plannerModel: 'gpt-6-astra',
+      plannerModel: 'gpt-6.2-astra',
       reason: 'main_not_cheap_or_mini',
       explicitPlannerOverride: false,
     });
@@ -72,7 +72,7 @@ describe('autopilot planner routing', () => {
     assert.deepEqual(resolveAutopilotPlannerRouting(tempDir), {
       owner: 'planner',
       mainModel: 'o4-mini',
-      plannerModel: 'gpt-6-astra',
+      plannerModel: 'gpt-6.2-astra',
       reason: 'main_is_cheap_or_mini',
       explicitPlannerOverride: false,
     });

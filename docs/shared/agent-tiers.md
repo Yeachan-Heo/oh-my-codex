@@ -14,13 +14,14 @@ OMX now separates three concepts:
 
 Use role to choose responsibility, tier to choose depth, and posture to choose operating style.
 
-Model routing: Each role belongs to a modelClass (`frontier`, `standard`, `fast`) which determines its default model tier. Built-in defaults are all `gpt-6-astra` across tiers; role reasoning defaults and explicit overrides remain unchanged.
+Model routing: Each role belongs to a modelClass (`frontier`, `standard`, `fast`) which determines its default model tier. Built-in defaults are `gpt-6.2-sol` for frontier and standard tiers and `gpt-6-luna` (medium reasoning) for the spark/fast tier; `planner`, `architect` and `researcher` are pinned to `gpt-6.2-astra`. Spark never inherits the configured main model.
 
 **Native Codex subagents** inherit the Codex `config.toml` model except:
-- Pinned roles (`planner`, `architect`, `researcher`) use exact `gpt-6-astra` with built-in providers
+- Pinned roles (`planner`, `architect`, `researcher`) use exact `gpt-6.2-astra` with built-in providers, unless `OMX_DEFAULT_FRONTIER_MODEL` is set
 - Per-agent `agentModels` overrides are respected
+- Env tier defaults are baked into the native TOML with built-in providers
 
-**Environment variables** (`OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, `OMX_DEFAULT_SPARK_MODEL`) do NOT set the native TOML `model` field or change native subagent runtime model selection. They configure Team worker fallback selection and mode resolution, and may be reflected in generated `resolved_model` or AGENTS.md model-table metadata.
+**Model precedence** (native TOML `model`, built-in providers): `.omx-config.json` `agentModels[role]` > env tier default (`OMX_DEFAULT_FRONTIER_MODEL` for frontier and pinned roles, `OMX_DEFAULT_SPARK_MODEL` for fast-lane roles, `OMX_DEFAULT_STANDARD_MODEL` for standard roles) > built-in pin or tier default. Setting the three env values is enough; no `agentModels` needed.
 
 ## Tiers
 
@@ -60,7 +61,7 @@ missing specialist coverage to their leader instead of delegating it.
   - Best for steerable frontier models and leader-style roles.
   - Prioritizes intent classification, delegation, verification, and architectural judgment.
   - Typical roles: `planner`, `analyst`, `architect`, `critic`, `code-reviewer`.
-  - **Native subagent model selection:** Ralplan keeps `planner` and `architect` in this posture. With **built-in providers**, `planner` uses exact `gpt-6-astra` (medium reasoning) and `architect` uses exact `gpt-6-astra` (xhigh reasoning). With **custom providers**, these roles inherit the provider's model at runtime. The `critic` consensus gate stays on the frontier lane.
+  - **Native subagent model selection:** Ralplan keeps `planner` and `architect` in this posture. With **built-in providers**, `planner` pins `gpt-6.2-astra` (medium reasoning) and `architect` pins `gpt-6.2-astra` (xhigh reasoning). With **custom providers**, these roles inherit the provider's model at runtime. The `critic` consensus gate stays on the frontier lane.
 
 - `deep-worker`:
   - Best for implementation-heavy roles that should carry work to completion.

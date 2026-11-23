@@ -1113,7 +1113,7 @@ printf '%s\\n' "$OMX_CODEX_LAUNCH_ID" "$OMX_ENTRY_PATH" > '${routingCapturePath}
       );
       assert.deepEqual(
         await runScaleUpCase({ teamName: 'scale-up-nonexecution-default', role: 'explore', launchArgs: '--model policy-model' }),
-        ['-c', 'model_reasoning_effort="low"', '--model', 'policy-model'],
+        ['-c', 'model_reasoning_effort="medium"', '--model', 'policy-model'],
       );
       assert.deepEqual(
         await runScaleUpCase({ teamName: 'scale-up-absent-role-default', launchArgs: '--model policy-model' }),

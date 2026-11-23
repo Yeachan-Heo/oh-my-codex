@@ -17,7 +17,7 @@ describe('config generator', () => {
       const notifyIdx = toml.indexOf('notify =');
       const reasoningIdx = toml.indexOf('model_reasoning_effort =');
       const devInstrIdx = toml.indexOf('developer_instructions =');
-      const modelIdx = toml.indexOf('model = "gpt-6-astra"');
+      const modelIdx = toml.indexOf('model = "gpt-6.2-sol"');
       const featuresIdx = toml.indexOf('[features]');
 
       assert.ok(notifyIdx >= 0, 'notify not found');
@@ -56,7 +56,7 @@ describe('config generator', () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, 'utf-8');
 
-      assert.match(toml, /^model = "gpt-6-astra"$/m);
+      assert.match(toml, /^model = "gpt-6.2-sol"$/m);
       assert.match(toml, /^model_reasoning_effort = "medium"$/m);
       assert.doesNotMatch(toml, /seeded behavioral defaults/);
       assert.doesNotMatch(toml, /^model_context_window\s*=/m);

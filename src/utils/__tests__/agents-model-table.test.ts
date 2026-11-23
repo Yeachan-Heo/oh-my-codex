@@ -64,12 +64,12 @@ describe('agents model table', () => {
     });
   });
 
-  it('uses the configured frontier model as the standard subagent default and spark default when no overrides exist', () => {
+  it('uses the configured frontier model as the standard subagent default and spark falls back to the luna default (no main-model inheritance)', () => {
     const context = resolveAgentsModelTableContext('model = "frontier-config"\n', { codexHomeOverride: isolatedCodexHome });
 
     assert.deepEqual(context, {
       frontierModel: 'frontier-config',
-      sparkModel: 'frontier-config',
+      sparkModel: 'gpt-6-luna',
       subagentDefaultModel: 'frontier-config',
     });
   });
@@ -82,17 +82,31 @@ describe('agents model table', () => {
     }, undefined, { codexHomeOverride: isolatedCodexHome });
 
     assert.match(table, /\| Frontier \(leader\) \| `gpt-frontier` \| high \|/);
-    assert.match(table, /\| Spark \(explorer\/fast\) \| `gpt-spark` \| low \|/);
+    assert.match(table, /\| Spark \(explorer\/fast\) \| `gpt-spark` \| medium \|/);
     assert.match(table, /\| Standard \(subagent default\) \| `gpt-standard` \| high \|/);
-    assert.match(table, /\| `explore` \| `gpt-spark` \| low \| Fast codebase search and file\/symbol mapping \(fast-lane, fast\) \|/);
-    assert.match(table, /\| `planner` \| `gpt-6-astra` \| medium \| Task sequencing, execution plans, risk flags \(frontier-orchestrator, frontier\) \|/);
-    assert.match(table, /\| `architect` \| `gpt-6-astra` \| xhigh \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
+    assert.match(table, /\| `explore` \| `gpt-spark` \| medium \| Fast codebase search and file\/symbol mapping \(fast-lane, fast\) \|/);
+    assert.match(table, /\| `planner` \| `gpt-6.2-astra` \| medium \| Task sequencing, execution plans, risk flags \(frontier-orchestrator, frontier\) \|/);
+    assert.match(table, /\| `architect` \| `gpt-6.2-astra` \| xhigh \| System design, boundaries, interfaces, long-horizon tradeoffs \(frontier-orchestrator, frontier\) \|/);
     assert.doesNotMatch(table, /\| `security-reviewer` \|/);
     assert.doesNotMatch(table, /\| `build-fixer` \|/);
     assert.match(table, /\| `code-reviewer` \| `gpt-frontier` \| high \| Comprehensive review across all concerns \(frontier-orchestrator, frontier\) \|/);
     assert.match(table, /\| `critic` \| `gpt-frontier` \| high \| Plan\/design critical challenge and review \(frontier-orchestrator, frontier\) \|/);
     assert.match(table, /\| `writer` \| `gpt-standard` \| high \| Documentation, migration notes, user guidance \(fast-lane, standard\) \|/);
     assert.match(table, /\| `executor` \| `gpt-frontier` \| medium \| Code implementation, refactoring, feature work \(deep-worker, standard\) \|/);
+  });
+
+  it('lets OMX_DEFAULT_FRONTIER_MODEL override exact pins in the table', () => {
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-6.2-sol';
+    const table = buildAgentsModelTable({
+      frontierModel: 'gpt-6.2-sol',
+      sparkModel: 'gpt-6-luna',
+      subagentDefaultModel: 'gpt-6.2-sol',
+    }, undefined, { codexHomeOverride: isolatedCodexHome });
+
+    assert.match(table, /\| `planner` \| `gpt-6.2-sol` \| medium \|/);
+    assert.match(table, /\| `architect` \| `gpt-6.2-sol` \| xhigh \|/);
+    assert.match(table, /\| `researcher` \| `gpt-6.2-sol` \| high \|/);
+    assert.match(table, /Precedence per role/);
   });
 
   it('reflects per-agent model and reasoning overrides', async () => {

@@ -449,7 +449,7 @@ These are operator/support surfaces:
   - `omx uninstall` removes OMX-managed wrappers from `.codex/hooks.json` but keeps the file when user hooks remain
 - `omx update` checks npm immediately, installs the newest global OMX build, then reruns the same interactive setup refresh path
 - launch-time update checks are throttled and prompt by default; use `OMX_AUTO_UPDATE=0` to disable them or `OMX_AUTO_UPDATE=defer` to schedule deferred updates without a prompt
-- fresh OMX setup defaults to `gpt-6-astra` across frontier, standard, and spark/fast agents, with the same role reasoning defaults; existing user model configuration and explicit overrides are preserved
+- built-in model defaults: `gpt-6.2-sol` for frontier and standard roles, `gpt-6-luna` (medium reasoning) for spark/fast roles, and `gpt-6.2-astra` pins for `planner` (medium), `architect` (xhigh) and `researcher` (high); spark never inherits the main model. Precedence per role: `.omx-config.json` `agentModels[role]` > `OMX_DEFAULT_FRONTIER_MODEL`/`OMX_DEFAULT_SPARK_MODEL`/`OMX_DEFAULT_STANDARD_MODEL` for the role's class > built-in default, so setting the three env values is enough; existing user model configuration and explicit overrides are preserved
 - `.omx-config.json` model/env routing is documented in [the model/env routing reference](./docs/reference/omx-config-schema-routing.md); only edit keys supported by your installed OMX version
 - `omx doctor` verifies the install when something seems wrong; it does not prove that the active Codex profile can make an authenticated model call
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow

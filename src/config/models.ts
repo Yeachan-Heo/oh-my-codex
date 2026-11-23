@@ -144,9 +144,9 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
 	return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = "gpt-6-astra";
-export const DEFAULT_STANDARD_MODEL = "gpt-6-astra";
-export const DEFAULT_SPARK_MODEL = "gpt-6-astra";
+export const DEFAULT_FRONTIER_MODEL = "gpt-6.2-sol";
+export const DEFAULT_STANDARD_MODEL = "gpt-6.2-sol";
+export const DEFAULT_SPARK_MODEL = "gpt-6-luna";
 
 /**
  * Built-in provider IDs that come with Codex.
@@ -163,6 +163,8 @@ export const GPT_5_6_MODEL_ALIASES = [
 ] as const;
 export const KNOWN_CODEX_MODEL_ALIASES = [
 	"gpt-6-astra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 	"gpt-6-sol",
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
@@ -600,10 +602,8 @@ const TEAM_LOW_COMPLEXITY_MODEL_KEYS = [
 
 /**
  * Get the envvar-backed spark/low-complexity default model.
- * When no explicit spark override is configured, spark inherits from the configured main/default model.
- * This prevents inversion where a cheap configured leader would paradoxically cause expensive models
- * to be used in fast lanes.
- * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > configured main model > DEFAULT_SPARK_MODEL
+ * Spark never inherits the configured main model: DEFAULT_SPARK_MODEL is the cheapest built-in default.
+ * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > DEFAULT_SPARK_MODEL
  */
 export function getSparkDefaultModel(
 	codexHomeOverride?: string,
@@ -619,17 +619,12 @@ export function getSparkDefaultModel(
 		readTeamLowComplexityOverride(codexHomeOverride);
 	if (lowComplexityOverride) return lowComplexityOverride;
 
-	// Inherit from configured main model, then fall back to built-in default
-	const mainModel =
-		getEnvConfiguredMainDefaultModel(env, codexHomeOverride) ??
-		getCodexConfigRootModel(codexHomeOverride) ??
-		DEFAULT_FRONTIER_MODEL;
-	return mainModel;
+	return DEFAULT_SPARK_MODEL;
 }
 
 /**
  * Get the low-complexity team worker model.
- * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > inherited main model > DEFAULT_SPARK_MODEL
+ * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > DEFAULT_SPARK_MODEL
  */
 export function getTeamLowComplexityModel(codexHomeOverride?: string): string {
 	return (

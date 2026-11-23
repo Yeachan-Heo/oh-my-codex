@@ -9,7 +9,7 @@ export interface AgentDefinition {
   description: string;
   reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh';
   /** Optional exact model pin for roles that should bypass tier defaults. */
-  exactModel?: 'gpt-6-astra' | 'gpt-5.6-terra' | 'gpt-5.6-sol';
+  exactModel?: 'gpt-6.2-astra' | 'gpt-5.6-terra' | 'gpt-5.6-sol';
   posture: 'frontier-orchestrator' | 'deep-worker' | 'fast-lane';
   modelClass: 'frontier' | 'standard' | 'fast';
   routingRole: 'leader' | 'specialist' | 'executor';
@@ -54,7 +54,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   'explore': {
     name: 'explore',
     description: 'Fast codebase search and file/symbol mapping',
-    reasoningEffort: 'low',
+    reasoningEffort: 'medium',
     posture: 'fast-lane',
     modelClass: 'fast',
     routingRole: 'specialist',
@@ -75,7 +75,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     name: 'planner',
     description: 'Task sequencing, execution plans, risk flags',
     reasoningEffort: 'medium',
-    exactModel: 'gpt-6-astra',
+    exactModel: 'gpt-6.2-astra',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
     routingRole: 'leader',
@@ -86,7 +86,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     name: 'architect',
     description: 'System design, boundaries, interfaces, long-horizon tradeoffs',
     reasoningEffort: 'xhigh',
-    exactModel: 'gpt-6-astra',
+    exactModel: 'gpt-6.2-astra',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
     routingRole: 'leader',
@@ -273,7 +273,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
     name: 'researcher',
     description: 'External documentation and reference research',
     reasoningEffort: 'high',
-    exactModel: 'gpt-6-astra',
+    exactModel: 'gpt-6.2-astra',
     posture: 'fast-lane',
     modelClass: 'standard',
     routingRole: 'specialist',

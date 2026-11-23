@@ -57,24 +57,21 @@ The model-routing reader supports `env`, `models`, and the per-role override map
 ```json
 {
   "agentModels": {
-    "planner": "gpt-6-astra",
-    "architect": "gpt-6-astra",
-    "researcher": "gpt-6-astra",
-    "explore": "gpt-6-astra"
+    "architect": "gpt-6.2-astra"
   },
   "agentReasoning": {
     "architect": "xhigh",
     "critic": "xhigh"
   },
   "env": {
-    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-6-astra",
-    "OMX_DEFAULT_STANDARD_MODEL": "gpt-6-astra",
-    "OMX_DEFAULT_SPARK_MODEL": "gpt-6-astra"
+    "OMX_DEFAULT_FRONTIER_MODEL": "gpt-6.2-sol",
+    "OMX_DEFAULT_STANDARD_MODEL": "gpt-6.2-sol",
+    "OMX_DEFAULT_SPARK_MODEL": "gpt-6-luna"
   },
   "models": {
-    "default": "gpt-6-astra",
-    "team": "gpt-6-astra",
-    "team_low_complexity": "gpt-6-astra"
+    "default": "gpt-6.2-sol",
+    "team": "gpt-6.2-sol",
+    "team_low_complexity": "gpt-6-luna"
   }
 }
 ```
@@ -87,7 +84,7 @@ Supported model-related keys:
 
 | Key | Purpose |
 | --- | --- |
-| `OMX_DEFAULT_FRONTIER_MODEL` | Main/frontier default used by leaders and frontier-class roles when no stronger config wins. |
+| `OMX_DEFAULT_FRONTIER_MODEL` | Main/frontier default used by leaders, frontier-class roles, and the pinned `planner`/`architect`/`researcher` roles (it overrides their built-in `gpt-6.2-astra` pin) when no `agentModels[role]` wins. |
 | `OMX_DEFAULT_STANDARD_MODEL` | Optional standard-lane override. If omitted, standard agents inherit the main/frontier default. |
 | `OMX_DEFAULT_SPARK_MODEL` | Spark/fast-lane default for exploration and low-complexity workers. |
 | `OMX_SPARK_MODEL` | Legacy spark fallback; prefer `OMX_DEFAULT_SPARK_MODEL` for new config. |
@@ -105,15 +102,15 @@ For `omx sparkshell`, the documented helper-specific environment keys are:
 | `OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE` | Override the packaged lightweight summary instructions file. |
 | `OMX_SPARKSHELL_SUMMARY_TIMEOUT_MS` | Override the local API summary timeout in milliseconds. |
 
-Both Sparkshell summary model defaults are `gpt-6-astra`. To retry with a distinct model when the primary is unavailable, explicitly set `OMX_SPARKSHELL_FALLBACK_MODEL` to a different model.
+Both Sparkshell summary model defaults are `gpt-6-astra` (independent of the agent tier defaults). To retry with a distinct model when the primary is unavailable, explicitly set `OMX_SPARKSHELL_FALLBACK_MODEL` to a different model.
 
 ### `models`
 
 `models` maps mode names to explicit model overrides. Values must be non-empty strings.
 
-The built-in frontier, standard, and spark defaults are all `gpt-6-astra`, including fast agents and low-complexity workers. Existing role reasoning defaults are unchanged. The known-alias list contains `gpt-6-astra`, `gpt-6-sol`, `gpt-6.1-sol`, `gpt-6.1-terra`, and `gpt-6-luna`, plus the configurable GPT-5.6 alternatives `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
+The built-in frontier and standard defaults are `gpt-6.2-sol`; the built-in spark default (fast agents and low-complexity workers, `explore` at `medium` reasoning) is `gpt-6-luna`. `planner` (medium), `architect` (xhigh), and `researcher` (high) are pinned to `gpt-6.2-astra`. Spark never inherits the configured main model. The known-alias list contains `gpt-6-astra`, `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6-sol`, `gpt-6.1-sol`, `gpt-6.1-terra`, and `gpt-6-luna`, plus the configurable GPT-5.6 alternatives `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Legacy prior-generation names (for example `gpt-5.5`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`) are not aliases and carry no special routing meaning; like any provider-specific model name, they pass through only as opaque override strings. The known-alias list is used for display and contract tests, not as a closed allow-list.
 
-Setup seeds Astra when no root model exists; it preserves an existing user model unless an explicit model change is requested. Explicit launch arguments, environment values, and model configuration retain their documented precedence.
+Setup seeds the frontier default when no root model exists; it preserves an existing user model unless an explicit model change is requested. Explicit launch arguments, environment values, and model configuration retain their documented precedence.
 
 Supported model-routing keys:
 
@@ -131,7 +128,7 @@ Do not invent per-role maps such as `models.executor`, `models.architect`, or `m
 
 `agentModels` is the supported per-agent model override map. Keys are normalized OMX agent names using the same normalization as `agentReasoning`: case-insensitive agent names containing letters, numbers, underscores, and hyphens. Values must be non-empty strings. Malformed agent names, empty values, and non-string values are ignored rather than fatal.
 
-For example, explicitly select GPT-5.6 alternatives instead of the Astra defaults:
+For example, explicitly select GPT-5.6 alternatives instead of the built-in defaults:
 
 ```json
 {
@@ -149,9 +146,10 @@ These overrides do not change built-in defaults in source. They are user/project
 For a named role, effective model precedence is:
 
 1. `.omx-config.json` `agentModels[role]`
-2. Built-in `exactModel` pins, such as planner/architect/researcher `gpt-6-astra`
-3. Special role logic, such as `executor` using the main/frontier lane
-4. `modelClass` routing: `fast` uses spark/low-complexity, `frontier` uses main/frontier, and `standard` uses the standard lane
+2. The env tier default for the role's class: `OMX_DEFAULT_FRONTIER_MODEL` for frontier and `exactModel` roles (and `executor`), `OMX_DEFAULT_SPARK_MODEL` for fast-lane roles, `OMX_DEFAULT_STANDARD_MODEL` for standard roles
+3. Built-in `exactModel` pins, such as planner/architect/researcher `gpt-6.2-astra`
+4. Special role logic, such as `executor` using the main/frontier lane
+5. `modelClass` routing: `fast` uses spark/low-complexity, `frontier` uses main/frontier, and `standard` uses the standard lane
 
 `agentModels` is the durable per-role surface. Do not put per-role models under `models.executor`, `models.architect`, or `models.roles`.
 
@@ -174,17 +172,19 @@ These overrides do not change built-in defaults in source. Every built-in `Agent
 
 ### Effective model precedence for native agents
 
-Native agent TOML generation writes the `model` key only when these conditions are met:
+Native agent TOML generation resolves the `model` key in this order (the same order as the `native-config.ts` header and the AGENTS.md model table):
 
-1. Per-agent override: `.omx-config.json` `agentModels[role]` is configured → `model` key is written
-2. **Built-in provider + exactModel pin:** For `planner`, `architect`, `researcher` with built-in providers, the `gpt-6-astra` exactModel pin is written → `model` key is written
-3. Otherwise: **No `model` key** is written to the agent TOML. The agent inherits the active Codex `config.toml`/provider model at runtime.
-   - For custom providers, exactModel pins are not baked; the native agent inherits model selection from `config.toml`/the active provider, including its default when no model is configured.
-   - The `resolved_model` shown in role instructions is **informational only** and does not control the written TOML.
+1. Per-agent override: `.omx-config.json` `agentModels[role]` → `model` key is written
+2. **Built-in provider + env tier default:** `OMX_DEFAULT_FRONTIER_MODEL` for frontier and `exactModel` roles (`planner`, `architect`, `researcher`, and `executor`), `OMX_DEFAULT_SPARK_MODEL` for fast-lane roles, `OMX_DEFAULT_STANDARD_MODEL` for standard roles (shell env, or `.omx-config.json` `env`) → `model` key is written
+3. **Built-in provider + exactModel pin:** `planner`, `architect`, `researcher` → the `gpt-6.2-astra` pin is written
+4. Otherwise: **No `model` key** is written to the agent TOML. The agent inherits the active Codex `config.toml`/provider model at runtime; `resolved_model` in role instructions shows the tier default (`gpt-6.2-sol`, or `gpt-6-luna` for fast-lane roles).
+   - For custom providers, neither env tier defaults nor exactModel pins are baked; the native agent inherits model selection from `config.toml`/the active provider, including its default when no model is configured.
 
-**Important:** `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, and `OMX_DEFAULT_SPARK_MODEL` do **NOT** set the native TOML `model` field or change native Codex subagent runtime model selection. They configure Team worker fallbacks and mode-specific resolution (such as Autopilot planning), and may be reflected in generated `resolved_model` or AGENTS.md model-table metadata. Native Codex subagents inherit the active Codex `config.toml`/provider model at runtime, except when:
-- Exact model pins (`planner`, `architect`, `researcher` with built-in providers) are baked into native TOML
-- Per-agent `agentModels` overrides are configured
+One setting is enough: this config alone gives `planner`, `architect` and `researcher` `gpt-6.2-sol`, with no `agentModels`:
+
+```json
+{"env":{"OMX_DEFAULT_FRONTIER_MODEL":"gpt-6.2-sol","OMX_DEFAULT_STANDARD_MODEL":"gpt-6.2-sol","OMX_DEFAULT_SPARK_MODEL":"gpt-6-luna"}}
+```
 
 For role-based Team/Ralph fallback routing, the native custom-provider exception does not apply. `agentModels[role]` takes precedence; role names ending in `-low` use the low-complexity fallback; otherwise an applicable role `exactModel` pin is used regardless of provider, followed by special-role and `modelClass` defaults. During Team worker launch selection, a distinct `OMX_TEAM_WORKER_LAUNCH_ARGS --model` wins over the inherited leader model; otherwise, an applicable per-agent override or exact role pin is selected before the inherited leader model. If neither a per-agent override nor exact role pin applies, an inherited leader `--model` is used before special-role or model-class fallback.
 
@@ -195,7 +195,7 @@ The main default resolves in this order:
 1. Shell `OMX_DEFAULT_FRONTIER_MODEL`
 2. `.omx-config.json` `env.OMX_DEFAULT_FRONTIER_MODEL`
 3. Active Codex `config.toml` root `model`
-4. Built-in default: `gpt-6-astra`
+4. Built-in default: `gpt-6.2-sol`
 
 ### Mode-specific model lookup
 
@@ -226,19 +226,19 @@ Spark/fast defaults resolve in this order:
 3. `.omx-config.json` `env.OMX_DEFAULT_SPARK_MODEL`
 4. `.omx-config.json` legacy `env.OMX_SPARK_MODEL`
 5. `.omx-config.json` `models.team_low_complexity`, `models.team-low-complexity`, or `models.teamLowComplexity`
-6. Built-in default: `gpt-6-astra`
+6. Built-in default: `gpt-6-luna` (the configured main model is never inherited)
 
 For team low-complexity helpers, the exact order depends on the call path: `getSparkDefaultModel()` checks spark env/config values before low-complexity aliases, while `getTeamLowComplexityModel()` checks low-complexity aliases before falling back to the spark default.
 
 ## Role/category routing examples
 
-The `resolveAgentModel()` function (used for instruction overlays and metadata) follows a richer precedence that accounts for configured models and modelClass routing. For instruction composition, frontier roles and the `executor` special case use the active Codex `config.toml` root `model` first, then fall back to `getMainDefaultModel()` if that root model is absent. This richer resolution is **not** reflected in the written TOML `model` key; it only affects the `resolved_model` metadata shown in instructions.
+The `resolveAgentModel()` function (used for instruction overlays and metadata) follows a richer precedence that accounts for configured models and modelClass routing. For instruction composition, frontier roles and the `executor` special case use the active Codex `config.toml` root `model` first, then fall back to `getMainDefaultModel()` if that root model is absent. The written TOML `model` key follows the precedence in "Effective model precedence for native agents" above.
 
 Examples:
 
 | Role/category | Examples | Model class behavior |
 | --- | --- | --- |
-| Exact planning/research pins | `planner`, `architect`, `researcher` | **Native agents with built-in providers:** Use the `exactModel` pin (`gpt-6-astra`) with role-specific reasoning unless `agentModels[role]` overrides it. Planner uses exact `gpt-6-astra` (medium reasoning), architect uses exact `gpt-6-astra` (xhigh reasoning), and researcher uses exact `gpt-6-astra` (high reasoning). **Native agents with custom providers:** exactModel pins are not baked; native agents inherit model selection from `config.toml`/the active provider at runtime, including the provider default when no model is configured. **Team/Ralph fallback:** role exactModel pins remain in effect regardless of provider unless `agentModels[role]` overrides them. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
+| Exact planning/research pins | `planner`, `architect`, `researcher` | **Native agents with built-in providers:** Use `agentModels[role]`, else `OMX_DEFAULT_FRONTIER_MODEL`, else the `exactModel` pin (`gpt-6.2-astra`) with role-specific reasoning. Planner pins `gpt-6.2-astra` (medium reasoning), architect `gpt-6.2-astra` (xhigh reasoning), and researcher `gpt-6.2-astra` (high reasoning). **Native agents with custom providers:** exactModel pins are not baked; native agents inherit model selection from `config.toml`/the active provider at runtime, including the provider default when no model is configured. **Team/Ralph fallback:** role exactModel pins remain in effect regardless of provider unless `agentModels[role]` overrides them. Ralplan's `critic` remains frontier-routed for the consensus gate. In Autopilot, `planning_routing.owner` switches the initial ralplan Planner draft/decomposition to this dedicated `planner` role when `[main]` is cheap/mini or when `agentModels.planner` is configured. |
 | Frontier orchestration | `critic`, `code-reviewer`, `security-reviewer`, `team-executor`, `vision` | Native-agent `resolved_model` metadata uses active `config.toml` root `model` first, then the main/frontier default fallback. |
 | Standard worker/review | `debugger`, `quality-reviewer`, `api-reviewer`, `performance-reviewer`, `dependency-expert`, `writer` | Uses the standard-lane default, which inherits main/frontier unless `OMX_DEFAULT_STANDARD_MODEL` is set. |
 | Fast/low-complexity | `explore`, `style-reviewer` | Uses the spark/low-complexity default. |
@@ -254,7 +254,7 @@ Team worker launch selection:
 
 1. `.omx-config.json` `agentModels[role]` override, if configured
 2. Role ending in `-low` → spark chain; it does not fall back to the `config.toml` root model
-3. Role `exactModel` pin (`planner`, `architect`, `researcher` → `gpt-6-astra`); Team worker pins apply regardless of provider
+3. `OMX_DEFAULT_FRONTIER_MODEL` if set, else the role `exactModel` pin (`planner`, `architect`, `researcher` → `gpt-6.2-astra`); Team worker pins apply regardless of provider
 4. `executor` special case → main/frontier chain
 5. Otherwise by `modelClass`: `fast` → spark chain; `frontier` → main/frontier chain; `standard` → standard chain (`OMX_DEFAULT_STANDARD_MODEL` > main chain)
 

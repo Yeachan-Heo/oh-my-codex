@@ -76,12 +76,12 @@ afterEach(() => {
 });
 
 describe("agents/native-config", () => {
-  it("defaults every role to Astra with its existing reasoning effort", () => {
+  it("defaults roles to 6.2-astra pins, 6.2-sol, and luna for fast-lane with their reasoning efforts", () => {
     delete process.env.OMX_DEFAULT_STANDARD_MODEL;
     const expectedEfforts = {
       "executor": "medium",
       "team-executor": "medium",
-      "explore": "low",
+      "explore": "medium",
       "analyst": "medium",
       "planner": "medium",
       "architect": "xhigh",
@@ -117,10 +117,11 @@ describe("agents/native-config", () => {
       // Only agents with exactModel write model field
       const parsedToml = parseToml(toml);
       if (AGENT_DEFINITIONS[role].exactModel) {
-        assert.equal(parsedToml.model, "gpt-6-astra", `${role} with exactModel should write model`);
+        assert.equal(parsedToml.model, "gpt-6.2-astra", `${role} with exactModel should write model`);
       } else {
+        const expectedModel = AGENT_DEFINITIONS[role].modelClass === "fast" ? "gpt-6-luna" : "gpt-6.2-sol";
         assert.equal(parsedToml.model, undefined, `${role} without exactModel should not write model field`);
-        assert.match(toml, /resolved_model: gpt-6-astra/, `${role} should document resolved model`);
+        assert.match(toml, new RegExp(`resolved_model: ${expectedModel}\\b`), `${role} should document resolved model`);
       }
       assert.equal(parsedToml.model_reasoning_effort, effort, role);
       assert.doesNotMatch(String(toml), /exact gpt-5\.6-terra model/, role);
@@ -136,7 +137,7 @@ describe("agents/native-config", () => {
         const toml = parseToml(generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome }));
         assert.equal(toml.model, model, role);
         assert.equal(toml.model_reasoning_effort, AGENT_DEFINITIONS[role].reasoningEffort, role);
-        assert.doesNotMatch(String(toml.developer_instructions), /exact gpt-6-astra model/, role);
+        assert.doesNotMatch(String(toml.developer_instructions), /exact gpt-6.2-astra model/, role);
       }
     } finally {
       await rm(codexHome, { recursive: true, force: true });
@@ -307,15 +308,14 @@ describe("agents/native-config", () => {
 
 
   it("pins planner, architect, and researcher to Astra while retaining effort defaults", () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-sol";
-    process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-sol";
+    delete process.env.OMX_DEFAULT_STANDARD_MODEL;
 
     for (const role of ["planner", "architect", "researcher"] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
-      assert.match(toml, /model = "gpt-6-astra"/, `${role} should use exact gpt-6-astra`);
-      assert.match(toml, /exact gpt-6-astra model/, `${role} should receive exact-gpt-6-astra guidance`);
+      assert.match(toml, /model = "gpt-6.2-astra"/, `${role} should use exact gpt-6.2-astra`);
+      assert.match(toml, /exact gpt-6.2-astra model/, `${role} should receive exact-gpt-6.2-astra guidance`);
       assert.match(toml, /strict execution order: inspect -> plan -> act -> verify/, `${role} should receive the exact-model guardrail`);
-      assert.match(toml, /resolved_model: gpt-6-astra/, `${role} should record exact gpt-6-astra metadata`);
+      assert.match(toml, /resolved_model: gpt-6.2-astra/, `${role} should record exact gpt-6.2-astra metadata`);
     }
 
     const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt");
@@ -325,9 +325,9 @@ describe("agents/native-config", () => {
     assert.match(architectToml, /model_reasoning_effort = "xhigh"/);
 
     const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt");
-    assert.match(researcherToml, /model = "gpt-6-astra"/, "researcher should keep exact Astra");
-    assert.match(researcherToml, /exact gpt-6-astra model/, "researcher should receive exact-Astra guidance");
-    assert.match(researcherToml, /resolved_model: gpt-6-astra/, "researcher should record exact Astra metadata");
+    assert.match(researcherToml, /model = "gpt-6.2-astra"/, "researcher should keep exact Astra");
+    assert.match(researcherToml, /exact gpt-6.2-astra model/, "researcher should receive exact-Astra guidance");
+    assert.match(researcherToml, /resolved_model: gpt-6.2-astra/, "researcher should record exact Astra metadata");
     assert.match(researcherToml, /model_reasoning_effort = "high"/);
 
     for (const role of [
@@ -336,8 +336,104 @@ describe("agents/native-config", () => {
     ] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
       // No exactModel, so model not written; resolved_model documented
-      assert.match(toml, /resolved_model: gpt-5\.6-sol/, `${role} should resolve to configured/default gpt-5.6-sol`);
+      assert.match(toml, /resolved_model: gpt-6\.2-sol/, `${role} should resolve to the default gpt-6.2-sol`);
       assert.doesNotMatch(toml, /resolved_model: gpt-5\.6-terra/, `${role} must not inherit exact-Terra pins`);
+    }
+  });
+
+  it("gives planner, architect and researcher gpt-6.2-sol from env-only config, without agentModels", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-env-only-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        env: {
+          OMX_DEFAULT_FRONTIER_MODEL: "gpt-6.2-sol",
+          OMX_DEFAULT_STANDARD_MODEL: "gpt-6.2-sol",
+          OMX_DEFAULT_SPARK_MODEL: "gpt-6-luna",
+        },
+      }));
+      delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+      const efforts = { planner: "medium", architect: "xhigh", researcher: "high" } as const;
+      for (const role of ["planner", "architect", "researcher"] as const) {
+        const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome });
+        const parsed = parseToml(toml);
+        assert.equal(parsed.model, "gpt-6.2-sol", role);
+        assert.equal(parsed.model_reasoning_effort, efforts[role], role);
+        assert.match(toml, /resolved_model: gpt-6\.2-sol/, role);
+        assert.doesNotMatch(toml, /exact gpt-6\.2-astra model/, role);
+      }
+      const explore = parseToml(generateAgentToml(AGENT_DEFINITIONS.explore, "explore prompt", { codexHomeOverride: codexHome }));
+      assert.equal(explore.model, "gpt-6-luna");
+      assert.equal(explore.model_reasoning_effort, "medium");
+      const debuggerToml = parseToml(generateAgentToml(AGENT_DEFINITIONS.debugger, "debugger prompt", { codexHomeOverride: codexHome }));
+      assert.equal(debuggerToml.model, "gpt-6.2-sol");
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("applies env tier defaults per class: frontier/pinned, spark, and standard", async () => {
+    delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-env-tiers-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        env: {
+          OMX_DEFAULT_FRONTIER_MODEL: "frontier-x",
+          OMX_DEFAULT_STANDARD_MODEL: "standard-x",
+          OMX_DEFAULT_SPARK_MODEL: "spark-x",
+        },
+      }));
+      const modelOf = (role: string) =>
+        parseToml(generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome })).model;
+      assert.equal(modelOf("planner"), "frontier-x");
+      assert.equal(modelOf("critic"), "frontier-x");
+      assert.equal(modelOf("executor"), "frontier-x");
+      assert.equal(modelOf("explore"), "spark-x");
+      assert.equal(modelOf("debugger"), "standard-x");
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets agentModels override env tier defaults", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-agentmodels-over-env-"));
+    try {
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        env: { OMX_DEFAULT_FRONTIER_MODEL: "gpt-6.2-sol", OMX_DEFAULT_SPARK_MODEL: "gpt-6-luna" },
+        agentModels: { planner: "gpt-6.2-astra", explore: "gpt-5.6-luna" },
+      }));
+      const modelOf = (role: string) =>
+        parseToml(generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome })).model;
+      assert.equal(modelOf("planner"), "gpt-6.2-astra");
+      assert.equal(modelOf("explore"), "gpt-5.6-luna");
+      assert.equal(modelOf("architect"), "gpt-6.2-sol");
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("does not bake env tier defaults or exact pins with a custom provider, and spark ignores the main model", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "omx-native-config-env-custom-provider-"));
+    try {
+      await writeFile(join(codexHome, "config.toml"), 'model = "glm-5.3-flash"\nmodel_provider = "custom-provider"\n');
+      await writeFile(join(codexHome, ".omx-config.json"), JSON.stringify({
+        env: { OMX_DEFAULT_FRONTIER_MODEL: "gpt-6.2-sol", OMX_DEFAULT_SPARK_MODEL: "gpt-6-luna" },
+      }));
+      for (const role of ["planner", "explore", "debugger"] as const) {
+        const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`, { codexHomeOverride: codexHome });
+        assert.equal(parseToml(toml).model, undefined, role);
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
+
+    const mainOnly = await mkdtemp(join(tmpdir(), "omx-native-config-spark-no-inherit-"));
+    try {
+      await writeFile(join(mainOnly, "config.toml"), 'model = "gpt-6.1-terra"\n');
+      const toml = generateAgentToml(AGENT_DEFINITIONS.explore, "explore prompt", { codexHomeOverride: mainOnly });
+      assert.match(toml, /resolved_model: gpt-6-luna/);
+      assert.equal(parseToml(toml).model, undefined);
+    } finally {
+      await rm(mainOnly, { recursive: true, force: true });
     }
   });
 
@@ -357,21 +453,21 @@ describe("agents/native-config", () => {
       });
       assert.doesNotMatch(plannerToml, /^model\s*=/m, "planner should not bake model field with custom provider");
       // When model is not baked, agents inherit from config.toml at runtime
-      assert.doesNotMatch(plannerToml, /exact gpt-6-astra model/, "planner should not receive exactModel guidance with custom provider");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not receive exactModel guidance with custom provider");
 
       // With custom provider, architect should NOT bake gpt-6-astra, should inherit from config
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(architectToml, /^model\s*=/m, "architect should not bake model field with custom provider");
-      assert.doesNotMatch(architectToml, /exact gpt-6-astra model/, "architect should not receive exactModel guidance with custom provider");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not receive exactModel guidance with custom provider");
 
       // With custom provider, researcher should NOT bake gpt-6-astra, should inherit from config
       const researcherToml = generateAgentToml(AGENT_DEFINITIONS.researcher, "researcher prompt", {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(researcherToml, /^model\s*=/m, "researcher should not bake model field with custom provider");
-      assert.doesNotMatch(researcherToml, /exact gpt-6-astra model/, "researcher should not receive exactModel guidance with custom provider");
+      assert.doesNotMatch(researcherToml, /exact gpt-6.2-astra model/, "researcher should not receive exactModel guidance with custom provider");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -531,7 +627,7 @@ describe("agents/native-config", () => {
         "utf8",
       );
       // Model resolved but not written without explicit override; resolved_model documented
-      assert.match(executorToml, /resolved_model: gpt-6-astra/);
+      assert.match(executorToml, /resolved_model: gpt-6\.2-sol/);
       assert.match(executorToml, /model_reasoning_effort = "medium"/);
 
       const skipped = await installNativeAgentConfigs(root, {
@@ -885,12 +981,12 @@ describe("agents/native-config", () => {
       plannerToml = await readFile(join(outDir, "planner.toml"), "utf8");
       assert.match(
         plannerToml,
-        /model = "gpt-6-astra"/,
+        /model = "gpt-6.2-astra"/,
         "planner should bake exactModel when using default provider",
       );
       assert.match(
         plannerToml,
-        /resolved_model: gpt-6-astra/,
+        /resolved_model: gpt-6.2-astra/,
         "planner should resolve to gpt-6-astra with default provider",
       );
 
@@ -898,7 +994,7 @@ describe("agents/native-config", () => {
       architectToml = await readFile(join(outDir, "architect.toml"), "utf8");
       assert.match(
         architectToml,
-        /model = "gpt-6-astra"/,
+        /model = "gpt-6.2-astra"/,
         "architect should bake exactModel when using default provider",
       );
 
@@ -906,7 +1002,7 @@ describe("agents/native-config", () => {
       researcherToml = await readFile(join(outDir, "researcher.toml"), "utf8");
       assert.match(
         researcherToml,
-        /model = "gpt-6-astra"/,
+        /model = "gpt-6.2-astra"/,
         "researcher should bake exactModel when using default provider",
       );
     } finally {
@@ -936,14 +1032,14 @@ describe("agents/native-config", () => {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(plannerToml, /^model\s*=/m, "planner should not bake model when custom provider is in active profile");
-      assert.doesNotMatch(plannerToml, /exact gpt-6-astra model/, "planner should not receive astra guidance when custom provider is in active profile");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not receive astra guidance when custom provider is in active profile");
 
       // With profile-selected custom provider, architect should NOT bake exactModel
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(architectToml, /^model\s*=/m, "architect should not bake model when custom provider is in active profile");
-      assert.doesNotMatch(architectToml, /exact gpt-6-astra model/, "architect should not receive astra guidance when custom provider is in active profile");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not receive astra guidance when custom provider is in active profile");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -965,15 +1061,15 @@ describe("agents/native-config", () => {
       const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(plannerToml, /model = "gpt-6-astra"/, "planner should bake exactModel with openai-chatgpt provider");
-      assert.match(plannerToml, /exact gpt-6-astra model/, "planner should receive astra guidance with openai-chatgpt provider");
+      assert.match(plannerToml, /model = "gpt-6.2-astra"/, "planner should bake exactModel with openai-chatgpt provider");
+      assert.match(plannerToml, /exact gpt-6.2-astra model/, "planner should receive astra guidance with openai-chatgpt provider");
 
       // With built-in openai-chatgpt provider, architect SHOULD bake exactModel
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(architectToml, /model = "gpt-6-astra"/, "architect should bake exactModel with openai-chatgpt provider");
-      assert.match(architectToml, /exact gpt-6-astra model/, "architect should receive astra guidance with openai-chatgpt provider");
+      assert.match(architectToml, /model = "gpt-6.2-astra"/, "architect should bake exactModel with openai-chatgpt provider");
+      assert.match(architectToml, /exact gpt-6.2-astra model/, "architect should receive astra guidance with openai-chatgpt provider");
     } finally {
       if (typeof origCodexHome === "string") {
         process.env.CODEX_HOME = origCodexHome;
@@ -1006,14 +1102,14 @@ describe("agents/native-config", () => {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(plannerToml, /^model\s*=/m, "planner should not bake model field with custom provider and no root model");
-      assert.doesNotMatch(plannerToml, /exact gpt-6-astra model/, "planner should not emit astra guidance with custom provider and no root model");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not emit astra guidance with custom provider and no root model");
 
       // With custom provider and no root model, architect should NOT emit astra guidance
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(architectToml, /^model\s*=/m, "architect should not bake model field with custom provider and no root model");
-      assert.doesNotMatch(architectToml, /exact gpt-6-astra model/, "architect should not emit astra guidance with custom provider and no root model");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not emit astra guidance with custom provider and no root model");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -1041,15 +1137,15 @@ describe("agents/native-config", () => {
       const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(plannerToml, /model = "gpt-6-astra"/, "planner should bake exactModel with profile-scoped built-in provider and model");
-      assert.match(plannerToml, /exact gpt-6-astra model/, "planner should receive astra guidance with profile-scoped built-in provider and model");
+      assert.match(plannerToml, /model = "gpt-6.2-astra"/, "planner should bake exactModel with profile-scoped built-in provider and model");
+      assert.match(plannerToml, /exact gpt-6.2-astra model/, "planner should receive astra guidance with profile-scoped built-in provider and model");
 
       // Same for architect
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(architectToml, /model = "gpt-6-astra"/, "architect should bake exactModel with profile-scoped built-in provider and model");
-      assert.match(architectToml, /exact gpt-6-astra model/, "architect should receive astra guidance with profile-scoped built-in provider and model");
+      assert.match(architectToml, /model = "gpt-6.2-astra"/, "architect should bake exactModel with profile-scoped built-in provider and model");
+      assert.match(architectToml, /exact gpt-6.2-astra model/, "architect should receive astra guidance with profile-scoped built-in provider and model");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -1090,19 +1186,19 @@ describe("agents/native-config", () => {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(architectToml, /^model\s*=/m, "architect should not bake model without override");
-      assert.doesNotMatch(architectToml, /exact gpt-6-astra model/, "architect should not emit astra guidance without override");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not emit astra guidance without override");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
   });
 
-  it("resolves profile model before falling back to env vars (Codex P2 finding)", async () => {
+  it("prefers the frontier env default over exact pins and profile models for built-in providers", async () => {
     const codexHome = join(tmpdir(), `omx-profile-env-priority-test-${process.pid}`);
     const origFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
     try {
       // Create a config.toml with profile-scoped built-in provider and model, but no root model
       // Also set OMX_DEFAULT_FRONTIER_MODEL env var to a different model
-      // The profile model should take precedence and planner should return exactModel
+      // The env tier default outranks the exactModel pin and the profile model
       await mkdir(codexHome, { recursive: true });
       await writeFile(join(codexHome, "config.toml"), [
         'profile = "work-lane"',
@@ -1116,19 +1212,19 @@ describe("agents/native-config", () => {
       process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-terra";
 
       // With profile-scoped built-in provider and model + env var set,
-      // planner should return exactModel (gpt-6-astra), not the env var default
+      // planner and architect resolve to the env default, not the pin
       const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(plannerToml, /model = "gpt-6-astra"/, "planner should bake exactModel, not env var default, when profile model is set");
-      assert.match(plannerToml, /exact gpt-6-astra model/, "planner should receive astra guidance, not fall back to env var");
+      assert.match(plannerToml, /model = "gpt-5\.6-terra"/, "planner should bake the env default");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not receive astra guidance when env overrides the pin");
 
       // Same for architect
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(architectToml, /model = "gpt-6-astra"/, "architect should bake exactModel, not env var default");
-      assert.match(architectToml, /exact gpt-6-astra model/, "architect should receive astra guidance");
+      assert.match(architectToml, /model = "gpt-5\.6-terra"/, "architect should bake the env default");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not receive astra guidance");
     } finally {
       if (typeof origFrontierModel === "string") {
         process.env.OMX_DEFAULT_FRONTIER_MODEL = origFrontierModel;
@@ -1162,9 +1258,9 @@ describe("agents/native-config", () => {
         codexHomeOverride: codexHome,
       });
       // Should NOT emit astra guidance (the root model)
-      assert.doesNotMatch(plannerToml, /exact gpt-6-astra model/, "planner should not resolve to root astra when profile has custom provider with model");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not resolve to root astra when profile has custom provider with model");
       // Should NOT have astra in resolved_model if custom provider is active
-      assert.doesNotMatch(plannerToml, /resolved_model: gpt-6-astra/, "planner metadata should not report root model when profile model is configured");
+      assert.doesNotMatch(plannerToml, /resolved_model: gpt-6.2-astra/, "planner metadata should not report root model when profile model is configured");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -1186,15 +1282,15 @@ describe("agents/native-config", () => {
       const plannerToml = generateAgentToml(AGENT_DEFINITIONS.planner, "planner prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(plannerToml, /model = "gpt-6-astra"/, "planner should bake exactModel when built-in provider is explicit even without root model");
-      assert.match(plannerToml, /exact gpt-6-astra model/, "planner should receive exact guidance when built-in provider is explicit without root model");
+      assert.match(plannerToml, /model = "gpt-6.2-astra"/, "planner should bake exactModel when built-in provider is explicit even without root model");
+      assert.match(plannerToml, /exact gpt-6.2-astra model/, "planner should receive exact guidance when built-in provider is explicit without root model");
 
       // Same for architect
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
-      assert.match(architectToml, /model = "gpt-6-astra"/, "architect should bake exactModel when built-in provider is explicit without root model");
-      assert.match(architectToml, /exact gpt-6-astra model/, "architect should receive exact guidance when built-in provider is explicit without root model");
+      assert.match(architectToml, /model = "gpt-6.2-astra"/, "architect should bake exactModel when built-in provider is explicit without root model");
+      assert.match(architectToml, /exact gpt-6.2-astra model/, "architect should receive exact guidance when built-in provider is explicit without root model");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -1225,7 +1321,7 @@ describe("agents/native-config", () => {
       });
       assert.doesNotMatch(plannerToml, /^model\s*=/m, "planner should not bake model field with custom provider and no root model");
       assert.doesNotMatch(plannerToml, /resolved_model:/, "planner should not emit resolved_model metadata with custom provider and no root model");
-      assert.doesNotMatch(plannerToml, /exact gpt-6-astra model/, "planner should not emit astra guidance with custom provider and no root model");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not emit astra guidance with custom provider and no root model");
 
       // Same for architect
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
@@ -1233,7 +1329,7 @@ describe("agents/native-config", () => {
       });
       assert.doesNotMatch(architectToml, /^model\s*=/m, "architect should not bake model field with custom provider and no root model");
       assert.doesNotMatch(architectToml, /resolved_model:/, "architect should not emit resolved_model metadata with custom provider and no root model");
-      assert.doesNotMatch(architectToml, /exact gpt-6-astra model/, "architect should not emit astra guidance with custom provider and no root model");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not emit astra guidance with custom provider and no root model");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -1256,14 +1352,14 @@ describe("agents/native-config", () => {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(plannerToml, /^model\s*=/m, "planner should not bake model field with custom provider");
-      assert.doesNotMatch(plannerToml, /exact gpt-6-astra model/, "planner should not receive exact guidance with custom provider");
+      assert.doesNotMatch(plannerToml, /exact gpt-6.2-astra model/, "planner should not receive exact guidance with custom provider");
 
       // Same for architect
       const architectToml = generateAgentToml(AGENT_DEFINITIONS.architect, "architect prompt", {
         codexHomeOverride: codexHome,
       });
       assert.doesNotMatch(architectToml, /^model\s*=/m, "architect should not bake model field with custom provider");
-      assert.doesNotMatch(architectToml, /exact gpt-6-astra model/, "architect should not receive exact guidance with custom provider");
+      assert.doesNotMatch(architectToml, /exact gpt-6.2-astra model/, "architect should not receive exact guidance with custom provider");
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
