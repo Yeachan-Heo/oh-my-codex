@@ -82,8 +82,8 @@ The consensus workflow:
 5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) or a blocking quality gate with `REJECT` or `ITERATE` verdict MUST run the same full closed loop:
    a. Collect Architect, Critic, and quality-gate feedback
    b. Revise the plan with Planner
-   c. Return to Architect review
-   d. Return to Critic evaluation
+   c. Return to Architect review. **Lane reuse:** continue the prior same-session Architect lane when the host exposes a continuation tool (`send_input` or `resume_agent`; never require `resume_agent` where the host does not expose it). If no continuation tool is available or the prior lane cannot be continued, spawn a replacement Architect and record `new_lane_reason` in the planning receipt (same contract as `assertRoleLaneReuse` in `src/ralplan/runtime.ts`).
+   d. Return to Critic evaluation. **Lane reuse:** apply the same rule to Critic: continue the prior same-session Critic lane via `send_input`/`resume_agent` when exposed; otherwise spawn a replacement Critic and record `new_lane_reason` in the planning receipt. Planner is not a reuse invariant: step 5b may use a fresh Planner for revision.
    e. Re-run the configured quality gates after Critic; repeat until Critic returns `APPROVE` and no blocking gates return `REJECT` or `ITERATE`, or 5 iterations are reached
    f. If 5 iterations are reached without Critic approval or unresolved blocking gate rejections/iterations, present the best version and unresolved blockers to the user without execution handoff
 6. On Critic approval and no blocking quality gates returning `REJECT` or `ITERATE` (unavailable verdicts are recorded as warnings and never block), persist the execution-ready planning artifacts, sequential Architect→Critic evidence, and quality-gate receipt. In standalone interactive Ralplan, present the requested future execution lane. Inside Autopilot, the existing explicit `$autopilot` invocation authorizes the supervised transition to its defining next stage, `$ultragoal`; persist an Autopilot-owned `ralplan_execution_handoff` bound to the same session and review cycle.
