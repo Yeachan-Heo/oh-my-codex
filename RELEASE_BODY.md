@@ -1,27 +1,27 @@
-# oh-my-codex v0.22.15
+# oh-my-codex v0.22.16
 
 ## Summary
 
-This patch release improves vision model guidance by requiring reliable viewport evidence for CSS advice, ensuring more accurate styling recommendations for responsive components.
+This patch release enhances the ralplan workflow with improved Architect/Critic quality gates and lane reuse strategy, fixing issues with plan review cycles.
 
 ## Improved
 
-- **REQUIRE RELIABLE VIEWPORT EVIDENCE FOR CSS ADVICE (#4123):** Vision model styling recommendations now require reliable viewport evidence, preventing CSS advice on components when viewport context cannot be verified. This ensures recommendations reflect the actual rendering environment and reduces false-positive style suggestions.
+- **RALPLAN RE-REVIEW ARCHITECT/CRITIC/QUALITY-GATE LANE REUSE (#4130, #4131):** Improved ralplan workflow with better Architect/Critic quality gates and enhanced lane reuse strategy, fixing plan review cycle issues (#4129).
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.15`.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.16`.
 
 ## Verification
 
-- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.15.md)).
-- Dev CI run 44987440579 passed all checks.
+- Full CI on dev candidate (candidate details recorded in [release readiness](docs/qa/release-readiness-0.22.16.md)).
+- Dev CI run 45234011201 passed all checks.
 
 ## Contributors
 
 Thanks to [@ev78394](https://github.com/ev78394) for contributing to this release.
 
-**Full Changelog**: [`v0.22.14...v0.22.15`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.14...v0.22.15)
+**Full Changelog**: [`v0.22.15...v0.22.16`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.15...v0.22.16)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
