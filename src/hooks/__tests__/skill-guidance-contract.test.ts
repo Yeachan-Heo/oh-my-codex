@@ -42,6 +42,13 @@ describe('execution-heavy skill guidance contract', () => {
       assert.match(loop, /spawn a replacement Critic and record `new_lane_reason` in the planning receipt/);
       assert.match(loop, /`assertRoleLaneReuse` in `src\/ralplan\/runtime\.ts`/);
       assert.match(loop, /Planner is not a reuse invariant: step 5b may use a fresh Planner/);
+      assert.match(loop, /apply the same rule per gate: continue the prior same-session lane for the same gate skill \(keyed by gate skill name; a gate whose configured `model` changed may be replaced\)/);
+      assert.match(loop, /spawn a replacement gate subagent and record `new_lane_reason` for that gate in the planning receipt alongside its `qualityGateResults` entry/);
+      const gates = content.slice(content.indexOf('**Plan quality gates (after step 4):**'));
+      assert.match(gates, /the first iteration spawns each gate fresh/);
+      assert.match(gates, /continue the prior same-session lane for the same gate skill \(keyed by gate skill name/);
+      assert.match(gates, /never require `resume_agent` where the host does not expose it/);
+      assert.match(gates, /spawn a replacement gate subagent and record `new_lane_reason` for that gate/);
     }
   });
 
