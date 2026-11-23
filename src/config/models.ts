@@ -22,279 +22,372 @@
  *   }
  * }
  *
- * Resolution: mode-specific > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
+ * Resolution:
+ * - getModelForMode: models[mode] > models.default > main default (shell env > .omx-config.json env > config.toml root model > built-in default)
+ * - Native TOML model: agentModels override > built-in-provider exactModel pin; otherwise no model field (inherit at runtime)
+ * - Team role fallback: agentModels > `*-low` spark path > exactModel pin (provider-independent) > executor/main > modelClass defaults
  */
 
-import { parse as parseToml } from '@iarna/toml';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { codexConfigPath, codexHome } from '../utils/paths.js';
+import { parse as parseToml } from "@iarna/toml";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import { codexConfigPath, codexHome } from "../utils/paths.js";
 
 export interface ModelsConfig {
-  [mode: string]: string | undefined;
+	[mode: string]: string | undefined;
 }
 
 export interface OmxConfigEnv {
-  [key: string]: string | undefined;
+	[key: string]: string | undefined;
 }
 
 /** @deprecated Use the surface-specific per-agent or root reasoning exports instead. */
-export const CANONICAL_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
-export type ConfiguredAgentReasoningEffort = (typeof CANONICAL_REASONING_EFFORTS)[number];
+export const CANONICAL_REASONING_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+] as const;
+export type ConfiguredAgentReasoningEffort =
+	(typeof CANONICAL_REASONING_EFFORTS)[number];
 
 /** @deprecated Use ROOT_UNSUPPORTED_REASONING_EFFORTS for root diagnostics. */
-export const AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS = ['max', 'ultra'] as const;
-export type AmbiguousUnsupportedReasoningEffort = (typeof AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS)[number];
+export const AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS = [
+	"max",
+	"ultra",
+] as const;
+export type AmbiguousUnsupportedReasoningEffort =
+	(typeof AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS)[number];
 
-export const PER_AGENT_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type PerAgentReasoningEffort = (typeof PER_AGENT_REASONING_EFFORTS)[number];
+export const PER_AGENT_REASONING_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
+export type PerAgentReasoningEffort =
+	(typeof PER_AGENT_REASONING_EFFORTS)[number];
 
-export const ROOT_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export const ROOT_REASONING_EFFORTS = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+] as const;
 export type RootReasoningEffort = (typeof ROOT_REASONING_EFFORTS)[number];
 
-export const ROOT_UNSUPPORTED_REASONING_EFFORTS = ['max', 'ultra'] as const;
-export type RootUnsupportedReasoningEffort = (typeof ROOT_UNSUPPORTED_REASONING_EFFORTS)[number];
-
+export const ROOT_UNSUPPORTED_REASONING_EFFORTS = ["max", "ultra"] as const;
+export type RootUnsupportedReasoningEffort =
+	(typeof ROOT_UNSUPPORTED_REASONING_EFFORTS)[number];
 
 interface OmxConfigFile {
-  agentReasoning?: Record<string, unknown>;
-  agentModels?: Record<string, unknown>;
-  env?: OmxConfigEnv;
-  models?: ModelsConfig;
+	agentReasoning?: Record<string, unknown>;
+	agentModels?: Record<string, unknown>;
+	env?: OmxConfigEnv;
+	models?: ModelsConfig;
+	qualityGates?: Record<string, unknown>;
 }
 
 interface CodexConfigFile {
-  model?: unknown;
-  model_provider?: unknown;
-  model_providers?: Record<string, unknown>;
-  profile?: unknown;
-  profiles?: Record<string, Record<string, unknown>>;
+	model?: unknown;
+	model_provider?: unknown;
+	model_providers?: Record<string, unknown>;
+	profile?: unknown;
+	profiles?: Record<string, Record<string, unknown>>;
 }
 
-export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
-export const OMX_DEFAULT_STANDARD_MODEL_ENV = 'OMX_DEFAULT_STANDARD_MODEL';
-export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
-export const OMX_SPARK_MODEL_ENV = 'OMX_SPARK_MODEL';
-export const OMX_TEAM_CHILD_MODEL_ENV = 'OMX_TEAM_CHILD_MODEL';
+export const OMX_DEFAULT_FRONTIER_MODEL_ENV = "OMX_DEFAULT_FRONTIER_MODEL";
+export const OMX_DEFAULT_STANDARD_MODEL_ENV = "OMX_DEFAULT_STANDARD_MODEL";
+export const OMX_DEFAULT_SPARK_MODEL_ENV = "OMX_DEFAULT_SPARK_MODEL";
+export const OMX_SPARK_MODEL_ENV = "OMX_SPARK_MODEL";
+export const OMX_TEAM_CHILD_MODEL_ENV = "OMX_TEAM_CHILD_MODEL";
 
 function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
-  const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
-  if (!existsSync(configPath)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    return raw as OmxConfigFile;
-  } catch {
-    return null;
-  }
+	const configPath = join(codexHomeOverride || codexHome(), ".omx-config.json");
+	if (!existsSync(configPath)) return null;
+	try {
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+		return raw as OmxConfigFile;
+	} catch {
+		return null;
+	}
 }
 
-function readCodexConfigFile(codexHomeOverride?: string): CodexConfigFile | null {
-  const configPath = codexHomeOverride
-    ? join(codexHomeOverride, 'config.toml')
-    : codexConfigPath();
-  if (!existsSync(configPath)) return null;
-  try {
-    const raw = parseToml(readFileSync(configPath, 'utf-8'));
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    return raw as CodexConfigFile;
-  } catch {
-    return null;
-  }
+function readCodexConfigFile(
+	codexHomeOverride?: string,
+): CodexConfigFile | null {
+	const configPath = codexHomeOverride
+		? join(codexHomeOverride, "config.toml")
+		: codexConfigPath();
+	if (!existsSync(configPath)) return null;
+	try {
+		const raw = parseToml(readFileSync(configPath, "utf-8"));
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+		return raw as CodexConfigFile;
+	} catch {
+		return null;
+	}
 }
 
 function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
-  const config = readOmxConfigFile(codexHomeOverride);
-  if (!config) return null;
-  if (config.models && typeof config.models === 'object' && !Array.isArray(config.models)) {
-    return config.models;
-  }
-  return null;
+	const config = readOmxConfigFile(codexHomeOverride);
+	if (!config) return null;
+	if (
+		config.models &&
+		typeof config.models === "object" &&
+		!Array.isArray(config.models)
+	) {
+		return config.models;
+	}
+	return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = 'gpt-6-astra';
-export const DEFAULT_STANDARD_MODEL = 'gpt-6-astra';
-export const DEFAULT_SPARK_MODEL = 'gpt-6-astra';
+export const DEFAULT_FRONTIER_MODEL = "gpt-6-astra";
+export const DEFAULT_STANDARD_MODEL = "gpt-6-astra";
+export const DEFAULT_SPARK_MODEL = "gpt-6-astra";
 
 /**
  * Built-in provider IDs that come with Codex.
  * Custom/third-party providers are everything else.
  */
 export const BUILTIN_PROVIDER_IDS = new Set([
-  'openai',        // Default OpenAI provider (when no model_provider is specified)
-  'openai-chatgpt', // OpenAI subscription provider (set by `omx auth add`)
+	"openai", // Default OpenAI provider (when no model_provider is specified)
+	"openai-chatgpt", // OpenAI subscription provider (set by `omx auth add`)
 ]) as ReadonlySet<string>;
-export const GPT_5_6_MODEL_ALIASES = ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol'] as const;
-export const KNOWN_CODEX_MODEL_ALIASES = ['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna', ...GPT_5_6_MODEL_ALIASES] as const;
+export const GPT_5_6_MODEL_ALIASES = [
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.6-sol",
+] as const;
+export const KNOWN_CODEX_MODEL_ALIASES = [
+	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6.1-sol",
+	"gpt-6.1-terra",
+	"gpt-6-luna",
+	...GPT_5_6_MODEL_ALIASES,
+] as const;
 export type KnownCodexModelAlias = (typeof KNOWN_CODEX_MODEL_ALIASES)[number];
 
-export function isKnownCodexModelAlias(model: string): model is KnownCodexModelAlias {
-  return (KNOWN_CODEX_MODEL_ALIASES as readonly string[]).includes(model);
+export function isKnownCodexModelAlias(
+	model: string,
+): model is KnownCodexModelAlias {
+	return (KNOWN_CODEX_MODEL_ALIASES as readonly string[]).includes(model);
 }
 
 export const DEFAULT_TEAM_CHILD_MODEL = DEFAULT_STANDARD_MODEL;
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function isAmbiguousUnsupportedReasoningEffort(value: string): value is AmbiguousUnsupportedReasoningEffort {
-  return (AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(value.toLowerCase());
+export function isAmbiguousUnsupportedReasoningEffort(
+	value: string,
+): value is AmbiguousUnsupportedReasoningEffort {
+	return (
+		AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS as readonly string[]
+	).includes(value.toLowerCase());
 }
 
 export function isUnsupportedRootReasoningEffort(value: string): boolean {
-  return (ROOT_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(value.toLowerCase());
+	return (ROOT_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(
+		value.toLowerCase(),
+	);
 }
 
 export function normalizeUnsupportedRootReasoningEffort(
-  value: string,
+	value: string,
 ): RootUnsupportedReasoningEffort | undefined {
-  const normalized = value.trim().toLowerCase();
-  return (ROOT_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(normalized)
-    ? normalized as RootUnsupportedReasoningEffort
-    : undefined;
+	const normalized = value.trim().toLowerCase();
+	return (ROOT_UNSUPPORTED_REASONING_EFFORTS as readonly string[]).includes(
+		normalized,
+	)
+		? (normalized as RootUnsupportedReasoningEffort)
+		: undefined;
 }
 
-function normalizeAgentReasoningEffort(value: unknown): PerAgentReasoningEffort | undefined {
-  const normalized = normalizeConfiguredValue(value)?.toLowerCase();
-  if (normalized && (PER_AGENT_REASONING_EFFORTS as readonly string[]).includes(normalized)) {
-    return normalized as PerAgentReasoningEffort;
-  }
-  return undefined;
+function normalizeAgentReasoningEffort(
+	value: unknown,
+): PerAgentReasoningEffort | undefined {
+	const normalized = normalizeConfiguredValue(value)?.toLowerCase();
+	if (
+		normalized &&
+		(PER_AGENT_REASONING_EFFORTS as readonly string[]).includes(normalized)
+	) {
+		return normalized as PerAgentReasoningEffort;
+	}
+	return undefined;
 }
 
 function normalizeAgentName(value: unknown): string | undefined {
-  const normalized = normalizeConfiguredValue(value)?.toLowerCase();
-  return normalized && /^[a-z0-9][a-z0-9_-]*$/.test(normalized) ? normalized : undefined;
+	const normalized = normalizeConfiguredValue(value)?.toLowerCase();
+	return normalized && /^[a-z0-9][a-z0-9_-]*$/.test(normalized)
+		? normalized
+		: undefined;
 }
 
-function readConfigEnvValue(key: string, codexHomeOverride?: string): string | undefined {
-  const config = readOmxConfigFile(codexHomeOverride);
-  if (!config || !config.env || typeof config.env !== 'object' || Array.isArray(config.env)) {
-    return undefined;
-  }
-  return normalizeConfiguredValue(config.env[key]);
+function readConfigEnvValue(
+	key: string,
+	codexHomeOverride?: string,
+): string | undefined {
+	const config = readOmxConfigFile(codexHomeOverride);
+	if (
+		!config ||
+		!config.env ||
+		typeof config.env !== "object" ||
+		Array.isArray(config.env)
+	) {
+		return undefined;
+	}
+	return normalizeConfiguredValue(config.env[key]);
 }
 
-function readTeamLowComplexityOverride(codexHomeOverride?: string): string | undefined {
-  const models = readModelsBlock(codexHomeOverride);
-  if (!models) return undefined;
-  for (const key of TEAM_LOW_COMPLEXITY_MODEL_KEYS) {
-    const value = normalizeConfiguredValue(models[key]);
-    if (value) return value;
-  }
-  return undefined;
+function readTeamLowComplexityOverride(
+	codexHomeOverride?: string,
+): string | undefined {
+	const models = readModelsBlock(codexHomeOverride);
+	if (!models) return undefined;
+	for (const key of TEAM_LOW_COMPLEXITY_MODEL_KEYS) {
+		const value = normalizeConfiguredValue(models[key]);
+		if (value) return value;
+	}
+	return undefined;
 }
 
 /** Configured `models.team_low_complexity` (or alias-key) override, if any. */
-export function getConfiguredTeamLowComplexityModel(codexHomeOverride?: string): string | undefined {
-  return readTeamLowComplexityOverride(codexHomeOverride);
+export function getConfiguredTeamLowComplexityModel(
+	codexHomeOverride?: string,
+): string | undefined {
+	return readTeamLowComplexityOverride(codexHomeOverride);
 }
 
-export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.ProcessEnv {
-  const config = readOmxConfigFile(codexHomeOverride);
-  if (!config || !config.env || typeof config.env !== 'object' || Array.isArray(config.env)) {
-    return {};
-  }
+export function readConfiguredEnvOverrides(
+	codexHomeOverride?: string,
+): NodeJS.ProcessEnv {
+	const config = readOmxConfigFile(codexHomeOverride);
+	if (
+		!config ||
+		!config.env ||
+		typeof config.env !== "object" ||
+		Array.isArray(config.env)
+	) {
+		return {};
+	}
 
-  const resolved: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(config.env)) {
-    const normalized = normalizeConfiguredValue(value);
-    if (normalized) resolved[key] = normalized;
-  }
-  return resolved;
+	const resolved: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(config.env)) {
+		const normalized = normalizeConfiguredValue(value);
+		if (normalized) resolved[key] = normalized;
+	}
+	return resolved;
 }
 
 export function readAgentReasoningOverrides(
-  codexHomeOverride?: string,
+	codexHomeOverride?: string,
 ): Record<string, PerAgentReasoningEffort> {
-  const config = readOmxConfigFile(codexHomeOverride);
-  const raw = config?.agentReasoning;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+	const config = readOmxConfigFile(codexHomeOverride);
+	const raw = config?.agentReasoning;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
 
-  const resolved: Record<string, PerAgentReasoningEffort> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    const role = normalizeAgentName(key);
-    const effort = normalizeAgentReasoningEffort(value);
-    if (role && effort) resolved[role] = effort;
-  }
-  return resolved;
+	const resolved: Record<string, PerAgentReasoningEffort> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		const role = normalizeAgentName(key);
+		const effort = normalizeAgentReasoningEffort(value);
+		if (role && effort) resolved[role] = effort;
+	}
+	return resolved;
 }
 
 export function getAgentReasoningOverride(
-  agentName: string | undefined,
-  codexHomeOverride?: string,
+	agentName: string | undefined,
+	codexHomeOverride?: string,
 ): PerAgentReasoningEffort | undefined {
-  const normalized = normalizeAgentName(agentName);
-  if (!normalized) return undefined;
-  return readAgentReasoningOverrides(codexHomeOverride)[normalized];
+	const normalized = normalizeAgentName(agentName);
+	if (!normalized) return undefined;
+	return readAgentReasoningOverrides(codexHomeOverride)[normalized];
 }
 
 export function readAgentModelOverrides(
-  codexHomeOverride?: string,
+	codexHomeOverride?: string,
 ): Record<string, string> {
-  const config = readOmxConfigFile(codexHomeOverride);
-  const raw = config?.agentModels;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+	const config = readOmxConfigFile(codexHomeOverride);
+	const raw = config?.agentModels;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
 
-  const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    const role = normalizeAgentName(key);
-    const model = normalizeConfiguredValue(value);
-    if (role && model) resolved[role] = model;
-  }
-  return resolved;
+	const resolved: Record<string, string> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		const role = normalizeAgentName(key);
+		const model = normalizeConfiguredValue(value);
+		if (role && model) resolved[role] = model;
+	}
+	return resolved;
 }
 
 export function getAgentModelOverride(
-  agentName: string | undefined,
-  codexHomeOverride?: string,
+	agentName: string | undefined,
+	codexHomeOverride?: string,
 ): string | undefined {
-  const normalized = normalizeAgentName(agentName);
-  if (!normalized) return undefined;
-  return readAgentModelOverrides(codexHomeOverride)[normalized];
+	const normalized = normalizeAgentName(agentName);
+	if (!normalized) return undefined;
+	return readAgentModelOverrides(codexHomeOverride)[normalized];
 }
 
 export function readActiveProviderEnvOverrides(
-  env: NodeJS.ProcessEnv = process.env,
-  codexHomeOverride?: string,
-  activeProviderOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+	codexHomeOverride?: string,
+	activeProviderOverride?: string,
 ): NodeJS.ProcessEnv {
-  const config = readCodexConfigFile(codexHomeOverride);
-  if (!config) return {};
+	const config = readCodexConfigFile(codexHomeOverride);
+	if (!config) return {};
 
-  const activeProvider = normalizeConfiguredValue(activeProviderOverride) ?? normalizeConfiguredValue(config.model_provider);
-  if (!activeProvider) return {};
+	const activeProvider =
+		normalizeConfiguredValue(activeProviderOverride) ??
+		normalizeConfiguredValue(config.model_provider);
+	if (!activeProvider) return {};
 
-  const providers = config.model_providers;
-  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
-    return {};
-  }
+	const providers = config.model_providers;
+	if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
+		return {};
+	}
 
-  const providerConfig = providers[activeProvider];
-  if (!providerConfig || typeof providerConfig !== 'object' || Array.isArray(providerConfig)) {
-    return {};
-  }
+	const providerConfig = providers[activeProvider];
+	if (
+		!providerConfig ||
+		typeof providerConfig !== "object" ||
+		Array.isArray(providerConfig)
+	) {
+		return {};
+	}
 
-  const envKey = normalizeConfiguredValue((providerConfig as Record<string, unknown>).env_key);
-  if (!envKey) return {};
+	const envKey = normalizeConfiguredValue(
+		(providerConfig as Record<string, unknown>).env_key,
+	);
+	if (!envKey) return {};
 
-  const envValue = normalizeConfiguredValue(env[envKey]);
-  return envValue ? { [envKey]: envValue } : {};
+	const envValue = normalizeConfiguredValue(env[envKey]);
+	return envValue ? { [envKey]: envValue } : {};
 }
 
 export function getEnvConfiguredMainDefaultModel(
-  env: NodeJS.ProcessEnv = process.env,
-  codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+	codexHomeOverride?: string,
 ): string | undefined {
-  return normalizeConfiguredValue(env[OMX_DEFAULT_FRONTIER_MODEL_ENV])
-    ?? readConfigEnvValue(OMX_DEFAULT_FRONTIER_MODEL_ENV, codexHomeOverride);
+	return (
+		normalizeConfiguredValue(env[OMX_DEFAULT_FRONTIER_MODEL_ENV]) ??
+		readConfigEnvValue(OMX_DEFAULT_FRONTIER_MODEL_ENV, codexHomeOverride)
+	);
 }
 
-function getCodexConfigRootModel(codexHomeOverride?: string): string | undefined {
-  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model);
+function getCodexConfigRootModel(
+	codexHomeOverride?: string,
+): string | undefined {
+	return normalizeConfiguredValue(
+		readCodexConfigFile(codexHomeOverride)?.model,
+	);
 }
 
 /**
@@ -302,7 +395,7 @@ function getCodexConfigRootModel(codexHomeOverride?: string): string | undefined
  * This is used to determine if we should suppress astra guidance for custom providers.
  */
 export function isModelConfiguredAtRoot(codexHomeOverride?: string): boolean {
-  return !!getCodexConfigRootModel(codexHomeOverride);
+	return !!getCodexConfigRootModel(codexHomeOverride);
 }
 
 /**
@@ -311,25 +404,31 @@ export function isModelConfiguredAtRoot(codexHomeOverride?: string): boolean {
  * Falls back to root-level model if no profile is set or profile has no override.
  * Returns undefined if no model is configured at either level.
  */
-export function getCodexConfigEffectiveModel(codexHomeOverride?: string): string | undefined {
-  const config = readCodexConfigFile(codexHomeOverride);
-  if (!config) return undefined;
+export function getCodexConfigEffectiveModel(
+	codexHomeOverride?: string,
+): string | undefined {
+	const config = readCodexConfigFile(codexHomeOverride);
+	if (!config) return undefined;
 
-  const activeProfile = normalizeConfiguredValue(config.profile);
-  if (activeProfile) {
-    const profiles = config.profiles;
-    if (profiles && typeof profiles === 'object' && !Array.isArray(profiles)) {
-      const profileConfig = profiles[activeProfile];
-      if (profileConfig && typeof profileConfig === 'object' && !Array.isArray(profileConfig)) {
-        const profileModel = normalizeConfiguredValue(profileConfig.model);
-        if (profileModel) {
-          return profileModel;
-        }
-      }
-    }
-  }
+	const activeProfile = normalizeConfiguredValue(config.profile);
+	if (activeProfile) {
+		const profiles = config.profiles;
+		if (profiles && typeof profiles === "object" && !Array.isArray(profiles)) {
+			const profileConfig = profiles[activeProfile];
+			if (
+				profileConfig &&
+				typeof profileConfig === "object" &&
+				!Array.isArray(profileConfig)
+			) {
+				const profileModel = normalizeConfiguredValue(profileConfig.model);
+				if (profileModel) {
+					return profileModel;
+				}
+			}
+		}
+	}
 
-  return normalizeConfiguredValue(config.model);
+	return normalizeConfiguredValue(config.model);
 }
 
 /**
@@ -337,7 +436,7 @@ export function getCodexConfigEffectiveModel(codexHomeOverride?: string): string
  * Used to determine if exactModel pins should be baked for built-in providers.
  */
 export function isModelConfigured(codexHomeOverride?: string): boolean {
-  return !!getCodexConfigEffectiveModel(codexHomeOverride);
+	return !!getCodexConfigEffectiveModel(codexHomeOverride);
 }
 
 /**
@@ -345,23 +444,33 @@ export function isModelConfigured(codexHomeOverride?: string): boolean {
  * Used to determine if profile models should apply before class-based fallbacks.
  */
 export function isProfileScopedModel(codexHomeOverride?: string): boolean {
-  const config = readCodexConfigFile(codexHomeOverride);
-  if (!config) return false;
-  
-  const activeProfile = normalizeConfiguredValue(config.profile);
-  if (!activeProfile) return false;
-  
-  const profiles = config.profiles;
-  if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) return false;
-  
-  const profileConfig = profiles[activeProfile];
-  if (!profileConfig || typeof profileConfig !== 'object' || Array.isArray(profileConfig)) return false;
-  
-  return !!normalizeConfiguredValue(profileConfig.model);
+	const config = readCodexConfigFile(codexHomeOverride);
+	if (!config) return false;
+
+	const activeProfile = normalizeConfiguredValue(config.profile);
+	if (!activeProfile) return false;
+
+	const profiles = config.profiles;
+	if (!profiles || typeof profiles !== "object" || Array.isArray(profiles))
+		return false;
+
+	const profileConfig = profiles[activeProfile];
+	if (
+		!profileConfig ||
+		typeof profileConfig !== "object" ||
+		Array.isArray(profileConfig)
+	)
+		return false;
+
+	return !!normalizeConfiguredValue(profileConfig.model);
 }
 
-export function getCodexConfigRootModelProvider(codexHomeOverride?: string): string | undefined {
-  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model_provider);
+export function getCodexConfigRootModelProvider(
+	codexHomeOverride?: string,
+): string | undefined {
+	return normalizeConfiguredValue(
+		readCodexConfigFile(codexHomeOverride)?.model_provider,
+	);
 }
 
 /**
@@ -369,58 +478,71 @@ export function getCodexConfigRootModelProvider(codexHomeOverride?: string): str
  * If a profile is active, profile-specific model_provider takes precedence.
  * Falls back to root-level model_provider if no profile is set or profile has no override.
  */
-export function getCodexConfigEffectiveModelProvider(codexHomeOverride?: string): string | undefined {
-  const config = readCodexConfigFile(codexHomeOverride);
-  if (!config) return undefined;
+export function getCodexConfigEffectiveModelProvider(
+	codexHomeOverride?: string,
+): string | undefined {
+	const config = readCodexConfigFile(codexHomeOverride);
+	if (!config) return undefined;
 
-  const activeProfile = normalizeConfiguredValue(config.profile);
-  if (activeProfile) {
-    const profiles = config.profiles;
-    if (profiles && typeof profiles === 'object' && !Array.isArray(profiles)) {
-      const profileConfig = profiles[activeProfile];
-      if (profileConfig && typeof profileConfig === 'object' && !Array.isArray(profileConfig)) {
-        const profileProvider = normalizeConfiguredValue(profileConfig.model_provider);
-        if (profileProvider) {
-          return profileProvider;
-        }
-      }
-    }
-  }
+	const activeProfile = normalizeConfiguredValue(config.profile);
+	if (activeProfile) {
+		const profiles = config.profiles;
+		if (profiles && typeof profiles === "object" && !Array.isArray(profiles)) {
+			const profileConfig = profiles[activeProfile];
+			if (
+				profileConfig &&
+				typeof profileConfig === "object" &&
+				!Array.isArray(profileConfig)
+			) {
+				const profileProvider = normalizeConfiguredValue(
+					profileConfig.model_provider,
+				);
+				if (profileProvider) {
+					return profileProvider;
+				}
+			}
+		}
+	}
 
-  return normalizeConfiguredValue(config.model_provider);
+	return normalizeConfiguredValue(config.model_provider);
 }
 
 /**
  * Check if a provider ID is a built-in provider.
  */
 export function isBuiltinProvider(providerId: string | undefined): boolean {
-  if (!providerId) return true; // Empty/undefined means default OpenAI
-  return BUILTIN_PROVIDER_IDS.has(providerId);
+	if (!providerId) return true; // Empty/undefined means default OpenAI
+	return BUILTIN_PROVIDER_IDS.has(providerId);
 }
 
 export function getEnvConfiguredStandardDefaultModel(
-  env: NodeJS.ProcessEnv = process.env,
-  codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+	codexHomeOverride?: string,
 ): string | undefined {
-  return normalizeConfiguredValue(env[OMX_DEFAULT_STANDARD_MODEL_ENV])
-    ?? readConfigEnvValue(OMX_DEFAULT_STANDARD_MODEL_ENV, codexHomeOverride);
+	return (
+		normalizeConfiguredValue(env[OMX_DEFAULT_STANDARD_MODEL_ENV]) ??
+		readConfigEnvValue(OMX_DEFAULT_STANDARD_MODEL_ENV, codexHomeOverride)
+	);
 }
 
 export function getEnvConfiguredSparkDefaultModel(
-  env: NodeJS.ProcessEnv = process.env,
-  codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+	codexHomeOverride?: string,
 ): string | undefined {
-  return normalizeConfiguredValue(env[OMX_DEFAULT_SPARK_MODEL_ENV])
-    ?? normalizeConfiguredValue(env[OMX_SPARK_MODEL_ENV])
-    ?? readConfigEnvValue(OMX_DEFAULT_SPARK_MODEL_ENV, codexHomeOverride)
-    ?? readConfigEnvValue(OMX_SPARK_MODEL_ENV, codexHomeOverride);
+	return (
+		normalizeConfiguredValue(env[OMX_DEFAULT_SPARK_MODEL_ENV]) ??
+		normalizeConfiguredValue(env[OMX_SPARK_MODEL_ENV]) ??
+		readConfigEnvValue(OMX_DEFAULT_SPARK_MODEL_ENV, codexHomeOverride) ??
+		readConfigEnvValue(OMX_SPARK_MODEL_ENV, codexHomeOverride)
+	);
 }
 
-
 export function getTeamChildModel(codexHomeOverride?: string): string {
-  return normalizeConfiguredValue(process.env[OMX_TEAM_CHILD_MODEL_ENV])
-    ?? readConfigEnvValue(OMX_TEAM_CHILD_MODEL_ENV, codexHomeOverride)
-    ?? DEFAULT_TEAM_CHILD_MODEL;
+	return (
+		normalizeConfiguredValue(process.env[OMX_TEAM_CHILD_MODEL_ENV]) ??
+		readConfigEnvValue(OMX_TEAM_CHILD_MODEL_ENV, codexHomeOverride) ??
+		DEFAULT_TEAM_CHILD_MODEL
+	);
 }
 
 /**
@@ -428,9 +550,11 @@ export function getTeamChildModel(codexHomeOverride?: string): string {
  * Resolution: OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
  */
 export function getMainDefaultModel(codexHomeOverride?: string): string {
-  return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride)
-    ?? getCodexConfigRootModel(codexHomeOverride)
-    ?? DEFAULT_FRONTIER_MODEL;
+	return (
+		getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride) ??
+		getCodexConfigRootModel(codexHomeOverride) ??
+		DEFAULT_FRONTIER_MODEL
+	);
 }
 
 /**
@@ -444,45 +568,72 @@ export function getMainDefaultModel(codexHomeOverride?: string): string {
  * Resolution: OMX_DEFAULT_STANDARD_MODEL > OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
  */
 export function getStandardDefaultModel(codexHomeOverride?: string): string {
-  return getEnvConfiguredStandardDefaultModel(process.env, codexHomeOverride)
-    ?? getMainDefaultModel(codexHomeOverride);
+	return (
+		getEnvConfiguredStandardDefaultModel(process.env, codexHomeOverride) ??
+		getMainDefaultModel(codexHomeOverride)
+	);
 }
 
 /**
  * Get the configured model for a specific mode.
  * Resolution: mode-specific override > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
  */
-export function getModelForMode(mode: string, codexHomeOverride?: string): string {
-  const models = readModelsBlock(codexHomeOverride);
-  const modeValue = normalizeConfiguredValue(models?.[mode]);
-  if (modeValue) return modeValue;
+export function getModelForMode(
+	mode: string,
+	codexHomeOverride?: string,
+): string {
+	const models = readModelsBlock(codexHomeOverride);
+	const modeValue = normalizeConfiguredValue(models?.[mode]);
+	if (modeValue) return modeValue;
 
-  const defaultValue = normalizeConfiguredValue(models?.default);
-  if (defaultValue) return defaultValue;
+	const defaultValue = normalizeConfiguredValue(models?.default);
+	if (defaultValue) return defaultValue;
 
-  return getMainDefaultModel(codexHomeOverride);
+	return getMainDefaultModel(codexHomeOverride);
 }
 
 const TEAM_LOW_COMPLEXITY_MODEL_KEYS = [
-  'team_low_complexity',
-  'team-low-complexity',
-  'teamLowComplexity',
+	"team_low_complexity",
+	"team-low-complexity",
+	"teamLowComplexity",
 ];
 
 /**
  * Get the envvar-backed spark/low-complexity default model.
- * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > DEFAULT_SPARK_MODEL
+ * When no explicit spark override is configured, spark inherits from the configured main/default model.
+ * This prevents inversion where a cheap configured leader would paradoxically cause expensive models
+ * to be used in fast lanes.
+ * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > configured main model > DEFAULT_SPARK_MODEL
  */
-export function getSparkDefaultModel(codexHomeOverride?: string): string {
-  return getEnvConfiguredSparkDefaultModel(process.env, codexHomeOverride)
-    ?? readTeamLowComplexityOverride(codexHomeOverride)
-    ?? DEFAULT_SPARK_MODEL;
+export function getSparkDefaultModel(
+	codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const explicitOverride = getEnvConfiguredSparkDefaultModel(
+		env,
+		codexHomeOverride,
+	);
+	if (explicitOverride) return explicitOverride;
+
+	const lowComplexityOverride =
+		readTeamLowComplexityOverride(codexHomeOverride);
+	if (lowComplexityOverride) return lowComplexityOverride;
+
+	// Inherit from configured main model, then fall back to built-in default
+	const mainModel =
+		getEnvConfiguredMainDefaultModel(env, codexHomeOverride) ??
+		getCodexConfigRootModel(codexHomeOverride) ??
+		DEFAULT_FRONTIER_MODEL;
+	return mainModel;
 }
 
 /**
  * Get the low-complexity team worker model.
- * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > DEFAULT_SPARK_MODEL
+ * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > inherited main model > DEFAULT_SPARK_MODEL
  */
 export function getTeamLowComplexityModel(codexHomeOverride?: string): string {
-  return readTeamLowComplexityOverride(codexHomeOverride) ?? getSparkDefaultModel(codexHomeOverride);
+	return (
+		readTeamLowComplexityOverride(codexHomeOverride) ??
+		getSparkDefaultModel(codexHomeOverride)
+	);
 }

@@ -13,7 +13,7 @@ import { queueDirectMailboxMessage } from '../mcp-comm.js';
 import { readTeamConfig, readTeamManifestV2, saveTeamConfig } from '../state.js';
 import {
   enqueueDispatchRequest, initTeamState, listDispatchRequests, listMailboxMessages,
-  markDispatchRequestNotified, readDispatchRequest, removeDispatchRequestsForWorkers,
+  markDispatchRequestNotified, readDispatchRequest, readMonitorSnapshot, removeDispatchRequestsForWorkers,
   sendDirectMessage, teamEventLogPath, type TeamDispatchRequestInput,
 } from '../state.js';
 
@@ -461,5 +461,71 @@ it('skips notification after intervening acknowledgement in transport_direct', a
     assert.ok(msgAfter?.delivered_at, 'message should be marked as delivered');
   } finally {
     setMailboxDeliveryAfterPhase1HookForTest(null);
+  }
+});
+
+it('does not mark message notified when dispatch snapshot is corrupted during finalization', async t => {
+  const { cwd } = await fixtureWithLiveWorkers(t);
+  
+  // Set up a team with transport_direct mode to test the direct notification path.
+  const config = await readTeamConfig('recovery', cwd);
+  assert.ok(config);
+  const manifestPath = join(cwd, '.omx', 'state', 'team', 'recovery', 'manifest.v2.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as any;
+  manifest.policy = { ...(manifest.policy || {}), dispatch_mode: 'transport_direct' };
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  
+  // Disable the runtime bridge to ensure there's no authoritative fallback.
+  // This forces readDispatchRequests to rely on the local shadow, so corruption causes real failure.
+  // Set to '0' (the recognized disabled value) since isBridgeEnabled() returns true for all other values.
+  process.env.OMX_RUNTIME_BRIDGE = '0';
+  t.after(() => {
+    delete process.env.OMX_RUNTIME_BRIDGE;
+  });
+  
+  // Send an unnotified message.
+  const message = await sendDirectMessage('recovery', 'worker-1', 'worker-2', 'test-msg', cwd);
+  assert.ok(!message.notified_at, 'message should start unnotified');
+  
+  // Use the hook to corrupt the dispatch snapshot after Phase 1.5 enqueue.
+  let hookInvoked = false;
+  let requestsPath = '';
+  let originalContent = '';
+  const { setMailboxDeliveryAfterEnqueueHookForTest } = await import('../runtime.js');
+  setMailboxDeliveryAfterEnqueueHookForTest(async (teamName: string, cwd: string) => {
+    hookInvoked = true;
+    // Corrupt the snapshot after Phase 1.5 enqueue but before Phase 2 finalization.
+    // This allows the test to exercise the finalization code path that handles corrupted snapshots.
+    requestsPath = join(cwd, '.omx', 'state', 'team', teamName, 'dispatch', 'requests.json');
+    originalContent = await readFile(requestsPath, 'utf8');
+    await writeFile(requestsPath, '{invalid json');
+  });
+  
+  try {
+    // Call monitorTeam. The dispatch will be enqueued in Phase 1.5, and then the hook
+    // will corrupt the snapshot. The finalization will see a corrupted snapshot and 
+    // should return a retryable failure. This means the message should NOT be marked as notified.
+    const { monitorTeam } = await import('../runtime.js');
+    await monitorTeam('recovery', cwd);
+    assert.equal(hookInvoked, true, 'test hook should have been invoked');
+    
+    // Verify that the message is NOT marked as notified (snapshot corruption should prevent it).
+    const mailbox = await listMailboxMessages('recovery', 'worker-2', cwd);
+    const msgAfter = mailbox.find(m => m.message_id === message.message_id);
+    assert.ok(!msgAfter?.notified_at, 'message should NOT be marked notified when dispatch snapshot is corrupted');
+    
+    // Verify that the monitor snapshot does not have a notification record for this message.
+    const snapshot = await readMonitorSnapshot('recovery', cwd);
+    assert.ok(snapshot, 'monitor snapshot should exist');
+    const hasNotificationRecord = message.message_id in snapshot.mailboxNotifiedByMessageId;
+    assert.ok(!hasNotificationRecord, 'monitor snapshot should not have notification record for corrupted dispatch');
+  } finally {
+    setMailboxDeliveryAfterEnqueueHookForTest(null);
+    // Restore the snapshot for cleanup
+    if (originalContent && requestsPath) {
+      try {
+        await writeFile(requestsPath, originalContent);
+      } catch {}
+    }
   }
 });

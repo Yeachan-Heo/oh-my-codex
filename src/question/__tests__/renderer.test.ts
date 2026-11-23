@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -366,12 +367,12 @@ describe('question window topology selection', () => {
 });
 
 describe('launchQuestionRenderer', () => {
-  it('fails before building UI argv or invoking tmux when no visible renderer is available', () => {
+  it('fails before building UI argv or invoking tmux when no visible renderer is available', async () => {
     const calls: string[][] = [];
     const originalArgv1 = process.argv[1];
     process.argv[1] = '';
     try {
-      assert.throws(
+      await assert.rejects(
         () => launchQuestionRenderer(
           {
             cwd: '/repo',
@@ -403,9 +404,9 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(calls, []);
   });
 
-  it('opens an interactive foreground split when already inside an attached tmux session', () => {
+  it('opens an interactive foreground split when already inside an attached tmux session', async () => {
     const calls: string[][] = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-1.json',
@@ -453,7 +454,7 @@ describe('launchQuestionRenderer', () => {
     assert.ok(calls.some((call) => call.join(' ') === 'list-panes -t %42 -F #{pane_dead}\t#{pane_id}'));
   });
 
-  it('opens a new tmux window when the current pane is too short for the question frame', () => {
+  it('opens a new tmux window when the current pane is too short for the question frame', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-new-window-'));
     try {
       const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
@@ -492,7 +493,7 @@ describe('launchQuestionRenderer', () => {
       }, null, 2));
 
       const calls: string[][] = [];
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd,
           recordPath,
@@ -530,7 +531,7 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('opens a new tmux window when wrapped content would exceed the split budget in a narrow pane', () => {
+  it('opens a new tmux window when wrapped content would exceed the split budget in a narrow pane', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-wrapped-window-'));
     try {
       const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
@@ -567,7 +568,7 @@ describe('launchQuestionRenderer', () => {
       }, null, 2));
 
       const calls: string[][] = [];
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd,
           recordPath,
@@ -605,7 +606,7 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('falls back to the default tmux width when the width probe fails', () => {
+  it('falls back to the default tmux width when the width probe fails', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-width-fallback-'));
     try {
       const stateDir = join(cwd, '.omx', 'state', 'sessions', 's1', 'questions');
@@ -642,7 +643,7 @@ describe('launchQuestionRenderer', () => {
       }, null, 2));
 
       const calls: string[][] = [];
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd,
           recordPath,
@@ -683,9 +684,9 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('targets the explicit leader pane even when the caller is already inside tmux', () => {
+  it('targets the explicit leader pane even when the caller is already inside tmux', async () => {
     const calls: string[][] = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-leader.json',
@@ -717,9 +718,9 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(splitCall.slice(0, 6), ['split-window', '-v', '-l', '24', '-t', '%44']);
   });
 
-  it('fails closed before splitting when inside a detached tmux session', () => {
+  it('fails closed before splitting when inside a detached tmux session', async () => {
     const calls: string[][] = [];
-    assert.throws(
+    await assert.rejects(
       () => launchQuestionRenderer(
         {
           cwd: '/repo',
@@ -750,13 +751,13 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(calls, [['display-message', '-p', '-t', '%11', '#{session_attached}']]);
   });
 
-  it('reports tmux permission failures without claiming the session is detached', () => {
+  it('reports tmux permission failures without claiming the session is detached', async () => {
     const probeError = Object.assign(
       new Error('connect /private/tmp/tmux-501/default: Operation not permitted'),
       { code: 'EPERM' },
     );
 
-    assert.throws(
+    await assert.rejects(
       () => launchQuestionRenderer(
         {
           cwd: '/repo',
@@ -782,10 +783,10 @@ describe('launchQuestionRenderer', () => {
     );
   });
 
-  it('preserves unexpected tmux attachment probe failures', () => {
+  it('preserves unexpected tmux attachment probe failures', async () => {
     const probeError = new Error('tmux server returned malformed output');
 
-    assert.throws(
+    await assert.rejects(
       () => launchQuestionRenderer(
         {
           cwd: '/repo',
@@ -811,9 +812,9 @@ describe('launchQuestionRenderer', () => {
     );
   });
 
-  it('targets an explicit host pane when launching from a container without TMUX', () => {
+  it('targets an explicit host pane when launching from a container without TMUX', async () => {
     const calls: string[][] = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-bridge.json',
@@ -848,10 +849,10 @@ describe('launchQuestionRenderer', () => {
     assert.ok(calls.some((call) => call.join(' ') === 'list-panes -t %78 -F #{pane_dead}\t#{pane_id}'));
   });
 
-  it('opens a visible Windows psmux shell pane and injects the question UI command literally', () => {
+  it('opens a visible Windows psmux shell pane and injects the question UI command literally', async () => {
     const tmuxCalls: string[][] = [];
     const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-bridge.json',
@@ -902,10 +903,10 @@ describe('launchQuestionRenderer', () => {
     ]);
   });
 
-  it('keeps the detached Windows console path for explicit non-psmux return bridges', () => {
+  it('keeps the detached Windows console path for explicit non-psmux return bridges', async () => {
     const tmuxCalls: string[][] = [];
     const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: 'C:/repo',
         recordPath: 'C:/repo/.omx/state/sessions/s1/questions/question-bridge.json',
@@ -948,7 +949,7 @@ describe('launchQuestionRenderer', () => {
     assert.equal(env.OMX_QUESTION_RETURN_TRANSPORT, 'tmux-send-keys');
   });
 
-  it('targets a persisted workflow pane when launching from a container without TMUX', () => {
+  it('targets a persisted workflow pane when launching from a container without TMUX', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-persisted-'));
     try {
       const stateDir = join(cwd, '.omx', 'state', 'sessions', 'sess-stateful');
@@ -961,7 +962,7 @@ describe('launchQuestionRenderer', () => {
       }, null, 2));
 
       const calls: string[][] = [];
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd,
           recordPath: join(stateDir, 'questions', 'question-bridge.json'),
@@ -995,9 +996,9 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('fails before prompting state when a reported split pane is already gone', () => {
+  it('fails before prompting state when a reported split pane is already gone', async () => {
     const calls: string[][] = [];
-    assert.throws(
+    await assert.rejects(
       () => launchQuestionRenderer(
         {
           cwd: '/repo',
@@ -1035,9 +1036,9 @@ describe('launchQuestionRenderer', () => {
     assert.ok(calls.some((call) => call.join(' ') === 'list-panes -t %42 -F #{pane_dead}\t#{pane_id}'));
   });
 
-  it('uses inline-tty on Windows without invoking tmux when no attached tmux pane is available', () => {
+  it('uses inline-tty on Windows without invoking tmux when no attached tmux pane is available', async () => {
     const calls: string[][] = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-inline.json',
@@ -1062,7 +1063,7 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(calls, []);
   });
 
-  it('falls back to the persisted session mode pane when Bash/tool env lost TMUX_PANE', () => {
+  it('falls back to the persisted session mode pane when Bash/tool env lost TMUX_PANE', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-state-'));
     try {
       const stateDir = join(cwd, '.omx', 'state', 'sessions', 'sess-stateful');
@@ -1075,7 +1076,7 @@ describe('launchQuestionRenderer', () => {
       }, null, 2));
 
       const calls: string[][] = [];
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd,
           recordPath: join(cwd, '.omx', 'state', 'sessions', 'sess-stateful', 'questions', 'question-3.json'),
@@ -1106,7 +1107,7 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('prefers session-scoped persisted panes over root workflow fallback panes', () => {
+  it('prefers session-scoped persisted panes over root workflow fallback panes', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-renderer-precedence-'));
     try {
       const rootStateDir = join(cwd, '.omx', 'state');
@@ -1125,7 +1126,7 @@ describe('launchQuestionRenderer', () => {
         tmux_pane_id: '%91',
       }, null, 2));
 
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd,
           recordPath: join(sessionStateDir, 'questions', 'question-4.json'),
@@ -1152,9 +1153,9 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('passes direct tmux argv so non-POSIX default shells do not parse a shell string', () => {
+  it('passes direct tmux argv so non-POSIX default shells do not parse a shell string', async () => {
     const calls: string[][] = [];
-    launchQuestionRenderer(
+    await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/question with spaces.json',
@@ -1190,14 +1191,14 @@ describe('launchQuestionRenderer', () => {
     ]);
   });
 
-  it('resolves the leader return target before opening the question pane', () => {
+  it('resolves the leader return target before opening the question pane', async () => {
     const calls: string[][] = [];
     const originalTmuxPane = process.env.TMUX_PANE;
     const originalTmux = process.env.TMUX;
     process.env.TMUX_PANE = '%200';
     process.env.TMUX = '/tmp/tmux-leader';
     try {
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd: '/repo',
           recordPath: '/repo/question-4.json',
@@ -1231,9 +1232,9 @@ describe('launchQuestionRenderer', () => {
     }
   });
 
-  it('uses detached sessions outside tmux', () => {
+  it('uses detached sessions outside tmux', async () => {
     const calls: string[][] = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-2.json',
@@ -1266,9 +1267,9 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(calls[1], ['has-session', '-t', 'omx-question-question-2']);
   });
 
-  it('fails when a detached tmux session disappears immediately after launch', () => {
+  it('fails when a detached tmux session disappears immediately after launch', async () => {
     const calls: string[][] = [];
-    assert.throws(
+    await assert.rejects(
       () => launchQuestionRenderer(
         {
           cwd: '/repo',
@@ -1294,12 +1295,12 @@ describe('launchQuestionRenderer', () => {
     assert.deepEqual(calls[1], ['has-session', '-t', 'omx-question-question-2']);
   });
 
-  it('prefers the current launcher path over a stale ambient OMX_ENTRY_PATH when spawning the UI', () => {
+  it('prefers the current launcher path over a stale ambient OMX_ENTRY_PATH when spawning the UI', async () => {
     const calls: string[][] = [];
     const originalArgv1 = process.argv[1];
     process.argv[1] = '/repo/dist/cli/omx.js';
     try {
-      const result = launchQuestionRenderer(
+      const result = await launchQuestionRenderer(
         {
           cwd: '/repo',
           recordPath: '/repo/.omx/state/sessions/s1/questions/question-3.json',
@@ -1513,7 +1514,7 @@ describe('question renderer in-flight dedupe', () => {
     }
   });
 
-  it('marks prior live prompting panes superseded and kills them before a new tmux split', () => {
+  it('marks prior live prompting panes superseded and kills them before a new tmux split', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-dedupe-launch-'));
     try {
       const dir = join(cwd, '.omx', 'state', 'sessions', 'sess-dedupe', 'questions');
@@ -1535,7 +1536,7 @@ describe('question renderer in-flight dedupe', () => {
       });
 
       const calls: string[][] = [];
-      const result = launchQuestionRenderer({
+      const result = await launchQuestionRenderer({
         cwd,
         recordPath: nextPath,
         sessionId: 'sess-dedupe',
@@ -1571,7 +1572,7 @@ describe('question renderer in-flight dedupe', () => {
     }
   });
 
-  it('does not supersede answered records when launching a replacement renderer', () => {
+  it('does not supersede answered records when launching a replacement renderer', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'omx-question-dedupe-answered-'));
     try {
       const dir = join(cwd, '.omx', 'state', 'sessions', 'sess-dedupe', 'questions');
@@ -1587,7 +1588,7 @@ describe('question renderer in-flight dedupe', () => {
         },
       });
 
-      const superseded = supersedeLiveQuestionsForSession(cwd, 'sess-dedupe', (args) => {
+      const superseded = await supersedeLiveQuestionsForSession(cwd, 'sess-dedupe', (args) => {
         if (args[0] === 'list-panes') return '0\t%41\n';
         throw new Error(`unexpected tmux call: ${args.join(' ')}`);
       });
@@ -1595,6 +1596,39 @@ describe('question renderer in-flight dedupe', () => {
       assert.deepEqual(superseded, []);
       const answered = JSON.parse(readFileSync(answeredPath, 'utf-8')) as { status: string };
       assert.equal(answered.status, 'answered');
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an answer committed after reading the live renderer snapshot', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-question-dedupe-answer-race-'));
+    try {
+      const dir = join(cwd, '.omx', 'state', 'sessions', 'sess-dedupe', 'questions');
+      mkdirSync(dir, { recursive: true });
+      const recordPath = join(dir, 'question-prior.json');
+      writeQuestionRecord(recordPath, { question_id: 'question-prior' });
+      const stateModule = new URL('../state.js', import.meta.url).href;
+      let answered = false;
+      let accepted = '';
+      const superseded = await supersedeLiveQuestionsForSession(cwd, 'sess-dedupe', (args) => {
+        if (args[0] === 'list-panes' && !answered) {
+          answered = true;
+          execFileSync(process.execPath, ['--input-type=module', '-e', `
+            import { submitQuestionAnswerById } from ${JSON.stringify(stateModule)};
+            await submitQuestionAnswerById(${JSON.stringify(cwd)}, 'question-prior', {
+              answer: { kind: 'option', value: 'a', selected_labels: ['A'], selected_values: ['a'] },
+            }, { sessionId: 'sess-dedupe', closeQuestionRenderer: () => true });
+          `]);
+          accepted = readFileSync(recordPath, 'utf8');
+        }
+        assert.notEqual(args[0], 'kill-pane', 'The superseding caller must not close an answered renderer');
+        return '0\t%41\n';
+      });
+      assert.equal(answered, true);
+      assert.equal(JSON.parse(accepted).status, 'answered');
+      assert.deepEqual(superseded, []);
+      assert.equal(readFileSync(recordPath, 'utf8'), accepted);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -1685,9 +1719,9 @@ describe('buildQuestionUiTmuxArgs', () => {
 });
 
 describe('launchQuestionRenderer under cmux', () => {
-  it('drops bare -e and exports env so the cmux split pane runs the real command', () => {
+  it('drops bare -e and exports env so the cmux split pane runs the real command', async () => {
     const calls: string[][] = [];
-    const result = launchQuestionRenderer(
+    const result = await launchQuestionRenderer(
       {
         cwd: '/repo',
         recordPath: '/repo/.omx/state/sessions/s1/questions/question-cmux.json',

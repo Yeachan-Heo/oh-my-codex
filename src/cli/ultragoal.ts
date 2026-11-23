@@ -416,10 +416,13 @@ export async function ultragoalCommand(args: string[], deps: UltragoalCommandDep
         })
         : null;
       const codexGoalFallback = reconciliation?.snapshot.unavailableReason === 'db_schema_context_error'
+        || reconciliation?.snapshot.unavailableReason === 'tool_unavailable'
         ? {
           status: 'codex_goal_reconciliation_unavailable',
           reason: reconciliation.snapshot.unavailableReason,
-          message: 'Codex goal DB/schema/context is unavailable; artifact-backed Ultragoal status remains available, but strict Codex goal completion reconciliation is deferred.',
+          message: reconciliation.snapshot.unavailableReason === 'tool_unavailable'
+            ? 'Codex goal native tool catalog is unavailable; artifact-backed Ultragoal status remains available, but strict Codex goal completion reconciliation is deferred.'
+            : 'Codex goal DB/schema/context is unavailable; artifact-backed Ultragoal status remains available, but strict Codex goal completion reconciliation is deferred.',
         }
         : undefined;
       if (json) printJson({ plan, summary: summarizeUltragoalPlan(plan), reconciliation, codexGoalFallback });

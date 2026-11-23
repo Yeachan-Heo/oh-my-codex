@@ -2,7 +2,7 @@ import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ import {
   resolveCliInvocation,
   parseResumeCodexHomeSelection,
   isResumeCodexLaunch,
+  findResumeCodexSubcommandIndex,
   CODEX_GLOBAL_OPTIONS_WITH_SPLIT_VALUE,
   isCodexVersionRequest,
   resolveUpdateChannelArg,
@@ -151,6 +152,19 @@ function expectedLowComplexityModel(codexHomeOverride?: string): string {
 
 afterEach(() => {
   mock.restoreAll();
+});
+
+it('finds the actual resume command rather than a global option value', () => {
+  assert.equal(findResumeCodexSubcommandIndex(['--model', 'resume', 'resume', '01234567-89ab-cdef-0123-456789abcdef']), 2);
+  assert.equal(findResumeCodexSubcommandIndex(['--model', 'resume', 'exec', 'resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['resume', '--', 'literal']), 0);
+});
+
+it('does not classify `omx --add-dir resume` as a resume launch (top-level handler uses findResumeCodexSubcommandIndex)', () => {
+  assert.equal(findResumeCodexSubcommandIndex(['--add-dir', 'resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['--add-dir=resume']), -1);
+  assert.equal(findResumeCodexSubcommandIndex(['--add-dir', 'resume', 'resume']), 2);
+  assert.equal(isResumeCodexLaunch(['--add-dir', 'resume']), false);
 });
 
 describe("madmax state isolation", () => {
@@ -317,7 +331,7 @@ describe("madmax state isolation", () => {
     const runs = await mkdtemp(join(tmpdir(), "omx-madmax-runs-"));
     try {
       const runDir = createMadmaxIsolatedRoot(wd, ["--madmax"], { OMX_RUNS_DIR: runs });
-      assert.equal(runDir.startsWith(runs), true);
+      assert.equal(runDir.startsWith(await realpath(runs)), true);
       assert.equal(existsSync(join(wd, ".omx")), false);
       const metadata = JSON.parse(await readFile(join(runDir, ".omxbox-run.json"), "utf-8"));
       assert.equal(metadata.source_cwd, wd);
@@ -2433,6 +2447,7 @@ describe("commandOwnsLocalHelp", () => {
       "code-intel",
       "team",
       "tmux-hook",
+      "native-runtime",
     ]) {
       assert.equal(
         commandOwnsLocalHelp(command),
@@ -2539,6 +2554,13 @@ describe("resolveCliInvocation", () => {
     });
   });
 
+  it("resolves native-runtime to its foreground command", () => {
+    assert.deepEqual(resolveCliInvocation(["native-runtime", "hydrate"]), {
+      command: "native-runtime",
+      launchArgs: [],
+    });
+  });
+
   it("resolves update channel flags and rejects invalid combinations", () => {
     assert.equal(resolveUpdateChannelArg([]), "stable");
     assert.equal(resolveUpdateChannelArg(["--stable"]), "stable");
@@ -2606,6 +2628,10 @@ describe("resolveCliInvocation", () => {
     assert.match(HELP, /omx update\s+Install the stable channel now, then refresh setup/);
     assert.match(HELP, /omx update --stable\s+Install\/rollback to npm stable \(oh-my-codex@latest\), then refresh setup/);
     assert.match(HELP, /omx update --dev\s+Install the upstream dev branch, then refresh setup/);
+  });
+
+  it("advertises the foreground native runtime repair command", () => {
+    assert.match(HELP, /omx native-runtime hydrate\s+Retry native runtime cache hydration in the foreground and report errors/);
   });
 
   it("scopes Ralplan authority preflight in top-level help", () => {

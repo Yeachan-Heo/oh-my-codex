@@ -42,6 +42,8 @@ export interface HydrateNativeBinaryOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   signal?: AbortSignal;
+  /** Propagate unavailable-manifest HTTP errors instead of treating them as absent assets. */
+  strictManifestErrors?: boolean;
 }
 
 export interface NativeBinaryCandidateOptions {
@@ -240,20 +242,34 @@ export async function loadNativeReleaseManifest(
   signal?: AbortSignal,
 ): Promise<NativeReleaseManifest> {
   const url = await resolveNativeManifestUrl(packageRoot, version, env);
-  const response = await fetch(url, { signal });
-  if (!response.ok) {
-    throw new Error(`[native-assets] failed to fetch native release manifest (${response.status} ${response.statusText}) from ${url}`);
+  let response: Response;
+  try {
+    response = await fetch(url, { signal });
+  } catch (error) {
+    throw new Error(
+      `[native-assets] failed to fetch native release manifest from ${sanitizeNativeAssetUrl(url)}: ${nativeAssetErrorMessage(error)}`,
+      { cause: error },
+    );
   }
-  const manifest = await response.json() as NativeReleaseManifest;
-  validateNativeReleaseManifest(manifest as never);
-  if (version && manifest.version !== version) throw new Error(`[native-assets] manifest version mismatch: expected ${version}, received ${manifest.version}`);
-  return manifest;
+  if (!response.ok) {
+    throw new Error(`[native-assets] failed to fetch native release manifest (${response.status} ${response.statusText}) from ${sanitizeNativeAssetUrl(url)}`);
+  }
+  try {
+    const manifest = await response.json() as NativeReleaseManifest;
+    validateNativeReleaseManifest(manifest as never);
+    if (version && manifest.version !== version) throw new Error(`[native-assets] manifest version mismatch: expected ${version}, received ${manifest.version}`);
+    return manifest;
+  } catch (error) {
+    throw new Error(
+      `[native-assets] failed to read native release manifest from ${sanitizeNativeAssetUrl(url)}: ${nativeAssetErrorMessage(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 function isUnavailableManifestError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return /\[native-assets\] failed to fetch native release manifest/i.test(error.message)
-    || /fetch failed/i.test(error.message);
+  return /\[native-assets\] failed to fetch native release manifest \(\d{3} /i.test(error.message);
 }
 
 function isUnavailableArchiveError(error: unknown): boolean {
@@ -265,10 +281,37 @@ function isUnavailableArchiveError(error: unknown): boolean {
 async function downloadFile(url: string, destinationPath: string, signal?: AbortSignal): Promise<void> {
   const response = await fetch(url, { signal });
   if (!response.ok || !response.body) {
-    throw new Error(`[native-assets] failed to download ${url} (${response.status} ${response.statusText})`);
+    throw new Error(`[native-assets] failed to download ${sanitizeNativeAssetUrl(url)} (${response.status} ${response.statusText})`);
   }
   await mkdir(dirname(destinationPath), { recursive: true });
   await pipeline(Readable.fromWeb(response.body), createWriteStream(destinationPath));
+}
+
+function sanitizeNativeAssetUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '[invalid URL]';
+  }
+}
+
+function nativeAssetErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  let cause = error instanceof Error ? error.cause : undefined;
+  const seen = new Set<unknown>();
+  while (cause instanceof Error && cause.cause !== undefined && !seen.has(cause)) {
+    seen.add(cause);
+    cause = cause.cause;
+  }
+  const causeMessage = cause === undefined
+    ? ''
+    : `; cause: ${cause instanceof Error ? cause.message : String(cause)}`;
+  return `${message}${causeMessage}`.replace(/https?:\/\/[^\s"'<>]+/gi, (url) => sanitizeNativeAssetUrl(url));
 }
 
 async function sha256ForFile(path: string): Promise<string> {
@@ -692,6 +735,7 @@ export async function hydrateNativeBinary(
     platform = process.platform,
     arch = process.arch,
     signal,
+    strictManifestErrors = false,
   } = options;
 
   if (env[NATIVE_AUTO_FETCH_ENV]?.trim() === '0') return undefined;
@@ -708,7 +752,7 @@ export async function hydrateNativeBinary(
   try {
     manifest = await loadNativeReleaseManifest(packageRoot, version, env, signal);
   } catch (error) {
-    if (isUnavailableManifestError(error)) return undefined;
+    if (!strictManifestErrors && isUnavailableManifestError(error)) return undefined;
     throw error;
   }
   const assets = resolveNativeReleaseAssetCandidates(manifest, product, version, platform, arch, {
@@ -755,7 +799,10 @@ export async function hydrateNativeBinary(
           await rm(extractedBinaryPath, { force: true });
           continue;
         }
-        throw error;
+        throw new Error(
+          `[native-assets] failed to hydrate asset ${asset.archive} from ${sanitizeNativeAssetUrl(asset.download_url)}: ${nativeAssetErrorMessage(error)}`,
+          { cause: error },
+        );
       }
     }
     return undefined;

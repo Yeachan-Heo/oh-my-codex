@@ -1,7 +1,9 @@
 import { execFile as execFileCb, execFileSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
-import { basename, dirname, join, resolve } from 'path';
+import { existsSync, mkdirSync, promises as fsPromises } from 'fs';
+import { basename, dirname, join, posix, resolve, win32 } from 'path';
 import { promisify } from 'util';
+import { randomUUID } from 'crypto';
+import { isCompletionEvidenceReport } from './completion-evidence.js';
 import {
   assertCurrentTaskBranchAvailable,
   upsertCurrentTaskBaseline,
@@ -495,8 +497,263 @@ export function ensureWorktree(
 }
 
 export interface RollbackWorktreeOptions {
+  /** Shutdown requires a clean checkout; provisioning and approved cleanup may discard it. */
+  force?: boolean;
   /** When true, skip `git branch -D` for branches created during provisioning (ralph policy). */
   skipBranchDeletion?: boolean;
+}
+
+interface SubmoduleRecovery {
+  directory?: string;
+  moved: Array<{ original: string; saved: string; checkout: boolean }>;
+  originalCheckouts?: string[];
+}
+
+export async function archiveIgnoredCompletionEvidence(worktreePath: string): Promise<void> {
+  const git = async (args: string[]): Promise<string> => (await execFilePromise('git', args, {
+    cwd: worktreePath, encoding: 'utf8',
+  })).stdout;
+  const files = (await git(['ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--', '.omx/evidence/'])).split('\0').filter(Boolean);
+  for (const file of files) {
+    if (!file.startsWith('.omx/evidence/')) continue;
+    let path = worktreePath;
+    let symlink = false;
+    for (const part of file.split('/')) {
+      path = join(path, part);
+      if ((await fsPromises.lstat(path)).isSymbolicLink()) { symlink = true; break; }
+    }
+    if (symlink) continue;
+    const stat = await fsPromises.lstat(path);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 1024 * 1024) continue;
+    let report: unknown;
+    try { report = JSON.parse(await fsPromises.readFile(path, 'utf8')); } catch (error) {
+      if (error instanceof SyntaxError) continue;
+      throw error;
+    }
+    if (!isCompletionEvidenceReport(report)) continue;
+    // Keep reports outside removable worktrees; unknown, tracked and symlinked files stay protected.
+    const archive = resolve(worktreePath, (await git(['rev-parse', '--git-common-dir'])).trim(), 'omx-completion-evidence');
+    await fsPromises.mkdir(archive, { recursive: true });
+    await fsPromises.rename(path, join(archive, `${randomUUID()}.json`));
+    for (let dir = dirname(path); dir !== join(worktreePath, '.omx'); dir = dirname(dir)) {
+      try { await fsPromises.rmdir(dir); } catch (error) {
+        if (['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) break;
+        throw error;
+      }
+    }
+  }
+}
+
+async function prepareSubmodulesForWorktreeRemoval(worktreePath: string, recovery: SubmoduleRecovery): Promise<void> {
+  const git = async (args: string[]): Promise<string> => (await execFilePromise('git', args, {
+    cwd: worktreePath, encoding: 'utf8',
+  })).stdout;
+  const mkdir = fsPromises.mkdir;
+  
+  await archiveIgnoredCompletionEvidence(worktreePath);
+  
+  const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored', '--ignore-submodules=none']);
+  if (status.trim()) throw new Error(`worktree_has_unpreserved_files:${worktreePath}`);
+  await git(['submodule', 'foreach', '--recursive',
+    'status=$(git status --porcelain --untracked-files=all --ignored --ignore-submodules=none) && test -z "$status" || exit 1']);
+  const checkouts = (await git(['submodule', 'foreach', '--quiet', 'printf "%s\\0" "$sm_path"'])).split('\0').filter(Boolean);
+  // Save the original checkouts for recheck before removal
+  recovery.originalCheckouts = checkouts;
+  const modules = resolve(worktreePath, (await git(['rev-parse', '--git-path', 'modules'])).trim());
+  if (!existsSync(modules) && checkouts.length === 0) return;
+  const commonDir = resolve(worktreePath, (await git(['rev-parse', '--git-common-dir'])).trim());
+  const recoveryRoot = join(commonDir, 'omx-submodule-recovery');
+  await mkdir(recoveryRoot, { recursive: true });
+  recovery.directory = await fsPromises.mkdtemp(join(recoveryRoot, 'worktree-'));
+  // Moving whole checkouts retains local data without deinit's writes to shared repository config.
+  const moves = checkouts.map(path => ({ original: join(worktreePath, path), saved: join(recovery.directory!, 'checkouts', path), checkout: true }));
+  if (existsSync(modules)) moves.push({ original: modules, saved: join(recovery.directory, 'modules'), checkout: false });
+  // Include worktreePath to bind recovery journal to this worktree (P2 #4364260549)
+  const recoveryMetadata = { worktreePath, moves };
+  await fsPromises.writeFile(join(recovery.directory, 'recovery.json'), JSON.stringify(recoveryMetadata));
+  for (const move of moves) {
+    await fsPromises.mkdir(dirname(move.saved), { recursive: true });
+    await fsPromises.rename(move.original, move.saved);
+    recovery.moved.push(move);
+    // Git treats a missing gitlink as a deletion, but an empty checkout as uninitialized.
+    if (move.checkout) await fsPromises.mkdir(move.original);
+  }
+}
+
+async function restoreSubmodules(recovery: SubmoduleRecovery): Promise<void> {
+  const errors: string[] = [];
+  for (const move of [...recovery.moved].reverse()) {
+    try {
+      if (move.checkout) await fsPromises.rmdir(move.original).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      if (existsSync(move.original)) throw new Error(`recovery_destination_exists:${move.original}`);
+      await fsPromises.rename(move.saved, move.original);
+    } catch (error) {
+      errors.push(`${move.saved}:${String(error)}`);
+    }
+  }
+  if (errors.length) throw new Error(errors.join(' | '));
+  if (recovery.directory) await fsPromises.rm(recovery.directory, { recursive: true });
+}
+
+/**
+ * True when `candidate` is `root` or a descendant of it. Uses the platform's
+ * path rules, so Windows separators, drive letters, and case are handled and a
+ * sibling such as `/repo/wt2` is not treated as inside `/repo/wt`.
+ */
+export function isPathWithin(candidate: string, root: string, platform: NodeJS.Platform = process.platform): boolean {
+  const paths = platform === 'win32' ? win32 : posix;
+  const relation = paths.relative(paths.resolve(root), paths.resolve(candidate));
+  if (relation === '') return true;
+  if (paths.isAbsolute(relation)) return false;
+  return relation !== '..' && !relation.startsWith(`..${paths.sep}`);
+}
+
+/**
+ * Replay any pending submodule recovery journals at the start of shutdown.
+ * If the process was killed after moving submodules but before creating placeholders,
+ * the recovery.json file persists in the .git/omx-submodule-recovery directory.
+ * Replaying it ensures submodules are restored before any git status/add operations.
+ * Completed archives are skipped (marked with .completed) to avoid destroying
+ * worker-local commits that were moved from a removed worktree.
+ * Returns true if all recovery journals were successfully replayed or didn't exist;
+ * returns false if any recovery remained unresolved, indicating shutdown should abort.
+ */
+export async function replaySubmoduleRecovery(worktreePath: string, repoRoot: string): Promise<boolean> {
+  const commonDir = resolve(repoRoot, (await execFilePromise('git', ['rev-parse', '--git-common-dir'], {
+    cwd: worktreePath, encoding: 'utf-8',
+  })).stdout.trim());
+  const recoveryRoot = join(commonDir, 'omx-submodule-recovery');
+  if (!existsSync(recoveryRoot)) return true; // No recovery needed
+  
+  // Legacy journals also archive the worktree's private Git modules directory,
+  // which lives outside the checkout for linked worktrees.
+  const worktreeModulesPath = resolve(worktreePath, (await execFilePromise('git', ['rev-parse', '--git-path', 'modules'], {
+    cwd: worktreePath, encoding: 'utf-8',
+  })).stdout.trim());
+
+  let anyRecoveryUnresolved = false;
+  
+  const archives = await fsPromises.readdir(recoveryRoot).catch(() => []);
+  for (const archive of archives) {
+    const recoveryDir = join(recoveryRoot, archive);
+    const recoveryJsonPath = join(recoveryDir, 'recovery.json');
+    const completedMarkerPath = join(recoveryDir, '.completed');
+    
+    // Skip archives that were already completed (removed worktree with successful moves)
+    if (existsSync(completedMarkerPath)) continue;
+    if (!existsSync(recoveryJsonPath)) continue;
+    
+    try {
+      const content = await fsPromises.readFile(recoveryJsonPath, 'utf-8');
+      const parsed = JSON.parse(content) as unknown;
+      
+      // Handle both old format (array) and new format (object with metadata)
+      const moves = (Array.isArray(parsed) 
+        ? parsed 
+        : (parsed as { worktreePath?: string; moves?: unknown[] }).moves || []
+      ) as Array<{ original: string; saved: string; checkout: boolean }>;
+      const storedWorktreePath = !Array.isArray(parsed) && (parsed as { worktreePath?: string }).worktreePath;
+      
+      // P2 #4364260549: Only replay journals for the current worktree
+      if (storedWorktreePath && storedWorktreePath !== worktreePath) {
+        continue; // Skip journals from other worktrees
+      }
+      
+      // For legacy journals (array format without worktreePath), infer ownership from move destinations
+      if (!storedWorktreePath && Array.isArray(parsed)) {
+        const destinationInWorktree = moves.some(move =>
+          isPathWithin(move.original, worktreePath) || isPathWithin(move.original, worktreeModulesPath));
+        if (!destinationInWorktree) {
+          continue; // Legacy journal belongs to another worktree
+        }
+      }
+      
+      let anyMovesFailed = false;
+      // Restore all submodules from this recovery directory
+      for (const move of [...moves].reverse()) {
+        try {
+          // P2 #4364260546: Check if saved path still exists; if not, move was already restored
+          if (!existsSync(move.saved)) {
+            continue; // This move was already successfully restored in a prior replay
+          }
+          
+          if (move.checkout) await fsPromises.rmdir(move.original).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+          if (existsSync(move.original)) {
+            // Destination exists but move was skipped; preserve recovery for retry
+            anyMovesFailed = true;
+            continue;
+          }
+          await fsPromises.rename(move.saved, move.original);
+        } catch (error) {
+          // Log but continue - we want to restore as much as possible
+          anyMovesFailed = true;
+          process.stderr.write(`[team/worktree] submodule recovery failed for ${move.original}: ${String(error)}\n`);
+        }
+      }
+      
+      // Only delete the recovery directory if all moves were successfully restored
+      // Otherwise preserve it for the next shutdown attempt
+      if (!anyMovesFailed) {
+        await fsPromises.rm(recoveryDir, { recursive: true }).catch(() => {});
+      } else {
+        anyRecoveryUnresolved = true;
+      }
+    } catch (error) {
+      process.stderr.write(`[team/worktree] failed to replay recovery journal: ${String(error)}\n`);
+      anyRecoveryUnresolved = true;
+    }
+  }
+  return !anyRecoveryUnresolved;
+}
+
+/**
+ * Mark a recovery directory as completed so it won't be replayed.
+ * Called after a worktree removal succeeds to indicate the checkouts were
+ * successfully moved but we're destroying the worktree anyway.
+ */
+export async function markSubmoduleRecoveryCompleted(recoveryDir: string): Promise<void> {
+  const completedMarkerPath = join(recoveryDir, '.completed');
+  await fsPromises.writeFile(completedMarkerPath, 'completed').catch(() => {});
+}
+
+/**
+ * Recheck all submodule placeholders immediately before worktree removal.
+ * A watcher may have repopulated a submodule path after the placeholder was created,
+ * and those writes may not be detected as dirty by git status. Verify all placeholders
+ * are still empty to prevent silent data loss.
+ * Uses the pre-move checkout list because after moves, `git submodule foreach`
+ * returns no paths (the checkouts are now in the recovery archive).
+ */
+export async function recheckSubmodulePlaceholdersBeforeRemoval(
+  worktreePath: string,
+  originalCheckouts: string[],
+): Promise<void> {
+  try {
+    for (const submodule of originalCheckouts) {
+      const placeholderPath = join(worktreePath, submodule);
+      if (!existsSync(placeholderPath)) continue;
+      
+      // Check if the placeholder directory is still empty
+      const entries = await fsPromises.readdir(placeholderPath).catch(() => []);
+      if (entries.length > 0) {
+        throw new Error(`submodule_placeholder_repopulated:${submodule}:${entries.join(',')}`);
+      }
+    }
+  } catch (error) {
+    // Re-throw to abort the removal if placeholders are not safe
+    throw error;
+  }
+}
+
+function assertWorktreeGitOperationsIdle(worktreePath: string): void {
+  const gitDir = readGit(worktreePath, ['rev-parse', '--absolute-git-dir']);
+  for (const marker of ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer', 'BISECT_START']) {
+    if (existsSync(join(gitDir, marker))) throw new Error(`git_operation_in_progress:${worktreePath}:${marker}`);
+  }
 }
 
 export async function rollbackProvisionedWorktrees(
@@ -510,15 +767,39 @@ export async function rollbackProvisionedWorktrees(
   const errors: string[] = [];
 
   for (const result of created) {
+    const submodules: SubmoduleRecovery = { moved: [] };
     try {
-      await execFilePromise('git', ['worktree', 'remove', '--force', result.worktreePath], {
+      if (options.force === false) {
+        assertWorktreeGitOperationsIdle(result.worktreePath);
+        await prepareSubmodulesForWorktreeRemoval(result.worktreePath, submodules);
+      }
+      // Recheck all submodule placeholders immediately before removal.
+      // A watcher may have repopulated a submodule path after the placeholder was created.
+      // Pass the original checkouts list because after moves, git submodule foreach returns no paths.
+      if (options.force === false && submodules.originalCheckouts) {
+        await recheckSubmodulePlaceholdersBeforeRemoval(result.worktreePath, submodules.originalCheckouts);
+      }
+      if (options.force === false) assertWorktreeGitOperationsIdle(result.worktreePath);
+      await execFilePromise('git', ['worktree', 'remove', ...(options.force === false ? [] : ['--force']), result.worktreePath], {
         cwd: result.repoRoot,
         encoding: 'utf-8',
       });
+      // Mark the recovery directory as completed so it won't be replayed
+      if (submodules.directory) {
+        await markSubmoduleRecoveryCompleted(submodules.directory);
+        console.warn(`[team worktree] Submodule data retained at ${submodules.directory}`);
+      }
     } catch (err: unknown) {
+      if (submodules.directory) {
+        try {
+          await restoreSubmodules(submodules);
+        } catch (restoreError) {
+          errors.push(`submodule_recovery:${submodules.directory}:${String(restoreError)}`);
+        }
+      }
       const stderr = ((err as Record<string, unknown>).stderr as string ?? '').trim();
       const exitCode = (err as Record<string, unknown>).code;
-      errors.push(`remove:${result.worktreePath}:${stderr || `exit_${exitCode}`}`);
+      errors.push(`remove:${result.worktreePath}:${stderr || (err instanceof Error ? err.message : `exit_${exitCode}`)}`);
       continue;
     }
 

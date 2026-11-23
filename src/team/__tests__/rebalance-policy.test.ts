@@ -54,12 +54,6 @@ describe('rebalance-policy', () => {
         workerName: 'worker-2',
         reason: 'reclaimed work is ready; balances current load',
       },
-      {
-        type: 'assign',
-        taskId: '3',
-        workerName: 'worker-2',
-        reason: 'idle worker pickup; balances current load',
-      },
     ]);
   });
 
@@ -98,7 +92,7 @@ describe('rebalance-policy', () => {
     assert.deepEqual(decisions, []);
   });
 
-  it('prefers specialized lanes for reclaimed work before lighter generic lanes', () => {
+  it('excludes outstanding owners despite stale idle status', () => {
     const decisions = buildRebalanceDecisions({
       reclaimedTaskIds: ['7'],
       tasks: [
@@ -139,8 +133,34 @@ describe('rebalance-policy', () => {
     assert.equal(decisions.length, 1);
     assert.equal(decisions[0]?.type, 'assign');
     assert.equal(decisions[0]?.taskId, '7');
-    assert.equal(decisions[0]?.workerName, 'worker-1');
-    assert.match(decisions[0]?.reason ?? '', /reclaimed work is ready; (keeps writer work grouped|matches worker role writer)/);
+    assert.equal(decisions[0]?.workerName, 'worker-2');
+  });
+
+  it('reserves an owned pending startup assignment before its worker claims it', () => {
+    const decisions = buildRebalanceDecisions({
+      reclaimedTaskIds: [],
+      tasks: [
+        { id: '1', subject: 'startup', description: 'work', status: 'pending', owner: 'worker-1', created_at: '2026-03-11T00:00:00Z' },
+        { id: '2', subject: 'overflow', description: 'work', status: 'pending', created_at: '2026-03-11T00:00:00Z' },
+      ],
+      workers: [{ name: 'worker-1', alive: true, status: { state: 'unknown', updated_at: '2026-03-11T00:00:00Z' } }],
+    });
+    assert.deepEqual(decisions, []);
+  });
+
+  it('assigns at most one pending task per available worker and leaves overflow for later', () => {
+    const tasks = Array.from({ length: 5 }, (_, i) => ({
+      id: String(i + 1), subject: 'followup', description: 'work', status: 'pending' as const,
+      created_at: '2026-03-11T00:00:00.000Z',
+    }));
+    const workers = ['worker-1', 'worker-2'].map((name) => ({
+      name, alive: true, status: { state: 'idle' as const, updated_at: '2026-03-11T00:00:00.000Z' },
+    }));
+    const decisions = buildRebalanceDecisions({ tasks, workers, reclaimedTaskIds: [] });
+    assert.equal(decisions.length, 2);
+    assert.equal(new Set(decisions.map((decision) => decision.workerName)).size, 2);
+    assert.deepEqual(decisions.map((decision) => decision.taskId), ['1', '2']);
+    assert.deepEqual(tasks.map((task) => task.status), Array(5).fill('pending'), 'policy must not mutate pending tasks');
   });
 
   it('does not assign work when no live idle worker is available', () => {

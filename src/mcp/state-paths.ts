@@ -27,6 +27,7 @@ export type CanonicalSessionBindingStatus =
   | 'root-mismatch'
   | 'foreign-cwd'
   | 'usable'
+  | 'non-runtime-owner'
   | 'stale-dead'
   | 'identity-indeterminate';
 
@@ -39,7 +40,7 @@ export interface CanonicalSessionBindingSnapshot {
   recordedCwd?: string;
   state?: SessionState;
   raw?: string;
-  liveness?: 'usable' | 'stale-dead' | 'identity-indeterminate';
+  liveness?: 'usable' | 'non-runtime-owner' | 'stale-dead' | 'identity-indeterminate';
   verifiedAliases: Partial<Record<VerifiedSessionBindingField, string>>;
 }
 
@@ -663,7 +664,7 @@ export async function readCanonicalSessionBindingSnapshot(
     };
   }
 
-  let liveness: 'usable' | 'stale-dead' | 'identity-indeterminate';
+  let liveness: 'usable' | 'non-runtime-owner' | 'stale-dead' | 'identity-indeterminate';
   try {
     liveness = classifySessionStateLiveness(state);
   } catch {
@@ -736,9 +737,10 @@ interface AuthoritativeSessionSnapshot {
  * when it holds full selected-root authority for this exact base state
  * directory: a nonempty recorded cwd that contains the observed cwd, and a
  * recorded state_root canonical-equal to the selected base (with the
- * historical cwd-derived fallback when state_root is absent). Usability/
- * liveness is deliberately NOT checked here so stale-dead recovery can
- * evaluate authority AND liveness from the same immutable bytes. A malformed
+ * historical cwd-derived fallback when state_root is absent). A verified
+ * managed-daemon owner is not an OMX runtime binding and returns null; other
+ * liveness decisions are deliberately left to callers so stale-dead recovery
+ * can evaluate authority AND liveness from the same immutable bytes. A malformed
  * or non-authoritative pointer returns null (fail closed); unexpected read
  * I/O errors propagate instead of being collapsed into a generic classification.
  */

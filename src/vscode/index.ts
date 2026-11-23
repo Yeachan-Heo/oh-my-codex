@@ -5,7 +5,7 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
-import { redactAuthSecrets } from '../auth/redact.js';
+import { createAuthStderrRedactor, redactAuthSecrets } from '../auth/redact.js';
 import { CODEX_BYPASS_FLAG, MADMAX_FLAG, MADMAX_SPARK_FLAG } from '../cli/constants.js';
 import {
   resolveCommandPathForPlatform,
@@ -94,6 +94,7 @@ export interface RunOmxCatalogCommandResult {
 
 interface LaunchDirectSessionDeps {
   spawn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+  createWriteStream?: typeof createWriteStream;
   now?: () => Date;
   randomId?: () => string;
 }
@@ -207,9 +208,9 @@ function defaultLogPath(cwd: string, sessionId: string): string {
   return join(cwd, '.omx', 'logs', 'vscode', `${sessionId}.log`);
 }
 
-function ensureLogStream(path: string): WriteStream {
+function ensureLogStream(path: string, createStream: typeof createWriteStream = createWriteStream): WriteStream {
   mkdirSync(dirname(path), { recursive: true });
-  return createWriteStream(path, { flags: 'a' });
+  return createStream(path, { flags: 'a' });
 }
 
 function writeLog(stream: WriteStream, text: string): void {
@@ -251,7 +252,7 @@ export function launchDirectSession(
   }
 
   const logPath = options.logPath ? resolve(options.logPath) : defaultLogPath(cwd, sessionId);
-  const logStream = ensureLogStream(logPath);
+  const logStream = ensureLogStream(logPath, deps.createWriteStream);
   const env = resolveLaunchEnv(options.env ?? process.env, sessionId, logPath);
   const platform = options.platform ?? process.platform;
   const spawnOptions: SpawnOptions = {
@@ -264,12 +265,16 @@ export function launchDirectSession(
   const startedAt = now.toISOString();
   writeLog(logStream, `[${startedAt}] $ ${launched.spec.command} ${launched.spec.args.join(' ')}\n`);
 
-  child.stdout?.on('data', (chunk: Buffer | string) => writeLog(logStream, String(chunk)));
-  child.stderr?.on('data', (chunk: Buffer | string) => writeLog(logStream, String(chunk)));
+  const stdoutRedactor = createAuthStderrRedactor((text) => writeLog(logStream, text));
+  const stderrRedactor = createAuthStderrRedactor((text) => writeLog(logStream, text));
+  child.stdout?.on('data', (chunk: Buffer | string) => stdoutRedactor.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  child.stderr?.on('data', (chunk: Buffer | string) => stderrRedactor.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
   child.on('error', (error) => {
     writeLog(logStream, `\n[${new Date().toISOString()}] launch error: ${redactOmxLogLine(error)}\n`);
   });
-  child.on('exit', (code, signal) => {
+  child.on('close', (code, signal) => {
+    stdoutRedactor.end();
+    stderrRedactor.end();
     writeLog(logStream, `\n[${new Date().toISOString()}] exited code=${code ?? 'null'} signal=${signal ?? 'null'}\n`);
     logStream.end();
   });

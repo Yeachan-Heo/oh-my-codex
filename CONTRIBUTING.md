@@ -14,6 +14,14 @@ npm run build
 npm test
 ```
 
+The Node test runner starts each test file with an empty temporary `HOME` and
+`USERPROFILE`, then removes that home when the file finishes. This prevents
+installed plugins and personal model overrides from changing test defaults.
+`PATH`, `TMPDIR`, and explicit runtime-binary overrides retain their existing
+behavior; tests can still select their own home fixtures. For a deliberate
+personal-home diagnostic, use `OMX_NODE_TEST_PRESERVE_HOME=1`. This is separate
+from `OMX_NODE_TEST_PRESERVE_RUNTIME_ENV=1` and is not needed for normal checks.
+
 For local CLI testing:
 
 ```bash
@@ -74,15 +82,15 @@ If `node_modules` is already fresh and you are iterating locally, you can skip `
 ## Project structure
 
 - `src/` -- TypeScript source (CLI, config, agents, MCP servers, hooks, modes, team, verification)
-- `prompts/` -- agent prompt markdown files (installed to `~/.codex/prompts/`)
-- `skills/` -- skill directories with `SKILL.md` (installed to `~/.codex/skills/`)
+- `prompts/` -- canonical role guidance and setup prompt assets; setup normally generates installable native TOMLs in both modes; `--disable-hooks` performs hook teardown and returns before normal asset installation and configuration in either mode. Legacy setup also installs prompt copies
+- `skills/` -- canonical skill directories; plugin mode discovers their generated plugin mirror, while legacy mode installs scoped skill copies
 - `templates/` -- `AGENTS.md` orchestration brain template
 
 ### Adding a new agent prompt
 
-1. Create `prompts/my-agent.md` with the agent's system prompt
-2. Run `omx setup --force` to install it to `~/.codex/prompts/`
-3. Use `/prompts:my-agent` in Codex CLI
+1. Create `prompts/my-agent.md` with the agent's system prompt.
+2. For an installable native role, add its definition/catalog entry and follow [Native agent SSOT](docs/plugin-bundle-ssot.md#native-agent-ssot), including `npm run verify:native-agents`.
+3. Test scoped setup in an isolated Codex home, preserving custom assets. Plugin mode installs native TOMLs, not `/prompts:` copies; use the exposed native role routing on the target Codex surface. Legacy mode also installs scoped prompt copies.
 
 ### Prompt guidance contract
 
@@ -92,9 +100,9 @@ That document defines the GPT-5.6 behavior contract contributors should preserve
 
 ### Adding a new skill
 
-1. Create `skills/my-skill/SKILL.md` with the skill workflow
-2. Run `omx setup --force` to install it to `~/.codex/skills/`
-3. Use `$my-skill` in Codex CLI
+1. Create `skills/my-skill/SKILL.md` with the skill workflow.
+2. Update both catalog manifests, then follow [Adding or changing a skill](docs/plugin-bundle-ssot.md#adding-or-changing-a-skill) to build, sync, and verify the plugin mirror.
+3. Test the selected setup/discovery mode in an isolated Codex home, then use `$my-skill` through that surface. Do not use `--force` against a personal installation merely to test a new skill.
 
 
 ### Document refresh warnings

@@ -30,33 +30,89 @@ interface PostinstallDependencies {
   writeStamp: (stamp: UserInstallStamp) => Promise<void>;
 }
 
-const RUNTIME_HYDRATION_TIMEOUT_MS = 15_000;
+const RUNTIME_HYDRATION_TIMEOUT_MS = 120_000;
+
+export async function hydrateOmxRuntime(options: {
+  packageRoot?: string;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  arch?: string;
+  timeoutMs?: number;
+} = {}): Promise<string | undefined> {
+  const timeoutMs = options.timeoutMs ?? RUNTIME_HYDRATION_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  timer.unref?.();
+  try {
+    return await hydrateNativeBinary("omx-runtime", {
+      packageRoot: options.packageRoot,
+      env: options.env,
+      platform: options.platform,
+      arch: options.arch,
+      signal: controller.signal,
+      strictManifestErrors: true,
+    });
+  } catch (error) {
+    if (!timedOut) throw error;
+    const detail = redactHydrationDiagnosticUrls(error instanceof Error ? error.message : String(error));
+    const cause = deepestErrorMessage(error);
+    throw new Error(
+      `[omx] omx-runtime hydration timed out after ${timeoutMs} ms: ${detail}; cause: ${cause}`,
+      { cause: error },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function hydrateOmxRuntimeNonFatal(options: {
   packageRoot?: string;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+  arch?: string;
   log?: (message: string) => void;
   timeoutMs?: number;
 } = {}): Promise<string | undefined> {
   const log = options.log ?? ((message: string) => console.log(message));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? RUNTIME_HYDRATION_TIMEOUT_MS);
-  timer.unref?.();
   try {
-    const runtimePath = await hydrateNativeBinary("omx-runtime", {
-      packageRoot: options.packageRoot,
-      env: options.env,
-      signal: controller.signal,
-    });
+    const runtimePath = await hydrateOmxRuntime(options);
     if (runtimePath) log(`[omx] Hydrated omx-runtime for this platform: ${runtimePath}`);
     else log("[omx] omx-runtime was not available for this platform; native runtime features remain disabled.");
     return runtimePath;
   } catch (error) {
-    log(`[omx] omx-runtime hydration failed non-fatally: ${error instanceof Error ? error.message : String(error)}`);
+    const message = redactHydrationDiagnosticUrls(error instanceof Error ? error.message : String(error));
+    log(`[omx] omx-runtime hydration failed non-fatally: ${message}`);
     return undefined;
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+function deepestErrorMessage(error: unknown): string {
+  let current = error;
+  const seen = new Set<unknown>();
+  while (current instanceof Error && current.cause !== undefined && !seen.has(current)) {
+    seen.add(current);
+    current = current.cause;
+  }
+  return redactHydrationDiagnosticUrls(current instanceof Error ? current.message : String(current));
+}
+
+function redactHydrationDiagnosticUrls(message: string): string {
+  return message.replace(/https?:\/\/[^\s"'<>]+/gi, (value) => {
+    try {
+      const url = new URL(value);
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return "[URL redacted]";
+    }
+  });
 }
 
 function stripLeadingV(version: string): string {

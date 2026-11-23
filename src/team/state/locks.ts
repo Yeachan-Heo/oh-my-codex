@@ -56,10 +56,21 @@ function lockOwnerToken(): string {
   return `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
 }
 
-async function maybeRecoverStaleLock(lockDir: string, lockStaleMs: number): Promise<boolean> {
-  if (!await isStaleLock(lockDir, lockStaleMs)) return false;
-  await rm(lockDir, { recursive: true, force: true });
-  return true;
+export async function assertTeamLockNotStale(lockDir: string, lockStaleMs: number): Promise<void> {
+  const info = await stat(lockDir).catch(() => null);
+  if (!info) return;
+  const ownerPath = join(lockDir, 'owner');
+  const token = await readFile(ownerPath, 'utf8').catch(() => '');
+  const pid = Number(/^(\d+)\./.exec(token.trim())?.[1]);
+  if (Number.isSafeInteger(pid) && pid > 0) {
+    try { process.kill(pid, 0); return; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return; }
+  } else if (!await isStaleLock(lockDir, lockStaleMs)) return;
+  const currentToken = await readFile(ownerPath, 'utf8').catch(() => '');
+  const currentInfo = await stat(lockDir).catch(() => null);
+  if (currentToken !== token || currentInfo?.dev !== info.dev || currentInfo?.ino !== info.ino) return;
+  // shortcut: crashed/unknown owners require manual recovery; auto-reclaim needs an OS lock or owner-fenced compare-and-delete.
+  throw new Error(`team_lock_recovery_required:${lockDir}: stale lock requires manual recovery. Confirm no operation is using it before removing the directory.`);
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -93,7 +104,7 @@ export async function withScalingLock<T>(
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'EEXIST') throw error;
-      if (await maybeRecoverStaleLock(lockDir, lockStaleMs)) continue;
+      await assertTeamLockNotStale(lockDir, lockStaleMs);
       if (Date.now() > deadline) {
         throw new Error(`Timed out acquiring scaling lock for team ${teamName}`);
       }
@@ -143,7 +154,7 @@ export async function withTeamLock<T>(
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'EEXIST') throw error;
-      if (await maybeRecoverStaleLock(lockDir, lockStaleMs)) continue;
+      await assertTeamLockNotStale(lockDir, lockStaleMs);
       if (Date.now() > deadline) {
         throw new Error(`Timed out acquiring team task lock for ${teamName}`);
       }
@@ -185,7 +196,7 @@ export async function withTaskClaimLock<T>(
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'EEXIST') throw error;
-      if (await maybeRecoverStaleLock(lockDir, lockStaleMs)) continue;
+      await assertTeamLockNotStale(lockDir, lockStaleMs);
       if (Date.now() > deadline) return { ok: false };
       await sleep(LOCK_OWNER_RETRY_MS);
     }
@@ -240,7 +251,7 @@ export async function withMailboxLock<T>(
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'EEXIST') throw error;
-      if (await maybeRecoverStaleLock(lockDir, lockStaleMs)) continue;
+      await assertTeamLockNotStale(lockDir, lockStaleMs);
       if (Date.now() > deadline) {
         throw new Error(`Timed out acquiring mailbox lock for ${teamName}/${workerName}`);
       }

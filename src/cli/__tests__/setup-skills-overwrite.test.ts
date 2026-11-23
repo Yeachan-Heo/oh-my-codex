@@ -504,10 +504,64 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'user' });
 
       const output = logs.join('\n');
-      assert.match(output, /Migration hint: Detected 1 overlapping skill names between canonical .*\.codex\/skills and legacy .*\.agents\/skills\./);
+      assert.match(output, /Migration hint: Detected 1 overlapping skill names between canonical .*\.codex\/skills and legacy .*\.agents\/skills\./);;
       assert.match(output, /Remove or archive ~\/\.agents\/skills after confirming .*\.codex\/skills is the version you want Codex to load\./);
     } finally {
       console.log = originalLog;
+      process.chdir(previousCwd);
+      if (typeof previousHome === 'string') process.env.HOME = previousHome; else delete process.env.HOME;
+      if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome; else delete process.env.CODEX_HOME;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates legacy skill receipt on upgrade when new receipt path does not exist', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-upgrade-'));
+    const previousCwd = process.cwd();
+    const previousHome = process.env.HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    try {
+      const home = join(wd, 'home');
+      const codexHome = join(home, '.codex');
+      process.env.HOME = home;
+      process.env.CODEX_HOME = codexHome;
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      // Seed a retired skill with the legacy receipt location ($HOME/.omx/...)
+      const legacySkillsDir = join(home, '.codex', 'skills');
+      await mkdir(legacySkillsDir, { recursive: true });
+      const retiredSkillDir = join(legacySkillsDir, 'retired-skill');
+      await mkdir(retiredSkillDir, { recursive: true });
+      await writeFile(join(retiredSkillDir, 'SKILL.md'), '---\nname: retired-skill\ndescription: "[OMX] old retired skill"\n---\n');
+
+      // Record in the legacy receipt location
+      const legacyReceiptPath = join(home, '.omx', 'state', 'setup', 'installed-skills.json');
+      await mkdir(dirname(legacyReceiptPath), { recursive: true });
+      const receipt: { version: 1; skills: Record<string, { files: Record<string, string> }> } = { version: 1, skills: {} };
+      const files: Record<string, string> = {};
+      for (const entry of await readdir(retiredSkillDir, { withFileTypes: true })) {
+        if (entry.isFile()) {
+          const full = join(retiredSkillDir, entry.name);
+          files[entry.name] = createHash('sha256').update(await readFile(full)).digest('hex');
+        }
+      }
+      receipt.skills['retired-skill'] = { files };
+      await writeFile(legacyReceiptPath, JSON.stringify(receipt, null, 2) + '\n');
+
+      // Verify the legacy receipt exists
+      assert.equal(existsSync(legacyReceiptPath), true);
+
+      // Verify the new receipt location does not exist yet
+      const newReceiptPath = join(codexHome, '.omx', 'state', 'setup', 'installed-skills.json');
+      assert.equal(existsSync(newReceiptPath), false);
+
+      // Run setup in plugin mode to trigger cleanup
+      await setup({ scope: 'user', installMode: 'plugin' });
+
+      // The retired skill should have been cleaned up
+      assert.equal(existsSync(retiredSkillDir), false, 'retired skill should be removed after cleanup');
+    } finally {
       process.chdir(previousCwd);
       if (typeof previousHome === 'string') process.env.HOME = previousHome; else delete process.env.HOME;
       if (typeof previousCodexHome === 'string') process.env.CODEX_HOME = previousCodexHome; else delete process.env.CODEX_HOME;

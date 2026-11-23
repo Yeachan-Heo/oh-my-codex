@@ -10,7 +10,7 @@ export interface CodexGoalSnapshot {
   status?: CodexGoalSnapshotStatus;
   tokenBudget?: number;
   remainingTokens?: number | null;
-  unavailableReason?: 'db_schema_context_error' | 'tool_error';
+  unavailableReason?: 'db_schema_context_error' | 'tool_unavailable' | 'tool_error';
   errorMessage?: string;
   raw: unknown;
 }
@@ -81,7 +81,86 @@ export function isCodexGoalDbSchemaContextError(message: string | undefined): bo
     );
 }
 
+function classifyGoalToolError(message: string): NonNullable<CodexGoalSnapshot['unavailableReason']> {
+  if (isCodexGoalDbSchemaContextError(message)) return 'db_schema_context_error';
+  if (/native nested tool inventory did not return one matching catalog record/i.test(message)) return 'tool_unavailable';
+  return 'tool_error';
+}
+
+// Native tool calls may be copied as their full tool response rather than just
+// structuredContent. Prefer the structured payload; never interpret transport
+// metadata as an active goal.
+function hasRecognizableGoalResponseShape(value: unknown): boolean {
+  const root = safeObject(value);
+  if (Object.hasOwn(root, 'goal')) {
+    if (root.goal === null || root.goal === false) return true;
+    const goal = safeObject(root.goal);
+    if (safeString(goal.objective ?? goal.goal ?? goal.description)) return true;
+    if (normalizeStatus(goal.status) !== 'unknown') return true;
+  }
+  if (safeString(root.objective)) return true;
+  if (normalizeStatus(root.status) !== 'unknown') return true;
+
+  const explicitError = [
+    root.error,
+    root.errorMessage,
+    root.stderr,
+    safeObject(root.error).message,
+    safeObject(root.error).error,
+  ].map(safeString).find(Boolean);
+  if (explicitError) return true;
+
+  const message = safeString(root.message);
+  return Boolean(message)
+    && (isCodexGoalDbSchemaContextError(message)
+      || /native nested tool inventory did not return one matching catalog record/i.test(message));
+}
+
+// A failed native call can carry its diagnostic as plain text. Keep known goal-tool
+// diagnostics so they are classified instead of discarded as transport text.
+function recognizableTextDiagnostic(text: string): Record<string, unknown> | null {
+  const diagnostic = { message: text.trim() };
+  return hasRecognizableGoalResponseShape(diagnostic) ? diagnostic : null;
+}
+
+function unwrapNativeGoalResponse(value: unknown): unknown {
+  const root = safeObject(value);
+  if (Object.hasOwn(root, 'structuredContent') && hasRecognizableGoalResponseShape(root.structuredContent)) {
+    return root.structuredContent;
+  }
+  if (hasRecognizableGoalResponseShape(value)) return value;
+  if (typeof root.content === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(root.content);
+      if (hasRecognizableGoalResponseShape(parsed)) return parsed;
+    } catch {
+      // Transport content is not always JSON.
+      const diagnostic = recognizableTextDiagnostic(root.content);
+      if (diagnostic) return diagnostic;
+    }
+  }
+  if (Array.isArray(root.content)) {
+    for (const part of root.content) {
+      const item = safeObject(part);
+      if (item.type !== 'text' || typeof item.text !== 'string') continue;
+      try {
+        const parsed: unknown = JSON.parse(item.text);
+        if (hasRecognizableGoalResponseShape(parsed)) return parsed;
+      } catch {
+        const diagnostic = recognizableTextDiagnostic(item.text);
+        if (diagnostic) return diagnostic;
+      }
+    }
+  }
+  return value;
+}
+
 export function parseCodexGoalSnapshot(value: unknown): CodexGoalSnapshot {
+  const unwrapped = unwrapNativeGoalResponse(value);
+  if (unwrapped !== value) {
+    const snapshot = parseCodexGoalSnapshot(unwrapped);
+    return { ...snapshot, raw: value };
+  }
   const root = safeObject(value);
   const hasGoalProperty = Object.hasOwn(root, 'goal');
   const goalValue = hasGoalProperty ? root.goal : value;
@@ -91,7 +170,7 @@ export function parseCodexGoalSnapshot(value: unknown): CodexGoalSnapshot {
   if (!hasGoalProperty && errorMessage) {
     return {
       available: false,
-      unavailableReason: isCodexGoalDbSchemaContextError(errorMessage) ? 'db_schema_context_error' : 'tool_error',
+      unavailableReason: classifyGoalToolError(errorMessage),
       errorMessage,
       raw: value,
     };
@@ -100,7 +179,7 @@ export function parseCodexGoalSnapshot(value: unknown): CodexGoalSnapshot {
     if (errorMessage) {
       return {
         available: false,
-        unavailableReason: isCodexGoalDbSchemaContextError(errorMessage) ? 'db_schema_context_error' : 'tool_error',
+        unavailableReason: classifyGoalToolError(errorMessage),
         errorMessage,
         raw: value,
       };
@@ -109,6 +188,9 @@ export function parseCodexGoalSnapshot(value: unknown): CodexGoalSnapshot {
   }
 
   const goal = safeObject(goalValue);
+  if (Object.keys(goal).length === 0 && !Object.hasOwn(root, 'objective') && !Object.hasOwn(root, 'status')) {
+    return { available: false, raw: value };
+  }
   const objective = safeString(
     goal.objective
     ?? goal.goal

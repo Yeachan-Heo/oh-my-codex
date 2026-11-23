@@ -46,7 +46,8 @@ Fixing symptoms instead of root causes creates whack-a-mole debugging cycles. Th
 </success_criteria>
 
 <verification_loop>
-- Default effort: medium (systematic investigation).
+- Recommend a supported reasoning effort from task demands, remaining uncertainty, available proof, and resource limits; briefly compare plausible alternatives without a role-based default.
+- Preserve explicit effort requirements and the leader's selected effort. Report justified changes to the caller; do not change runtime settings.
 - Stop when root cause is identified with evidence and minimal fix is recommended.
 - Escalate upward after 3 failed hypotheses (do not keep trying variations of the same approach).
 - Continue through clear, low-risk debugging steps automatically; ask only when reproduction or remediation requires a materially branching decision.

@@ -1,3 +1,4 @@
+import { TASK_LEASE_INSTRUCTIONS } from './task-lease.js';
 import type { TeamTask, TeamTaskCoordinationMechanism } from "./state.js";
 import { existsSync } from "fs";
 import { execFileSync } from "child_process";
@@ -86,6 +87,7 @@ ${renderCodeGraphInstructions(options.toolContext)}
 5. Read task files from \`${options.teamStateRoot}/team/${options.teamName}/tasks/task-<id>.json\` using bare \`task_id\` values in APIs.
 6. Use claim-safe lifecycle APIs only:
    - \`omx team api claim-task --json\`
+   ${TASK_LEASE_INSTRUCTIONS}
    - \`omx team api transition-task-status --json\`
    - \`omx team api release-task-claim --json\` only for rollback to pending
 7. Use mailbox delivery flow:
@@ -325,8 +327,8 @@ When marking completion, include structured verification evidence in your task r
 - \`Verification:\`
 - One or more PASS/FAIL checks with command/output references
 - Tasks marked \`requires_code_change:true\` must include both the structured \`Verification:\` summary above and \`EVIDENCE_RECORDED: .omx/evidence/<file>.json\` on its own line before completing; a marker alone is rejected.
-- Write that JSON in your assigned working directory with \`teamName\`, \`taskId\`, \`claimTokenSha256\` (SHA-256 of the current claim token), \`summary\`, \`verification:[{command,result:"passed",output}]\`, and \`unverified:[]\` (list any checks not run).
-- Create/update the file after claiming. Missing, stale, mismatched, placeholder or symlinked evidence is rejected; it checks the report, not whether the commands actually ran.
+- Commit the code, verify that exact commit, and leave the worktree clean before completion. Write that JSON in your assigned worktree (or working directory) with \`teamName\`, \`taskId\`, \`claimTokenSha256\` (SHA-256 of the current claim token), \`verifiedHead\` (full \`git rev-parse HEAD\` SHA that was verified), \`summary\`, \`verification:[{command,result:"passed",output}]\`, and \`unverified:[]\` (list any checks not run).
+- Create/update the file after claiming. Missing, stale, mismatched, placeholder or symlinked evidence is rejected; the reported SHA must match the clean current HEAD. Later edits or a different HEAD require a new verified code-task handoff; research-only completion cannot authorize integration. It checks the report, not whether the commands actually ran.
 `;
 }
 
@@ -356,6 +358,7 @@ You are a team worker in team "${teamName}". Your identity and assigned tasks ar
 6. Task id format:
    - State/MCP APIs use task_id: "<id>" (example: "1"), never "task-1"
 7. Request a claim via CLI interop (\`omx team api claim-task --json\`); do not directly set lifecycle fields in the task file
+   ${TASK_LEASE_INSTRUCTIONS}
 8. Do the work using your tools
 9. After completing work, commit your changes before reporting completion:
    \`git add -A && git commit -m "task: <task-subject>"\`
@@ -891,6 +894,7 @@ ${approvedContextSection}${workerGoalSection}
 6. Task id format:
    - State/MCP APIs use \`task_id: "<id>"\` (example: \`"1"\`), not \`"task-1"\`.
 7. Request a claim via CLI interop (\`omx team api claim-task --json\`) to claim it
+   ${TASK_LEASE_INSTRUCTIONS}
 8. Complete the work described in the task
 9. After completing work, commit your changes before reporting completion:
    \`git add -A && git commit -m "task: <task-subject>"\`
@@ -972,6 +976,15 @@ export function generateTaskAssignmentInbox(
     : taskOrId;
   const taskId = task.id;
   const taskDescription = task.description;
+  const handedOffClaim = typeof taskOrId !== "string"
+    && taskOrId.status === "in_progress"
+    && taskOrId.claim?.owner === workerName
+    ? taskOrId.claim
+    : undefined;
+  const claimInstruction = handedOffClaim && typeof taskOrId !== "string"
+    ? `The leader already claimed this task for you. Do NOT re-claim it. Use the current handoff: \`claim_token: "${handedOffClaim.token}"\`, \`version: ${taskOrId.version}\`, \`leased_until: "${handedOffClaim.leased_until}"\`. Include this \`claim_token\` in lifecycle transitions and rollback. If the lease has expired or the task file no longer matches, stop and ask the leader for a current assignment.`
+    : "Request a claim via CLI interop (`omx team api claim-task --json`)";
+
   const workerGoalSection = typeof taskOrId === "string"
     ? ""
     : renderTeamWorkerGoalInstruction({
@@ -1009,7 +1022,8 @@ ${workerGoalSection}
 1. Resolve canonical team state root and read the task file at \`<team_state_root>/team/${teamName}/tasks/task-${taskId}.json\`
 2. Task id format:
    - State/MCP APIs use \`task_id: "${taskId}"\` (not \`"task-${taskId}"\`).
-3. Request a claim via CLI interop (\`omx team api claim-task --json\`)
+3. ${claimInstruction}
+   ${TASK_LEASE_INSTRUCTIONS}
 4. Complete the work
 5. After completing work, commit your changes before reporting completion:
    \`git add -A && git commit -m "task: <task-subject>"\`

@@ -42,7 +42,9 @@ The main agent cannot process visual content directly. These rules exist because
 </success_criteria>
 
 <verification_loop>
-- Default effort: low (extract what is asked, nothing more).
+- If reassessment is justified from task demands, remaining uncertainty, available proof, and resource limits, recommend a supported reasoning effort and briefly compare plausible alternatives without a role-based default; otherwise preserve extraction-only output.
+- Preserve explicit effort requirements and the leader's selected effort. Report justified changes to the caller; do not change runtime settings.
+- For screenshot layout reviews, if a scaled full-page capture makes viewport width, wrapping, or clipping unreliable, report that evidence limit and request fixed-viewport captures at the intended widths before recommending CSS changes for the affected layout.
 - Stop when the requested information is extracted or confirmed missing.
 - Continue through clear, low-risk next steps automatically; ask only when the next step materially changes scope or requires user preference.
 </verification_loop>

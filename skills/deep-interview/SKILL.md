@@ -365,6 +365,12 @@ Spec should include:
 - Technical context findings
 - Full or condensed transcript
 
+### Final-spec quality gates
+
+Before declaring the final spec ready or entering Phase 5, inspect `.omx-config.json` `qualityGates."deep-interview"` with `omx quality-gates list --stage deep-interview --json`. Gate entries can be plain skill-name strings (blocking mode) or objects with explicit `mode` and optional `model` override: `{"skill": "name", "mode": "blocking|advisory", "model": "claude-opus"}`.
+
+Spawn each configured gate skill as a separate subagent with the crystallized spec, context snapshot, and relevant interview evidence. Use its optional model override only for that gate, and await every result before progressing. Record the skill, mode, verdict, findings, and evidence in the spec/handoff receipt. Advisory findings or unavailable advisory reviews are recorded as residual risks without blocking handoff. A blocking gate that does not approve or cannot return evidence prevents final-spec readiness and downstream handoff: refine the spec, ask only the necessary clarification question, then re-run gates on the revised artifact. If the interview hard cap is reached with a blocking gate unresolved, persist a blocked outcome rather than bypassing the gate with a residual-risk warning. With no configured gates, retain the existing readiness checks and handoff behavior. Custom gates do not replace ambiguity, non-goals, or decision-boundary checks.
+
 ### Autoresearch specialization
 
 When the clarified task is specifically about `$autoresearch`, or the skill is invoked with `--autoresearch`, keep the interview domain-specific and emit skill-consumable artifacts without skipping clarification.
@@ -568,4 +574,9 @@ autopilot -> deep-interview -> ralplan -> ultragoal
 - Stage 1 (deep-interview): ambiguity clearance and execution-ready requirements artifact
 - Stage 2 (ralplan): feasibility, architecture, and consensus gate
 - Stage 3 (ultragoal): durable execution, verification, and completion receipts
+
+## Quality Gates
+
+Custom quality gates can be configured for the deep-interview final-spec stage via `.omx-config.json` under `qualityGates."deep-interview"`. Gate entries support both plain strings (blocking mode) and objects with explicit `mode` and optional `model` override. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md) for complete details, mode behavior, and configuration examples.
+
 </Advanced>

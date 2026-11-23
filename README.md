@@ -104,7 +104,7 @@ Choose the setup scope deliberately:
 `--force` is independent and transient: it is neither recorded nor replayed, and does not override an explicit merge policy. Setup atomically commits explicit set or clear intent only after all setup work succeeds, including when active-session or plugin-symlink safeguards skip the current `AGENTS.md` write, so the next refresh can honor the requested policy. This does not make merge the default or revive the rejected #2892 merge-by-default approach. Older OMX versions safely ignore the field, but may erase it when rewriting their known setup preferences.
 
 
-**Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for official Codex lifecycle hooks, optional MCP compatibility servers, and apps. It is still **not** a replacement for the global `oh-my-codex` CLI plus scoped setup: plugin-scoped hooks launch the installed `omx` CLI, legacy setup mode installs native agents and prompts, and plugin setup mode relies on plugin discovery for bundled skills while archiving/removing legacy OMX-managed prompts/native-agent TOMLs so stale role files cannot shadow plugin behavior. Plugin mode still needs a persistent scope `AGENTS.md` (`~/.codex/AGENTS.md` for user setup or `./AGENTS.md` for project setup) as the durable orchestration guidance layer; session-scoped AGENTS files only compose that durable guidance with runtime overlays and are not a replacement.
+**Codex plugin install note:** this repo also ships an official Codex plugin layout at `plugins/oh-my-codex` with marketplace metadata in `.agents/plugins/marketplace.json`. That plugin bundles the mirrored skill surface plus plugin-scoped companion metadata for official Codex lifecycle hooks, optional MCP compatibility servers, and apps. It is still **not** a replacement for the global `oh-my-codex` CLI plus scoped setup: plugin-scoped hooks launch the installed `omx` CLI, and both setup modes normally install setup-owned native agent TOMLs for `agent_type` routing. In either mode, `omx setup --disable-hooks` disables OMX-owned hook registrations and related enablement, then returns before normal asset installation, configuration, `AGENTS.md`, HUD, and state setup. Legacy mode also installs prompt and skill copies. Plugin mode uses plugin discovery for bundled skills, archives/removes legacy OMX-managed prompt copies, and removes stale generated/non-installable native-agent files. Plugin setup without `--force` preserves user-authored or ambiguous role files, except that disabling Team (`--disable-team` or persisted `teamMode: "disabled"`) backs up and removes `team-executor.toml` regardless of ownership. See [Plugin bundle SSOT](docs/plugin-bundle-ssot.md) for these ownership rules. Plugin mode still needs a persistent scope `AGENTS.md` (`~/.codex/AGENTS.md` for user setup or `./AGENTS.md` for project setup) as the durable orchestration guidance layer; session-scoped AGENTS files only compose that durable guidance with runtime overlays and are not a replacement.
 
 Then work normally inside Codex:
 
@@ -170,6 +170,8 @@ checkout, which is the safer default when using `--madmax`. Replace
 ### Concurrent standard conversations
 
 A standard launch owns one writable session pointer under its selected `OMX_ROOT`. A second ordinary `omx` launch from the same checkout therefore fails closed instead of sharing or silently changing that root. Give each additional conversation an explicit, distinct root:
+
+`omx resume` follows the same ownership rule. Malformed, uncertain, or live-owner pointers are preserved for diagnosis and resume is refused; a verified-dead pointer is recovered through the bounded session-pointer recovery path (forensic bytes preserved in quarantine) before resume continues.
 
 ```bash
 omx
@@ -283,6 +285,7 @@ Use `$team` when an active Ultragoal story needs coordinated parallel work.
 ### `/goal` and skill selection
 
 Start a normal strong session with `omx --madmax --xhigh` (or add `--worktree=<task>` in a git repo). Inside that session, execute directly or use `$ultragoal` for durable multi-goal runs, `$team` for coordinated parallel work, or `$plan` when the task needs explicit planning first. Use `/goal` when the task itself needs a durable objective/checkpoint structure that Codex should keep reconciling across turns.
+When native `get_goal` responses are unavailable or wrapped by the tool transport, Ultragoal preserves artifact-backed status without claiming completion; see [Ultragoal goal-mode diagnostics and recovery](./docs/ultragoal.md).
 
 Add only 2-5 relevant skills by default. More skills are allowed when the task scope justifies them, but loading a large catalog is usually a context-budget and attention-quality problem, not a hard parser/runtime blocker. Treat it as a concrete runtime blocker only when a command actually errors.
 
@@ -394,6 +397,21 @@ Unknown durations remain unknown, and a recorded result without an explicit erro
 does not prove success. See [session timeline](./docs/session-timeline.md) for
 supported records, status meanings, and examples.
 
+### Compare two sessions
+
+Use `omx session compare <baseline-id> <candidate-id>` to compare execution counts,
+explicit failures, and namespace-aware tool timing after a workflow change.
+The report distinguishes added and removed tools, preserves unknown measurements,
+and reports absolute and percentage changes. Use `--sort duration` to find the
+largest mean-latency increases, or `--json --output comparison.json` to save a report.
+
+For automation, `--fail-on-regression` exits 2 on observed regressions and 3 on
+inconclusive evidence. `--max-duration-increase 10` changes the default 20% mean
+tool latency threshold; latency checks require complete timing coverage on both
+sides. Display filters never change the whole-session assessment. Compare
+similar workloads and see [session comparison](./docs/session-compare.md) for
+cross-home selection, evidence gaps, and exit-code semantics.
+
 ### Team runtime
 
 Use the team runtime when you specifically need durable tmux/worktree coordination, not as the default way to begin using OMX. In Codex App or plain outside-tmux sessions, treat `omx team` as a tmux-runtime shell surface rather than a directly available in-app workflow; launch OMX CLI from shell first if you actually want team execution.
@@ -408,6 +426,17 @@ omx team status <team-name>
 omx team resume <team-name>
 omx team shutdown <team-name>
 ```
+
+`omx team status [<team-name>] [--json]` only observes existing state, so it can
+run against a read-only OMX root. It does not reclaim expired claims, deliver
+mailbox messages, integrate worker commits, or update runtime state. Without a
+team name, status resolves only a unique team belonging to the current leader
+session; provide an explicit name when no matching context is available.
+
+`omx tmux-hook status` is also observational. If hook configuration is missing,
+it reports that condition without creating files; use `omx tmux-hook init` to
+initialize configuration explicitly.
+
 
 ### Setup, doctor, and HUD
 

@@ -13,6 +13,12 @@
 
 import { execFile } from 'child_process';
 import { buildCapturePaneArgv } from '../scripts/tmux-hook-engine.js';
+import {
+  captureHerdrWorkerPane,
+  isHerdrPaneId,
+  submitToHerdrWorker,
+  type HerdrExecOptions,
+} from './herdr-session.js';
 import { captureWorkerPane, paneLooksReady, paneHasActiveTask, sendToWorker } from './tmux-session.js';
 
 // ---------------------------------------------------------------------------
@@ -38,8 +44,24 @@ export const DEFAULT_NUDGE_CONFIG: NudgeConfig = {
 // Pane capture + idle detection
 // ---------------------------------------------------------------------------
 
-/** Capture the last 80 lines of a tmux pane. Returns '' on error. */
-export function capturePane(paneId: string): Promise<string> {
+/** Injectable herdr exec used by the herdr capture/send branches (tests). */
+export type IdleNudgeHerdrExecFn = HerdrExecOptions['execFn'];
+
+export interface IdleNudgeDeps {
+  herdrExecFn?: IdleNudgeHerdrExecFn;
+}
+
+/**
+ * Capture the last 80 lines of a worker pane — tmux (`%N`) or herdr
+ * (`wN:pM`). Herdr capture uses `pane read --source recent-unwrapped`, which
+ * matches `capture-pane -J` semantics (soft wraps joined, ANSI stripped), so
+ * the shared idle classifiers keep working. Returns '' on error.
+ */
+export function capturePane(paneId: string, deps: IdleNudgeDeps = {}): Promise<string> {
+  if (isHerdrPaneId(paneId)) {
+    return captureHerdrWorkerPane(paneId, 80, { execFn: deps.herdrExecFn })
+      .catch(() => '');
+  }
   return new Promise((resolve) => {
     execFile('tmux', buildCapturePaneArgv(paneId, 80), (err, stdout) => {
       if (err) resolve('');
@@ -52,8 +74,8 @@ export function capturePane(paneId: string): Promise<string> {
  * A pane is idle when it shows a prompt (ready for input) but has no
  * active task running.
  */
-export async function isPaneIdle(paneId: string): Promise<boolean> {
-  const captured = await capturePane(paneId);
+export async function isPaneIdle(paneId: string, deps: IdleNudgeDeps = {}): Promise<boolean> {
+  const captured = await capturePane(paneId, deps);
   if (!captured) return false;
   return paneLooksReady(captured) && !paneHasActiveTask(captured);
 }
@@ -76,9 +98,21 @@ export interface TeamNudgePaneTarget {
 
 async function sendToWorkerByPaneId(
   sessionName: string,
+  paneId: string,
   target: TeamNudgePaneTarget | null,
   message: string,
+  deps: IdleNudgeDeps = {},
 ): Promise<boolean> {
+  if (isHerdrPaneId(paneId)) {
+    // Herdr pane ids are stable addresses: submit the nudge through the
+    // semantic agent surface instead of tmux send-keys.
+    try {
+      await submitToHerdrWorker(paneId, message, { execFn: deps.herdrExecFn });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   try {
     if (target) {
       await sendToWorker(
@@ -104,18 +138,34 @@ async function sendToWorkerByPaneId(
 
 
 function isAuthorizedTeamNudgeTarget(value: string | TeamNudgePaneTarget): value is TeamNudgePaneTarget {
-  return typeof value !== 'string'
-    && /^%[0-9]+$/.test(value.paneId)
+  if (typeof value === 'string') return false;
+  const herdrTarget = isHerdrPaneId(value.paneId);
+  if (!herdrTarget && !/^%[0-9]+$/.test(value.paneId)) return false;
+  // Herdr pane ids are never reused, so there is no recycled-pane PID to pin;
+  // panePid may be 0 ("unknown") there, while tmux panes keep the strict
+  // positive-PID proof.
+  const panePidAuthorized = herdrTarget
+    ? Number.isSafeInteger(value.panePid) && value.panePid >= 0
+    : Number.isSafeInteger(value.panePid) && value.panePid > 0;
+  return panePidAuthorized
     && Number.isSafeInteger(value.workerIndex)
     && value.workerIndex >= 0
-    && Number.isSafeInteger(value.panePid)
-    && value.panePid > 0
     && value.teamOwnerId.trim() !== ''
     && value.paneId !== value.hudPaneId?.trim();
 }
 
-async function isAuthorizedTeamPaneIdle(sessionName: string, target: TeamNudgePaneTarget): Promise<boolean> {
+async function isAuthorizedTeamPaneIdle(
+  sessionName: string,
+  target: TeamNudgePaneTarget,
+  deps: IdleNudgeDeps = {},
+): Promise<boolean> {
   try {
+    if (isHerdrPaneId(target.paneId)) {
+      // Herdr panes have no tmux PID/owner proof; capture through the herdr
+      // pane-read branch instead of the pinned tmux worker capture.
+      const capture = await capturePane(target.paneId, deps);
+      return capture !== '' && paneLooksReady(capture) && !paneHasActiveTask(capture);
+    }
     const capture = await captureWorkerPane(
       sessionName,
       target.workerIndex,
@@ -143,13 +193,15 @@ interface PaneNudgeState {
 
 export class NudgeTracker {
   private readonly config: NudgeConfig;
+  private readonly deps: IdleNudgeDeps;
   private readonly states = new Map<string, PaneNudgeState>();
   /** Minimum interval between idle-detection scans (ms). */
   private readonly scanIntervalMs = 5_000;
   private lastScanAt = 0;
 
-  constructor(config?: Partial<NudgeConfig>) {
+  constructor(config?: Partial<NudgeConfig>, deps: IdleNudgeDeps = {}) {
     this.config = { ...DEFAULT_NUDGE_CONFIG, ...config };
+    this.deps = deps;
   }
 
   /**
@@ -190,8 +242,8 @@ export class NudgeTracker {
       if (state.nudgeCount >= this.config.maxCount) continue;
 
       const idle = isAuthorizedTeamNudgeTarget(paneTarget)
-        ? await isAuthorizedTeamPaneIdle(sessionName, paneTarget)
-        : await isPaneIdle(paneId);
+        ? await isAuthorizedTeamPaneIdle(sessionName, paneTarget, this.deps)
+        : await isPaneIdle(paneId, this.deps);
 
       if (!idle) {
         // Pane is active — reset idle tracking
@@ -208,9 +260,13 @@ export class NudgeTracker {
       if (now - state.firstIdleAt < this.config.delayMs) continue;
 
       // Send the nudge
-      const ok = isAuthorizedTeamNudgeTarget(paneTarget)
-        ? await sendToWorkerByPaneId(sessionName, paneTarget, this.config.message)
-        : await sendToWorkerByPaneId(sessionName, null, this.config.message);
+      const ok = await sendToWorkerByPaneId(
+        sessionName,
+        paneId,
+        isAuthorizedTeamNudgeTarget(paneTarget) ? paneTarget : null,
+        this.config.message,
+        this.deps,
+      );
       if (ok) {
         state.nudgeCount++;
         state.lastNudgeAt = now;

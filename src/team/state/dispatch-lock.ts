@@ -1,6 +1,7 @@
 import { existsSync } from 'fs';
-import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
+import { assertTeamLockNotStale } from './locks.js';
 
 const OMX_DISPATCH_LOCK_TIMEOUT_ENV = 'OMX_DISPATCH_LOCK_TIMEOUT_MS';
 const DEFAULT_DISPATCH_LOCK_TIMEOUT_MS = 15_000;
@@ -51,15 +52,7 @@ export async function withDispatchLock<T>(
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'EEXIST') throw error;
 
-      try {
-        const info = await stat(lockDir);
-        if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        // best effort
-      }
+      await assertTeamLockNotStale(lockDir, LOCK_STALE_MS);
 
       if (Date.now() > deadline) {
         throw new Error(

@@ -363,10 +363,10 @@ function selectorEvaluation(
   const bad: BindingSelectorName[] = [];
   const unverified: BindingSelectorName[] = [];
   const aliases = new Set(Object.values(snapshot.verifiedAliases ?? {}));
-  // identity-indeterminate snapshots carry no verified aliases, but the recorded ids in
-  // session.json still let us tell a matching selector from a demonstrated mismatch.
+  // identity-indeterminate and non-runtime-owner snapshots carry no OMX authority, but the
+  // recorded ids in session.json still let us tell a matching selector from a mismatch.
   const recordedIds = new Set(
-    snapshot.status === "identity-indeterminate" && snapshot.state
+    (snapshot.status === "identity-indeterminate" || snapshot.status === "non-runtime-owner") && snapshot.state
       ? Object.values(verifiedSessionAliases(snapshot.state))
       : [],
   );
@@ -411,6 +411,9 @@ function bindingRecoveryAction(
   if (snapshot.status === "stale-dead") {
     return `${selectorFix}${rootClear}inspect selected session.json owner identity; run omx session pointer recover only for a positively dead, non-reused owner; reused or uncertain identity requires investigation; relaunch after resolution`;
   }
+  if (snapshot.status === "non-runtime-owner") {
+    return `${selectorFix}${rootClear}run omx session pointer recover to quarantine the live managed Codex daemon pointer; relaunch`;
+  }
   return `${selectorFix}${rootClear}inspect selected session.json; verify owner; terminate only verified owner if necessary; relaunch`;
 }
 
@@ -428,6 +431,7 @@ function compactCappedBindingRecoveryAction(
     ? "terminate only verified owner if necessary;"
     : "";
   if (snapshot.status === "stale-dead") return `${selectorFix}${rootClear}recover only verified-dead non-reused owner;investigate reused/uncertain identity;relaunch`;
+  if (snapshot.status === "non-runtime-owner") return `${selectorFix}${rootClear}run omx session pointer recover;relaunch`;
   if (ownerTermination) return `${selectorFix}${rootClear}${ownerTermination}relaunch`;
   if (snapshot.status === "read-error") return `${selectorFix}${rootClear}inspect;relaunch`;
   return `${selectorFix}${rootClear}relaunch`;
@@ -458,6 +462,8 @@ export function formatStateRootSessionBindingDiagnostic(
         ? "stale-dead"
         : snapshot.liveness === "usable"
           ? "usable"
+          : snapshot.liveness === "non-runtime-owner"
+            ? "managed-daemon-not-runtime-owner"
           : undefined;
   const fields = [
     `src=${source}`,
@@ -516,6 +522,7 @@ export function formatStateRootSessionBindingDiagnostic(
       ...(snapshot.status === "stale-dead"
         ? ["recover=dead-nonreused-only", "reused=investigate"]
         : []),
+      ...(snapshot.status === "non-runtime-owner" ? ["recover=omx session pointer recover (managed Codex daemon)"] : []),
       ...(selectedSessionLabel ? ["selected=session.json"] : []),
       ...(badSelectorsField ? [badSelectorsField] : []),
       ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
@@ -580,6 +587,7 @@ export function formatStateRootSessionBindingDiagnostic(
     ...(snapshot.status === "stale-dead"
       ? ["recover=dead-nonreused-only", "reused=investigate"]
       : []),
+    ...(snapshot.status === "non-runtime-owner" ? ["recover=omx session pointer recover (managed Codex daemon)"] : []),
     ...(selectedSessionLabel ? ["selected=session.json"] : []),
     ...(badSelectorsField ? [badSelectorsField] : []),
     ...(hasUnverifiedSelectors && identityProbeReason ? [`unverified=${identityProbeReason}`] : []),
@@ -626,6 +634,12 @@ export function checkStateRootSessionBinding(
     evaluation.unverified.length === 0
   )
     status = "pass";
+  else if (
+    snapshot.status === "non-runtime-owner" &&
+    evaluation.bad.length === 0 &&
+    evaluation.unverified.length === 0
+  )
+    status = "warn";
   const message = formatStateRootSessionBindingDiagnostic(snapshot, env, evaluation.bad);
   return { name: "State root/session binding", status, message };
 }
@@ -1433,12 +1447,10 @@ export function checkProcessIdentityReadiness(
 						? "provider unavailable"
 						: "provider response unverifiable";
 		// The native runtime is hydrated to the version-keyed cache, not shipped
-		// in the npm tarball. When hydration never ran (offline install) or the
-		// cache was cleared, reinstall/update repairs it — but when the provider
-		// is unavailable for any other reason, say what actually restores it
-		// instead of prescribing a no-op reinstall (issue #3636).
+		// in the npm tarball. The foreground repair command retries hydration and
+		// surfaces its failure instead of looping through an opaque update.
 		const remedy = observation.kind === "unsupported"
-			? "run `omx update` (repairs the native runtime cache) or `omx setup`, then rerun doctor; session pointer recovery works without the native runtime"
+			? "run `omx native-runtime hydrate` in the foreground to retry native runtime hydration and report errors, then rerun doctor; session pointer recovery works without the native runtime"
 			: "reinstall or update OMX and rerun doctor";
 		return {
 			name: "Process identity",

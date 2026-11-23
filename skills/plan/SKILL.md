@@ -36,8 +36,8 @@ Plan creates concise, actionable work plans. Auto-detects interview vs direct, s
 | Review | `--review` | Critic evaluation of existing plan |
 
 ### Interview (`--interview`)
-1. Classify request; ask one focused question via `omx question`
-2. Gather codebase facts first, then ask informed follow-ups
+1. Classify the request and gather discoverable codebase facts before asking a question
+2. Ask one focused question for the remaining intent/preference gap through the available question surface below
 3. Build on answers; consult Analyst for hidden requirements
 4. Create plan when user signals readiness
 
@@ -49,7 +49,7 @@ Plan creates concise, actionable work plans. Auto-detects interview vs direct, s
 ### Review (`--review`)
 1. Read plan from `.omx/plans/`
 2. Evaluate via Critic; verdict APPROVED/REVISE/REJECT
-3. If author == reviewer, hand off to `$code-review`
+3. Use a separate Critic reviewer when the current lane authored the plan; if independent review is unavailable, report that gap without claiming approval
 
 ### Output
 Every plan includes: Requirements Summary, Acceptance Criteria (testable), Implementation Steps (with file refs, adaptive count), Risks/Mitigations, Verification. Saved to `.omx/plans/`.
@@ -60,14 +60,14 @@ Outcome-first framing: apply outcome-first framing, concise visible updates for 
 
 <Tool_Usage>
 - `omx explore` is deprecated. Use normal repository inspection; `omx sparkshell` only for explicit shell-native evidence
-- Use `omx question` for interview questions; plain text only as fallback
-- Use `ask_codex` with `planner`/`analyst`/`critic` as needed
+- In attached OMX tmux, use `omx question` with `OMX_QUESTION_RETURN_PANE` set to the current pane. Outside tmux, use native structured input when available; otherwise ask one concise plain-text question and wait for the answer
+- Use only the host's exposed native subagent tools with the installed `planner`/`analyst`/`critic` roles when the selected planning step needs them; report an unavailable required reviewer instead of inventing a tool
 </Tool_Usage>
 
 <Escalation_And_Stop_Conditions>
 - Stop interviewing when requirements are clear — do not over-interview
 - Escalate on irreconcilable trade-offs requiring business decision
-- "just do it" / "skip planning" → hand off to `$ultragoal`
+- "just do it" / "skip planning" → continue the authorized scoped task through direct execution; use `$ultragoal` only when explicitly requested or required for durable goals, preserving any active workflow's gates
 </Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
@@ -82,7 +82,7 @@ Outcome-first framing: apply outcome-first framing, concise visible updates for 
 | Type | Examples | Action |
 |------|----------|--------|
 | Codebase Fact | "Where is X?" | Explore first, do not ask |
-| User Preference | "Priority?" | Ask via `omx question` |
+| User Preference | "Priority?" | Ask through the available question surface above |
 | Scope Decision | "Include Y?" | Ask user |
 
 ## Review Quality Criteria

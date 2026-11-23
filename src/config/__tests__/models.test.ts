@@ -1,452 +1,526 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
-import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import assert from "node:assert/strict";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { mkdtemp, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
-  AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS,
-  CANONICAL_REASONING_EFFORTS,
-  DEFAULT_FRONTIER_MODEL,
-  DEFAULT_SPARK_MODEL,
-  DEFAULT_STANDARD_MODEL,
-  DEFAULT_TEAM_CHILD_MODEL,
-  GPT_5_6_MODEL_ALIASES,
-  KNOWN_CODEX_MODEL_ALIASES,
-  PER_AGENT_REASONING_EFFORTS,
-  ROOT_REASONING_EFFORTS,
-  ROOT_UNSUPPORTED_REASONING_EFFORTS,
-  getAgentModelOverride,
-  getAgentReasoningOverride,
-  getEnvConfiguredStandardDefaultModel,
-  getMainDefaultModel,
-  getModelForMode,
-  getSparkDefaultModel,
-  getStandardDefaultModel,
-  getTeamChildModel,
-  getTeamLowComplexityModel,
-  isAmbiguousUnsupportedReasoningEffort,
-  isKnownCodexModelAlias,
-  isUnsupportedRootReasoningEffort,
-  normalizeUnsupportedRootReasoningEffort,
-  readAgentModelOverrides,
-  readAgentReasoningOverrides,
-  readConfiguredEnvOverrides,
-  type AmbiguousUnsupportedReasoningEffort,
-  type ConfiguredAgentReasoningEffort,
-  type PerAgentReasoningEffort,
-  type RootReasoningEffort,
-  type RootUnsupportedReasoningEffort,
-} from '../models.js';
+	AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS,
+	type AmbiguousUnsupportedReasoningEffort,
+	CANONICAL_REASONING_EFFORTS,
+	type ConfiguredAgentReasoningEffort,
+	DEFAULT_FRONTIER_MODEL,
+	DEFAULT_SPARK_MODEL,
+	DEFAULT_STANDARD_MODEL,
+	DEFAULT_TEAM_CHILD_MODEL,
+	GPT_5_6_MODEL_ALIASES,
+	getAgentModelOverride,
+	getAgentReasoningOverride,
+	getEnvConfiguredStandardDefaultModel,
+	getMainDefaultModel,
+	getModelForMode,
+	getSparkDefaultModel,
+	getStandardDefaultModel,
+	getTeamChildModel,
+	getTeamLowComplexityModel,
+	isAmbiguousUnsupportedReasoningEffort,
+	isKnownCodexModelAlias,
+	isUnsupportedRootReasoningEffort,
+	KNOWN_CODEX_MODEL_ALIASES,
+	normalizeUnsupportedRootReasoningEffort,
+	PER_AGENT_REASONING_EFFORTS,
+	type PerAgentReasoningEffort,
+	ROOT_REASONING_EFFORTS,
+	ROOT_UNSUPPORTED_REASONING_EFFORTS,
+	type RootReasoningEffort,
+	type RootUnsupportedReasoningEffort,
+	readAgentModelOverrides,
+	readAgentReasoningOverrides,
+	readConfiguredEnvOverrides,
+} from "../models.js";
 
-describe('getModelForMode', () => {
-  let tempDir: string;
-  let originalCodexHome: string | undefined;
-  let originalDefaultFrontierModel: string | undefined;
-  let originalDefaultStandardModel: string | undefined;
-  let originalDefaultSparkModel: string | undefined;
-  let originalTeamChildModel: string | undefined;
-  let originalSparkModel: string | undefined;
+describe("getModelForMode", () => {
+	let tempDir: string;
+	let originalCodexHome: string | undefined;
+	let originalDefaultFrontierModel: string | undefined;
+	let originalDefaultStandardModel: string | undefined;
+	let originalDefaultSparkModel: string | undefined;
+	let originalTeamChildModel: string | undefined;
+	let originalSparkModel: string | undefined;
 
-  beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), 'omx-models-'));
-    originalCodexHome = process.env.CODEX_HOME;
-    originalDefaultFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
-    originalDefaultStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
-    originalDefaultSparkModel = process.env.OMX_DEFAULT_SPARK_MODEL;
-    originalTeamChildModel = process.env.OMX_TEAM_CHILD_MODEL;
-    originalSparkModel = process.env.OMX_SPARK_MODEL;
-    process.env.CODEX_HOME = tempDir;
-    delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
-    delete process.env.OMX_DEFAULT_STANDARD_MODEL;
-    delete process.env.OMX_DEFAULT_SPARK_MODEL;
-    delete process.env.OMX_TEAM_CHILD_MODEL;
-    delete process.env.OMX_SPARK_MODEL;
-  });
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "omx-models-"));
+		originalCodexHome = process.env.CODEX_HOME;
+		originalDefaultFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
+		originalDefaultStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
+		originalDefaultSparkModel = process.env.OMX_DEFAULT_SPARK_MODEL;
+		originalTeamChildModel = process.env.OMX_TEAM_CHILD_MODEL;
+		originalSparkModel = process.env.OMX_SPARK_MODEL;
+		process.env.CODEX_HOME = tempDir;
+		delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+		delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+		delete process.env.OMX_DEFAULT_SPARK_MODEL;
+		delete process.env.OMX_TEAM_CHILD_MODEL;
+		delete process.env.OMX_SPARK_MODEL;
+	});
 
-  afterEach(async () => {
-    if (typeof originalCodexHome === 'string') {
-      process.env.CODEX_HOME = originalCodexHome;
-    } else {
-      delete process.env.CODEX_HOME;
-    }
-    if (typeof originalDefaultFrontierModel === 'string') {
-      process.env.OMX_DEFAULT_FRONTIER_MODEL = originalDefaultFrontierModel;
-    } else {
-      delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
-    }
-    if (typeof originalDefaultStandardModel === 'string') {
-      process.env.OMX_DEFAULT_STANDARD_MODEL = originalDefaultStandardModel;
-    } else {
-      delete process.env.OMX_DEFAULT_STANDARD_MODEL;
-    }
-    if (typeof originalDefaultSparkModel === 'string') {
-      process.env.OMX_DEFAULT_SPARK_MODEL = originalDefaultSparkModel;
-    } else {
-      delete process.env.OMX_DEFAULT_SPARK_MODEL;
-    }
-    if (typeof originalTeamChildModel === 'string') {
-      process.env.OMX_TEAM_CHILD_MODEL = originalTeamChildModel;
-    } else {
-      delete process.env.OMX_TEAM_CHILD_MODEL;
-    }
-    if (typeof originalSparkModel === 'string') {
-      process.env.OMX_SPARK_MODEL = originalSparkModel;
-    } else {
-      delete process.env.OMX_SPARK_MODEL;
-    }
-    await rm(tempDir, { recursive: true, force: true });
-  });
+	afterEach(async () => {
+		if (typeof originalCodexHome === "string") {
+			process.env.CODEX_HOME = originalCodexHome;
+		} else {
+			delete process.env.CODEX_HOME;
+		}
+		if (typeof originalDefaultFrontierModel === "string") {
+			process.env.OMX_DEFAULT_FRONTIER_MODEL = originalDefaultFrontierModel;
+		} else {
+			delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+		}
+		if (typeof originalDefaultStandardModel === "string") {
+			process.env.OMX_DEFAULT_STANDARD_MODEL = originalDefaultStandardModel;
+		} else {
+			delete process.env.OMX_DEFAULT_STANDARD_MODEL;
+		}
+		if (typeof originalDefaultSparkModel === "string") {
+			process.env.OMX_DEFAULT_SPARK_MODEL = originalDefaultSparkModel;
+		} else {
+			delete process.env.OMX_DEFAULT_SPARK_MODEL;
+		}
+		if (typeof originalTeamChildModel === "string") {
+			process.env.OMX_TEAM_CHILD_MODEL = originalTeamChildModel;
+		} else {
+			delete process.env.OMX_TEAM_CHILD_MODEL;
+		}
+		if (typeof originalSparkModel === "string") {
+			process.env.OMX_SPARK_MODEL = originalSparkModel;
+		} else {
+			delete process.env.OMX_SPARK_MODEL;
+		}
+		await rm(tempDir, { recursive: true, force: true });
+	});
 
-  async function writeConfig(config: Record<string, unknown>): Promise<void> {
-    await writeFile(join(tempDir, '.omx-config.json'), JSON.stringify(config));
-  }
+	async function writeConfig(config: Record<string, unknown>): Promise<void> {
+		await writeFile(join(tempDir, ".omx-config.json"), JSON.stringify(config));
+	}
 
-  it('returns frontier default when config file does not exist', () => {
-    assert.equal(getModelForMode('team'), DEFAULT_FRONTIER_MODEL);
-  });
+	it("returns frontier default when config file does not exist", () => {
+		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+	});
 
-  it('returns frontier default when config has no models section', async () => {
-    await writeConfig({ notifications: { enabled: false } });
-    assert.equal(getModelForMode('team'), DEFAULT_FRONTIER_MODEL);
-  });
+	it("returns frontier default when config has no models section", async () => {
+		await writeConfig({ notifications: { enabled: false } });
+		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+	});
 
-  it('returns mode-specific model when configured', async () => {
-    await writeConfig({ models: { team: 'gpt-4.1', default: 'o4-mini' } });
-    assert.equal(getModelForMode('team'), 'gpt-4.1');
-  });
+	it("returns mode-specific model when configured", async () => {
+		await writeConfig({ models: { team: "gpt-4.1", default: "o4-mini" } });
+		assert.equal(getModelForMode("team"), "gpt-4.1");
+	});
 
-  it('falls back to default when mode-specific model is not set', async () => {
-    await writeConfig({ models: { default: 'o4-mini' } });
-    assert.equal(getModelForMode('team'), 'o4-mini');
-  });
+	it("falls back to default when mode-specific model is not set", async () => {
+		await writeConfig({ models: { default: "o4-mini" } });
+		assert.equal(getModelForMode("team"), "o4-mini");
+	});
 
-  it('returns frontier default when models section is empty', async () => {
-    await writeConfig({ models: {} });
-    assert.equal(getModelForMode('team'), DEFAULT_FRONTIER_MODEL);
-  });
+	it("returns frontier default when models section is empty", async () => {
+		await writeConfig({ models: {} });
+		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+	});
 
-  it('ignores empty string values and falls back to default', async () => {
-    await writeConfig({ models: { team: '', default: 'o4-mini' } });
-    assert.equal(getModelForMode('team'), 'o4-mini');
-  });
+	it("ignores empty string values and falls back to default", async () => {
+		await writeConfig({ models: { team: "", default: "o4-mini" } });
+		assert.equal(getModelForMode("team"), "o4-mini");
+	});
 
-  it('trims whitespace from model values', async () => {
-    await writeConfig({ models: { team: '  gpt-4.1  ' } });
-    assert.equal(getModelForMode('team'), 'gpt-4.1');
-  });
+	it("trims whitespace from model values", async () => {
+		await writeConfig({ models: { team: "  gpt-4.1  " } });
+		assert.equal(getModelForMode("team"), "gpt-4.1");
+	});
 
-  it('resolves different modes independently', async () => {
-    await writeConfig({ models: { team: 'gpt-4.1', autopilot: 'o4-mini', ralph: 'gpt-5' } });
-    assert.equal(getModelForMode('team'), 'gpt-4.1');
-    assert.equal(getModelForMode('autopilot'), 'o4-mini');
-    assert.equal(getModelForMode('ralph'), 'gpt-5');
-  });
+	it("resolves different modes independently", async () => {
+		await writeConfig({
+			models: { team: "gpt-4.1", autopilot: "o4-mini", ralph: "gpt-5" },
+		});
+		assert.equal(getModelForMode("team"), "gpt-4.1");
+		assert.equal(getModelForMode("autopilot"), "o4-mini");
+		assert.equal(getModelForMode("ralph"), "gpt-5");
+	});
 
-  it('returns frontier default for invalid models section (array)', async () => {
-    await writeConfig({ models: ['not', 'valid'] });
-    assert.equal(getModelForMode('team'), DEFAULT_FRONTIER_MODEL);
-  });
+	it("returns frontier default for invalid models section (array)", async () => {
+		await writeConfig({ models: ["not", "valid"] });
+		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+	});
 
-  it('returns frontier default for malformed JSON', async () => {
-    await writeFile(join(tempDir, '.omx-config.json'), 'not-json');
-    assert.equal(getModelForMode('team'), DEFAULT_FRONTIER_MODEL);
-  });
+	it("returns frontier default for malformed JSON", async () => {
+		await writeFile(join(tempDir, ".omx-config.json"), "not-json");
+		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+	});
 
-  it('uses OMX_DEFAULT_FRONTIER_MODEL when config does not provide a value', () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-terra';
-    assert.equal(getMainDefaultModel(), 'gpt-5.6-terra');
-    assert.equal(getModelForMode('team'), 'gpt-5.6-terra');
-  });
+	it("uses OMX_DEFAULT_FRONTIER_MODEL when config does not provide a value", () => {
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-terra";
+		assert.equal(getMainDefaultModel(), "gpt-5.6-terra");
+		assert.equal(getModelForMode("team"), "gpt-5.6-terra");
+	});
 
-  it('uses .omx-config.json env.OMX_DEFAULT_FRONTIER_MODEL when shell env is absent', async () => {
-    await writeConfig({ env: { OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local' } });
-    assert.equal(getMainDefaultModel(), 'frontier-local');
-    assert.equal(getModelForMode('team'), 'frontier-local');
-  });
+	it("uses .omx-config.json env.OMX_DEFAULT_FRONTIER_MODEL when shell env is absent", async () => {
+		await writeConfig({
+			env: { OMX_DEFAULT_FRONTIER_MODEL: "frontier-local" },
+		});
+		assert.equal(getMainDefaultModel(), "frontier-local");
+		assert.equal(getModelForMode("team"), "frontier-local");
+	});
 
-  it('uses config.toml root model as the main and standard default when env overrides are absent', async () => {
-    await writeFile(join(tempDir, 'config.toml'), 'model = "frontier-config"\n');
+	it("uses config.toml root model as the main and standard default when env overrides are absent", async () => {
+		await writeFile(
+			join(tempDir, "config.toml"),
+			'model = "frontier-config"\n',
+		);
 
-    assert.equal(getMainDefaultModel(), 'frontier-config');
-    assert.equal(getStandardDefaultModel(), 'frontier-config');
-    assert.equal(getModelForMode('team'), 'frontier-config');
-  });
+		assert.equal(getMainDefaultModel(), "frontier-config");
+		assert.equal(getStandardDefaultModel(), "frontier-config");
+		assert.equal(getModelForMode("team"), "frontier-config");
+	});
 
-  it('uses OMX_DEFAULT_STANDARD_MODEL when configured in shell env', () => {
-    process.env.OMX_DEFAULT_STANDARD_MODEL = 'gpt-5.6-terra-tuned';
-    assert.equal(getEnvConfiguredStandardDefaultModel(), 'gpt-5.6-terra-tuned');
-    assert.equal(getStandardDefaultModel(), 'gpt-5.6-terra-tuned');
-  });
+	it("uses OMX_DEFAULT_STANDARD_MODEL when configured in shell env", () => {
+		process.env.OMX_DEFAULT_STANDARD_MODEL = "gpt-5.6-terra-tuned";
+		assert.equal(getEnvConfiguredStandardDefaultModel(), "gpt-5.6-terra-tuned");
+		assert.equal(getStandardDefaultModel(), "gpt-5.6-terra-tuned");
+	});
 
-  it('uses .omx-config.json env.OMX_DEFAULT_STANDARD_MODEL when shell env is absent', async () => {
-    await writeConfig({ env: { OMX_DEFAULT_STANDARD_MODEL: 'standard-local' } });
-    assert.equal(getEnvConfiguredStandardDefaultModel(), 'standard-local');
-    assert.equal(getStandardDefaultModel(), 'standard-local');
-  });
+	it("uses .omx-config.json env.OMX_DEFAULT_STANDARD_MODEL when shell env is absent", async () => {
+		await writeConfig({
+			env: { OMX_DEFAULT_STANDARD_MODEL: "standard-local" },
+		});
+		assert.equal(getEnvConfiguredStandardDefaultModel(), "standard-local");
+		assert.equal(getStandardDefaultModel(), "standard-local");
+	});
 
-  it('prefers shell OMX_DEFAULT_FRONTIER_MODEL over .omx-config.json env override', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-shell';
-    await writeConfig({ env: { OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local' } });
-    assert.equal(getMainDefaultModel(), 'frontier-shell');
-  });
+	it("prefers shell OMX_DEFAULT_FRONTIER_MODEL over .omx-config.json env override", async () => {
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "frontier-shell";
+		await writeConfig({
+			env: { OMX_DEFAULT_FRONTIER_MODEL: "frontier-local" },
+		});
+		assert.equal(getMainDefaultModel(), "frontier-shell");
+	});
 
-  it('keeps explicit config default ahead of OMX_DEFAULT_FRONTIER_MODEL', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-terra';
-    await writeConfig({ models: { default: 'o4-mini' } });
-    assert.equal(getModelForMode('team'), 'o4-mini');
-  });
+	it("keeps explicit config default ahead of OMX_DEFAULT_FRONTIER_MODEL", async () => {
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-terra";
+		await writeConfig({ models: { default: "o4-mini" } });
+		assert.equal(getModelForMode("team"), "o4-mini");
+	});
 
-  it('keeps explicit mode config ahead of OMX_DEFAULT_FRONTIER_MODEL', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-terra';
-    await writeConfig({ models: { team: 'gpt-4.1', default: 'o4-mini' } });
-    assert.equal(getModelForMode('team'), 'gpt-4.1');
-  });
+	it("keeps explicit mode config ahead of OMX_DEFAULT_FRONTIER_MODEL", async () => {
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-terra";
+		await writeConfig({ models: { team: "gpt-4.1", default: "o4-mini" } });
+		assert.equal(getModelForMode("team"), "gpt-4.1");
+	});
 
+	it("defaults team child model to the standard lane independent of frontier defaults", () => {
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "frontier-expensive";
+		assert.equal(DEFAULT_TEAM_CHILD_MODEL, "gpt-6-astra");
+		assert.equal(getTeamChildModel(), "gpt-6-astra");
+	});
 
+	it("uses OMX_TEAM_CHILD_MODEL shell override for team child model", () => {
+		process.env.OMX_TEAM_CHILD_MODEL = "team-child-custom";
+		assert.equal(getTeamChildModel(), "team-child-custom");
+	});
 
-  it('defaults team child model to the standard lane independent of frontier defaults', () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-expensive';
-    assert.equal(DEFAULT_TEAM_CHILD_MODEL, 'gpt-6-astra');
-    assert.equal(getTeamChildModel(), 'gpt-6-astra');
-  });
+	it("uses .omx-config.json env.OMX_TEAM_CHILD_MODEL when shell env is absent", async () => {
+		await writeConfig({ env: { OMX_TEAM_CHILD_MODEL: "team-child-local" } });
+		assert.equal(getTeamChildModel(), "team-child-local");
+	});
 
-  it('uses OMX_TEAM_CHILD_MODEL shell override for team child model', () => {
-    process.env.OMX_TEAM_CHILD_MODEL = 'team-child-custom';
-    assert.equal(getTeamChildModel(), 'team-child-custom');
-  });
+	it("returns low-complexity team model when configured", async () => {
+		// Intentional legacy model fixture: verifies explicit user config is preserved, not used as a runtime default.
+		await writeConfig({ models: { team_low_complexity: "gpt-4.1-mini" } });
+		assert.equal(getTeamLowComplexityModel(), "gpt-4.1-mini");
+	});
 
-  it('uses .omx-config.json env.OMX_TEAM_CHILD_MODEL when shell env is absent', async () => {
-    await writeConfig({ env: { OMX_TEAM_CHILD_MODEL: 'team-child-local' } });
-    assert.equal(getTeamChildModel(), 'team-child-local');
-  });
+	it("uses OMX_DEFAULT_SPARK_MODEL when low-complexity config is absent", async () => {
+		process.env.OMX_DEFAULT_SPARK_MODEL = "gpt-5.6-luna-fast";
+		await writeConfig({ models: { team: "gpt-4.1" } });
+		assert.equal(getSparkDefaultModel(), "gpt-5.6-luna-fast");
+		assert.equal(getTeamLowComplexityModel(), "gpt-5.6-luna-fast");
+	});
 
-  it('returns low-complexity team model when configured', async () => {
-    // Intentional legacy model fixture: verifies explicit user config is preserved, not used as a runtime default.
-    await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
-    assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
-  });
+	it("uses .omx-config.json env.OMX_DEFAULT_SPARK_MODEL when shell env is absent", async () => {
+		await writeConfig({
+			env: { OMX_DEFAULT_SPARK_MODEL: "spark-local" },
+			models: { team: "gpt-4.1" },
+		});
+		assert.equal(getSparkDefaultModel(), "spark-local");
+	});
 
-  it('uses OMX_DEFAULT_SPARK_MODEL when low-complexity config is absent', async () => {
-    process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.6-luna-fast';
-    await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getSparkDefaultModel(), 'gpt-5.6-luna-fast');
-    assert.equal(getTeamLowComplexityModel(), 'gpt-5.6-luna-fast');
-  });
+	it("falls back to legacy OMX_SPARK_MODEL when canonical spark env is absent", async () => {
+		process.env.OMX_SPARK_MODEL = "gpt-5.6-luna-fast";
+		await writeConfig({ models: { team: "gpt-4.1" } });
+		assert.equal(getSparkDefaultModel(), "gpt-5.6-luna-fast");
+		assert.equal(getTeamLowComplexityModel(), "gpt-5.6-luna-fast");
+	});
 
-  it('uses .omx-config.json env.OMX_DEFAULT_SPARK_MODEL when shell env is absent', async () => {
-    await writeConfig({ env: { OMX_DEFAULT_SPARK_MODEL: 'spark-local' }, models: { team: 'gpt-4.1' } });
-    assert.equal(getSparkDefaultModel(), 'spark-local');
-  });
+	it("prefers OMX_DEFAULT_SPARK_MODEL over legacy OMX_SPARK_MODEL", () => {
+		process.env.OMX_DEFAULT_SPARK_MODEL = "spark-canonical";
+		process.env.OMX_SPARK_MODEL = "spark-legacy";
+		assert.equal(getSparkDefaultModel(), "spark-canonical");
+	});
 
-  it('falls back to legacy OMX_SPARK_MODEL when canonical spark env is absent', async () => {
-    process.env.OMX_SPARK_MODEL = 'gpt-5.6-luna-fast';
-    await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getSparkDefaultModel(), 'gpt-5.6-luna-fast');
-    assert.equal(getTeamLowComplexityModel(), 'gpt-5.6-luna-fast');
-  });
+	it("inherits from configured main model when no explicit spark override is set", async () => {
+		// When user configures a main model, spark should inherit it instead of using DEFAULT_SPARK_MODEL
+		// This prevents expensive models from being used in fast lanes when user chose a cheaper main model
+		await writeFile(join(tempDir, "config.toml"), 'model = "gpt-6.1-terra"\n');
+		assert.equal(getMainDefaultModel(), "gpt-6.1-terra");
+		assert.equal(getSparkDefaultModel(), "gpt-6.1-terra");
+	});
 
-  it('prefers OMX_DEFAULT_SPARK_MODEL over legacy OMX_SPARK_MODEL', () => {
-    process.env.OMX_DEFAULT_SPARK_MODEL = 'spark-canonical';
-    process.env.OMX_SPARK_MODEL = 'spark-legacy';
-    assert.equal(getSparkDefaultModel(), 'spark-canonical');
-  });
+	it("respects explicit spark override over inherited main model", async () => {
+		// Explicit spark override should take precedence
+		process.env.OMX_DEFAULT_SPARK_MODEL = "spark-explicit";
+		await writeFile(join(tempDir, "config.toml"), 'model = "gpt-6.1-terra"\n');
+		assert.equal(getSparkDefaultModel(), "spark-explicit");
+	});
 
-  it('reads normalized env overrides from .omx-config.json', async () => {
-    await writeConfig({
-      env: {
-        OMX_DEFAULT_FRONTIER_MODEL: ' frontier-local ',
-        OMX_DEFAULT_STANDARD_MODEL: ' standard-local ',
-        OMX_DEFAULT_SPARK_MODEL: ' spark-local ',
-        EMPTY: '   ',
-      },
-    });
-    assert.deepEqual(readConfiguredEnvOverrides(), {
-      OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local',
-      OMX_DEFAULT_STANDARD_MODEL: 'standard-local',
-      OMX_DEFAULT_SPARK_MODEL: 'spark-local',
-    });
-  });
+	it("respects low-complexity key over inherited main model", async () => {
+		// Low-complexity config key should take precedence over inherited main model
+		await writeFile(join(tempDir, "config.toml"), 'model = "gpt-6-astra"\n');
+		await writeConfig({ models: { team_low_complexity: "gpt-6.1-terra" } });
+		assert.equal(getSparkDefaultModel(), "gpt-6.1-terra");
+	});
 
-  it('reads normalized per-agent reasoning overrides from .omx-config.json', async () => {
-    await writeConfig({
-      agentReasoning: {
-        Architect: ' xhigh ',
-        critic: 'high',
-        executor: 'invalid',
-        'bad role': 'low',
-        empty: '   ',
-      },
-    });
+	it("reads normalized env overrides from .omx-config.json", async () => {
+		await writeConfig({
+			env: {
+				OMX_DEFAULT_FRONTIER_MODEL: " frontier-local ",
+				OMX_DEFAULT_STANDARD_MODEL: " standard-local ",
+				OMX_DEFAULT_SPARK_MODEL: " spark-local ",
+				EMPTY: "   ",
+			},
+		});
+		assert.deepEqual(readConfiguredEnvOverrides(), {
+			OMX_DEFAULT_FRONTIER_MODEL: "frontier-local",
+			OMX_DEFAULT_STANDARD_MODEL: "standard-local",
+			OMX_DEFAULT_SPARK_MODEL: "spark-local",
+		});
+	});
 
-    assert.deepEqual(readAgentReasoningOverrides(), {
-      architect: 'xhigh',
-      critic: 'high',
-    });
-    assert.equal(getAgentReasoningOverride('ARCHITECT'), 'xhigh');
-    assert.equal(getAgentReasoningOverride('executor'), undefined);
-  });
+	it("reads normalized per-agent reasoning overrides from .omx-config.json", async () => {
+		await writeConfig({
+			agentReasoning: {
+				Architect: " xhigh ",
+				critic: "high",
+				executor: "invalid",
+				"bad role": "low",
+				empty: "   ",
+			},
+		});
 
-  it('accepts normalized per-agent max while omitting unsupported and invalid reasoning values', async () => {
-    await writeConfig({
-      agentReasoning: {
-        Architect: 'low',
-        architect: ' MAX ',
-        critic: 'ultra',
-        executor: 'invalid',
-        planner: 'xhigh',
-        empty: '   ',
-        array: ['max'],
-        object: { effort: 'max' },
-        boolean: true,
-        number: 5,
-      },
-    });
+		assert.deepEqual(readAgentReasoningOverrides(), {
+			architect: "xhigh",
+			critic: "high",
+		});
+		assert.equal(getAgentReasoningOverride("ARCHITECT"), "xhigh");
+		assert.equal(getAgentReasoningOverride("executor"), undefined);
+	});
 
-    assert.deepEqual(readAgentReasoningOverrides(), {
-      architect: 'max',
-      planner: 'xhigh',
-    });
-    assert.equal(getAgentReasoningOverride('ARCHITECT'), 'max');
-    assert.equal(getAgentReasoningOverride('critic'), undefined);
-    assert.equal(getAgentReasoningOverride('executor'), undefined);
-  });
+	it("accepts normalized per-agent max while omitting unsupported and invalid reasoning values", async () => {
+		await writeConfig({
+			agentReasoning: {
+				Architect: "low",
+				architect: " MAX ",
+				critic: "ultra",
+				executor: "invalid",
+				planner: "xhigh",
+				empty: "   ",
+				array: ["max"],
+				object: { effort: "max" },
+				boolean: true,
+				number: 5,
+			},
+		});
 
-  it('keeps legacy, per-agent, and root reasoning vocabularies distinct', () => {
-    const legacyEffort: ConfiguredAgentReasoningEffort = 'xhigh';
-    const perAgentEffort: PerAgentReasoningEffort = 'max';
-    const rootEffort: RootReasoningEffort = 'xhigh';
-    const rootUnsupportedEffort: RootUnsupportedReasoningEffort = 'max';
-    void legacyEffort;
-    void perAgentEffort;
-    void rootEffort;
-    void rootUnsupportedEffort;
-    const ambiguousUnsupportedEffort: AmbiguousUnsupportedReasoningEffort = 'ultra';
-    void ambiguousUnsupportedEffort;
+		assert.deepEqual(readAgentReasoningOverrides(), {
+			architect: "max",
+			planner: "xhigh",
+		});
+		assert.equal(getAgentReasoningOverride("ARCHITECT"), "max");
+		assert.equal(getAgentReasoningOverride("critic"), undefined);
+		assert.equal(getAgentReasoningOverride("executor"), undefined);
+	});
 
-    // @ts-expect-error Legacy configured reasoning remains four-valued.
-    const legacyMax: ConfiguredAgentReasoningEffort = 'max';
-    // @ts-expect-error Root reasoning remains four-valued.
-    const rootMax: RootReasoningEffort = 'max';
-    // @ts-expect-error Root unsupported tokens exclude unknown values.
-    const rootUnknown: RootUnsupportedReasoningEffort = 'future';
-    void legacyMax;
-    void rootMax;
-    void rootUnknown;
-    // @ts-expect-error Per-agent reasoning excludes ultra.
-    const perAgentUltra: PerAgentReasoningEffort = 'ultra';
-    // @ts-expect-error Legacy unsupported tokens exclude supported values.
-    const ambiguousHigh: AmbiguousUnsupportedReasoningEffort = 'high';
-    void perAgentUltra;
-    void ambiguousHigh;
+	it("keeps legacy, per-agent, and root reasoning vocabularies distinct", () => {
+		const legacyEffort: ConfiguredAgentReasoningEffort = "xhigh";
+		const perAgentEffort: PerAgentReasoningEffort = "max";
+		const rootEffort: RootReasoningEffort = "xhigh";
+		const rootUnsupportedEffort: RootUnsupportedReasoningEffort = "max";
+		void legacyEffort;
+		void perAgentEffort;
+		void rootEffort;
+		void rootUnsupportedEffort;
+		const ambiguousUnsupportedEffort: AmbiguousUnsupportedReasoningEffort =
+			"ultra";
+		void ambiguousUnsupportedEffort;
 
-    assert.deepEqual(CANONICAL_REASONING_EFFORTS, ['low', 'medium', 'high', 'xhigh']);
-    assert.deepEqual(AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS, ['max', 'ultra']);
-    assert.deepEqual(PER_AGENT_REASONING_EFFORTS, ['low', 'medium', 'high', 'xhigh', 'max']);
-    assert.deepEqual(ROOT_REASONING_EFFORTS, ['low', 'medium', 'high', 'xhigh']);
-    assert.deepEqual(ROOT_UNSUPPORTED_REASONING_EFFORTS, ['max', 'ultra']);
-    assert.notStrictEqual(ROOT_REASONING_EFFORTS, CANONICAL_REASONING_EFFORTS);
+		// @ts-expect-error Legacy configured reasoning remains four-valued.
+		const legacyMax: ConfiguredAgentReasoningEffort = "max";
+		// @ts-expect-error Root reasoning remains four-valued.
+		const rootMax: RootReasoningEffort = "max";
+		// @ts-expect-error Root unsupported tokens exclude unknown values.
+		const rootUnknown: RootUnsupportedReasoningEffort = "future";
+		void legacyMax;
+		void rootMax;
+		void rootUnknown;
+		// @ts-expect-error Per-agent reasoning excludes ultra.
+		const perAgentUltra: PerAgentReasoningEffort = "ultra";
+		// @ts-expect-error Legacy unsupported tokens exclude supported values.
+		const ambiguousHigh: AmbiguousUnsupportedReasoningEffort = "high";
+		void perAgentUltra;
+		void ambiguousHigh;
 
-    assert.equal(isAmbiguousUnsupportedReasoningEffort('MAX'), true);
-    assert.equal(isAmbiguousUnsupportedReasoningEffort(' max '), false);
+		assert.deepEqual(CANONICAL_REASONING_EFFORTS, [
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+		]);
+		assert.deepEqual(AMBIGUOUS_UNSUPPORTED_REASONING_EFFORTS, ["max", "ultra"]);
+		assert.deepEqual(PER_AGENT_REASONING_EFFORTS, [
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		assert.deepEqual(ROOT_REASONING_EFFORTS, [
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+		]);
+		assert.deepEqual(ROOT_UNSUPPORTED_REASONING_EFFORTS, ["max", "ultra"]);
+		assert.notStrictEqual(ROOT_REASONING_EFFORTS, CANONICAL_REASONING_EFFORTS);
 
-    const ambiguousCandidate = 'MAX' as string;
-    if (isAmbiguousUnsupportedReasoningEffort(ambiguousCandidate)) {
-      const narrowedAmbiguousCandidate: AmbiguousUnsupportedReasoningEffort = ambiguousCandidate;
-      void narrowedAmbiguousCandidate;
-    }
-    assert.equal(isUnsupportedRootReasoningEffort('MAX'), true);
-    assert.equal(isUnsupportedRootReasoningEffort('ulTRA'), true);
-    assert.equal(isUnsupportedRootReasoningEffort(' ultra '), false);
-    assert.equal(isUnsupportedRootReasoningEffort('xhigh'), false);
-    assert.equal(normalizeUnsupportedRootReasoningEffort(' MAX '), 'max');
-    assert.equal(normalizeUnsupportedRootReasoningEffort(' Ultra '), 'ultra');
-    assert.equal(normalizeUnsupportedRootReasoningEffort('xhigh'), undefined);
+		assert.equal(isAmbiguousUnsupportedReasoningEffort("MAX"), true);
+		assert.equal(isAmbiguousUnsupportedReasoningEffort(" max "), false);
 
-    const rootCandidate = 'MAX' as string;
-    if (isUnsupportedRootReasoningEffort(rootCandidate)) {
-      // @ts-expect-error Root classification must not narrow arbitrary strings.
-      const narrowedRootCandidate: RootUnsupportedReasoningEffort = rootCandidate;
-      void narrowedRootCandidate;
-    }
-  });
+		const ambiguousCandidate = "MAX" as string;
+		if (isAmbiguousUnsupportedReasoningEffort(ambiguousCandidate)) {
+			const narrowedAmbiguousCandidate: AmbiguousUnsupportedReasoningEffort =
+				ambiguousCandidate;
+			void narrowedAmbiguousCandidate;
+		}
+		assert.equal(isUnsupportedRootReasoningEffort("MAX"), true);
+		assert.equal(isUnsupportedRootReasoningEffort("ulTRA"), true);
+		assert.equal(isUnsupportedRootReasoningEffort(" ultra "), false);
+		assert.equal(isUnsupportedRootReasoningEffort("xhigh"), false);
+		assert.equal(normalizeUnsupportedRootReasoningEffort(" MAX "), "max");
+		assert.equal(normalizeUnsupportedRootReasoningEffort(" Ultra "), "ultra");
+		assert.equal(normalizeUnsupportedRootReasoningEffort("xhigh"), undefined);
 
+		const rootCandidate = "MAX" as string;
+		if (isUnsupportedRootReasoningEffort(rootCandidate)) {
+			// @ts-expect-error Root classification must not narrow arbitrary strings.
+			const narrowedRootCandidate: RootUnsupportedReasoningEffort =
+				rootCandidate;
+			void narrowedRootCandidate;
+		}
+	});
 
-  it('reads normalized per-agent model overrides from .omx-config.json', async () => {
-    await writeConfig({
-      agentModels: {
-        Architect: ' gpt-5.6-sol ',
-        critic: 'gpt-5.5',
-        executor: '',
-        researcher: 42,
-        'bad role': 'gpt-5',
-        reviewer: ' gpt-5.6-terra ',
-      },
-    });
+	it("reads normalized per-agent model overrides from .omx-config.json", async () => {
+		await writeConfig({
+			agentModels: {
+				Architect: " gpt-5.6-sol ",
+				critic: "gpt-5.5",
+				executor: "",
+				researcher: 42,
+				"bad role": "gpt-5",
+				reviewer: " gpt-5.6-terra ",
+			},
+		});
 
-    assert.deepEqual(readAgentModelOverrides(), {
-      architect: 'gpt-5.6-sol',
-      critic: 'gpt-5.5',
-      reviewer: 'gpt-5.6-terra',
-    });
-    assert.equal(getAgentModelOverride('ARCHITECT'), 'gpt-5.6-sol');
-    assert.equal(getAgentModelOverride('executor'), undefined);
-    assert.equal(getAgentModelOverride('bad role'), undefined);
-  });
+		assert.deepEqual(readAgentModelOverrides(), {
+			architect: "gpt-5.6-sol",
+			critic: "gpt-5.5",
+			reviewer: "gpt-5.6-terra",
+		});
+		assert.equal(getAgentModelOverride("ARCHITECT"), "gpt-5.6-sol");
+		assert.equal(getAgentModelOverride("executor"), undefined);
+		assert.equal(getAgentModelOverride("bad role"), undefined);
+	});
 
-  it('defaults every model tier to Astra', () => {
-    for (const model of [DEFAULT_FRONTIER_MODEL, DEFAULT_STANDARD_MODEL, DEFAULT_SPARK_MODEL, getMainDefaultModel(), getStandardDefaultModel(), getSparkDefaultModel(), getTeamChildModel(), getTeamLowComplexityModel()]) {
-      assert.equal(model, 'gpt-6-astra');
-    }
-    assert.equal(isKnownCodexModelAlias('gpt-6-astra'), true);
-  });
+	it("defaults every model tier to Astra", () => {
+		for (const model of [
+			DEFAULT_FRONTIER_MODEL,
+			DEFAULT_STANDARD_MODEL,
+			DEFAULT_SPARK_MODEL,
+			getMainDefaultModel(),
+			getStandardDefaultModel(),
+			getSparkDefaultModel(),
+			getTeamChildModel(),
+			getTeamLowComplexityModel(),
+		]) {
+			assert.equal(model, "gpt-6-astra");
+		}
+		assert.equal(isKnownCodexModelAlias("gpt-6-astra"), true);
+	});
 
-  it('recognizes the GPT-6 family without inferring unannounced aliases', () => {
-    for (const model of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna']) {
-      assert.equal(isKnownCodexModelAlias(model), true, model);
-    }
-    assert.equal(isKnownCodexModelAlias('gpt-6-terra'), false);
-    assert.equal(isKnownCodexModelAlias('gpt-6-luna-custom'), false);
-  });
+	it("recognizes the GPT-6 family without inferring unannounced aliases", () => {
+		for (const model of [
+			"gpt-6-astra",
+			"gpt-6-sol",
+			"gpt-6.1-sol",
+			"gpt-6.1-terra",
+			"gpt-6-luna",
+		]) {
+			assert.equal(isKnownCodexModelAlias(model), true, model);
+		}
+		assert.equal(isKnownCodexModelAlias("gpt-6-terra"), false);
+		assert.equal(isKnownCodexModelAlias("gpt-6.1-terra-custom"), false);
+		assert.equal(isKnownCodexModelAlias("gpt-6-luna-custom"), false);
+	});
 
-  it('preserves GPT-6 mode and lightweight overrides ahead of defaults', async () => {
-    await writeConfig({
-      env: { OMX_DEFAULT_FRONTIER_MODEL: 'gpt-6-astra', OMX_DEFAULT_SPARK_MODEL: 'gpt-6-astra' },
-      models: { default: 'gpt-6-sol', team: 'gpt-6-luna', team_low_complexity: 'gpt-6-luna' },
-    });
-    assert.equal(getModelForMode('team'), 'gpt-6-luna');
-    assert.equal(getModelForMode('autopilot'), 'gpt-6-sol');
-    assert.equal(getTeamLowComplexityModel(), 'gpt-6-luna');
-  });
+	it("preserves GPT-6 mode and lightweight overrides ahead of defaults", async () => {
+		await writeConfig({
+			env: {
+				OMX_DEFAULT_FRONTIER_MODEL: "gpt-6-astra",
+				OMX_DEFAULT_SPARK_MODEL: "gpt-6-astra",
+			},
+			models: {
+				default: "gpt-6-sol",
+				team: "gpt-6-luna",
+				team_low_complexity: "gpt-6-luna",
+			},
+		});
+		assert.equal(getModelForMode("team"), "gpt-6-luna");
+		assert.equal(getModelForMode("autopilot"), "gpt-6-sol");
+		assert.equal(getTeamLowComplexityModel(), "gpt-6-luna");
+	});
 
-  it('lists GPT-5.6 Terra/Luna/Sol as known Codex model aliases', () => {
-    assert.deepEqual([...GPT_5_6_MODEL_ALIASES], [
-      'gpt-5.6-terra',
-      'gpt-5.6-luna',
-      'gpt-5.6-sol',
-    ]);
-    for (const alias of GPT_5_6_MODEL_ALIASES) {
-      assert.equal(isKnownCodexModelAlias(alias), true);
-      assert.equal(KNOWN_CODEX_MODEL_ALIASES.includes(alias), true);
-    }
-  });
+	it("lists GPT-5.6 Terra/Luna/Sol as known Codex model aliases", () => {
+		assert.deepEqual(
+			[...GPT_5_6_MODEL_ALIASES],
+			["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
+		);
+		for (const alias of GPT_5_6_MODEL_ALIASES) {
+			assert.equal(isKnownCodexModelAlias(alias), true);
+			assert.equal(KNOWN_CODEX_MODEL_ALIASES.includes(alias), true);
+		}
+	});
 
-  it('keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL', async () => {
-    // Intentional legacy model fixture: explicit user config must outrank current spark defaults.
-    process.env.OMX_DEFAULT_SPARK_MODEL = 'gpt-5.6-luna-fast';
-    await writeConfig({ models: { team_low_complexity: 'gpt-4.1-mini' } });
-    assert.equal(getTeamLowComplexityModel(), 'gpt-4.1-mini');
-  });
+	it("keeps explicit low-complexity config ahead of OMX_DEFAULT_SPARK_MODEL", async () => {
+		// Intentional legacy model fixture: explicit user config must outrank current spark defaults.
+		process.env.OMX_DEFAULT_SPARK_MODEL = "gpt-5.6-luna-fast";
+		await writeConfig({ models: { team_low_complexity: "gpt-4.1-mini" } });
+		assert.equal(getTeamLowComplexityModel(), "gpt-4.1-mini");
+	});
 
-  it('inherits the main default for standard agents when no standard override is configured', async () => {
-    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-5.6-sol-custom';
-    await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getStandardDefaultModel(), 'gpt-5.6-sol-custom');
-  });
+	it("inherits the main default for standard agents when no standard override is configured", async () => {
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-sol-custom";
+		await writeConfig({ models: { team: "gpt-4.1" } });
+		assert.equal(getStandardDefaultModel(), "gpt-5.6-sol-custom");
+	});
 
-  it('returns canonical spark fallback when not configured', async () => {
-    await writeConfig({ models: { team: 'gpt-4.1' } });
-    assert.equal(getStandardDefaultModel(), DEFAULT_FRONTIER_MODEL);
-    assert.equal(getSparkDefaultModel(), DEFAULT_SPARK_MODEL);
-    assert.equal(getTeamLowComplexityModel(), DEFAULT_SPARK_MODEL);
-  });
+	it("returns canonical spark fallback when not configured", async () => {
+		await writeConfig({ models: { team: "gpt-4.1" } });
+		assert.equal(getStandardDefaultModel(), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getSparkDefaultModel(), DEFAULT_SPARK_MODEL);
+		assert.equal(getTeamLowComplexityModel(), DEFAULT_SPARK_MODEL);
+	});
 });

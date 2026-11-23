@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -1183,7 +1184,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
   });
 
   it("repairs repeated hook-trust banners without losing approved foreign trust (#3818)", async () => {
-    const wd = await mkdtemp(join(tmpdir(), "omx-setup-hook-trust-markers-"));
+    const wd = await realpath(await mkdtemp(join(tmpdir(), "omx-setup-hook-trust-markers-")));
     try {
       const codexDir = join(wd, ".codex");
       const hooksPath = join(codexDir, "hooks.json");

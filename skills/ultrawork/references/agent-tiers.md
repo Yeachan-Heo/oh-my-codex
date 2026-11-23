@@ -53,7 +53,7 @@ Use role to choose responsibility, tier to choose depth, and posture to choose o
 
 - `deep-worker`:
   - Best for implementation-heavy roles that should carry work to completion.
-  - Prioritizes direct execution, minimal diffs, and strict verification.
+  - Prioritizes complete, maintainable repairs within scope; correctness and clarity ahead of patch minimization. Includes strict verification.
   - Typical roles: `executor`, `debugger`, `test-engineer`, `build-fixer`.
 
 - `fast-lane`:

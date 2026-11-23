@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'fs/promises';
 
 import { existsSync } from 'fs';
@@ -981,6 +982,54 @@ describe('state paths', () => {
           },
         );
       } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it('fails closed for a verified managed-daemon pointer even with its recorded OMX selector', async () => {
+      const wd = await mkRealTemp('omx-writable-managed-daemon-');
+      const cmdline = '/usr/local/bin/codex app-server --managed-daemon';
+      const identity = {
+        platform: 'linux' as const,
+        birth: '42',
+        cmdline_hash: createHash('sha256').update(cmdline).digest('hex'),
+      };
+      const previousSessionId = process.env.OMX_SESSION_ID;
+      __setSessionPointerTransactionDependenciesForTests({
+        runtimePlatform: 'linux',
+        probePid: () => 'alive',
+        observeProcess: () => ({ kind: 'identity', identity, cmdline }),
+      });
+      try {
+        const stateDir = getBaseStateDir(wd);
+        const sessionPath = join(stateDir, 'session.json');
+        const pointerBody = JSON.stringify({
+          session_id: 'sess-managed-daemon',
+          cwd: wd,
+          pid: 12345,
+          platform: 'linux',
+          identity_schema_version: 2,
+          process_identity: identity,
+          pid_start_ticks: 42,
+          pid_cmdline: cmdline,
+        });
+        await mkdir(stateDir, { recursive: true });
+        await writeFile(sessionPath, pointerBody, 'utf-8');
+        process.env.OMX_SESSION_ID = 'sess-managed-daemon';
+
+        await assert.rejects(
+          () => resolveWritableStateScope(wd),
+          (error: unknown) => {
+            assert.equal((error as Error).message, WRITABLE_STATE_SCOPE_ERRORS.unusableSession);
+            return true;
+          },
+        );
+        assert.equal(await readFile(sessionPath, 'utf-8'), pointerBody);
+        assert.equal(existsSync(join(stateDir, 'sessions', 'sess-managed-daemon')), false);
+      } finally {
+        __resetSessionPointerTransactionDependenciesForTests();
+        if (typeof previousSessionId === 'string') process.env.OMX_SESSION_ID = previousSessionId;
+        else delete process.env.OMX_SESSION_ID;
         await rm(wd, { recursive: true, force: true });
       }
     });

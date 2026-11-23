@@ -410,6 +410,15 @@ describe("omxStateDir", () => {
     assert.equal(omxPlansDir("/ignored/project"), "/tmp/omx-box/.omx/plans");
     assert.equal(omxLogsDir("/ignored/project"), "/tmp/omx-box/.omx/logs");
   });
+
+  it("uses OMX_STATE_ROOT when OMX_ROOT is unset and prefers OMX_ROOT when both are set", () => {
+    delete process.env.OMX_ROOT;
+    process.env.OMX_STATE_ROOT = "/tmp/omx-state-root";
+    assert.equal(omxLogsDir("/ignored/project"), "/tmp/omx-state-root/.omx/logs");
+
+    process.env.OMX_ROOT = "/tmp/omx-root";
+    assert.equal(omxLogsDir("/ignored/project"), "/tmp/omx-root/.omx/logs");
+  });
 });
 
 describe("omxProjectMemoryPath", () => {

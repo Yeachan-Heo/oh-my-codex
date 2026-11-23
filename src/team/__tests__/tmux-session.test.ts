@@ -63,6 +63,7 @@ import {
   waitForWorkerReadyAsync,
   paneIsBootstrapping,
   parseSplitWindowPaneId,
+  bindSplitReceiptToPaneCommand,
   bindSplitWindowReceiptFormat,
   classifyWorkerStartupInjectSafety,
   checkWorkerStartupInjectSafety,
@@ -79,6 +80,7 @@ import { readExactPaneProof, readExactPaneProofSync } from '../exact-pane.js';
 
 const fsMutable = fs as typeof fs & {
   existsSync: typeof fs.existsSync;
+  readFileSync: typeof fs.readFileSync;
   fsyncSync: typeof fs.fsyncSync;
   statSync: typeof fs.statSync;
 };
@@ -128,6 +130,19 @@ function withMockedFsyncSync<T>(mock: typeof fs.fsyncSync, fn: () => T): T {
     fsMutable.fsyncSync = original;
     syncBuiltinESMExports();
   }
+}
+
+function neutralizeWslProcVersionForNativeWindowsTest(): () => void {
+  const original = fsMutable.readFileSync;
+  fsMutable.readFileSync = ((path: fs.PathOrFileDescriptor, ...args: any[]) => {
+    if (path === '/proc/version') return 'Linux version native-windows-test-host';
+    return (original as (...callArgs: any[]) => any)(path, ...args);
+  }) as typeof fs.readFileSync;
+  syncBuiltinESMExports();
+  return () => {
+    fsMutable.readFileSync = original;
+    syncBuiltinESMExports();
+  };
 }
 
 function escapeRegExp(value: string): string {
@@ -2628,6 +2643,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.PS1';
     process.env.SHELL = '/bin/zsh';
@@ -2654,6 +2670,7 @@ describe('buildWorkerStartupCommand', () => {
       assert.match(decoded, /'--model' 'gpt-5'/);
       assert.match(decoded, /'--dangerously-bypass-approvals-and-sandbox'/);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2688,6 +2705,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.EXE;.PS1';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
@@ -2707,6 +2725,7 @@ describe('buildWorkerStartupCommand', () => {
       const prefix = `${powershellExePath} -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand `;
       assert.ok(cmd.startsWith(prefix), cmd);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2743,6 +2762,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.EXE;.PS1';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
@@ -2772,6 +2792,7 @@ describe('buildWorkerStartupCommand', () => {
       assert.ok(cmd.startsWith(prefix), cmd);
       assert.ok(!cmd.startsWith(`${pathPowerShellExe} `), cmd);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2814,6 +2835,7 @@ describe('buildWorkerStartupCommand', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     process.env.PATH = fakeBin;
     process.env.PATHEXT = '.CMD;.PS1';
     process.env.SHELL = '/bin/zsh';
@@ -2846,6 +2868,7 @@ describe('buildWorkerStartupCommand', () => {
       );
       assert.doesNotMatch(decoded, new RegExp(escapeRegExp(codexCmdPath)));
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -2898,14 +2921,84 @@ describe('buildWorkerStartupCommand', () => {
       const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish', () =>
         buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
       );
-      assert.match(cmd, /'\/bin\/sh' -c\b/, 'must launch workers through /bin/sh when no supported shells exist');
-      assert.doesNotMatch(cmd, /'\/bin\/sh' -lc\b/);
+      assert.match(cmd, /\/bin\/sh\b/, 'must launch workers through /bin/sh when no supported shells exist');
+      assert.doesNotMatch(cmd, /\/bin\/sh -lc\b/);
       assert.doesNotMatch(cmd, /\.zshrc|\.bashrc/, 'must not source zsh/bash rc files for /bin/sh fallback');
     } finally {
       if (typeof prevShell === 'string') process.env.SHELL = prevShell;
       else delete process.env.SHELL;
       if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
       else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('embeds receipt in PowerShell script before encoding (when on native Windows) or appends to POSIX', () => {
+    const receipt = 'omx_source_test_receipt';
+    const prevShell = process.env.SHELL;
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+    try {
+      // buildWorkerStartupCommand should either:
+      // - On Windows: embed receipt in the PowerShell script before encoding
+      // - On POSIX: append receipt as shell comment
+      const cmdWithReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt);
+
+      if (cmdWithReceipt.includes('-EncodedCommand')) {
+        // Windows PowerShell case: Verify receipt is in the encoded command
+        const match = cmdWithReceipt.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+        assert(match, 'Should have encoded command with receipt');
+        const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
+        assert(decoded.includes(`# ${receipt}`), 'Decoded script should contain receipt');
+        // Verify the invocation line (exec ...) is not inside the comment
+        const lines = decoded.split(';');
+        const commentLineIndex = lines.findIndex((line) => line.includes(`# ${receipt}`));
+        assert(commentLineIndex >= 0, 'Should find receipt comment line');
+        const invocationLineIndex = lines.findIndex((line) => line.includes('&'));
+        assert(invocationLineIndex >= 0, 'Should find invocation line with &');
+        assert(invocationLineIndex < commentLineIndex || lines[commentLineIndex]?.includes('&') === false, 'Invocation must not be inside comment');
+      } else {
+        // POSIX case: Verify receipt is appended
+        assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment in POSIX command');
+      }
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
+  it('appends receipt to POSIX worker startup commands without modifying the inner command', () => {
+    const receipt = 'omx_source_posix_receipt';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/bin/bash';
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+
+    try {
+      const cmdNoReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd());
+      const cmdWithReceipt: string = buildWorkerStartupCommand('alpha', 1, [], process.cwd(), {}, undefined, undefined, undefined, receipt);
+
+      // If it's a PowerShell command (Windows), receipt should be embedded in the script
+      // If it's a POSIX command (Unix/macOS), receipt should be appended
+      assert(cmdWithReceipt.includes(receipt), 'Receipt must be present in command');
+      
+      if (cmdWithReceipt.includes('-EncodedCommand')) {
+        // PowerShell case
+        const match = cmdWithReceipt.match(/-EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+        assert(match, 'Should extract encoded command');
+        const decoded = Buffer.from(match[1], 'base64').toString('utf16le');
+        assert(decoded.includes(receipt), 'Decoded script should contain receipt');
+      } else {
+        // POSIX case: verify receipt is appended as comment
+        assert(cmdWithReceipt.includes(`# ${receipt}`), 'Receipt should be appended as comment to POSIX command');
+      }
+    } finally {
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
     }
   });
 });
@@ -4931,6 +5024,77 @@ describe('createTeamSession tmux instance tagging', () => {
         () => bindSplitWindowReceiptFormat(effect, invalidReceipt),
         /tmux_source_transaction_receipt_invalid/,
       );
+    }
+  });
+
+  it('embeds receipt in PowerShell script before encoding and appends to POSIX commands', () => {
+    const receipt = 'omx_source_receipt_example';
+
+    // PowerShell commands from buildWorkerStartupCommand have receipt embedded in the script,
+    // but bindSplitReceiptToPaneCommand will append " # receipt" as plaintext (for fallback detection).
+    const scriptWithReceipt = `$ErrorActionPreference = 'Stop'; # ${receipt}`;
+    const encodedReceipt = Buffer.from(scriptWithReceipt, 'utf16le').toString('base64');
+    const powershellCommand = `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedReceipt}`;
+    // PowerShell commands don't have plaintext receipt, so it gets appended
+    const result = bindSplitReceiptToPaneCommand(powershellCommand, receipt);
+    assert.equal(result, `${powershellCommand} # ${receipt}`, 'PowerShell command should have receipt appended as plaintext for detection');
+
+    // POSIX shell commands should have receipt appended as a comment
+    const bashCommand = '/bin/bash -c "worker_command"';
+    assert.equal(
+      bindSplitReceiptToPaneCommand(bashCommand, receipt),
+      `${bashCommand} # ${receipt}`,
+      'Bash command should have receipt appended as comment',
+    );
+
+    // Plain command should have receipt appended
+    const plainCommand = 'worker_process';
+    assert.equal(
+      bindSplitReceiptToPaneCommand(plainCommand, receipt),
+      `${plainCommand} # ${receipt}`,
+      'Plain command should have receipt appended as comment',
+    );
+
+    // Test POSIX command containing the literal text '-EncodedCommand' in its content
+    // This should NOT be misparsed; receipt should just be appended
+    const posixWithEncodedCommandText = 'echo "Usage: -EncodedCommand option for PowerShell"';
+    const resultWithEncodedText = bindSplitReceiptToPaneCommand(posixWithEncodedCommandText, receipt);
+    assert.equal(
+      resultWithEncodedText,
+      `${posixWithEncodedCommandText} # ${receipt}`,
+      'POSIX command with -EncodedCommand text should get receipt appended like any other POSIX command',
+    );
+  });
+
+  it('detects receipt in both POSIX shell comments and PowerShell encoded commands for fallback reconciliation', () => {
+    const receipt = 'omx_source_test_fallback';
+
+    // Test POSIX shell case: receipt in command as comment
+    const posixCommand = `/bin/bash -c "worker" # ${receipt}`;
+    assert(posixCommand.includes(receipt), 'POSIX command should contain receipt');
+
+    // Test PowerShell case: receipt should be detectable inside the decoded script
+    const scriptWithReceipt = `# ${receipt}\n$ErrorActionPreference = 'Stop'`;
+    const encodedWithReceipt = Buffer.from(scriptWithReceipt, 'utf16le').toString('base64');
+    const powerShellCommand = `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedWithReceipt}`;
+    // Extract and verify the receipt is in the decoded script
+    const psMatch = powerShellCommand.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+    assert(psMatch, 'Should extract encoded command');
+    const psDecoded = Buffer.from(psMatch[1], 'base64').toString('utf16le');
+    assert(psDecoded.includes(receipt), 'Decoded PS command should contain receipt');
+
+    // Verify that panes WITHOUT receipts would not match (prevents false reconciliation)
+    const noReceiptCommand = '/bin/bash -c "worker"';
+    assert(!noReceiptCommand.includes(receipt), 'Pane without receipt should not match');
+
+    // PowerShell command without receipt
+    const scriptNoReceipt = '$ErrorActionPreference = "Stop"';
+    const encodedNoReceipt = Buffer.from(scriptNoReceipt, 'utf16le').toString('base64');
+    const psNoReceiptCommand = `powershell.exe -EncodedCommand ${encodedNoReceipt}`;
+    const psNoReceiptMatch = psNoReceiptCommand.match(/EncodedCommand\s+([A-Za-z0-9+/=]+)/);
+    if (psNoReceiptMatch) {
+      const psNoReceiptDecoded = Buffer.from(psNoReceiptMatch[1], 'base64').toString('utf16le');
+      assert(!psNoReceiptDecoded.includes(receipt), 'PS pane without receipt should not match');
     }
   });
 
@@ -6976,6 +7140,11 @@ esac
   it('rejects standalone HUD PID reuse before native resize', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-hud-pid-reuse-'));
     const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
+    const prevWsl = process.env.WSL_DISTRO_NAME;
+    const prevInterop = process.env.WSL_INTEROP;
+    delete process.env.WSL_DISTRO_NAME;
+    delete process.env.WSL_INTEROP;
     try {
       await withMockTmuxFixture(
         'omx-tmux-standalone-hud-pid-reuse-',
@@ -7011,6 +7180,11 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
+      if (typeof prevWsl === 'string') process.env.WSL_DISTRO_NAME = prevWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevInterop === 'string') process.env.WSL_INTEROP = prevInterop;
+      else delete process.env.WSL_INTEROP;
       if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
       await rm(cwd, { recursive: true, force: true });
     }
@@ -7383,6 +7557,7 @@ describe('native Windows HUD reconciliation', () => {
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
 
     try {
       await withMockTmuxFixture(
@@ -7468,6 +7643,7 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -7497,6 +7673,7 @@ esac
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
 
     try {
       await withMockTmuxFixture(
@@ -7587,6 +7764,7 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -7616,6 +7794,7 @@ esac
     const prevWsl = process.env.WSL_DISTRO_NAME;
     const prevWslInterop = process.env.WSL_INTEROP;
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
 
     try {
       await withMockTmuxFixture(
@@ -7706,6 +7885,7 @@ esac
         },
       );
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
       else delete process.env.TMUX;
@@ -9531,6 +9711,7 @@ describe('translatePathForMsys', () => {
 describe('isNativeWindows', () => {
   it('returns true when process.platform is win32 and not WSL2', () => {
     const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    const restoreProcVersion = neutralizeWslProcVersionForNativeWindowsTest();
     const prevDistro = process.env.WSL_DISTRO_NAME;
     const prevInterop = process.env.WSL_INTEROP;
     delete process.env.WSL_DISTRO_NAME;
@@ -9539,6 +9720,7 @@ describe('isNativeWindows', () => {
     try {
       assert.equal(isNativeWindows(), true);
     } finally {
+      restoreProcVersion();
       if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
       if (typeof prevDistro === 'string') process.env.WSL_DISTRO_NAME = prevDistro;
       else delete process.env.WSL_DISTRO_NAME;

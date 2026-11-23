@@ -11,6 +11,95 @@ import {
 } from '../codex-goal-snapshot.js';
 
 describe('codex goal snapshot reconciliation', () => {
+  it('recognizes real native get_goal null response through structuredContent', () => {
+    const response = {
+      structuredContent: { goal: null, remainingTokens: null, completionBudgetReport: null },
+      content: '{"goal":{"objective":"stale", "status":"complete"}}',
+    };
+    const snapshot = parseCodexGoalSnapshot(response);
+    assert.equal(snapshot.available, false);
+    assert.equal(snapshot.raw, response);
+    assert.equal(reconcileCodexGoalSnapshot(snapshot, { expectedObjective: 'Ship', requireSnapshot: true, requireComplete: true }).ok, false);
+  });
+
+  it('falls back from empty/null structuredContent to valid content while preserving the original raw response', () => {
+    const payload = { goal: { objective: 'Ship fallback', status: 'active' }, remainingTokens: 7 };
+    for (const structuredContent of [null, {}]) {
+      const response = { structuredContent, content: JSON.stringify(payload) };
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, true);
+      assert.equal(snapshot.objective, 'Ship fallback');
+      assert.equal(snapshot.remainingTokens, 7);
+      assert.equal(snapshot.raw, response);
+    }
+  });
+
+  it('falls back from empty/null structuredContent to top-level DB and native tool diagnostics', () => {
+    for (const [response, expectedReason] of [
+      [{ structuredContent: null, error: 'SqliteError: no such table: thread_goals' }, 'db_schema_context_error'],
+      [{ structuredContent: {}, error: 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record' }, 'tool_unavailable'],
+    ] as const) {
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, false);
+      assert.equal(snapshot.unavailableReason, expectedReason);
+      assert.equal(snapshot.raw, response);
+    }
+  });
+
+  it('falls back from malformed recognizable-looking structuredContent to valid content', () => {
+    const payload = { goal: { objective: 'Ship valid fallback', status: 'active' }, remainingTokens: 11 };
+    for (const structuredContent of [
+      { goal: {} },
+      { goal: { objective: '', status: 'mystery' } },
+      { message: 'transport completed successfully' },
+    ]) {
+      const response = { structuredContent, content: JSON.stringify(payload) };
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, true);
+      assert.equal(snapshot.objective, 'Ship valid fallback');
+      assert.equal(snapshot.remainingTokens, 11);
+      assert.equal(snapshot.raw, response);
+    }
+  });
+
+  it('still accepts recognized DB/tool diagnostics carried in message fields', () => {
+    for (const [message, expectedReason] of [
+      ['Codex goal DB/schema/context unavailable', 'db_schema_context_error'],
+      ['INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record', 'tool_unavailable'],
+    ] as const) {
+      const response = { structuredContent: { message }, content: JSON.stringify({ goal: { objective: 'stale', status: 'complete' } }) };
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, false);
+      assert.equal(snapshot.unavailableReason, expectedReason);
+      assert.equal(snapshot.raw, response);
+    }
+  });
+
+  it('extracts native structuredContent and serialized text goal payloads', () => {
+    const payload = { goal: { objective: 'Ship', status: 'active' }, remainingTokens: 42 };
+    for (const response of [
+      { structuredContent: payload, content: JSON.stringify({ goal: null }) },
+      { content: JSON.stringify(payload) },
+      { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+    ]) {
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, true);
+      assert.equal(snapshot.objective, 'Ship');
+      assert.equal(snapshot.remainingTokens, 42);
+      assert.equal(snapshot.raw, response);
+    }
+  });
+
+  it('rejects unrecognized tool metadata rather than inventing a goal', () => {
+    assert.equal(parseCodexGoalSnapshot({ content: [{ type: 'text', text: 'not JSON' }], id: 'call-1' }).available, false);
+    assert.equal(parseCodexGoalSnapshot({ metadata: { status: 'complete' } }).available, false);
+  });
+
+  it('classifies missing native get_goal catalog distinctly from database errors', () => {
+    const snapshot = parseCodexGoalSnapshot({ error: 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record' });
+    assert.equal(snapshot.available, false);
+    assert.equal(snapshot.unavailableReason, 'tool_unavailable');
+  });
   it('normalizes get_goal JSON shape', () => {
     const snapshot = parseCodexGoalSnapshot({
       goal: { objective: 'Ship the feature', status: 'completed', token_budget: 1000 },
@@ -95,6 +184,22 @@ describe('codex goal snapshot reconciliation', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(result.errors, []);
   });
+  it('classifies known goal-tool diagnostics delivered as plain text parts', () => {
+    const message = 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record';
+    for (const response of [
+      { content: [{ type: 'text', text: message }], isError: true },
+      { content: message, isError: true },
+    ]) {
+      const snapshot = parseCodexGoalSnapshot(response);
+      assert.equal(snapshot.available, false);
+      assert.equal(snapshot.unavailableReason, 'tool_unavailable');
+      assert.equal(snapshot.errorMessage, message);
+      assert.deepEqual(snapshot.raw, response);
+    }
+    const unrelated = parseCodexGoalSnapshot({ content: [{ type: 'text', text: 'working on it' }] });
+    assert.equal(unrelated.unavailableReason, undefined);
+  });
+
   it('preserves native blocked status instead of coercing it to unknown', () => {
     const snapshot = parseCodexGoalSnapshot({
       goal: { objective: 'Ship blocked path', status: 'blocked' },

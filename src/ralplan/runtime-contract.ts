@@ -48,6 +48,16 @@ export interface RalplanReviewResult {
   advisory_artifact_manifest_sha256?: string;
 }
 
+export interface RalplanQualityGateResult {
+  skill: string;
+  iteration: number;
+  verdict: RalplanReviewVerdict | 'unavailable';
+  summary: string;
+  mode?: 'blocking' | 'advisory';
+  thread_id?: string;
+  provenance_kind?: 'native_subagent';
+}
+
 export interface RalplanConsensusGate {
   required: true;
   complete: boolean;
@@ -59,6 +69,7 @@ export interface RalplanConsensusGate {
   architect_review: (RalplanReviewResult & { agent_role: 'architect'; iteration: number }) | null;
   critic_review: (RalplanReviewResult & { agent_role: 'critic'; iteration: number }) | null;
   blocked_reason: string | null;
+  qualityGateResults: Record<string, { verdict: RalplanQualityGateResult['verdict']; summary: string }>;
 }
 
 export interface RalplanConsensusIterationContext {
@@ -68,6 +79,7 @@ export interface RalplanConsensusIterationContext {
   priorDrafts: RalplanDraftResult[];
   architectReviews: RalplanReviewResult[];
   criticReviews: RalplanReviewResult[];
+  gateResults: RalplanQualityGateResult[];
   reusableRoleLanes: { architect?: RalplanReusableRoleLane; critic?: RalplanReusableRoleLane };
 }
 
@@ -77,6 +89,14 @@ export interface RalplanConsensusExecutor {
   criticReview(ctx: RalplanConsensusIterationContext & {
     draft: RalplanDraftResult;
     architectReview: RalplanReviewResult;
+  }): Promise<RalplanReviewResult>;
+  /** Spawn the configured skill as a native subagent. */
+  qualityGateReview?(ctx: RalplanConsensusIterationContext & {
+    gateName: string;
+    gateModel?: string;
+    draft: RalplanDraftResult;
+    architectReview: RalplanReviewResult;
+    criticReview: RalplanReviewResult;
   }): Promise<RalplanReviewResult>;
 }
 

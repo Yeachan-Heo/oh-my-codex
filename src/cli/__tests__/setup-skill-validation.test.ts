@@ -42,6 +42,10 @@ describe('omx setup skill validation', () => {
     const dstDir = join(root, 'dst-skills');
     const skillDir = join(srcDir, 'ask');
 
+    // Set HOME to the temporary root so that dstDir is within the managed scope
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
     try {
       await mkdir(skillDir, { recursive: true });
       await writeFile(join(skillDir, 'SKILL.md'), `---\nname: ask\ndescription: "broken\n---\n\n# Help\n`);
@@ -60,6 +64,8 @@ describe('omx setup skill validation', () => {
       assert.equal(existsSync(join(dstDir, 'ask', 'SKILL.md')), false);
       assert.equal(existsSync(join(dstDir, 'ask', 'notes.md')), false);
     } finally {
+      if (typeof previousHome === 'string') process.env.HOME = previousHome;
+      else delete process.env.HOME;
       await rm(root, { recursive: true, force: true });
     }
   });

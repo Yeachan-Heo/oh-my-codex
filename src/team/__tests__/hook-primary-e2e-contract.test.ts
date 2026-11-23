@@ -49,12 +49,18 @@ describe('hook-primary PostToolUse E2E contract guardrails', () => {
     assert.doesNotMatch(body, /handleTeamWorkerPostToolUseSuccess|team-worker-posttooluse/);
   });
 
-  it('preserves fallback team monitoring instead of removing polling/runtime recovery', async () => {
+  it('preserves fallback monitoring and verified handoffs without automatic dirty-worktree commits', async () => {
     const runtimeSource = await readSource('src/team/runtime.ts');
     const notifyWorkerSource = await readSource('src/scripts/notify-hook/team-worker.ts');
 
     assert.match(runtimeSource, /export async function monitorTeam\s*\(/);
-    assert.match(runtimeSource, /autoCommitDirtyWorktree/);
+    assert.match(runtimeSource, /await reclaimExpiredTaskClaim\s*\(/);
+    assert.match(runtimeSource, /await integrateWorkerCommitsIntoLeader\s*\(/);
+    assert.match(runtimeSource, /await readVerifiedWorkerHandoff\s*\(/);
+    const handoffBody = functionBody(runtimeSource, 'async function readVerifiedWorkerHandoff(');
+    assert.match(handoffBody, /task\.verified_head === workerHead/);
+    assert.match(handoffBody, /hasStructuredVerificationEvidence\(task\.result\)/);
+    assert.doesNotMatch(runtimeSource, /autoCommitDirtyWorktree|auto-checkpoint/);
     assert.match(notifyWorkerSource, /maybeNotifyLeaderWorkerIdle|updateWorkerHeartbeat/);
   });
 
@@ -71,7 +77,7 @@ describe('hook-primary PostToolUse E2E contract guardrails', () => {
     }
   });
 
-  it('keeps any worker PostToolUse bridge constrained to successful Bash events', async () => {
+  it('constrains worker PostToolUse checkpoint authority to successful Bash events', async () => {
     const bridgeSource = await readOptionalSource('src/scripts/notify-hook/team-worker-posttooluse.ts');
     if (!bridgeSource) {
       assert.equal(bridgeSource, '', 'bridge source absent in this worktree; dispatch tests cover current no-op path');

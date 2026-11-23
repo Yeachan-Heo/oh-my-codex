@@ -1118,7 +1118,7 @@ exit 1
       );
       assert.equal((await readDispatchRequest('alpha', queued.request.request_id, cwd))?.status, 'pending');
       const journalPath = join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl');
-      assert.deepEqual((await readFile(journalPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line).command),
+      assert.deepEqual((await readFile(journalPath, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line).command),
         ['MarkNotified', 'MarkDelivered']);
 
       delete process.env.OMX_TEST_REJECT_MARK_NOTIFIED;
@@ -1174,7 +1174,7 @@ exit 1
         const { drainPendingTeamDispatch } = await import('../../scripts/notify-hook/team-dispatch.js');
         assert.equal((await drainPendingTeamDispatch({ cwd, maxPerTick: 5 })).processed, 1);
         const journal = join(cwd, '.omx/state/team/alpha/dispatch/runtime-finalizations.jsonl');
-        assert.deepEqual((await readFile(journal, 'utf8')).trim().split('\n').map(line => JSON.parse(line).command), ['MarkNotified', 'MarkDelivered', 'MarkNotified', 'MarkDelivered']);
+        assert.deepEqual((await readFile(journal, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line).command), ['MarkNotified', 'MarkDelivered', 'MarkNotified', 'MarkDelivered']);
         await writeFile(runtime, supported);
         await chmod(runtime, 0o755);
         await writeFile(projectionPath, pendingProjection);
@@ -1333,7 +1333,7 @@ exit 1
           await writeFile(compatPath, pending);
           const journalPath = join(stateDir, 'team', 'alpha', 'dispatch', 'runtime-finalizations.jsonl');
           const journal = await readFile(journalPath, 'utf8');
-          const journalCommands = journal.trim().split('\n').map((line) => JSON.parse(line).command);
+          const journalCommands = journal.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line).command);
           assert.deepEqual(journalCommands, mode === 'default-injector'
             ? ['MarkNotified', 'MarkDelivered', 'MarkNotified', 'MarkDelivered']
             : [mode === 'failed' ? 'MarkFailed' : 'MarkNotified']);

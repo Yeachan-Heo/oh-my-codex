@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { writeUserInstallStamp } from "../../cli/update.js";
 import {
+  hydrateOmxRuntime,
+  hydrateOmxRuntimeNonFatal,
   isGlobalInstallLifecycle,
   runPostinstall,
 } from "../postinstall.js";
@@ -24,6 +26,123 @@ describe("isGlobalInstallLifecycle", () => {
 });
 
 describe("runPostinstall", () => {
+  it("surfaces manifest HTTP failures to foreground hydration while keeping the wrapper non-fatal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-postinstall-manifest-error-"));
+    const logs: string[] = [];
+    const manifestUrl = "https://example.test/native-release-manifest.json?token=must-not-be-logged";
+    const originalFetch = globalThis.fetch;
+
+    try {
+      await writeFile(join(root, "package.json"), JSON.stringify({ version: "0.21.44" }));
+      globalThis.fetch = (async () => new Response("unavailable", {
+        status: 503,
+        statusText: "Service Unavailable",
+      })) as typeof fetch;
+
+      const options = {
+        packageRoot: root,
+        env: {
+          OMX_NATIVE_MANIFEST_URL: manifestUrl,
+          OMX_NATIVE_CACHE_DIR: join(root, "cache"),
+        },
+        platform: "linux" as const,
+        arch: "x64",
+      };
+      await assert.rejects(
+        () => hydrateOmxRuntime(options),
+        /503 Service Unavailable.*https:\/\/example\.test\/native-release-manifest\.json/,
+      );
+
+      const result = await hydrateOmxRuntimeNonFatal({
+        ...options,
+        log: (message) => logs.push(message),
+      });
+      assert.equal(result, undefined);
+      assert.match(logs.join("\n"), /503 Service Unavailable/);
+      assert.doesNotMatch(logs.join("\n"), /must-not-be-logged/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the macOS ARM runtime asset and cause when hydration times out", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-postinstall-timeout-"));
+    const logs: string[] = [];
+    const version = "0.21.43";
+    const target = "aarch64-apple-darwin";
+    const manifestUrl = "https://example.test/native-release-manifest.json";
+    const archive = `omx-runtime-${target}.tar.xz`;
+    const assetUrl = `https://example.test/releases/${archive}?token=must-not-be-logged`;
+    const manifest = {
+      manifest_version: 1,
+      version,
+      tag: `v${version}`,
+      assets: [{
+        product: "omx-runtime",
+        version,
+        platform: "darwin",
+        arch: "arm64",
+        target,
+        archive,
+        binary: "omx-runtime",
+        binary_path: "omx-runtime",
+        sha256: "0".repeat(64),
+        size: 1,
+        download_url: assetUrl,
+      }],
+    };
+    const originalFetch = globalThis.fetch;
+    let assetFetchStarted = false;
+    const keepAlive = setInterval(() => {}, 1_000);
+
+    try {
+      await writeFile(join(root, "package.json"), JSON.stringify({ version }));
+      globalThis.fetch = (async (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === manifestUrl) return new Response(JSON.stringify(manifest));
+        assetFetchStarted = true;
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) {
+            reject(new Error("expected hydration abort signal"));
+            return;
+          }
+          const rejectAborted = () => {
+            const error = new Error("This operation was aborted");
+            error.name = "AbortError";
+            reject(error);
+          };
+          if (signal.aborted) rejectAborted();
+          else signal.addEventListener("abort", rejectAborted, { once: true });
+        });
+      }) as typeof fetch;
+
+      const result = await hydrateOmxRuntimeNonFatal({
+        packageRoot: root,
+        env: {
+          OMX_NATIVE_MANIFEST_URL: manifestUrl,
+          OMX_NATIVE_CACHE_DIR: join(root, "cache"),
+        },
+        platform: "darwin",
+        arch: "arm64",
+        timeoutMs: 250,
+        log: (message) => logs.push(message),
+      });
+
+      assert.equal(result, undefined);
+      assert.equal(assetFetchStarted, true, "the timeout must occur while downloading the asset");
+      assert.match(logs.join("\n"), /timed out after 250 ms/);
+      assert.match(logs.join("\n"), new RegExp(archive));
+      assert.match(logs.join("\n"), /cause: This operation was aborted/);
+      assert.doesNotMatch(logs.join("\n"), /must-not-be-logged/);
+    } finally {
+      clearInterval(keepAlive);
+      globalThis.fetch = originalFetch;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("clears stale Bun provenance for a global replacement while printing an explicit opt-in setup hint", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-postinstall-"));
     const stampPath = join(root, ".codex", ".omx", "install-state.json");

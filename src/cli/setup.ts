@@ -13,6 +13,7 @@ import {
 	writeFile,
 	stat,
 	lstat,
+	realpath,
 	rm,
 	open,
 	chmod,
@@ -491,9 +492,14 @@ function getBackupContext(
 			baseRoot: projectRoot,
 		};
 	}
+	// For user scope, keep backups under ~/.omx/backups (not under CODEX_HOME).
+	// The baseRoot is used for validation scope determination per destination:
+	// - Destinations under CODEX_HOME are validated against CODEX_HOME
+	// - Destinations under ~/.omx are validated against homedir() (or OMX_ROOT if set)
+	const homeDir = homedir();
 	return {
-		backupRoot: join(homedir(), ".omx", "backups", "setup", timestamp),
-		baseRoot: homedir(),
+		backupRoot: join(homeDir, ".omx", "backups", "setup", timestamp),
+		baseRoot: homeDir,
 	};
 }
 
@@ -1987,16 +1993,50 @@ async function cleanupNativeHookTransactionStagedDeletions(
 	}
 }
 
+/**
+ * Sanitize an absolute path to be a valid relative path component for backups.
+ * Handles Windows paths by removing drive letters, colons, and backslashes.
+ * On Windows: C:\custom-codex\config.toml -> custom-codex_config.toml
+ * On Unix: /custom-codex/config.toml -> custom-codex_config.toml
+ */
+function sanitizePathForBackup(absPath: string): string {
+	// Remove the Windows drive letter (e.g., "C:"), then leading slashes and backslashes
+	let sanitized = absPath.replace(/^[A-Za-z]:/, "").replace(/^[\\/]+/, "");
+	// Remove any remaining backslashes and colons, replacing with underscores
+	sanitized = sanitized.replace(/[\\/\\:]/g, "_");
+	// Collapse multiple underscores
+	sanitized = sanitized.replace(/_+/g, "_");
+	return sanitized;
+}
+
+/**
+ * Relative location of `targetPath` inside a backup root. Falls back to a sanitized
+ * absolute path when the target is outside `baseRoot`, including Windows cross-drive
+ * targets where `relative()` returns an absolute path instead of a `..` path.
+ */
+export function backupRelativePath(
+	baseRoot: string,
+	targetPath: string,
+	pathApi: Pick<typeof import("path"), "relative" | "isAbsolute"> = { relative, isAbsolute },
+): string {
+	const relativePath = pathApi.relative(baseRoot, targetPath);
+	if (
+		relativePath === "" ||
+		relativePath === ".." ||
+		relativePath.startsWith("../") ||
+		relativePath.startsWith("..\\") ||
+		pathApi.isAbsolute(relativePath)
+	) {
+		return sanitizePathForBackup(targetPath);
+	}
+	return relativePath;
+}
+
 function nativeHookTransactionBackupPath(
 	artifactPath: string,
 	backupContext: SetupBackupContext,
 ): string {
-	const relativePath = relative(backupContext.baseRoot, artifactPath);
-	const safeRelativePath =
-		relativePath.startsWith("..") || relativePath === ""
-			? artifactPath.replace(/^[/]+/, "")
-			: relativePath;
-	return join(backupContext.backupRoot, safeRelativePath);
+	return join(backupContext.backupRoot, backupRelativePath(backupContext.baseRoot, artifactPath));
 }
 
 async function ensureSnapshotBackup(
@@ -2188,24 +2228,266 @@ async function commitNativeHookTransaction(
 
 
 /**
- * A symlinked destination would redirect reads, backups and writes outside the
- * managed tree, so refuse before touching it.
+ * Canonicalize a path to its real form using the deepest-existing-ancestor pattern.
+ * Uses fs.realpath (follows symlinks) on the deepest existing component, then
+ * re-appends any non-existent tail. This ensures consistent handling of OS-level
+ * symlinks in parent directories (e.g., /tmp -> /private/tmp on macOS).
+ * #4352912480: Handles MISSING scope roots by canonicalizing through deepest existing ancestor.
  */
-async function assertNoSymlinkDestination(destinationPath: string): Promise<void> {
-	let destinationStat: Stats;
+async function canonicalizePathToRealForm(absolutePath: string): Promise<string> {
+	let realPath: string = absolutePath;
+	let currentPath = absolutePath;
+	
+	while (currentPath && currentPath !== dirname(currentPath)) {
+		try {
+			// Check with lstat first to detect dangling symlinks before realpath (#4353639282)
+			// If this component is a symlink (even dangling), try its parent instead of following it
+			try {
+				const stats = await lstat(currentPath);
+				if (stats.isSymbolicLink()) {
+					// This is a symlink; don't follow it, try the parent instead
+					currentPath = dirname(currentPath);
+					continue;
+				}
+			} catch (lstatError) {
+				// lstat failed; this might be ENOENT, continue to realpath attempt
+			}
+			
+			// Try to realpath the current component (follows all symlinks)
+			realPath = await realpath(currentPath);
+			// Successfully realpathhed; now append the remaining tail
+			const tail = absolutePath.slice(currentPath.length);
+			realPath = tail ? join(realPath, tail) : realPath;
+			break;
+		} catch (error) {
+			if (isMissingPathError(error)) {
+				// This component doesn't exist; try its parent
+				currentPath = dirname(currentPath);
+				if (currentPath === dirname(currentPath)) {
+					// Reached the filesystem root; use absolute path as-is
+				realPath = absolutePath;
+				break;
+				}
+			} else {
+				throw error;
+			}
+		}
+	}
+	
+	return realPath;
+}
+
+/**
+ * Try to find an alternative symlinked path that resolves to the canonical path.
+ * Used for error messages to show symlinked paths when possible.
+ */
+async function findSymlinkedAlternativePath(canonicalPath: string): Promise<string | null> {
 	try {
-		destinationStat = await lstat(destinationPath);
-	} catch (error) {
-		if (isMissingPathError(error)) return;
-		throw error;
+		const parts = canonicalPath.split(sep).filter(Boolean);
+		if (parts.length < 2) return null;
+		
+		// Walk up the canonical path, checking each ancestor for symlinks
+		for (let i = 1; i < parts.length; i++) {
+			const canonicalPrefix = sep + parts.slice(0, i).join(sep);
+			const suffix = parts.slice(i).join(sep);
+			
+			try {
+				const parentDir = dirname(canonicalPrefix);
+				const baseName = basename(canonicalPrefix);
+				
+				// Check if there's a symlink with the same name at the same level
+				try {
+					const symlinkPath = join(parentDir, baseName);
+					const stat = await lstat(symlinkPath);
+					if (stat.isSymbolicLink()) {
+						// Verify it points to the right place
+						const target = await canonicalizePathToRealForm(symlinkPath);
+						if (target === canonicalPrefix) {
+							return join(symlinkPath, suffix);
+						}
+					}
+				} catch {
+					// Continue if this check fails
+				}
+			} catch {
+				// Continue searching
+			}
+		}
+	} catch {
+		// If anything goes wrong, return null and use the canonical path
 	}
-	if (destinationStat.isSymbolicLink()) {
-		const msg =
-			`Refusing to install through symlink ${destinationPath}. ` +
-			`Either remove the symlink (rm ${destinationPath}), ` +
-			`or move the target to the expected location before running setup again.`;
-		throw new Error(msg);
+	return null;
+}
+
+/**
+ * Validates that a destination path is safe for managed setup operations (install, read, compare).
+ * Refuses if the destination is a symlink or lies outside the specified scope root,
+ * or if any ancestor component within the scope is a symlink.
+ *
+ * This guard prevents symlink attacks that would redirect reads, backups, and writes outside
+ * the managed tree. Uses a single algorithm that:
+ * 1. Canonicalizes the scope root via deepest-existing-ancestor realpath (follows ALL symlinks)
+ * 2. Walks prefixes of the LEXICAL absolute destination from shortest to longest
+ * 3. Finds the FIRST prefix P whose deepest-existing-ancestor canonical form equals canonicalScope
+ * 4. For each lexical component after P down to destination, lstat it:
+ *    - symlink (including dangling) → throw error
+ *    - ENOENT → stop (rest is missing, fine)
+ *
+ * This handles cases like /tmp -> /private/tmp on macOS where scopeRoot and destination
+ * may be in different lexical forms but resolve to the same canonical path.
+ *
+ * MUST be called BEFORE reading/comparing contents and BEFORE mkdir of any intermediate dir.
+ * It is the single authoritative source of symlink validation for all managed scope writes.
+ *
+ * Addresses Codex findings:
+ * - 4351464979: validate before compare (filesDiffer) ✓
+ * - 4351464989: validate before compare (readFile) ✓
+ * - 4351560195: respects CODEX_HOME via codexHome() ✓
+ * - 4351560207: validate before compare ✓
+ * - 4351560219: validate before mkdir ✓
+ * - 4352912480: canonicalizes through OS-level symlinks in ancestors ✓
+ * - 4352912502: validates against override root ✓
+ */
+async function assertManagedDestination(
+	destinationPath: string,
+	scopeRoot: string,
+): Promise<void> {
+	// Resolve paths to absolute forms
+	const absolutePath = isAbsolute(destinationPath) ? destinationPath : join(process.cwd(), destinationPath);
+	const absoluteScopeRoot = isAbsolute(scopeRoot) ? scopeRoot : join(process.cwd(), scopeRoot);
+	
+	// Step 1: Canonicalize the scope root via deepest-existing-ancestor realpath.
+	const canonicalScope = await canonicalizePathToRealForm(absoluteScopeRoot);
+	
+	// Step 2 & 3: Walk lexical prefixes of destination to find the matching scope point.
+	// Build the list of prefixes from root downward.
+	const prefixes: string[] = [];
+	let currentPrefix = absolutePath;
+	while (true) {
+		prefixes.unshift(currentPrefix);
+		if (currentPrefix === sep) break;
+		const parent = dirname(currentPrefix);
+		if (parent === currentPrefix) {
+			// Shouldn't happen, but break to avoid infinite loop
+			break;
+		}
+		currentPrefix = parent;
 	}
+	
+	let matchingPrefixPath = '';
+	for (const prefix of prefixes) {
+		const canonicalPrefix = await canonicalizePathToRealForm(prefix);
+		if (canonicalPrefix === canonicalScope) {
+			matchingPrefixPath = prefix;
+			break;
+		}
+	}
+	
+	if (!matchingPrefixPath) {
+		// No prefix matched the scope; destination is outside managed scope
+		throw new Error(
+			`Destination ${absolutePath} is outside managed scope ${absoluteScopeRoot}.`,
+		);
+	}
+	
+	// Step 4: For each component lexically after the matching prefix, check with lstat.
+	// Extract the remaining path components after the matching prefix.
+	let current = matchingPrefixPath;
+	const remaining = relative(current, absolutePath);
+	
+	if (remaining && remaining !== '.') {
+		const remainingComponents = remaining.split(sep);
+		let currentForDisplay = matchingPrefixPath;
+		
+		for (const component of remainingComponents) {
+			current = join(current, component);
+			currentForDisplay = join(currentForDisplay, component);
+			
+			try {
+				const stats = await lstat(current);
+				if (stats.isSymbolicLink()) {
+					// Try to find a symlinked alternative path for the error message
+					let displayPath = current;
+					const altPath = await findSymlinkedAlternativePath(current);
+					if (altPath) {
+						displayPath = altPath;
+					}
+					
+					const msg =
+						`Refusing to install through symlink ${displayPath}. ` +
+						`Either remove the symlink (rm ${displayPath}), ` +
+						`or move the target to the expected location before running setup again.`;
+					throw new Error(msg);
+				}
+			} catch (error) {
+				// If component doesn't exist yet, that's fine; we'll create it during mkdir
+				if (isMissingPathError(error)) {
+					// Stop checking further components; rest of path is missing
+					break;
+				}
+				// Re-throw symlink errors and other unexpected errors
+				if (error instanceof Error && error.message.includes('Refusing to install through symlink')) {
+					throw error;
+				}
+				throw error;
+			}
+		}
+	}
+}
+
+
+
+/**
+ * Determine the validation scope root for a destination based on its location.
+ * Canonicalizes paths to handle OS-level symlinks (e.g., /tmp -> /private/tmp on macOS).
+ * For project scope: validates against projectRoot (#4352912487)
+ * Destinations under CODEX_HOME validate against CODEX_HOME;
+ * Destinations under OMX_ROOT (if set) validate against OMX_ROOT (#4352912502);
+ * other paths (like ~/.omx, ~/.claude) validate against the user's home.
+ */
+async function getValidationScopeRoot(destinationPath: string): Promise<string> {
+	const absPath = isAbsolute(destinationPath) ? destinationPath : join(process.cwd(), destinationPath);
+	const projectRoot = process.cwd();
+	const codexHomeDir = codexHome();
+	const projectCodexHome = join(projectRoot, ".codex");
+	
+	// Canonicalize both paths to handle symlinks consistently
+	const realDestPath = await canonicalizePathToRealForm(absPath);
+	const realCodexHome = await canonicalizePathToRealForm(
+		isAbsolute(codexHomeDir) ? codexHomeDir : join(process.cwd(), codexHomeDir)
+	);
+	const realProjectCodexHome = await canonicalizePathToRealForm(projectCodexHome);
+	const realProjectRoot = await canonicalizePathToRealForm(projectRoot);
+
+	// Check OMX_ROOT override first (#4352912502)
+	const omxRoot = process.env.OMX_ROOT;
+	if (omxRoot) {
+		const realOmxRoot = await canonicalizePathToRealForm(
+			isAbsolute(omxRoot) ? omxRoot : join(process.cwd(), omxRoot)
+		);
+		if (realDestPath.startsWith(realOmxRoot + sep) || realDestPath === realOmxRoot) {
+			return realOmxRoot; // Return the canonical OMX_ROOT for consistent scope comparison
+		}
+	}
+	
+	// Check if destination is under project root or project .codex (#4352912487)
+	// This indicates project scope files that should validate against projectRoot
+	if (realDestPath.startsWith(realProjectRoot + sep) || realDestPath === realProjectRoot ||
+		realDestPath.startsWith(realProjectCodexHome + sep) || realDestPath === realProjectCodexHome) {
+		// If the destination is under the project root but NOT under user's CODEX_HOME,
+		// it's a project-scoped file that should validate against projectRoot
+		if (!realDestPath.startsWith(realCodexHome + sep) && realDestPath !== realCodexHome) {
+			return realProjectRoot; // Return canonical project root
+		}
+	}
+	
+	// Check if the destination is under CODEX_HOME (using real paths for comparison)
+	if (realDestPath.startsWith(realCodexHome + sep) || realDestPath === realCodexHome) {
+		return realCodexHome; // Return the canonical CODEX_HOME for consistent scope comparison
+	}
+	
+	// Otherwise, it's validated against the home directory
+	return await canonicalizePathToRealForm(homedir());
 }
 
 async function ensureBackup(
@@ -2214,17 +2496,18 @@ async function ensureBackup(
 	backupContext: SetupBackupContext,
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<boolean> {
-	await assertNoSymlinkDestination(destinationPath);
+	const scopeRoot = await getValidationScopeRoot(destinationPath);
+	await assertManagedDestination(destinationPath, scopeRoot);
 	if (!contentChanged || !existsSync(destinationPath)) return false;
 
-	const relativePath = relative(backupContext.baseRoot, destinationPath);
-	const safeRelativePath =
-		relativePath.startsWith("..") || relativePath === ""
-			? destinationPath.replace(/^[/]+/, "")
-			: relativePath;
-	const backupPath = join(backupContext.backupRoot, safeRelativePath);
+	const backupPath = join(
+		backupContext.backupRoot,
+		backupRelativePath(backupContext.baseRoot, destinationPath),
+	);
 
 	if (!options.dryRun) {
+		const backupScopeRoot = await getValidationScopeRoot(backupPath);
+		await assertManagedDestination(backupPath, backupScopeRoot);
 		await mkdir(dirname(backupPath), { recursive: true });
 		await copyFile(destinationPath, backupPath);
 	}
@@ -2389,29 +2672,53 @@ interface InstalledSkillReceipt {
 }
 
 function installedSkillReceiptPath(scope: SetupScope, projectRoot: string): string {
-  const authorityRoot = scope === "project" ? projectRoot : homedir();
+  // For user scope, use CODEX_HOME as the managed authority root, not the user's home directory.
+  const authorityRoot = scope === "project" ? projectRoot : codexHome();
   return join(authorityRoot, ".omx", "state", "setup", "installed-skills.json");
 }
 
-async function readInstalledSkillReceipt(receiptPath: string): Promise<InstalledSkillReceipt> {
-  try {
-    const parsed = JSON.parse(
-      await readFile(receiptPath, "utf-8"),
-    ) as InstalledSkillReceipt;
-    if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") {
-      // Re-key through a prototype-less record so a `__proto__` entry in a persisted receipt is a
-      // real own property on both sides of the comparison.
-      const skills: InstalledSkillReceipt["skills"] = Object.create(null);
-      for (const [name, entry] of Object.entries(parsed.skills)) {
-        const files: Record<string, string> = Object.create(null) as Record<string, string>;
-        for (const [file, digest] of Object.entries(entry?.files ?? {})) files[file] = String(digest);
-        skills[name] = { files };
+async function readInstalledSkillReceipt(receiptPath: string, legacyReceiptPath?: string): Promise<InstalledSkillReceipt> {
+  const parseReceipt = (content: string): InstalledSkillReceipt | null => {
+    try {
+      const parsed = JSON.parse(content) as InstalledSkillReceipt;
+      if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") {
+        // Re-key through a prototype-less record so a `__proto__` entry in a persisted receipt is a
+        // real own property on both sides of the comparison.
+        const skills: InstalledSkillReceipt["skills"] = Object.create(null);
+        for (const [name, entry] of Object.entries(parsed.skills)) {
+          const files: Record<string, string> = Object.create(null) as Record<string, string>;
+          for (const [file, digest] of Object.entries(entry?.files ?? {})) files[file] = String(digest);
+          skills[name] = { files };
+        }
+        return { version: 1, skills };
       }
-      return { version: 1, skills };
+    } catch {
+      // Invalid or malformed receipt
     }
+    return null;
+  };
+
+  // Try reading from the new receipt path first
+  try {
+    const content = await readFile(receiptPath, "utf-8");
+    const parsed = parseReceipt(content);
+    if (parsed) return parsed;
   } catch {
-    // A missing or unreadable receipt means "no proof of ownership", which retains conservatively.
+    // New receipt does not exist or is unreadable; try legacy path
   }
+
+  // Try reading from the legacy receipt path if provided
+  if (legacyReceiptPath) {
+    try {
+      const content = await readFile(legacyReceiptPath, "utf-8");
+      const parsed = parseReceipt(content);
+      if (parsed) return parsed;
+    } catch {
+      // Legacy receipt does not exist or is unreadable
+    }
+  }
+
+  // No valid receipt found; return empty receipt
   return { version: 1, skills: Object.create(null) as InstalledSkillReceipt["skills"] };
 }
 
@@ -2451,8 +2758,9 @@ async function isUnmodifiedRecordedInstall(
   receiptPath: string,
   skillName: string,
   skillDir: string,
+  legacyReceiptPath?: string,
 ): Promise<boolean> {
-  const receipt = await readInstalledSkillReceipt(receiptPath);
+  const receipt = await readInstalledSkillReceipt(receiptPath, legacyReceiptPath);
   const recorded = receipt.skills[skillName]?.files;
   if (!recorded || Object.keys(recorded).length === 0) return false;
   let current: Record<string, string>;
@@ -2480,6 +2788,7 @@ async function writeInstalledSkillReceipt(
   skillsDir: string,
   writtenFilesBySkill: ReadonlyMap<string, readonly string[]>,
   options: Pick<SetupOptions, "dryRun">,
+  scopeRoot: string,
 ): Promise<void> {
   if (options.dryRun) return;
   const receipt = await readInstalledSkillReceipt(receiptPath);
@@ -2499,11 +2808,15 @@ async function writeInstalledSkillReceipt(
     else delete receipt.skills[name];
   }
   try {
+    await assertManagedDestination(receiptPath, scopeRoot);
     await mkdir(dirname(receiptPath), { recursive: true });
-    await assertNoSymlinkDestination(receiptPath);
     await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
-  } catch {
-    // A receipt we cannot persist simply means the next refresh retains conservatively.
+  } catch (error) {
+    // Symlink assertions must propagate to prevent writes through symlinks
+    if (error instanceof Error && error.message.includes('Refusing to install through symlink')) {
+      throw error;
+    }
+    // A receipt we cannot persist for other reasons simply means the next refresh retains conservatively.
   }
 }
 
@@ -3163,7 +3476,7 @@ async function ensureProjectGitignore(
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<"created" | "updated" | "unchanged"> {
 	const gitignorePath = join(projectRoot, ".gitignore");
-	await assertNoSymlinkDestination(gitignorePath);
+	await assertManagedDestination(gitignorePath, projectRoot);
 	const destinationExists = existsSync(gitignorePath);
 	const existing = destinationExists
 		? await readFile(gitignorePath, "utf-8")
@@ -4155,6 +4468,22 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	} = options;
 	const pkgRoot = getPackageRoot();
 	const projectRoot = process.cwd();
+	
+	// Validate .omx is never a symlink before any operations touch it
+	if (!dryRun) {
+		const omxPath = join(projectRoot, ".omx");
+		try {
+			const omxScopeRoot = await getValidationScopeRoot(omxPath);
+			await assertManagedDestination(omxPath, omxScopeRoot);
+		} catch (error) {
+			// Missing .omx is fine, but symlinks must be refused
+			if (error instanceof Error && error.message.includes("Refusing to install through symlink")) {
+				throw error;
+			}
+			// Any other error is unexpected
+			throw error;
+		}
+	}
 	const persistedPreferences = await readPersistedSetupPreferences(
 		projectRoot,
 		{ warnOnLegacyScope: true },
@@ -4344,6 +4673,8 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
+	// For user scope, compute the legacy receipt path at $HOME/.omx/state/setup/installed-skills.json
+	const legacySkillReceiptPath = resolvedScope.scope === "user" ? join(homedir(), ".omx", "state", "setup", "installed-skills.json") : undefined;
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
 	if (repairPluginCache && !isPluginInstallMode) {
 		throw new Error("--repair-plugin-cache requires plugin setup mode; add --plugin.");
@@ -4497,25 +4828,28 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 	// Step 1: Ensure directories exist
 	console.log("[1/8] Creating directories...");
-	const dirs = isPluginInstallMode
-		? [
-				scopeDirs.codexHomeDir,
-				scopeDirs.nativeAgentsDir,
-				omxStateDir(projectRoot),
-				omxPlansDir(projectRoot),
-				omxLogsDir(projectRoot),
-			]
-		: [
-				scopeDirs.codexHomeDir,
-				scopeDirs.promptsDir,
-				scopeDirs.skillsDir,
-				scopeDirs.nativeAgentsDir,
-				omxStateDir(projectRoot),
-				omxPlansDir(projectRoot),
-				omxLogsDir(projectRoot),
-			];
-	for (const dir of dirs) {
+	const userScopeDirs = isPluginInstallMode
+		? [scopeDirs.codexHomeDir, scopeDirs.nativeAgentsDir]
+		: [scopeDirs.codexHomeDir, scopeDirs.promptsDir, scopeDirs.skillsDir, scopeDirs.nativeAgentsDir];
+	const projectScopeDirs = [omxStateDir(projectRoot), omxPlansDir(projectRoot), omxLogsDir(projectRoot)];
+
+	// Validate and create user-scope directories against appropriate authority root
+	// (CODEX_HOME for files under CODEX_HOME, homedir() for ~/.omx and other paths)
+	for (const dir of userScopeDirs) {
 		if (!dryRun) {
+			const dirScopeRoot = await getValidationScopeRoot(dir);
+			await assertManagedDestination(dir, dirScopeRoot);
+			await mkdir(dir, { recursive: true });
+		}
+		if (verbose) console.log(`  mkdir ${dir}`);
+	}
+
+	// Validate and create project-scope directories against appropriate authority root
+	// (projectRoot for normal files, OMX_ROOT if set for .omx/* paths)
+	for (const dir of projectScopeDirs) {
+		if (!dryRun) {
+			const dirScopeRoot = await getValidationScopeRoot(dir);
+			await assertManagedDestination(dir, dirScopeRoot);
 			await mkdir(dir, { recursive: true });
 		}
 		if (verbose) console.log(`  mkdir ${dir}`);
@@ -4619,7 +4953,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				skillsSrc,
 				skillsDst,
 				backupContext,
-				{ dryRun, verbose, skillReceiptPath },
+				{ dryRun, verbose, skillReceiptPath, legacySkillReceiptPath },
 			);
 			summary.skills.backedUp += cleanup.backedUp;
 			summary.skills.removed += cleanup.removedSkillNames.length;
@@ -5233,10 +5567,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	// Step 8: Configure HUD
 	console.log("[8/8] Configuring HUD...");
 	const hudConfigPath = join(projectRoot, ".omx", "hud-config.json");
+	// Validate .omx even when hud-config.json already exists to catch symlinks
+	if (!dryRun) {
+		await assertManagedDestination(hudConfigPath, projectRoot);
+	}
 	if (force || !existsSync(hudConfigPath)) {
 		if (!dryRun) {
-			await assertNoSymlinkDestination(hudConfigPath);
 			const defaultHudConfig = { preset: "focused" };
+			await mkdir(dirname(hudConfigPath), { recursive: true });
 			await writeFile(hudConfigPath, JSON.stringify(defaultHudConfig, null, 2));
 		}
 		if (verbose) console.log("  Wrote .omx/hud-config.json");
@@ -5397,6 +5735,8 @@ async function syncManagedFileFromDisk(
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 	verboseLabel: string,
 ): Promise<void> {
+	const dstScopeRoot = await getValidationScopeRoot(dstPath);
+	await assertManagedDestination(dstPath, dstScopeRoot);
 	const destinationExists = existsSync(dstPath);
 	const changed = !destinationExists || (await filesDiffer(srcPath, dstPath));
 
@@ -5430,10 +5770,13 @@ async function syncManagedContent(
 	options: Pick<SetupOptions, "dryRun" | "verbose">,
 	verboseLabel: string,
 ): Promise<void> {
+	const dstScopeRoot = await getValidationScopeRoot(dstPath);
+	await assertManagedDestination(dstPath, dstScopeRoot);
 	const destinationExists = existsSync(dstPath);
 	let changed = true;
 	if (destinationExists) {
 		const existing = await readFile(dstPath, "utf-8");
+
 		changed = existing !== content;
 	}
 
@@ -5515,10 +5858,11 @@ async function readNativeAgentInstallManifest(
 async function writeNativeAgentInstallManifest(
 	agentsDir: string,
 	manifest: NativeAgentInstallManifest,
+	scopeRoot: string,
 ): Promise<void> {
 	const manifestPath = nativeAgentInstallManifestPath(agentsDir);
+	await assertManagedDestination(manifestPath, scopeRoot);
 	await mkdir(dirname(manifestPath), { recursive: true });
-	await assertNoSymlinkDestination(manifestPath);
 	const sortedFiles = Object.fromEntries(
 		Object.entries(manifest.files).sort(([left], [right]) =>
 			left.localeCompare(right),
@@ -5541,7 +5885,8 @@ async function syncNativeAgentToml(
 ): Promise<void> {
 	const fileName = basename(dstPath);
 	const nextHash = hashContent(content);
-	await assertNoSymlinkDestination(dstPath);
+	const dstScopeRoot = await getValidationScopeRoot(dstPath);
+	await assertManagedDestination(dstPath, dstScopeRoot);
 	const destinationExists = existsSync(dstPath);
 
 	if (!destinationExists) {
@@ -5840,6 +6185,8 @@ async function refreshNativeAgentConfigs(
 	const summary = createEmptyCategorySummary();
 
 	if (!options.dryRun) {
+		const agentsDirScopeRoot = await getValidationScopeRoot(agentsDir);
+		await assertManagedDestination(agentsDir, agentsDirScopeRoot);
 		await mkdir(agentsDir, { recursive: true });
 	}
 
@@ -5950,7 +6297,8 @@ async function refreshNativeAgentConfigs(
 	}
 
 	if (!options.dryRun) {
-		await writeNativeAgentInstallManifest(agentsDir, nativeAgentManifest);
+		const manifestScopeRoot = await getValidationScopeRoot(join(agentsDir, "..", ".omx", "native-agents.json"));
+		await writeNativeAgentInstallManifest(agentsDir, nativeAgentManifest, manifestScopeRoot);
 	}
 
 	return summary;
@@ -6020,6 +6368,11 @@ export async function installSkills(
 ): Promise<SetupCategorySummary> {
 	const summary = createEmptyCategorySummary();
 	if (!existsSync(srcDir)) return summary;
+	// Validate the skills directory before creating any skill subdirectories
+	if (!options.dryRun) {
+		const dstDirScopeRoot = await getValidationScopeRoot(dstDir);
+		await assertManagedDestination(dstDir, dstDirScopeRoot);
+	}
 	const installableSkillNames = getSetupInstallableSkillNames();
 	const installableSkills: Array<{
 		name: string;
@@ -6088,6 +6441,8 @@ export async function installSkills(
 		const skillDst = skill.destinationDir;
 
 		if (!options.dryRun) {
+			const skillDstScopeRoot = await getValidationScopeRoot(skillDst);
+			await assertManagedDestination(skillDst, skillDstScopeRoot);
 			await mkdir(skillDst, { recursive: true });
 		}
 
@@ -6129,7 +6484,8 @@ export async function installSkills(
 	// Without an authority path, refuse to create a receipt rather than placing deletion authority
 	// in the user-writable skills directory.
 	if (options.skillReceiptPath) {
-		await writeInstalledSkillReceipt(options.skillReceiptPath, dstDir, writtenFilesBySkill, options);
+		const receiptScopeRoot = await getValidationScopeRoot(options.skillReceiptPath);
+		await writeInstalledSkillReceipt(options.skillReceiptPath, dstDir, writtenFilesBySkill, options, receiptScopeRoot);
 	}
 
 	if (manifest && existsSync(dstDir)) {
@@ -6191,12 +6547,7 @@ async function removeDirectoryCopyAware(
 	const destinationExists = existsSync(sourceDir);
 	if (!destinationExists) return false;
 
-	const relativePath = relative(backupContext.baseRoot, sourceDir);
-	const safeRelativePath =
-		relativePath.startsWith("..") || relativePath === ""
-			? sourceDir.replace(/^[/]+/, "")
-			: relativePath;
-	const backupPath = join(backupContext.backupRoot, safeRelativePath);
+	const backupPath = join(backupContext.backupRoot, backupRelativePath(backupContext.baseRoot, sourceDir));
 
 	if (!options.dryRun) {
 		await mkdir(dirname(backupPath), { recursive: true });
@@ -6223,7 +6574,7 @@ async function cleanupLegacyManagedSkills(
 	srcDir: string,
 	dstDir: string,
 	backupContext: SetupBackupContext,
-	options: Pick<SetupOptions, "dryRun" | "verbose" | "skillReceiptPath">,
+	options: Pick<SetupOptions, "dryRun" | "verbose" | "skillReceiptPath"> & { legacySkillReceiptPath?: string },
 ): Promise<LegacySkillCleanupResult> {
 	const result: LegacySkillCleanupResult = {
 		backedUp: 0,
@@ -6263,7 +6614,7 @@ async function cleanupLegacyManagedSkills(
 		// A matching SKILL.md does not prove the whole directory is ours: a user file sitting beside it
 		// would be deleted with the directory. Require the same unmodified-install proof the ordinary
 		// retirement sweep uses.
-		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, skillName, installedSkillDir))) {
+		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, skillName, installedSkillDir, options.legacySkillReceiptPath))) {
 			const warning = `Skipping legacy skill cleanup for ${skillName}: directory contents are not a receipted unmodified OMX install.`;
 			result.skippedSkillNames.push(skillName);
 			result.warnings.push(warning);
@@ -6289,7 +6640,7 @@ async function cleanupLegacyManagedSkills(
 		const installedSkillDir = join(dstDir, entry.name);
 		if (!(await isOmxManagedInstalledSkillDir(installedSkillDir))) continue;
 		// The badge alone is not proof of ownership for deletion; a user-edited body keeps it.
-		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, entry.name, installedSkillDir))) {
+		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, entry.name, installedSkillDir, options.legacySkillReceiptPath))) {
 			result.skippedSkillNames.push(entry.name);
 			result.warnings.push(
 				`Skipping retired skill ${entry.name}: modified since install, or installed before receipts existed.`,

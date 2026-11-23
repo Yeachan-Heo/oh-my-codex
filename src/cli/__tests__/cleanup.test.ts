@@ -1,9 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   cleanupCommand,
   cleanupOmxMcpProcesses,
-  cleanupStaleTmpDirectories,
   extractOmxMcpEntrypoint,
   findCleanupCandidates,
   findDuplicateSiblingCleanupCandidates,
@@ -481,84 +485,57 @@ describe('cleanupOmxMcpProcesses', () => {
   });
 });
 
-describe('cleanupStaleTmpDirectories', () => {
-  const tmpEntries = [
-    { name: 'omx-stale-a', isDirectory: () => true },
-    { name: 'omc-stale-b', isDirectory: () => true },
-    { name: 'oh-my-codex-fresh', isDirectory: () => true },
-    { name: 'oh-my-codex-file', isDirectory: () => false },
-    { name: 'other-stale', isDirectory: () => true },
-  ];
-
-  it('supports dry-run and reports stale matching directories older than one hour', async () => {
-    const lines: string[] = [];
-    const removedPaths: string[] = [];
-    const now = 10 * 60 * 60 * 1000;
-
-    const removedCount = await cleanupStaleTmpDirectories(['--dry-run'], {
-      tmpRoot: '/tmp',
-      listTmpEntries: async () => tmpEntries,
-      statPath: async (path) => ({
-        mtimeMs:
-          path === '/tmp/oh-my-codex-fresh'
-            ? now - 30 * 60 * 1000
-            : now - 2 * 60 * 60 * 1000,
-      }),
-      removePath: async (path) => {
-        removedPaths.push(path);
-      },
-      now: () => now,
-      writeLine: (line) => lines.push(line),
-    });
-
-    assert.equal(removedCount, 0);
-    assert.deepEqual(removedPaths, []);
-    assert.match(
-      lines.join('\n'),
-      /Dry run: would remove 2 stale OMX \/tmp directories:/,
-    );
-    assert.match(lines.join('\n'), /\/tmp\/omc-stale-b/);
-    assert.match(lines.join('\n'), /\/tmp\/omx-stale-a/);
-    assert.doesNotMatch(lines.join('\n'), /oh-my-codex-fresh/);
-    assert.doesNotMatch(lines.join('\n'), /other-stale/);
-  });
-
-  it('removes only stale matching directories and returns the removed count', async () => {
-    const lines: string[] = [];
-    const removedPaths: string[] = [];
-    const now = 10 * 60 * 60 * 1000;
-
-    const removedCount = await cleanupStaleTmpDirectories([], {
-      tmpRoot: '/tmp',
-      listTmpEntries: async () => tmpEntries,
-      statPath: async (path) => ({
-        mtimeMs:
-          path === '/tmp/oh-my-codex-fresh'
-            ? now - 30 * 60 * 1000
-            : now - 2 * 60 * 60 * 1000,
-      }),
-      removePath: async (path) => {
-        removedPaths.push(path);
-      },
-      now: () => now,
-      writeLine: (line) => lines.push(line),
-    });
-
-    assert.equal(removedCount, 2);
-    assert.deepEqual(removedPaths, ['/tmp/omc-stale-b', '/tmp/omx-stale-a']);
-    assert.match(lines.join('\n'), /Removed stale \/tmp directory: \/tmp\/omc-stale-b/);
-    assert.match(lines.join('\n'), /Removed stale \/tmp directory: \/tmp\/omx-stale-a/);
-    assert.match(lines.join('\n'), /Removed 2 stale OMX \/tmp directories\./);
-  });
-});
-
 describe('cleanupCommand', () => {
-  it('runs tmp cleanup after orphaned MCP cleanup', async () => {
+  it('preserves old temporary projects, including a live process working directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cleanup-preserve-'));
+    const projects = ['omx-active-project', 'omc-old-project', 'oh-my-codex-old-project'].map((name) => join(root, name));
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const savedEnv = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      for (const project of projects) {
+        await mkdir(project);
+        await writeFile(join(project, 'uncommitted.txt'), 'keep this work\n');
+        await utimes(project, old, old);
+      }
+      child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: projects[0], stdio: 'ignore' });
+      await once(child, 'spawn');
+      Object.assign(process.env, { TMPDIR: root, TMP: root, TEMP: root });
+      for (const args of [[], ['--dry-run']]) {
+        let processCleanupCalled = false;
+        await cleanupCommand(args, {
+          cleanupProcesses: async () => {
+            processCleanupCalled = true;
+            return { dryRun: args.includes('--dry-run'), candidates: [], terminatedCount: 0, forceKilledCount: 0, failedPids: [] };
+          },
+        });
+        assert.equal(processCleanupCalled, true);
+        assert.equal(child.exitCode, null);
+        assert.equal(child.signalCode, null);
+        for (const project of projects) {
+          assert.equal(await readFile(join(project, 'uncommitted.txt'), 'utf8'), 'keep this work\n');
+        }
+      }
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (child?.pid && child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await once(child, 'exit');
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards dry-run to orphaned MCP cleanup', async () => {
     const calls: string[] = [];
 
     await cleanupCommand(['--dry-run'], {
-      cleanupProcesses: async () => {
+      cleanupProcesses: async (args) => {
         calls.push('processes');
+        assert.deepEqual(args, ['--dry-run']);
         return {
           dryRun: true,
           candidates: [],
@@ -566,22 +543,19 @@ describe('cleanupCommand', () => {
           forceKilledCount: 0,
           failedPids: [],
         };
-      },
-      cleanupTmpDirectories: async () => {
-        calls.push('tmp');
-        return 0;
       },
     });
 
-    assert.deepEqual(calls, ['processes', 'tmp']);
+    assert.deepEqual(calls, ['processes']);
   });
 
-  it('skips tmp cleanup when showing help', async () => {
+  it('forwards help to orphaned MCP cleanup', async () => {
     const calls: string[] = [];
 
     await cleanupCommand(['--help'], {
-      cleanupProcesses: async () => {
+      cleanupProcesses: async (args) => {
         calls.push('processes');
+        assert.deepEqual(args, ['--help']);
         return {
           dryRun: true,
           candidates: [],
@@ -589,10 +563,6 @@ describe('cleanupCommand', () => {
           forceKilledCount: 0,
           failedPids: [],
         };
-      },
-      cleanupTmpDirectories: async () => {
-        calls.push('tmp');
-        return 0;
       },
     });
 

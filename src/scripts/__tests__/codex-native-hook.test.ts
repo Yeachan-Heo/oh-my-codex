@@ -21,6 +21,7 @@ import { buildManagedCodexHooksConfig } from "../../config/codex-hooks.js";
 import { DOCUMENT_REFRESH_EXEMPTION_PREFIX } from "../../document-refresh/enforcer.js";
 import {
 	initTeamState,
+  createTask, claimTask, withTeamTaskBarrier, transitionTaskStatus, writeWorkerStatus,
   readTeamConfig,
 	readTeamLeaderAttention,
 	readTeamPhase,
@@ -702,6 +703,7 @@ async function writeActiveAutopilotSession(
 ): Promise<void> {
 	await writeJson(join(cwd, ".omx", "state", "session.json"), {
 		session_id: sessionId,
+    cwd,
 	});
 	await writeJson(
 		join(cwd, ".omx", "state", "sessions", sessionId, "autopilot-state.json"),
@@ -2871,7 +2873,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 			});
 
 			// Set native session as active FIRST so injectExecFollowup can find it
-			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId, cwd });
 
 			// Write an active ralplan skill state for this native session
 			await writeJson(
@@ -2907,7 +2909,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
 			// This triggers the ownerState logic in dispatchCodexNativeHook's Stop handler
 			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
-			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId, cwd });
 
 			// Dispatch Stop with native session ID (triggers sessionScopedOnly via ownerState)
 			const stopResult = await dispatchCodexNativeHook(
@@ -2952,7 +2954,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 			});
 
 			// Set native session as active FIRST so injectExecFollowup can find it
-			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: nativeSessionId, cwd });
 
 			// Write an active ralplan skill state
 			await writeJson(
@@ -2987,7 +2989,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 
 			// Change active session so resolveInternalSessionIdForPayload fails for native session ID
 			await mkdir(join(stateDir, "sessions", activeSessionId), { recursive: true });
-			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId });
+			await writeJson(join(stateDir, "session.json"), { session_id: activeSessionId, cwd });
 
 			// First Stop dispatches and delivers the follow-up
 			const firstStop = await dispatchCodexNativeHook(
@@ -3449,8 +3451,203 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
 
       const logFiles = await readdir(join(cwd, ".omx", "logs"));
       assert.equal(logFiles.some((name) => /^native-hook-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name)), true);
+      const logName = logFiles.find((name) => /^native-hook-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name));
+      assert.notEqual(logName, undefined);
+      const [record] = (await readFile(join(cwd, ".omx", "logs", logName ?? ""), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.equal(typeof record?.timestamp, "string");
+      assert.equal(record?.type, "native_hook_dispatch_error");
+      assert.equal(record?.hook_event_name, "Stop");
+      assert.equal(record?.session_id, "sess-cli-stop-dispatch-silent");
+      assert.equal(record?.thread_id, "thread-cli-stop-dispatch-silent");
+      assert.equal(record?.turn_id, "turn-cli-stop-dispatch-silent");
+      assert.equal(record?.error, "test-induced Stop dispatch failure");
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("routes native-hook CLI error logs through OMX_ROOT", async () => {
+    const project = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-log-project-"));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-cli-log-runtime-"));
+    const projectLogsDir = join(project, ".omx", "logs");
+    const sentinelPath = join(projectLogsDir, "sentinel.jsonl");
+    const sentinel = "preserve this project log\n";
+    try {
+      await mkdir(projectLogsDir, { recursive: true });
+      await writeFile(sentinelPath, sentinel);
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        OMX_ROOT: runtimeRoot,
+        NODE_ENV: "test",
+        OMX_NATIVE_HOOK_TEST_THROW_DISPATCH: "1",
+      };
+      delete env.OMX_STATE_ROOT;
+      delete env.OMX_TEAM_STATE_ROOT;
+      delete env.OMX_TEAM_ROOT;
+      delete env.OMX_PLUGIN_ROOT;
+      delete env.OMX_PLUGIN_CACHE_PIN_PENDING;
+      delete env.OMX_PLUGIN_CACHE_PIN_REQUIRED;
+
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd: project,
+        input: JSON.stringify({ hook_event_name: "Stop", cwd: project }),
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      const output = parseSingleJsonStdout(result.stdout);
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "native_stop_dispatch_failure");
+      assert.equal(existsSync(join(runtimeRoot, ".omx", "logs")), true);
+      const runtimeLogsDir = join(runtimeRoot, ".omx", "logs");
+      const logFiles = await readdir(runtimeLogsDir);
+      assert.equal(logFiles.length, 1);
+      assert.match(logFiles[0] ?? "", /^native-hook-\d{4}-\d{2}-\d{2}\.jsonl$/);
+      const [record] = (await readFile(join(runtimeLogsDir, logFiles[0] ?? ""), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.deepEqual(
+        {
+          type: record?.type,
+          hook_event_name: record?.hook_event_name,
+          error: record?.error,
+        },
+        {
+          type: "native_hook_dispatch_error",
+          hook_event_name: "Stop",
+          error: "test-induced dispatch failure",
+        },
+      );
+      assert.equal(await readFile(sentinelPath, "utf-8"), sentinel);
+      assert.deepEqual(await readdir(projectLogsDir), ["sentinel.jsonl"]);
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      await rm(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("honors OMX_STATE_ROOT, OMX_ROOT precedence, and the cwd default for native-hook logs", async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-state-root-"));
+    const unusedStateRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-unused-state-root-"));
+    const omxRoot = await mkdtemp(join(tmpdir(), "omx-native-hook-root-"));
+    const baseEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      NODE_ENV: "test",
+      OMX_NATIVE_HOOK_TEST_THROW_DISPATCH: "1",
+    };
+    delete baseEnv.OMX_ROOT;
+    delete baseEnv.OMX_STATE_ROOT;
+    delete baseEnv.OMX_TEAM_STATE_ROOT;
+    delete baseEnv.OMX_TEAM_ROOT;
+    delete baseEnv.OMX_PLUGIN_ROOT;
+    delete baseEnv.OMX_PLUGIN_CACHE_PIN_PENDING;
+    delete baseEnv.OMX_PLUGIN_CACHE_PIN_REQUIRED;
+    const cases: Array<{
+      name: string;
+      expectedRoot?: string;
+      unusedRoot?: string;
+      overrides: NodeJS.ProcessEnv;
+    }> = [
+      {
+        name: "OMX_STATE_ROOT alone",
+        expectedRoot: stateRoot,
+        overrides: { OMX_STATE_ROOT: stateRoot },
+      },
+      {
+        name: "OMX_ROOT precedence",
+        expectedRoot: omxRoot,
+        unusedRoot: unusedStateRoot,
+        overrides: { OMX_ROOT: omxRoot, OMX_STATE_ROOT: unusedStateRoot },
+      },
+      { name: "cwd default", overrides: {} },
+    ];
+
+    try {
+      for (const scenario of cases) {
+        const project = await mkdtemp(join(tmpdir(), "omx-native-hook-root-contract-"));
+        try {
+          const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+            cwd: project,
+            input: JSON.stringify({ hook_event_name: "Stop", cwd: project }),
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            env: { ...baseEnv, ...scenario.overrides },
+          });
+
+          assert.equal(result.status, 0, `${scenario.name}: ${result.stderr || result.stdout}`);
+          assert.equal(result.stderr, "", scenario.name);
+          assert.equal(
+            parseSingleJsonStdout(result.stdout).stopReason,
+            "native_stop_dispatch_failure",
+            scenario.name,
+          );
+          const selectedRoot = scenario.expectedRoot ?? project;
+          const selectedLogsDir = join(selectedRoot, ".omx", "logs");
+          const logFiles = await readdir(selectedLogsDir);
+          assert.equal(
+            logFiles.some((name) => /^native-hook-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name)),
+            true,
+            scenario.name,
+          );
+          if (scenario.expectedRoot) {
+            assert.equal(existsSync(join(project, ".omx", "logs")), false, scenario.name);
+          }
+          if (scenario.unusedRoot) {
+            assert.equal(existsSync(join(scenario.unusedRoot, ".omx", "logs")), false, scenario.name);
+          }
+        } finally {
+          await rm(project, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+      await rm(unusedStateRoot, { recursive: true, force: true });
+      await rm(omxRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps CLI failure handling non-fatal when the selected native-hook log root is unwritable", async () => {
+    const project = await mkdtemp(join(tmpdir(), "omx-native-hook-unwritable-project-"));
+    const runtimeParent = await mkdtemp(join(tmpdir(), "omx-native-hook-unwritable-runtime-"));
+    const runtimeRoot = join(runtimeParent, "runtime-root");
+    try {
+      await writeFile(runtimeRoot, "not a directory\n");
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        OMX_ROOT: runtimeRoot,
+        NODE_ENV: "test",
+        OMX_NATIVE_HOOK_TEST_THROW_DISPATCH: "1",
+      };
+      delete env.OMX_STATE_ROOT;
+      delete env.OMX_TEAM_STATE_ROOT;
+      delete env.OMX_TEAM_ROOT;
+      delete env.OMX_PLUGIN_ROOT;
+      delete env.OMX_PLUGIN_CACHE_PIN_PENDING;
+      delete env.OMX_PLUGIN_CACHE_PIN_REQUIRED;
+
+      const result = spawnSync(process.execPath, [nativeHookScriptPath()], {
+        cwd: project,
+        input: JSON.stringify({ hook_event_name: "Stop", cwd: project }),
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        env,
+      });
+
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.stderr, "");
+      assert.equal(parseSingleJsonStdout(result.stdout).stopReason, "native_stop_dispatch_failure");
+      assert.equal(existsSync(join(project, ".omx")), false);
+      assert.equal(await readFile(runtimeRoot, "utf-8"), "not a directory\n");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+      await rm(runtimeParent, { recursive: true, force: true });
     }
   });
 
@@ -9230,6 +9427,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -9296,6 +9494,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -9390,6 +9589,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -9471,6 +9671,7 @@ standardMaxRounds = 15
 			await writeJson(join(stateDir, "session.json"), {
 				session_id: canonicalSessionId,
 				native_session_id: leaderNativeSessionId,
+			cwd,
 			});
 			await writeJson(join(stateDir, "subagent-tracking.json"), {
 				schemaVersion: 1,
@@ -16692,6 +16893,284 @@ exit 0
     }
   });
 
+  it("renews the captured claim on real-wire plain-string PostToolUse without checkpoint or dedupe", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-real-wire-renewal-"));
+    const teamName = "native-real-wire";
+    const stateRoot = join(cwd, ".omx/state");
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      await writeWorkerStatus(teamName, "worker-1", {
+        state: "working", current_task_id: task.id, current_claim_token: claim.claimToken, updated_at: new Date().toISOString(),
+      }, cwd);
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "real-wire-renewal",
+        tool_input: { command: "printf ok" }, tool_response: "ok\n",
+      }, { cwd });
+      assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
+      const after = JSON.parse(await readFile(join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`), "utf8"));
+      assert.equal(after.version, claim.task.version + 1);
+      assert.equal(after.claim.token, claim.claimToken);
+      assert.equal(JSON.parse(await readFile(join(workerRoot, "heartbeat.json"), "utf8")).source, "posttooluse");
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const outcome of ['live', 'expired', 'wrong-token'] as const) {
+    it(`heartbeat directory does not bypass native PostToolUse ${outcome === 'live' ? 'renewal' : 'STOP'} for a ${outcome} claim`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-heartbeat-io-"));
+      const teamName = "native-heartbeat-io";
+      const stateRoot = join(cwd, ".omx/state");
+      try {
+        await configureAuthoritativeTeamWorker(cwd, teamName);
+        const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+        const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+        assert.ok(claim.ok);
+        const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+        await writeWorkerStatus(teamName, "worker-1", {
+          state: "working", current_task_id: task.id,
+          current_claim_token: outcome === 'wrong-token' ? 'wrong-captured-token' : claim.claimToken,
+          updated_at: new Date().toISOString(),
+        }, cwd);
+        await mkdir(join(workerRoot, "heartbeat.json"));
+        const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+        if (outcome !== 'wrong-token') {
+          await writeJson(taskPath, { ...claim.task, claim: { ...claim.task.claim, leased_until: new Date(outcome === 'expired' ? 0 : Date.now() + 60_000).toISOString() } });
+        }
+        const taskBefore = await readFile(taskPath, "utf8");
+        const statusBefore = await readFile(join(workerRoot, "status.json"), "utf8");
+        const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+        git(["init"]);
+        git(["config", "user.email", "test@example.com"]);
+        git(["config", "user.name", "Test User"]);
+        await writeFile(join(cwd, "work.txt"), "before\n");
+        git(["add", "work.txt"]);
+        git(["commit", "-m", "initial"]);
+        const head = git(["rev-parse", "HEAD"]);
+        await writeFile(join(cwd, "work.txt"), "unverified output\n");
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "heartbeat-io",
+          tool_input: { command: "printf ok" }, tool_response: "plain stdout/stderr\n",
+        }, { cwd });
+        if (outcome === 'live') {
+          assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
+          const after = JSON.parse(await readFile(taskPath, "utf8"));
+          assert.equal(after.version, claim.task.version + 1);
+          assert.equal(after.claim.token, claim.claimToken);
+          assert.ok(Date.parse(after.claim.leased_until) > Date.parse(JSON.parse(taskBefore).claim.leased_until));
+        } else {
+          const stop = outcome === 'expired' ? /lease_expired.*STOP editing/ : /claim_conflict.*STOP editing/;
+          assert.match(String(result.outputJson?.systemMessage), stop);
+          const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+          assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+          assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+          assert.match(await readFile(join(workerRoot, "lease-loss.json"), "utf8"), stop);
+        }
+        assert.equal(await readFile(join(workerRoot, "status.json"), "utf8"), statusBefore);
+        assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+        assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+        assert.equal(git(["rev-parse", "HEAD"]), head);
+        assert.equal(git(["diff", "--cached"]), "");
+        assert.equal(await readFile(join(cwd, "work.txt"), "utf8"), "unverified output\n");
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("surfaces unexpected status I/O as native real-wire PostToolUse STOP without task mutation", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-status-io-"));
+    const teamName = "native-status-io";
+    const stateRoot = join(cwd, ".omx/state");
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      await mkdir(join(workerRoot, "status.json"));
+      const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+      const taskBefore = await readFile(taskPath, "utf8");
+      const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      git(["init"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test User"]);
+      await writeFile(join(cwd, "work.txt"), "before\n");
+      git(["add", "work.txt"]);
+      git(["commit", "-m", "initial"]);
+      const head = git(["rev-parse", "HEAD"]);
+      await writeFile(join(cwd, "work.txt"), "unverified output\n");
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "status-io",
+        tool_input: { command: "printf ok" }, tool_response: "plain stdout/stderr\n",
+      }, { cwd });
+      assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*renewal_error:.*EISDIR.*STOP editing/);
+      const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+      assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+      assert.match(await readFile(join(workerRoot, "lease-loss.json"), "utf8"), /EISDIR.*STOP editing/);
+      assert.equal(git(["rev-parse", "HEAD"]), head);
+      assert.equal(git(["diff", "--cached"]), "");
+      assert.equal(await readFile(join(cwd, "work.txt"), "utf8"), "unverified output\n");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces lease loss from PostToolUse without checkpointing stale work", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-lease-loss-"));
+    const teamName = "native-lease-loss";
+    const stateRoot = join(cwd, ".omx/state");
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      await writeJson(join(workerRoot, "status.json"), {
+        state: "working", current_task_id: task.id, current_claim_token: claim.claimToken,
+      });
+      const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+      await writeJson(taskPath, { ...claim.task, claim: { ...claim.task.claim, leased_until: new Date(0).toISOString() } });
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_STATE_ROOT = stateRoot;
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash",
+        tool_input: { command: "printf ok" }, tool_response: "ok\n",
+      }, { cwd });
+      assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*lease_expired.*STOP editing/);
+      const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(workerRoot, "lease-loss.json")), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  for (const terminalStatus of ['completed', 'failed'] as const) {
+    it(`allows separate idle status after native PostToolUse for an own ${terminalStatus} handoff without checkpointing`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-terminal-handoff-"));
+      const teamName = "native-terminal-handoff";
+      const stateRoot = join(cwd, ".omx/state");
+      try {
+        await configureAuthoritativeTeamWorker(cwd, teamName);
+        const task = await createTask(teamName, { subject: "research", description: "no code", status: "pending", requires_code_change: false }, cwd);
+        await createTask(teamName, { subject: "other ongoing work", description: "keep team active", status: "pending" }, cwd);
+        const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+        assert.ok(claim.ok);
+        await writeWorkerStatus(teamName, "worker-1", {
+          state: "working", current_task_id: task.id, current_claim_token: claim.claimToken, updated_at: new Date().toISOString(),
+        }, cwd);
+        const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+        const statusPath = join(workerRoot, "status.json");
+        const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+        assert.ok((await transitionTaskStatus(teamName, task.id, "in_progress", terminalStatus, claim.claimToken, cwd, {
+          result: "Research complete; no code changes.", error: "Research could not finish.",
+        })).ok);
+        const statusBefore = await readFile(statusPath, "utf8");
+        const taskBefore = await readFile(taskPath, "utf8");
+        const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+        git(["init"]);
+        git(["config", "user.email", "test@example.com"]);
+        git(["config", "user.name", "Test User"]);
+        await writeFile(join(cwd, "work.txt"), "before\n");
+        git(["add", "work.txt"]);
+        git(["commit", "-m", "initial"]);
+        const headBefore = git(["rev-parse", "HEAD"]);
+        await writeFile(join(cwd, "work.txt"), "unverified terminal edits\n");
+        const result = await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "terminal-handoff",
+          tool_input: { command: "omx team api transition-task-status" }, tool_response: "handoff complete\n",
+        }, { cwd });
+        assert.doesNotMatch(JSON.stringify(result.outputJson), /LEASE LOST|STOP editing/);
+        for (const file of ["lease-loss.json", "posttooluse-dedupe.json"]) assert.equal(existsSync(join(workerRoot, file)), false);
+        assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+        assert.equal(git(["rev-parse", "HEAD"]), headBefore);
+        assert.equal(git(["diff", "--cached"]), "");
+        assert.equal(await readFile(join(cwd, "work.txt"), "utf8"), "unverified terminal edits\n");
+        assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+        assert.equal(await readFile(statusPath, "utf8"), statusBefore);
+        await writeWorkerStatus(teamName, "worker-1", { state: "idle", updated_at: new Date().toISOString() }, cwd);
+        const idle = await dispatchCodexNativeHook({
+          hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_response: "idle\n",
+          tool_input: { command: "write idle worker status" },
+        }, { cwd });
+        assert.doesNotMatch(JSON.stringify(idle.outputJson), /LEASE LOST|STOP editing/);
+        assert.equal(JSON.parse(await readFile(statusPath, "utf8")).state, "idle");
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("surfaces a thrown automatic renewal membership timeout as native PostToolUse STOP without checkpoint or dedupe", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-renewal-timeout-"));
+    const teamName = "native-renewal-timeout";
+    const stateRoot = join(cwd, ".omx/state");
+    let release!: () => void;
+    let barrier: Promise<void> | undefined;
+    try {
+      await configureAuthoritativeTeamWorker(cwd, teamName);
+      const task = await createTask(teamName, { subject: "work", description: "work", status: "pending" }, cwd);
+      const claim = await claimTask(teamName, task.id, "worker-1", null, cwd);
+      assert.ok(claim.ok);
+      const workerRoot = join(stateRoot, "team", teamName, "workers/worker-1");
+      const statusPath = join(workerRoot, "status.json");
+      await writeJson(statusPath, {
+        state: "working", current_task_id: task.id, current_claim_token: claim.claimToken,
+      });
+      const taskPath = join(stateRoot, "team", teamName, "tasks", `task-${task.id}.json`);
+      const taskBefore = await readFile(taskPath, "utf8");
+      const statusBefore = await readFile(statusPath, "utf8");
+      const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+      git(["init"]);
+      git(["config", "user.email", "test@example.com"]);
+      git(["config", "user.name", "Test User"]);
+      await writeFile(join(cwd, "work.txt"), "before\n");
+      git(["add", "work.txt"]);
+      git(["commit", "-m", "initial"]);
+      const headBefore = git(["rev-parse", "HEAD"]);
+      await writeFile(join(cwd, "work.txt"), "unverified edits\n");
+      process.env.OMX_TEAM_INTERNAL_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_WORKER = `${teamName}/worker-1`;
+      process.env.OMX_TEAM_STATE_ROOT = stateRoot;
+      let acquired!: () => void;
+      const ready = new Promise<void>((resolve) => { acquired = resolve; });
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      barrier = withTeamTaskBarrier(teamName, cwd, async () => { acquired(); await held; });
+      await ready;
+      // Dispatch outside the barrier callback so ALS reentrancy cannot bypass its deadline.
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "PostToolUse", cwd, tool_name: "Bash", tool_use_id: "renewal-timeout",
+        tool_input: { command: "printf ok" }, tool_response: "plain stdout/stderr\n",
+      }, { cwd });
+      assert.match(String(result.outputJson?.systemMessage), /LEASE LOST:.*Timed out acquiring team task lock.*STOP editing/);
+      const hookOutput = result.outputJson?.hookSpecificOutput as Record<string, unknown>;
+      assert.equal(hookOutput.additionalContext, result.outputJson?.systemMessage);
+      assert.equal(existsSync(join(workerRoot, "posttooluse-dedupe.json")), false);
+      assert.equal(existsSync(join(cwd, ".omx/reports/team-commit-hygiene", `${teamName}.ledger.json`)), false);
+      assert.equal(existsSync(join(workerRoot, "lease-loss.json")), true);
+      assert.equal(git(["rev-parse", "HEAD"]), headBefore);
+      assert.equal(git(["diff", "--cached"]), "");
+      assert.equal(await readFile(taskPath, "utf8"), taskBefore);
+      assert.equal(await readFile(statusPath, "utf8"), statusBefore);
+    } finally {
+      release?.();
+      await barrier;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("rejects foreign explicit worker roots for completed Stop/PostToolUse and ignores malformed internal identity", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-team-worker-foreign-root-"));
     const workerCwd = join(cwd, "worker");
@@ -18483,7 +18962,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-skill"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -18691,7 +19170,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-ralplan-canonical-root-no-cwd";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -18748,7 +19227,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-current-active-ralplan";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -18804,7 +19283,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-unscoped-root-current-active";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -18858,7 +19337,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-unscoped-root-no-plan-artifact";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: false,
         skill: "ralplan",
@@ -18978,7 +19457,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-ralplan-cross-worktree-root";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19039,7 +19518,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-ralplan-root-complete-no-cwd";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19160,7 +19639,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-session-ralplan-root-active";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19308,7 +19787,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-skill-subagent"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19371,7 +19850,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const now = new Date().toISOString();
       await mkdir(join(stateDir, "sessions", "sess-stop-skill-subagent-complete"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent-complete" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-subagent-complete", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill-subagent-complete", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -19628,7 +20107,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -19680,7 +20159,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question-inactive"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-inactive" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-inactive", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question-inactive", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -19738,7 +20217,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionDir = join(stateDir, "sessions", sessionId);
       await mkdir(join(sessionDir, "questions"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(sessionDir, "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -19821,7 +20300,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question-replay"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-replay" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-replay", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question-replay", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -19960,7 +20439,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-deep-interview-question-next-round"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-next-round" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-deep-interview-question-next-round", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-deep-interview-question-next-round", "skill-active-state.json"), {
         version: 1,
         active: true,
@@ -21518,6 +21997,7 @@ exit 0
       await writeJson(join(stateDir, "session.json"), {
         session_id: "omx-canonical",
         native_session_id: "codex-native",
+      cwd,
       });
 
       await dispatchCodexNativeHook(
@@ -22026,7 +22506,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-auto-inactive-mode"), { recursive: true });
       process.env.OMX_SESSION_ID = "sess-stop-auto-inactive-mode";
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-inactive-mode" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-auto-inactive-mode", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-auto-inactive-mode", "deep-interview-state.json"), {
         active: false,
         mode: "deep-interview",
@@ -22069,7 +22549,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-terminal-ralplan";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
         active: false,
         mode: "ralplan",
@@ -22120,7 +22600,7 @@ exit 0
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-active-ultrawork";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "ultrawork-state.json"), {
         active: true,
         mode: "ultrawork",
@@ -22176,7 +22656,7 @@ exit 0
       const sourceStateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-stop-boxed-ralplan";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: sessionId });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
       await writeJson(join(stateDir, "sessions", sessionId, "ralplan-state.json"), {
         active: false,
         mode: "ralplan",
@@ -22329,6 +22809,7 @@ exit 0
       await writeJson(join(stateDir, "session.json"), {
         session_id: "omx-canonical",
         native_session_id: "codex-native",
+      cwd,
       });
       await writeJson(join(stateDir, "sessions", "omx-canonical", "team-state.json"), {
         active: true,
@@ -22470,7 +22951,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-stop-skill-repeat"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-repeat" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-stop-skill-repeat", cwd });
       await writeJson(join(stateDir, "sessions", "sess-stop-skill-repeat", "skill-active-state.json"), {
         active: true,
         skill: "ralplan",
@@ -23549,7 +24030,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current", cwd });
       await writeJson(join(stateDir, "sessions", "sess-current", "team-state.json"), {
         active: true,
         current_phase: "starting",
@@ -23658,7 +24139,7 @@ exit 0
     try {
       const stateDir = join(cwd, ".omx", "state");
       await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
-      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current" });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current", cwd });
       await writeJson(join(stateDir, "sessions", "sess-current", "team-state.json"), {
         active: true,
         current_phase: "starting",

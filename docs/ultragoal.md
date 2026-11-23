@@ -80,7 +80,9 @@ Completed legacy thread-goal blocker handling:
 omx ultragoal checkpoint --goal-id G001-example --status blocked --evidence "completed legacy Codex goal blocks create_goal in this thread" --codex-goal-json ./get-goal.json
 ```
 
-`--status blocked` is a non-terminal ledger checkpoint. Use it in two cases: (1) legacy per-story or pre-aggregate sessions where a previous, different Codex thread goal is already `complete` and the current `get_goal`/`create_goal` tool surface has no reset/new-goal operation that can clear that completed goal from the same thread; (2) when the matching Codex goal for the active ultragoal objective is truthfully `blocked` and you need to persist a non-terminal `goal_blocked` receipt with evidence. Both cases write a `goal_blocked` event, preserve the ultragoal as `in_progress`, and keep recovery finite without treating the microgoal as complete or failed.
+`--status blocked` is a non-terminal ledger checkpoint. Use it in three cases: (1) legacy per-story or pre-aggregate sessions where a previous, different Codex thread goal is already `complete` and the current `get_goal`/`create_goal` tool surface has no reset/new-goal operation that can clear that completed goal from the same thread; (2) when the matching Codex goal for the active ultragoal objective is truthfully `blocked` and you need to persist a non-terminal `goal_blocked` receipt with evidence; (3) when `get_goal` itself is unavailable because the Codex goal database/schema/context or native tool catalog cannot be read. In the unavailable-tool case, pass the returned error JSON with `--codex-goal-json` and evidence describing the blocker. These paths write a `goal_blocked` event, preserve the ultragoal as `in_progress`, and keep recovery finite without treating the microgoal as complete or failed.
+
+`omx ultragoal status --codex-goal-json ...` also distinguishes a missing native `get_goal` tool catalog from a database/schema/context failure. Both remain reconciliation-unavailable diagnostics: artifact-backed Ultragoal status is still readable, but neither condition proves Codex goal completion.
 
 Status:
 

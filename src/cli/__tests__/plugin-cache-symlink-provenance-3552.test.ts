@@ -30,6 +30,7 @@ import {
   readOmxPluginCacheState,
   discoverOmxPluginCacheDirs,
   computeOmxPluginCacheClaimDigest,
+  getPinnedLauncherIncompatibilityReason,
   resolvePackagedOmxMarketplace,
   setPluginCacheMutationHooksForTest,
 } from "../plugin-marketplace.js";
@@ -239,6 +240,32 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("keeps a published claim stable across healthy validation and unchanged materialization", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-published-claim-stability-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(first.status, "materialized", JSON.stringify(first));
+        const cacheDir = first.cacheDir!;
+        const completion = JSON.parse(await readFile(join(cacheDir, ".omx-complete"), "utf-8")) as {
+          claimDigest: string;
+        };
+        const publishedDigest = await computeOmxPluginCacheClaimDigest(cacheDir);
+        assert.equal(publishedDigest, completion.claimDigest);
+
+        assert.equal(await omxPluginCacheProvenanceReason(cacheDir, packaged, first.version), null);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+        const second = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(second.status, "unchanged", JSON.stringify(second));
+        assert.equal(await computeOmxPluginCacheClaimDigest(cacheDir), publishedDigest);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when the committed publication marker is removed", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-marker-loss-"));
     try {
@@ -267,15 +294,92 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
         assert.equal(first.status, "materialized");
         const completePath = join(first.cacheDir!, ".omx-complete");
-        for (const marker of ["{\n", "not-json\n"]) {
+        for (const marker of ["{\n", "not-json\n", '{"version":"x","claimDigest":"x"}\n']) {
           await writeFile(completePath, marker);
           assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false, marker);
+          assert.match(
+            await omxPluginCacheProvenanceReason(first.cacheDir!, packaged, first.version) ?? "",
+            /completion marker is malformed/,
+          );
         }
         const second = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
         assert.equal(second.status, "stale-launcher");
 
         const clean = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
         assert.equal(clean.status, "stale-launcher");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes a completion-marker version mismatch from a claim-digest mismatch", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-claim-diagnostics-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const version = await packagedPluginVersion();
+        const completePath = join(cacheDir, ".omx-complete");
+        const completion = JSON.parse(await readFile(completePath, "utf-8")) as {
+          claimDigest: string;
+        };
+
+        await writeFile(completePath, `${JSON.stringify({ version: "0.0.0", claimDigest: completion.claimDigest })}\n`);
+        assert.match(
+          await omxPluginCacheProvenanceReason(cacheDir, packaged, version) ?? "",
+          /completion marker version mismatch/,
+        );
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+
+        const wrongDigest = `${completion.claimDigest[0] === "0" ? "1" : "0"}${completion.claimDigest.slice(1)}`;
+        await writeFile(completePath, `${JSON.stringify({ version, claimDigest: wrongDigest })}\n`);
+        assert.match(
+          await omxPluginCacheProvenanceReason(cacheDir, packaged, version) ?? "",
+          /claim digest mismatch/,
+        );
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reports identity-only rewrites despite packaged hook bytes and launcher remaining valid", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-claim-identity-drift-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const version = await packagedPluginVersion();
+        const completePath = join(cacheDir, ".omx-complete");
+        const completion = JSON.parse(await readFile(completePath, "utf-8")) as {
+          claimDigest: string;
+        };
+        const hookPath = join(cacheDir, "hooks", "hooks.json");
+        const hookBytes = await readFile(hookPath);
+        const originalStats = await lstat(hookPath);
+        const replacementPath = join(dirname(hookPath), ".hooks.json-replacement");
+        await writeFile(replacementPath, hookBytes, { flag: "wx" });
+        const replacementStats = await lstat(replacementPath);
+        await rename(replacementPath, hookPath);
+        const rewrittenStats = await lstat(hookPath);
+        assert.ok(
+          originalStats.dev !== rewrittenStats.dev || originalStats.ino !== rewrittenStats.ino,
+          "atomic same-content replacement changes the claimed filesystem identity",
+        );
+        assert.equal(rewrittenStats.dev, replacementStats.dev);
+        assert.equal(rewrittenStats.ino, replacementStats.ino);
+        assert.notEqual(await computeOmxPluginCacheClaimDigest(cacheDir), completion.claimDigest);
+        assert.equal(await pluginHookCacheMatchesPackaged(cacheDir, packaged), true);
+        assert.equal(await getPinnedLauncherIncompatibilityReason(cacheDir, packaged), null);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        assert.match(
+          await omxPluginCacheProvenanceReason(cacheDir, packaged, version) ?? "",
+          /claim digest mismatch/,
+        );
       });
     } finally {
       await rm(wd, { recursive: true, force: true });

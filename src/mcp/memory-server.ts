@@ -9,9 +9,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { readFile, writeFile, mkdir, rename } from 'fs/promises';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { withCrossProcessFileLockSync } from '../subagents/tracker.js';
 import { parseNotepadPruneDaysOld } from './memory-validation.js';
 import { autoStartStdioMcpServer } from './bootstrap.js';
 import { resolveWorkingDirectoryForState } from './state-paths.js';
@@ -31,6 +31,14 @@ interface ProjectMemory {
   structure?: string;
   notes?: Array<{ category: string; content: string; timestamp: string }>;
   directives?: Array<{ directive: string; priority: string; context?: string; timestamp: string }>;
+}
+
+function readProjectMemory(path: string): ProjectMemory {
+  const value: unknown = JSON.parse(readFileSync(path, 'utf-8'));
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Invalid project memory object at ${path}`);
+  }
+  return value as ProjectMemory;
 }
 
 const server = new Server(
@@ -183,6 +191,21 @@ export async function handleMemoryToolCall(request: {
     };
   }
 
+  const memoryWrite = ['project_memory_write', 'project_memory_add_note', 'project_memory_add_directive'].includes(name);
+  const notepadWrite = ['notepad_write_priority', 'notepad_write_working', 'notepad_write_manual', 'notepad_prune'].includes(name);
+  if (memoryWrite || notepadWrite) {
+    const path = memoryWrite ? getMemoryPath(wd) : getNotepadPath(wd);
+    return withCrossProcessFileLockSync(path, (lock) => handleMemoryOperation(name, a, wd, (contents) => {
+      lock.assertOwnership();
+      lock.publish(contents);
+    }));
+  }
+  return handleMemoryOperation(name, a, wd);
+}
+
+function handleMemoryOperation(
+  name: string, a: Record<string, unknown>, wd: string, publish?: (contents: string) => void,
+) {
   switch (name) {
     // === Project Memory ===
     case 'project_memory_read': {
@@ -192,7 +215,7 @@ export async function handleMemoryToolCall(request: {
       }
       let data: ProjectMemory = {};
       try {
-        data = JSON.parse(await readFile(memPath, 'utf-8')) as ProjectMemory;
+        data = readProjectMemory(memPath);
       } catch {
         data = {};
       }
@@ -205,34 +228,23 @@ export async function handleMemoryToolCall(request: {
 
     case 'project_memory_write': {
       const memPath = getMemoryPath(wd);
-      await mkdir(join(wd, '.omx'), { recursive: true });
       const merge = a.merge as boolean;
       const newMem = a.memory as Record<string, unknown>;
       if (merge && existsSync(memPath)) {
-        let existing: Record<string, unknown> = {};
-        try {
-          existing = JSON.parse(await readFile(memPath, 'utf-8')) as Record<string, unknown>;
-        } catch {
-          existing = {};
-        }
+        const existing = readProjectMemory(memPath);
         const merged = { ...existing, ...newMem };
-        await writeFile(memPath, JSON.stringify(merged, null, 2));
+        publish!(JSON.stringify(merged, null, 2));
       } else {
-        await writeFile(memPath, JSON.stringify(newMem, null, 2));
+        publish!(JSON.stringify(newMem, null, 2));
       }
       return text({ success: true });
     }
 
     case 'project_memory_add_note': {
       const memPath = getMemoryPath(wd);
-      await mkdir(join(wd, '.omx'), { recursive: true });
       let data: ProjectMemory = {};
       if (existsSync(memPath)) {
-        try {
-          data = JSON.parse(await readFile(memPath, 'utf-8')) as ProjectMemory;
-        } catch {
-          data = {};
-        }
+        data = readProjectMemory(memPath);
       }
       if (!data.notes) data.notes = [];
       data.notes.push({
@@ -240,20 +252,15 @@ export async function handleMemoryToolCall(request: {
         content: a.content as string,
         timestamp: new Date().toISOString(),
       });
-      await writeFile(memPath, JSON.stringify(data, null, 2));
+      publish!(JSON.stringify(data, null, 2));
       return text({ success: true, noteCount: data.notes.length });
     }
 
     case 'project_memory_add_directive': {
       const memPath = getMemoryPath(wd);
-      await mkdir(join(wd, '.omx'), { recursive: true });
       let data: ProjectMemory = {};
       if (existsSync(memPath)) {
-        try {
-          data = JSON.parse(await readFile(memPath, 'utf-8')) as ProjectMemory;
-        } catch {
-          data = {};
-        }
+        data = readProjectMemory(memPath);
       }
       if (!data.directives) data.directives = [];
       data.directives.push({
@@ -262,7 +269,7 @@ export async function handleMemoryToolCall(request: {
         context: a.context as string | undefined,
         timestamp: new Date().toISOString(),
       });
-      await writeFile(memPath, JSON.stringify(data, null, 2));
+      publish!(JSON.stringify(data, null, 2));
       return text({ success: true, directiveCount: data.directives.length });
     }
 
@@ -272,7 +279,7 @@ export async function handleMemoryToolCall(request: {
       if (!existsSync(notePath)) {
         return text({ exists: false, content: '' });
       }
-      const content = await readFile(notePath, 'utf-8');
+      const content = readFileSync(notePath, 'utf-8');
       const section = a.section as string | undefined;
       if (section && section !== 'all') {
         const sectionContent = extractSection(content, section);
@@ -283,11 +290,10 @@ export async function handleMemoryToolCall(request: {
 
     case 'notepad_write_priority': {
       const notePath = getNotepadPath(wd);
-      await mkdir(join(wd, '.omx'), { recursive: true });
       const content = a.content as string;
       let existing: string;
       try {
-        existing = await readFile(notePath, 'utf-8');
+        existing = readFileSync(notePath, 'utf-8');
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
           existing = '';
@@ -296,19 +302,16 @@ export async function handleMemoryToolCall(request: {
         }
       }
       existing = replaceSection(existing, 'PRIORITY', content.slice(0, 500));
-      const tmpPath = notePath + '.tmp.' + process.pid;
-      await writeFile(tmpPath, existing);
-      await rename(tmpPath, notePath);
+      publish!(existing);
       return text({ success: true });
     }
 
     case 'notepad_write_working': {
       const notePath = getNotepadPath(wd);
-      await mkdir(join(wd, '.omx'), { recursive: true });
       const entry = `\n[${new Date().toISOString()}] ${a.content as string}`;
       let existing: string;
       try {
-        existing = await readFile(notePath, 'utf-8');
+        existing = readFileSync(notePath, 'utf-8');
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
           existing = '';
@@ -317,19 +320,16 @@ export async function handleMemoryToolCall(request: {
         }
       }
       existing = appendToSection(existing, 'WORKING MEMORY', entry);
-      const tmpPath = notePath + '.tmp.' + process.pid;
-      await writeFile(tmpPath, existing);
-      await rename(tmpPath, notePath);
+      publish!(existing);
       return text({ success: true });
     }
 
     case 'notepad_write_manual': {
       const notePath = getNotepadPath(wd);
-      await mkdir(join(wd, '.omx'), { recursive: true });
       const entry = `\n${a.content as string}`;
       let existing: string;
       try {
-        existing = await readFile(notePath, 'utf-8');
+        existing = readFileSync(notePath, 'utf-8');
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
           existing = '';
@@ -338,9 +338,7 @@ export async function handleMemoryToolCall(request: {
         }
       }
       existing = appendToSection(existing, 'MANUAL', entry);
-      const tmpPath = notePath + '.tmp.' + process.pid;
-      await writeFile(tmpPath, existing);
-      await rename(tmpPath, notePath);
+      publish!(existing);
       return text({ success: true });
     }
 
@@ -358,7 +356,7 @@ export async function handleMemoryToolCall(request: {
       }
       const days = parsedDays.days;
       const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-      const content = await readFile(notePath, 'utf-8');
+      const content = readFileSync(notePath, 'utf-8');
       const workingSection = extractSection(content, 'WORKING MEMORY');
       if (!workingSection) {
         return text({ pruned: 0, message: 'No working memory entries found' });
@@ -379,7 +377,7 @@ export async function handleMemoryToolCall(request: {
       }
       if (pruned > 0) {
         const updated = replaceSection(content, 'WORKING MEMORY', kept.join('\n'));
-        await writeFile(notePath, updated);
+        publish!(updated);
       }
       return text({ pruned, remaining: kept.filter(l => l.match(/^\[/)).length });
     }
@@ -389,8 +387,8 @@ export async function handleMemoryToolCall(request: {
       if (!existsSync(notePath)) {
         return text({ exists: false, size: 0, entryCount: 0, oldestEntry: null });
       }
-      const content = await readFile(notePath, 'utf-8');
-      const stats = await import('fs/promises').then(fs => fs.stat(notePath));
+      const content = readFileSync(notePath, 'utf-8');
+      const stats = statSync(notePath);
       const workingSection = extractSection(content, 'WORKING MEMORY');
       const timestamps: string[] = [];
       if (workingSection) {

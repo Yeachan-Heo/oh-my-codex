@@ -1,3 +1,4 @@
+import { renewWorkerTaskLease, reportWorkerTaskLeaseLoss } from './team-worker-lease.js';
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
@@ -18,6 +19,7 @@ export interface TeamWorkerPostToolUseResult {
   handled: boolean;
   status: PostToolUseStatus;
   reason?: string;
+  stopMessage?: string;
   teamName?: string;
   workerName?: string;
   stateRoot?: string;
@@ -397,9 +399,6 @@ export async function handleTeamWorkerPostToolUseSuccess(
 ): Promise<TeamWorkerPostToolUseResult> {
   try {
     if (readHookEvent(payload) !== 'PostToolUse') return { handled: false, status: 'skipped', reason: 'not_posttooluse', operationKinds: [] };
-    if (readToolName(payload) !== 'Bash') return { handled: false, status: 'skipped', reason: 'not_bash', operationKinds: [] };
-    if (readExitCode(payload) !== 0) return { handled: false, status: 'skipped', reason: 'nonzero_exit', operationKinds: [] };
-
     const parsedWorker = parseTeamWorkerEnv(env.OMX_TEAM_INTERNAL_WORKER ?? env.OMX_TEAM_WORKER);
     if (!parsedWorker) return { handled: false, status: 'skipped', reason: 'missing_worker_env', operationKinds: [] };
 
@@ -423,7 +422,20 @@ export async function handleTeamWorkerPostToolUseSuccess(
     }
 
     const nowIso = new Date().toISOString();
-    await writeHeartbeat(stateRoot, teamName, workerName, nowIso);
+    // Best-effort heartbeat telemetry must not bypass authoritative renewal.
+    await writeHeartbeat(stateRoot, teamName, workerName, nowIso).catch(() => {});
+    const renewal = await renewWorkerTaskLease(stateRoot, teamName, workerName);
+    if (renewal && 'terminalHandoff' in renewal) {
+      return { handled: true, status: 'skipped', reason: 'terminal_handoff', teamName, workerName, stateRoot, worktreePath, operationKinds: [] };
+    }
+    if (renewal && !renewal.ok) {
+      const stopMessage = await reportWorkerTaskLeaseLoss(stateRoot, teamName, workerName, renewal.error);
+      return { handled: true, status: 'skipped', reason: `lease_lost:${renewal.error}`, stopMessage, teamName, workerName, stateRoot, worktreePath, operationKinds: [] };
+    }
+
+    // Tool activity renews the claim; only explicit Bash success authorizes checkpointing.
+    if (readToolName(payload) !== 'Bash') return { handled: false, status: 'skipped', reason: 'not_bash', operationKinds: [] };
+    if (readExitCode(payload) !== 0) return { handled: false, status: 'skipped', reason: 'nonzero_exit', operationKinds: [] };
 
     const config = await readTeamConfig(stateRoot, teamName);
     const leaderArtifactCwd = readLeaderArtifactCwd(config, cwd);

@@ -407,7 +407,20 @@ describe("agents/native-config", () => {
     assert.doesNotMatch(tunedToml, /exact gpt-5\.6-terra model/);
   });
 
-  it("adds a leaf guard after delegation guidance in generated native agent instructions", () => {
+  it("keeps generated overlays within read-only and advisory assignments", () => {
+    for (const role of ["architect", "planner", "researcher", "debugger"] as const) {
+      const toml = generateAgentToml(AGENT_DEFINITIONS[role], "Return a read-only analysis.");
+      const instructions = parseToml(toml).developer_instructions as string;
+
+      assert.match(instructions, /Return a read-only analysis\./);
+      assert.doesNotMatch(instructions, /requested work is implemented/);
+      assert.doesNotMatch(instructions, /diagnostics, tests, and build evidence are mandatory/);
+      assert.doesNotMatch(instructions, /Default to delegation and orchestration when specialists exist/);
+      assert.match(instructions, /assigned (?:result|scope)/);
+    }
+  });
+
+  it("adds a leaf guard after scope-aware posture guidance in generated native agent instructions", () => {
     const codeReviewerToml = generateAgentToml(
       AGENT_DEFINITIONS["code-reviewer"],
       "code-reviewer prompt",
@@ -417,17 +430,17 @@ describe("agents/native-config", () => {
     assert.match(codeReviewerToml, /do not call Task, spawn_agent, or native child agents/);
     assert.match(codeReviewerToml, /report missing specialist coverage to the leader/);
 
-    const postureDelegationIndex = codeReviewerToml.indexOf(
-      "Default to delegation and orchestration when specialists exist.",
+    const postureScopeIndex = codeReviewerToml.indexOf(
+      "Specialist coverage must stay within the assigned role and delegation authority.",
     );
-    const modelDelegationIndex = codeReviewerToml.indexOf("precise delegation.");
+    const modelScopeIndex = codeReviewerToml.indexOf("assigned scope, tradeoff reasoning, and precise handoffs.");
     const guardIndex = codeReviewerToml.indexOf("<native_subagent_leaf_guard>");
     const metadataIndex = codeReviewerToml.indexOf("## OMX Agent Metadata");
 
-    assert.ok(postureDelegationIndex >= 0, "frontier posture delegation text should exist");
-    assert.ok(modelDelegationIndex >= 0, "frontier model delegation text should exist");
-    assert.ok(guardIndex > postureDelegationIndex, "leaf guard should override posture delegation text");
-    assert.ok(guardIndex > modelDelegationIndex, "leaf guard should override model delegation text");
+    assert.ok(postureScopeIndex >= 0, "frontier posture should preserve assigned scope");
+    assert.ok(modelScopeIndex >= 0, "frontier model guidance should preserve assigned scope");
+    assert.ok(guardIndex > postureScopeIndex, "leaf guard should follow posture guidance");
+    assert.ok(guardIndex > modelScopeIndex, "leaf guard should follow model guidance");
     assert.ok(metadataIndex > guardIndex, "metadata should remain final non-policy bookkeeping");
 
     const researcherToml = generateAgentToml(

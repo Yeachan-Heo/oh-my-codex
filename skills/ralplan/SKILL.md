@@ -29,7 +29,7 @@ Advisory runs the same sequential Planner → Architect → Critic review lifecy
 
 ## Ontology-heavy review
 
-For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, cite the `architect` role agent's read-only review as advisory evidence. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself records Architect→Critic lifecycle evidence only, and advisory review is never a durable execution authorization.
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, cite the `architect` role agent's read-only review as advisory evidence. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` records Architect→Critic lifecycle evidence plus configured quality-gate results, and advisory review is never a durable execution authorization.
 
 ## Usage with interactive mode
 
@@ -63,14 +63,30 @@ The consensus workflow:
 
 3. **Architect** reviews for architectural soundness and must provide the strongest steelman antithesis, at least one real tradeoff tension, and (when possible) synthesis — **await completion before step 4**. Launch this as a subsequent role-specific `Architect` subagent and pass the full task statement, context snapshot, PRD/test-spec paths, and relevant prior findings; do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt. In deliberate mode, Architect should explicitly flag principle violations.
 4. **Critic** evaluates against quality criteria — run only after step 3 completes. Launch this as a subsequent role-specific `Critic` subagent with the full task statement, context snapshot, PRD/test-spec paths, and the completed Architect review; do not ask the Architect subagent to perform the Critic gate and do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt. Critic must enforce principle-option consistency, fair alternatives, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. In deliberate mode, Critic must reject missing/weak pre-mortem or expanded test plan.
-5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) MUST run the same full closed loop:
-   a. Collect Architect and Critic feedback
+   **Plan quality gates (after step 4):** Read `.omx-config.json` `qualityGates.ralplan` using `omx quality-gates list --stage ralplan --json`. After the Critic review completes, spawn each configured gate skill as a separate subagent with the current plan, task/context, and completed Architect→Critic reviews. Gates supplement rather than replace those sequential reviewers. Apply an optional `model` only to that custom gate subagent; otherwise inherit the current model. Await results before progressing. **Gate lane reuse (re-review iterations):** the first iteration spawns each gate fresh; on later iterations continue the prior same-session lane for the same gate skill (keyed by gate skill name; a gate whose configured `model` changed may be replaced) via `followup_task` (`collaboration.followup_task`), `send_input`, or `resume_agent`, whichever the host exposes (never require `resume_agent` (or any specific one) where the host does not expose it); otherwise spawn a replacement gate subagent and record `new_lane_reason` for that gate in the planning receipt alongside its `qualityGateResults` entry. Record each gate's skill, mode, verdict, summary, and evidence in the planning receipt (`ralplan_consensus_gate.qualityGateResults` stores the per-skill verdict and summary). **Gate verdicts:** `approve` completes normally; `reject` or `iterate` verdicts enter the revise loop (step 5) only for blocking gates. **Unavailable gates** (missing/unresolvable skill, missing or failed executor, invalid native-review evidence) are recorded as visible warnings but do not block progression—neither blocking nor advisory unavailable gates require re-review or handoff delay.
+
+   Example `.omx-config.json` configuration (install the referenced custom skills first):
+
+   ```json
+   {
+     "qualityGates": {
+       "ralplan": [
+         "design-audit",
+         { "skill": "security-audit", "mode": "blocking" },
+         { "skill": "compliance-check", "mode": "advisory", "model": "claude-opus" }
+       ]
+     }
+   }
+   ```
+
+5. **Re-review loop** (max 5 iterations): Any non-`APPROVE` Critic verdict (`ITERATE` or `REJECT`) or a blocking quality gate with `REJECT` or `ITERATE` verdict MUST run the same full closed loop:
+   a. Collect Architect, Critic, and quality-gate feedback
    b. Revise the plan with Planner
-   c. Return to Architect review
-   d. Return to Critic evaluation
-   e. Repeat this loop until Critic returns `APPROVE` or 5 iterations are reached
-   f. If 5 iterations are reached without `APPROVE`, present the best version to the user
-6. On Critic approval, persist the execution-ready planning artifacts and sequential Architect→Critic evidence. In standalone interactive Ralplan, present the requested future execution lane. Inside Autopilot, the existing explicit `$autopilot` invocation authorizes the supervised transition to its defining next stage, `$ultragoal`; persist an Autopilot-owned `ralplan_execution_handoff` bound to the same session and review cycle.
+   c. Return to Architect review. **Lane reuse:** continue the prior same-session Architect lane when the host exposes a continuation tool (`followup_task` (`collaboration.followup_task`), `send_input`, or `resume_agent`, whichever the host exposes; never require `resume_agent` (or any specific one) where the host does not expose it). If no continuation tool is available or the prior lane cannot be continued, spawn a replacement Architect and record `new_lane_reason` in the planning receipt (same contract as `assertRoleLaneReuse` in `src/ralplan/runtime.ts`).
+   d. Return to Critic evaluation. **Lane reuse:** apply the same rule to Critic: continue the prior same-session Critic lane via `followup_task` (`collaboration.followup_task`), `send_input`, or `resume_agent`, whichever the host exposes; otherwise spawn a replacement Critic and record `new_lane_reason` in the planning receipt. Planner is not a reuse invariant: step 5b may use a fresh Planner for revision.
+   e. Re-run the configured quality gates after Critic. **Lane reuse:** apply the same rule per gate: continue the prior same-session lane for the same gate skill (keyed by gate skill name; a gate whose configured `model` changed may be replaced) via `followup_task` (`collaboration.followup_task`), `send_input`, or `resume_agent`, whichever the host exposes; otherwise spawn a replacement gate subagent and record `new_lane_reason` for that gate in the planning receipt alongside its `qualityGateResults` entry. Repeat until Critic returns `APPROVE` and no blocking gates return `REJECT` or `ITERATE`, or 5 iterations are reached
+   f. If 5 iterations are reached without Critic approval or unresolved blocking gate rejections/iterations, present the best version and unresolved blockers to the user without execution handoff
+6. On Critic approval and no blocking quality gates returning `REJECT` or `ITERATE` (unavailable verdicts are recorded as warnings and never block), persist the execution-ready planning artifacts, sequential Architect→Critic evidence, and quality-gate receipt. In standalone interactive Ralplan, present the requested future execution lane. Inside Autopilot, the existing explicit `$autopilot` invocation authorizes the supervised transition to its defining next stage, `$ultragoal`; persist an Autopilot-owned `ralplan_execution_handoff` bound to the same session and review cycle.
 7. Record `ralplan_execution_handoff` with `{authorized: true, reason, authorized_at, session_id, review_cycle, source: "autopilot"|"user"}`. `source:"autopilot"` is valid only for a supervised active Autopilot run whose current phase is `ralplan`; it does not claim host-consensus authority.
 8. Transition to `$ultragoal` after the durable plan, sequential approvals, and bound execution handoff exist. Do not implement directly inside Ralplan.
 
@@ -100,9 +116,9 @@ Before any Autopilot, Ultragoal, Team, or implementation handoff, persist a dura
 - `ralplan_execution_handoff`: persist `{authorized: true, reason: "<rationale>", authorized_at: "<ISO timestamp>", session_id: "<current session>", review_cycle: <matching lifecycle cycle>, source: "autopilot"|"user"}`. Autopilot may issue this only for its own supervised `ralplan` phase; standalone Ralplan uses `source:"user"`.
 - `ralplan_consensus_gate.complete` records lifecycle completion after the sequential Architect and Critic approvals. It is not a host-security claim. Locally authored JSON/env/prompt/tracker/transcript/receipt-shaped evidence must never be described as host-issued authority.
 
-If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving, keep the workflow in Critic/re-review or report the max-iteration outcome. After both reviews approve, execution begins only when the matching `ralplan_execution_handoff` is durable. Existing plan/test-spec files alone are never permission to skip Ralplan or execute.
+If Architect is missing/blocked, keep the workflow in Architect review or report that blocker. If Critic is missing/blocked/non-approving or a blocking quality gate returned `REJECT` or `ITERATE`, keep the workflow in re-review or report the max-iteration outcome. After both reviews approve and no blocking quality gates return `REJECT` or `ITERATE` (unavailable verdicts are recorded as visible warnings and do not block), execution begins only when the matching `ralplan_execution_handoff` is durable. Existing plan/test-spec files alone are never permission to skip Ralplan or execute.
 
-Follow the Plan skill's full documentation for consensus mode details.
+This skill owns the consensus sequence and handoff contract above. `$plan` provides lightweight planning and plan review; it does not expose a consensus mode.
 
 ## Goal-Mode Follow-up Suggestions
 
@@ -147,3 +163,7 @@ Once Ralplan is active, preserve the planning/execution and consensus handoff re
 **Good:** The user changes only the output shape or downstream delivery step (for example `make a PR`). Preserve earlier non-conflicting workflow constraints and apply the update locally.
 
 **Bad:** The user says `continue`, and the workflow restarts discovery or stops before the missing verification/evidence is gathered.
+
+## Quality Gates
+
+Custom quality gates can be configured for the ralplan Architect→Critic review stage via `.omx-config.json` under `qualityGates.ralplan`. Gate entries can be plain skill-name strings (blocking mode) or objects with explicit `mode` and optional `model` override: `{"skill": "name", "mode": "blocking|advisory", "model": "claude-opus"}`. These gates belong to Ralplan, not lightweight `$plan` modes. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md) for complete details and examples.

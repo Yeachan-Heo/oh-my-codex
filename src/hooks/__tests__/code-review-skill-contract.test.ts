@@ -56,8 +56,8 @@ describe('code-review skill contract', () => {
     assert.match(codeReviewSkill, /Else if `code-reviewer` recommendation is \*\*REQUEST CHANGES\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
     assert.match(codeReviewSkill, /Else if architect status is \*\*WATCH\*\*, final recommendation is \*\*COMMENT\*\*/i);
     assert.match(codeReviewSkill, /Else final recommendation follows the `code-reviewer` lane/i);
-    assert.match(codeReviewSkill, /\*\*APPROVE\*\* only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence/i);
-    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* for a blocker, unresolved high\/critical finding, or unavailable lane/i);
+    assert.match(codeReviewSkill, /\*\*APPROVE\*\* only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, both independent lanes returned evidence/i);
+    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* for a blocker, unresolved high\/critical finding, unavailable lane, or non-passing\/unavailable blocking quality gate/i);
   });
 
   it('bounds auto-fix wording to the supported omx ralph compatibility path only', () => {
@@ -85,5 +85,99 @@ describe('code-review skill contract', () => {
         Number(mediumCount[1]) +
         Number(lowCount[1]),
     );
+  });
+
+  describe('continuation decision table', () => {
+    it('defines continuation decision table with five cases', () => {
+      assert.match(codeReviewSkill, /Continuation Decision Table/i);
+      assert.match(codeReviewSkill, /Fresh Review/i);
+      assert.match(codeReviewSkill, /Resuming Missing Lane/i);
+      assert.match(codeReviewSkill, /Resuming Missing Validation/i);
+      assert.match(codeReviewSkill, /Repair Re-review/i);
+      assert.match(codeReviewSkill, /Complete Evidence/i);
+    });
+
+    it('distinguishes fresh review from continuation', () => {
+      assert.match(codeReviewSkill, /Fresh Review.*no prior receipt.*OR source\/requirements\/gates changed/i);
+      assert.match(codeReviewSkill, /Launch both code-reviewer and architect lanes in parallel on clean contexts/i);
+    });
+
+    it('covers missing lane resumption with evidence reuse', () => {
+      assert.match(codeReviewSkill, /Resuming Missing Lane.*one lane has evidence, other missing/i);
+      assert.match(codeReviewSkill, /Re-launch the missing lane only/i);
+      assert.match(codeReviewSkill, /Carry prior evidence from the complete lane/i);
+    });
+
+    it('covers incomplete validation collection', () => {
+      assert.match(codeReviewSkill, /Resuming Missing Validation.*both lanes returned, validation incomplete/i);
+      assert.match(codeReviewSkill, /Collect missing validation inputs\/results/i);
+      assert.match(codeReviewSkill, /Reuse lane evidence/i);
+    });
+
+    it('covers repair re-review with source change', () => {
+      assert.match(codeReviewSkill, /Repair Re-review.*implementation changed source.*authorized repair owner/i);
+      assert.match(codeReviewSkill, /Re-launch both lanes on the revised scope/i);
+      assert.match(codeReviewSkill, /Include prior findings as context/i);
+    });
+
+    it('covers complete evidence termination', () => {
+      assert.match(codeReviewSkill, /Complete Evidence.*all lanes returned, all validation complete/i);
+      assert.match(codeReviewSkill, /Return the existing scoped result and stop/i);
+    });
+
+    it('enforces binding rules for evidence reuse', () => {
+      assert.match(codeReviewSkill, /Binding Rules/i);
+      assert.match(codeReviewSkill, /source-bound receipt tracks scope identity/i);
+      assert.match(codeReviewSkill, /Missing or unverifiable bindings.*prevent evidence reuse/i);
+    });
+  });
+
+  describe('source-bound review receipt', () => {
+    it('defines receipt structure with scope, source, gates, lanes, and validation', () => {
+      assert.match(codeReviewSkill, /Source-Bound Review Receipt/i);
+      assert.match(codeReviewSkill, /REVIEW SCOPE/i);
+      assert.match(codeReviewSkill, /SOURCE IDENTITY/i);
+      assert.match(codeReviewSkill, /REQUIREMENTS & GATES/i);
+      assert.match(codeReviewSkill, /LANE RESULTS/i);
+      assert.match(codeReviewSkill, /VALIDATION/i);
+      assert.match(codeReviewSkill, /FINDINGS & GAPS/i);
+      assert.match(codeReviewSkill, /FINAL RECOMMENDATION/i);
+    });
+
+    it('records scope identity including uncommitted changes', () => {
+      assert.match(codeReviewSkill, /Files Reviewed/i);
+      assert.match(codeReviewSkill, /Changed Lines/i);
+      assert.match(codeReviewSkill, /Base Commit/i);
+      assert.match(codeReviewSkill, /Uncommitted Changes.*file hashes if present/i);
+    });
+
+    it('tracks source binding status and invalidation triggers', () => {
+      assert.match(codeReviewSkill, /Source Binding: <valid\|stale\|unbound>/i);
+      assert.match(codeReviewSkill, /Invalidation Triggers/i);
+      assert.match(codeReviewSkill, /Base commit or uncommitted changes differ/i);
+      assert.match(codeReviewSkill, /Requirements or acceptance criteria are updated/i);
+      assert.match(codeReviewSkill, /Configured quality gates change/i);
+      assert.match(codeReviewSkill, /Validation inputs\/results are unavailable or stale/i);
+      assert.match(codeReviewSkill, /Required lanes.*are missing or unavailable/i);
+    });
+
+    it('records each lane result with recommendation, findings, and artifact', () => {
+      assert.match(codeReviewSkill, /code-reviewer:\s*Recommendation:/i);
+      assert.match(codeReviewSkill, /Finding Severity.*CRITICAL.*HIGH.*MEDIUM.*LOW/i);
+      assert.match(codeReviewSkill, /Artifact:.*reference or hash/i);
+      assert.match(codeReviewSkill, /architect:\s*Status: CLEAR \| WATCH \| BLOCK/i);
+    });
+
+    it('records custom gate results with mode and verdict', () => {
+      assert.match(codeReviewSkill, /\[custom gates\]:/i);
+      assert.match(codeReviewSkill, /Gate Name.*skill name/i);
+      assert.match(codeReviewSkill, /Mode: blocking \| advisory/i);
+      assert.match(codeReviewSkill, /Verdict: pass \| fail \| unavailable/i);
+    });
+
+    it('distinguishes binding status and prevents unverifiable approval', () => {
+      assert.match(codeReviewSkill, /Reuse Rules.*Evidence may be reused.*only if all binding conditions match/i);
+      assert.match(codeReviewSkill, /Missing or unverifiable bindings never establish approval/i);
+    });
   });
 });

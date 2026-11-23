@@ -1809,6 +1809,29 @@ describe('package-manager ownership', () => {
   const executable = '/configured/node_modules/oh-my-codex/dist/cli/omx.js';
   const packageRoot = '/configured/node_modules/oh-my-codex';
 
+  async function createNpmRuntimePrefixFixture(includeRuntimeNpm = true) {
+    const root = await mkdtemp(join(tmpdir(), 'omx-npm-runtime-prefix-'));
+    const nodeRuntime = join(root, 'node-runtime');
+    const currentNodeExecutable = join(nodeRuntime, 'bin', 'node');
+    const npmCli = join(nodeRuntime, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const npmPrefix = join(root, 'global-prefix');
+    const globalInstallRoot = join(npmPrefix, 'lib', 'node_modules');
+    const currentPackageRoot = join(globalInstallRoot, 'oh-my-codex');
+    const currentExecutable = join(currentPackageRoot, 'dist', 'cli', 'omx.js');
+    const pathBin = join(root, 'path-bin');
+    await mkdir(dirname(currentNodeExecutable), { recursive: true });
+    await writeFile(currentNodeExecutable, '');
+    if (includeRuntimeNpm) {
+      await mkdir(dirname(npmCli), { recursive: true });
+      await writeFile(npmCli, '');
+    }
+    await mkdir(dirname(currentExecutable), { recursive: true });
+    await writeFile(currentExecutable, '');
+    await mkdir(pathBin, { recursive: true });
+    await writeFile(join(pathBin, 'npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    return { root, currentNodeExecutable, npmCli, npmPrefix, globalInstallRoot, currentPackageRoot, currentExecutable, pathBin };
+  }
+
   function ownershipDependencies(stamp: 'npm' | 'bun' | undefined, roots: { npm?: string; bunBin?: string }) {
     return {
       currentExecutable: executable,
@@ -1906,6 +1929,110 @@ describe('package-manager ownership', () => {
       },
       environment: {},
     }), null, 'missing installed npm CLI must fail closed');
+  });
+
+  it('resolves npm from the Node runtime with a separate global prefix', async () => {
+    const fixture = await createNpmRuntimePrefixFixture();
+    let npmCommand: Extract<PackageManagerOwnership, { manager: 'npm' }>['npmCommand'] | undefined;
+    try {
+      assert.equal(existsSync(join(fixture.globalInstallRoot, 'npm', 'bin', 'npm-cli.js')), false);
+      const ownership = await resolvePackageManagerOwnership({
+        currentExecutable: fixture.currentExecutable,
+        currentPackageRoot: fixture.currentPackageRoot,
+        currentNodeExecutable: fixture.currentNodeExecutable,
+        platform: 'darwin',
+        readInstallStamp: async () => null,
+        realpath: realpathSync,
+        resolveNpmCommand: () => null,
+        resolveNpmGlobalInstallRoot: (command) => {
+          npmCommand = command;
+          return fixture.globalInstallRoot;
+        },
+        resolveNpmPrefix: () => fixture.npmPrefix,
+        resolveBunGlobalBin: () => null,
+        resolveBunCommand: () => null,
+        environment: { PATH: fixture.pathBin },
+      });
+
+      assert.deepEqual(npmCommand, {
+        kind: 'node-script',
+        command: fixture.currentNodeExecutable,
+        commandArgs: [fixture.npmCli],
+      });
+      assert.equal(ownership?.manager, 'npm');
+      assert.equal(ownership?.globalInstallRoot, fixture.globalInstallRoot);
+      assert.equal(ownership?.npmPrefix, fixture.npmPrefix);
+      assert.equal(ownership?.packageRoot, fixture.currentPackageRoot);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a Node runtime npm whose reported global prefix does not contain the install root', async () => {
+    const fixture = await createNpmRuntimePrefixFixture();
+    const mismatchedPrefix = join(fixture.root, 'unrelated-prefix');
+    await mkdir(mismatchedPrefix);
+    let npmCommand: Extract<PackageManagerOwnership, { manager: 'npm' }>['npmCommand'] | undefined;
+    try {
+      const ownership = await resolvePackageManagerOwnership({
+        currentExecutable: fixture.currentExecutable,
+        currentPackageRoot: fixture.currentPackageRoot,
+        currentNodeExecutable: fixture.currentNodeExecutable,
+        platform: 'darwin',
+        readInstallStamp: async () => null,
+        realpath: realpathSync,
+        resolveNpmCommand: () => null,
+        resolveNpmGlobalInstallRoot: (command) => {
+          npmCommand = command;
+          return fixture.globalInstallRoot;
+        },
+        resolveNpmPrefix: () => mismatchedPrefix,
+        resolveBunGlobalBin: () => null,
+        resolveBunCommand: () => null,
+        environment: { PATH: fixture.pathBin },
+      });
+
+      assert.deepEqual(npmCommand, {
+        kind: 'node-script',
+        command: fixture.currentNodeExecutable,
+        commandArgs: [fixture.npmCli],
+      });
+      assert.equal(ownership, null);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not trust an npm found only on PATH', async () => {
+    const fixture = await createNpmRuntimePrefixFixture(false);
+    let npmRootQueries = 0;
+    try {
+      assert.equal(existsSync(fixture.npmCli), false);
+      assert.equal(existsSync(join(fixture.globalInstallRoot, 'npm', 'bin', 'npm-cli.js')), false);
+      assert.equal(existsSync(join(fixture.pathBin, 'npm')), true);
+      const ownership = await resolvePackageManagerOwnership({
+        currentExecutable: fixture.currentExecutable,
+        currentPackageRoot: fixture.currentPackageRoot,
+        currentNodeExecutable: fixture.currentNodeExecutable,
+        platform: 'darwin',
+        readInstallStamp: async () => null,
+        realpath: realpathSync,
+        resolveNpmCommand: () => null,
+        resolveNpmGlobalInstallRoot: () => {
+          npmRootQueries += 1;
+          return fixture.globalInstallRoot;
+        },
+        resolveNpmPrefix: () => fixture.npmPrefix,
+        resolveBunGlobalBin: () => null,
+        resolveBunCommand: () => null,
+        environment: { PATH: fixture.pathBin },
+      });
+
+      assert.equal(ownership, null);
+      assert.equal(npmRootQueries, 0);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
   });
 
   it('resolves npm from the selected global OMX root before a Node runtime sibling on Windows', async () => {

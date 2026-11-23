@@ -11,6 +11,7 @@ import {
 } from '../state.js';
 import {
   queueInboxInstruction,
+  queueInboxNotification,
   queueDirectMailboxMessage,
   queueBroadcastMailboxMessage,
 } from '../mcp-comm.js';
@@ -156,6 +157,30 @@ describe('mcp-comm', () => {
       assert.deepEqual(events, ['notify']);
       const requests = await listDispatchRequests('alpha', cwd, { kind: 'inbox' });
       assert.equal(requests[0]?.intent, 'followup-relaunch');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('queueInboxNotification preserves the current inbox while notifying', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-notification-'));
+    try {
+      await initTeamState('alpha', 't', 'executor', 1, cwd);
+      const inboxPath = join(cwd, '.omx/state/team/alpha/workers/worker-1/inbox.md');
+      const inbox = '# Current follow-up\nTask B\nclaim token: current-token\n';
+      await writeFile(inboxPath, inbox);
+      const outcome = await queueInboxNotification({
+        teamName: 'alpha', workerName: 'worker-1', workerIndex: 1,
+        triggerMessage: 'read current inbox', cwd,
+        notify: async () => {
+          assert.equal(await readFile(inboxPath, 'utf8'), inbox);
+          return { ok: true, transport: 'tmux_send_keys', reason: 'sent' };
+        },
+      });
+      assert.ok(outcome.ok);
+      assert.ok(outcome.request_id);
+      assert.equal(await readFile(inboxPath, 'utf8'), inbox);
+      assert.equal((await listDispatchRequests('alpha', cwd))[0]?.status, 'notified');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -2541,6 +2541,62 @@ describe('ultragoal artifacts', () => {
     });
   });
 
+  it('guides missing native get_goal inventory with native-catalog remediation instead of DB/schema advice', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, { brief: 'brief', goals: [{ title: 'First', objective: 'Complete first milestone.' }] });
+      const first = await startNextUltragoal(cwd);
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'complete',
+          evidence: 'implementation complete but native get_goal is missing',
+          codexGoal: { error: 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record' },
+          qualityGate: cleanQualityGate(),
+        }),
+        (error: unknown) => {
+          assert.match(String(error), /native get_goal tool is missing from the Codex tool catalog/);
+          assert.match(String(error), /--status blocked/);
+          assert.match(String(error), /native tool catalog does not expose get_goal/);
+          assert.doesNotMatch(String(error), /no such table: thread_goals/);
+          return true;
+        },
+      );
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals[0]?.status, 'in_progress');
+      assert.equal(plan.goals[0]?.completedAt, undefined);
+    });
+  });
+
+  it('mentions missing native get_goal catalog in rejected blocked-checkpoint input guidance', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, { brief: 'brief', goals: [{ title: 'First', objective: 'Complete first milestone.' }] });
+      const first = await startNextUltragoal(cwd);
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: first.goal!.id,
+          status: 'blocked',
+          evidence: 'blocked without a usable get_goal snapshot',
+          codexGoal: { metadata: { unavailable: true } },
+        }),
+        /missing native get_goal tool catalog/,
+      );
+    });
+  });
+
+  it('records missing native get_goal inventory as a non-terminal blocked checkpoint', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, { brief: 'brief', goals: [{ title: 'First', objective: 'Complete first milestone.' }] });
+      const first = await startNextUltragoal(cwd);
+      const updated = await checkpointUltragoal(cwd, {
+        goalId: first.goal!.id, status: 'blocked',
+        evidence: 'get_goal is missing from the native tool catalog; completion is not verified',
+        codexGoal: { error: 'INVALID_ARGUMENT: Native nested tool inventory did not return one matching catalog record' },
+      });
+      assert.equal(updated.goals[0]?.status, 'in_progress');
+      assert.equal(updated.goals[0]?.completedAt, undefined);
+    });
+  });
+
   it('records a safe blocker when the aggregate Codex goal is already complete while a microgoal remains in progress', async () => {
     await withTempRepo(async (cwd) => {
       await createUltragoalPlan(cwd, {

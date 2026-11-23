@@ -178,6 +178,21 @@ export function buildFullChangelogLine(repo: string, currentTag: string, previou
   return `**Full Changelog**: [\`${currentTag}\`](https://github.com/${repo}/releases/tag/${currentTag})`;
 }
 
+function extractTemplateVersion(markdown: string): string | undefined {
+  const match = markdown.match(/^#\s+oh-my-codex\s+(v\d+\.\d+\.\d+)/m);
+  return match?.[1];
+}
+
+function validateTemplateVersion(markdown: string, currentTag: string): void {
+  const templateVersion = extractTemplateVersion(markdown);
+  if (!templateVersion) {
+    throw new Error('release body template is missing a top-level title with version (expected: # oh-my-codex <version>)');
+  }
+  if (templateVersion !== currentTag) {
+    throw new Error(`release body template version (${templateVersion}) does not match the current tag (${currentTag}); stale template detected`);
+  }
+}
+
 function replaceTitle(markdown: string, currentTag: string): string {
   if (!/^#\s+/m.test(markdown)) {
     throw new Error('release body template is missing a top-level title');
@@ -298,6 +313,7 @@ export async function generateReleaseBody(options: GenerateReleaseBodyOptions): 
   });
 
   let markdown = readFileSync(templatePath, 'utf-8');
+  validateTemplateVersion(markdown, currentTag);
   markdown = replaceTitle(markdown, currentTag);
   markdown = replaceSectionBody(markdown, 'Contributors', renderContributorsSection(contributors));
   markdown = replaceFullChangelogLine(markdown, buildFullChangelogLine(repo || '', currentTag, previousTag));

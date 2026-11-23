@@ -47,6 +47,9 @@ const DOC_SURFACES = [
   join('docs', 'prompt-guidance-contract.md'),
 ];
 
+// `$name` skill tokens; a trailing `:` marks a shell variable such as PowerShell's `$env:NAME`.
+const SKILL_TOKEN_PATTERN = /\$([a-z][a-z0-9-]*)(?![a-z0-9:-])/g;
+
 describe('sunset routing contract', () => {
   it('drops the over-broad parallel trigger', () => {
     const parallel = KEYWORD_TRIGGER_DEFINITIONS.filter((entry) => entry.keyword === 'parallel');
@@ -177,7 +180,7 @@ describe('sunset routing contract', () => {
           .map((label) => line.indexOf(label))
           .filter((offset) => offset >= 0);
         const earliestLabel = labelOffsets.length > 0 ? Math.min(...labelOffsets) : -1;
-        for (const match of line.matchAll(/\$([a-z][a-z0-9-]*)/g)) {
+        for (const match of line.matchAll(SKILL_TOKEN_PATTERN)) {
           const token = match[1];
           // `$name` is a prose placeholder, not a skill invocation.
           if (token === 'name') continue;
@@ -211,7 +214,7 @@ describe('sunset routing contract', () => {
     const line = 'Use `$deepsearch` freely. Removed in OMX 0.21: `$tdd`';
     const labelOffset = line.indexOf('Removed in OMX 0.21');
     const offenders: string[] = [];
-    for (const match of line.matchAll(/\$([a-z][a-z0-9-]*)/g)) {
+    for (const match of line.matchAll(SKILL_TOKEN_PATTERN)) {
       if (invocable.has(match[1])) continue;
       if (match.index < labelOffset) offenders.push(match[1]);
     }

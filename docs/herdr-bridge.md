@@ -150,7 +150,8 @@ over a local socket.
   hook dispatcher.
 - `src/adapt/herdr.ts` — `omx adapt herdr` target metadata.
 
-## Phase 2 (out of scope)
+## Phase 2
 
 Using Herdr as a pluggable multiplexer/runtime backend for Team panes/workspaces
-(instead of nested tmux) is deferred.
+(instead of nested tmux) landed separately — see
+[docs/herdr-runtime.md](herdr-runtime.md).

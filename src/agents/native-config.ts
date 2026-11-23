@@ -1,6 +1,18 @@
 /**
  * Native agent config generators for Codex CLI.
  * Writes standalone TOML files under ~/.codex/agents/ or ./.codex/agents/.
+ *
+ * Model precedence for the written TOML `model` key (NOT written if neither applies):
+ * 1. Per-agent override: .omx-config.json agentModels[role] → `model` key written
+ * 2. exactModel + built-in provider: planner/architect/researcher → `model` key written (gpt-6-astra)
+ * 3. Otherwise: NO `model` key written; agent inherits Codex config.toml model at runtime
+ *
+ * For instruction composition (resolved_model metadata), richer logic applies including configured
+ * models and modelClass routing; see resolveAgentModel(). That richer resolution is informational only.
+ *
+ * IMPORTANT: OMX_DEFAULT_FRONTIER_MODEL, OMX_DEFAULT_STANDARD_MODEL, and OMX_DEFAULT_SPARK_MODEL
+ * do not set the native TOML model field or change native runtime model selection. They configure
+ * Team worker fallbacks and mode-specific resolution, and may affect resolved_model/model-table metadata.
  */
 
 import { existsSync, readFileSync } from "fs";
@@ -36,7 +48,7 @@ const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
     "",
     "You are operating in the frontier-orchestrator posture.",
     "- Prioritize intent classification before implementation.",
-    "- Default to delegation and orchestration when specialists exist.",
+    "- Specialist coverage must stay within the assigned role and delegation authority.",
     "- Treat the first decision as a routing problem: research vs planning vs implementation vs verification.",
     "- Challenge flawed user assumptions concisely before execution when the design is likely to cause avoidable problems.",
     "- Preserve explicit executor handoff boundaries: do not absorb deep implementation work when a specialized executor is more appropriate.",
@@ -48,8 +60,8 @@ const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
     "",
     "You are operating in the deep-worker posture.",
     "- Once the task is clearly implementation-oriented, bias toward direct execution and end-to-end completion.",
-    "- Explore first, then implement minimal changes that match existing patterns.",
-    "- Keep verification strict: diagnostics, tests, and build evidence are mandatory before claiming completion.",
+    "- For authorized implementation, explore first, then make minimal changes that match existing patterns.",
+    "- Verify the assigned result with fresh evidence: run diagnostics, tests, and builds when required by the task or repository; read-only analysis ends with supported conclusions and explicit limits.",
     "- Escalate only after materially different approaches fail or when architecture tradeoffs exceed local implementation scope.",
     "",
     "</posture_overlay>",
@@ -72,7 +84,7 @@ const MODEL_CLASS_OVERLAYS: Record<AgentDefinition["modelClass"], string> = {
     "<model_class_guidance>",
     "",
     "This role is tuned for frontier-class models.",
-    "- Use the model's steerability for coordination, tradeoff reasoning, and precise delegation.",
+    "- Use the model's steerability for the assigned scope, tradeoff reasoning, and precise handoffs.",
     "- Favor clean routing decisions over impulsive implementation.",
     "",
     "</model_class_guidance>",
@@ -103,7 +115,7 @@ function buildExactModelOverlay(exactModel: string): string {
     "",
     `This role is executing under the exact ${exactModel} model.`,
     "- Use a strict execution order: inspect -> plan -> act -> verify.",
-    "- Treat completion criteria as explicit: only report done after the requested work is implemented and fresh verification passes.",
+    "- Treat completion criteria as explicit: only report done after the assigned result is complete and required fresh verification passes; read-only analysis and planning do not authorize implementation.",
     "- If requirements are ambiguous or a blocker appears, state the blocker plainly and stop guessing until the missing decision is resolved.",
     "- Do not bluff, pad, or invent results; report missing evidence and incomplete work honestly.",
     "",

@@ -49,7 +49,7 @@ describe('native release workflow', () => {
     assert.match(workflow, /aarch64-unknown-linux-gnu/);
     assert.match(workflow, /aarch64-unknown-linux-musl/);
     assert.match(workflow, /macos-15-intel/);
-    assert.match(workflow, /macos-14/);
+    assert.match(workflow, /runner: macos-15$/m);
     assert.match(workflow, /windows-latest/);
     assert.match(workflow, /musl-tools/);
     assert.match(workflow, /CC_x86_64_unknown_linux_musl=musl-gcc/);

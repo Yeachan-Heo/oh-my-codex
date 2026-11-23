@@ -48,9 +48,9 @@ export interface ProcessIdentity {
   cmdline_hash?: string;
 }
 
-/** Raw observation from a native process-identity provider. No comparison logic. */
+/** Raw process observation; Linux also supplies cmdline for managed-daemon classification. */
 export type ProcessObservation =
-  | { kind: 'identity'; identity: ProcessIdentity }
+  | { kind: 'identity'; identity: ProcessIdentity; cmdline?: string }
   | { kind: 'gone' }
   | { kind: 'denied' }
   | { kind: 'unsupported' }
@@ -105,6 +105,7 @@ export interface SessionPointerContext {
 export type SessionPointerStatus =
   | 'absent'
   | 'usable'
+  | 'non-runtime-owner'
   | 'stale-dead'
   | 'identity-indeterminate'
   | 'malformed'
@@ -150,7 +151,7 @@ export type SessionPointerTransactionOperation =
   | 'lock-release';
 
 type AttemptedStateRootSource = StateRootSource | 'unresolved';
-type UnusableSessionPointerStatus = 'malformed' | 'foreign-cwd' | 'identity-indeterminate';
+type UnusableSessionPointerStatus = 'malformed' | 'foreign-cwd' | 'identity-indeterminate' | 'non-runtime-owner';
 
 export type SessionPointerCleanupPhase =
   | 'remove-owner-temp'
@@ -501,6 +502,7 @@ export type SessionPointerRecoveryStatus =
   | 'absent'
   | 'recovered'
   | 'usable'
+  | 'non-runtime-owner'
   | 'reused'
   | 'identity-indeterminate'
   | 'malformed'
@@ -755,6 +757,7 @@ function observeLinuxProcess(pid: number): ProcessObservation {
         birth: String(identity.startTicks),
         ...(cmdlineHash ? { cmdline_hash: cmdlineHash } : {}),
       },
+      ...(identity.cmdline ? { cmdline: identity.cmdline } : {}),
     };
   }
 
@@ -871,7 +874,7 @@ export function isSessionStale(
     observeProcess,
   };
   const classification = classifySessionProcess(state, dependencies);
-  if (classification === 'usable') return false;
+  if (classification === 'usable' || classification === 'non-runtime-owner') return false;
   if (classification === 'stale-dead') return true;
 
   // `identity-indeterminate` means two different things and only one of them is stale.
@@ -888,7 +891,7 @@ export function isSessionStale(
   return !isUnobservableLivePointerState(state, runtimePlatform, probePid);
 }
 
-type ProcessClassificationStatus = 'usable' | 'stale-dead' | 'identity-indeterminate';
+type ProcessClassificationStatus = 'usable' | 'non-runtime-owner' | 'stale-dead' | 'identity-indeterminate';
 type ObservationComparison = 'match' | 'birth-mismatch' | 'birth-mismatch-retryable' | 'identity-unavailable';
 
 function safeObserve(
@@ -976,6 +979,44 @@ function recordedIdentityForState(
     };
   }
   return null;
+}
+
+function isManagedCodexDaemonCommand(cmdline: string): boolean {
+  const args = normalizeCmdline(cmdline)?.split(' ') ?? [];
+  return args.length >= 3
+    && basename(args[0]) === 'codex'
+    && args[1] === 'app-server'
+    && args.includes('--managed-daemon');
+}
+
+function isVerifiedManagedCodexDaemonOwner(state: SessionState, recorded: ProcessIdentity): boolean {
+  if (recorded.platform !== 'linux' || !recorded.cmdline_hash || !state.pid_cmdline) return false;
+  const recordedCmdlineHash = hashCmdline(state.pid_cmdline);
+  return recordedCmdlineHash !== undefined
+    && recordedCmdlineHash === recorded.cmdline_hash
+    && isManagedCodexDaemonCommand(state.pid_cmdline);
+}
+
+function isVerifiedManagedCodexDaemonObservation(
+  pid: number,
+  platform: NodeJS.Platform,
+  observation: ProcessObservation | null,
+): boolean {
+  if (platform !== 'linux'
+    || observation?.kind !== 'identity'
+    || observation.identity.platform !== 'linux'
+    || !isValidProcessIdentity(observation.identity)
+    || !observation.cmdline) return false;
+  return isVerifiedManagedCodexDaemonOwner({
+    session_id: 'managed-codex-daemon-candidate',
+    started_at: '',
+    cwd: '',
+    pid,
+    platform,
+    identity_schema_version: 2,
+    process_identity: observation.identity,
+    pid_cmdline: observation.cmdline,
+  }, observation.identity);
 }
 
 /**
@@ -1094,6 +1135,7 @@ function isValidStartTicks(value: unknown): value is number {
 function classifySessionProcess(
   state: SessionState,
   dependencies: SessionPointerTransactionDependencies,
+  classifyManagedDaemonOwner = true,
 ): ProcessClassificationStatus {
   const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
   const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
@@ -1110,7 +1152,10 @@ function classifySessionProcess(
 
   const classification = classifyRecordedIdentity(recorded, runtimePlatform, dependencies, state.pid);
   switch (classification.status) {
-    case 'match': return 'usable';
+    case 'match':
+      return classifyManagedDaemonOwner && isVerifiedManagedCodexDaemonOwner(state, recorded)
+        ? 'non-runtime-owner'
+        : 'usable';
     case 'gone':
     case 'birth-mismatch': return 'stale-dead';
     case 'identity-unavailable': return 'identity-indeterminate';
@@ -1125,7 +1170,7 @@ function classifySessionProcess(
  */
 export function classifySessionStateLiveness(
   state: SessionState,
-): 'usable' | 'stale-dead' | 'identity-indeterminate' {
+): 'usable' | 'non-runtime-owner' | 'stale-dead' | 'identity-indeterminate' {
   return classifySessionProcess(state, transactionDependencies);
 }
 
@@ -1139,6 +1184,8 @@ function classifyParsedSessionPointer(
   }
   const state = value as SessionState;
   if (!normalizeSessionId(state.session_id)) return { status: 'malformed', raw };
+  if (context.sessionPath === join(context.baseStateDir, SESSION_FILE)
+    && (typeof state.cwd !== 'string' || !state.cwd.trim())) return { status: 'malformed', raw, state };
   if (typeof state.cwd === 'string' && state.cwd.trim() && !isSessionStateAuthoritativeForCwd(state, context.cwd)) {
     return { status: 'foreign-cwd', raw, state };
   }
@@ -1151,7 +1198,8 @@ function classifyParsedSessionPointer(
   }
   if (state.identity_schema_version === 2 && state.process_identity === undefined) return { status: 'malformed', raw, state };
 
-  const processStatus = classifySessionProcess(state, transactionDependencies);
+  const isCanonicalSessionPointer = context.sessionPath === join(context.baseStateDir, SESSION_FILE);
+  const processStatus = classifySessionProcess(state, transactionDependencies, isCanonicalSessionPointer);
   return { status: processStatus, state, raw };
 }
 
@@ -1286,6 +1334,28 @@ function preserveExistingLaunchLineageToken(existing: SessionState | undefined, 
     : state;
 }
 
+function preserveExistingProcessOwner(existing: SessionState, state: SessionState): SessionState {
+  const {
+    pid: _pid,
+    platform: nextPlatform,
+    identity_schema_version: _identitySchemaVersion,
+    process_identity: _processIdentity,
+    pid_start_ticks: _pidStartTicks,
+    pid_cmdline: _pidCmdline,
+    ...metadata
+  } = state;
+  const platform = existing.platform ?? nextPlatform;
+  return {
+    ...metadata,
+    pid: existing.pid,
+    ...(platform ? { platform } : {}),
+    ...(existing.identity_schema_version !== undefined ? { identity_schema_version: existing.identity_schema_version } : {}),
+    ...(existing.process_identity !== undefined ? { process_identity: existing.process_identity } : {}),
+    ...(existing.pid_start_ticks !== undefined ? { pid_start_ticks: existing.pid_start_ticks } : {}),
+    ...(existing.pid_cmdline !== undefined ? { pid_cmdline: existing.pid_cmdline } : {}),
+  };
+}
+
 function normalizeNonempty(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -1295,10 +1365,19 @@ function resolvePid(options: SessionStartOptions): number {
 }
 
 function sessionIdentityFor(pid: number, platform: NodeJS.Platform): ProcessIdentity | null {
+  return sessionProcessObservationFor(pid, platform)?.identity ?? null;
+}
+
+function sessionProcessObservationFor(
+  pid: number,
+  platform: NodeJS.Platform,
+): Extract<ProcessObservation, { kind: 'identity' }> | null {
   try {
     const observation = transactionDependencies.observeProcess(pid, platform);
-    return observation.kind === 'identity' && isValidProcessIdentity(observation.identity) && observation.identity.platform === platform
-      ? observation.identity
+    return observation.kind === 'identity'
+      && isValidProcessIdentity(observation.identity)
+      && observation.identity.platform === platform
+      ? observation
       : null;
   } catch {
     return null;
@@ -1835,6 +1914,7 @@ function classifyParsedSessionPointerForRecovery(value: unknown, raw: string): S
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 'malformed', raw };
   const state = value as SessionState;
   if (!normalizeSessionId(state.session_id)) return { status: 'malformed', raw };
+  if (typeof state.cwd !== 'string' || !state.cwd.trim()) return { status: 'malformed', raw, state };
   if (state.identity_schema_version !== undefined && state.identity_schema_version !== 2) {
     return { status: 'identity-indeterminate', raw, state };
   }
@@ -1906,7 +1986,7 @@ function malformedRecoveryPointerReason(state: SessionState): string | undefined
   return undefined;
 }
 
-function classifySessionProcessForRecovery(state: SessionState): 'usable' | 'dead' | 'reused' | 'identity-indeterminate' {
+function classifySessionProcessForRecovery(state: SessionState): 'usable' | 'non-runtime-owner' | 'dead' | 'reused' | 'identity-indeterminate' {
   const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
   const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
     || typeof state.pid_cmdline === 'string'
@@ -1928,8 +2008,18 @@ function classifySessionProcessForRecovery(state: SessionState): 'usable' | 'dea
   const classification = classifyRecordedIdentity(recorded, transactionDependencies.runtimePlatform, transactionDependencies, state.pid);
   if (classification.status === 'gone') return 'dead';
   if (classification.status === 'birth-mismatch') return 'reused';
-  if (classification.status === 'match') return 'usable';
+  if (classification.status === 'match') {
+    return isVerifiedManagedCodexDaemonOwner(state, recorded) ? 'non-runtime-owner' : 'usable';
+  }
   return 'identity-indeterminate';
+}
+
+function isRecoverablePointerClassification(
+  pointerStatus: SessionPointerStatus,
+  processStatus: ReturnType<typeof classifySessionProcessForRecovery>,
+): boolean {
+  return pointerStatus === 'stale-dead' && processStatus === 'dead'
+    || pointerStatus === 'non-runtime-owner' && processStatus === 'non-runtime-owner';
 }
 
 function pointerRecoveryRefusal(
@@ -1949,7 +2039,7 @@ function pointerRecoveryRefusal(
 }
 
 /**
- * Explicitly quarantine one authoritative, positively dead selected pointer.
+ * Explicitly quarantine one authoritative, positively dead or managed-daemon selected pointer.
  * The canonical pointer lock serializes the final classification and move with
  * SessionStart/SessionEnd, while the no-replace archive preserves exact bytes.
  */
@@ -1986,9 +2076,12 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       return result;
     }
     const sessionId = normalizeSessionId(pointer.state?.session_id);
-    if (pointer.status !== 'stale-dead' || !pointer.state || !pointer.raw || !pointer.bytes || !sessionId) {
+    if ((pointer.status !== 'stale-dead' && pointer.status !== 'non-runtime-owner')
+      || !pointer.state || !pointer.raw || !pointer.bytes || !sessionId) {
       const reason = pointer.status === 'usable'
         ? 'The selected session pointer owner is usable or live.'
+        : pointer.status === 'non-runtime-owner'
+          ? 'The selected session pointer belongs to a live managed Codex daemon, not an OMX runtime.'
         : pointer.status === 'identity-indeterminate'
           ? 'The selected session pointer owner identity is indeterminate.'
           : pointer.status === 'foreign-cwd'
@@ -2012,10 +2105,16 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       return result;
     }
     const recoveryLiveness = classifySessionProcessForRecovery(pointer.state);
-    if (recoveryLiveness !== 'dead') {
-      const status: SessionPointerRecoveryStatus = recoveryLiveness === 'reused' ? 'reused' : recoveryLiveness;
+    if (!isRecoverablePointerClassification(pointer.status, recoveryLiveness)) {
+      const status: SessionPointerRecoveryStatus = recoveryLiveness === 'dead'
+        ? 'race'
+        : recoveryLiveness === 'reused'
+          ? 'reused'
+          : recoveryLiveness;
       const reason = recoveryLiveness === 'reused'
         ? 'The selected session pointer PID was reused or its recorded birth identity mismatched.'
+        : recoveryLiveness === 'non-runtime-owner'
+          ? 'The selected session pointer belongs to a live managed Codex daemon, not an OMX runtime.'
         : recoveryLiveness === 'usable'
           ? 'The selected session pointer owner is usable or live.'
           : 'The selected session pointer owner identity is indeterminate.';
@@ -2062,10 +2161,10 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       if (!sameRecoveryIdentity(currentStat, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')
         || !sameRecoveryIdentity(currentAfterRead, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')
         || !currentBytes.equals(pointer.bytes)
-        || current.status !== 'stale-dead'
+        || current.status !== pointer.status
         || !current.state
         || selectedRootAuthorityFailure(context, current.state) !== undefined
-        || classifySessionProcessForRecovery(current.state) !== 'dead') {
+        || !isRecoverablePointerClassification(current.status, classifySessionProcessForRecovery(current.state))) {
         result = pointerRecoveryRefusal(context, 'race', 'The selected session pointer changed before quarantine.', sessionId);
         return result;
       }
@@ -2117,10 +2216,10 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       }
       if (sourceAfterMove
         || !archivedBytes?.equals(pointer.bytes)
-        || archivedPointer?.status !== 'stale-dead'
+        || archivedPointer?.status !== pointer.status
         || !archivedPointer.state
         || selectedRootAuthorityFailure(context, archivedPointer.state) !== undefined
-        || classifySessionProcessForRecovery(archivedPointer.state) !== 'dead') {
+        || !isRecoverablePointerClassification(archivedPointer.status, classifySessionProcessForRecovery(archivedPointer.state))) {
         if (!sourceAfterMove && archivedBytes?.equals(pointer.bytes) && archivedStat
           && sameRecoveryIdentity(archivedStat, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')) {
           const rollback = await moveRecoveryPathNoReplace(
@@ -2156,7 +2255,9 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
         pointerPath: context.sessionPath,
         action: 'quarantined',
         recovered: true,
-        reason: 'Verified-dead selected session pointer quarantined with exact forensic bytes preserved.',
+        reason: pointer.status === 'non-runtime-owner'
+          ? 'Verified managed Codex daemon session pointer quarantined with exact forensic bytes preserved.'
+          : 'Verified-dead selected session pointer quarantined with exact forensic bytes preserved.',
         sessionId,
         quarantinePath,
       };
@@ -2558,6 +2659,7 @@ function unusablePointerAbort(
   const pointerStatus = pointer.status === 'malformed'
     || pointer.status === 'foreign-cwd'
     || pointer.status === 'identity-indeterminate'
+    || pointer.status === 'non-runtime-owner'
     ? pointer.status
     : undefined;
   return resolvedAbort(context, {
@@ -2765,7 +2867,7 @@ function startPointerTransition(
   requireAbsent = false,
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
-    if (requireAbsent && pointer.status !== 'absent') {
+    if (requireAbsent && pointer.status !== 'absent' && pointer.status !== 'non-runtime-owner') {
       // Same read-vs-authority split: an occupied pointer is an owner conflict even when its
       // liveness is indeterminate, which is the only classification a live pointer can get on a
       // platform without process-birth evidence.
@@ -2784,6 +2886,7 @@ function startPointerTransition(
     if (
       pointer.status !== 'absent'
       && pointer.status !== 'stale-dead'
+      && pointer.status !== 'non-runtime-owner'
       && pointer.status !== 'usable'
       && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
     ) {
@@ -3557,12 +3660,16 @@ function reconcileNativeTransition(
       && pointer.status !== 'usable'
       && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
     ) {
+      // A live managed daemon pointer is occupied evidence, not an absent slot. Only an explicit
+      // OMX launch may replace it; native SessionStart cannot claim it as canonical runtime state.
       throw unusablePointerAbort(context, nativeSessionId, pointer);
     }
 
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
-    const linuxIdentity = sessionIdentityFor(pid, platform);
+    const processObservation = sessionProcessObservationFor(pid, platform);
+    const linuxIdentity = processObservation?.identity ?? null;
+    const isManagedDaemonOwner = isVerifiedManagedCodexDaemonObservation(pid, platform, processObservation);
     const livenessProven = pointer.status === 'usable';
     const existing = livenessProven
       || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
@@ -3576,10 +3683,17 @@ function reconcileNativeTransition(
     if (!existing) {
       const ownerCandidate = verifiedOwnerCandidate(context, options);
       const ownerOmxSessionId = ownerCandidate;
-      return createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
+      const next = createSessionState(context.cwd, context.baseStateDir, nativeSessionId, pid, platform, linuxIdentity, {
         nativeSessionId,
         ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
       });
+      // A daemon hook without an established OMX runtime owner must remain sidecar-scoped.
+      if (isManagedDaemonOwner) throw ownerConflictAbort(context, nativeSessionId, next);
+      return next;
+    }
+
+    if (isManagedDaemonOwner && (!Number.isInteger(existing.pid) || existing.pid <= 0)) {
+      throw ownerConflictAbort(context, nativeSessionId, existing);
     }
 
     const existingNativeSessionId = normalizeSessionId(existing.native_session_id);
@@ -3588,6 +3702,12 @@ function reconcileNativeTransition(
     }
 
     const nowIso = new Date().toISOString();
+    let ownerIdentity = linuxIdentity;
+    if (isManagedDaemonOwner) {
+      const existingIdentity = recordedIdentityForState(existing, platform);
+      if (existingIdentity === 'invalid') throw ownerConflictAbort(context, nativeSessionId, existing);
+      ownerIdentity = existingIdentity;
+    }
 
     const ownerCandidate = verifiedOwnerCandidate(context, options);
     let ownerOmxSessionId: string | undefined;
@@ -3601,26 +3721,38 @@ function reconcileNativeTransition(
       throw ownerConflictAbort(context, nativeSessionId, existing, error);
     }
 
-    return preserveExistingLaunchLineageToken(existing, createSessionState(context.cwd, context.baseStateDir, existing.session_id, pid, platform, linuxIdentity, {
-      nowIso,
-      nativeSessionId,
-      previousNativeSessionId: existing.previous_native_session_id,
-      nativeSessionSwitchedAt: existing.native_session_switched_at,
-      ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
-      startedAt: existing.started_at,
-      tmuxSessionName: existing.tmux_session_name,
-      tmuxPaneId: existing.tmux_pane_id,
-      launchLineageToken: isValidToken(existing.launch_lineage_token)
-        ? existing.launch_lineage_token
-        : undefined,
-    }));
+    const next = createSessionState(
+      context.cwd,
+      context.baseStateDir,
+      existing.session_id,
+      isManagedDaemonOwner ? existing.pid : pid,
+      isManagedDaemonOwner ? existing.platform ?? platform : platform,
+      ownerIdentity,
+      {
+        nowIso,
+        nativeSessionId,
+        previousNativeSessionId: existing.previous_native_session_id,
+        nativeSessionSwitchedAt: existing.native_session_switched_at,
+        ...(ownerOmxSessionId ? { ownerOmxSessionId } : {}),
+        startedAt: existing.started_at,
+        tmuxSessionName: existing.tmux_session_name,
+        tmuxPaneId: existing.tmux_pane_id,
+        launchLineageToken: isValidToken(existing.launch_lineage_token)
+          ? existing.launch_lineage_token
+          : undefined,
+      },
+    );
+    return preserveExistingLaunchLineageToken(
+      existing,
+      isManagedDaemonOwner ? preserveExistingProcessOwner(existing, next) : next,
+    );
   };
 }
 
 /**
  * Reconcile native SessionStart only when the selected pointer is absent, stale,
- * or already belongs to that native session. A different live native ID is
- * authoritative owner evidence and must never be replaced.
+ * or already belongs to that native session. A different live native ID or a live
+ * managed daemon is authoritative owner evidence and must never be replaced.
  */
 export async function reconcileNativeSessionStart(
   cwd: string,

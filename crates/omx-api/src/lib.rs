@@ -1627,13 +1627,18 @@ pub fn serve(config: ServerConfig) -> Result<DaemonState> {
 
     for stream in listener.incoming() {
         let stream = stream?;
-        handle_connection(
+        if let Err(error) = handle_connection(
             stream,
             &config.backend,
             &telemetry,
             &shutdown,
             config.local_bearer_token.as_deref(),
-        )?;
+        ) {
+            eprintln!(
+                "omx-api: client connection failed: {}",
+                redact_secrets(&error.to_string())
+            );
+        }
         if config.once || shutdown.load(Ordering::SeqCst) {
             break;
         }

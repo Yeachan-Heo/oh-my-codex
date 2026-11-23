@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { TEAM_NAME_SAFE_PATTERN } from '../contracts.js';
-import { buildInternalTeamName, resolveTeamIdentityScope, resolveTeamNameForCurrentContext, TeamLookupAmbiguityError } from '../team-identity.js';
+import { buildInternalTeamName, resolveCurrentTeamName, resolveTeamIdentityScope, resolveTeamNameForCurrentContext, TeamLookupAmbiguityError } from '../team-identity.js';
 import { initTeamState } from '../state.js';
 
 const longDisplay = 'this-is-a-very-long-team-display-name-that-would-overflow';
@@ -17,6 +17,15 @@ async function writePhase(cwd: string, teamName: string, currentPhase: string, u
     transitions: [],
     updated_at: updatedAt,
   }, null, 2));
+}
+
+async function writeLeaderPane(cwd: string, teamName: string, leaderPaneId: string): Promise<void> {
+  for (const filename of ['manifest.v2.json', 'config.json']) {
+    const path = join(cwd, '.omx', 'state', 'team', teamName, filename);
+    const data = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    data.leader_pane_id = leaderPaneId;
+    await writeFile(path, JSON.stringify(data, null, 2));
+  }
 }
 
 describe('team identity', () => {
@@ -38,6 +47,71 @@ describe('team identity', () => {
     const scope = resolveTeamIdentityScope({ TMUX: '/tmp/tmux,1,0', TMUX_PANE: '%42' });
     assert.equal(scope.source, 'tmux-pane');
     assert.equal(scope.paneId, '%42');
+  });
+
+  it('resolves an unnamed team only when the sole active candidate matches the current leader session', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-identity-current-sole-'));
+    try {
+      await initTeamState('demo-active', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-current' }, {
+        display_name: 'demo', requested_name: 'demo', identity_source: 'env-session',
+      });
+
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-current' }), 'demo-active');
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-foreign' }), null);
+      assert.equal(resolveCurrentTeamName(cwd, {}), null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back to an unbound terminal team for unnamed resolution', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-identity-terminal-unnamed-'));
+    try {
+      await initTeamState('demo-terminal', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-terminal' }, {
+        display_name: 'demo', requested_name: 'demo', identity_source: 'env-session',
+      });
+      await writePhase(cwd, 'demo-terminal', 'complete', '2026-01-03T00:00:00.000Z');
+
+      assert.equal(resolveCurrentTeamName(cwd, {}), null);
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-foreign' }), null);
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-terminal' }), 'demo-terminal');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the current leader terminal team even when another session has an active team', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-identity-terminal-vs-foreign-active-'));
+    try {
+      await initTeamState('demo-mine', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-mine' }, {
+        display_name: 'demo', requested_name: 'demo', identity_source: 'env-session',
+      });
+      await writePhase(cwd, 'demo-mine', 'complete', '2026-01-03T00:00:00.000Z');
+      await initTeamState('other-active', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-other' }, {
+        display_name: 'other', requested_name: 'other', identity_source: 'env-session',
+      });
+
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-mine' }), 'demo-mine');
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-other' }), 'other-active');
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-foreign' }), null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not accept a matching leader pane when an explicit current session conflicts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-identity-session-precedence-'));
+    try {
+      await initTeamState('demo-active', 'task', 'executor', 1, cwd, undefined, { OMX_SESSION_ID: 'session-owner' }, {
+        display_name: 'demo', requested_name: 'demo', identity_source: 'env-session',
+      });
+      await writeLeaderPane(cwd, 'demo-active', '%42');
+
+      assert.equal(resolveCurrentTeamName(cwd, { OMX_SESSION_ID: 'session-foreign', TMUX_PANE: '%42' }), null);
+      assert.equal(resolveCurrentTeamName(cwd, { TMUX_PANE: '%42' }), 'demo-active');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('resolves display names from OMX_TEAM_STATE_ROOT when cwd has no local team state', async () => {

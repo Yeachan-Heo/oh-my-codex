@@ -24,6 +24,7 @@ import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { sleepSync } from '../utils/sleep.js';
+import type { ReplyPaneIdentity } from './tmux-detector.js';
 
 const REGISTRY_PATH = join(homedir(), '.omx', 'state', 'reply-session-registry.jsonl');
 const REGISTRY_LOCK_PATH = join(homedir(), '.omx', 'state', 'reply-session-registry.lock');
@@ -54,6 +55,7 @@ export interface SessionMapping {
   event: string;
   createdAt: string;
   projectPath?: string;
+  tmuxIdentity?: ReplyPaneIdentity;
 }
 
 function ensureRegistryDir(): void {

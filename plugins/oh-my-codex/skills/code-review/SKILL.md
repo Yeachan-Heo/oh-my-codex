@@ -29,11 +29,25 @@ git diff --stat
 git diff -- <scope>
 ```
 
+## Continuation Decision Table
+
+When a user requests `continue` or provides existing artifacts, check the source binding and decide the next step:
+
+| Condition | Action |
+|-----------|--------|
+| **Fresh Review** (no prior receipt, OR source/requirements/gates changed) | Launch both code-reviewer and architect lanes in parallel on clean contexts. Treat prior artifacts as context only; do not reuse evidence. |
+| **Resuming Missing Lane** (one lane has evidence, other missing, source/requirements/gates unchanged) | Re-launch the missing lane only. Carry prior evidence from the complete lane. |
+| **Resuming Missing Validation** (both lanes returned, validation incomplete, source/requirements/gates unchanged) | Collect missing validation inputs/results. Reuse lane evidence. |
+| **Repair Re-review** (implementation changed source after prior review, authorized repair owner confirmed) | Re-launch both lanes on the revised scope. Include prior findings as context; preserve dispositions unless new evidence justifies reopening. Carry repair authorization through the review. |
+| **Complete Evidence** (all lanes returned, all validation complete, source/requirements/gates unchanged) | Return the existing scoped result and stop. No re-review needed. |
+
+**Binding Rules**: A source-bound receipt tracks scope identity (commit, uncommitted changes, file hashes), requirements, configured gates, and lane results. Missing or unverifiable bindings (stale/unbound artifacts, changed source not signed by repair authorization) prevent evidence reuse. Invalidation triggers a fresh review; partial evidence loss triggers lane resumption, not full restart.
+
 ## Execution
 
 1. Identify changed files and review boundaries; do not silently widen the scope.
 2. Launch the `code-reviewer` and `architect` agents in parallel. Both lanes run in parallel on a clean context with explicit scope and artifacts. If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
-3. Respect the user's current model and reasoning/effort selection. Do not pass `model` or `reasoning_effort` overrides in review-lane calls.
+3. Respect the user's current model and reasoning/effort selection. Do not pass `model` or `reasoning_effort` overrides in the built-in `code-reviewer` and `architect` review-lane calls. A configured custom quality gate may override its own subagent model as described below.
 
 ```text
 task(
@@ -56,6 +70,12 @@ recommendations, and Architectural Status: CLEAR / WATCH / BLOCK.
 Scope: [scope and artifacts]"
 )
 ```
+
+## Custom code-review quality gates
+
+After the built-in independent reviews, read `.omx-config.json` `qualityGates."code-review"` with `omx quality-gates list --stage code-review --json`. Each gate specifies `skill`, `mode` (`advisory` or `blocking`), and optional `model`; for example `{"qualityGates":{"code-review":[{"skill":"security-audit","mode":"blocking"}]}}`.
+
+Spawn each configured gate skill as a separate subagent with the same scoped diff, requirements, validation evidence, and completed built-in reviews. Honor an optional `model` only for that custom gate. Await results before final synthesis; record each skill, mode, verdict, findings, and evidence in the review receipt. Advisory findings, including unavailable advisory reviews, remain visible but do not independently block approval. A blocking gate that does not approve or cannot return evidence forces **REQUEST CHANGES** and prevents merge-ready status or downstream clean-review progression. Re-review the corrected scope and re-run gates before clearing that blocker; the standalone review remains read-only. Custom gates never replace the required `code-reviewer` and `architect` lanes. An empty gate list preserves the existing review flow.
 
 ## Review taxonomy
 
@@ -85,7 +105,7 @@ Combine the `code-reviewer` recommendation and architect status. Approval requir
 - Else if architect status is **WATCH**, final recommendation is **COMMENT**.
 - Else final recommendation follows the `code-reviewer` lane.
 
-Approval criteria: **APPROVE** only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence. **REQUEST CHANGES** for a blocker, unresolved high/critical finding, or unavailable lane. **COMMENT** may record non-blocking findings.
+Approval criteria: **APPROVE** only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, both independent lanes returned evidence, and every configured blocking quality gate passes. **REQUEST CHANGES** for a blocker, unresolved high/critical finding, unavailable lane, or non-passing/unavailable blocking quality gate. **COMMENT** may record non-blocking findings.
 
 Do not self-review as a fallback. If the `code-reviewer` or `architect` path is missing, unavailable, skipped, or fails, block approval until independent lane evidence exists. On the supported `omx ralph` CLI compatibility path, findings may trigger automatic fix follow-up without another permission prompt; plain `code-review` itself remains read-only and does **not** promise auto-fix.
 
@@ -110,9 +130,83 @@ RECOMMENDATION: COMMENT
 Replace the illustrative counts and verdict with observed values. Include scope,
 lane evidence/artifact references, unresolved risks, and validation gaps.
 
+## Source-Bound Review Receipt
+
+When a review completes or a user requests continuation, record a source-bound receipt that binds the review result to its input context. This receipt is the basis for deciding whether to reuse evidence or perform a fresh review.
+
+**Receipt Structure**:
+
+```text
+SOURCE-BOUND REVIEW RECEIPT
+
+REVIEW SCOPE
+  Files Reviewed: <count>
+  Changed Lines: <+/->
+  Boundaries: <scope description>
+
+SOURCE IDENTITY
+  Base Commit: <commit hash>
+  Uncommitted Changes: <yes|no> [file hashes if present]
+  Source Binding: <valid|stale|unbound>
+
+REQUIREMENTS & GATES
+  Specification: [reference or summary]
+  Acceptance Criteria: [reference or summary]
+  Test/CI Evidence: [references]
+  Configured Quality Gates: [list of blocking/advisory gates]
+
+LANE RESULTS
+  code-reviewer:
+    Recommendation: APPROVE | REQUEST CHANGES | COMMENT
+    Finding Severity: CRITICAL (N) | HIGH (N) | MEDIUM (N) | LOW (N)
+    Artifact: [reference or hash]
+    Status: complete | unavailable
+  
+  architect:
+    Status: CLEAR | WATCH | BLOCK
+    Finding Severity: CRITICAL (N) | HIGH (N) | MEDIUM (N) | LOW (N)
+    Artifact: [reference or hash]
+    Status: complete | unavailable
+  
+  [custom gates]:
+    Gate Name: <skill name>
+    Mode: blocking | advisory
+    Verdict: pass | fail | unavailable
+    Artifact: [reference or hash]
+    Status: complete | unavailable
+
+VALIDATION
+  Inputs Recorded: [list of validation requirements met]
+  Validation Results: [status of each requirement]
+  Validation Status: complete | incomplete
+
+FINDINGS & GAPS
+  Unresolved High/Critical: [count and list]
+  Evidence Gaps: [any missing evidence from required lanes or gates]
+  Blockers: [any blocking conditions preventing approval]
+
+FINAL RECOMMENDATION
+  Recommendation: APPROVE | REQUEST CHANGES | COMMENT
+  Merge-Ready: yes | no
+  Binding Status: bound | unbound
+```
+
+**Invalidation Triggers**: The receipt becomes invalid if:
+- Base commit or uncommitted changes differ from the initial review (source changed)
+- Requirements or acceptance criteria are updated
+- Configured quality gates change (gates added, removed, or mode changed)
+- Validation inputs/results are unavailable or stale
+- Required lanes (code-reviewer or architect) are missing or unavailable
+
+**Reuse Rules**: Evidence may be reused across continuation requests only if all binding conditions match and the receipt status is `bound`. A `stale` or `unbound` receipt requires fresh review. Missing or unverifiable bindings never establish approval.
+
 ## Exit condition
 
 Stop when the scoped diff has two independent lane results and a deterministic final
 recommendation. Report `APPROVE` only under the approval criteria; otherwise leave a
 bounded `REQUEST CHANGES`, `COMMENT`, or unavailable-review result. Never claim
 merge-ready without the required evidence.
+
+## Quality Gates
+
+Custom quality gates can be configured for the code-review stage via `.omx-config.json` under `qualityGates."code-review"`. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md).

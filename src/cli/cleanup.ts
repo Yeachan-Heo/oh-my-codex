@@ -1,27 +1,22 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'child_process';
-import { readdir, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { resolveOmxFirstPartyMcpEntrypointForPluginTarget } from '../config/omx-first-party-mcp.js';
 
 const HELP = [
   'Usage: omx cleanup [--dry-run]',
   '',
-  'Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories left behind by previous Codex App sessions.',
+  'Kill orphaned OMX MCP server processes. Temporary directories are preserved.',
   '',
   'Options:',
-  '  --dry-run  List matching orphaned processes and stale /tmp directories without removing them',
+  '  --dry-run  List matching orphaned processes without terminating them',
   '  --help     Show this help message',
 ].join('\n');
 
 const PROCESS_EXIT_POLL_MS = 100;
 const SIGTERM_GRACE_MS = 5_000;
-const STALE_TMP_MAX_AGE_MS = 60 * 60 * 1000;
 const OMX_MCP_ENTRYPOINT_PATTERN = /(?:^|[\\/])dist[\\/]mcp[\\/]((?:state|memory|code-intel|trace|wiki)-server\.(?:[cm]?js|ts))\b/i;
 const OMX_MCP_SERVE_TARGET_PATTERN = /(?:^|\s)mcp-serve\s+([^\s]+)/i;
 const CODEX_PROCESS_PATTERN = /(?:^|[\\/\s])codex(?:\.js)?(?:\s|$)|@openai[\\/]codex/i;
 const OMX_LAUNCH_PROCESS_PATTERN = /(?:^|[\\/\s])omx(?:\.js)?(?:\s|$)|(?:^|[\\/])(?:bin|dist[\\/]cli)[\\/]omx\.js(?:\s|$)|oh-my-codex[\\/]dist[\\/]cli[\\/]omx\.js/i;
-const OMX_TMP_DIRECTORY_PATTERN = /^(omc|omx|oh-my-codex)-/;
 const PROCESS_LIST_COMMAND_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
   encoding: 'utf-8',
   windowsHide: true,
@@ -65,23 +60,8 @@ export interface CleanupDependencies {
   writeLine?: (line: string) => void;
 }
 
-interface TmpDirectoryEntry {
-  name: string;
-  isDirectory(): boolean;
-}
-
-export interface TmpCleanupDependencies {
-  tmpRoot?: string;
-  listTmpEntries?: (tmpRoot: string) => Promise<TmpDirectoryEntry[]>;
-  statPath?: (path: string) => Promise<{ mtimeMs: number }>;
-  removePath?: (path: string) => Promise<void>;
-  now?: () => number;
-  writeLine?: (line: string) => void;
-}
-
 export interface CleanupCommandDependencies {
   cleanupProcesses?: (args: readonly string[]) => Promise<CleanupResult>;
-  cleanupTmpDirectories?: (args: readonly string[]) => Promise<number>;
 }
 
 type ProcessListCommandRunner = (
@@ -95,10 +75,6 @@ const defaultProcessListCommandRunner: ProcessListCommandRunner = (file, args, o
 
 function normalizeCommand(command: string): string {
   return command.replace(/\\+/g, '/').trim();
-}
-
-function formatPlural(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export function isOmxMcpProcess(command: string): boolean {
@@ -513,86 +489,10 @@ export async function cleanupOmxMcpProcesses(
   };
 }
 
-export async function cleanupStaleTmpDirectories(
-  args: readonly string[],
-  dependencies: TmpCleanupDependencies = {},
-): Promise<number> {
-  const dryRun = args.includes('--dry-run');
-  const tmpRoot = dependencies.tmpRoot ?? tmpdir();
-  const listTmpEntries = dependencies.listTmpEntries ?? ((root: string) => readdir(root, { withFileTypes: true }));
-  const statPath = dependencies.statPath ?? stat;
-  const removePath = dependencies.removePath ?? ((path: string) => rm(path, { recursive: true, force: true }));
-  const now = dependencies.now ?? Date.now;
-  const writeLine = dependencies.writeLine ?? ((line: string) => console.log(line));
-
-  const staleDirectories: string[] = [];
-  for (const entry of await listTmpEntries(tmpRoot)) {
-    if (!entry.isDirectory() || !OMX_TMP_DIRECTORY_PATTERN.test(entry.name)) continue;
-
-    const entryPath = join(tmpRoot, entry.name);
-    let entryStat: { mtimeMs: number };
-    try {
-      entryStat = await statPath(entryPath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw err;
-    }
-
-    if (now() - entryStat.mtimeMs <= STALE_TMP_MAX_AGE_MS) continue;
-    staleDirectories.push(entryPath);
-  }
-  staleDirectories.sort((left, right) => left.localeCompare(right));
-
-  if (staleDirectories.length === 0) {
-    writeLine(dryRun
-      ? 'Dry run: no stale OMX /tmp directories found.'
-      : 'No stale OMX /tmp directories found.');
-    return 0;
-  }
-
-  const summaryTarget = formatPlural(
-    staleDirectories.length,
-    'stale OMX /tmp directory',
-    'stale OMX /tmp directories',
-  );
-  if (dryRun) {
-    writeLine(`Dry run: would remove ${summaryTarget}:`);
-    for (const directoryPath of staleDirectories) {
-      writeLine(`  ${directoryPath}`);
-    }
-    return 0;
-  }
-
-  let removedCount = 0;
-  for (const directoryPath of staleDirectories) {
-    try {
-      await removePath(directoryPath);
-      removedCount += 1;
-      writeLine(`Removed stale /tmp directory: ${directoryPath}`);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw err;
-    }
-  }
-
-  writeLine(
-    `Removed ${formatPlural(
-      removedCount,
-      'stale OMX /tmp directory',
-      'stale OMX /tmp directories',
-    )}.`,
-  );
-  return removedCount;
-}
-
 export async function cleanupCommand(
   args: string[],
   dependencies: CleanupCommandDependencies = {},
 ): Promise<void> {
   const cleanupProcesses = dependencies.cleanupProcesses ?? cleanupOmxMcpProcesses;
-  const cleanupTmpDirectories = dependencies.cleanupTmpDirectories ?? cleanupStaleTmpDirectories;
-
   await cleanupProcesses(args);
-  if (args.includes('--help') || args.includes('-h')) return;
-  await cleanupTmpDirectories(args);
 }

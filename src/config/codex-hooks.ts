@@ -2307,7 +2307,7 @@ function foreignHookTrustHash(
 
   return versionForCodexTomlIdentity({
     event_name: codexHookEventLabel(eventName),
-    ...(matcher ? { matcher } : {}),
+    ...(typeof matcher === "string" ? { matcher } : {}),
     hooks: [{
       type: "command",
       command,
