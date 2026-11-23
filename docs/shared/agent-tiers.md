@@ -69,6 +69,6 @@ missing specialist coverage to their leader instead of delegating it.
 
 - `fast-lane`:
   - Best for triage, search, and narrow synthesis.
-  - Model selection: Uses the spark/low-complexity tier (default `gpt-6-astra` like other lanes). Configure `OMX_DEFAULT_SPARK_MODEL` (for Team workers) or `agentModels.explore`/etc. (for native agents) to use a cheaper model.
+  - Model selection: Inherits the configured frontier/main model unless an explicit spark-lane override is set. This prevents inversion where a cheap configured leader would paradoxically cause expensive models to be used in fast lanes. Use `OMX_DEFAULT_SPARK_MODEL` (for Team workers) or `agentModels.explore`/etc. (for native agents) to override this inheritance.
   - Prioritizes quick routing, concise search, and escalation over deep autonomous work.
   - Typical roles: `explore`, `writer`, and lightweight research/search specialists.
