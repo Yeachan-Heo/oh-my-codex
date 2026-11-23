@@ -31,6 +31,27 @@ describe('execution-heavy skill guidance contract', () => {
     }
   });
 
+  it('ralplan re-review loop requires Architect/Critic lane reuse with a new_lane_reason fallback (#4129)', () => {
+    for (const path of ['skills/ralplan/SKILL.md', 'plugins/oh-my-codex/skills/ralplan/SKILL.md']) {
+      const content = loadSurface(path);
+      const loop = content.slice(content.indexOf('**Re-review loop**'));
+      assert.match(loop, /continue the prior same-session Architect lane when the host exposes a continuation tool \(`send_input` or `resume_agent`/);
+      assert.match(loop, /apply the same rule to Critic: continue the prior same-session Critic lane/);
+      assert.match(loop, /never require `resume_agent` where the host does not expose it/);
+      assert.match(loop, /spawn a replacement Architect and record `new_lane_reason` in the planning receipt/);
+      assert.match(loop, /spawn a replacement Critic and record `new_lane_reason` in the planning receipt/);
+      assert.match(loop, /`assertRoleLaneReuse` in `src\/ralplan\/runtime\.ts`/);
+      assert.match(loop, /Planner is not a reuse invariant: step 5b may use a fresh Planner/);
+      assert.match(loop, /apply the same rule per gate: continue the prior same-session lane for the same gate skill \(keyed by gate skill name; a gate whose configured `model` changed may be replaced\)/);
+      assert.match(loop, /spawn a replacement gate subagent and record `new_lane_reason` for that gate in the planning receipt alongside its `qualityGateResults` entry/);
+      const gates = content.slice(content.indexOf('**Plan quality gates (after step 4):**'));
+      assert.match(gates, /the first iteration spawns each gate fresh/);
+      assert.match(gates, /continue the prior same-session lane for the same gate skill \(keyed by gate skill name/);
+      assert.match(gates, /never require `resume_agent` where the host does not expose it/);
+      assert.match(gates, /spawn a replacement gate subagent and record `new_lane_reason` for that gate/);
+    }
+  });
+
   it('doctor recovery preserves owned boundaries rather than deleting mixed roots', () => {
     for (const path of ['skills/doctor/SKILL.md', 'plugins/oh-my-codex/skills/doctor/SKILL.md']) {
       const content = loadSurface(path);
