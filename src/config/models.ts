@@ -475,17 +475,28 @@ const TEAM_LOW_COMPLEXITY_MODEL_KEYS = [
 
 /**
  * Get the envvar-backed spark/low-complexity default model.
- * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > DEFAULT_SPARK_MODEL
+ * When no explicit spark override is configured, spark inherits from the configured main/default model.
+ * This prevents inversion where a cheap configured leader would paradoxically cause expensive models
+ * to be used in fast lanes.
+ * Resolution: OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > explicit low-complexity key(s) > configured main model > DEFAULT_SPARK_MODEL
  */
-export function getSparkDefaultModel(codexHomeOverride?: string): string {
-  return getEnvConfiguredSparkDefaultModel(process.env, codexHomeOverride)
-    ?? readTeamLowComplexityOverride(codexHomeOverride)
-    ?? DEFAULT_SPARK_MODEL;
+export function getSparkDefaultModel(codexHomeOverride?: string, env: NodeJS.ProcessEnv = process.env): string {
+  const explicitOverride = getEnvConfiguredSparkDefaultModel(env, codexHomeOverride);
+  if (explicitOverride) return explicitOverride;
+  
+  const lowComplexityOverride = readTeamLowComplexityOverride(codexHomeOverride);
+  if (lowComplexityOverride) return lowComplexityOverride;
+  
+  // Inherit from configured main model, then fall back to built-in default
+  const mainModel = getEnvConfiguredMainDefaultModel(env, codexHomeOverride)
+    ?? getCodexConfigRootModel(codexHomeOverride)
+    ?? DEFAULT_FRONTIER_MODEL;
+  return mainModel;
 }
 
 /**
  * Get the low-complexity team worker model.
- * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > DEFAULT_SPARK_MODEL
+ * Resolution: explicit low-complexity key(s) > OMX_DEFAULT_SPARK_MODEL > OMX_SPARK_MODEL > inherited main model > DEFAULT_SPARK_MODEL
  */
 export function getTeamLowComplexityModel(codexHomeOverride?: string): string {
   return readTeamLowComplexityOverride(codexHomeOverride) ?? getSparkDefaultModel(codexHomeOverride);

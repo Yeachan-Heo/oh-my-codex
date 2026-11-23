@@ -9,6 +9,7 @@ import {
   getEnvConfiguredSparkDefaultModel,
   getEnvConfiguredMainDefaultModel,
   getEnvConfiguredStandardDefaultModel,
+  getConfiguredTeamLowComplexityModel,
 } from '../config/models.js';
 
 export const OMX_MODELS_START_MARKER = '<!-- OMX:MODELS:START -->';
@@ -108,17 +109,20 @@ export function resolveAgentsModelTableContext(
   } = {},
 ): AgentsModelTableContext {
   const { codexHomeOverride, env = process.env } = options;
-  const frontierModel =
-    getRootModelName(configTomlContent) ??
-    getEnvConfiguredMainDefaultModel(env, codexHomeOverride) ??
-    DEFAULT_FRONTIER_MODEL;
+  
+  // Resolve frontier model from config.toml root model, env override, or default.
+  // Priority: config.toml model > env override > default
+  const rootModel = getRootModelName(configTomlContent);
+  const envMainModel = getEnvConfiguredMainDefaultModel(env, codexHomeOverride);
+  const frontierModel = rootModel ?? envMainModel ?? DEFAULT_FRONTIER_MODEL;
   
   // Spark inherits from configured frontier model unless explicitly overridden.
   // This prevents inversion where a cheap configured leader would paradoxically cause
   // expensive models to be used in fast lanes.
-  const explicitSparkOverride =
-    getEnvConfiguredSparkDefaultModel(env, codexHomeOverride);
-  const sparkModel = explicitSparkOverride ?? frontierModel;
+  // Use the same resolution logic as the runtime: explicit overrides > low-complexity keys > inherited main model > default
+  const explicitSparkOverride = getEnvConfiguredSparkDefaultModel(env, codexHomeOverride);
+  const lowComplexityOverride = getConfiguredTeamLowComplexityModel(codexHomeOverride);
+  const sparkModel = explicitSparkOverride ?? lowComplexityOverride ?? frontierModel;
   
   const subagentDefaultModel =
     getEnvConfiguredStandardDefaultModel(env, codexHomeOverride) ??
