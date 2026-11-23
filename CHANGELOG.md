@@ -14,7 +14,7 @@ Patch release enhances the ralplan workflow with improved Architect/Critic quali
 
 ### Fixed
 
-- **PREVENT SPARK MODEL INVERSION WHEN CHEAPER FRONTIER MODEL CONFIGURED (#4135):** Fixed spark model selection logic to prevent costly model inversion when a cheaper frontier model is already configured. Fixes #4133.
+- **PREVENT SPARK MODEL INVERSION WHEN CHEAPER FRONTIER MODEL CONFIGURED (#4135):** Fixed setup model table selection logic to only update generated AGENTS.md; runtime spark resolution remains unchanged and is fixed in this release (#4138).
 - **MAKE SPARK/EXPLORE RUNTIME RESOLUTION FOLLOW CONFIGURED MODEL (#4138):** Fixed spark and explore model runtime resolution to respect configured model settings, completing the fix for #4133.
 
 **Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.15...v0.22.17
