@@ -478,6 +478,38 @@ describe('omx launch exit output (fake codex, isolated HOME)', () => {
     } finally { await rm(wd, { recursive: true, force: true }); }
   });
 
+  it('omx resume <uuid> prints the resume block with that id', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const r = run(['resume', SID], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
+      assert.match(r.stderr, new RegExp(`^  omx resume ${SID}$`, 'm'), r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('omx --madmax resume <uuid> prints the madmax cd form', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const r = run(['--madmax', 'resume', SID], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`cd /[^ ]+ && omx --madmax resume ${SID}`), r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
+  it('omx resume --last prints the resolved session id', async () => {
+    const { wd, fakeBin } = await setup(false);
+    try {
+      const codexHome = join(wd, 'home', '.codex');
+      const rollout = join(codexHome, 'sessions', '2026', '11', '09', 'rollout-a.jsonl');
+      await mkdir(dirname(rollout), { recursive: true });
+      await writeFile(rollout, `${JSON.stringify({ type: 'session_meta', payload: { id: SID, cwd: wd } })}\n`);
+      // fake codex touches the rollout so it is newer than the launch start
+      await writeFile(join(fakeBin, 'codex'), `#!/bin/sh\ntouch "${rollout}"\nexit 0\n`, { mode: 0o755 });
+      const r = run(['resume', '--last'], wd, fakeBin);
+      assert.match(r.stderr, new RegExp(`Session id: ${SID}`), r.stderr);
+      assert.match(r.stderr, new RegExp(`omx resume ${SID}`), r.stderr);
+    } finally { await rm(wd, { recursive: true, force: true }); }
+  });
+
   it('exit block for project-scoped launch does not include --project flag', async () => {
     const { wd, fakeBin } = await setup(true);
     try {

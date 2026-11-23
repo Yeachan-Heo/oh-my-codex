@@ -2433,6 +2433,16 @@ export function isResumeCodexLaunch(args: string[]): boolean {
   return findResumeCodexSubcommandIndex(args) >= 0;
 }
 
+const RESUME_SESSION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Explicit positional session UUID following `resume`, if any. */
+export function extractExplicitResumeSessionId(args: string[]): string | undefined {
+  const resumeIndex = findResumeCodexSubcommandIndex(args);
+  if (resumeIndex < 0) return undefined;
+  const { omxArgs } = splitOmxArgsAtEndOfOptions(args);
+  return omxArgs.slice(resumeIndex + 1).find((arg) => RESUME_SESSION_UUID_PATTERN.test(arg));
+}
+
 function resumeRequestsLast(args: string[]): boolean {
   const { omxArgs } = splitOmxArgsAtEndOfOptions(args);
   const resumeIndex = omxArgs.indexOf("resume");
@@ -5874,18 +5884,23 @@ export async function launchWithHud(args: string[]): Promise<void> {
     codexDirOverride,
   );
   const printExitResumeBlock = async (): Promise<void> => {
-    if (isResumeLaunch || (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach)) return;
+    if (launchPolicy === "detached-tmux" && !detachedPreflight?.shouldAttach) return;
     try {
       // Search both runtime home and project's durable home (for detached cleanup case)
       const searchHomes = [codexHomeOverride ?? codexHome()];
       if (projectLocalCodexHomeForCleanup) {
         searchHomes.push(projectLocalCodexHomeForCleanup);
       }
-      const latest = await findLatestSession({
-        codexHomeDirs: searchHomes,
-        modifiedSinceMs: resumeBlockStartedAtMs,
-        cwdFilter: effectiveCwdForSession,
-      });
+      const explicitResumeSessionId = isResumeLaunch
+        ? extractExplicitResumeSessionId(normalizedArgs)
+        : undefined;
+      const latest = explicitResumeSessionId
+        ? undefined
+        : await findLatestSession({
+          codexHomeDirs: searchHomes,
+          modifiedSinceMs: resumeBlockStartedAtMs,
+          cwdFilter: effectiveCwdForSession,
+        });
       // Determine if we should add --project flag: when using a worktree with a project-local home,
       // we need to preserve the home by adding --project so the resume command works from the worktree.
       const shouldAddProjectFlag = !!(ensuredLaunchWorktree?.enabled && projectLocalCodexHomeForCleanup);
@@ -5907,7 +5922,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       }
       
       process.stderr.write(formatResumeBlock({
-        sessionId: latest?.session_id ?? null,
+        sessionId: explicitResumeSessionId ?? latest?.session_id ?? null,
         launchArgs: omxArgs,
         launchCwd,
         madmaxStateDir: madmaxStateDirForResumeBlock,
