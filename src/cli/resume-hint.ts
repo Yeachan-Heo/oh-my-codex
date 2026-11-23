@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { MADMAX_FLAG, HIGH_REASONING_FLAG, XHIGH_REASONING_FLAG } from './constants.js';
 import { classifySessionStateLiveness, type SessionState } from '../hooks/session.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
@@ -64,11 +64,12 @@ export function resolveEffectiveSessionCwd(
   return launchCwd;
 }
 
-function contextFlags(launchArgs: readonly string[]): string[] {
+function contextFlags(launchArgs: readonly string[], launchCwd: string): string[] {
   const flags: string[] = [];
   let madmax = false;
   let reasoning: string | undefined;
   let model: string | undefined;
+  let codexHome: string | undefined;
   for (let i = 0; i < launchArgs.length; i += 1) {
     const arg = launchArgs[i]!;
     if (arg === '--') break;
@@ -76,10 +77,16 @@ function contextFlags(launchArgs: readonly string[]): string[] {
     else if (arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) reasoning = arg;
     else if ((arg === '--model' || arg === '-m') && launchArgs[i + 1]) { model = launchArgs[i + 1]; i += 1; }
     else if (arg.startsWith('--model=')) model = arg.slice('--model='.length);
+    // Resume home selectors must survive into the hint, or the printed command
+    // searches the default homes and cannot find a session in a custom home.
+    else if (arg === '--codex-home' && launchArgs[i + 1]) { codexHome = launchArgs[i + 1]; i += 1; }
+    else if (arg.startsWith('--codex-home=')) codexHome = arg.slice('--codex-home='.length);
   }
   if (madmax) flags.push(MADMAX_FLAG);
   if (reasoning) flags.push(reasoning);
   if (model) flags.push('--model', shellQuote(model));
+  // Absolute, so the command still works after the hint cds elsewhere.
+  if (codexHome) flags.push('--codex-home', shellQuote(resolve(launchCwd, codexHome)));
   return flags;
 }
 
@@ -96,7 +103,7 @@ function buildTmuxAttachCommand(tmuxBinary: string, tmuxSessionName: string): st
  * Build an omx resume command for a known-dead owner.
  */
 function buildOmxResumeCommand(sessionId: string, input: ResumeBlockInput): string {
-  const flags = contextFlags(input.launchArgs);
+  const flags = contextFlags(input.launchArgs, input.launchCwd);
   if (input.projectLocalHome) flags.push('--project');
   const omx = ['omx', ...flags, 'resume', shellQuote(sessionId)].join(' ');
   const madmax = flags.includes(MADMAX_FLAG);

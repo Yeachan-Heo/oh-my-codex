@@ -76,6 +76,17 @@ describe('resume block formatting', () => {
     );
   });
 
+  it('keeps an explicit --codex-home (absolute) from a resume launch', () => {
+    assert.equal(
+      buildResumeCommand({ sessionId: SID, launchArgs: ['resume', '--codex-home', 'homes/custom', SID], launchCwd: '/p' }),
+      `omx --codex-home /p/homes/custom resume ${SID}`,
+    );
+    assert.equal(
+      buildResumeCommand({ sessionId: SID, launchArgs: ['resume', '--codex-home=/abs/h', SID], launchCwd: '/p' }),
+      `omx --codex-home /abs/h resume ${SID}`,
+    );
+  });
+
   it('without a session id says so and prints no broken resume command', () => {
     const out = formatResumeBlock({ sessionId: null, launchArgs: ['--madmax'], launchCwd: '/p' });
     assert.match(out, /No Codex session id was captured/);
