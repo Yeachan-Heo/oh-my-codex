@@ -4,13 +4,11 @@ import { tryReadCatalogManifest } from '../catalog/reader.js';
 import { getRootModelName } from '../config/generator.js';
 import {
   DEFAULT_FRONTIER_MODEL,
-  DEFAULT_SPARK_MODEL,
   getAgentModelOverride,
   getAgentReasoningOverride,
   getEnvConfiguredSparkDefaultModel,
   getEnvConfiguredMainDefaultModel,
   getEnvConfiguredStandardDefaultModel,
-  getSparkDefaultModel,
 } from '../config/models.js';
 
 export const OMX_MODELS_START_MARKER = '<!-- OMX:MODELS:START -->';
@@ -114,10 +112,14 @@ export function resolveAgentsModelTableContext(
     getRootModelName(configTomlContent) ??
     getEnvConfiguredMainDefaultModel(env, codexHomeOverride) ??
     DEFAULT_FRONTIER_MODEL;
-  const sparkModel =
-    getEnvConfiguredSparkDefaultModel(env, codexHomeOverride) ??
-    getSparkDefaultModel(codexHomeOverride) ??
-    DEFAULT_SPARK_MODEL;
+  
+  // Spark inherits from configured frontier model unless explicitly overridden.
+  // This prevents inversion where a cheap configured leader would paradoxically cause
+  // expensive models to be used in fast lanes.
+  const explicitSparkOverride =
+    getEnvConfiguredSparkDefaultModel(env, codexHomeOverride);
+  const sparkModel = explicitSparkOverride ?? frontierModel;
+  
   const subagentDefaultModel =
     getEnvConfiguredStandardDefaultModel(env, codexHomeOverride) ??
     frontierModel;

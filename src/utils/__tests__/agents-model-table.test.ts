@@ -64,12 +64,12 @@ describe('agents model table', () => {
     });
   });
 
-  it('uses the configured frontier model as the standard subagent default when no standard override exists', () => {
+  it('uses the configured frontier model as the standard subagent default and spark default when no overrides exist', () => {
     const context = resolveAgentsModelTableContext('model = "frontier-config"\n', { codexHomeOverride: isolatedCodexHome });
 
     assert.deepEqual(context, {
       frontierModel: 'frontier-config',
-      sparkModel: 'gpt-6-astra',
+      sparkModel: 'frontier-config',
       subagentDefaultModel: 'frontier-config',
     });
   });
