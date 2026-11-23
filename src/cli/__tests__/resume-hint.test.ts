@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildResumeCommand, extractCodexDirectoryOverride, formatResumeBlock, resolveEffectiveSessionCwd, shellQuote } from '../resume-hint.js';
 import { findLatestSession } from '../../session-history/search.js';
+import { extractExplicitResumeSessionId, findResumeCodexSubcommandIndex, parseResumeCodexHomeSelection } from '../index.js';
 import { type SessionState } from '../../hooks/session.js';
 
 const SID = '01a1bee6-529f-7f43-bb86-e85cdc099614';
@@ -79,12 +80,20 @@ describe('resume block formatting', () => {
   it('keeps an explicit --codex-home (absolute) from a resume launch', () => {
     assert.equal(
       buildResumeCommand({ sessionId: SID, launchArgs: ['resume', '--codex-home', 'homes/custom', SID], launchCwd: '/p' }),
-      `omx --codex-home /p/homes/custom resume ${SID}`,
+      `omx resume --codex-home /p/homes/custom ${SID}`,
     );
     assert.equal(
       buildResumeCommand({ sessionId: SID, launchArgs: ['resume', '--codex-home=/abs/h', SID], launchCwd: '/p' }),
-      `omx --codex-home /abs/h resume ${SID}`,
+      `omx resume --codex-home /abs/h ${SID}`,
     );
+  });
+
+  it('printed --codex-home resume command round-trips through the resume parser', () => {
+    const cmd = buildResumeCommand({ sessionId: SID, launchArgs: ['--madmax', 'resume', '--codex-home', '/abs/h', SID], launchCwd: '/p' })!;
+    const args = cmd.replace(/^cd \S+ && /, '').split(' ').slice(1);
+    assert.ok(findResumeCodexSubcommandIndex(args) >= 0, cmd);
+    assert.equal(parseResumeCodexHomeSelection(args).explicitCodexHome, '/abs/h');
+    assert.equal(extractExplicitResumeSessionId(args), SID);
   });
 
   it('without a session id says so and prints no broken resume command', () => {
