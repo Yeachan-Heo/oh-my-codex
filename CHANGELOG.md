@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.16] - 2026-11-24
+
+Patch release enhances the ralplan workflow with improved Architect/Critic quality gates and lane reuse strategy. See [release notes](docs/release-notes-0.22.16.md) for exact scope and evidence.
+
+### Improved
+
+- **RALPLAN RE-REVIEW ARCHITECT/CRITIC/QUALITY-GATE LANE REUSE (#4130, #4131):** Improved ralplan workflow with better Architect/Critic quality gates and enhanced lane reuse strategy, fixing plan review cycle issues (#4129).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.15...v0.22.16
+
 ## [0.22.15] - 2026-11-22
 
 Patch release improves vision model guidance for CSS advice. See [release notes](docs/release-notes-0.22.15.md) for exact scope and evidence.
