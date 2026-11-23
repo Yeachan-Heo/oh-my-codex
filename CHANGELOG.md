@@ -4,7 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.18] - 2026-11-24
+
+Patch release ships the runtime fix for spark/explore model resolution, completing the fix for issue #4133. See [release notes](docs/release-notes-0.22.18.md) for exact scope and evidence.
+
+### Fixed
+
+- **MAKE SPARK/EXPLORE RUNTIME RESOLUTION FOLLOW CONFIGURED MODEL (#4138):** Fixed spark and explore model runtime resolution to respect configured model settings, completing the fix for #4133 (started by #4135 setup table changes in v0.22.17).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.17...v0.22.18
+
 ## [0.22.17] - 2026-11-24
+
+Patch release enhances the ralplan workflow with improved Architect/Critic quality gates, lane reuse strategy, and fixes spark model setup table. See [release notes](docs/release-notes-0.22.17.md) for exact scope and evidence.
+
+### Improved
+
+- **RALPLAN RE-REVIEW ARCHITECT/CRITIC/QUALITY-GATE LANE REUSE (#4130, #4131):** Improved ralplan workflow with better Architect/Critic quality gates and enhanced lane reuse strategy, fixing plan review cycle issues (#4129).
+
+### Fixed
+
+- **PREVENT SPARK MODEL INVERSION WHEN CHEAPER FRONTIER MODEL CONFIGURED (#4135):** Fixed setup model table selection logic to only update generated AGENTS.md; runtime spark resolution remains unchanged and is fixed in this release (#4138).
+- **MAKE SPARK/EXPLORE RUNTIME RESOLUTION FOLLOW CONFIGURED MODEL (#4138):** Fixed spark and explore model runtime resolution to respect configured model settings, completing the fix for #4133.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.16...v0.22.17
+
+## [0.22.16] - 2026-11-24
 
 Patch release enhances the ralplan workflow with improved Architect/Critic quality gates, lane reuse strategy, and fixes spark model inversion. See [release notes](docs/release-notes-0.22.17.md) for exact scope and evidence. Note: v0.22.16 was published without code changes; this release ships them.
 

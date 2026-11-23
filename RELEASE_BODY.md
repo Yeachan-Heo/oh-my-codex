@@ -1,31 +1,27 @@
-# oh-my-codex v0.22.17
+# oh-my-codex v0.22.18
 
 ## Summary
 
-This patch release enhances the ralplan workflow with improved Architect/Critic quality gates and lane reuse strategy, plus a fix for spark model inversion. The changes were intended for v0.22.16 but were not included in that release; they ship in this release instead.
+This patch release ships the runtime fix for spark/explore model resolution, completing the fix for issue #4133. The runtime now consistently applies the configured model setting across setup and runtime contexts.
 
-## Improved
+## Fixed
 
-- **RALPLAN RE-REVIEW ARCHITECT/CRITIC/QUALITY-GATE LANE REUSE (#4130, #4131):** Improved ralplan workflow with better Architect/Critic quality gates and enhanced lane reuse strategy, fixing plan review cycle issues (#4129).
-
-## Improved
-
-- **PREVENT SPARK MODEL INVERSION WHEN CHEAPER FRONTIER MODEL CONFIGURED (#4135):** Fixed spark model selection logic to prevent costly model inversion when a cheaper frontier model is already configured. Fixes #4133.
+- **MAKE SPARK/EXPLORE RUNTIME RESOLUTION FOLLOW CONFIGURED MODEL (#4138):** Fixed spark and explore model runtime resolution to respect configured model settings, completing the fix for #4133 (started by #4135 setup table changes in v0.22.17).
 
 ## Compatibility
 
-No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.17`.
+No breaking API changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.18`.
 
 ## Verification
 
-- Dev CI gate on candidate commit verified (details recorded in [release readiness](docs/qa/release-readiness-0.22.17.md)).
+- Dev CI gate on candidate commit verified.
 - Release branch merged to main with two-parent merge commit.
 
 ## Contributors
 
-Thanks to [@ev78394](https://github.com/ev78394) for contributing to this release.
+Thanks to the development team for contributing to this release.
 
-**Full Changelog**: [`v0.22.15...v0.22.16`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.15...v0.22.16)
+**Full Changelog**: [`v0.22.17...v0.22.18`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.17...v0.22.18)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
