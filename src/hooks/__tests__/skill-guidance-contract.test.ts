@@ -35,9 +35,16 @@ describe('execution-heavy skill guidance contract', () => {
     for (const path of ['skills/ralplan/SKILL.md', 'plugins/oh-my-codex/skills/ralplan/SKILL.md']) {
       const content = loadSurface(path);
       const loop = content.slice(content.indexOf('**Re-review loop**'));
-      assert.match(loop, /continue the prior same-session Architect lane when the host exposes a continuation tool \(`send_input` or `resume_agent`/);
+      assert.match(loop, /continue the prior same-session Architect lane when the host exposes a continuation tool \(`followup_task` \(`collaboration.followup_task`\), `send_input`, or `resume_agent`, whichever the host exposes/);
       assert.match(loop, /apply the same rule to Critic: continue the prior same-session Critic lane/);
-      assert.match(loop, /never require `resume_agent` where the host does not expose it/);
+      const ops = /`followup_task` \(`collaboration\.followup_task`\), `send_input`, or `resume_agent`, whichever the host exposes/;
+      const architectStep = loop.slice(loop.indexOf('c. Return to Architect review'), loop.indexOf('d. Return to Critic evaluation'));
+      const criticStep = loop.slice(loop.indexOf('d. Return to Critic evaluation'), loop.indexOf('e. Re-run the configured quality gates'));
+      const gateStep = loop.slice(loop.indexOf('e. Re-run the configured quality gates'), loop.indexOf('f. If 5 iterations'));
+      assert.match(architectStep, ops);
+      assert.match(criticStep, ops);
+      assert.match(gateStep, ops);
+      assert.match(loop, /never require `resume_agent` \(or any specific one\) where the host does not expose it/);
       assert.match(loop, /spawn a replacement Architect and record `new_lane_reason` in the planning receipt/);
       assert.match(loop, /spawn a replacement Critic and record `new_lane_reason` in the planning receipt/);
       assert.match(loop, /`assertRoleLaneReuse` in `src\/ralplan\/runtime\.ts`/);
@@ -46,8 +53,9 @@ describe('execution-heavy skill guidance contract', () => {
       assert.match(loop, /spawn a replacement gate subagent and record `new_lane_reason` for that gate in the planning receipt alongside its `qualityGateResults` entry/);
       const gates = content.slice(content.indexOf('**Plan quality gates (after step 4):**'));
       assert.match(gates, /the first iteration spawns each gate fresh/);
+      assert.match(gates, ops);
       assert.match(gates, /continue the prior same-session lane for the same gate skill \(keyed by gate skill name/);
-      assert.match(gates, /never require `resume_agent` where the host does not expose it/);
+      assert.match(gates, /never require `resume_agent` \(or any specific one\) where the host does not expose it/);
       assert.match(gates, /spawn a replacement gate subagent and record `new_lane_reason` for that gate/);
     }
   });
