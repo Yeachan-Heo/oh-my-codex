@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.18] - 2026-11-24
+
+Patch release ships the runtime spark/explore resolution fix that was intended for v0.22.17 but was not included in the published v0.22.17 package.
+
+### Fixed
+
+- **MAKE SPARK/EXPLORE RUNTIME RESOLUTION FOLLOW CONFIGURED MODEL (#4138):** Fixes #4133: runtime spark/explore resolution follows the configured main model; planner/architect/researcher astra pins unchanged pending owner decision.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.17...v0.22.18
+
 ## [0.22.17] - 2026-11-24
 
 Patch release enhances the ralplan workflow with improved Architect/Critic quality gates, lane reuse strategy, and fixes spark model inversion. See [release notes](docs/release-notes-0.22.17.md) for exact scope and evidence. Note: v0.22.16 was published without code changes; this release ships them.
