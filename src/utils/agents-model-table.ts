@@ -51,22 +51,23 @@ function getAgentRecommendedModel(
 	if (modelOverride) {
 		return modelOverride;
 	}
-	if (agent.exactModel) {
+	// Same role set as native-config resolveEnvTierModel: the frontier env tier
+	// default beats the root config model, matching the baked native agent TOML.
+	if (
+		agent.exactModel ||
+		agent.name === "executor" ||
+		agent.modelClass === "frontier"
+	) {
 		return (
 			getEnvConfiguredMainDefaultModel(process.env, options.codexHomeOverride) ??
-			agent.exactModel
+			agent.exactModel ??
+			context.frontierModel
 		);
-	}
-
-	if (agent.name === "executor") {
-		return context.frontierModel;
 	}
 
 	switch (agent.modelClass) {
 		case "fast":
 			return context.sparkModel;
-		case "frontier":
-			return context.frontierModel;
 		case "standard":
 		default:
 			return context.subagentDefaultModel;

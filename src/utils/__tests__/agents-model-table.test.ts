@@ -109,6 +109,18 @@ describe('agents model table', () => {
     assert.match(table, /Precedence per role/);
   });
 
+  it('applies OMX_DEFAULT_FRONTIER_MODEL to every frontier role row over a different root model, like the native TOML', () => {
+    process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-env';
+    const context = resolveAgentsModelTableContext('model = "frontier-config"\n', { codexHomeOverride: isolatedCodexHome });
+    const table = buildAgentsModelTable(context, undefined, { codexHomeOverride: isolatedCodexHome });
+
+    assert.match(table, /\| Frontier \(leader\) \| `frontier-config` \| high \|/);
+    assert.match(table, /\| `executor` \| `frontier-env` \| medium \|/);
+    assert.match(table, /\| `critic` \| `frontier-env` \| high \|/);
+    assert.match(table, /\| `code-reviewer` \| `frontier-env` \| high \|/);
+    assert.match(table, /\| `planner` \| `frontier-env` \| medium \|/);
+  });
+
   it('reflects per-agent model and reasoning overrides', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'omx-agents-model-table-'));
     try {
