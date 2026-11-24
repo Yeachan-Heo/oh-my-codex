@@ -1,30 +1,16 @@
-# oh-my-codex v0.22.19
+# oh-my-codex v0.22.20
 
 ## Summary
 
-This patch release makes the `OMX_DEFAULT_*_MODEL` env tier variables the single source of truth for agent models (#4146, fixes #4133/#4149) and prints the exit resume block for resume launches (#4144, fixes #4060).
-
-## Changed
-
-- **ENV TIER VARS AS SINGLE SOURCE OF TRUTH (#4146):** Fixes #4133, #4149. The per-agent `exactModel` pins are removed. `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL` and `OMX_DEFAULT_SPARK_MODEL` drive all agents. Defaults: frontier `gpt-6.2-astra` (planner/architect/critic), standard `gpt-6.2-sol`, spark `gpt-6-luna` (explore/style-reviewer/vision). The model table lists the leader row first and orders rows by tier.
+This patch release maps Homebrew Cellar node paths to stable symlinks to ensure managed codex hooks survive node upgrades (#4155, fixes #4153).
 
 ## Fixed
 
-- **PRINT EXIT RESUME BLOCK FOR RESUME LAUNCHES (#4144):** Fixes #4060. Resume launches now print the exit resume block.
-
-## Migration
-
-This is a behavior change (#4146):
-
-- The `exactModel` pins are removed.
-- `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL` and `OMX_DEFAULT_SPARK_MODEL` drive all agents.
-- The defaults are frontier `gpt-6.2-astra` (planner/architect/critic), standard `gpt-6.2-sol`, spark `gpt-6-luna` (explore/style-reviewer/vision).
-- The `config.toml` root `model` no longer affects agent tiers.
-- Re-run `omx setup --force` to regenerate the agent TOML.
+- **MAP HOMEBREW CELLAR NODE PATHS TO STABLE SYMLINKS (#4155):** Fixes #4153. Homebrew stores node in a version-pinned Cellar path (e.g. `/opt/homebrew/Cellar/node/26.0.0/bin/node`). When persisted in `~/.codex/hooks.json`, hooks exit 127 immediately after node is upgraded and the old Cellar directory is cleaned up. The `resolveStableNodePath()` helper now detects Homebrew Cellar paths and maps them to the stable prefix symlink, allowing hooks to survive upgrades. Applied to both managed codex hooks and MCP server configuration.
 
 ## Compatibility
 
-Behavior change for agent model selection, see Migration. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.19`.
+Behavior change for Homebrew node path handling. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.20`.
 
 ## Verification
 
@@ -33,9 +19,9 @@ Behavior change for agent model selection, see Migration. Release-coupled metada
 
 ## Contributors
 
-Thanks to the team for ensuring this release reaches users with improved model handling and resume block display.
+Thanks to the team for ensuring this release reaches users with improved hook stability across node upgrades.
 
-**Full Changelog**: [`v0.22.18...v0.22.19`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.18...v0.22.19)
+**Full Changelog**: [`v0.22.19...v0.22.20`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.19...v0.22.20)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
