@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.22] - 2026-11-25
+
+Patch release enhances the setup command to refresh stale model, provider, and reasoning pins when configurations change.
+
+### Fixed
+
+- **REFRESH AGENTS WHEN ONLY MODEL CHANGES (#4165):** The setup command now detects and refreshes stale model/provider/reasoning pins while preserving other user edits. Users can keep custom workflows and other configuration intact while updating agent definitions based on the latest model capabilities. Fixes #3919 (partial, option A).
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.21...v0.22.22
+
 ## [0.22.21] - 2026-11-24
 
 Patch release fixes repeated Stop hook invocations for blocked team workers, ensuring deterministic worker lifecycle management.
