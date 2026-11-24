@@ -3008,7 +3008,7 @@ async function resolveTeamWorkerStopDecision(
   const workerRunState = safeString(status?.state).trim().toLowerCase();
   const workerRunStateIsTerminal = TEAM_WORKER_TERMINAL_RUN_STATES.has(workerRunState);
   if (!identity && !status && !existsSync(workerRoot)) {
-    return blockWorkerStop("missing_worker_state", "worker identity/status state is missing", stateDir);
+    return blockWorkerStop("missing_worker_state", "worker identity/status state is missing", workerRoot);
   }
 
   const candidateTaskIds = new Set<string>();
@@ -3028,9 +3028,9 @@ async function resolveTeamWorkerStopDecision(
     taskFiles = await readdir(tasksDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' && candidateTaskIds.size === 0) {
-      return blockWorkerStop("missing_task_assignment", "no current_task_id or assigned_tasks are recorded", stateDir);
+      return blockWorkerStop("missing_task_assignment", "no current_task_id or assigned_tasks are recorded", workerRoot);
     }
-    return blockWorkerStop("unreadable_tasks", "task directory cannot be enumerated safely", stateDir);
+    return blockWorkerStop("unreadable_tasks", "task directory cannot be enumerated safely", workerRoot);
   }
   for (const entry of taskFiles) {
     const idFromFile = /^task-(\d+)\.json$/.exec(entry)?.[1];
@@ -3039,7 +3039,7 @@ async function resolveTeamWorkerStopDecision(
     const info = await lstat(taskPath).catch(() => null);
     const task = info?.isFile() && !info.isSymbolicLink() ? await readJsonIfExists(taskPath) : null;
     if (!task || Array.isArray(task) || safeString(task.id) !== idFromFile || !(TEAM_TASK_STATUSES as readonly unknown[]).includes(task.status)) {
-      return blockWorkerStop(`unreadable_task_${idFromFile}`, `task ${idFromFile} has no trustworthy task state`, stateDir);
+      return blockWorkerStop(`unreadable_task_${idFromFile}`, `task ${idFromFile} has no trustworthy task state`, workerRoot);
     }
     const taskOwner = safeString(task.owner).trim();
     const taskClaimOwner = safeString(safeObject(task.claim).owner).trim();
@@ -3049,7 +3049,7 @@ async function resolveTeamWorkerStopDecision(
   }
 
   if (candidateTaskIds.size === 0) {
-    return blockWorkerStop("missing_task_assignment", "no current_task_id or assigned_tasks are recorded", stateDir);
+    return blockWorkerStop("missing_task_assignment", "no current_task_id or assigned_tasks are recorded", workerRoot);
   }
 
   let completedTaskCount = 0;
@@ -3059,7 +3059,7 @@ async function resolveTeamWorkerStopDecision(
     );
     const statusValue = safeString(task?.status).trim().toLowerCase();
     if (!statusValue) {
-      return blockWorkerStop(`missing_task_state_${taskId}`, `task ${taskId} has no readable status`, stateDir);
+      return blockWorkerStop(`missing_task_state_${taskId}`, `task ${taskId} has no readable status`, workerRoot);
     }
     if (statusValue === "completed") {
       completedTaskCount += 1;
@@ -3069,12 +3069,12 @@ async function resolveTeamWorkerStopDecision(
       return blockWorkerStop(
         `non_completed_task_${taskId}_${statusValue}`,
         `task ${taskId} is ${statusValue}, not completed`,
-        stateDir,
+        workerRoot,
       );
     }
     return {
       kind: "blocked",
-      stateDir,
+      stateDir: workerRoot,
       workerContext,
       allowRepeatDuringStopHook: !workerRunStateIsTerminal && statusValue !== "blocked",
       output: {
@@ -3089,10 +3089,10 @@ async function resolveTeamWorkerStopDecision(
   }
 
   if (completedTaskCount === candidateTaskIds.size) {
-    return { kind: "allowed", stateDir, workerContext };
+    return { kind: "allowed", stateDir: workerRoot, workerContext };
   }
 
-  return blockWorkerStop("missing_completed_task_evidence", "no referenced worker task is completed", stateDir);
+  return blockWorkerStop("missing_completed_task_evidence", "no referenced worker task is completed", workerRoot);
 }
 
 function isStopExempt(payload: CodexHookPayload): boolean {
