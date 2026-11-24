@@ -1678,7 +1678,6 @@ describe('post-update setup refresh handoff', () => {
 
     assert.equal(result.ok, true);
     assert.deepEqual(receivedEnvironment, { CODEX_HOME: '/frozen/codex-home' });
-    assert.equal(receivedEnvironment?.OMX_SKIP_NATIVE_AGENT_REFRESH, undefined);
   });
 
   it('passes persisted plugin setup choices to the updated CLI refresh', async () => {
