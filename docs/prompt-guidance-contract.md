@@ -35,28 +35,6 @@ Workflow skills may use a compact reference to the shared workflow guidance patt
 
 `$ultraqa` is an adversarial dynamic e2e workflow, not a shallow static QA checklist. Its skill guidance must require a generated scenario matrix, malicious/hostile user behavior modeling, useful temporary tests or harnesses, hostile edge cases such as malformed input, repeated interruptions, prompt injection, cancel/resume, stale state, dirty worktrees, hung commands, flaky tests, and misleading success output, plus a structured report with commands, failures, fixes, cleanup/rollback, residual risks, and evidence. Safety bounds must remain explicit: no destructive commands, no secret exfiltration, no unbounded runtime, and no untracked generated debris. Regression coverage in `src/hooks/prompt-guidance-contract.ts` and `src/hooks/__tests__/skill-guidance-contract.test.ts` should fail if UltraQA regresses to build/lint/typecheck/test-only guidance.
 
-## Exact-model mini adaptation seam
-
-OMX also has a narrow **instruction-composition seam** for subagents/workers whose **final resolved model** is exactly `gpt-5.6-terra`.
-That seam is part of prompt delivery, but it is intentionally narrower than the general GPT-5.6 behavioral contract described below.
-
-Contributor rules for that seam:
-
-- Key mini-specific instruction adaptation off the **final resolved model string**, not off role name, lane, or default tier membership.
-- Role-level `exactModel` pins may route selected agents to `gpt-5.6-terra`, but the mini-specific instruction seam still keys off the final resolved model string after that routing decision.
-- Trim the final resolved model string, then compare it with exact, case-sensitive equality to `gpt-5.6-terra`; do not widen behavior to `gpt-5.6-sol`, `gpt-5.6-terra-tuned`, case variants, or other variants.
-- Keep one shared **inner role-instruction composition helper** as the source of truth for model-gated prompt adaptation.
-- Keep `src/team/worker-bootstrap.ts` limited to **outer AGENTS/runtime wrapping**. It should wrap already-composed instructions, not own model-specific adaptation logic.
-- Keep `src/team/role-router.ts` as a raw role-prompt loader unless a minimal plumbing change is unavoidable.
-
-Primary implementation surfaces for this seam:
-
-| Responsibility | Primary sources |
-|---|---|
-| shared inner prompt composition | `src/agents/native-config.ts`, `src/agents/__tests__/native-config.test.ts` |
-| team runtime/scaling plumbing | `src/team/runtime.ts`, `src/team/scaling.ts`, associated runtime/scaling tests |
-| outer wrapper boundary | `src/team/worker-bootstrap.ts`, `src/team/__tests__/worker-bootstrap.test.ts` |
-
 ## What this contract is — and is not
 
 This contract is about **how OMX prompts should behave**. It is not the same thing as OMX's routing metadata.
@@ -175,7 +153,6 @@ Posture-aware routing is real, but it is not the same contract as the GPT-5.6 be
 | Topic | Primary sources |
 |---|---|
 | GPT-5.6 prompt behavior contract | `templates/AGENTS.md`, any tracked `AGENTS.md`, canonical XML-tagged role prompt surfaces in `prompts/*.md`, workflow skills in `skills/*/SKILL.md`, `src/config/generator.ts`, `src/hooks/__tests__/prompt-guidance-*.test.ts` |
-| exact-model mini composition seam | `src/agents/native-config.ts`, `src/team/runtime.ts`, `src/team/scaling.ts`, `src/team/worker-bootstrap.ts`, targeted native/runtime/scaling/bootstrap tests |
 | role/tier/posture routing | `README.md:133-179`, `docs/shared/agent-tiers.md`, `src/agents/native-config.ts` |
 
 If a change only affects posture overlays or native agent metadata, document it in the routing docs rather than expanding this contract unnecessarily.
@@ -194,9 +171,8 @@ Before opening a PR that changes prompt text, confirm all of the following:
 1. **Preserve the five core behaviors.** Your change should keep or strengthen outcome-first framing, concise collaboration/preambles, low-risk follow-through, scoped overrides, and evidence-backed validation/stop rules.
 2. **Keep role-specific wording role-specific.** The phrasing can differ by role, but the behavior should stay semantically aligned.
 3. **Update scenario examples when behavior changes.** If you change how prompts handle `continue`, `make a PR`, or `merge if CI green`, update the prompt examples and related tests.
-4. **Keep the mini-only seam exact and centralized.** If you touch mini adaptation, gate it on the final resolved model with exact `gpt-5.6-terra` equality, keep the shared inner helper as the source of truth, and keep `worker-bootstrap.ts` wrapper-only.
-5. **Do not confuse routing metadata with prompt behavior.** Posture/tier updates belong in routing docs/tests unless they also change prompt prose.
-6. **Update regression coverage when the contract changes.** Start with `src/hooks/__tests__/prompt-guidance-contract.test.ts`, `prompt-guidance-wave-two.test.ts`, `prompt-guidance-scenarios.test.ts`, `prompt-guidance-catalog.test.ts`, `skill-guidance-contract.test.ts`, and `prompt-guidance-fragments.test.ts`; add native/runtime/scaling/bootstrap coverage when the mini-only seam changes.
+4. **Do not confuse routing metadata with prompt behavior.** Posture/tier updates belong in routing docs/tests unless they also change prompt prose.
+5. **Update regression coverage when the contract changes.** Start with `src/hooks/__tests__/prompt-guidance-contract.test.ts`, `prompt-guidance-wave-two.test.ts`, `prompt-guidance-scenarios.test.ts`, `prompt-guidance-catalog.test.ts`, `skill-guidance-contract.test.ts`, and `prompt-guidance-fragments.test.ts`.
 
 ## Validation workflow for contributors
 
@@ -212,16 +188,6 @@ node --test \
   dist/hooks/__tests__/skill-guidance-contract.test.js \
   dist/hooks/__tests__/prompt-guidance-fragments.test.js \
   dist/hooks/__tests__/explicit-terminal-stop-docs-contract.test.js
-```
-
-If you touch the exact-model `gpt-5.6-terra` composition seam, also run:
-
-```bash
-node --test \
-  dist/agents/__tests__/native-config.test.js \
-  dist/team/__tests__/runtime.test.js \
-  dist/team/__tests__/scaling.test.js \
-  dist/team/__tests__/worker-bootstrap.test.js
 ```
 
 For broader prompt or skill changes, prefer the full suite:

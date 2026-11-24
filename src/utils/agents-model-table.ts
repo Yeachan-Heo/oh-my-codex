@@ -6,13 +6,12 @@ import { isNativeAgentInstallableStatus } from "../agents/policy.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { getRootModelName } from "../config/generator.js";
 import {
-	DEFAULT_FRONTIER_MODEL,
+	DEFAULT_LEADER_MODEL,
 	getAgentModelOverride,
 	getAgentReasoningOverride,
-	getConfiguredTeamLowComplexityModel,
-	getEnvConfiguredMainDefaultModel,
-	getEnvConfiguredSparkDefaultModel,
-	getEnvConfiguredStandardDefaultModel,
+	getFrontierDefaultModel,
+	getSparkDefaultModel,
+	getStandardDefaultModel,
 } from "../config/models.js";
 
 export const OMX_MODELS_START_MARKER = "<!-- OMX:MODELS:START -->";
@@ -21,7 +20,10 @@ export const OMX_MODELS_END_MARKER = "<!-- OMX:MODELS:END -->";
 const TEAM_MODEL_RESOLUTION_END = "</team_model_resolution>";
 
 export interface AgentsModelTableContext {
+	/** Main/leader session model: the config.toml root model. Not an agent tier. */
 	frontierModel: string;
+	/** Frontier agent tier model (planner, architect, researcher). */
+	frontierAgentModel: string;
 	sparkModel: string;
 	subagentDefaultModel: string;
 }
@@ -35,7 +37,7 @@ function escapeTableCell(value: string): string {
 }
 
 function formatRoleLabel(role: string): string {
-	return role.includes("(") ? role : `\`${role}\``;
+	return role.includes(" ") ? role : `\`${role}\``;
 }
 
 function getAgentRecommendedModel(
@@ -50,19 +52,12 @@ function getAgentRecommendedModel(
 	if (modelOverride) {
 		return modelOverride;
 	}
-	if (agent.exactModel) {
-		return agent.exactModel;
-	}
-
-	if (agent.name === "executor") {
-		return context.frontierModel;
-	}
 
 	switch (agent.modelClass) {
+		case "frontier":
+			return context.frontierAgentModel;
 		case "fast":
 			return context.sparkModel;
-		case "frontier":
-			return context.frontierModel;
 		case "standard":
 		default:
 			return context.subagentDefaultModel;
@@ -80,16 +75,17 @@ function getAgentReasoningEffort(
 }
 
 function getAgentUseCase(agent: AgentDefinition): string {
-	return `${agent.description} (${agent.posture}, ${agent.modelClass})`;
+	return `${agent.description} (${agent.posture})`;
 }
 
 function buildTableRow(
 	role: string,
+	tier: string,
 	model: string,
 	reasoningEffort: string,
 	useCase: string,
 ): string {
-	return `| ${escapeTableCell(formatRoleLabel(role))} | ${escapeTableCell(`\`${model}\``)} | ${escapeTableCell(reasoningEffort)} | ${escapeTableCell(useCase)} |`;
+	return `| ${escapeTableCell(formatRoleLabel(role))} | ${escapeTableCell(tier)} | ${escapeTableCell(`\`${model}\``)} | ${escapeTableCell(reasoningEffort)} | ${escapeTableCell(useCase)} |`;
 }
 
 function getModelTableAgents(
@@ -109,6 +105,25 @@ function getModelTableAgents(
 	);
 }
 
+const TIER_LABEL: Record<AgentDefinition["modelClass"], string> = {
+	frontier: "frontier",
+	standard: "standard",
+	fast: "spark",
+};
+
+const TIER_ORDER: Record<AgentDefinition["modelClass"], number> = {
+	frontier: 0,
+	standard: 1,
+	fast: 2,
+};
+
+/** Frontier, then standard, then spark; definition order is kept within a tier. */
+function sortAgentsByTier(agents: AgentDefinition[]): AgentDefinition[] {
+	return [...agents].sort(
+		(a, b) => TIER_ORDER[a.modelClass] - TIER_ORDER[b.modelClass],
+	);
+}
+
 export function resolveAgentsModelTableContext(
 	configTomlContent: string,
 	options: {
@@ -118,31 +133,16 @@ export function resolveAgentsModelTableContext(
 ): AgentsModelTableContext {
 	const { codexHomeOverride, env = process.env } = options;
 
-	// Resolve frontier model from config.toml root model, env override, or default.
-	// Priority: config.toml model > env override > default
-	const rootModel = getRootModelName(configTomlContent);
-	const envMainModel = getEnvConfiguredMainDefaultModel(env, codexHomeOverride);
-	const frontierModel = rootModel ?? envMainModel ?? DEFAULT_FRONTIER_MODEL;
-
-	// Spark inherits from configured frontier model unless explicitly overridden.
-	// This prevents inversion where a cheap configured leader would paradoxically cause
-	// expensive models to be used in fast lanes.
-	// Use the same resolution logic as the runtime: explicit overrides > low-complexity keys > inherited main model > default
-	const explicitSparkOverride = getEnvConfiguredSparkDefaultModel(
-		env,
-		codexHomeOverride,
-	);
-	const lowComplexityOverride =
-		getConfiguredTeamLowComplexityModel(codexHomeOverride);
-	const sparkModel =
-		explicitSparkOverride ?? lowComplexityOverride ?? frontierModel;
-
-	const subagentDefaultModel =
-		getEnvConfiguredStandardDefaultModel(env, codexHomeOverride) ??
-		frontierModel;
+	// The leader row is the config.toml root model (setup seeds DEFAULT_LEADER_MODEL). Agent tiers
+	// come only from the tier env vars or the built-in tier defaults, never from the root model.
+	const frontierModel = getRootModelName(configTomlContent) ?? DEFAULT_LEADER_MODEL;
+	const frontierAgentModel = getFrontierDefaultModel(codexHomeOverride, env);
+	const sparkModel = getSparkDefaultModel(codexHomeOverride, env);
+	const subagentDefaultModel = getStandardDefaultModel(codexHomeOverride, env);
 
 	return {
 		frontierModel,
+		frontierAgentModel,
 		sparkModel,
 		subagentDefaultModel,
 	};
@@ -155,26 +155,16 @@ export function buildAgentsModelTable(
 ): string {
 	const rows = [
 		buildTableRow(
-			"Frontier (leader)",
+			"Leader/main session",
+			"config.toml root",
 			context.frontierModel,
 			"high",
-			"Primary leader/orchestrator for planning, coordination, and frontier-class reasoning.",
+			"Primary leader/orchestrator for planning, coordination, and delegation.",
 		),
-		buildTableRow(
-			"Spark (explorer/fast)",
-			context.sparkModel,
-			"low",
-			"Fast triage, explore, lightweight synthesis, and low-latency routing.",
-		),
-		buildTableRow(
-			"Standard (subagent default)",
-			context.subagentDefaultModel,
-			"high",
-			"Default standard-capability model for installable specialists and secondary worker lanes unless a role is explicitly frontier or spark.",
-		),
-		...getModelTableAgents(definitions).map((agent) =>
+		...sortAgentsByTier(getModelTableAgents(definitions)).map((agent) =>
 			buildTableRow(
 				agent.name,
+				TIER_LABEL[agent.modelClass],
 				getAgentRecommendedModel(agent, context, options),
 				getAgentReasoningEffort(agent, options),
 				getAgentUseCase(agent),
@@ -185,10 +175,10 @@ export function buildAgentsModelTable(
 	return [
 		"## Model Capability Table",
 		"",
-		"Auto-generated by `omx setup` from the current `config.toml` plus OMX model overrides.",
+		"Auto-generated by `omx setup` from the current `config.toml` plus OMX model overrides. Precedence per role: `.omx-config.json` `agentModels[role]` > tier env var (`OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL` or `OMX_DEFAULT_SPARK_MODEL`) > built-in tier default. The `config.toml` root model is the leader (main session) model only and does not affect agent tiers.",
 		"",
-		"| Role | Model | Reasoning Effort | Use Case |",
-		"| --- | --- | --- | --- |",
+		"| Role | Tier | Model | Reasoning Effort | Use Case |",
+		"| --- | --- | --- | --- | --- |",
 		...rows,
 	].join("\n");
 }

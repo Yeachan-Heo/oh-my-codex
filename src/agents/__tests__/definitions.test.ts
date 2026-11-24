@@ -76,7 +76,7 @@ describe('agents/definitions', () => {
 
   it('keeps every built-in reasoning default unchanged', () => {
     const expectedReasoningEfforts = {
-      explore: 'low',
+      explore: 'medium',
       analyst: 'medium',
       planner: 'medium',
       architect: 'xhigh',
@@ -140,45 +140,35 @@ describe('agents/definitions', () => {
 
 
 
-  it('keeps the installable agent model split aligned with the OMX subagent matrix', () => {
-    assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
-    assert.equal(AGENT_DEFINITIONS['security-reviewer'].modelClass, 'frontier');
-    assert.equal(AGENT_DEFINITIONS['test-engineer'].modelClass, 'frontier');
-    assert.equal(AGENT_DEFINITIONS['team-executor'].modelClass, 'frontier');
-    assert.equal(AGENT_DEFINITIONS.vision.modelClass, 'frontier');
-
-    assert.equal(AGENT_DEFINITIONS.explore.modelClass, 'fast');
-
-    for (const name of [
-      'researcher',
-      'debugger',
-      'designer',
-      'writer',
-      'git-master',
-      'build-fixer',
-      'executor',
-      'verifier',
-      'dependency-expert',
-    ] as const) {
-      assert.equal(AGENT_DEFINITIONS[name].modelClass, 'standard');
-      assert.equal(AGENT_DEFINITIONS[name].reasoningEffort, name === 'executor' ? 'medium' : 'high');
+  it('keeps the model tier split: frontier planner/architect/critic, spark explore/style-reviewer/vision, rest standard', () => {
+    const frontier = ['planner', 'architect', 'critic'];
+    const fast = ['explore', 'style-reviewer', 'vision'];
+    for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
+      const expected = frontier.includes(name) ? 'frontier' : fast.includes(name) ? 'fast' : 'standard';
+      assert.equal(agent.modelClass, expected, name);
     }
+    assert.equal(Object.values(AGENT_DEFINITIONS).some((agent) => 'exactModel' in agent), false);
   });
 
-  it('pins ralplan thesis and antithesis to exact gpt-6-astra with role-specific reasoning', () => {
-    assert.equal(AGENT_DEFINITIONS.planner.exactModel, 'gpt-6-astra');
-    assert.equal(AGENT_DEFINITIONS.planner.reasoningEffort, 'medium');
-    assert.equal(AGENT_DEFINITIONS.planner.modelClass, 'frontier');
-
-    assert.equal(AGENT_DEFINITIONS.architect.exactModel, 'gpt-6-astra');
-    assert.equal(AGENT_DEFINITIONS.architect.reasoningEffort, 'xhigh');
-    assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
-
-    assert.equal(AGENT_DEFINITIONS.researcher.exactModel, 'gpt-6-astra');
-    assert.equal(AGENT_DEFINITIONS.researcher.reasoningEffort, 'high');
-
-    assert.equal(AGENT_DEFINITIONS.critic.exactModel, undefined);
-    assert.equal(AGENT_DEFINITIONS.critic.reasoningEffort, 'high');
-    assert.equal(AGENT_DEFINITIONS.critic.modelClass, 'frontier');
+  it('keeps per-role reasoning efforts independent of the tier', () => {
+    const efforts: Record<string, string> = {
+      planner: 'medium',
+      architect: 'xhigh',
+      researcher: 'high',
+      critic: 'high',
+      explore: 'medium',
+      'style-reviewer': 'low',
+      vision: 'low',
+      analyst: 'medium',
+      'security-reviewer': 'medium',
+      'test-engineer': 'medium',
+      'code-reviewer': 'high',
+      'code-simplifier': 'high',
+      'team-executor': 'medium',
+      executor: 'medium',
+    };
+    for (const [name, effort] of Object.entries(efforts)) {
+      assert.equal(AGENT_DEFINITIONS[name].reasoningEffort, effort, name);
+    }
   });
 });

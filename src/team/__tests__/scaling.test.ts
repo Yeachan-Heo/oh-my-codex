@@ -1075,7 +1075,7 @@ printf '%s\\n' "$OMX_CODEX_LAUNCH_ID" "$OMX_ENTRY_PATH" > '${routingCapturePath}
       const expectedSandboxArgs = [
         '--sandbox', 'workspace-write',
         '-c', 'model_reasoning_effort="medium"',
-        '--model', 'leader-model',
+        '--model', 'gpt-6.2-sol',
         '--', 'C:\\scale-up\\nested\\', '--sandbox=read-only', '--madmax',
       ];
       assert.deepEqual(sandboxArgs, expectedSandboxArgs);
@@ -1102,7 +1102,7 @@ printf '%s\\n' "$OMX_CODEX_LAUNCH_ID" "$OMX_ENTRY_PATH" > '${routingCapturePath}
       assert.deepEqual(approvalArgs, [
         '--ask-for-approval', 'on-request',
         '-c', 'model_reasoning_effort="medium"',
-        '--model', 'leader-model',
+        '--model', 'gpt-6.2-sol',
       ]);
 
       process.argv = previousArgv.filter((arg) => arg !== '--dangerously-bypass-approvals-and-sandbox' && arg !== '--madmax');
@@ -1113,7 +1113,7 @@ printf '%s\\n' "$OMX_CODEX_LAUNCH_ID" "$OMX_ENTRY_PATH" > '${routingCapturePath}
       );
       assert.deepEqual(
         await runScaleUpCase({ teamName: 'scale-up-nonexecution-default', role: 'explore', launchArgs: '--model policy-model' }),
-        ['-c', 'model_reasoning_effort="low"', '--model', 'policy-model'],
+        ['-c', 'model_reasoning_effort="medium"', '--model', 'policy-model'],
       );
       assert.deepEqual(
         await runScaleUpCase({ teamName: 'scale-up-absent-role-default', launchArgs: '--model policy-model' }),
@@ -2096,8 +2096,8 @@ exit 0
       const rootAgents = await readFile(join(cwd, '.omx', 'state', 'team', 'canonical-root', 'workers', 'worker-2', 'AGENTS.md'), 'utf-8');
       assert.match(rootAgents, /You are operating as the \*\*writer\*\* role/);
       assert.match(rootAgents, /<identity>You are Writer\.<\/identity>/);
-      assert.match(rootAgents, /exact gpt-5\.6-terra model/);
-      assert.match(rootAgents, /strict execution order: inspect -> plan -> act -> verify/);
+      assert.doesNotMatch(rootAgents, /exact gpt-5\.6-terra model/);
+      assert.doesNotMatch(rootAgents, /strict execution order: inspect -> plan -> act -> verify/);
     } finally {
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;

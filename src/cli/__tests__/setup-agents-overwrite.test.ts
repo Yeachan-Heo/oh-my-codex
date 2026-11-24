@@ -180,6 +180,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         addGeneratedAgentsMarker(template),
         {
           frontierModel: 'legacy-frontier',
+          frontierAgentModel: 'legacy-frontier',
           sparkModel: 'legacy-spark',
           subagentDefaultModel: 'legacy-frontier',
         },
@@ -200,15 +201,15 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.doesNotMatch(output, /Skipped AGENTS\.md overwrite/);
       assert.match(
         agentsContent,
-        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+        new RegExp(`\\| Leader\\/main session \\| config\\.toml root \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
       );
       assert.match(
         agentsContent,
-        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
+        new RegExp(`\\| \`explore\` \\| spark \\| \`${expectedContext.sparkModel}\` \\| medium \\|`),
       );
       assert.match(
         agentsContent,
-        new RegExp(String.raw`\| \`executor\` \| \`${expectedContext.frontierModel}\` \| medium \| Code implementation, refactoring, feature work`),
+        new RegExp(String.raw`\| \`executor\` \| standard \| \`${expectedContext.subagentDefaultModel}\` \| medium \| Code implementation, refactoring, feature work`),
       );
       assert.doesNotMatch(agentsContent, /legacy-frontier/);
       assert.doesNotMatch(agentsContent, /legacy-spark/);
@@ -231,6 +232,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         addGeneratedAgentsMarker(template),
         {
           frontierModel: 'stale-frontier',
+          frontierAgentModel: 'stale-frontier',
           sparkModel: 'stale-spark',
           subagentDefaultModel: 'stale-frontier',
         },
@@ -254,11 +256,11 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.equal(countOccurrences(agentsContent, OMX_MANAGED_AGENTS_END_MARKER), 0);
       assert.match(
         agentsContent,
-        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+        new RegExp(`\\| Leader\\/main session \\| config\\.toml root \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
       );
       assert.match(
         agentsContent,
-        new RegExp(`\\| Spark \\(explorer\\/fast\\) \\| \`${expectedContext.sparkModel}\` \\| low \\|`),
+        new RegExp(`\\| \`explore\` \\| spark \\| \`${expectedContext.sparkModel}\` \\| medium \\|`),
       );
       assert.doesNotMatch(agentsContent, /stale-frontier/);
       assert.doesNotMatch(agentsContent, /stale-spark/);
@@ -286,7 +288,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         '',
         '| Role | Model | Reasoning Effort | Use Case |',
         '| --- | --- | --- | --- |',
-        '| Frontier (leader) | `legacy-frontier` | high | stale |',
+        '| Leader/main session | config.toml root | `legacy-frontier` | high | stale |',
         '<!-- OMX:MODELS:END -->',
         '',
         'Footer guidance stays user-owned.',
@@ -308,7 +310,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.match(agentsContent, /Footer guidance stays user-owned\./);
       assert.match(
         agentsContent,
-        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+        new RegExp(`\\| Leader\\/main session \\| config\\.toml root \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
       );
       assert.doesNotMatch(agentsContent, /legacy-frontier/);
       assert.doesNotMatch(agentsContent, /<!-- omx:generated:agents-md -->/);
@@ -824,6 +826,7 @@ describe('omx setup AGENTS refresh behavior', () => {
         addGeneratedAgentsMarker(template),
         {
           frontierModel: 'legacy-frontier',
+          frontierAgentModel: 'legacy-frontier',
           sparkModel: 'legacy-spark',
           subagentDefaultModel: 'legacy-frontier',
         },
@@ -854,7 +857,7 @@ describe('omx setup AGENTS refresh behavior', () => {
       assert.match(agentsContent, /Keep this custom guidance\./);
       assert.match(
         agentsContent,
-        new RegExp(`\\| Frontier \\(leader\\) \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
+        new RegExp(`\\| Leader\\/main session \\| config\\.toml root \\| \`${expectedContext.frontierModel}\` \\| high \\|`),
       );
       assert.doesNotMatch(agentsContent, /legacy-frontier/);
       assert.doesNotMatch(agentsContent, /legacy-spark/);

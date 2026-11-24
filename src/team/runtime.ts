@@ -162,7 +162,7 @@ import {
   parseTeamWorkerLaunchArgs,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
-  shouldHonorAgentExactModel,
+  shouldHonorAgentRoleModel,
   type TeamReasoningEffort,
 } from './model-contract.js';
 import { resolveCanonicalTeamStateRoot } from './state-root.js';
@@ -3534,7 +3534,7 @@ export function resolveWorkerLaunchArgsFromEnv(
     inheritedArgs,
     fallbackModel,
     preferredReasoning,
-    honorExactRoleModel: shouldHonorAgentExactModel(agentType, env.CODEX_HOME),
+    honorRoleModel: shouldHonorAgentRoleModel(agentType, env.CODEX_HOME),
     requestedAgentType: agentType,
   });
 

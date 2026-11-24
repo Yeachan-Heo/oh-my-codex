@@ -3,9 +3,8 @@ import {
   DEFAULT_SPARK_MODEL,
   getAgentModelOverride,
   getAgentReasoningOverride,
-  getMainDefaultModel,
+  getModelClassDefaultModel,
   getSparkDefaultModel,
-  getStandardDefaultModel,
   type PerAgentReasoningEffort,
 } from '../config/models.js';
 
@@ -66,7 +65,7 @@ export interface ResolveTeamWorkerLaunchArgsOptions {
   inheritedArgs?: string[];
   fallbackModel?: string;
   preferredReasoning?: TeamReasoningEffort;
-  honorExactRoleModel?: boolean;
+  honorRoleModel?: boolean;
 }
 
 function teamWorkerLaunchArgsError(source: string, reason: string): Error {
@@ -561,21 +560,21 @@ export function normalizeTeamWorkerLaunchArgs(
   return normalized;
 }
 
-function shouldHonorExactRoleModel(options: ResolveTeamWorkerLaunchArgsOptions): boolean {
-  return options.honorExactRoleModel === true && Boolean(options.fallbackModel);
+function shouldHonorRoleModel(options: ResolveTeamWorkerLaunchArgsOptions): boolean {
+  return options.honorRoleModel === true && Boolean(options.fallbackModel);
 }
 
 function selectTeamWorkerModel(params: {
   envModel?: string;
   inheritedModel?: string;
   fallbackModel?: string;
-  honorExactRoleModel?: boolean;
+  honorRoleModel?: boolean;
 }): string | undefined {
   const envModel = normalizeOptionalModel(params.envModel);
   const inheritedModel = normalizeOptionalModel(params.inheritedModel);
   const fallbackModel = normalizeOptionalModel(params.fallbackModel);
   if (envModel && envModel !== inheritedModel) return envModel;
-  if (params.honorExactRoleModel && fallbackModel) return fallbackModel;
+  if (params.honorRoleModel && fallbackModel) return fallbackModel;
   return envModel ?? inheritedModel ?? fallbackModel;
 }
 
@@ -601,7 +600,7 @@ export function resolveTeamWorkerLaunchArgs(options: ResolveTeamWorkerLaunchArgs
     envModel,
     inheritedModel,
     fallbackModel,
-    honorExactRoleModel: shouldHonorExactRoleModel(options),
+    honorRoleModel: shouldHonorRoleModel(options),
   });
   const selectedModelProvider = envParsed.modelProviderOverride ?? inheritedParsed.modelProviderOverride ?? undefined;
   const endOfOptionsIndex = envArgs.indexOf('--');
@@ -647,14 +646,12 @@ export function resolveAgentReasoningEffort(
     ?? normalizeOptionalReasoning(getAgent(agentType)?.reasoningEffort);
 }
 
-export function shouldHonorAgentExactModel(
+/** True when the role has a resolvable tier/override model, which then beats the inherited leader model. */
+export function shouldHonorAgentRoleModel(
   agentType?: string,
   codexHomeOverride?: string,
 ): boolean {
-  if (typeof agentType !== 'string' || agentType.trim() === '') return false;
-  const normalized = agentType.trim().toLowerCase();
-  if (getAgentModelOverride(normalized, codexHomeOverride)) return true;
-  return Boolean(getAgent(normalized)?.exactModel);
+  return resolveAgentDefaultModel(agentType, codexHomeOverride) !== undefined;
 }
 
 export function resolveAgentDefaultModel(
@@ -663,25 +660,12 @@ export function resolveAgentDefaultModel(
 ): string | undefined {
   if (typeof agentType !== 'string' || agentType.trim() === '') return undefined;
   const normalized = agentType.trim().toLowerCase();
-  if (normalized === '') return undefined;
   const modelOverride = getAgentModelOverride(normalized, codexHomeOverride);
   if (modelOverride) return modelOverride;
   if (normalized.endsWith('-low')) return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
 
   const agent = getAgent(normalized);
-  if (agent?.exactModel) return agent.exactModel;
-  if (normalized === 'executor') return getMainDefaultModel(codexHomeOverride);
-
-  switch (agent?.modelClass) {
-    case 'fast':
-      return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
-    case 'frontier':
-      return getMainDefaultModel(codexHomeOverride);
-    case 'standard':
-      return getStandardDefaultModel(codexHomeOverride);
-    default:
-      return undefined;
-  }
+  return agent ? getModelClassDefaultModel(agent.modelClass, codexHomeOverride) : undefined;
 }
 
 export function isLowComplexityAgentType(agentType?: string): boolean {

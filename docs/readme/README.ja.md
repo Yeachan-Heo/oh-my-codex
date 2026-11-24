@@ -161,7 +161,7 @@ omx team shutdown <team-name>
 
 Codex plugin marketplace は plugin bundle を `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/` にキャッシュすることがあります。bundle には Codex lifecycle hooks、任意の MCP compatibility server、app metadata が含まれますが、MCP/app は既定で無効で、実行には installed `omx` CLI が必要です。scope に応じて setup は prompt、skill、AGENTS scaffolding、config、旧 Codex 向け native hook を管理します。ユーザー作成 hook を保ち、OMX wrapper のみを更新します。uninstall はユーザー hook が残る場合ファイルを保持します。
 
-`omx update` は npm を確認して global OMX を更新し、同じ setup refresh を再実行します。新規 setup の標準 model は `gpt-6-astra` で、既存 user 設定と明示的 override は維持されます。.omx-config の model/env 設定は[参照資料](../../docs/reference/omx-config-schema-routing.md)を確認し、利用中の版がサポートする key のみ編集してください。`omx doctor` はインストール形状を検査しますが認証済み model call の成功は証明しません。HUD は監視用です。
+`omx update` は npm を確認して global OMX を更新し、同じ setup refresh を再実行します。新規 setup では frontier agent（`planner`、`architect`、`critic`）に `gpt-6.2-astra`、standard agent（spark 以外のその他すべての role）に `gpt-6.2-sol`、spark agent（`explore`、`style-reviewer`、`vision`）に `gpt-6-luna` を使用し、既存 user 設定と明示的 override は維持されます。.omx-config の model/env 設定は[参照資料](../../docs/reference/omx-config-schema-routing.md)を確認し、利用中の版がサポートする key のみ編集してください。`omx doctor` はインストール形状を検査しますが認証済み model call の成功は証明しません。HUD は監視用です。
 
 HUD には現在の Team 名/worker 数、agent の状態・task・role・pane・更新時刻が表示されます。不明な status は unknown と表示され、`working` はプロセス生存を意味しません。team data は変更せず読み取ります。GitGuardex の完了段階表示はプロジェクト `.omx/hud-config.json` に `"guardex": { "enabled": true }` を設定した場合のみ有効です。画面に収まらない worker は `+N workers` とまとめられます。
 

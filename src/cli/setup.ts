@@ -116,7 +116,7 @@ import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, classifySessionStateLiveness } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
-import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
+import { DEFAULT_LEADER_MODEL } from "../config/models.js";
 import {
 	teamModeEnabled,
 	type SetupTeamMode,
@@ -455,7 +455,7 @@ const REQUIRED_TEAM_CLI_API_MARKERS = [
 const DEFAULT_SETUP_SCOPE: SetupScope = "user";
 const DEFAULT_SETUP_INSTALL_MODE: SetupInstallMode = "legacy";
 const LEGACY_SETUP_MODELS = new Set(["gpt-5.3-codex", "gpt-5.5"]);
-const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
+const DEFAULT_SETUP_MODEL = DEFAULT_LEADER_MODEL;
 const OBSOLETE_NATIVE_AGENT_FIELD = ["skill", "ref"].join("_");
 const GITHUB_AUTH_STATUS_TIMEOUT_MS = 2_000;
 
@@ -3798,7 +3798,7 @@ function buildPluginModeHooksConfigPlan(
 		"model",
 	)
 		? configAfterLegacyCleanup
-		: `model = ${JSON.stringify(DEFAULT_FRONTIER_MODEL)}\n${configAfterLegacyCleanup}`;
+		: `model = ${JSON.stringify(DEFAULT_LEADER_MODEL)}\n${configAfterLegacyCleanup}`;
 	const configWithRuntimeFeatures = upsertPluginModeRuntimeFeatureFlags(
 		configWithDefaultModel,
 		options.codexHookFeatureFlag,

@@ -94,7 +94,7 @@ import {
   resolveTeamWorkerLaunchArgs,
   resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
-  shouldHonorAgentExactModel,
+  shouldHonorAgentRoleModel,
   TEAM_WORKER_INHERITED_MODEL_ENV,
   type TeamReasoningEffort,
 } from './model-contract.js';
@@ -2528,6 +2528,6 @@ function resolveWorkerLaunchArgsForScaling(
     inheritedArgs,
     fallbackModel,
     preferredReasoning,
-    honorExactRoleModel: shouldHonorAgentExactModel(agentType, codexHomeOverride),
+    honorRoleModel: shouldHonorAgentRoleModel(agentType, codexHomeOverride),
   });
 }
