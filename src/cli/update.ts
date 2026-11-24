@@ -480,8 +480,12 @@ export function runDeferredGlobalUpdate(
     const payloadFingerprint = createHash('sha256').update(readFileSync(canonicalPayload)).digest('hex');
     const workerFingerprint = createHash('sha256').update(readFileSync(workerPath)).digest('hex');
     const stagedDirectory = stage;
+    const workerEnvironment = { ...ownership.environment };
+    // Update setup now refreshes safely managed agents; do not carry forward the
+    // private suppression flag from an ambient/frozen environment.
+    delete workerEnvironment[SKIP_NATIVE_AGENT_REFRESH_ENV];
     const child = spawnProcess(process.execPath, [workerPath, payloadPath, payloadFingerprint, workerFingerprint], {
-      cwd, detached: true, env: { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'ignore', windowsHide: true,
+      cwd, detached: true, env: workerEnvironment, stdio: 'ignore', windowsHide: true,
     });
     child.once('error', (error) => {
       try {
@@ -724,9 +728,11 @@ export function spawnInstalledSetupRefresh(
   command = process.execPath,
   environment: NodeJS.ProcessEnv = process.env,
 ): RunSetupRefreshResult {
+  const setupEnvironment = { ...environment };
+  delete setupEnvironment[SKIP_NATIVE_AGENT_REFRESH_ENV];
   const result = spawnProcess(command, [cliEntry, ...resolveSetupRefreshArgs(cwd)], {
     cwd,
-    env: environment,
+    env: setupEnvironment,
     stdio: 'inherit',
     windowsHide: true,
   });
@@ -756,7 +762,7 @@ async function runSetupRefresh(cwd: string, ownership?: PackageManagerOwnership)
     cwd,
     spawnSync,
     process.execPath,
-    { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' },
+    ownership.environment,
   );
 }
 
