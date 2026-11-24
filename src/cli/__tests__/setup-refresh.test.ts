@@ -1168,7 +1168,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         await writeFile(artifactPath, invalidBytes);
 
         await assert.rejects(
-          runSetupInTempDir(wd, { scope: "project", skipNativeAgentRefresh: true }),
+          runSetupInTempDir(wd, { scope: "project" }),
           /invalid UTF-8/,
         );
 

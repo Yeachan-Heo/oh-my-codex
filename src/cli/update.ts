@@ -84,7 +84,6 @@ const DEV_INSTALL_SOURCE = 'github:Yeachan-Heo/oh-my-codex#dev';
 const DEV_REPOSITORY_URL = 'https://github.com/Yeachan-Heo/oh-my-codex.git';
 const DEV_REPOSITORY_BRANCH = 'dev';
 const DEV_UPDATE_TIMEOUT_MS = 300000;
-const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 
 export function resolveUpdateChannelConfig(channel: UpdateChannel = 'stable'): UpdateChannelConfig {
   if (channel === 'dev') {
@@ -480,12 +479,8 @@ export function runDeferredGlobalUpdate(
     const payloadFingerprint = createHash('sha256').update(readFileSync(canonicalPayload)).digest('hex');
     const workerFingerprint = createHash('sha256').update(readFileSync(workerPath)).digest('hex');
     const stagedDirectory = stage;
-    const workerEnvironment = { ...ownership.environment };
-    // Update setup now refreshes safely managed agents; do not carry forward the
-    // private suppression flag from an ambient/frozen environment.
-    delete workerEnvironment[SKIP_NATIVE_AGENT_REFRESH_ENV];
     const child = spawnProcess(process.execPath, [workerPath, payloadPath, payloadFingerprint, workerFingerprint], {
-      cwd, detached: true, env: workerEnvironment, stdio: 'ignore', windowsHide: true,
+      cwd, detached: true, env: ownership.environment, stdio: 'ignore', windowsHide: true,
     });
     child.once('error', (error) => {
       try {
@@ -728,11 +723,9 @@ export function spawnInstalledSetupRefresh(
   command = process.execPath,
   environment: NodeJS.ProcessEnv = process.env,
 ): RunSetupRefreshResult {
-  const setupEnvironment = { ...environment };
-  delete setupEnvironment[SKIP_NATIVE_AGENT_REFRESH_ENV];
   const result = spawnProcess(command, [cliEntry, ...resolveSetupRefreshArgs(cwd)], {
     cwd,
-    env: setupEnvironment,
+    env: environment,
     stdio: 'inherit',
     windowsHide: true,
   });
