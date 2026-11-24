@@ -5815,6 +5815,28 @@ function hashContent(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
+function normalizeNativeAgentModel(content: string): string {
+	const developerInstructionsMarker = 'developer_instructions = """';
+	const markerIndex = content.indexOf(developerInstructionsMarker);
+	if (markerIndex < 0) return content;
+
+	const header = content.slice(0, markerIndex).replace(
+		/^model = "(?:\\.|[^"\\])*"$/m,
+		'model = "<configured-model>"',
+	);
+	const instructions = content
+		.slice(markerIndex)
+		.replace(/^- resolved_model:.*$/m, "- resolved_model: <configured-model>");
+	return `${header}${instructions}`;
+}
+
+function differsOnlyByNativeAgentModel(existing: string, generated: string): boolean {
+	return (
+		existing !== generated &&
+		normalizeNativeAgentModel(existing) === normalizeNativeAgentModel(generated)
+	);
+}
+
 function nativeAgentInstallManifestPath(agentsDir: string): string {
 	return join(agentsDir, "..", ".omx", "native-agents.json");
 }
@@ -5915,7 +5937,8 @@ async function syncNativeAgentToml(
 	}
 
 	const priorHash = manifest.files[fileName]?.sha256;
-	const safeToOverwrite = options.force || priorHash === existingHash;
+	const differsOnlyByModel = differsOnlyByNativeAgentModel(existing, content);
+	const safeToOverwrite = options.force || priorHash === existingHash || differsOnlyByModel;
 	if (!safeToOverwrite) {
 		summary.skipped += 1;
 		if (options.verbose) {

@@ -114,6 +114,44 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
     }
   });
 
+  it('refreshes a native agent when only its generated model differs from the current config', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agent-model-refresh-'));
+    const previousCwd = process.cwd();
+    const previousFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+      delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+
+      await setup({ scope: 'project' });
+
+      const codexHome = join(wd, '.codex');
+      const plannerPath = join(codexHome, 'agents', 'planner.toml');
+      const planner = await readFile(plannerPath, 'utf-8');
+      const staleModel = 'legacy-frontier-model';
+      const stalePlanner = planner
+        .replace(/^model = ".*"$/m, `model = "${staleModel}"`)
+        .replace(/^- resolved_model: .*$/m, `- resolved_model: ${staleModel}`);
+      await writeFile(plannerPath, stalePlanner);
+      await writeFile(
+        join(codexHome, '.omx-config.json'),
+        JSON.stringify({ env: { OMX_DEFAULT_FRONTIER_MODEL: 'configured-frontier-model' } }),
+      );
+
+      await setup({ scope: 'project' });
+
+      const refreshedPlanner = await readFile(plannerPath, 'utf-8');
+      assert.match(refreshedPlanner, /^model = "configured-frontier-model"$/m);
+      assert.match(refreshedPlanner, /^- resolved_model: configured-frontier-model$/m);
+      assert.doesNotMatch(refreshedPlanner, new RegExp(staleModel));
+    } finally {
+      if (typeof previousFrontierModel === 'string') process.env.OMX_DEFAULT_FRONTIER_MODEL = previousFrontierModel;
+      else delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('overwrites customized native agent TOMLs only when setup force is explicit', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
     const previousCwd = process.cwd();
