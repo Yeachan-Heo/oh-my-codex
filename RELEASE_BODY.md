@@ -31,6 +31,10 @@ Behavior change for agent model selection, see Migration. Release-coupled metada
 - Dev CI gate on candidate commit verified.
 - Release branch merged to main with two-parent merge commit.
 
+## Contributors
+
+Thanks to the team for ensuring this release reaches users with improved model handling and resume block display.
+
 **Full Changelog**: [`v0.22.18...v0.22.19`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.18...v0.22.19)
 
 —
