@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.20] - 2026-11-24
+
+Patch release maps Homebrew Cellar node paths to stable symlinks to ensure managed codex hooks survive node upgrades.
+
+### Fixed
+
+- **MAP HOMEBREW CELLAR NODE PATHS TO STABLE SYMLINKS (#4155):** Fixes #4153. Homebrew stores node in a version-pinned Cellar path. When persisted in `~/.codex/hooks.json`, hooks break after node upgrades. The `resolveStableNodePath()` helper now detects Homebrew Cellar paths and maps them to stable symlinks, allowing hooks to survive upgrades.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.19...v0.22.20
+
 ## [0.22.19] - 2026-11-24
 
 Patch release makes the env tier variables the single source of truth for agent models and prints the exit resume block for resume launches.
