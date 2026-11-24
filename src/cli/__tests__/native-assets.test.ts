@@ -488,7 +488,6 @@ describe('native asset helpers', () => {
       const hydrated = await hydrateNativeBinary('omx-runtime', {
         packageRoot: wd,
         env: {
-          OMX_NATIVE_MANIFEST_URL: `http://127.0.0.1:${address.port}/native-release-manifest.json`,
           OMX_NATIVE_CACHE_DIR: join(wd, 'cache'),
         },
         platform: 'linux',
@@ -498,6 +497,41 @@ describe('native asset helpers', () => {
 
       assert.equal(hydrated, undefined);
       assert.equal(manifestRequests, 0);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('requests a release manifest for dev versions when OMX_NATIVE_MANIFEST_URL is set', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-native-hydrate-dev-manifest-override-'));
+    let manifestRequests = 0;
+    const server = createServer((_req, res) => {
+      manifestRequests += 1;
+      res.writeHead(404);
+      res.end('missing');
+    });
+    try {
+      await writeFile(join(wd, 'package.json'), JSON.stringify({
+        version: '0.22.24-dev',
+        repository: { url: 'git+https://github.com/Yeachan-Heo/oh-my-codex.git' },
+      }));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('failed to bind test server');
+
+      const hydrated = await hydrateNativeBinary('omx-runtime', {
+        packageRoot: wd,
+        env: {
+          OMX_NATIVE_MANIFEST_URL: `http://127.0.0.1:${address.port}/native-release-manifest.json`,
+          OMX_NATIVE_CACHE_DIR: join(wd, 'cache'),
+        },
+        platform: 'linux',
+        arch: 'x64',
+      });
+
+      assert.equal(hydrated, undefined);
+      assert.equal(manifestRequests, 1);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
       await rm(wd, { recursive: true, force: true });
