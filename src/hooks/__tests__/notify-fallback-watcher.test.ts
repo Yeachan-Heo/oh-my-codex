@@ -4624,6 +4624,121 @@ exit 0
     }
   });
 
+  it('replays recent completions found by periodic reconciliation after a missed watch event', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-missed-watch-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-missed-watch-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const initialRolloutPath = join(sessionDir, `rollout-initial-${sid}.jsonl`);
+    const lateRolloutPath = join(sessionDir, `rollout-late-${sid}.jsonl`);
+    const preloadPath = join(wd, 'suppress-session-watch-events.cjs');
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const turnLogPath = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(initialRolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-initial-${sid}`, cwd: wd },
+      })}\n`);
+      await writeFile(preloadPath, `
+const fs = require('node:fs');
+const path = require('node:path');
+const { syncBuiltinESMExports } = require('node:module');
+const originalWatch = fs.watch;
+fs.watch = function (watchPath, options, listener) {
+  const sessionsSegment = path.sep + '.codex' + path.sep + 'sessions' + path.sep;
+  if (!String(watchPath).includes(sessionsSegment)) {
+    return originalWatch.call(fs, watchPath, options, listener);
+  }
+  if (typeof options === 'function') return originalWatch.call(fs, watchPath, () => {});
+  return originalWatch.call(fs, watchPath, options, () => {});
+};
+syncBuiltinESMExports();
+`);
+
+      child = spawn(
+        process.execPath,
+        [
+          '--require',
+          preloadPath,
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--idle-max-poll-ms',
+          '100',
+          '--discovery-interval-ms',
+          '250',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '7000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: buildCleanNotifyEnv({ HOME: tempHome }),
+        }
+      );
+
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.tracked_files === 1
+            && watcherState.rollout_discovery?.scan_count === 1;
+        } catch {
+          return false;
+        }
+      }, 3000, 25);
+
+      const newTurnId = `turn-reconciled-${sid}`;
+      await writeFile(lateRolloutPath, `${[
+        {
+          timestamp: new Date().toISOString(),
+          type: 'session_meta',
+          payload: { id: `thread-late-${sid}`, cwd: wd },
+        },
+        {
+          timestamp: new Date(Date.now() + 500).toISOString(),
+          type: 'event_msg',
+          payload: {
+            type: 'task_complete',
+            turn_id: newTurnId,
+            last_agent_message: 'completion recovered by reconciliation',
+          },
+        },
+      ].map((line) => JSON.stringify(line)).join('\n')}\n`);
+
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.tracked_files === 2
+            && watcherState.rollout_discovery?.scan_count >= 2
+            && (await readLines(turnLogPath)).some((line) => line.includes(newTurnId));
+        } catch {
+          return false;
+        }
+      }, 2500, 25);
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it('exits after the configured max lifetime', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-max-life-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-max-home-'));

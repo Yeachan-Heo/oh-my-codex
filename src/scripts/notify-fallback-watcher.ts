@@ -133,7 +133,10 @@ const idleMaxPollMs = Math.max(
   asNumber(argValue('--idle-max-poll-ms', process.env.OMX_NOTIFY_FALLBACK_IDLE_MAX_POLL_MS || '1000'), 1000),
 );
 // Directory events are primary; this repairs missed events and date-directory changes.
-const rolloutDiscoveryIntervalMs = 60_000;
+const rolloutDiscoveryIntervalMs = Math.max(
+  pollMs,
+  asNumber(argValue('--discovery-interval-ms', '60000'), 60_000),
+);
 const rolloutDiscoveryNamedEventCooldownMs = 250;
 const rolloutDiscoveryFilenameLessEventCooldownMs = 5_000;
 const trackedFileFilenameLessEventCooldownMs = 1_000;
@@ -1903,7 +1906,11 @@ async function ensureTrackedFiles(includeRecentEvents = false): Promise<void> {
       continue;
     }
     const size = fileStat.size || 0;
-    const replayRecentEvents = runOnce || includeRecentEvents || newRolloutPaths.has(path);
+    // Later scans may recover rollouts whose filesystem event was dropped.
+    const replayRecentEvents = runOnce
+      || includeRecentEvents
+      || rolloutDiscoveryScanCount > 1
+      || newRolloutPaths.has(path);
     const offset = replayRecentEvents ? 0 : size;
     fileState.set(path, { threadId: sessionMeta.threadId, offset, size, partial: '', decoder: new StringDecoder('utf8') });
     if (replayRecentEvents) dirtyTrackedFiles.add(path);
