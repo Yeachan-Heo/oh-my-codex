@@ -1,16 +1,16 @@
-# oh-my-codex v0.22.20
+# oh-my-codex v0.22.21
 
 ## Summary
 
-This patch release maps Homebrew Cellar node paths to stable symlinks to ensure managed codex hooks survive node upgrades (#4155, fixes #4153).
+This patch release fixes repeated Stop hook invocations for blocked team workers, ensuring deterministic worker lifecycle management and preventing accumulating dedup state.
 
 ## Fixed
 
-- **MAP HOMEBREW CELLAR NODE PATHS TO STABLE SYMLINKS (#4155):** Fixes #4153. Homebrew stores node in a version-pinned Cellar path (e.g. `/opt/homebrew/Cellar/node/26.0.0/bin/node`). When persisted in `~/.codex/hooks.json`, hooks exit 127 immediately after node is upgraded and the old Cellar directory is cleaned up. The `resolveStableNodePath()` helper now detects Homebrew Cellar paths and maps them to the stable prefix symlink, allowing hooks to survive upgrades. Applied to both managed codex hooks and MCP server configuration.
+- **SUPPRESS REPEATED STOP HOOK FOR BLOCKED TEAM WORKERS (#4162):** Fixes #4156. Team workers in blocked state were triggering repeated Stop hooks due to improper state management, causing lifecycle dedup accumulation. The fix restores correct stateDir handling throughout resolveTeamWorkerStopDecision, adds dedupeStateDir field to TeamWorkerStopDecision.blocked variant, and ensures allowRepeatDuringStopHook narrowing remains functional. All team worker stop tests passing: nudge dedup, serialization, leader busy.
 
 ## Compatibility
 
-Behavior change for Homebrew node path handling. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.20`.
+Behavior change for team worker Stop hook handling. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.21`.
 
 ## Verification
 
@@ -19,9 +19,9 @@ Behavior change for Homebrew node path handling. Release-coupled metadata (`pack
 
 ## Contributors
 
-Thanks to the team for ensuring this release reaches users with improved hook stability across node upgrades.
+Thanks to the team for ensuring this release reaches users with improved team worker lifecycle stability.
 
-**Full Changelog**: [`v0.22.19...v0.22.20`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.19...v0.22.20)
+**Full Changelog**: [`v0.22.20...v0.22.21`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.20...v0.22.21)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
