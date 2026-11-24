@@ -292,7 +292,6 @@ export async function run020To021UpgradeFixture(options: {
 				scope: "user",
 				installMode: options.mode === "plugin" ? "plugin" : "legacy",
 				force: true,
-				skipNativeAgentRefresh: true,
 				pluginAgentsMdPrompt: async () => false,
 				pluginDeveloperInstructionsPrompt: async () => false,
 				codexFeaturesProbe: () =>

@@ -3194,7 +3194,6 @@ describe("omx setup install mode behavior", () => {
 									scope: "user",
 									installMode: "plugin",
 									pluginAgentsMdPrompt: async () => false,
-									skipNativeAgentRefresh: true,
 									codexFeaturesProbe: () =>
 										"hooks stable true\nplugin_hooks experimental true\n",
 								}),
@@ -3414,7 +3413,6 @@ describe("omx setup install mode behavior", () => {
 									scope: "user",
 									installMode: "plugin",
 									pluginAgentsMdPrompt: async () => false,
-									skipNativeAgentRefresh: true,
 									codexFeaturesProbe: () =>
 										"hooks stable true\nplugin_hooks experimental true\n",
 								}),
@@ -3482,7 +3480,6 @@ describe("omx setup install mode behavior", () => {
 							scope: "user",
 							installMode: "plugin",
 							pluginAgentsMdPrompt: async () => false,
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () =>
 								"hooks stable true\nplugin_hooks experimental true\n",
 						}),
@@ -3530,7 +3527,6 @@ describe("omx setup install mode behavior", () => {
 					scope: "user",
 					installMode: "plugin",
 					pluginAgentsMdPrompt: async () => false,
-					skipNativeAgentRefresh: true,
 					codexFeaturesProbe: () =>
 						"hooks stable true\nplugin_hooks experimental true\n",
 				});
@@ -3611,7 +3607,6 @@ describe("omx setup install mode behavior", () => {
 						scope: "user",
 						installMode: "plugin",
 						pluginAgentsMdPrompt: async () => false,
-						skipNativeAgentRefresh: true,
 						codexFeaturesProbe: () =>
 							"hooks stable true\nplugin_hooks experimental true\n",
 					});
@@ -3669,7 +3664,6 @@ describe("omx setup install mode behavior", () => {
 						scope: "user",
 						installMode: "plugin",
 						pluginAgentsMdPrompt: async () => false,
-						skipNativeAgentRefresh: true,
 						codexFeaturesProbe: () =>
 							"hooks stable true\nplugin_hooks experimental true\n",
 					});
@@ -3720,7 +3714,6 @@ describe("omx setup install mode behavior", () => {
 						scope: "user",
 						installMode: "plugin",
 						pluginAgentsMdPrompt: async () => false,
-						skipNativeAgentRefresh: true,
 						codexFeaturesProbe: () =>
 							"hooks stable true\nplugin_hooks experimental true\n",
 					});
@@ -3774,7 +3767,6 @@ describe("omx setup install mode behavior", () => {
 								scope: "user",
 								installMode: "plugin",
 								pluginAgentsMdPrompt: async () => false,
-								skipNativeAgentRefresh: true,
 								codexFeaturesProbe: () =>
 									"hooks stable true\nplugin_hooks experimental true\n",
 							});
@@ -3808,7 +3800,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					assert.ok(syncCalls > 0);
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
@@ -3854,7 +3845,7 @@ describe("omx setup install mode behavior", () => {
 						join(codexHomeDir, "config.toml"),
 						'notify = ["node", "/tmp/user-notify.js"]\n',
 					);
-					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					await setup({ scope: "user", installMode: "legacy" });
 					assert.ok(directorySyncCalls > 0);
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
 					assert.equal(
@@ -3895,7 +3886,7 @@ describe("omx setup install mode behavior", () => {
 				await withIsolatedUserHome(wd, async () => {
 					await withTempCwd(wd, async () => {
 						await assert.rejects(
-							setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+							setup({ scope: "user", installMode: "legacy" }),
 							new RegExp(fixture.code),
 						);
 					});
@@ -3930,7 +3921,7 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					await setup({ scope: "user", installMode: "legacy" });
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
 				});
 			});
@@ -3958,7 +3949,7 @@ describe("omx setup install mode behavior", () => {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
 					await assert.rejects(
-						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						setup({ scope: "user", installMode: "legacy" }),
 						/read-back changed/,
 					);
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
@@ -4002,7 +3993,7 @@ describe("omx setup install mode behavior", () => {
 					await writeFile(configPath, original);
 					chmodSync(configPath, 0o600);
 					await assert.rejects(
-						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						setup({ scope: "user", installMode: "legacy" }),
 						/read-back changed/,
 					);
 					assert.equal(await readFile(configPath, "utf-8"), original);
@@ -4027,7 +4018,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
@@ -4041,7 +4031,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "plugin",
-						skipNativeAgentRefresh: true,
 						pluginAgentsMdPrompt: async () => false,
 						codexFeaturesProbe: () =>
 							[
@@ -4077,7 +4066,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
@@ -4088,7 +4076,6 @@ describe("omx setup install mode behavior", () => {
 						scope: "user",
 						installMode: "plugin",
 						pluginAgentsMdPrompt: async () => false,
-						skipNativeAgentRefresh: true,
 						codexFeaturesProbe: removedProbe,
 					});
 
@@ -4120,7 +4107,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
@@ -4142,7 +4128,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "plugin",
-							skipNativeAgentRefresh: true,
 							pluginAgentsMdPrompt: async () => false,
 							codexFeaturesProbe: () =>
 								[
@@ -5062,7 +5047,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						}),
 						/ancestor .*symbolic link/,
 					);
@@ -5088,7 +5072,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						}),
 						/ancestor .*symbolic link/,
 					);
@@ -5122,7 +5105,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						}),
 						/ancestor .*not a directory/,
 					);
@@ -5195,7 +5177,6 @@ describe("omx setup install mode behavior", () => {
 								scope: "user",
 								installMode: "legacy",
 								mergeAgents: true,
-								skipNativeAgentRefresh: true,
 							}),
 						/rolled back: injected config replacement failure/,
 					);
@@ -5243,7 +5224,6 @@ describe("omx setup install mode behavior", () => {
 								scope: "user",
 								installMode: "legacy",
 								mergeAgents: true,
-								skipNativeAgentRefresh: true,
 							}),
 						/rolled back: injected Windows config replacement failure/,
 					);
@@ -5326,7 +5306,6 @@ describe("omx setup install mode behavior", () => {
 							setup({
 								scope: "user",
 								installMode: "legacy",
-								skipNativeAgentRefresh: true,
 								codexFeaturesProbe: () => null,
 								codexVersionProbe: () => null,
 							}),
@@ -5388,7 +5367,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => null,
 							codexVersionProbe: () => null,
 						}),
@@ -5416,7 +5394,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 						codexFeaturesProbe: () => null,
 						codexVersionProbe: () => null,
 					});
@@ -5444,7 +5421,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => null,
 							codexVersionProbe: () => null,
 						}),
@@ -5468,7 +5444,7 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					await setup({ scope: "user", installMode: "legacy" });
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
 					const configBefore = await readFile(configPath);
@@ -5486,7 +5462,6 @@ describe("omx setup install mode behavior", () => {
 							scope: "user",
 							installMode: "plugin",
 							pluginAgentsMdPrompt: async () => false,
-							skipNativeAgentRefresh: true,
 						}),
 						/precondition changed/,
 					);
@@ -5525,7 +5500,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => null,
 							codexVersionProbe: () => null,
 						}),
@@ -5592,7 +5566,6 @@ describe("omx setup install mode behavior", () => {
 							setup({
 								scope: "user",
 								installMode: "legacy",
-								skipNativeAgentRefresh: true,
 								codexFeaturesProbe: () => null,
 								codexVersionProbe: () => null,
 							}),
@@ -5646,7 +5619,7 @@ describe("omx setup install mode behavior", () => {
 					await writeFile(metadataPath, Buffer.from([0xff]));
 
 					await assert.rejects(
-						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						setup({ scope: "user", installMode: "legacy" }),
 						/notification metadata .*invalid UTF-8/,
 					);
 					assert.equal(await readFile(configPath, "utf-8"), configBefore);
@@ -5679,7 +5652,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					const configBefore = await readFile(configPath);
 					const hooksBefore = await readFile(hooksPath);
@@ -5701,7 +5673,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						}),
 						/precondition changed/,
 					);
@@ -5731,7 +5702,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							firstPartyMcpRemovalPrompt: async () => {
 								await writeFile(configPath, foreignConfig);
 								return false;
@@ -5780,7 +5750,6 @@ describe("omx setup install mode behavior", () => {
 							setup({
 								scope: "user",
 								installMode: "legacy",
-								skipNativeAgentRefresh: true,
 							}),
 							/EEXIST/,
 						);
@@ -5839,7 +5808,6 @@ describe("omx setup install mode behavior", () => {
 							setup({
 								scope: "user",
 								installMode: "legacy",
-								skipNativeAgentRefresh: true,
 							}),
 							/temporary.*manual recovery/,
 						);
@@ -5877,7 +5845,6 @@ describe("omx setup install mode behavior", () => {
 						await setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						});
 						const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 						const hooksPath = join(codexHomeDir, "hooks.json");
@@ -5916,7 +5883,6 @@ describe("omx setup install mode behavior", () => {
 								scope: "user",
 								installMode: "plugin",
 								pluginAgentsMdPrompt: async () => false,
-								skipNativeAgentRefresh: true,
 							}),
 							/staged deletion.*manual recovery/,
 						);
@@ -5969,7 +5935,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => null,
 							codexVersionProbe: () => null,
 						}),
@@ -5998,7 +5963,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
@@ -6025,7 +5989,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "plugin",
-							skipNativeAgentRefresh: true,
 							pluginAgentsMdPrompt: async () => false,
 							codexFeaturesProbe: () =>
 								[
@@ -6081,7 +6044,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						}),
 						/rollback failed/,
 					);
@@ -6106,7 +6068,6 @@ describe("omx setup install mode behavior", () => {
 					await setup({
 						scope: "user",
 						installMode: "legacy",
-						skipNativeAgentRefresh: true,
 					});
 					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const hooksPath = join(codexHomeDir, "hooks.json");
@@ -6138,7 +6099,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "plugin",
-							skipNativeAgentRefresh: true,
 							pluginAgentsMdPrompt: async () => false,
 						}),
 						/committed but staged deletion cleanup failed/,
@@ -6192,7 +6152,6 @@ describe("omx setup install mode behavior", () => {
 						await setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 						});
 						const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 						const hooksPath = join(codexHomeDir, "hooks.json");
@@ -6223,7 +6182,6 @@ describe("omx setup install mode behavior", () => {
 								scope: "user",
 								installMode: "plugin",
 								pluginAgentsMdPrompt: async () => false,
-								skipNativeAgentRefresh: true,
 							}),
 							fixture.committed
 								? /committed but staged deletion cleanup failed during finalization/
@@ -6290,7 +6248,6 @@ describe("omx setup install mode behavior", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => null,
 							codexVersionProbe: () => null,
 						}),
@@ -6315,7 +6272,7 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					await setup({ scope: "user", installMode: "legacy" });
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const configPath = join(codexHomeDir, "config.toml");
@@ -6339,7 +6296,6 @@ describe("omx setup install mode behavior", () => {
 							scope: "user",
 							installMode: "plugin",
 							pluginAgentsMdPrompt: async () => false,
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\n",
 						}),
 						/rollback failed.*recovery preflight/,
@@ -6364,7 +6320,7 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					await setup({ scope: "user", installMode: "legacy" });
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const shimPath = buildManagedCodexNativeHookWindowsShimPathForFilesystem(codexHomeDir);
 					const configPath = join(codexHomeDir, "config.toml");
@@ -6393,7 +6349,6 @@ describe("omx setup install mode behavior", () => {
 							scope: "user",
 							installMode: "plugin",
 							pluginAgentsMdPrompt: async () => false,
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => "hooks stable true\nplugin_hooks experimental true\n",
 						}),
 						/rollback failed/,
@@ -6435,7 +6390,7 @@ describe("omx setup install mode behavior", () => {
 						},
 					);
 					await assert.rejects(
-						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						setup({ scope: "user", installMode: "legacy" }),
 						/precondition changed/,
 					);
 					assert.ok(foreignInode);
@@ -6455,7 +6410,7 @@ describe("omx setup install mode behavior", () => {
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					await setup({ scope: "user", installMode: "legacy" });
 					const hooksPath = join(codexHomeDir, "hooks.json");
 					const configPath = join(codexHomeDir, "config.toml");
 					const configBefore = await readFile(configPath);
@@ -6476,7 +6431,6 @@ describe("omx setup install mode behavior", () => {
 							scope: "user",
 							installMode: "plugin",
 							pluginAgentsMdPrompt: async () => false,
-							skipNativeAgentRefresh: true,
 						}),
 						/precondition changed/,
 					);
@@ -6517,7 +6471,7 @@ describe("omx setup install mode behavior", () => {
 						},
 					);
 					await assert.rejects(
-						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						setup({ scope: "user", installMode: "legacy" }),
 						/rollback failed/,
 					);
 					assert.ok(foreignInode);
@@ -6603,7 +6557,6 @@ describe("late setup failure transaction boundary", () => {
 						setup({
 							scope: "user",
 							installMode: "legacy",
-							skipNativeAgentRefresh: true,
 							codexFeaturesProbe: () => null,
 							codexVersionProbe: () => null,
 						}),

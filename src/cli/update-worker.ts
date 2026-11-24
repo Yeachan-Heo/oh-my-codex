@@ -11,7 +11,6 @@ import { omxUserInstallStampPath } from '../utils/paths.js';
 type DeferredUpdatePayload = { cwd: string; logPath: string; parentPid: number; ownership: PackageManagerOwnership; setupArgs: string[] };
 const PACKAGE_NAME = 'oh-my-codex';
 const installSource = `${PACKAGE_NAME}@latest`;
-const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 const installOptions: SpawnSyncOptions = { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000, windowsHide: true };
 
 
@@ -120,9 +119,7 @@ async function main(): Promise<void> {
       env: payload.ownership.environment,
       log: (message) => appendFile(payload!.logPath, `${message}\n`).then(() => undefined),
     });
-    const setupEnvironment = { ...payload.ownership.environment };
-    delete setupEnvironment[SKIP_NATIVE_AGENT_REFRESH_ENV];
-    const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: setupEnvironment, stdio: 'inherit', windowsHide: true });
+    const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: payload.ownership.environment, stdio: 'inherit', windowsHide: true });
     if (setup.error || setup.status !== 0) throw new Error(setup.error?.message || `setup exited ${setup.status}`);
     await finalizeSuccessfulUpdate(payload.ownership);
   } catch (error) {

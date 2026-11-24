@@ -1245,7 +1245,7 @@ describe('runDeferredGlobalUpdate', () => {
         12345,
         {
           ...frozenNpmOwnership,
-          environment: { ...frozenNpmOwnership.environment, OMX_SKIP_NATIVE_AGENT_REFRESH: '1' },
+          environment: { ...frozenNpmOwnership.environment },
         },
       );
 
@@ -1268,7 +1268,7 @@ describe('runDeferredGlobalUpdate', () => {
         parentPid: 12345,
         ownership: {
           ...frozenNpmOwnership,
-          environment: { ...frozenNpmOwnership.environment, OMX_SKIP_NATIVE_AGENT_REFRESH: '1' },
+          environment: { ...frozenNpmOwnership.environment },
         },
         setupArgs: ['setup'],
       });
@@ -1343,7 +1343,7 @@ describe('runDeferredGlobalUpdate', () => {
       assert.equal(calls.length, 1);
       const payload = JSON.parse(await readFile(calls[0]?.args[1] ?? '', 'utf-8')) as { setupArgs: string[] };
       assert.deepEqual(payload.setupArgs, ['setup', '--scope', 'user', '--plugin', '--mcp', 'none', '--disable-team']);
-      assert.equal((calls[0].options as { env?: NodeJS.ProcessEnv } | undefined)?.env?.OMX_SKIP_NATIVE_AGENT_REFRESH, undefined);
+      assert.deepEqual((calls[0].options as { env?: NodeJS.ProcessEnv } | undefined)?.env, frozenNpmOwnership.environment);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1425,7 +1425,7 @@ describe('deferred update worker', () => {
       await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: PACKAGE_NAME, version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
       await writeFile(cliPath, [
         "import { existsSync, writeFileSync } from 'node:fs';",
-        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), skip: process.env.OMX_SKIP_NATIVE_AGENT_REFRESH, stampPresent: existsSync(process.env.OMX_UPDATE_STAMP_PATH) }));",
+        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, stampPresent: existsSync(process.env.OMX_UPDATE_STAMP_PATH) }));",
       ].join('\n'));
       await writeFile(npmCliPath, [
         "const args = process.argv.slice(2);",
@@ -1446,7 +1446,6 @@ describe('deferred update worker', () => {
           OMX_UPDATE_PREFIX: root,
           CODEX_HOME: codexHome,
           OMX_UPDATE_STAMP_PATH: stampPath,
-          OMX_SKIP_NATIVE_AGENT_REFRESH: '1',
         },
       };
       const serialized = JSON.stringify({ cwd: root, logPath: join(root, 'update.log'), parentPid: 999999, ownership, setupArgs: ['setup', '--scope', 'project'] });
@@ -1460,6 +1459,7 @@ describe('deferred update worker', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), {
         args: ['setup', '--scope', 'project'],
+        codexHome,
         stampPresent: false,
       });
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
@@ -1658,10 +1658,9 @@ describe('post-update setup refresh handoff', () => {
     assert.equal(receivedTimeout, undefined);
   });
 
-  it('strips internal agent-refresh suppression from the immediate update setup child', () => {
+  it('passes the frozen environment unchanged to the immediate update setup child', () => {
     const frozenEnvironment: NodeJS.ProcessEnv = {
       CODEX_HOME: '/frozen/codex-home',
-      OMX_SKIP_NATIVE_AGENT_REFRESH: '1',
     };
     let receivedEnvironment: NodeJS.ProcessEnv | undefined;
 
