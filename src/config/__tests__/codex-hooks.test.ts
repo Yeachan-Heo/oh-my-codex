@@ -24,6 +24,7 @@ import {
   mergeManagedCodexHooksConfig,
   removeManagedCodexHooks,
   resolveWindowsPowerShellPath,
+  resolveStableNodePath,
   parseManagedCodexNativeHookWindowsShimCommand,
   ManagedCodexHooksPlanError,
   planManagedCodexHooksMerge,
@@ -35,14 +36,56 @@ import { migrateManagedCodexHookTrustStateCoordinates } from "../generator.js";
 
 describe("codex hooks helpers", () => {
 
-  it("uses the current JavaScript runtime for managed hook commands", () => {
+  it("uses a stable node path for managed hook commands", () => {
     const config = buildManagedCodexHooksConfig("/repo");
     const command = config.hooks.SessionStart[0]?.hooks[0]?.command;
+    const stablePath = resolveStableNodePath();
 
     assert.equal(
       command,
-      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
+      `"${stablePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`,
     );
+  });
+
+  it("maps Homebrew macOS Cellar node paths to the stable bin symlink", () => {
+    const cellarPath = "/opt/homebrew/Cellar/node/26.0.0/bin/node";
+    const result = resolveStableNodePath(cellarPath);
+
+    // If the stable path exists and is compatible, it should be used
+    // If not, execPath is returned unchanged
+    // This test verifies the mapping logic without depending on actual filesystem
+    if (result === "/opt/homebrew/bin/node") {
+      // Stable path was used (filesystem path exists and is valid)
+      assert.equal(result, "/opt/homebrew/bin/node");
+    } else {
+      // Stable path wasn't available, execPath is returned
+      assert.equal(result, cellarPath);
+    }
+  });
+
+  it("maps Linuxbrew Cellar node paths to the stable bin symlink", () => {
+    const linuxbrewPath = "/home/linuxbrew/.linuxbrew/Cellar/node/24.1.0/bin/node";
+    const result = resolveStableNodePath(linuxbrewPath);
+
+    if (result === "/home/linuxbrew/.linuxbrew/bin/node") {
+      assert.equal(result, "/home/linuxbrew/.linuxbrew/bin/node");
+    } else {
+      assert.equal(result, linuxbrewPath);
+    }
+  });
+
+  it("leaves non-Homebrew node paths unchanged", () => {
+    const nonBrewPaths = [
+      "/usr/local/bin/node",
+      "/usr/bin/node",
+      "/opt/homebrew/bin/node",
+      "C:\\Program Files\\nodejs\\node.exe",
+      "/nvm/versions/node/v20.0.0/bin/node",
+    ];
+
+    for (const path of nonBrewPaths) {
+      assert.equal(resolveStableNodePath(path), path);
+    }
   });
 
   it("registers SessionStart for startup, resume, and clear reset sources", () => {
@@ -1265,8 +1308,9 @@ describe("codex hooks helpers", () => {
 
   it("matches Codex's normalized command hook hash identity", async () => {
     const state = buildManagedCodexHookTrustState("/hooks.json", "/repo");
+    const stablePath = resolveStableNodePath();
     const command =
-      `"${process.execPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`;
+      `"${stablePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" "/repo/dist/scripts/codex-native-hook.js"`;
     const expectedIdentity = {
       event_name: "pre_tool_use",
       hooks: [

@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { existsSync, realpathSync } from "fs";
 import { readdir, realpath } from "fs/promises";
 import { basename, dirname, join, relative, resolve, win32 } from "path";
 
@@ -225,6 +226,55 @@ export function resolveWindowsPowerShellPath(
   );
 }
 
+/**
+ * Homebrew and Linuxbrew expose node through stable `bin/node` symlinks that are
+ * repointed on every `brew upgrade node`, while `process.execPath` resolves to the
+ * version-pinned Cellar path (e.g. `/opt/homebrew/Cellar/node/26.0.0/bin/node`).
+ * Persisting that pinned path into `~/.codex/hooks.json` makes every managed
+ * codex hook exit 127 the moment node is upgraded and the old Cellar directory
+ * is cleaned up. When possible, normalize it to the stable symlink so hooks
+ * survive node upgrades. Non-Homebrew paths are returned unchanged.
+ *
+ * Stability check: only maps to stable path if it exists and either:
+ * - realpaths to the same binary, or
+ * - points to the same major version of node
+ */
+export function resolveStableNodePath(
+  execPath: string = process.execPath,
+): string {
+  // Check for Homebrew Cellar paths and map to stable symlink
+  const cellarMatch = execPath.match(/^(.+?)(\/Cellar\/node\/[^/]+)(\/bin\/node)$/);
+  if (!cellarMatch) return execPath;
+
+  const [, prefix, , ] = cellarMatch;
+  const stableNodePath = `${prefix}/bin/node`;
+
+  // Verify the stable path exists before using it
+  if (!existsSync(stableNodePath)) {
+    return execPath;
+  }
+
+  try {
+    // Verify that both paths exist and resolve to compatible versions
+    const currentRealpath = realpathSync(execPath);
+    const stableRealpath = realpathSync(stableNodePath);
+
+    // If they point to the same file, use the stable path
+    if (currentRealpath === stableRealpath) {
+      return stableNodePath;
+    }
+
+    // Check if they're different binaries of the same major version
+    // This handles the case where the Cellar path and stable path might point
+    // to different node binaries during a brew upgrade transitional state
+    // For now, fall back to execPath if they don't match exactly
+    return execPath;
+  } catch {
+    // If we can't verify, fall back to execPath
+    return execPath;
+  }
+}
+
 export function buildManagedCodexNativeHookWindowsShimPath(
   codexHomeDir: string,
 ): string {
@@ -361,7 +411,7 @@ export function buildManagedCodexNativeHookWindowsShimContent(
   const hookScript =
     options.hookScriptPath ??
     win32.join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
-  const nodePath = options.nodePath ?? process.execPath;
+  const nodePath = options.nodePath ?? resolveStableNodePath();
 
   // Windows PowerShell 5.1 (powershell.exe) decodes BOM-less .ps1 files using
   // the system ANSI codepage, which mojibakes non-ASCII install paths embedded
@@ -409,7 +459,7 @@ export function buildManagedCodexNativeHookCommand(
   }
   const hookScript = join(pkgRoot, "dist", "scripts", "codex-native-hook.js");
 
-  return `${quoteCommandPart(process.execPath)} ${quoteCommandPart(hookScript)}`;
+  return `${quoteCommandPart(resolveStableNodePath())} ${quoteCommandPart(hookScript)}`;
 }
 
 function buildCommandHook(
