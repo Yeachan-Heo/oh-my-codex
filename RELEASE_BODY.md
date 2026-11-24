@@ -1,16 +1,26 @@
-# oh-my-codex v0.22.22
+# oh-my-codex v0.22.23
 
 ## Summary
 
-This patch release enhances the setup command to refresh stale model, provider, and reasoning pins when configurations change, without requiring the `--force` flag. This partially addresses #3919 for option A.
+This patch release improves the update flow to automatically refresh native agents after package updates, switches the notify fallback watcher to file-system events, removes redundant agent refresh suppression logic, restores rollout replay during reconciliation, and clarifies Team and native model routing in the AGENTS.md templates.
 
 ## Fixed
 
-- **REFRESH AGENTS WHEN ONLY MODEL CHANGES (#4165):** Fixes #3919 (partial). The setup command now detects and refreshes stale model/provider/reasoning pins while preserving other user edits, eliminating the need for `--force` in many cases. Users can now keep custom workflows and other configuration intact while updating agent definitions based on the latest model capabilities.
+- **OMX UPDATE REFRESHES NATIVE AGENTS AFTER PACKAGE UPDATES (#4167):** Fixes #4166. When OMX packages are updated via npm, the setup command now automatically refreshes native agent TOMLs without requiring manual re-setup. The update hook detects package changes and triggers native agent refresh.
+
+- **NOTIFY FALLBACK WATCHER USES FS.WATCH INSTEAD OF POLLING (#4170):** Improves notify watcher performance by switching from polling to file-system events. The fallback notify watcher now uses `fs.watch()` for more efficient real-time file monitoring when native fsevents are unavailable.
+
+- **REMOVE AGENT REFRESH SUPPRESSION FLAG (#4172):** Removes the `OMX_SKIP_NATIVE_AGENT_REFRESH` environment variable and associated suppression logic, simplifying the native agent refresh flow during updates.
+
+- **REPLAY ROLLOUTS FOUND DURING RECONCILIATION (#4173):** Restores rollout replay functionality during reconciliation. Rollouts that were paused or incomplete are now replayed when their parent task is reconciled.
+
+## Changed
+
+- **DOCS: CLARIFY TEAM AND NATIVE MODEL ROUTING IN AGENTS.MD TEMPLATES (#4174):** Template documentation in AGENTS.md now clarifies how Team executor, native model routing, and agent discovery interact. This helps users understand model tier selection and agent resolution behavior.
 
 ## Compatibility
 
-Behavior change for setup command. Stale model pins are now automatically refreshed without user intervention. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.22`.
+Behavior change for setup and update commands. Agents are now automatically refreshed after package updates. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.23`.
 
 ## Verification
 
@@ -19,9 +29,9 @@ Behavior change for setup command. Stale model pins are now automatically refres
 
 ## Contributors
 
-Thanks to iqdoctor for improving the setup experience and to the team for ensuring this release reaches users with better agent configuration management.
+Thanks to iqdoctor for improving the update experience and to the team for delivering better agent management and documentation.
 
-**Full Changelog**: [`v0.22.21...v0.22.22`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.21...v0.22.22)
+**Full Changelog**: [`v0.22.22...v0.22.23`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.22...v0.22.23)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
