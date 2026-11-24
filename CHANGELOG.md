@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.21] - 2026-11-24
+
+Patch release fixes repeated Stop hook invocations for blocked team workers, ensuring deterministic worker lifecycle management.
+
+### Fixed
+
+- **SUPPRESS REPEATED STOP HOOK FOR BLOCKED TEAM WORKERS (#4162):** Fixes #4156. Team workers in blocked state were triggering repeated Stop hooks due to improper state management. The fix restores correct stateDir handling throughout resolveTeamWorkerStopDecision and adds dedupeStateDir field to TeamWorkerStopDecision.blocked variant.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.20...v0.22.21
+
 ## [0.22.20] - 2026-11-24
 
 Patch release maps Homebrew Cellar node paths to stable symlinks to ensure managed codex hooks survive node upgrades.
