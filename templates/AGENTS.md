@@ -112,7 +112,12 @@ Fallback behavior when hook context is unavailable:
 - Bare skill names do not activate skills by themselves; skill-name activation requires explicit `$skill` invocation. Natural-language routing phrases may still map to a workflow. Examples: `analyze` / `investigate` → `$analyze` for read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references.
 - Keep the detailed keyword list in `src/hooks/keyword-registry.ts`; do not duplicate it here.
 
-Check the installed skill's CLI, native tool, and runtime requirements for the current stage. Team launches use the OMX CLI and follow the prerequisites of the selected launch mode. The default tmux-backed launch requires an attached tmux leader. In Codex App or outside tmux, explain the Team runtime boundary if the selected launch mode's prerequisites are missing. Use a supported route only when it satisfies the task. Standalone Ultragoal uses the OMX CLI and the Codex goal tools required by its current stage. Preserve required attached reviews and the prerequisites of supervised workflows.
+Check the installed skill's CLI, native tool, and runtime requirements for the current stage.
+
+For prompt-side `$team`, follow the hook's routing decision and the Team skill's attached tmux requirement. In Codex App or native Codex outside tmux, explain this Team runtime boundary. For a direct `omx team` launch from a shell, check the selected launch mode's prerequisites, including an attached tmux leader for the default tmux-backed mode. Use a supported route only when it satisfies the task.
+
+Standalone Ultragoal uses the OMX CLI and the Codex goal tools required by its current stage. Preserve required attached reviews and the prerequisites of supervised workflows.
+
 - Route explicit `$autopilot` to its supervised `$deep-interview -> $ralplan -> $ultragoal` chain.
 - `$ralph`, `$ultrawork`, `$pipeline`, `ecomode`, and `swarm` remain removed or deprecated sunset stubs; do not route users there.
 - When deep-interview is active in attached-tmux OMX CLI/runtime, ask each interview round via `omx question`; after launching `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing; preserve the leader pane with `OMX_QUESTION_RETURN_PANE=$TMUX_PANE` when invoking it through Bash/tool paths. Outside tmux or native surfaces that cannot render `omx question` should use the native structured question path when available; otherwise ask exactly one concise plain-text question and wait for the answer.
