@@ -4457,6 +4457,173 @@ exit 0
     }
   });
 
+  it('uses filesystem events to poll changed rollout files and discover new ones', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-discovery-throttle-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-discovery-throttle-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const firstRolloutPath = join(sessionDir, `rollout-first-${sid}.jsonl`);
+    const existingRolloutPath = join(sessionDir, `rollout-existing-${sid}.jsonl`);
+    const unrelatedRolloutPath = join(sessionDir, `rollout-unrelated-${sid}.jsonl`);
+    const newRolloutPath = join(sessionDir, `rollout-new-${sid}.jsonl`);
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const turnLogPath = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(firstRolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-first-${sid}`, cwd: wd },
+      })}\n`);
+      await writeFile(existingRolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-existing-${sid}`, cwd: wd },
+      })}\n`);
+      await writeFile(unrelatedRolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-unrelated-${sid}`, cwd: `${wd}-other` },
+      })}\n`);
+
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript,
+          '--cwd',
+          wd,
+          '--notify-script',
+          notifyHook,
+          '--poll-ms',
+          '50',
+          '--idle-max-poll-ms',
+          '100',
+          '--parent-pid',
+          String(process.pid),
+          '--max-lifetime-ms',
+          '15000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: buildCleanNotifyEnv({ HOME: tempHome }),
+        }
+      );
+
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.tracked_files === 2
+            && watcherState.rollout_discovery?.scan_count === 1
+            && watcherState.rollout_discovery?.watching_directories === 1;
+        } catch {
+          return false;
+        }
+      }, 4000, 25);
+
+      const quietStartState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      const quietBaseline = quietStartState.tracked_file_checks;
+      const quietFilenameLessBaseline = quietStartState.rollout_discovery?.filename_less_events;
+      await sleep(150);
+      const quietState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      if (quietState.rollout_discovery?.filename_less_events === quietFilenameLessBaseline) {
+        assert.equal(quietState.tracked_file_checks, quietBaseline, 'unchanged files should not be stat-checked on each watcher tick');
+      }
+
+      // Keep the watcher on its fast path while a different session also writes
+      // to the watched directory. Neither update should trigger a full scan.
+      let lastObservedCheckCount = quietBaseline;
+      let observedBasePollForFileEvent = false;
+      for (let index = 0; index < 8; index += 1) {
+        await appendLine(firstRolloutPath, {
+          timestamp: new Date().toISOString(),
+          type: 'ignored_test_activity',
+          index,
+        });
+        await waitFor(async () => {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          if (watcherState.tracked_file_checks <= lastObservedCheckCount) return false;
+          lastObservedCheckCount = watcherState.tracked_file_checks;
+          observedBasePollForFileEvent ||= watcherState.adaptive_poll?.current_ms === 50
+            && watcherState.adaptive_poll?.last_activity_reason === 'rollout_event';
+          return true;
+        }, 1000, 10);
+        await appendLine(unrelatedRolloutPath, {
+          timestamp: new Date().toISOString(),
+          type: 'ignored_other_session_activity',
+          index,
+        });
+        await sleep(45);
+      }
+
+      const activeState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.equal(observedBasePollForFileEvent, true, 'tracked rollout changes should reset polling to the base cadence');
+      assert.ok(activeState.tracked_file_checks > quietBaseline, 'file events should trigger checks for changed rollouts');
+      assert.equal(activeState.rollout_discovery?.interval_ms, 60_000, 'full directory reconciliation should be a low-frequency fallback');
+      assert.equal(activeState.rollout_discovery?.watching_directories, 1, 'directory watcher should be active in the fixture');
+      if (activeState.rollout_discovery?.filename_less_events === 0) {
+        assert.ok(
+          activeState.tracked_file_checks <= 12,
+          `expected checks to follow file events instead of polling every tracked file, got ${activeState.tracked_file_checks}`,
+        );
+        assert.equal(activeState.rollout_discovery?.scan_count, 1, 'updates to known rollout files should not trigger directory scans');
+      } else {
+        assert.ok(activeState.rollout_discovery?.scan_count <= 5, 'filename-less events should be coalesced before rescanning');
+      }
+      assert.equal(activeState.rollout_discovery?.watcher_errors?.length, 0, 'directory watcher should not report setup errors');
+
+      await writeFile(newRolloutPath, '');
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.tracked_files === 2
+            && watcherState.rollout_discovery?.scan_count >= 2;
+        } catch {
+          return false;
+        }
+      }, 6000, 25);
+
+      await appendLine(newRolloutPath, {
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-new-${sid}`, cwd: wd },
+      });
+      const newTurnId = `turn-new-${sid}`;
+      await appendLine(newRolloutPath, {
+        timestamp: new Date(Date.now() + 500).toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: newTurnId,
+          last_agent_message: 'newly discovered rollout event',
+        },
+      });
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.tracked_files === 3
+            && watcherState.rollout_discovery?.scan_count >= 3
+            && (await readLines(turnLogPath)).some((line) => line.includes(newTurnId));
+        } catch {
+          return false;
+        }
+      }, 6500, 25);
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it('exits after the configured max lifetime', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-max-life-'));
     const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-max-home-'));
