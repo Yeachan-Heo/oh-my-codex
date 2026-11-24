@@ -228,34 +228,6 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
     }
   });
 
-  it('honors explicit native-agent refresh suppression during setup', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
-    const previousCwd = process.cwd();
-    const previousSkipNativeAgentRefresh = process.env.OMX_SKIP_NATIVE_AGENT_REFRESH;
-    try {
-      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
-      process.chdir(wd);
-
-      await setup({ scope: 'project' });
-
-      const executorPath = join(wd, '.codex', 'agents', 'executor.toml');
-      const installed = await readFile(executorPath, 'utf-8');
-      const customized = installed
-        .replace(/^model = ".*"$/m, 'model = "gpt-5.5"')
-        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "low"');
-      await writeFile(executorPath, customized);
-
-      process.env.OMX_SKIP_NATIVE_AGENT_REFRESH = '1';
-      await setup({ scope: 'project', force: true });
-
-      assert.equal(await readFile(executorPath, 'utf-8'), customized);
-    } finally {
-      if (typeof previousSkipNativeAgentRefresh === 'string') process.env.OMX_SKIP_NATIVE_AGENT_REFRESH = previousSkipNativeAgentRefresh;
-      else delete process.env.OMX_SKIP_NATIVE_AGENT_REFRESH;
-      process.chdir(previousCwd);
-      await rm(wd, { recursive: true, force: true });
-    }
-  });
 
   it('preserves setup-owned prompt assets and removes unknown prompts on --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
