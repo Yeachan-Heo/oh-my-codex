@@ -5815,6 +5815,31 @@ function hashContent(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
+// Model, provider, reasoning, and resolved_model values are derived from the current
+// Codex/.omx-config settings. Ignore only these fields when deciding whether a TOML
+// otherwise matches the generated file; all other local content must still match.
+function normalizeNativeAgentConfig(content: string): string {
+	const developerInstructionsMarker = 'developer_instructions = """';
+	const markerIndex = content.indexOf(developerInstructionsMarker);
+	if (markerIndex < 0) return content;
+
+	const header = content.slice(0, markerIndex).replace(
+		/^(?:model|model_provider|model_reasoning_effort) = .*\r?\n?/gm,
+		"",
+	);
+	const instructions = content
+		.slice(markerIndex)
+		.replace(/^- resolved_model:.*(?:\r?\n|$)/gm, "");
+	return `${header}${instructions}`;
+}
+
+function differsOnlyByNativeAgentConfig(existing: string, generated: string): boolean {
+	return (
+		existing !== generated &&
+		normalizeNativeAgentConfig(existing) === normalizeNativeAgentConfig(generated)
+	);
+}
+
 function nativeAgentInstallManifestPath(agentsDir: string): string {
 	return join(agentsDir, "..", ".omx", "native-agents.json");
 }
@@ -5915,7 +5940,8 @@ async function syncNativeAgentToml(
 	}
 
 	const priorHash = manifest.files[fileName]?.sha256;
-	const safeToOverwrite = options.force || priorHash === existingHash;
+	const differsOnlyByModelConfig = differsOnlyByNativeAgentConfig(existing, content);
+	const safeToOverwrite = options.force || priorHash === existingHash || differsOnlyByModelConfig;
 	if (!safeToOverwrite) {
 		summary.skipped += 1;
 		if (options.verbose) {
