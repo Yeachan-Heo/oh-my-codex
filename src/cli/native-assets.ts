@@ -748,6 +748,8 @@ export async function hydrateNativeBinary(
     if (inspected.state === 'verified') return inspected.path!;
   }
 
+  if (version.endsWith('-dev')) return undefined;
+
   let manifest: NativeReleaseManifest;
   try {
     manifest = await loadNativeReleaseManifest(packageRoot, version, env, signal);
