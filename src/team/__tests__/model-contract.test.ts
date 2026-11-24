@@ -250,31 +250,55 @@ describe('team model contract', () => {
     }
   });
 
-  it('maps worker roles to configured default model lanes', () => {
+  it('maps worker roles to the built-in tier defaults', () => {
     withIsolatedDefaultModelEnv(() => {
-      assert.equal(resolveAgentDefaultModel('explore'), expectedLowComplexityModel());
-      assert.equal(resolveAgentDefaultModel('writer'), 'gpt-6.2-sol');
-      assert.equal(resolveAgentDefaultModel('executor'), 'gpt-6.2-sol');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6.2-astra');
+      for (const role of ['planner', 'architect', 'critic']) {
+        assert.equal(resolveAgentDefaultModel(role), 'gpt-6.2-astra', role);
+      }
+      for (const role of ['researcher', 'analyst', 'security-reviewer', 'test-engineer', 'code-reviewer', 'code-simplifier', 'team-executor', 'executor', 'writer']) {
+        assert.equal(resolveAgentDefaultModel(role), 'gpt-6.2-sol', role);
+      }
+      for (const role of ['explore', 'style-reviewer', 'vision']) {
+        assert.equal(resolveAgentDefaultModel(role), 'gpt-6-luna', role);
+      }
       assert.equal(resolveAgentDefaultModel('does-not-exist'), undefined);
     });
   });
-  it('uses exact model pins when no frontier env default is configured', () => {
-    withIsolatedDefaultModelEnv(() => {
-      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-6.2-astra');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6.2-astra');
-      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-6.2-astra');
-      assert.equal(resolveAgentDefaultModel('critic'), 'gpt-6.2-sol');
-    });
+
+  it('resolves each tier from its env var only, ignoring the config.toml root model', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'omx-model-contract-env-tiers-'));
+    try {
+      await writeFile(join(codexHome, 'config.toml'), 'model = "root-model"\n');
+      await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
+        env: {
+          OMX_DEFAULT_FRONTIER_MODEL: 'frontier-env',
+          OMX_DEFAULT_STANDARD_MODEL: 'standard-env',
+          OMX_DEFAULT_SPARK_MODEL: 'spark-env',
+        },
+        agentModels: {},
+      }));
+      withIsolatedDefaultModelEnv(() => {
+        for (const role of ['planner', 'architect', 'critic']) {
+          assert.equal(resolveAgentDefaultModel(role, codexHome), 'frontier-env', role);
+        }
+        for (const role of ['researcher', 'analyst', 'security-reviewer', 'test-engineer', 'code-reviewer', 'executor']) {
+          assert.equal(resolveAgentDefaultModel(role, codexHome), 'standard-env', role);
+        }
+        for (const role of ['explore', 'style-reviewer', 'vision']) {
+          assert.equal(resolveAgentDefaultModel(role, codexHome), 'spark-env', role);
+        }
+      });
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 
-  it('lets OMX_DEFAULT_FRONTIER_MODEL override exact model pins so one setting is enough', () => {
+  it('does not let the frontier env var change standard or spark roles', () => {
     withIsolatedDefaultModelEnv(() => {
-      process.env.OMX_DEFAULT_FRONTIER_MODEL = 'gpt-6.2-sol';
-
-      assert.equal(resolveAgentDefaultModel('planner'), 'gpt-6.2-sol');
-      assert.equal(resolveAgentDefaultModel('architect'), 'gpt-6.2-sol');
-      assert.equal(resolveAgentDefaultModel('researcher'), 'gpt-6.2-sol');
+      process.env.OMX_DEFAULT_FRONTIER_MODEL = 'frontier-env';
+      assert.equal(resolveAgentDefaultModel('planner'), 'frontier-env');
+      assert.equal(resolveAgentDefaultModel('executor'), 'gpt-6.2-sol');
+      assert.equal(resolveAgentDefaultModel('explore'), 'gpt-6-luna');
     });
   });
 
@@ -290,6 +314,8 @@ describe('team model contract', () => {
 
       assert.equal(resolveAgentDefaultModel('architect', codexHome), 'gpt-5.6-sol-architect');
       assert.equal(resolveAgentDefaultModel('explore', codexHome), 'gpt-5.6-sol-explore');
+      assert.equal(resolveAgentDefaultModel('planner', codexHome), 'gpt-6.2-astra');
+      assert.equal(resolveAgentDefaultModel('critic', codexHome), 'gpt-6.2-astra');
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }
@@ -304,14 +330,14 @@ describe('team model contract', () => {
     });
   });
 
-  it('lets exact role model defaults override inherited mini leader model when requested', () => {
+  it('lets role model defaults override inherited mini leader model when requested', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.deepEqual(
         resolveTeamWorkerLaunchArgs({
           inheritedArgs: ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.6-terra'],
           fallbackModel: resolveAgentDefaultModel('planner'),
           preferredReasoning: 'high',
-          honorExactRoleModel: true,
+          honorRoleModel: true,
         }),
         [
           '--dangerously-bypass-approvals-and-sandbox',
@@ -323,7 +349,7 @@ describe('team model contract', () => {
       );
     });
   });
-  it('preserves explicit worker model overrides before exact role defaults', () => {
+  it('preserves explicit worker model overrides before role defaults', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.deepEqual(
         resolveTeamWorkerLaunchArgs({
@@ -331,7 +357,7 @@ describe('team model contract', () => {
           inheritedArgs: ['--dangerously-bypass-approvals-and-sandbox', '--model', 'gpt-5.6-terra'],
           fallbackModel: resolveAgentDefaultModel('planner'),
           preferredReasoning: 'high',
-          honorExactRoleModel: true,
+          honorRoleModel: true,
         }),
         [
           '--dangerously-bypass-approvals-and-sandbox',
@@ -348,7 +374,7 @@ describe('team model contract', () => {
         inheritedArgs: ['--model', 'gpt-5.6-terra'],
         fallbackModel: resolveAgentDefaultModel('planner'),
         preferredReasoning: 'high',
-        honorExactRoleModel: true,
+        honorRoleModel: true,
       });
 
       assert.equal(diagnostics.actualModel, 'explicit-worker-model');
@@ -357,7 +383,7 @@ describe('team model contract', () => {
     });
   });
 
-  it('preserves inherited mini leader model for roles without exact-model enforcement', () => {
+  it('preserves inherited mini leader model when the role model is not honored', () => {
     withIsolatedDefaultModelEnv(() => {
       assert.deepEqual(
         resolveTeamWorkerLaunchArgs({

@@ -88,7 +88,6 @@ describe("verify-native-agents", () => {
           "Executor prompt discussing generated guard markers as prose.",
           "</posture_overlay>",
           "</model_class_guidance>",
-          "</exact_model_guidance>",
           "<native_subagent_leaf_guard>",
           "- Do not treat this prompt text as a generated guard.",
           "</native_subagent_leaf_guard>",

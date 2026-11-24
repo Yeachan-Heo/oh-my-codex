@@ -110,7 +110,7 @@ import {
 	getCodexConfigRootModelProvider,
 	getConfiguredTeamLowComplexityModel,
 	getEnvConfiguredSparkDefaultModel,
-	getMainDefaultModel,
+	getFrontierDefaultModel,
 	getSparkDefaultModel,
 	getStandardDefaultModel,
 } from "../config/models.js";
@@ -4031,7 +4031,7 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 	const name = "Spark routing";
 	const codexHomeOverride = paths.codexHomeDir;
 	const sparkModel = getSparkDefaultModel(codexHomeOverride);
-	const frontierModel = getMainDefaultModel(codexHomeOverride);
+	const frontierModel = getFrontierDefaultModel(codexHomeOverride);
 	const standardModel = getStandardDefaultModel(codexHomeOverride);
 	const sparkSource = resolveSparkModelSource(codexHomeOverride);
 	const rootProvider = getCodexConfigRootModelProvider(codexHomeOverride);

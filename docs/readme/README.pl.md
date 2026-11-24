@@ -345,7 +345,7 @@ omx team shutdown <team-name>
 - `omx setup --merge-agents` aktualizuje sekcje między `<!-- OMX:AGENTS:START -->` i `<!-- OMX:AGENTS:END -->`; `--no-merge-agents` zapisuje jawny wybór kontekstowy, a `--clear-merge-agents-policy` usuwa politykę. Jest ona per-root, odtwarzana przy aktualizacji tylko dla zgodnego zakresu, nie jest globalna ani wymuszana domyślnie.
 - `omx uninstall` usuwa wrappery zarządzane przez OMX z `.codex/hooks.json`, ale pozostawia plik, jeśli zawiera hooki użytkownika.
 - `omx update` natychmiast sprawdza npm, instaluje najnowszą globalną wersję OMX i ponawia interaktywny setup. Kontrole przy starcie są ograniczone i pytają o zgodę; `OMX_AUTO_UPDATE=0` je wyłącza, `OMX_AUTO_UPDATE=defer` planuje aktualizację bez pytania.
-- Nowy setup używa `gpt-6-astra` dla agentów frontier, standard oraz spark/fast z domyślnym reasoning zależnym od roli; istniejące konfiguracje i jawne overrides są zachowywane.
+- Nowy setup używa `gpt-6.2-astra` dla agentów frontier (`planner`, `architect`, `critic`), `gpt-6.2-sol` dla agentów standard (wszystkie pozostałe role niebędące spark) oraz `gpt-6-luna` dla agentów spark (`explore`, `style-reviewer`, `vision`), z niezmienionymi domyślnymi ustawieniami reasoning zależnymi od roli; istniejące konfiguracje i jawne overrides są zachowywane.
 - Routing model/env w `.omx-config.json` opisano w [referencji schematu](../../docs/reference/omx-config-schema-routing.md); edytuj tylko klucze obsługiwane przez zainstalowaną wersję.
 - `omx doctor` weryfikuje instalację, ale nie dowodzi, że aktywny profil Codexa wykona uwierzytelnione zapytanie do modelu.
 - `omx hud --watch` to monitoring/status, nie główny workflow.

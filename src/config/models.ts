@@ -17,15 +17,13 @@
  *   "agentReasoning": {
  *     "architect": "xhigh"
  *   },
- *   "agentModels": {
- *     "architect": "gpt-6-astra"
- *   }
+ *   "agentModels": {}
  * }
  *
  * Resolution:
- * - getModelForMode: models[mode] > models.default > main default (shell env > .omx-config.json env > config.toml root model > built-in default)
- * - Native TOML model: agentModels override > built-in-provider exactModel pin; otherwise no model field (inherit at runtime)
- * - Team role fallback: agentModels > `*-low` spark path > exactModel pin (provider-independent) > executor/main > modelClass defaults
+ * - getModelForMode: models[mode] > models.default > main default (shell env > .omx-config.json env > config.toml root model > DEFAULT_LEADER_MODEL)
+ * - Per-role agent model: agentModels[role] > tier env var (frontier/standard/spark) > built-in tier default
+ *   (native TOML for built-in providers, Team worker fallback, AGENTS.md model table)
  */
 
 import { parse as parseToml } from "@iarna/toml";
@@ -144,9 +142,12 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
 	return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = "gpt-6.2-sol";
+/** Built-in agent tier defaults; the OMX_DEFAULT_*_MODEL env vars override them. */
+export const DEFAULT_FRONTIER_MODEL = "gpt-6.2-astra";
 export const DEFAULT_STANDARD_MODEL = "gpt-6.2-sol";
 export const DEFAULT_SPARK_MODEL = "gpt-6-luna";
+/** Main/leader session model that setup seeds into config.toml; not an agent tier. */
+export const DEFAULT_LEADER_MODEL = "gpt-6.2-sol";
 
 /**
  * Built-in provider IDs that come with Codex.
@@ -433,40 +434,6 @@ export function getCodexConfigEffectiveModel(
 	return normalizeConfiguredValue(config.model);
 }
 
-/**
- * Check if a model is configured either at root or in an active profile.
- * Used to determine if exactModel pins should be baked for built-in providers.
- */
-export function isModelConfigured(codexHomeOverride?: string): boolean {
-	return !!getCodexConfigEffectiveModel(codexHomeOverride);
-}
-
-/**
- * Check if a model is configured by an active profile (not at root).
- * Used to determine if profile models should apply before class-based fallbacks.
- */
-export function isProfileScopedModel(codexHomeOverride?: string): boolean {
-	const config = readCodexConfigFile(codexHomeOverride);
-	if (!config) return false;
-
-	const activeProfile = normalizeConfiguredValue(config.profile);
-	if (!activeProfile) return false;
-
-	const profiles = config.profiles;
-	if (!profiles || typeof profiles !== "object" || Array.isArray(profiles))
-		return false;
-
-	const profileConfig = profiles[activeProfile];
-	if (
-		!profileConfig ||
-		typeof profileConfig !== "object" ||
-		Array.isArray(profileConfig)
-	)
-		return false;
-
-	return !!normalizeConfiguredValue(profileConfig.model);
-}
-
 export function getCodexConfigRootModelProvider(
 	codexHomeOverride?: string,
 ): string | undefined {
@@ -549,31 +516,62 @@ export function getTeamChildModel(codexHomeOverride?: string): string {
 
 /**
  * Get the envvar-backed main/default model.
- * Resolution: OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
+ * Resolution: OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_LEADER_MODEL
  */
 export function getMainDefaultModel(codexHomeOverride?: string): string {
 	return (
 		getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride) ??
 		getCodexConfigRootModel(codexHomeOverride) ??
+		DEFAULT_LEADER_MODEL
+	);
+}
+
+/**
+ * Get the frontier-tier agent model (planner, architect, researcher).
+ * Resolution: OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL. The config.toml root model is the
+ * main/leader session model only and never affects agent tiers.
+ */
+export function getFrontierDefaultModel(
+	codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	return (
+		getEnvConfiguredMainDefaultModel(env, codexHomeOverride) ??
 		DEFAULT_FRONTIER_MODEL
 	);
 }
 
 /**
- * Get the envvar-backed standard/default subagent model.
- *
- * Standard-role subagents inherit the configured main/default model unless an
- * explicit standard-lane override is configured. This keeps spawned agents in
- * sync with the leader model while preserving OMX_DEFAULT_STANDARD_MODEL as the
- * opt-in escape hatch for cheaper/specialized standard workers.
- *
- * Resolution: OMX_DEFAULT_STANDARD_MODEL > OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
+ * Get the standard-tier agent model (every non-frontier, non-spark role).
+ * Resolution: OMX_DEFAULT_STANDARD_MODEL > DEFAULT_STANDARD_MODEL. Never inherits frontier or the root model.
  */
-export function getStandardDefaultModel(codexHomeOverride?: string): string {
+export function getStandardDefaultModel(
+	codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
 	return (
-		getEnvConfiguredStandardDefaultModel(process.env, codexHomeOverride) ??
-		getMainDefaultModel(codexHomeOverride)
+		getEnvConfiguredStandardDefaultModel(env, codexHomeOverride) ??
+		DEFAULT_STANDARD_MODEL
 	);
+}
+
+/**
+ * Resolve the tier model for an agent's modelClass: tier env var > built-in tier default.
+ * Spark follows the spark chain (OMX_DEFAULT_SPARK_MODEL > legacy keys > DEFAULT_SPARK_MODEL).
+ */
+export function getModelClassDefaultModel(
+	modelClass: "frontier" | "standard" | "fast",
+	codexHomeOverride?: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	switch (modelClass) {
+		case "frontier":
+			return getFrontierDefaultModel(codexHomeOverride, env);
+		case "fast":
+			return getSparkDefaultModel(codexHomeOverride, env);
+		case "standard":
+			return getStandardDefaultModel(codexHomeOverride, env);
+	}
 }
 
 /**

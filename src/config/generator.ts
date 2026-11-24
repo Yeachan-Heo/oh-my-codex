@@ -16,7 +16,7 @@ import { join, resolve } from "path";
 import TOML from "@iarna/toml";
 import { analyzeTomlSource, type TomlSourceLexicalAnalysis } from "../utils/toml-source.js";
 import { canonicalizeComparablePath } from "../utils/paths.js";
-import { DEFAULT_FRONTIER_MODEL } from "./models.js";
+import { DEFAULT_LEADER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 import {
   DEFAULT_CODEX_HOOK_FEATURE_FLAG,
@@ -92,7 +92,7 @@ const OMX_TOP_LEVEL_KEYS = [
   "developer_instructions",
 ] as const;
 
-export const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
+export const DEFAULT_SETUP_MODEL = DEFAULT_LEADER_MODEL;
 
 const LEGACY_SEEDED_MODEL_CONTEXT_WINDOW = 250000;
 const LEGACY_SEEDED_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 200000;

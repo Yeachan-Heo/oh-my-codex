@@ -134,19 +134,12 @@ Team mode is the structured multi-agent surface. Use it when durable staged coor
 <team_model_resolution>
 Team/Swarm worker model selection (for worker roles only, NOT native Codex subagents):
 
-- At launch, a per-worker `OMX_TEAM_WORKER_LAUNCH_ARGS --model` that differs from the inherited leader `--model` wins.
-- Otherwise, `.omx-config.json` `agentModels[role]` or an applicable role `exactModel` pin is selected before the inherited leader model. Team worker `exactModel` pins apply regardless of provider.
-- If neither a per-agent override nor an applicable exact pin applies, an inherited leader `--model` wins before the computed role fallback.
-- When no inherited model is available, the role fallback resolves in this order:
-  1. `.omx-config.json` `agentModels[role]` override
-  2. Role ending in `-low` → spark chain
-  3. `OMX_DEFAULT_FRONTIER_MODEL` if set, else role `exactModel` pin (`planner`/`architect`/`researcher` → `gpt-6.2-astra`); Team pins apply regardless of provider
-  4. `executor` special case → frontier/main chain
-  5. Otherwise by `modelClass`: `fast` → spark; `frontier` → main; `standard` → standard lane
+- A per-worker `OMX_TEAM_WORKER_LAUNCH_ARGS --model` that differs from the inherited leader `--model` wins first.
+- For a known role, its tier/override model wins over an inherited leader model. Precedence per role: `.omx-config.json` `agentModels[role]` > tier env var (`OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL` or `OMX_DEFAULT_SPARK_MODEL`) > built-in tier default. The `config.toml` root model is the leader (main session) model only and does not affect agent tiers.
+- If no role model can be resolved, use the inherited leader model before a generic fallback.
+- The spark chain may also use legacy `OMX_SPARK_MODEL` and team low-complexity model keys; these apply only to spark roles.
 
-Role defaults use `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, or `OMX_DEFAULT_SPARK_MODEL` as applicable; the legacy spark alias is `OMX_SPARK_MODEL`. The spark chain does not fall back to the `config.toml` root model.
-
-For native Codex subagents with built-in providers, the TOML `model` follows one precedence: `.omx-config.json` `agentModels[role]` > env tier default (`OMX_DEFAULT_FRONTIER_MODEL` for frontier and pinned roles, `OMX_DEFAULT_SPARK_MODEL` for fast-lane roles, `OMX_DEFAULT_STANDARD_MODEL` for standard roles) > built-in pin/tier default. Otherwise they inherit the active `config.toml`/provider model.
+For native Codex subagents, built-in or implicit providers write the resolved tier model for every role. Custom providers omit `model` unless `.omx-config.json` `agentModels[role]` is set.
 
 Normalize model flags to one canonical `--model <value>` entry. Use `OMX_DEFAULT_FRONTIER_MODEL` / `OMX_DEFAULT_STANDARD_MODEL` / `OMX_DEFAULT_SPARK_MODEL` for Team worker defaults and native subagent configuration.
 </team_model_resolution>

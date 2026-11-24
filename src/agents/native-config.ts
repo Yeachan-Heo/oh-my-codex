@@ -2,23 +2,18 @@
  * Native agent config generators for Codex CLI.
  * Writes standalone TOML files under ~/.codex/agents/ or ./.codex/agents/.
  *
- * Model precedence for the written TOML `model` key (NOT written if none applies):
- * 1. Per-agent override: .omx-config.json agentModels[role] → `model` key written
- * 2. Env tier default for the role's class, built-in provider only → `model` key written:
- *    OMX_DEFAULT_FRONTIER_MODEL for frontier and exactModel roles (and executor),
- *    OMX_DEFAULT_SPARK_MODEL for fast-lane roles, OMX_DEFAULT_STANDARD_MODEL for standard roles
- *    (shell env or .omx-config.json `env`)
- * 3. Built-in exactModel pin + built-in provider: planner/architect/researcher → `model` key written (gpt-6.2-astra)
- * 4. Otherwise: NO `model` key written; agent inherits Codex config.toml model at runtime
+ * Model precedence for the written TOML `model` key:
+ * 1. Per-agent override: .omx-config.json agentModels[role]
+ * 2. Tier env var for the role's modelClass (shell env or .omx-config.json `env`):
+ *    OMX_DEFAULT_FRONTIER_MODEL, OMX_DEFAULT_STANDARD_MODEL, OMX_DEFAULT_SPARK_MODEL
+ * 3. Built-in tier default (gpt-6.2-astra / gpt-6.2-sol / gpt-6-luna)
  *
- * One setting is therefore enough: setting the three OMX_DEFAULT_*_MODEL env values moves every role,
- * including the exactModel roles, without per-role agentModels.
- *
- * For instruction composition (resolved_model metadata), the same precedence applies, followed by
- * configured models and modelClass defaults; see resolveAgentModel().
+ * For built-in providers the resolved model is written for every role. For custom providers the
+ * `model` key is omitted unless agentModels[role] is set. The config.toml root model is the
+ * main/leader session model only and never affects agent tiers.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
@@ -26,26 +21,17 @@ import { readCatalogManifest } from "../catalog/reader.js";
 import type { CatalogManifest } from "../catalog/schema.js";
 import { getInstallableNativeAgentNames } from "./policy.js";
 import {
-  getEnvConfiguredMainDefaultModel,
-  getEnvConfiguredSparkDefaultModel,
-  getEnvConfiguredStandardDefaultModel,
   getAgentReasoningOverride,
   getAgentModelOverride,
-  getMainDefaultModel,
-  getSparkDefaultModel,
-  getStandardDefaultModel,
+  getModelClassDefaultModel,
   getCodexConfigEffectiveModel,
   getCodexConfigEffectiveModelProvider,
   isBuiltinProvider,
-  isProfileScopedModel,
   type PerAgentReasoningEffort,
 } from "../config/models.js";
-import { getRootModelName } from "../config/generator.js";
 import { codexAgentsDir } from "../utils/paths.js";
 
 
-
-export const EXACT_GPT_5_6_TERRA_MODEL = "gpt-5.6-terra";
 
 const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
   "frontier-orchestrator": [
@@ -114,20 +100,6 @@ const MODEL_CLASS_OVERLAYS: Record<AgentDefinition["modelClass"], string> = {
   ].join("\n"),
 };
 
-function buildExactModelOverlay(exactModel: string): string {
-  return [
-    "<exact_model_guidance>",
-    "",
-    `This role is executing under the exact ${exactModel} model.`,
-    "- Use a strict execution order: inspect -> plan -> act -> verify.",
-    "- Treat completion criteria as explicit: only report done after the assigned result is complete and required fresh verification passes; read-only analysis and planning do not authorize implementation.",
-    "- If requirements are ambiguous or a blocker appears, state the blocker plainly and stop guessing until the missing decision is resolved.",
-    "- Do not bluff, pad, or invent results; report missing evidence and incomplete work honestly.",
-    "",
-    "</exact_model_guidance>",
-  ].join("\n");
-}
-
 const NATIVE_SUBAGENT_LEAF_GUARD = [
   "<native_subagent_leaf_guard>",
   "",
@@ -148,7 +120,6 @@ export interface GeneratedNativeAgentConfig {
 
 interface AgentModelResolutionOptions {
   codexHomeOverride?: string;
-  configTomlContent?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -158,62 +129,10 @@ interface RoleInstructionMetadata {
   modelClass: AgentDefinition["modelClass"];
   routingRole: AgentDefinition["routingRole"];
   nativeSubagentDelegation?: AgentDefinition["nativeSubagentDelegation"];
-  exactModel?: AgentDefinition["exactModel"];
 }
 
 interface ComposeRoleInstructionsOptions {
   nativeAgent?: boolean;
-  /**
-   * When true, suppress the exact-model overlay even if the agent has exactModel defined.
-   * Used when the agent will inherit from a custom provider at runtime.
-   */
-  suppressExactModelOverlay?: boolean;
-}
-
-function readConfigTomlContent(
-  codexHomeOverride?: string,
-  provided?: string,
-): string {
-  if (typeof provided === "string") return provided;
-  const configPath = join(codexHomeOverride ?? process.env.CODEX_HOME ?? "", "config.toml");
-  if (codexHomeOverride && existsSync(configPath)) {
-    return readFileSync(configPath, "utf-8");
-  }
-  return "";
-}
-
-function resolveFrontierModel(options: AgentModelResolutionOptions): string {
-  const configTomlContent = readConfigTomlContent(
-    options.codexHomeOverride,
-    options.configTomlContent,
-  );
-  return getRootModelName(configTomlContent)
-    ?? getMainDefaultModel(options.codexHomeOverride);
-}
-
-function resolveStandardModel(options: AgentModelResolutionOptions): string {
-  const explicitStandardModel = getEnvConfiguredStandardDefaultModel(
-    options.env ?? process.env,
-    options.codexHomeOverride,
-  );
-
-  if (explicitStandardModel) return explicitStandardModel;
-  return getStandardDefaultModel(options.codexHomeOverride);
-}
-
-/** Env tier default (shell env or .omx-config.json env) for the agent's class, if configured. */
-function resolveEnvTierModel(
-  agent: AgentDefinition,
-  options: AgentModelResolutionOptions,
-): string | undefined {
-  const env = options.env ?? process.env;
-  if (agent.exactModel || agent.name === "executor" || agent.modelClass === "frontier") {
-    return getEnvConfiguredMainDefaultModel(env, options.codexHomeOverride);
-  }
-  if (agent.modelClass === "fast") {
-    return getEnvConfiguredSparkDefaultModel(env, options.codexHomeOverride);
-  }
-  return getEnvConfiguredStandardDefaultModel(env, options.codexHomeOverride);
 }
 
 function resolveAgentModel(
@@ -221,72 +140,15 @@ function resolveAgentModel(
   options: AgentModelResolutionOptions = {},
 ): string | undefined {
   const modelOverride = getAgentModelOverride(agent.name, options.codexHomeOverride);
-  if (modelOverride) {
-    return modelOverride;
-  }
-  const effectiveProvider = getCodexConfigEffectiveModelProvider(options.codexHomeOverride);
-  // Use case-sensitive provider classification for consistency.
-  // Custom providers like "OpenAI" should not match built-in "openai".
-  const isBuiltin = isBuiltinProvider(effectiveProvider);
-  const effectiveModel = getCodexConfigEffectiveModel(options.codexHomeOverride);
-  
-  // Decision logic for exact model pins and resolution:
-  // 1. If built-in provider and agent has exactModel: use exactModel (bake the pin)
-  // 2. If custom provider (explicitly set):
-  //    a. If a model is configured (root or profile): return it for metadata
-  //    b. If no model configured: return undefined (don't emit fallback metadata)
-  // 3. If built-in provider with no exactModel, but a model is configured (profile or root):
-  //    Return the configured model before falling back to modelClass defaults (fixes #4310223529)
-  // 4. Otherwise (built-in + no exactModel + no configured model): use modelClass-based defaults
-  
+  if (modelOverride) return modelOverride;
+
+  // Case-sensitive provider classification: custom providers like "OpenAI" do not match built-in "openai".
+  const isBuiltin = isBuiltinProvider(getCodexConfigEffectiveModelProvider(options.codexHomeOverride));
   if (isBuiltin) {
-    const envTierModel = resolveEnvTierModel(agent, options);
-    if (envTierModel) return envTierModel;
+    return getModelClassDefaultModel(agent.modelClass, options.codexHomeOverride, options.env);
   }
-
-  if (agent.exactModel && isBuiltin) {
-    // Built-in provider (or implicit default): use exactModel for roles that have it
-    return agent.exactModel;
-  }
-  
-  // Only suppress resolution and return model directly if provider is EXPLICITLY custom.
-  // An explicitly custom provider means: effectiveProvider is set AND it's not built-in.
-  // If provider is implicitly built-in (effectiveProvider is undefined), fall through to modelClass resolution.
-  if (effectiveProvider && !isBuiltin) {
-    // Explicitly set custom provider case
-    if (effectiveModel) {
-      // Custom provider with a configured model: return it for metadata
-      // (agent will inherit this model from the provider at runtime)
-      return effectiveModel;
-    } else {
-      // Custom provider with no configured model: return undefined
-      // (agent inherits from provider's unknown default; don't emit astra fallback metadata)
-      return undefined;
-    }
-  }
-
-  // Apply profile models before class-based fallbacks (fixing #4310223529)
-  // If a built-in provider has a profile-scoped model, use it
-  // instead of falling back to env/class-based defaults.
-  // Note: Root models follow the existing precedence (env > root), so don't override for those.
-  if (effectiveModel && isBuiltin && isProfileScopedModel(options.codexHomeOverride)) {
-    // Built-in provider with profile-scoped model configuration
-    return effectiveModel;
-  }
-
-  if (agent.name === "executor") {
-    return resolveFrontierModel(options);
-  }
-
-  switch (agent.modelClass) {
-    case "frontier":
-      return resolveFrontierModel(options);
-    case "fast":
-      return getSparkDefaultModel(options.codexHomeOverride);
-    case "standard":
-    default:
-      return resolveStandardModel(options);
-  }
+  // Custom provider: the provider's configured model (if any) is metadata only; no tier model applies.
+  return getCodexConfigEffectiveModel(options.codexHomeOverride);
 }
 
 export function composeRoleInstructions(
@@ -305,14 +167,6 @@ export function composeRoleInstructions(
       "",
       MODEL_CLASS_OVERLAYS[metadata.modelClass],
     );
-  }
-
-  const normalizedResolvedModel = resolvedModel?.trim();
-  const exactModel = normalizedResolvedModel === EXACT_GPT_5_6_TERRA_MODEL
-    ? EXACT_GPT_5_6_TERRA_MODEL
-    : metadata?.exactModel;
-  if (exactModel && normalizedResolvedModel === exactModel && !options.suppressExactModelOverlay) {
-    parts.push("", buildExactModelOverlay(exactModel));
   }
 
   if (options.nativeAgent === true && metadata?.nativeSubagentDelegation !== "allowed") {
@@ -360,7 +214,6 @@ export function composeRoleInstructionsForRole(
       modelClass: agent.modelClass,
       routingRole: agent.routingRole,
       nativeSubagentDelegation: agent.nativeSubagentDelegation,
-      exactModel: agent.exactModel,
     }
       : null,
     resolvedModel,
@@ -436,29 +289,8 @@ export function generateAgentToml(
 ): string {
   const resolvedModel = resolveAgentModel(agent, options);
   const reasoningOverride = getAgentReasoningOverride(agent.name, options.codexHomeOverride);
-  const effectiveProvider = getCodexConfigEffectiveModelProvider(options.codexHomeOverride);
-  // Use case-sensitive provider classification for consistency.
-  // Both functions use the raw provider ID without normalization to correctly
-  // distinguish between built-in "openai" and custom providers like "OpenAI".
-  const isBuiltin = isBuiltinProvider(effectiveProvider);
+  const isBuiltin = isBuiltinProvider(getCodexConfigEffectiveModelProvider(options.codexHomeOverride));
   const hasAgentModelOverride = !!getAgentModelOverride(agent.name, options.codexHomeOverride);
-  
-  // Bake exactModel pin when:
-  // - Agent has exactModel defined AND
-  // - Provider is built-in (implicit or explicit)
-  // Built-in providers are known and safe to pin; custom providers require runtime resolution.
-  const shouldBakeExactModel = isBuiltin
-    && (!!agent.exactModel || !!resolveEnvTierModel(agent, options));
-  
-  // Suppress exact model overlay (guidance text) when:
-  // - Provider is custom AND
-  // - No per-agent override is configured
-  // This prevents emitting outdated guidance for custom-provider agents that inherit at runtime.
-  const suppressOverlay = !isBuiltin && !hasAgentModelOverride;
-  
-  // Determine metadata model: use resolved model only if it's not a runtime-inherited fallback.
-  // If resolveAgentModel returns undefined (custom provider), don't emit resolved_model metadata.
-  const metadataModel = resolvedModel;
 
   return generateStandaloneAgentToml({
     name: agent.name,
@@ -466,13 +298,12 @@ export function generateAgentToml(
     developerInstructions: composeRoleInstructions(
       promptContent,
       agent,
-      metadataModel,
-      { nativeAgent: true, suppressExactModelOverlay: suppressOverlay },
+      resolvedModel,
+      { nativeAgent: true },
     ),
-    // Only include model field if agent has explicit specification: exactModel (when using built-in provider) or per-agent override.
-    // Without explicit specs, agents inherit from config.toml at runtime, staying current when config changes.
-    // For custom/third-party providers, exactModel pins are omitted to allow the agent to work with the provider's available models.
-    model: (shouldBakeExactModel || hasAgentModelOverride) ? resolvedModel : undefined,
+    // Built-in providers: always write the resolved tier model. Custom providers: only write the
+    // model when agentModels[role] is set; otherwise the agent inherits the provider default at runtime.
+    model: (isBuiltin || hasAgentModelOverride) ? resolvedModel : undefined,
     // Never include modelProvider field in agent TOMLs to prevent staleness.
     // Agents inherit model_provider from config.toml at runtime. Not pinning provider for
     // model-only overrides allows independent provider updates at runtime.

@@ -1,29 +1,37 @@
 # Agent Tiers
 
-This file defines practical tier guidance for OMX agent routing.
+This file defines work-depth guidance and model-tier routing for OMX agents.
 
 ## Mental Model
 
-OMX now separates three concepts:
+OMX separates these concepts:
 
 - `role`: what the agent is responsible for (`executor`, `planner`, `architect`)
-- `tier`: how much reasoning/cost to spend (`LOW`, `STANDARD`, `THOROUGH`)
+- task `tier`: how much work depth to use (`LOW`, `STANDARD`, `THOROUGH`)
+- model tier: which model default the role uses (`frontier`, `standard`, `spark`)
 - `posture`: how the role behaves (`frontier-orchestrator`, `deep-worker`, `fast-lane`)
-- `exactModel`: optional role pin that bypasses tier defaults when a role needs a
-  specific model contract.
 
-Use role to choose responsibility, tier to choose depth, and posture to choose operating style.
+Use role to choose responsibility, task tier to choose depth, model tier to select the model default, and posture to choose operating style.
 
-Model routing: Each role belongs to a modelClass (`frontier`, `standard`, `fast`) which determines its default model tier. Built-in defaults are `gpt-6.2-sol` for frontier and standard tiers and `gpt-6-luna` (medium reasoning) for the spark/fast tier; `planner`, `architect` and `researcher` are pinned to `gpt-6.2-astra`. Spark never inherits the configured main model.
+## Model Tiers
 
-**Native Codex subagents** inherit the Codex `config.toml` model except:
-- Pinned roles (`planner`, `architect`, `researcher`) use exact `gpt-6.2-astra` with built-in providers, unless `OMX_DEFAULT_FRONTIER_MODEL` is set
-- Per-agent `agentModels` overrides are respected
-- Env tier defaults are baked into the native TOML with built-in providers
+Per-role precedence is `.omx-config.json` `agentModels[role]` > the tier environment variable > the built-in tier default. `agentModels` is empty by default. The root `config.toml` model is for the main/leader session only; setup seeds it to `gpt-6.2-sol` and it never affects agent tiers.
 
-**Model precedence** (native TOML `model`, built-in providers): `.omx-config.json` `agentModels[role]` > env tier default (`OMX_DEFAULT_FRONTIER_MODEL` for frontier and pinned roles, `OMX_DEFAULT_SPARK_MODEL` for fast-lane roles, `OMX_DEFAULT_STANDARD_MODEL` for standard roles) > built-in pin or tier default. Setting the three env values is enough; no `agentModels` needed.
+| Model tier | Environment variable | Built-in default | Roles |
+| --- | --- | --- | --- |
+| Frontier | `OMX_DEFAULT_FRONTIER_MODEL` | `gpt-6.2-astra` | `planner`, `architect`, `critic` |
+| Standard | `OMX_DEFAULT_STANDARD_MODEL` | `gpt-6.2-sol` | Every other non-spark role, including `researcher`, `analyst`, `security-reviewer`, `test-engineer`, `code-reviewer`, `code-simplifier`, `team-executor`, and `executor` |
+| Spark | `OMX_DEFAULT_SPARK_MODEL` | `gpt-6-luna` | `explore`, `style-reviewer`, `vision` |
 
-## Tiers
+Standard never inherits the frontier model, and spark never inherits the main/leader model. The spark chain alone may also use the legacy `OMX_SPARK_MODEL` and team low-complexity model keys.
+
+With built-in or implicit providers, native agent TOML writes the resolved tier model for every role. With custom providers, it omits `model` unless `agentModels[role]` is set. A role override still takes precedence in instruction `resolved_model` metadata; otherwise, custom-provider metadata uses the configured root/profile model or is absent if none is configured.
+
+Team worker fallback uses the same `agentModels[role]` > tier environment variable > built-in tier default chain. For a known role, that tier/override model wins over the inherited leader model. A distinct `OMX_TEAM_WORKER_LAUNCH_ARGS --model` wins first.
+
+Reasoning efforts remain unchanged per role. Use `.omx-config.json` `agentReasoning` to override a role's reasoning effort.
+
+## Task Tiers
 
 - `LOW`:
   Fast lookups and narrow checks.
@@ -51,7 +59,7 @@ Model routing: Each role belongs to a modelClass (`frontier`, `standard`, `fast`
 
 ## Posture Guidance
 
-Posture and model overlays stay within the assigned role and task authority.
+Posture overlays stay within the assigned role and task authority.
 Read-only analysis or planning completes with supported conclusions or a plan;
 it does not require implementation. Diagnostics, tests, and builds apply when
 the assigned result or repository requires them. Native leaf agents report
@@ -61,7 +69,7 @@ missing specialist coverage to their leader instead of delegating it.
   - Best for steerable frontier models and leader-style roles.
   - Prioritizes intent classification, delegation, verification, and architectural judgment.
   - Typical roles: `planner`, `analyst`, `architect`, `critic`, `code-reviewer`.
-  - **Native subagent model selection:** Ralplan keeps `planner` and `architect` in this posture. With **built-in providers**, `planner` pins `gpt-6.2-astra` (medium reasoning) and `architect` pins `gpt-6.2-astra` (xhigh reasoning). With **custom providers**, these roles inherit the provider's model at runtime. The `critic` consensus gate stays on the frontier lane.
+  - Model selection follows each role's model tier; posture does not add a model override.
 
 - `deep-worker`:
   - Best for implementation-heavy roles that should carry work to completion.
@@ -70,6 +78,6 @@ missing specialist coverage to their leader instead of delegating it.
 
 - `fast-lane`:
   - Best for triage, search, and narrow synthesis.
-  - Model selection: Inherits the configured frontier/main model unless an explicit spark-lane override is set. This prevents inversion where a cheap configured leader would paradoxically cause expensive models to be used in fast lanes. Use `OMX_DEFAULT_SPARK_MODEL` (for Team workers) or `agentModels.explore`/etc. (for native agents) to override this inheritance.
+  - Model selection uses the spark tier: `agentModels[role]`, then `OMX_DEFAULT_SPARK_MODEL`, then built-in `gpt-6-luna`.
   - Prioritizes quick routing, concise search, and escalation over deep autonomous work.
   - Typical roles: `explore`, `writer`, and lightweight research/search specialists.

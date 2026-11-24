@@ -57,6 +57,7 @@ import {
   setTerminalEpochStartedHookForTest,
 } from '../runtime.js';
 import {
+  resolveAgentDefaultModel,
   resolveAgentReasoningEffort,
   resolveTeamLowComplexityDefaultModel,
   TEAM_WORKER_INHERITED_MODEL_ENV,
@@ -963,7 +964,7 @@ describe('runtime', () => {
     assert.deepEqual(args, ['--no-alt-screen', '--model', expectedLowComplexityModel()]);
   });
 
-  it('keeps an explicit direct policy authoritative while preserving inherited model and role reasoning', () => {
+  it('keeps an explicit direct policy authoritative while using the role tier model and role reasoning', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       {
         OMX_TEAM_WORKER_LAUNCH_ARGS: '--sandbox=workspace-write',
@@ -977,9 +978,8 @@ describe('runtime', () => {
     assert.deepEqual(args, [
       '--sandbox', 'workspace-write',
       '-c', 'model_reasoning_effort="medium"',
-      '--model', 'leader-model',
+      '--model', resolveAgentDefaultModel('executor'),
     ]);
-
   });
 
   it('rejects explicit mixed worker policy before initial team state or workers are created', async () => {
@@ -1567,19 +1567,28 @@ require('fs').writeFileSync(process.env.OMX_NON_CODEX_CAPTURE, process.argv.slic
     );
   });
 
-  it('resolveWorkerLaunchArgsFromEnv uses inherited leader model for all agent types', () => {
+  it('resolveWorkerLaunchArgsFromEnv uses the role tier model over the inherited leader model', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'executor',
       'gpt-4.1',
     );
-    assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1']);
+    assert.deepEqual(args, ['--no-alt-screen', '--model', resolveAgentDefaultModel('executor')]);
   });
 
-  it('resolveWorkerLaunchArgsFromEnv uses inherited leader model over low-complexity default', () => {
+  it('resolveWorkerLaunchArgsFromEnv uses the spark tier model over the inherited leader model for spark roles', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'explore',
+      'gpt-4.1',
+    );
+    assert.deepEqual(args, ['--no-alt-screen', '--model', expectedLowComplexityModel()]);
+  });
+
+  it('resolveWorkerLaunchArgsFromEnv falls back to the inherited leader model for unknown roles', () => {
+    const args = resolveWorkerLaunchArgsFromEnv(
+      { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
+      'custom-unknown-role',
       'gpt-4.1',
     );
     assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-4.1']);
