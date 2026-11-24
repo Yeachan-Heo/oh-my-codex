@@ -3076,7 +3076,7 @@ async function resolveTeamWorkerStopDecision(
       kind: "blocked",
       stateDir,
       workerContext,
-      allowRepeatDuringStopHook: !workerRunStateIsTerminal,
+      allowRepeatDuringStopHook: !workerRunStateIsTerminal && statusValue !== "blocked",
       output: {
         decision: "block",
         reason:
@@ -3121,8 +3121,7 @@ async function buildDeclaredTeamWorkerStopOutput(
   if (isStopExempt(payload)) return null;
   const decision = await resolveTeamWorkerStopDecision(cwd);
   if (decision.kind === "blocked") {
-    if ((payload.stop_hook_active === true || payload.stopHookActive === true) && !decision.allowRepeatDuringStopHook) return null;
-    return decision.output;
+    return await returnPersistentStopBlock(payload, decision.stateDir, "team-worker-stop", safeString(decision.output.stopReason), decision.output, undefined, { allowRepeatDuringStopHook: decision.allowRepeatDuringStopHook });
   }
   if (decision.kind === "allowed") {
     try {
