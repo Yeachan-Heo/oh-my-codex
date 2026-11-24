@@ -101,13 +101,98 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
       const installed = await readFile(executorPath, 'utf-8');
       const customized = installed
         .replace(/^model = ".*"$/m, 'model = "gpt-5.5"')
-        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "low"');
+        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "low"')
+        .replace('<identity>', '<identity>\nManual user instruction');
       assert.notEqual(customized, installed);
       await writeFile(executorPath, customized);
 
       await setup({ scope: 'project' });
 
       assert.equal(await readFile(executorPath, 'utf-8'), customized);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes a native agent when only its generated model differs from the current config', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agent-model-refresh-'));
+    const previousCwd = process.cwd();
+    const previousFrontierModel = process.env.OMX_DEFAULT_FRONTIER_MODEL;
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+      delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+
+      await setup({ scope: 'project' });
+
+      const codexHome = join(wd, '.codex');
+      const plannerPath = join(codexHome, 'agents', 'planner.toml');
+      const planner = await readFile(plannerPath, 'utf-8');
+      const staleModel = 'legacy-frontier-model';
+      const stalePlanner = planner
+        .replace(/^model = ".*"$/m, `model = "${staleModel}"`)
+        .replace(/^- resolved_model: .*$/m, `- resolved_model: ${staleModel}`);
+      await writeFile(plannerPath, stalePlanner);
+      await writeFile(
+        join(codexHome, '.omx-config.json'),
+        JSON.stringify({ env: { OMX_DEFAULT_FRONTIER_MODEL: 'configured-frontier-model' } }),
+      );
+
+      await setup({ scope: 'project' });
+
+      const refreshedPlanner = await readFile(plannerPath, 'utf-8');
+      assert.match(refreshedPlanner, /^model = "configured-frontier-model"$/m);
+      assert.match(refreshedPlanner, /^- resolved_model: configured-frontier-model$/m);
+      assert.doesNotMatch(refreshedPlanner, new RegExp(staleModel));
+    } finally {
+      if (typeof previousFrontierModel === 'string') process.env.OMX_DEFAULT_FRONTIER_MODEL = previousFrontierModel;
+      else delete process.env.OMX_DEFAULT_FRONTIER_MODEL;
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('removes stale model, provider, and reasoning pins for custom-provider agents', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-custom-provider-agent-refresh-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const codexHome = join(wd, '.codex');
+      const configPath = join(codexHome, 'config.toml');
+      const config = await readFile(configPath, 'utf-8');
+      await writeFile(
+        configPath,
+        config.replace(
+          /^model = ".*"$/m,
+          'model = "custom-root-model"\nmodel_provider = "custom-provider"\n\n[model_providers.custom-provider]\nname = "Custom provider"\nbase_url = "https://example.invalid/v1"\nwire_api = "responses"',
+        ),
+      );
+
+      const plannerPath = join(codexHome, 'agents', 'planner.toml');
+      const planner = await readFile(plannerPath, 'utf-8');
+      const legacyPlanner = planner
+        .replace(/^model = ".*"$/m, 'model = "legacy-model"')
+        .replace(/^model_reasoning_effort = ".*"$/m, 'model_reasoning_effort = "high"')
+        .replace(
+          /^(description = .*\n)/m,
+          '$1model_provider = "legacy-provider"\n',
+        )
+        .replace(/^- resolved_model: .*$/m, '- resolved_model: legacy-model');
+      await writeFile(plannerPath, legacyPlanner);
+
+      await setup({ scope: 'project' });
+
+      const refreshedPlanner = await readFile(plannerPath, 'utf-8');
+      assert.doesNotMatch(refreshedPlanner, /^model = /m);
+      assert.doesNotMatch(refreshedPlanner, /^model_provider = /m);
+      assert.match(refreshedPlanner, /^model_reasoning_effort = "medium"$/m);
+      assert.match(refreshedPlanner, /^- resolved_model: custom-root-model$/m);
+      assert.doesNotMatch(refreshedPlanner, /legacy-(?:model|provider)/);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
