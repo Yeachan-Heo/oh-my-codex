@@ -1,26 +1,22 @@
-# oh-my-codex v0.22.23
+# oh-my-codex v0.22.24
 
 ## Summary
 
-This patch release improves the update flow to automatically refresh native agents after package updates, switches the notify fallback watcher to file-system events, removes redundant agent refresh suppression logic, restores rollout replay during reconciliation, and clarifies Team and native model routing in the AGENTS.md templates.
+This patch release improves native manifest handling for dev versions by respecting explicit environment overrides, and enhances documentation clarity for workflow runtime prerequisites and template validation checks.
 
 ## Fixed
 
-- **OMX UPDATE REFRESHES NATIVE AGENTS AFTER PACKAGE UPDATES (#4167):** Fixes #4166. When OMX packages are updated via npm, the setup command now automatically refreshes native agent TOMLs without requiring manual re-setup. The update hook detects package changes and triggers native agent refresh.
-
-- **NOTIFY FALLBACK WATCHER USES FS.WATCH INSTEAD OF POLLING (#4170):** Improves notify watcher performance by switching from polling to file-system events. The fallback notify watcher now uses `fs.watch()` for more efficient real-time file monitoring when native fsevents are unavailable.
-
-- **REMOVE AGENT REFRESH SUPPRESSION FLAG (#4172):** Removes the `OMX_SKIP_NATIVE_AGENT_REFRESH` environment variable and associated suppression logic, simplifying the native agent refresh flow during updates.
-
-- **REPLAY ROLLOUTS FOUND DURING RECONCILIATION (#4173):** Restores rollout replay functionality during reconciliation. Rollouts that were paused or incomplete are now replayed when their parent task is reconciled.
+- **NATIVE MANIFEST HYDRATION RESPECTS ENV OVERRIDES FOR DEV VERSIONS (#4179):** Fixes #4166 regression. When OMX runs a dev version, the manifest request is now correctly skipped only when neither `OMX_NATIVE_MANIFEST_URL` nor `OMX_NATIVE_RELEASE_BASE_URL` environment variables are set. If either override is explicitly set, the manifest is loaded as requested, allowing dev builds to work with custom manifest endpoints. Error messages in sparkshell and api were also improved to suggest local builds or binary path overrides for dev versions instead of network reconnection.
 
 ## Changed
 
-- **DOCS: CLARIFY TEAM AND NATIVE MODEL ROUTING IN AGENTS.MD TEMPLATES (#4174):** Template documentation in AGENTS.md now clarifies how Team executor, native model routing, and agent discovery interact. This helps users understand model tier selection and agent resolution behavior.
+- **DOCS: CLARIFY WORKFLOW RUNTIME PREREQUISITES (#4176):** Template documentation now clarifies the runtime requirements and expectations for workflow execution, helping users understand setup and execution environment requirements.
+
+- **DOCS: SCOPE TEMPLATE VALIDATION TO APPLICABLE CHECKS (#4178):** Template validation guidance is now scoped to checks that apply in the current context, reducing noise and improving clarity for template maintainers and validators.
 
 ## Compatibility
 
-Behavior change for setup and update commands. Agents are now automatically refreshed after package updates. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.23`.
+Behavior change for manifest loading in development versions. The `-dev` version suffix now only skips manifest requests when no manifest URL environment variables are set; explicit environment overrides are always respected. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.24`.
 
 ## Verification
 
@@ -29,9 +25,9 @@ Behavior change for setup and update commands. Agents are now automatically refr
 
 ## Contributors
 
-Thanks to iqdoctor for improving the update experience and to the team for delivering better agent management and documentation.
+Thanks to Valeriy Pavlovich and the team for improving manifest handling and documentation clarity.
 
-**Full Changelog**: [`v0.22.22...v0.22.23`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.22...v0.22.23)
+**Full Changelog**: [`v0.22.23...v0.22.24`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.23...v0.22.24)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
