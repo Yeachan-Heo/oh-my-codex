@@ -5461,7 +5461,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       assert.notEqual(workerStop.outputJson?.stopReason, "session_scope_unmatched");
       assert.notEqual(workerStop.outputJson?.stopReason, "session_pointer_unusable");
       assert.equal(await readFile(leaderRalphPath, "utf-8"), leaderRalphBeforeWorkerStop);
-      assert.equal(existsSync(rootNativeStopPath), true, "worker Stop should create native-stop-state.json for dedup tracking");
+      assert.equal(existsSync(rootNativeStopPath), false);
 
       delete process.env.OMX_TEAM_INTERNAL_WORKER;
       delete process.env.OMX_TEAM_WORKER;
