@@ -120,7 +120,9 @@ async function main(): Promise<void> {
       env: payload.ownership.environment,
       log: (message) => appendFile(payload!.logPath, `${message}\n`).then(() => undefined),
     });
-    const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: { ...payload.ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'inherit', windowsHide: true });
+    const setupEnvironment = { ...payload.ownership.environment };
+    delete setupEnvironment[SKIP_NATIVE_AGENT_REFRESH_ENV];
+    const setup = spawnSync(process.execPath, [cliEntry, ...payload.setupArgs], { cwd: payload.cwd, env: setupEnvironment, stdio: 'inherit', windowsHide: true });
     if (setup.error || setup.status !== 0) throw new Error(setup.error?.message || `setup exited ${setup.status}`);
     await finalizeSuccessfulUpdate(payload.ownership);
   } catch (error) {

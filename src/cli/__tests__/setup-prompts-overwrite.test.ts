@@ -228,7 +228,7 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
     }
   });
 
-  it('skips native agent TOMLs entirely during background update-check setup refreshes', async () => {
+  it('honors explicit native-agent refresh suppression during setup', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-prompts-'));
     const previousCwd = process.cwd();
     const previousSkipNativeAgentRefresh = process.env.OMX_SKIP_NATIVE_AGENT_REFRESH;
