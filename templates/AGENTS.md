@@ -135,7 +135,7 @@ Team mode is the structured multi-agent surface. Use it when durable staged coor
 **Codex Team worker launch**
 
 - OMX resolves each worker's model when it builds the launch arguments. A model supplied in `OMX_TEAM_WORKER_LAUNCH_ARGS` takes priority when it differs from the inherited leader launch model.
-- Otherwise, a resolved role model takes priority. Resolve the role from `.omx-config.json` `agentModels[role]`, then the applicable tier. The tiers use `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, or `OMX_DEFAULT_SPARK_MODEL` with built-in defaults. The spark resolver also accepts legacy `OMX_SPARK_MODEL` and low-complexity settings.
+- Otherwise, a resolved role model takes priority. Resolve the role from `.omx-config.json` `agentModels[role]`, then the applicable tier. The tiers use `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, or `OMX_DEFAULT_SPARK_MODEL` with built-in defaults. For spark roles only, the resolver also accepts legacy `OMX_SPARK_MODEL` and low-complexity settings.
 - If no role model resolves, use the inherited leader launch model when available. Tier resolution is independent of the root `config.toml` model. OMX emits one `--model <value>` flag when it resolves a model. Otherwise, Codex uses its normal model configuration.
 
 **Native Codex role settings**
