@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync } from 'fs';
+import { existsSync, watch as watchDirectory, type FSWatcher } from 'fs';
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { spawn, type ChildProcess } from 'child_process';
 import { dirname, join, resolve } from 'path';
@@ -132,6 +132,17 @@ const idleMaxPollMs = Math.max(
   pollMs,
   asNumber(argValue('--idle-max-poll-ms', process.env.OMX_NOTIFY_FALLBACK_IDLE_MAX_POLL_MS || '1000'), 1000),
 );
+// Directory events are primary; this repairs missed events and date-directory changes.
+const rolloutDiscoveryIntervalMs = Math.max(
+  pollMs,
+  asNumber(argValue('--discovery-interval-ms', '60000'), 60_000),
+);
+const rolloutDiscoveryNamedEventCooldownMs = 250;
+const rolloutDiscoveryFilenameLessEventCooldownMs = 5_000;
+const trackedFileFilenameLessEventCooldownMs = 1_000;
+// File events are also primary; this catches changes if the OS watcher drops one.
+const trackedFileReconcileIntervalMs = 30_000;
+const rolloutWatcherRetryIntervalMs = 5_000;
 const parentPid = Math.trunc(asNumber(argValue('--parent-pid', String(process.ppid || 0)), process.ppid || 0));
 const startedAt = Date.now();
 const fileWindowMs = runOnce ? 15000 : 30000;
@@ -290,6 +301,23 @@ interface CycleActivitySummary {
 
 const fileState = new Map<string, WatcherFileMeta>();
 const seenTurnKeys = new Set<string>();
+let rolloutDiscoveryScanCount = 0;
+let lastRolloutDiscoveryAt: string | null = null;
+let lastRolloutDiscoveryAtMs = 0;
+let rolloutDiscoveryPending = true;
+let rolloutDiscoveryPendingAtMs = 0;
+let includeRecentRolloutEventsOnNextDiscovery = false;
+let lastTrackedFileReconcileAtMs = startedAt;
+let trackedFileCheckCount = 0;
+let rolloutDirectoryFilenameLessEventCount = 0;
+let lastFilenameLessFileCheckAtMs = 0;
+const dirtyTrackedFiles = new Set<string>();
+const knownRolloutPaths = new Set<string>();
+const newRolloutPaths = new Set<string>();
+const filenameLessDirtyDirectories = new Set<string>();
+const rolloutDirectoryWatchers = new Map<string, FSWatcher>();
+const rolloutDirectoryWatchErrors = new Map<string, string>();
+let rolloutDirectoryWatcherRetryAtMs = 0;
 let stopping = false;
 let shutdownPromise: Promise<void> | null = null;
 let activeNotifyHookChild: ChildProcess | null = null;
@@ -1299,7 +1327,18 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
     pid_file: runOnce ? null : pidFilePath,
     max_lifetime_ms: maxLifetimeMs,
     tracked_files: fileState.size,
+    tracked_file_checks: trackedFileCheckCount,
+    tracked_file_reconcile_interval_ms: trackedFileReconcileIntervalMs,
     seen_turns: seenTurnKeys.size,
+    rollout_discovery: {
+      interval_ms: rolloutDiscoveryIntervalMs,
+      scan_count: rolloutDiscoveryScanCount,
+      last_scan_at: lastRolloutDiscoveryAt,
+      watching_directories: rolloutDirectoryWatchers.size,
+      filename_less_events: rolloutDirectoryFilenameLessEventCount,
+      watcher_retry_interval_ms: rolloutWatcherRetryIntervalMs,
+      watcher_errors: Array.from(rolloutDirectoryWatchErrors, ([directory, error]) => ({ directory, error })),
+    },
     dispatch_drain: {
       enabled: true,
       max_per_tick: dispatchTickMax,
@@ -1465,6 +1504,7 @@ async function runFallbackAutoNudgeTick(): Promise<void> {
 async function requestShutdown(reason: string, signal: string | null = null): Promise<void> {
   if (shutdownPromise) return shutdownPromise;
   stopping = true;
+  closeRolloutDirectoryWatchers();
   shutdownPromise = (async () => {
     await terminateActiveNotifyHookChild();
     await activeDeliveryPromise?.catch(() => undefined);
@@ -1574,13 +1614,122 @@ function sessionDirs(): string[] {
   return Array.from(new Set([today, yesterday]));
 }
 
+function markTrackedFilesInDirectoryDirty(dir: string): void {
+  for (const path of fileState.keys()) {
+    if (dirname(path) === dir) dirtyTrackedFiles.add(path);
+  }
+}
+
+function requestRolloutDiscoveryAfter(delayMs: number): void {
+  const requestedAtMs = Date.now() + delayMs;
+  if (!rolloutDiscoveryPending || rolloutDiscoveryPendingAtMs === 0) {
+    rolloutDiscoveryPendingAtMs = requestedAtMs;
+  } else {
+    rolloutDiscoveryPendingAtMs = Math.min(rolloutDiscoveryPendingAtMs, requestedAtMs);
+  }
+  rolloutDiscoveryPending = true;
+}
+
+function flushFilenameLessDirtyDirectories(now: number): boolean {
+  if (filenameLessDirtyDirectories.size === 0
+    || now - lastFilenameLessFileCheckAtMs < trackedFileFilenameLessEventCooldownMs) return false;
+  for (const dir of filenameLessDirtyDirectories) markTrackedFilesInDirectoryDirty(dir);
+  filenameLessDirtyDirectories.clear();
+  lastFilenameLessFileCheckAtMs = now;
+  return true;
+}
+
+function handleRolloutDirectoryEvent(dir: string, filename: string | Buffer | null): void {
+  const name = filename?.toString();
+  if (!name) {
+    rolloutDirectoryFilenameLessEventCount += 1;
+    includeRecentRolloutEventsOnNextDiscovery = true;
+    filenameLessDirtyDirectories.add(dir);
+    const now = Date.now();
+    flushFilenameLessDirtyDirectories(now);
+    requestRolloutDiscoveryAfter(rolloutDiscoveryFilenameLessEventCooldownMs);
+    return;
+  }
+  if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) return;
+
+  const path = join(dir, name);
+  if (fileState.has(path)) {
+    dirtyTrackedFiles.add(path);
+    return;
+  }
+  if (knownRolloutPaths.has(path)) return;
+  newRolloutPaths.add(path);
+  requestRolloutDiscoveryAfter(rolloutDiscoveryNamedEventCooldownMs);
+}
+
+function recordRolloutDirectoryWatchError(dir: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : safeString(error);
+  rolloutDirectoryWatchErrors.set(dir, (message || 'unknown watch error').slice(0, 240));
+  rolloutDirectoryWatcherRetryAtMs = Date.now() + rolloutWatcherRetryIntervalMs;
+  includeRecentRolloutEventsOnNextDiscovery = true;
+}
+
+function refreshRolloutDirectoryWatchers(): void {
+  const isInitialDiscovery = rolloutDiscoveryScanCount === 0;
+  const wantedDirs = new Set(sessionDirs());
+  const existingDirs = new Set(Array.from(wantedDirs).filter((dir) => existsSync(dir)));
+  for (const [dir, watcher] of rolloutDirectoryWatchers) {
+    if (existingDirs.has(dir)) continue;
+    watcher.close();
+    rolloutDirectoryWatchers.delete(dir);
+  }
+  for (const dir of rolloutDirectoryWatchErrors.keys()) {
+    if (!existingDirs.has(dir)) rolloutDirectoryWatchErrors.delete(dir);
+  }
+  if (rolloutDirectoryWatchErrors.size === 0) rolloutDirectoryWatcherRetryAtMs = 0;
+
+  for (const dir of existingDirs) {
+    if (rolloutDirectoryWatchers.has(dir)) continue;
+    const recovering = rolloutDirectoryWatchErrors.has(dir);
+    try {
+      const watcher = watchDirectory(dir, { persistent: false }, (_eventType, filename) => {
+        handleRolloutDirectoryEvent(dir, filename);
+      });
+      watcher.on('error', (error) => {
+        if (rolloutDirectoryWatchers.get(dir) !== watcher) return;
+        rolloutDirectoryWatchers.delete(dir);
+        watcher.close();
+        recordRolloutDirectoryWatchError(dir, error);
+        requestRolloutDiscoveryAfter(0);
+        lastTrackedFileReconcileAtMs = 0;
+      });
+      rolloutDirectoryWatchers.set(dir, watcher);
+      rolloutDirectoryWatchErrors.delete(dir);
+      if (!isInitialDiscovery) includeRecentRolloutEventsOnNextDiscovery = true;
+      if (recovering) {
+        requestRolloutDiscoveryAfter(0);
+        lastTrackedFileReconcileAtMs = 0;
+      }
+    } catch (error) {
+      recordRolloutDirectoryWatchError(dir, error);
+    }
+  }
+  if (rolloutDirectoryWatchErrors.size === 0) rolloutDirectoryWatcherRetryAtMs = 0;
+}
+
+function retryFailedRolloutDirectoryWatchersIfDue(now: number): void {
+  if (rolloutDirectoryWatchErrors.size === 0 || now < rolloutDirectoryWatcherRetryAtMs) return;
+  rolloutDirectoryWatcherRetryAtMs = now + rolloutWatcherRetryIntervalMs;
+  refreshRolloutDirectoryWatchers();
+}
+
+function closeRolloutDirectoryWatchers(): void {
+  for (const watcher of rolloutDirectoryWatchers.values()) watcher.close();
+  rolloutDirectoryWatchers.clear();
+}
+
 async function readFirstLine(path: string): Promise<string> {
   const content = await readFile(path, 'utf-8');
   const idx = content.indexOf('\n');
   return idx >= 0 ? content.slice(0, idx) : content;
 }
 
-function shouldTrackSessionMeta(line: string): string | null {
+function parseSessionMeta(line: string): { threadId: string; cwd: string } | null {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(line) as Record<string, unknown>;
@@ -1589,12 +1738,14 @@ function shouldTrackSessionMeta(line: string): string | null {
   }
   if (!parsed || parsed.type !== 'session_meta' || !parsed.payload) return null;
   const payload = parsed.payload as Record<string, unknown>;
-  if (safeString(payload.cwd) !== cwd) return null;
   const threadId = safeString(payload.id);
-  return threadId || null;
+  if (!threadId) return null;
+  return { threadId, cwd: safeString(payload.cwd) };
 }
 
 async function discoverRolloutFiles(): Promise<string[]> {
+  rolloutDiscoveryScanCount += 1;
+  lastRolloutDiscoveryAt = new Date().toISOString();
   const discovered: string[] = [];
   for (const dir of sessionDirs()) {
     if (!existsSync(dir)) continue;
@@ -1740,19 +1891,46 @@ async function processLine(meta: WatcherFileMeta, line: string, filePath: string
   }
 }
 
-async function ensureTrackedFiles(): Promise<void> {
+async function ensureTrackedFiles(includeRecentEvents = false): Promise<void> {
   const files = await discoverRolloutFiles();
   for (const path of files) {
-    if (fileState.has(path)) continue;
+    if (fileState.has(path) || knownRolloutPaths.has(path)) continue;
     const line = await readFirstLine(path).catch(() => '');
-    const threadId = shouldTrackSessionMeta(line);
-    if (!threadId) continue;
+    const sessionMeta = parseSessionMeta(line);
+    if (!sessionMeta) continue;
     const fileStat = await stat(path).catch(() => null);
     if (!fileStat) continue;
+    knownRolloutPaths.add(path);
+    if (sessionMeta.cwd !== cwd) {
+      newRolloutPaths.delete(path);
+      continue;
+    }
     const size = fileStat.size || 0;
-    const offset = runOnce ? 0 : size;
-    fileState.set(path, { threadId, offset, size, partial: '', decoder: new StringDecoder('utf8') });
+    // Later scans may recover rollouts whose filesystem event was dropped.
+    const replayRecentEvents = runOnce
+      || includeRecentEvents
+      || rolloutDiscoveryScanCount > 1
+      || newRolloutPaths.has(path);
+    const offset = replayRecentEvents ? 0 : size;
+    fileState.set(path, { threadId: sessionMeta.threadId, offset, size, partial: '', decoder: new StringDecoder('utf8') });
+    if (replayRecentEvents) dirtyTrackedFiles.add(path);
+    newRolloutPaths.delete(path);
   }
+}
+
+async function ensureTrackedFilesWhenDue(): Promise<void> {
+  const now = Date.now();
+  if (!runOnce) retryFailedRolloutDirectoryWatchersIfDue(now);
+  const reconciliationDue = now - lastRolloutDiscoveryAtMs >= rolloutDiscoveryIntervalMs;
+  const eventScanDue = rolloutDiscoveryPending && now >= rolloutDiscoveryPendingAtMs;
+  if (!reconciliationDue && !eventScanDue) return;
+  rolloutDiscoveryPending = false;
+  rolloutDiscoveryPendingAtMs = 0;
+  lastRolloutDiscoveryAtMs = now;
+  if (!runOnce) refreshRolloutDirectoryWatchers();
+  const includeRecentEvents = includeRecentRolloutEventsOnNextDiscovery;
+  includeRecentRolloutEventsOnNextDiscovery = false;
+  await ensureTrackedFiles(includeRecentEvents);
 }
 
 function splitBufferedLines(partial: string, delta: string): { lines: string[]; partial: string } {
@@ -1796,7 +1974,16 @@ async function readFileDelta(
 
 async function pollFiles(): Promise<number> {
   let processedCount = 0;
-  for (const [path, meta] of fileState.entries()) {
+  flushFilenameLessDirtyDirectories(Date.now());
+  const reconcileDue = runOnce || Date.now() - lastTrackedFileReconcileAtMs >= trackedFileReconcileIntervalMs;
+  const pathsToCheck = reconcileDue ? new Set(fileState.keys()) : new Set(dirtyTrackedFiles);
+  if (reconcileDue && !runOnce) lastTrackedFileReconcileAtMs = Date.now();
+
+  for (const path of pathsToCheck) {
+    dirtyTrackedFiles.delete(path);
+    const meta = fileState.get(path);
+    if (!meta) continue;
+    trackedFileCheckCount += 1;
     const fileStat = await stat(path).catch(() => null);
     if (!fileStat) continue;
     const currentSize = fileStat.size || 0;
@@ -1989,7 +2176,7 @@ async function runWatcherCycle(): Promise<number> {
     lastAuthorityBackoff = createAuthorityBackoffState('');
   }
   if (!authorityOnly) {
-    await ensureTrackedFiles();
+    await ensureTrackedFilesWhenDue();
     processedRolloutCount = await pollFiles();
   }
   const controlPlaneSummary = await pumpTeamControlPlaneTick();

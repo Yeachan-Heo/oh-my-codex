@@ -84,7 +84,6 @@ const DEV_INSTALL_SOURCE = 'github:Yeachan-Heo/oh-my-codex#dev';
 const DEV_REPOSITORY_URL = 'https://github.com/Yeachan-Heo/oh-my-codex.git';
 const DEV_REPOSITORY_BRANCH = 'dev';
 const DEV_UPDATE_TIMEOUT_MS = 300000;
-const SKIP_NATIVE_AGENT_REFRESH_ENV = 'OMX_SKIP_NATIVE_AGENT_REFRESH';
 
 export function resolveUpdateChannelConfig(channel: UpdateChannel = 'stable'): UpdateChannelConfig {
   if (channel === 'dev') {
@@ -481,7 +480,7 @@ export function runDeferredGlobalUpdate(
     const workerFingerprint = createHash('sha256').update(readFileSync(workerPath)).digest('hex');
     const stagedDirectory = stage;
     const child = spawnProcess(process.execPath, [workerPath, payloadPath, payloadFingerprint, workerFingerprint], {
-      cwd, detached: true, env: { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' }, stdio: 'ignore', windowsHide: true,
+      cwd, detached: true, env: ownership.environment, stdio: 'ignore', windowsHide: true,
     });
     child.once('error', (error) => {
       try {
@@ -756,7 +755,7 @@ async function runSetupRefresh(cwd: string, ownership?: PackageManagerOwnership)
     cwd,
     spawnSync,
     process.execPath,
-    { ...ownership.environment, [SKIP_NATIVE_AGENT_REFRESH_ENV]: '1' },
+    ownership.environment,
   );
 }
 

@@ -1243,7 +1243,10 @@ describe('runDeferredGlobalUpdate', () => {
         }) as typeof import('node:child_process').spawn,
         'win32',
         12345,
-        frozenNpmOwnership,
+        {
+          ...frozenNpmOwnership,
+          environment: { ...frozenNpmOwnership.environment },
+        },
       );
 
       assert.equal(result.ok, true);
@@ -1263,7 +1266,10 @@ describe('runDeferredGlobalUpdate', () => {
         cwd,
         logPath: result.logPath,
         parentPid: 12345,
-        ownership: frozenNpmOwnership,
+        ownership: {
+          ...frozenNpmOwnership,
+          environment: { ...frozenNpmOwnership.environment },
+        },
         setupArgs: ['setup'],
       });
       assert.deepEqual(listeners, ['error']);
@@ -1271,7 +1277,7 @@ describe('runDeferredGlobalUpdate', () => {
       assert.equal(calls[0]?.options.stdio, 'ignore');
       assert.equal(calls[0]?.options.windowsHide, true);
       assert.equal(calls[0]?.options.cwd, cwd);
-      assert.deepEqual(calls[0]?.options.env, { OMX_UPDATE_TEST: '1', OMX_SKIP_NATIVE_AGENT_REFRESH: '1' });
+      assert.deepEqual(calls[0]?.options.env, { OMX_UPDATE_TEST: '1' });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1337,7 +1343,7 @@ describe('runDeferredGlobalUpdate', () => {
       assert.equal(calls.length, 1);
       const payload = JSON.parse(await readFile(calls[0]?.args[1] ?? '', 'utf-8')) as { setupArgs: string[] };
       assert.deepEqual(payload.setupArgs, ['setup', '--scope', 'user', '--plugin', '--mcp', 'none', '--disable-team']);
-      assert.equal((calls[0].options as { env?: NodeJS.ProcessEnv } | undefined)?.env?.OMX_SKIP_NATIVE_AGENT_REFRESH, '1');
+      assert.deepEqual((calls[0].options as { env?: NodeJS.ProcessEnv } | undefined)?.env, frozenNpmOwnership.environment);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1400,7 +1406,7 @@ describe('runDeferredGlobalUpdate', () => {
 
 
 describe('deferred update worker', () => {
-  it('retains refresh suppression and removes the verified staging directory after execution', async () => {
+  it('allows native agent refresh and removes the verified staging directory after execution', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-'));
     const globalRoot = join(root, 'global');
     const packageRoot = join(globalRoot, PACKAGE_NAME);
@@ -1419,7 +1425,7 @@ describe('deferred update worker', () => {
       await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: PACKAGE_NAME, version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
       await writeFile(cliPath, [
         "import { existsSync, writeFileSync } from 'node:fs';",
-        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), skip: process.env.OMX_SKIP_NATIVE_AGENT_REFRESH, stampPresent: existsSync(process.env.OMX_UPDATE_STAMP_PATH) }));",
+        "writeFileSync(process.env.OMX_UPDATE_CAPTURE_PATH, JSON.stringify({ args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, stampPresent: existsSync(process.env.OMX_UPDATE_STAMP_PATH) }));",
       ].join('\n'));
       await writeFile(npmCliPath, [
         "const args = process.argv.slice(2);",
@@ -1453,7 +1459,7 @@ describe('deferred update worker', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), {
         args: ['setup', '--scope', 'project'],
-        skip: '1',
+        codexHome,
         stampPresent: false,
       });
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
@@ -1652,10 +1658,9 @@ describe('post-update setup refresh handoff', () => {
     assert.equal(receivedTimeout, undefined);
   });
 
-  it('passes only the frozen ownership environment to the immediate setup child', () => {
+  it('passes the frozen environment unchanged to the immediate update setup child', () => {
     const frozenEnvironment: NodeJS.ProcessEnv = {
       CODEX_HOME: '/frozen/codex-home',
-      OMX_SKIP_NATIVE_AGENT_REFRESH: '1',
     };
     let receivedEnvironment: NodeJS.ProcessEnv | undefined;
 
@@ -1671,8 +1676,7 @@ describe('post-update setup refresh handoff', () => {
     );
 
     assert.equal(result.ok, true);
-    assert.deepEqual(receivedEnvironment, frozenEnvironment);
-    assert.equal(receivedEnvironment?.OMX_SKIP_NATIVE_AGENT_REFRESH, '1');
+    assert.deepEqual(receivedEnvironment, { CODEX_HOME: '/frozen/codex-home' });
   });
 
   it('passes persisted plugin setup choices to the updated CLI refresh', async () => {

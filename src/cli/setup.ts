@@ -207,7 +207,6 @@ interface SetupOptions {
 	scope?: SetupScope;
 	verbose?: boolean;
 	agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
-	skipNativeAgentRefresh?: boolean;
 	/** Trusted setup-owned receipt location, never inside the user skills directory. */
 	skillReceiptPath?: string;
 	setupScopePrompt?: (defaultScope: SetupScope) => Promise<SetupScope>;
@@ -292,7 +291,6 @@ const PROJECT_GITIGNORE_ENTRIES = [
 const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
-const SKIP_NATIVE_AGENT_REFRESH_ENV = "OMX_SKIP_NATIVE_AGENT_REFRESH";
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
 const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
 const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
@@ -4457,7 +4455,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		teamMode: requestedTeamMode,
 		scope: requestedScope,
 		verbose = false,
-		skipNativeAgentRefresh: requestedSkipNativeAgentRefresh = false,
 		setupScopePrompt,
 		persistedSetupReviewPrompt,
 		installModePrompt,
@@ -4581,9 +4578,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		)
 		?? "enabled";
 	const isTeamModeEnabled = teamModeEnabled(resolvedTeamMode);
-	const skipNativeAgentRefresh =
-		requestedSkipNativeAgentRefresh ||
-		process.env[SKIP_NATIVE_AGENT_REFRESH_ENV] === "1";
 	const scopeDirs = resolveScopeDirectories(resolvedScope.scope, projectRoot);
 	if (!dryRun) {
 		const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
@@ -4995,12 +4989,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 
 	// Step 4: Install native agent configs
 	console.log("[4/8] Installing native agent configs...");
-	if (skipNativeAgentRefresh) {
-		summary.nativeAgents = createEmptyCategorySummary();
-		console.log(
-			"  Native agent refresh skipped for background update-check setup refresh.\n",
-		);
-	} else if (isPluginInstallMode) {
+	if (isPluginInstallMode) {
 		summary.nativeAgents = await refreshNativeAgentConfigs(
 			pkgRoot,
 			scopeDirs.nativeAgentsDir,

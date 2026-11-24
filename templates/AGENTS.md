@@ -132,16 +132,16 @@ Team mode is the structured multi-agent surface. Use it when durable staged coor
 </team_pipeline>
 
 <team_model_resolution>
-Team/Swarm worker model selection (for worker roles only, NOT native Codex subagents):
+**Codex Team worker launch**
 
-- A per-worker `OMX_TEAM_WORKER_LAUNCH_ARGS --model` that differs from the inherited leader `--model` wins first.
-- For a known role, its tier/override model wins over an inherited leader model. Precedence per role: `.omx-config.json` `agentModels[role]` > tier env var (`OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL` or `OMX_DEFAULT_SPARK_MODEL`) > built-in tier default. The `config.toml` root model is the leader (main session) model only and does not affect agent tiers.
-- If no role model can be resolved, use the inherited leader model before a generic fallback.
-- The spark chain may also use legacy `OMX_SPARK_MODEL` and team low-complexity model keys; these apply only to spark roles.
+- OMX resolves each worker's model when it builds the launch arguments. A model supplied in `OMX_TEAM_WORKER_LAUNCH_ARGS` takes priority when it differs from the inherited leader launch model.
+- Otherwise, a resolved role model takes priority. Resolve the role from `.omx-config.json` `agentModels[role]`, then the applicable tier. The tiers use `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL`, or `OMX_DEFAULT_SPARK_MODEL` with built-in defaults. The spark resolver also accepts legacy `OMX_SPARK_MODEL` and low-complexity settings.
+- If no role model resolves, use the inherited leader launch model when available. Tier resolution is independent of the root `config.toml` model. OMX emits one `--model <value>` flag when it resolves a model. Otherwise, Codex uses its normal model configuration.
 
-For native Codex subagents, built-in or implicit providers write the resolved tier model for every role. Custom providers omit `model` unless `.omx-config.json` `agentModels[role]` is set.
+**Native Codex role settings**
 
-Normalize model flags to one canonical `--model <value>` entry. Use `OMX_DEFAULT_FRONTIER_MODEL` / `OMX_DEFAULT_STANDARD_MODEL` / `OMX_DEFAULT_SPARK_MODEL` for Team worker defaults and native subagent configuration.
+- OMX uses role overrides and tier defaults when it generates or refreshes a role TOML. For a built-in or implicit provider it writes the resolved `model`. For a custom provider it writes `model` only when `agentModels[role]` explicitly sets it.
+- At spawn, Codex uses the effective role TOML. Explicit `model` and `model_reasoning_effort` values take precedence independently. For each field the role leaves unset, Codex uses its normal spawn and default resolution. OMX tier settings reach native roles through TOML generation.
 </team_model_resolution>
 
 <!-- OMX:MODELS:START -->
