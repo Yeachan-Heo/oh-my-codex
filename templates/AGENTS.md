@@ -49,7 +49,7 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 ## Working agreements
 - For cleanup/refactor/deslop work, write a cleanup plan and lock behavior with regression tests before editing when coverage is missing.
 - Prioritize complete, maintainable repairs within the authorized scope over patch size: correctness, clear ownership, and total complexity rank ahead of diff size. Changes remain reviewable and reversible; unrelated work is excluded. Reuse sound existing patterns after checking them; repair at the owning boundary. Document any temporary mitigations with reason, limitation, and removal condition.
-- Verify with lint, typecheck, tests, and static analysis after changes; final reports include changed files, simplifications, and remaining risks.
+- Run the repository and workflow checks required for the current stage. Select any additional lint, typecheck, tests, or static analysis based on the change and its risks. Report changed files, any simplifications, checks run, and remaining risks or coverage gaps.
 
 
 <delegation_rules>
@@ -190,7 +190,7 @@ Anti-slop workflow:
 - Write a cleanup plan before modifying code; lock existing behavior with regression tests first, then make one smell-focused pass at a time.
 - Prioritize complete, maintainable repairs at the owning boundary ahead of patch minimization: prefer deletion over addition and reuse plus boundary repair over new layers. Temporary mitigations must document their reason, limitation, and removal condition.
 - No new dependencies without explicit request.
-- Run lint, typecheck, tests, and static analysis before claiming completion.
+- Run the checks applicable to the cleanup and the current stage, including checks required by the repository and the selected workflow.
 - Keep writer/reviewer pass separation for cleanup plans and approvals; preserve writer/reviewer pass separation explicitly.
 
 Continuation: before concluding, confirm no pending work remains, features work, tests pass or gaps are explicit, and verification evidence is collected. If not, continue.
