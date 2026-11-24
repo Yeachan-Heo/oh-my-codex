@@ -1,4 +1,5 @@
 import { join } from "path";
+import { resolveStableNodePath } from "./codex-hooks.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
 
 export const OMX_PLUGIN_MCP_COMMAND = "omx";
@@ -84,7 +85,7 @@ export function resolveOmxFirstPartyMcpEntrypointForPluginTarget(
 }
 
 export function getCurrentNodeExecutablePath(): string {
-  return process.execPath;
+  return resolveStableNodePath();
 }
 
 export function getOmxFirstPartySetupMcpServers(
