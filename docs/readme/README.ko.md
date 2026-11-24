@@ -163,7 +163,7 @@ omx team shutdown <team-name>
 
 플러그인 마켓플레이스는 `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/`에 번들을 캐시할 수 있습니다. 번들에는 Codex lifecycle 훅, 선택적 MCP 호환 서버 및 앱용 메타데이터가 포함되지만 기본 비활성입니다. setup은 범위에 따라 프롬프트, 스킬, AGENTS, config, 구버전용 native hooks를 설치/갱신합니다. 비-OMX 훅은 보존하고 OMX 래퍼만 다시 씁니다. uninstall은 OMX 래퍼만 제거하고 사용자 훅이 남아 있으면 파일을 보존합니다.
 
-`omx update`는 npm을 확인하고 최신 전역 빌드를 설치한 뒤 동일한 setup 갱신을 실행합니다. 새 setup의 기본 모델은 `gpt-6-astra`이며 사용자 설정과 명시적 override는 보존됩니다. 라우팅 설정은 [모델/env 참조](../../docs/reference/omx-config-schema-routing.md)를 확인하고 설치 버전에서 지원되는 키만 쓰세요. `omx doctor`는 설치 상태를 확인할 뿐 인증된 실제 모델 호출을 보장하지 않습니다. HUD는 모니터링 표면입니다.
+`omx update`는 npm을 확인하고 최신 전역 빌드를 설치한 뒤 동일한 setup 갱신을 실행합니다. 새 setup은 frontier agent(`planner`, `architect`, `critic`)에 `gpt-6.2-astra`, spark가 아닌 나머지 모든 role의 standard agent에 `gpt-6.2-sol`, spark agent(`explore`, `style-reviewer`, `vision`)에 `gpt-6-luna`를 기본 사용하며 사용자 설정과 명시적 override는 보존됩니다. 라우팅 설정은 [모델/env 참조](../../docs/reference/omx-config-schema-routing.md)를 확인하고 설치 버전에서 지원되는 키만 쓰세요. `omx doctor`는 설치 상태를 확인할 뿐 인증된 실제 모델 호출을 보장하지 않습니다. HUD는 모니터링 표면입니다.
 
 HUD는 현재 Team 이름과 worker 수, 상태/작업/역할/pane/갱신 시각을 보여줍니다. 표시 불가 상태는 unknown이며 working 표시가 프로세스 생존을 증명하지는 않습니다. 팀 파일은 읽기 전용으로 검사됩니다. GitGuardex 단계 표시는 프로젝트 `.omx/hud-config.json`에 `"guardex": { "enabled": true }`를 설정한 경우에만 활성화됩니다. worker가 화면에 맞지 않으면 `+N workers`로 축약되며 크기는 tmux geometry에 따라 조정됩니다.
 

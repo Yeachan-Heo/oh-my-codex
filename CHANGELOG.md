@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.19] - 2026-11-24
+
+Patch release makes the env tier variables the single source of truth for agent models and prints the exit resume block for resume launches.
+
+### Changed
+
+- **ENV TIER VARS AS SINGLE SOURCE OF TRUTH (#4146):** Fixes #4133, #4149. Behavior change, see migration note below.
+
+### Fixed
+
+- **PRINT EXIT RESUME BLOCK FOR RESUME LAUNCHES (#4144):** Fixes #4060.
+
+### Migration (#4146)
+
+- The `exactModel` pins are removed.
+- `OMX_DEFAULT_FRONTIER_MODEL`, `OMX_DEFAULT_STANDARD_MODEL` and `OMX_DEFAULT_SPARK_MODEL` drive all agents.
+- Defaults: frontier `gpt-6.2-astra` (planner/architect/critic), standard `gpt-6.2-sol`, spark `gpt-6-luna` (explore/style-reviewer/vision).
+- The `config.toml` root `model` no longer affects agent tiers.
+- Re-run `omx setup --force` to regenerate the agent TOML.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.18...v0.22.19
+
 ## [0.22.18] - 2026-11-24
 
 Patch release ships the runtime spark/explore resolution fix that was intended for v0.22.17 but was not included in the published v0.22.17 package.

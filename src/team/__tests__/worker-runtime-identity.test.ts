@@ -218,10 +218,10 @@ process.on('SIGTERM', () => process.exit(0));
       assert.ok(worker2Args, 'worker-2 argv capture file should be written');
       const worker1Joined = worker1Args!.join(' ');
       const worker2Joined = worker2Args!.join(' ');
-      assert.match(worker1Joined, /model_reasoning_effort="low"/);
-      assert.match(worker1Joined, /--model gpt-6-astra/);
+      assert.match(worker1Joined, /model_reasoning_effort="medium"/);
+      assert.match(worker1Joined, /--model gpt-6-luna/);
       assert.match(worker2Joined, /model_reasoning_effort="low"/);
-      assert.match(worker2Joined, /--model gpt-6-astra/);
+      assert.match(worker2Joined, /--model gpt-6-luna/);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -326,7 +326,7 @@ process.on('SIGTERM', () => process.exit(0));
         join(cwd, '.omx', 'state', 'team', 'low-role-scale', 'runtime', 'worker-2-startup.sh'),
         'utf-8',
       );
-      assert.match(startupScript, /gpt-6-astra/);
+      assert.match(startupScript, /gpt-6-luna/);
       execFileSync('sh', ['-n', join(cwd, '.omx', 'state', 'team', 'low-role-scale', 'runtime', 'worker-2-startup.sh')]);
       assert.match(startupScript, /model_reasoning_effort.*low/);
     } finally {

@@ -161,7 +161,7 @@ omx team shutdown <team-name>
 
 Codex plugin marketplace 可将插件缓存到 `${CODEX_HOME:-~/.codex}/plugins/cache/$MARKETPLACE_NAME/oh-my-codex/$VERSION/`。插件包含官方 Codex 生命周期 hook、可选 MCP 兼容服务器和 apps 的伴随元数据（MCP/apps 默认关闭），运行时仍配合已安装的 `omx` CLI。按安装范围，setup 管理 prompts、skills、AGENTS scaffolding、配置及旧版/不支持 `plugin_hooks` 的 Codex hook。setup refresh 保留用户 hook，只重写 OMX 管理的 wrapper；卸载时仍保留用户 hook。
 
-`omx update` 立即检查 npm、安装最新全局 OMX，再运行同一交互式 setup refresh。全新 setup 默认对 frontier/standard/spark agent 使用 `gpt-6-astra`，并保留现有用户配置和显式 override。请查阅[模型/env 路由参考](../../docs/reference/omx-config-schema-routing.md)，只编辑已安装版本支持的设置。`omx doctor` 检查安装状态，但不能证明当前 Codex profile 能完成认证请求。`omx hud --watch` 是状态监控界面。
+`omx update` 立即检查 npm、安装最新全局 OMX，再运行同一交互式 setup refresh。全新 setup 默认 frontier agent（`planner`、`architect`、`critic`）使用 `gpt-6.2-astra`，standard agent（其余所有非 spark role）使用 `gpt-6.2-sol`，spark agent（`explore`、`style-reviewer`、`vision`）使用 `gpt-6-luna`，并保留现有用户配置和显式 override。请查阅[模型/env 路由参考](../../docs/reference/omx-config-schema-routing.md)，只编辑已安装版本支持的设置。`omx doctor` 检查安装状态，但不能证明当前 Codex profile 能完成认证请求。`omx hud --watch` 是状态监控界面。
 
 活动 Team 在每种 HUD preset 中显示 team 名称、worker 数及 agent 的状态、task ID、role、tmux pane 和更新时间。未知字段显示为 unknown；显示 working 不代表进程仍存活。数据以只读方式读取。GitGuardex 进度仅在项目 `.omx/hud-config.json` 中启用 `"guardex": { "enabled": true }` 后显示。HUD 按终端空间调整，放不下的成员合并为 `+N workers`。
 

@@ -154,7 +154,6 @@ function assertTomlStructure(
   const latestGeneratedPolicyIndex = Math.max(
     instructions.lastIndexOf("</posture_overlay>", metadataIndex),
     instructions.lastIndexOf("</model_class_guidance>", metadataIndex),
-    instructions.lastIndexOf("</exact_model_guidance>", metadataIndex),
   );
   const leafGuardIndex = instructions.lastIndexOf(leafGuard);
   const leafGuardEndIndex = instructions.lastIndexOf(leafGuardEnd);

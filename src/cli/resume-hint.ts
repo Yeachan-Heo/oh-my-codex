@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { MADMAX_FLAG, HIGH_REASONING_FLAG, XHIGH_REASONING_FLAG } from './constants.js';
 import { classifySessionStateLiveness, type SessionState } from '../hooks/session.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
@@ -84,6 +84,23 @@ function contextFlags(launchArgs: readonly string[]): string[] {
 }
 
 /**
+ * Explicit `--codex-home` from the launch, as resume-subcommand args. It must
+ * follow `resume` (only the resume path consumes it) and is made absolute so
+ * the command still works after the hint cds elsewhere. Without it the printed
+ * command searches the default homes and cannot find a custom-home session.
+ */
+function resumeHomeArgs(launchArgs: readonly string[], launchCwd: string): string[] {
+  let codexHome: string | undefined;
+  for (let i = 0; i < launchArgs.length; i += 1) {
+    const arg = launchArgs[i]!;
+    if (arg === '--') break;
+    if (arg === '--codex-home' && launchArgs[i + 1]) { codexHome = launchArgs[i + 1]; i += 1; }
+    else if (arg.startsWith('--codex-home=')) codexHome = arg.slice('--codex-home='.length);
+  }
+  return codexHome ? ['--codex-home', shellQuote(resolve(launchCwd, codexHome))] : [];
+}
+
+/**
  * Build a tmux attach command to reattach to a live session.
  * When the session owner is still alive and has an active tmux session,
  * suggest tmux attach instead of omx resume.
@@ -98,7 +115,7 @@ function buildTmuxAttachCommand(tmuxBinary: string, tmuxSessionName: string): st
 function buildOmxResumeCommand(sessionId: string, input: ResumeBlockInput): string {
   const flags = contextFlags(input.launchArgs);
   if (input.projectLocalHome) flags.push('--project');
-  const omx = ['omx', ...flags, 'resume', shellQuote(sessionId)].join(' ');
+  const omx = ['omx', ...flags, 'resume', ...resumeHomeArgs(input.launchArgs, input.launchCwd), shellQuote(sessionId)].join(' ');
   const madmax = flags.includes(MADMAX_FLAG);
   const cdTarget = input.worktree?.path ?? (madmax ? input.launchCwd : undefined);
   return cdTarget ? `cd ${shellQuote(cdTarget)} && ${omx}` : omx;

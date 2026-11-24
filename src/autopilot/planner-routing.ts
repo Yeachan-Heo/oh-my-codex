@@ -1,7 +1,6 @@
-import { AGENT_DEFINITIONS } from '../agents/definitions.js';
 import {
   getAgentModelOverride,
-  getMainDefaultModel,
+  getFrontierDefaultModel,
   getModelForMode,
 } from '../config/models.js';
 
@@ -30,8 +29,7 @@ export function isCheapOrMiniModelName(model: string): boolean {
 
 export function getDefaultPlannerModel(codexHomeOverride?: string): string {
   return getAgentModelOverride('planner', codexHomeOverride)
-    ?? AGENT_DEFINITIONS.planner.exactModel
-    ?? getMainDefaultModel(codexHomeOverride);
+    ?? getFrontierDefaultModel(codexHomeOverride);
 }
 
 /**

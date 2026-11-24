@@ -992,7 +992,7 @@ describe("omx setup install mode behavior", () => {
 	});
 
 	for (const fixture of [
-		{ name: "fresh config", config: "", model: "gpt-6-astra" },
+		{ name: "fresh config", config: "", model: "gpt-6.2-sol" },
 		{
 			name: "multiline developer instructions with bracket headings",
 			config: [
@@ -1007,7 +1007,7 @@ describe("omx setup install mode behavior", () => {
 				'"""',
 				"",
 			].join("\n"),
-			model: "gpt-6-astra",
+			model: "gpt-6.2-sol",
 		},
 		{
 			name: "explicit root and profile settings",
@@ -1035,7 +1035,7 @@ describe("omx setup install mode behavior", () => {
 				'model_reasoning_effort = "low"',
 				"",
 			].join("\n"),
-			model: "gpt-6-astra",
+			model: "gpt-6.2-sol",
 		},
 	]) {
 		it(`seeds only a missing plugin root model for ${fixture.name}`, async () => {

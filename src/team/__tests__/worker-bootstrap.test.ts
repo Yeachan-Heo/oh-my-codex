@@ -1321,9 +1321,8 @@ describe("worker bootstrap", () => {
 
       const content = await readFile(outPath, "utf8");
       assert.match(content, /<identity>You are Writer\.<\/identity>/);
-      assert.match(content, /exact gpt-5\.6-terra model/);
-      assert.match(content, /strict execution order: inspect -> plan -> act -> verify/);
-      assert.equal((content.match(/<exact_model_guidance>/g) || []).length, 1);
+      assert.doesNotMatch(content, /exact gpt-5\.6-terra model/);
+      assert.doesNotMatch(content, /<exact_model_guidance>/);
       assert.equal((content.match(/resolved_model: gpt-5\.6-terra/g) || []).length, 1);
     } finally {
       await rm(cwd, { recursive: true, force: true });

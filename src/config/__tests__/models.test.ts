@@ -9,6 +9,7 @@ import {
 	CANONICAL_REASONING_EFFORTS,
 	type ConfiguredAgentReasoningEffort,
 	DEFAULT_FRONTIER_MODEL,
+	DEFAULT_LEADER_MODEL,
 	DEFAULT_SPARK_MODEL,
 	DEFAULT_STANDARD_MODEL,
 	DEFAULT_TEAM_CHILD_MODEL,
@@ -16,7 +17,9 @@ import {
 	getAgentModelOverride,
 	getAgentReasoningOverride,
 	getEnvConfiguredStandardDefaultModel,
+	getFrontierDefaultModel,
 	getMainDefaultModel,
+	getModelClassDefaultModel,
 	getModelForMode,
 	getSparkDefaultModel,
 	getStandardDefaultModel,
@@ -102,12 +105,12 @@ describe("getModelForMode", () => {
 	}
 
 	it("returns frontier default when config file does not exist", () => {
-		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getModelForMode("team"), DEFAULT_LEADER_MODEL);
 	});
 
 	it("returns frontier default when config has no models section", async () => {
 		await writeConfig({ notifications: { enabled: false } });
-		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getModelForMode("team"), DEFAULT_LEADER_MODEL);
 	});
 
 	it("returns mode-specific model when configured", async () => {
@@ -122,7 +125,7 @@ describe("getModelForMode", () => {
 
 	it("returns frontier default when models section is empty", async () => {
 		await writeConfig({ models: {} });
-		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getModelForMode("team"), DEFAULT_LEADER_MODEL);
 	});
 
 	it("ignores empty string values and falls back to default", async () => {
@@ -146,12 +149,12 @@ describe("getModelForMode", () => {
 
 	it("returns frontier default for invalid models section (array)", async () => {
 		await writeConfig({ models: ["not", "valid"] });
-		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getModelForMode("team"), DEFAULT_LEADER_MODEL);
 	});
 
 	it("returns frontier default for malformed JSON", async () => {
 		await writeFile(join(tempDir, ".omx-config.json"), "not-json");
-		assert.equal(getModelForMode("team"), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getModelForMode("team"), DEFAULT_LEADER_MODEL);
 	});
 
 	it("uses OMX_DEFAULT_FRONTIER_MODEL when config does not provide a value", () => {
@@ -168,14 +171,16 @@ describe("getModelForMode", () => {
 		assert.equal(getModelForMode("team"), "frontier-local");
 	});
 
-	it("uses config.toml root model as the main and standard default when env overrides are absent", async () => {
+	it("uses config.toml root model as the main default only, never for agent tiers", async () => {
 		await writeFile(
 			join(tempDir, "config.toml"),
 			'model = "frontier-config"\n',
 		);
 
 		assert.equal(getMainDefaultModel(), "frontier-config");
-		assert.equal(getStandardDefaultModel(), "frontier-config");
+		assert.equal(getStandardDefaultModel(), DEFAULT_STANDARD_MODEL);
+		assert.equal(getFrontierDefaultModel(), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getSparkDefaultModel(), DEFAULT_SPARK_MODEL);
 		assert.equal(getModelForMode("team"), "frontier-config");
 	});
 
@@ -215,8 +220,8 @@ describe("getModelForMode", () => {
 
 	it("defaults team child model to the standard lane independent of frontier defaults", () => {
 		process.env.OMX_DEFAULT_FRONTIER_MODEL = "frontier-expensive";
-		assert.equal(DEFAULT_TEAM_CHILD_MODEL, "gpt-6-astra");
-		assert.equal(getTeamChildModel(), "gpt-6-astra");
+		assert.equal(DEFAULT_TEAM_CHILD_MODEL, "gpt-6.2-sol");
+		assert.equal(getTeamChildModel(), "gpt-6.2-sol");
 	});
 
 	it("uses OMX_TEAM_CHILD_MODEL shell override for team child model", () => {
@@ -263,12 +268,12 @@ describe("getModelForMode", () => {
 		assert.equal(getSparkDefaultModel(), "spark-canonical");
 	});
 
-	it("inherits from configured main model when no explicit spark override is set", async () => {
-		// When user configures a main model, spark should inherit it instead of using DEFAULT_SPARK_MODEL
-		// This prevents expensive models from being used in fast lanes when user chose a cheaper main model
+	it("does not inherit the configured main model for spark (luna is the cheapest default)", async () => {
 		await writeFile(join(tempDir, "config.toml"), 'model = "gpt-6.1-terra"\n');
-		assert.equal(getMainDefaultModel(), "gpt-6.1-terra");
-		assert.equal(getSparkDefaultModel(), "gpt-6.1-terra");
+		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-6.2-sol";
+		assert.equal(getMainDefaultModel(), "gpt-6.2-sol");
+		assert.equal(getSparkDefaultModel(), "gpt-6-luna");
+		assert.equal(getTeamLowComplexityModel(), "gpt-6-luna");
 	});
 
 	it("respects explicit spark override over inherited main model", async () => {
@@ -445,20 +450,19 @@ describe("getModelForMode", () => {
 		assert.equal(getAgentModelOverride("bad role"), undefined);
 	});
 
-	it("defaults every model tier to Astra", () => {
-		for (const model of [
-			DEFAULT_FRONTIER_MODEL,
-			DEFAULT_STANDARD_MODEL,
-			DEFAULT_SPARK_MODEL,
-			getMainDefaultModel(),
-			getStandardDefaultModel(),
-			getSparkDefaultModel(),
-			getTeamChildModel(),
-			getTeamLowComplexityModel(),
-		]) {
-			assert.equal(model, "gpt-6-astra");
-		}
-		assert.equal(isKnownCodexModelAlias("gpt-6-astra"), true);
+	it("defaults frontier to gpt-6.2-astra, standard to gpt-6.2-sol and spark to gpt-6-luna", () => {
+		assert.equal(DEFAULT_FRONTIER_MODEL, "gpt-6.2-astra");
+		assert.equal(DEFAULT_STANDARD_MODEL, "gpt-6.2-sol");
+		assert.equal(DEFAULT_SPARK_MODEL, "gpt-6-luna");
+		assert.equal(getFrontierDefaultModel(), "gpt-6.2-astra");
+		assert.equal(getStandardDefaultModel(), "gpt-6.2-sol");
+		assert.equal(getSparkDefaultModel(), "gpt-6-luna");
+		assert.equal(getTeamLowComplexityModel(), "gpt-6-luna");
+		assert.equal(getTeamChildModel(), "gpt-6.2-sol");
+		assert.equal(getMainDefaultModel(), DEFAULT_LEADER_MODEL);
+		assert.equal(DEFAULT_LEADER_MODEL, "gpt-6.2-sol");
+		assert.equal(isKnownCodexModelAlias("gpt-6.2-astra"), true);
+		assert.equal(isKnownCodexModelAlias("gpt-6.2-sol"), true);
 	});
 
 	it("recognizes the GPT-6 family without inferring unannounced aliases", () => {
@@ -511,16 +515,20 @@ describe("getModelForMode", () => {
 		assert.equal(getTeamLowComplexityModel(), "gpt-4.1-mini");
 	});
 
-	it("inherits the main default for standard agents when no standard override is configured", async () => {
+	it("never lets the frontier env var or the root model change the standard or spark tiers", async () => {
 		process.env.OMX_DEFAULT_FRONTIER_MODEL = "gpt-5.6-sol-custom";
 		await writeConfig({ models: { team: "gpt-4.1" } });
-		assert.equal(getStandardDefaultModel(), "gpt-5.6-sol-custom");
-	});
-
-	it("returns canonical spark fallback when not configured", async () => {
-		await writeConfig({ models: { team: "gpt-4.1" } });
-		assert.equal(getStandardDefaultModel(), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getFrontierDefaultModel(), "gpt-5.6-sol-custom");
+		assert.equal(getStandardDefaultModel(), DEFAULT_STANDARD_MODEL);
 		assert.equal(getSparkDefaultModel(), DEFAULT_SPARK_MODEL);
 		assert.equal(getTeamLowComplexityModel(), DEFAULT_SPARK_MODEL);
+	});
+
+	it("resolves each tier from its env var, then the built-in default", () => {
+		process.env.OMX_DEFAULT_STANDARD_MODEL = "standard-env";
+		process.env.OMX_DEFAULT_SPARK_MODEL = "spark-env";
+		assert.equal(getModelClassDefaultModel("frontier"), DEFAULT_FRONTIER_MODEL);
+		assert.equal(getModelClassDefaultModel("standard"), "standard-env");
+		assert.equal(getModelClassDefaultModel("fast"), "spark-env");
 	});
 });
