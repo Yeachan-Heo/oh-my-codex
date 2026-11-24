@@ -174,10 +174,13 @@ export async function resolveApiBinaryPathWithHydration(
   const hydrated = await hydrateNativeBinary('omx-api', { packageRoot, env, platform, arch });
   if (hydrated) return hydrated;
 
+  const isDev = version.endsWith('-dev');
   throw new Error(
-    `[api] native binary not found. Checked cached/native candidates under ${packageRoot}, ${repoLocal}, and ${nestedRepoLocal}. `
-      + `${rejectedCache ? `Rejected managed cache entry ${rejectedCache.path} (${rejectedCache.state}). ` : ''}`
-      + `Reconnect to the network so OMX can fetch the release asset, or set ${OMX_API_BIN_ENV} to override the path.`,
+    isDev
+      ? `[api] native binary unavailable for dev build. Set ${OMX_API_BIN_ENV} to an existing binary path, or build the native binary locally.`
+      : `[api] native binary not found. Checked cached/native candidates under ${packageRoot}, ${repoLocal}, and ${nestedRepoLocal}. `
+        + `${rejectedCache ? `Rejected managed cache entry ${rejectedCache.path} (${rejectedCache.state}). ` : ''}`
+        + `Reconnect to the network so OMX can fetch the release asset, or set ${OMX_API_BIN_ENV} to override the path.`,
   );
 }
 

@@ -49,7 +49,7 @@ Keep runtime marker contracts stable and non-destructive when overlays are appli
 ## Working agreements
 - For cleanup/refactor/deslop work, write a cleanup plan and lock behavior with regression tests before editing when coverage is missing.
 - Prioritize complete, maintainable repairs within the authorized scope over patch size: correctness, clear ownership, and total complexity rank ahead of diff size. Changes remain reviewable and reversible; unrelated work is excluded. Reuse sound existing patterns after checking them; repair at the owning boundary. Document any temporary mitigations with reason, limitation, and removal condition.
-- Verify with lint, typecheck, tests, and static analysis after changes; final reports include changed files, simplifications, and remaining risks.
+- Run the repository and workflow checks required for the current stage. Select any additional lint, typecheck, tests, or static analysis based on the change and its risks. Report changed files, any simplifications, checks run, and remaining risks or coverage gaps.
 
 
 <delegation_rules>
@@ -112,7 +112,12 @@ Fallback behavior when hook context is unavailable:
 - Bare skill names do not activate skills by themselves; skill-name activation requires explicit `$skill` invocation. Natural-language routing phrases may still map to a workflow. Examples: `analyze` / `investigate` → `$analyze` for read-only deep analysis with ranked synthesis, explicit confidence, and concrete file references.
 - Keep the detailed keyword list in `src/hooks/keyword-registry.ts`; do not duplicate it here.
 
-Runtime workflows such as `autopilot`, `ultraqa`, `team`, and `ultragoal` require OMX CLI runtime support. In Codex App, outside-tmux, or plain Codex sessions without OMX tmux runtime, explain that those workflows are not directly available there and continue with the nearest App-safe surface unless the user explicitly wants to launch OMX CLI from shell first.
+Check the installed skill's CLI, native tool, and runtime requirements for the current stage.
+
+For prompt-side `$team`, follow the hook's routing decision and the Team skill's attached tmux requirement. In Codex App or native Codex outside tmux, explain this Team runtime boundary. For a direct `omx team` launch from a shell, check the selected launch mode's prerequisites, including an attached tmux leader for the default tmux-backed mode. Use a supported route only when it satisfies the task.
+
+Standalone Ultragoal uses the OMX CLI and the Codex goal tools required by its current stage. Preserve required attached reviews and the prerequisites of supervised workflows.
+
 - Route explicit `$autopilot` to its supervised `$deep-interview -> $ralplan -> $ultragoal` chain.
 - `$ralph`, `$ultrawork`, `$pipeline`, `ecomode`, and `swarm` remain removed or deprecated sunset stubs; do not route users there.
 - When deep-interview is active in attached-tmux OMX CLI/runtime, ask each interview round via `omx question`; after launching `omx question` in a background terminal, wait for that terminal to finish and read the JSON answer before continuing; preserve the leader pane with `OMX_QUESTION_RETURN_PANE=$TMUX_PANE` when invoking it through Bash/tool paths. Outside tmux or native surfaces that cannot render `omx question` should use the native structured question path when available; otherwise ask exactly one concise plain-text question and wait for the answer.
@@ -185,7 +190,7 @@ Anti-slop workflow:
 - Write a cleanup plan before modifying code; lock existing behavior with regression tests first, then make one smell-focused pass at a time.
 - Prioritize complete, maintainable repairs at the owning boundary ahead of patch minimization: prefer deletion over addition and reuse plus boundary repair over new layers. Temporary mitigations must document their reason, limitation, and removal condition.
 - No new dependencies without explicit request.
-- Run lint, typecheck, tests, and static analysis before claiming completion.
+- Run the checks applicable to the cleanup and the current stage, including checks required by the repository and the selected workflow.
 - Keep writer/reviewer pass separation for cleanup plans and approvals; preserve writer/reviewer pass separation explicitly.
 
 Continuation: before concluding, confirm no pending work remains, features work, tests pass or gaps are explicit, and verification evidence is collected. If not, continue.
