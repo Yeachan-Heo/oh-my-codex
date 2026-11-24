@@ -2956,6 +2956,7 @@ type TeamWorkerStopDecision =
   | {
       kind: "blocked";
       stateDir: string;
+      dedupeStateDir?: string;
       workerContext: { teamName: string; workerName: string };
       output: Record<string, unknown>;
       allowRepeatDuringStopHook: boolean;
@@ -2976,13 +2977,35 @@ async function resolveTeamWorkerStopDecision(
   const workerContext = readCanonicalInternalTeamWorkerEnvironment();
   if (!workerContext) return { kind: "unresolved", reason: "missing_canonical_internal_worker_context" };
 
+  const stateDir = await resolveTeamStateDirForWorkerContext(cwd, workerContext);
+  if (!stateDir) {
+    // When state dir is not available, use default and no dedupeStateDir
+    return {
+      kind: "blocked",
+      stateDir: join(cwd, ".omx", "state"),
+      workerContext,
+      allowRepeatDuringStopHook: false,
+      output: {
+        decision: "block",
+        reason:
+          `OMX team worker ${workerContext.workerName} Stop cannot be allowed for missing_state_dir: team state root could not be resolved. ` +
+          "Continue the assigned task, repair worker state, or report a concrete blocker before stopping.",
+        stopReason: `team_worker_${workerContext.workerName}_missing_state_dir`,
+        systemMessage:
+          `OMX team worker ${workerContext.workerName} Stop lacks completed task evidence (missing_state_dir).`,
+      },
+    };
+  }
+  const workerRoot = join(stateDir, "team", workerContext.teamName, "workers", workerContext.workerName);
+
   const blockWorkerStop = (
     reasonCode: string,
     detail: string,
-    stateDirForDecision = join(cwd, ".omx", "state"),
+    dedupeStateDir?: string,
   ): TeamWorkerStopDecision => ({
     kind: "blocked",
-    stateDir: stateDirForDecision,
+    stateDir: stateDir,
+    ...(dedupeStateDir ? { dedupeStateDir } : {}),
     workerContext,
     allowRepeatDuringStopHook: false,
     output: {
@@ -2995,12 +3018,6 @@ async function resolveTeamWorkerStopDecision(
         `OMX team worker ${workerContext.workerName} Stop lacks completed task evidence (${reasonCode}).`,
     },
   });
-
-  const stateDir = await resolveTeamStateDirForWorkerContext(cwd, workerContext);
-  if (!stateDir) {
-    return blockWorkerStop("missing_state_dir", "team state root could not be resolved");
-  }
-  const workerRoot = join(stateDir, "team", workerContext.teamName, "workers", workerContext.workerName);
   const [identity, status] = await Promise.all([
     readJsonIfExists(join(workerRoot, "identity.json")),
     readJsonIfExists(join(workerRoot, "status.json")),
@@ -3074,7 +3091,8 @@ async function resolveTeamWorkerStopDecision(
     }
     return {
       kind: "blocked",
-      stateDir: workerRoot,
+      stateDir: stateDir,
+      dedupeStateDir: workerRoot,
       workerContext,
       allowRepeatDuringStopHook: !workerRunStateIsTerminal && statusValue !== "blocked",
       output: {
@@ -3121,7 +3139,7 @@ async function buildDeclaredTeamWorkerStopOutput(
   if (isStopExempt(payload)) return null;
   const decision = await resolveTeamWorkerStopDecision(cwd);
   if (decision.kind === "blocked") {
-    return await returnPersistentStopBlock(payload, decision.stateDir, "team-worker-stop", safeString(decision.output.stopReason), decision.output, undefined, { allowRepeatDuringStopHook: decision.allowRepeatDuringStopHook });
+    return await returnPersistentStopBlock(payload, decision.dedupeStateDir ?? decision.stateDir, "team-worker-stop", safeString(decision.output.stopReason), decision.output, undefined, { allowRepeatDuringStopHook: decision.allowRepeatDuringStopHook });
   }
   if (decision.kind === "allowed") {
     try {
@@ -21567,7 +21585,7 @@ async function buildStopHookOutput(
     if (teamWorkerDecision.kind === "blocked") {
       return await returnPersistentStopBlock(
         payload,
-        stateDir,
+        teamWorkerDecision.dedupeStateDir ?? stateDir,
         "team-worker-stop",
         safeString(teamWorkerDecision.output.stopReason),
         teamWorkerDecision.output,
@@ -21711,7 +21729,7 @@ async function buildStopHookOutput(
     if (teamWorkerDecision.kind === "blocked") {
       return await returnPersistentStopBlock(
         payload,
-        stateDir,
+        teamWorkerDecision.dedupeStateDir ?? stateDir,
         "team-worker-stop",
         safeString(teamWorkerDecision.output.stopReason),
         teamWorkerDecision.output,
