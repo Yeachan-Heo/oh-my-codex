@@ -4998,7 +4998,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	if (skipNativeAgentRefresh) {
 		summary.nativeAgents = createEmptyCategorySummary();
 		console.log(
-			"  Native agent refresh skipped for background update-check setup refresh.\n",
+			"  Native agent refresh skipped by setup policy.\n",
 		);
 	} else if (isPluginInstallMode) {
 		summary.nativeAgents = await refreshNativeAgentConfigs(

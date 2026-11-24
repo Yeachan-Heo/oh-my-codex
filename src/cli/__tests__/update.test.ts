@@ -1243,7 +1243,10 @@ describe('runDeferredGlobalUpdate', () => {
         }) as typeof import('node:child_process').spawn,
         'win32',
         12345,
-        frozenNpmOwnership,
+        {
+          ...frozenNpmOwnership,
+          environment: { ...frozenNpmOwnership.environment, OMX_SKIP_NATIVE_AGENT_REFRESH: '1' },
+        },
       );
 
       assert.equal(result.ok, true);
@@ -1263,7 +1266,10 @@ describe('runDeferredGlobalUpdate', () => {
         cwd,
         logPath: result.logPath,
         parentPid: 12345,
-        ownership: frozenNpmOwnership,
+        ownership: {
+          ...frozenNpmOwnership,
+          environment: { ...frozenNpmOwnership.environment, OMX_SKIP_NATIVE_AGENT_REFRESH: '1' },
+        },
         setupArgs: ['setup'],
       });
       assert.deepEqual(listeners, ['error']);
@@ -1271,7 +1277,7 @@ describe('runDeferredGlobalUpdate', () => {
       assert.equal(calls[0]?.options.stdio, 'ignore');
       assert.equal(calls[0]?.options.windowsHide, true);
       assert.equal(calls[0]?.options.cwd, cwd);
-      assert.deepEqual(calls[0]?.options.env, { OMX_UPDATE_TEST: '1', OMX_SKIP_NATIVE_AGENT_REFRESH: '1' });
+      assert.deepEqual(calls[0]?.options.env, { OMX_UPDATE_TEST: '1' });
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1337,7 +1343,7 @@ describe('runDeferredGlobalUpdate', () => {
       assert.equal(calls.length, 1);
       const payload = JSON.parse(await readFile(calls[0]?.args[1] ?? '', 'utf-8')) as { setupArgs: string[] };
       assert.deepEqual(payload.setupArgs, ['setup', '--scope', 'user', '--plugin', '--mcp', 'none', '--disable-team']);
-      assert.equal((calls[0].options as { env?: NodeJS.ProcessEnv } | undefined)?.env?.OMX_SKIP_NATIVE_AGENT_REFRESH, '1');
+      assert.equal((calls[0].options as { env?: NodeJS.ProcessEnv } | undefined)?.env?.OMX_SKIP_NATIVE_AGENT_REFRESH, undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -1400,7 +1406,7 @@ describe('runDeferredGlobalUpdate', () => {
 
 
 describe('deferred update worker', () => {
-  it('retains refresh suppression and removes the verified staging directory after execution', async () => {
+  it('allows native agent refresh and removes the verified staging directory after execution', async () => {
     const root = await mkdtemp(join(tmpdir(), 'omx-update-worker-'));
     const globalRoot = join(root, 'global');
     const packageRoot = join(globalRoot, PACKAGE_NAME);
@@ -1440,6 +1446,7 @@ describe('deferred update worker', () => {
           OMX_UPDATE_PREFIX: root,
           CODEX_HOME: codexHome,
           OMX_UPDATE_STAMP_PATH: stampPath,
+          OMX_SKIP_NATIVE_AGENT_REFRESH: '1',
         },
       };
       const serialized = JSON.stringify({ cwd: root, logPath: join(root, 'update.log'), parentPid: 999999, ownership, setupArgs: ['setup', '--scope', 'project'] });
@@ -1453,7 +1460,6 @@ describe('deferred update worker', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(await readFile(capturePath, 'utf-8')), {
         args: ['setup', '--scope', 'project'],
-        skip: '1',
         stampPresent: false,
       });
       const stamp = JSON.parse(await readFile(stampPath, 'utf-8')) as {
@@ -1652,7 +1658,7 @@ describe('post-update setup refresh handoff', () => {
     assert.equal(receivedTimeout, undefined);
   });
 
-  it('passes only the frozen ownership environment to the immediate setup child', () => {
+  it('strips internal agent-refresh suppression from the immediate update setup child', () => {
     const frozenEnvironment: NodeJS.ProcessEnv = {
       CODEX_HOME: '/frozen/codex-home',
       OMX_SKIP_NATIVE_AGENT_REFRESH: '1',
@@ -1671,8 +1677,7 @@ describe('post-update setup refresh handoff', () => {
     );
 
     assert.equal(result.ok, true);
-    assert.deepEqual(receivedEnvironment, frozenEnvironment);
-    assert.equal(receivedEnvironment?.OMX_SKIP_NATIVE_AGENT_REFRESH, '1');
+    assert.deepEqual(receivedEnvironment, { CODEX_HOME: '/frozen/codex-home' });
   });
 
   it('passes persisted plugin setup choices to the updated CLI refresh', async () => {
