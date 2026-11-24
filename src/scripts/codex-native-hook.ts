@@ -3089,7 +3089,7 @@ async function resolveTeamWorkerStopDecision(
   }
 
   if (completedTaskCount === candidateTaskIds.size) {
-    return { kind: "allowed", stateDir: workerRoot, workerContext };
+    return { kind: "allowed", stateDir, workerContext };
   }
 
   return blockWorkerStop("missing_completed_task_evidence", "no referenced worker task is completed", workerRoot);
