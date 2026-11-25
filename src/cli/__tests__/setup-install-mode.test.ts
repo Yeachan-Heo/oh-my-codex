@@ -4684,7 +4684,7 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
-	it("archives stale legacy prompts and preserves modified native agents when plugin mode refreshes", async () => {
+	it("archives stale legacy prompts and refreshes native agent models while preserving legacy bodies", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -4712,7 +4712,10 @@ describe("omx setup install mode behavior", () => {
 
 					assert.equal(existsSync(promptPath), false);
 					assert.equal(existsSync(agentPath), true);
-					assert.equal(await readFile(agentPath, "utf-8"), staleAgentToml);
+					const refreshedAgentToml = await readFile(agentPath, "utf-8");
+					assert.match(refreshedAgentToml, /model = "[^"]+"/);
+					assert.match(refreshedAgentToml, /model_reasoning_effort = "[^"]+"/);
+					assert.match(refreshedAgentToml, /developer_instructions = """old planner body"""/);
 					assert.match(
 						output,
 						/Archived and removed .* legacy OMX-managed prompt file/,
@@ -4739,7 +4742,7 @@ describe("omx setup install mode behavior", () => {
 								join(backupRoot, entry, ".codex", "agents", "planner.toml"),
 							),
 						),
-						false,
+						true,
 					);
 				});
 			});
