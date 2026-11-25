@@ -10028,6 +10028,11 @@ standardMaxRounds = 15
 			assert.doesNotMatch(message, /documented_host_consensus_receipt_unavailable/);
 			
 			const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-autopilot-unsupported-native");
+			assert.match(message, /native subagent support is unavailable/i);
+			assert.match(message, /already assigned to an active Team.*Team protocol/i);
+			assert.doesNotMatch(message, /terminalize the workflow as blocked/i);
+			assert.match(message, /native independent (?:final )?review/i);
+			assert.match(message, /Reason: native_subagents_unsupported/);
 			// #3463: deep-interview state may now exist
 			// #3463: ultragoal state not created yet
 		} finally {
