@@ -1,22 +1,16 @@
-# oh-my-codex v0.22.24
+# oh-my-codex v0.22.25
 
 ## Summary
 
-This patch release improves native manifest handling for dev versions by respecting explicit environment overrides, and enhances documentation clarity for workflow runtime prerequisites and template validation checks.
+This patch release fixes a regression in Autopilot Deep Interview mode that prevented valid questions from being asked when running in exact-session autopilot mode.
 
 ## Fixed
 
-- **NATIVE MANIFEST HYDRATION RESPECTS ENV OVERRIDES FOR DEV VERSIONS (#4179):** Fixes #4166 regression. When OMX runs a dev version, the manifest request is now correctly skipped only when neither `OMX_NATIVE_MANIFEST_URL` nor `OMX_NATIVE_RELEASE_BASE_URL` environment variables are set. If either override is explicitly set, the manifest is loaded as requested, allowing dev builds to work with custom manifest endpoints. Error messages in sparkshell and api were also improved to suggest local builds or binary path overrides for dev versions instead of network reconnection.
-
-## Changed
-
-- **DOCS: CLARIFY WORKFLOW RUNTIME PREREQUISITES (#4176):** Template documentation now clarifies the runtime requirements and expectations for workflow execution, helping users understand setup and execution environment requirements.
-
-- **DOCS: SCOPE TEMPLATE VALIDATION TO APPLICABLE CHECKS (#4178):** Template validation guidance is now scoped to checks that apply in the current context, reducing noise and improving clarity for template maintainers and validators.
+- **ALLOW AUTOPILOT DEEP INTERVIEW QUESTIONS (#4182):** Fixes #4183. When running in Autopilot mode with an exact-session `autopilot-state.json` file that lacks the autopilot marker, the mode is now correctly inferred as autopilot, allowing Deep Interview questions to proceed. The fix ensures that Deep Interview questions are not incorrectly blocked when autopilot state is present but the marker is missing, and normalizeSessionId is now properly exported for session identifier handling.
 
 ## Compatibility
 
-Behavior change for manifest loading in development versions. The `-dev` version suffix now only skips manifest requests when no manifest URL environment variables are set; explicit environment overrides are always respected. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.24`.
+No breaking changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.25`.
 
 ## Verification
 
@@ -25,9 +19,9 @@ Behavior change for manifest loading in development versions. The `-dev` version
 
 ## Contributors
 
-Thanks to Valeriy Pavlovich and the team for improving manifest handling and documentation clarity.
+Thanks to iqdoctor for fixing Autopilot Deep Interview mode and improving session handling.
 
-**Full Changelog**: [`v0.22.23...v0.22.24`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.23...v0.22.24)
+**Full Changelog**: [`v0.22.24...v0.22.25`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.24...v0.22.25)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
