@@ -225,6 +225,69 @@ export function isSafelyEditableNativeAgentToml(
     if (/"""|'''|^\s*\[/.test(line)) return false;
     if (!/^\s*[A-Za-z0-9_-]+\s*=\s*[^\r\n]*$/.test(line)) return false;
   }
+
+  // Check whether developer_instructions is a multiline triple-quoted string.
+  // A TOML with top-level keys after developer_instructions body is unsafe
+  // because setup cannot patch those fields without reserializing the entire file.
+  // However, single-line developer_instructions are always editable, so we only
+  // need to check for trailing content when the body is a multiline triple-quoted string.
+  //
+  // Find the developer_instructions line and determine if it's a triple-quoted string.
+  const instructionsMatch = content.match(/^developer_instructions\s*=\s*"""(?:\r?\n)?/m);
+  if (!instructionsMatch) {
+    // Not a triple-quoted string (or no developer_instructions); safe to edit.
+    return true;
+  }
+  // This is a triple-quoted string. Find the closing """ delimiter.
+  // The challenge is that the content can end with any number of quote characters,
+  // so we need to find where the actual closing delimiter is.
+  const bodyStartIndex = instructionsMatch.index! + instructionsMatch[0].length;
+  // Search for the closing delimiter by finding """ followed by either whitespace or EOF.
+  // TOML allows for quotes in the content, so we match from after the body start,
+  // consuming everything until we find """ at the start of a line, or """ on the same line
+  // but not followed by other non-whitespace characters (accounting for content that ends with quotes).
+  const contentAfterStart = content.substring(bodyStartIndex);
+  // Look for a closing delimiter: either on a new line or at end of line/file.
+  // We need to find where """ appears in a way that closes the string.
+  // Strategy: find """ and check if it's followed by nothing, whitespace, comment, or EOF on that line.
+  let closingIndex = -1;
+  let searchIndex = 0;
+  while (searchIndex < contentAfterStart.length) {
+    const quoteIndex = contentAfterStart.indexOf('"""', searchIndex);
+    if (quoteIndex === -1) return false; // No closing delimiter found
+    // Check what follows this potential closing delimiter
+    const afterDelim = contentAfterStart.substring(quoteIndex + 3);
+    // The delimiter is valid if it's followed by:
+    // - newline (possibly with \r)
+    // - whitespace/comment until newline
+    // - EOF
+    const lineMatch = afterDelim.match(/^(\s*(?:#[^\r\n]*)?)(?:\r?\n|$)/);
+    if (lineMatch) {
+      closingIndex = quoteIndex;
+      break;
+    }
+    searchIndex = quoteIndex + 1;
+  }
+  if (closingIndex === -1) return false;
+  // Found the closing delimiter. Check if it has a preceding newline.
+  // If there's a newline before the closing delimiter, this is a multiline string.
+  const beforeDelim = contentAfterStart.substring(0, closingIndex);
+  const hasNewline = /\r?\n$/.test(beforeDelim);
+  if (!hasNewline) {
+    // Single-line triple-quoted string (no newline before closing delimiter).
+    // These are safe to edit since they can be edited without issues.
+    return true;
+  }
+  // Multiline triple-quoted string; check for top-level keys after the closing delimiter.
+  const afterDelimStart = bodyStartIndex + closingIndex + 3;
+  const afterBody = content.substring(afterDelimStart);
+  // Check that only blank lines and comments follow the closing """
+  for (const line of afterBody.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    // Any non-blank, non-comment line after developer_instructions is unsafe
+    return false;
+  }
   return true;
 }
 

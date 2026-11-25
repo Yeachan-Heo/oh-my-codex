@@ -48,7 +48,7 @@ afterEach(() => {
 
 describe('checkNativeAgentConfigDrift', () => {
   it('reports missing installable agent files and respects Team-disabled selection', async () => {
-    const result = await checkNativeAgentConfigDrift(paths());
+    const result = await checkNativeAgentConfigDrift(paths(), root);
     assert.equal(result.status, 'warn');
     assert.match(result.message, /executor\.toml is missing/);
     assert.doesNotMatch(result.message, /team-executor\.toml/);
@@ -59,7 +59,7 @@ describe('checkNativeAgentConfigDrift', () => {
     const tampered = generated.replace(/^model = ".*"$/m, 'model = "unsupported-manual-model"');
     writeFileSync(join(paths().agentsDir, 'executor.toml'), tampered);
 
-    const result = await checkNativeAgentConfigDrift(paths());
+    const result = await checkNativeAgentConfigDrift(paths(), root);
     assert.equal(result.status, 'warn');
     assert.match(result.message, /executor\.toml has unsupported\/stale model value/);
   });
@@ -77,7 +77,7 @@ describe('checkNativeAgentConfigDrift', () => {
       files: { 'executor.toml': { sha256: fileHash, developerInstructionsSha256: digest } },
     }));
 
-    const result = await checkNativeAgentConfigDrift(paths());
+    const result = await checkNativeAgentConfigDrift(paths(), root);
     assert.equal(result.status, 'warn');
     assert.match(result.message, /executor\.toml contains a customized user developer_instructions version/);
   });
@@ -89,7 +89,7 @@ describe('checkNativeAgentConfigDrift', () => {
       .replace(/^description = .*$/m, 'description = """\nmodel = "text inside a string"\n"""');
     writeFileSync(join(paths().agentsDir, 'executor.toml'), unsafe);
 
-    const result = await checkNativeAgentConfigDrift(paths());
+    const result = await checkNativeAgentConfigDrift(paths(), root);
     assert.equal(result.status, 'warn');
     assert.match(result.message, /valid TOML source layout is unsafe for the needed automatic refresh/);
     assert.match(result.message, /setup preserves it/);
@@ -117,8 +117,33 @@ describe('checkNativeAgentConfigDrift', () => {
     writeFileSync(join(paths().agentsDir, 'executor.toml'), compactBody);
     writeFileSync(join(paths().codexHomeDir, '.omx-config.json'), JSON.stringify({ agentModels: { executor: 'next-model' } }));
 
-    const result = await checkNativeAgentConfigDrift(paths());
+    const result = await checkNativeAgentConfigDrift(paths(), root);
     assert.equal(result.status, 'warn');
     assert.match(result.message, /valid TOML source layout is unsafe for the needed automatic refresh/);
+  });
+
+  it('reads Team preferences from project setup-scope, not from OMX_STATE_ROOT-derived cwd', async () => {
+    // Create a separate temp directory for OMX_STATE_ROOT outside the project
+    const externalStateRoot = mkdtempSync(join(tmpdir(), 'omx-external-state-'));
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    try {
+      process.env.OMX_STATE_ROOT = externalStateRoot;
+      writeExecutorToml();
+      
+      // Verify setup-scope.json is in the project root with teamMode disabled
+      const setupScopeContent = readFileSync(join(root, '.omx', 'setup-scope.json'), 'utf-8');
+      assert.match(setupScopeContent, /"teamMode"\s*:\s*"disabled"/);
+
+      // doctor should read Team disabled from project scope, not walk up from externalStateRoot
+      const result = await checkNativeAgentConfigDrift(paths(), root);
+      // team-executor.toml should not be reported as missing since Team is disabled in project scope
+      // This test verifies that we successfully read Team disabled from project scope
+      // even though OMX_STATE_ROOT is set to a directory outside the project
+      assert.doesNotMatch(result.message, /team-executor\.toml/);
+    } finally {
+      if (previousOmxStateRoot === undefined) delete process.env.OMX_STATE_ROOT;
+      else process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      rmSync(externalStateRoot, { recursive: true, force: true });
+    }
   });
 });
