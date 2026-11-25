@@ -118,7 +118,9 @@ describe('compat doctor contract', () => {
       assert.equal(result.status, Number.parseInt(readFixture('install-onboarding.exitcode.txt').trim(), 10), result.stderr || result.stdout);
       assert.equal(result.stderr, '');
       const expected = readFixture('install-onboarding.stdout.txt');
-      const platformExpected = expected.replace('  [OK] Node.js: <NODE_VERSION>\n', '  [OK] Node.js: <NODE_VERSION>\n  [PROCESS_IDENTITY_STATUS]\n');
+      const platformExpected = process.platform === 'darwin' || process.platform === 'win32'
+        ? expected.replace('  [OK] Node.js: <NODE_VERSION>\n', '  [OK] Node.js: <NODE_VERSION>\n  [PROCESS_IDENTITY_STATUS]\n')
+        : expected;
       assert.equal(normalizeInstallDoctorOutput(result.stdout, home, wd), platformExpected);
       assert.ok(result.stdout.includes(SAFE_DOCTOR_RECOVERY) || result.stdout.includes(SAFE_DOCTOR_FAILURE));
       assert.doesNotMatch(result.stdout, /^Review (?:warnings|failed checks) above\.[^\n]*--force/m);
