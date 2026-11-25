@@ -29,6 +29,7 @@ const CODEX_HOOK_EVENT_NAMES = new Set([
   'UserPromptSubmit',
   'PreCompact',
   'PostCompact',
+  'SubagentStart',
   'SubagentStop',
   'Stop',
 ]);
@@ -178,13 +179,14 @@ function isSafeRoutingSessionId(value) {
 }
 
 function isChildRoutingSessionStart(payload, ownerSessionId) {
-  if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SessionStart' || !ownerSessionId) return false;
+  const event = payload?.hook_event_name ?? payload?.hookEventName;
+  if ((event !== 'SessionStart' && event !== 'SubagentStart') || !ownerSessionId) return false;
   const childSessionId = hookPayloadSessionId(null, payload);
   const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
   const stateDir = listAuthoritativeStateBaseDirs(cwd)[0];
   const transcriptCandidate = payload?.transcript_path ?? payload?.transcriptPath;
   const transcriptPath = typeof transcriptCandidate === 'string' ? transcriptCandidate.trim() : '';
-  if (!childSessionId || !transcriptPath) return false;
+  if (!childSessionId || !transcriptPath || (event === 'SubagentStart' && payload.agent_id !== childSessionId)) return false;
   let fd;
   try {
     fd = openSync(transcriptPath, 'r');
@@ -202,12 +204,7 @@ function isChildRoutingSessionStart(payload, ownerSessionId) {
       && spawn && typeof spawn === 'object'
       && typeof parentThreadId === 'string'
       && (parentThreadId === ownerSessionId
-        || (isSafeRoutingSessionId(parentThreadId)
-          && isTrackedSubagentInSessionTree(
-            readJsonFile(join(stateDir, 'subagent-tracking.json')),
-            ownerSessionId,
-            parentThreadId,
-          )));
+        || isRoutingTrackedSubagent(cwd, stateDir, ownerSessionId, parentThreadId));
   } catch {
     return false;
   } finally {
@@ -233,18 +230,21 @@ function isTrackedSubagentInSessionTree(tracking, rootSessionId, targetThreadId)
   return false;
 }
 
+function isRoutingTrackedSubagent(cwd, stateDir, ownerSessionId, threadId) {
+  if (!isSafeRoutingSessionId(threadId)) return false;
+  const tracking = readJsonFile(join(stateDir, 'subagent-tracking.json'));
+  if (isTrackedSubagentInSessionTree(tracking, ownerSessionId, threadId)) return true;
+  const session = readJsonFile(join(stateDir, 'session.json'));
+  if (!isSessionStateAuthoritativeForCwd(session, cwd)
+    || ![session.session_id, session.native_session_id, session.owner_omx_session_id, session.owner_codex_session_id, session.codex_session_id].includes(ownerSessionId)) return false;
+  return isTrackedSubagentInSessionTree(tracking, session.session_id, threadId);
+}
+
 function isChildRoutingSubagentStop(payload, ownerSessionId) {
   if ((payload?.hook_event_name ?? payload?.hookEventName) !== 'SubagentStop' || !ownerSessionId) return false;
   const cwd = typeof payload.cwd === 'string' && payload.cwd.trim() ? payload.cwd : process.cwd();
   const stateDir = listAuthoritativeStateBaseDirs(cwd)[0];
-  const parentSessionId = hookPayloadSessionId(null, payload);
-  if (!isSafeRoutingSessionId(parentSessionId)) return false;
-  const tracking = readJsonFile(join(stateDir, 'subagent-tracking.json'));
-  if (isTrackedSubagentInSessionTree(tracking, ownerSessionId, parentSessionId)) return true;
-  const session = readJsonFile(join(stateDir, 'session.json'));
-  if (!isSessionStateAuthoritativeForCwd(session, cwd)
-    || ![session.session_id, session.native_session_id, session.owner_omx_session_id, session.owner_codex_session_id, session.codex_session_id].includes(ownerSessionId)) return false;
-  return isTrackedSubagentInSessionTree(tracking, session.session_id, parentSessionId);
+  return isRoutingTrackedSubagent(cwd, stateDir, ownerSessionId, hookPayloadSessionId(null, payload));
 }
 
 function readPinnedRoutingRecord(routingPath) {
@@ -288,6 +288,7 @@ function isPluginHookRoutingSession(input, payload) {
       return ownerSessionId === sessionId || isChildRoutingSessionStart(payload, ownerSessionId)
         || isChildRoutingSubagentStop(payload, ownerSessionId);
     }
+    if ((payload?.hook_event_name ?? payload?.hookEventName) === 'SubagentStart') return false;
     mkdirSync(dirname(routingPath), { recursive: true });
     writeFileSync(routingPath, `${JSON.stringify({ routing: OMX_PLUGIN_HOOK_ROUTING_ONLY_MARKER, ownerSessionId: sessionId })}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     return true;

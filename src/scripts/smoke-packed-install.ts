@@ -21,7 +21,7 @@ import { pathToFileURL } from 'node:url';
 import { TextDecoder } from 'node:util';
 
 import TOML, { parse as parseToml } from '@iarna/toml';
-import { isManagedCodexHookCommand, planManagedCodexHooksRemoval } from '../config/codex-hooks.js';
+import { MANAGED_HOOK_EVENTS, isManagedCodexHookCommand, planManagedCodexHooksRemoval } from '../config/codex-hooks.js';
 import {
   spawnPlatformCommand,
   spawnPlatformCommandSync,
@@ -46,16 +46,7 @@ export const PACKED_INSTALL_SMOKE_CORE_COMMANDS = [
   ['sparkshell', '--help'],
 ] as const;
 
-export const MANAGED_CODEX_HOOK_EVENTS = [
-  'SessionStart',
-  'PreToolUse',
-  'PostToolUse',
-  'UserPromptSubmit',
-  'PreCompact',
-  'PostCompact',
-  'SubagentStop',
-  'Stop',
-] as const;
+export const MANAGED_CODEX_HOOK_EVENTS = MANAGED_HOOK_EVENTS;
 
 export const PACKED_INSTALL_NATIVE_HOOK_REGRESSION_PROMPTS = [
   { name: 'directive-use-ralplan', prompt: 'use $ralplan plan this', expectedSkill: 'ralplan', expectedStopBlock: true },
@@ -2328,6 +2319,14 @@ export function buildNativeHookSmokePayload(
         ...base,
         transcript_path: join(smokeCwd, 'nonexistent-transcript.jsonl'),
         prompt: 'packed install native hook smoke test',
+      };
+    case 'SubagentStart':
+      return {
+        ...base,
+        agent_id: base.session_id,
+        agent_type: 'executor',
+        turn_id: 'packed-install-smoke-child-turn',
+        transcript_path: null,
       };
     case 'SubagentStop':
       return {

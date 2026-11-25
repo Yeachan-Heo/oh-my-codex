@@ -376,7 +376,7 @@ export async function runWatchMode(
       } else if (ownedHudPane) {
         const layout = await dependencies.readHudLayoutProjectionFn(frameCwd);
         desiredHeight = (layout.ultragoalActive ? HUD_TMUX_ULTRAGOAL_HEIGHT_LINES : HUD_TMUX_HEIGHT_LINES)
-          + layout.teamWorkerCount;
+          + layout.teamWorkerCount + (layout.nativeAgentCount ?? 0);
       } else {
         desiredHeight = HUD_TMUX_HEIGHT_LINES;
       }

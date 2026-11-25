@@ -89,6 +89,7 @@ Do not run a combined `npm install -g @openai/codex oh-my-codex` over an existin
 On a real `oh-my-codex` version bump, the global npm install now prints an explicit reminder instead of launching setup automatically. When you're ready, run the scoped setup command below or use `omx update` to check npm and then run the same setup refresh path.
 
 OMX also checks for npm updates at launch on a throttled cadence and prompts before scheduling the update after the current session exits. Set `OMX_AUTO_UPDATE=0` to disable the launch-time check, or set `OMX_AUTO_UPDATE=defer` to schedule the same deferred update without prompting.
+Launchers that manage their own `CODEX_HOME` can set `OMX_DEFERRED_UPDATE_SETUP=external` to apply the deferred package update without running OMX setup over launcher-managed files.
 
 Choose the setup scope deliberately:
 - Use `omx setup --scope project --merge-agents` from the git project you want OMX to operate on when that repository should own the durable `AGENTS.md` guidance.
@@ -415,6 +416,8 @@ cross-home selection, evidence gaps, and exit-code semantics.
 ### Team runtime
 
 Use the team runtime when you specifically need durable tmux/worktree coordination, not as the default way to begin using OMX. In Codex App or plain outside-tmux sessions, treat `omx team` as a tmux-runtime shell surface rather than a directly available in-app workflow; launch OMX CLI from shell first if you actually want team execution.
+
+Interactive Team arranges the leader's tmux window and refuses to use a window with other sessions' panes. A clean Git worktree does not isolate that layout. If the window is shared, open a new tmux window (`Ctrl-b c` with the default prefix), launch OMX there, and retry `omx team`. Leave the existing panes open.
 
 When Team runs inside an Ultragoal story, Ultragoal remains leader-owned state: workers report checkpoint-ready evidence upward instead of mutating `.omx/ultragoal` directly. Team startup tolerates stale or malformed Ultragoal artifacts for unrelated work, but explicitly Ultragoal-linked Team launches stay fail-closed. Team startup also writes `.omx/state/team/<team-name>/preflight-context.json` so large Team runs can be resumed after compaction with the original task, worker split, Ultragoal context, and verification checklist.
 

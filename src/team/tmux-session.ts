@@ -835,7 +835,7 @@ function frozenWindowTopologyError(
   const unexpected = actual.filter((paneId) => !expectedPaneIds.has(paneId));
   const missing = expected.filter((paneId) => !actualPaneIds.has(paneId));
   return new Error(
-    `tmux window topology changed before layout mutation: target=${teamTarget}; expected=[${expected.join(',')}]; actual=[${actual.join(',')}]; unexpected=[${unexpected.join(',')}]; missing=[${missing.join(',')}]. Team requires an isolated tmux window with no host-owned foreign panes`,
+    `tmux window topology changed before layout mutation: target=${teamTarget}; expected=[${expected.join(',')}]; actual=[${actual.join(',')}]; unexpected=[${unexpected.join(',')}]; missing=[${missing.join(',')}]. Team requires an isolated tmux window with no host-owned foreign panes. Open a new tmux window (by default, Ctrl-b c), launch OMX there, and retry \`omx team\`.`,
   );
 }
 

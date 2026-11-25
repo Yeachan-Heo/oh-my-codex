@@ -27,6 +27,8 @@ export interface TrackedSubagentThread {
   kind: 'leader' | 'subagent';
   first_seen_at: string;
   last_seen_at: string;
+  /** Descriptive HUD lifecycle marker; it never grants reopen authority. */
+  native_started_at?: string;
   completed_at?: string;
   last_turn_id?: string;
   last_completed_turn_id?: string;
@@ -79,6 +81,7 @@ export interface RecordSubagentTurnInput {
   agentNickname?: string;
   kind?: 'leader' | 'subagent';
   leaderThreadId?: string;
+  nativeStarted?: boolean;
   completed?: boolean;
   completionSource?: string;
   status?: SubagentAvailabilityStatus;
@@ -98,6 +101,7 @@ export interface NativeSubagentAuthorityObservation {
   authorityEvidence?: 'valid' | 'untrusted' | 'absent';
   implicatedChildThreadIds?: string[];
   mode?: string;
+  agentNickname?: string;
   timestamp?: string;
 }
 
@@ -313,6 +317,9 @@ export function normalizeSubagentTrackingState(input: unknown): SubagentTracking
         kind,
         first_seen_at: firstSeenAt,
         last_seen_at: lastSeenAt,
+        ...(typeof candidate.native_started_at === 'string' && Number.isFinite(Date.parse(candidate.native_started_at))
+          ? { native_started_at: candidate.native_started_at }
+          : {}),
         ...(typeof candidate.last_turn_id === 'string' && candidate.last_turn_id.trim().length > 0 ? { last_turn_id: candidate.last_turn_id } : {}),
         ...(typeof candidate.completed_at === 'string' && candidate.completed_at.trim().length > 0 ? { completed_at: candidate.completed_at } : {}),
         ...(typeof candidate.last_completed_turn_id === 'string' && candidate.last_completed_turn_id.trim().length > 0
@@ -999,6 +1006,11 @@ export function recordSubagentTurn(state: SubagentTrackingState, input: RecordSu
     kind,
     first_seen_at: existingThread?.first_seen_at ?? timestamp,
     last_seen_at: timestamp,
+    ...(input.nativeStarted
+      ? { native_started_at: timestamp }
+      : !input.completed && existingThread?.native_started_at
+        ? { native_started_at: existingThread.native_started_at }
+        : {}),
     turn_count: (existingThread?.turn_count ?? 0) + 1,
     ...(input.turnId?.trim()
       ? { last_turn_id: input.turnId.trim() }
@@ -1170,6 +1182,7 @@ export function recordNativeSubagentAuthorityObservation(
         kind: 'subagent',
         ...(parentThreadId && parentThreadId !== childThreadId ? { leaderThreadId: parentThreadId } : {}),
         mode: observation.mode,
+        agentNickname: observation.agentNickname,
         timestamp,
       });
       const thread = next.sessions[sessionId]?.threads[childThreadId];

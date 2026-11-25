@@ -436,7 +436,7 @@ interface DeferredUpdatePayload {
   logPath: string;
   parentPid: number;
   ownership: PackageManagerOwnership;
-  setupArgs: string[];
+  setupArgs: string[] | null;
 }
 
 export function runDeferredGlobalUpdate(
@@ -456,7 +456,12 @@ export function runDeferredGlobalUpdate(
     stage = mkdtempSync(join(tmpdir(), 'omx-update-'));
     if (platform !== 'win32') chmodSync(stage, 0o700);
     const payloadPath = join(stage, 'transaction.json');
-    const payload: DeferredUpdatePayload = { cwd, logPath, parentPid, ownership, setupArgs: resolveSetupRefreshArgs(cwd) };
+    // A launcher like Cue owns the generated CODEX_HOME. Freeze its handoff
+    // in the same payload as ownership, not in the npm worker's environment.
+    const setupArgs = process.env.OMX_DEFERRED_UPDATE_SETUP === 'external'
+      ? null
+      : resolveSetupRefreshArgs(cwd);
+    const payload: DeferredUpdatePayload = { cwd, logPath, parentPid, ownership, setupArgs };
     const serialized = JSON.stringify(payload);
     writeFileSync(payloadPath, serialized, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
     const canonicalStage = realpathSync(stage);
