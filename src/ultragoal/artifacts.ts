@@ -262,6 +262,8 @@ export interface RecordFinalReviewBlockersOptions extends AddUltragoalGoalOption
 
 export interface CodexGoalInstructionOptions {
   nativeSubagentSupport?: NativeSubagentSupportEvidence;
+  autopilotSupervised?: boolean;
+  capacityBlocked?: boolean;
 }
 
 export interface UltragoalQualityGate {
@@ -2187,6 +2189,23 @@ export function codexGoalConductorGuidance(options: CodexGoalInstructionOptions)
   ].join('\n');
 }
 
+function autopilotExecutorHandoff(options: CodexGoalInstructionOptions): string | null {
+  if (!options.autopilotSupervised) return null;
+  const support = options.nativeSubagentSupport;
+  if (support?.status === 'unsupported' || support?.status === 'role_routing_unavailable') {
+    return 'Autopilot executor handoff: BLOCKED for product edits: native typed executor delegation is unavailable. Do not implement in Main; use a supported surface with the installed executor role and resume. Read-only and Main-owned metadata work may continue.';
+  }
+  if (options.capacityBlocked) {
+    return 'Autopilot executor handoff: native agent capacity is currently exhausted. Reuse a reachable executor for this lane if available; otherwise report a blocker and resume when capacity returns or on a supported surface. Do not repeatedly spawn/close agents or implement in Main. Read-only and Main-owned metadata work may continue.';
+  }
+  return [
+    'Autopilot executor handoff: for work requiring source or test edits, including cleanup and review-fix product edits, Main must not write those artifacts directly.',
+    'Check that the host exposes native role routing and the installed executor role; then dispatch or reuse a reachable performer with agent_type: "executor" before product edits. Give the story ID and objective, bounded file ownership, acceptance checks, and required changed-file and verification evidence; await and inspect its result.',
+    'If the role or routing is unavailable, report the blocker and resume on a supported surface with the installed executor; do not silently fall back to Main. Read-only and Main-owned metadata work do not require an executor.',
+    'Main may initiate ai-slop-cleaner and independent review, but the executor performs any product edits they require; rerun verification after cleanup and keep the independent review gate.',
+  ].join('\n');
+}
+
 export function buildCodexGoalInstruction(
   goal: UltragoalItem,
   plan: UltragoalPlan,
@@ -2204,6 +2223,7 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   return [
     codexGoalConductorGuidance(options),
+    autopilotExecutorHandoff(options),
     '',
     'Ultragoal active-goal handoff',
     `Plan: ${plan.goalsPath}`,
@@ -2260,6 +2280,7 @@ function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: Ultragoal
   const checkpointStatus = finalStory ? 'complete' : 'active';
   return [
     codexGoalConductorGuidance(options),
+    autopilotExecutorHandoff(options),
     '',
     'Ultragoal aggregate-goal handoff',
     `Plan: ${prefixedStatePath(statePathPrefix, ULTRAGOAL_GOALS)}`,
