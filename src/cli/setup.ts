@@ -104,13 +104,20 @@ import {
 	planClaudeCodeMcpSettingsSync,
 	type UnifiedMcpRegistryLoadResult,
 } from "../config/mcp-registry.js";
-import { generateAgentToml } from "../agents/native-config.js";
+import {
+	generateAgentToml,
+	getGeneratedResolvedModel,
+	hashGeneratedDeveloperInstructions,
+	hashGeneratedDeveloperPrompt,
+	isSafelyEditableNativeAgentToml,
+} from "../agents/native-config.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import {
 	getCatalogAgentStatusByName,
 	getInstallableNativeAgentNames,
 	isNativeAgentInstallableStatus,
 	isSetupPromptAssetName,
+	TEAM_MODE_NATIVE_AGENT_NAMES,
 } from "../agents/policy.js";
 import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, classifySessionStateLiveness } from "../hooks/session.js";
@@ -293,7 +300,6 @@ const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
 const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
-const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
 
 function isCatalogInstallableStatus(status: string | undefined): boolean {
 	return status === "active" || status === "internal";
@@ -5792,7 +5798,10 @@ async function syncManagedContent(
 }
 
 interface NativeAgentInstallManifestEntry {
-	sha256: string;
+	sha256?: string;
+	developerInstructionsSha256?: string;
+	developerInstructionsPromptSha256?: string;
+	generatedResolvedModel?: string;
 }
 
 interface NativeAgentInstallManifest {
@@ -5804,29 +5813,120 @@ function hashContent(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
-// Model, provider, reasoning, and resolved_model values are derived from the current
-// Codex/.omx-config settings. Ignore only these fields when deciding whether a TOML
-// otherwise matches the generated file; all other local content must still match.
-function normalizeNativeAgentConfig(content: string): string {
-	const developerInstructionsMarker = 'developer_instructions = """';
-	const markerIndex = content.indexOf(developerInstructionsMarker);
-	if (markerIndex < 0) return content;
-
-	const header = content.slice(0, markerIndex).replace(
-		/^(?:model|model_provider|model_reasoning_effort) = .*\r?\n?/gm,
-		"",
-	);
-	const instructions = content
-		.slice(markerIndex)
-		.replace(/^- resolved_model:.*(?:\r?\n|$)/gm, "");
-	return `${header}${instructions}`;
+function parsedAgentToml(content: string): Record<string, unknown> | undefined {
+	try {
+		return TOML.parse(content) as Record<string, unknown>;
+	} catch {
+		return undefined;
+	}
 }
 
-function differsOnlyByNativeAgentConfig(existing: string, generated: string): boolean {
-	return (
-		existing !== generated &&
-		normalizeNativeAgentConfig(existing) === normalizeNativeAgentConfig(generated)
+function getDeveloperInstructions(content: string): string | undefined {
+	const parsed = parsedAgentToml(content);
+	return typeof parsed?.developer_instructions === "string"
+		? parsed.developer_instructions
+		: undefined;
+}
+
+function generatedInstructionManifestFields(instructions: string): Pick<
+	NativeAgentInstallManifestEntry,
+	"developerInstructionsSha256" | "developerInstructionsPromptSha256" | "generatedResolvedModel"
+> {
+	const generatedResolvedModel = getGeneratedResolvedModel(instructions);
+	return {
+		developerInstructionsSha256: hashGeneratedDeveloperInstructions(instructions),
+		developerInstructionsPromptSha256: hashGeneratedDeveloperPrompt(instructions, generatedResolvedModel),
+		...(generatedResolvedModel === undefined ? {} : { generatedResolvedModel }),
+	};
+}
+
+function reconcileGeneratedAgentToml(
+	existing: string,
+	generated: string,
+	previous: NativeAgentInstallManifestEntry | undefined,
+): { content: string; customizedInstructions: boolean } | undefined {
+	const existingParsed = parsedAgentToml(existing);
+	const generatedParsed = parsedAgentToml(generated);
+	if (!existingParsed || !generatedParsed) return undefined;
+	const name = generatedParsed.name;
+	if (typeof name !== "string" || existingParsed.name !== name) return undefined;
+
+	const existingHash = hashContent(existing);
+	const existingInstructions = getDeveloperInstructions(existing);
+	const generatedInstructions = getDeveloperInstructions(generated);
+	if (existingInstructions === undefined || generatedInstructions === undefined) return undefined;
+	const bodyHash = hashGeneratedDeveloperInstructions(existingInstructions);
+	const bodyPromptHash = hashGeneratedDeveloperPrompt(existingInstructions, previous?.generatedResolvedModel);
+	const generatedBodyHash = hashGeneratedDeveloperInstructions(generatedInstructions);
+	const pristine = previous?.sha256 === existingHash;
+	const owned = pristine || isGeneratedOmxNativeAgentToml(existing, name);
+	if (!owned) return undefined;
+	const bodyUnchanged = pristine ||
+		previous?.developerInstructionsSha256 === bodyHash ||
+		(previous?.developerInstructionsPromptSha256 !== undefined &&
+			previous.developerInstructionsPromptSha256 === bodyPromptHash) ||
+		bodyHash === generatedBodyHash;
+	if (!isSafelyEditableNativeAgentToml(
+		existing,
+		name,
+		bodyUnchanged && existingInstructions !== generatedInstructions,
+	)) return undefined;
+
+	const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+	const generatedHeader = generated.slice(0, generated.search(/^developer_instructions\s*=/m));
+	const modelKeys = ["model", "model_provider", "model_reasoning_effort"] as const;
+	const expected = generatedHeader.split(/\r?\n/).filter((line) =>
+		modelKeys.some((key) => new RegExp(`^${key}\\s*=`).test(line)),
 	);
+	const lines = existing.split(/\r?\n/);
+	const instructionsLine = lines.findIndex((line) => /^\s*developer_instructions\s*=/.test(line));
+	if (instructionsLine < 0) return undefined;
+	const headerSource = lines.slice(0, instructionsLine);
+	const comments = new Map<string, string>();
+	const orphanComments: string[] = [];
+	for (const line of headerSource) {
+		const key = modelKeys.find((candidate) => new RegExp(`^\\s*${candidate}\\s*=`).test(line));
+		if (!key) continue;
+		let quoted = false;
+		let escaped = false;
+		let commentAt = -1;
+		for (let i = 0; i < line.length; i += 1) {
+			const char = line[i];
+			if (escaped) { escaped = false; continue; }
+			if (char === "\\" && quoted) { escaped = true; continue; }
+			if (char === '"') { quoted = !quoted; continue; }
+			if (char === "#" && !quoted) { commentAt = i; break; }
+		}
+		if (commentAt >= 0) comments.set(key, line.slice(commentAt));
+	}
+	const expectedWithComments = expected.map((line) => {
+		const key = line.slice(0, line.indexOf("=")).trim() as typeof modelKeys[number];
+		const comment = comments.get(key);
+		comments.delete(key);
+		return comment ? `${line} ${comment}` : line;
+	});
+	for (const comment of comments.values()) orphanComments.push(comment);
+	const header = headerSource.filter((line) =>
+		!modelKeys.some((key) => new RegExp(`^\\s*${key}\\s*=`).test(line)),
+	);
+	const descriptionIndex = header.findIndex((line) => /^\s*description\s*=/.test(line));
+	header.splice(descriptionIndex >= 0 ? descriptionIndex + 1 : header.length, 0, ...expectedWithComments, ...orphanComments);
+	let result = [...header, ...lines.slice(instructionsLine)].join(eol);
+
+	if (bodyUnchanged && existingInstructions !== generatedInstructions) {
+		const bodyBlock = /^developer_instructions\s*=\s*"""\r?\n[\s\S]*?^"""(?=\r?$)/m;
+		const generatedBlock = generated.match(bodyBlock);
+		if (!generatedBlock || !bodyBlock.test(result)) return undefined;
+		result = result.replace(bodyBlock, generatedBlock[0].replace(/\n/g, eol));
+	}
+	const resultParsed = parsedAgentToml(result);
+	if (!resultParsed) return undefined;
+	for (const key of modelKeys) {
+		if (resultParsed[key] !== generatedParsed[key]) return undefined;
+	}
+	if (bodyUnchanged && resultParsed.developer_instructions !== generatedInstructions) return undefined;
+	if (!bodyUnchanged && resultParsed.developer_instructions !== existingInstructions) return undefined;
+	return { content: result, customizedInstructions: !bodyUnchanged };
 }
 
 function nativeAgentInstallManifestPath(agentsDir: string): string {
@@ -5859,9 +5959,23 @@ async function readNativeAgentInstallManifest(
 			if (!fileName.endsWith(".toml")) continue;
 			if (!entry || typeof entry !== "object") continue;
 			const sha256 = (entry as { sha256?: unknown }).sha256;
-			if (typeof sha256 === "string" && /^[0-9a-f]{64}$/i.test(sha256)) {
-				files[fileName] = { sha256: sha256.toLowerCase() };
-			}
+			const developerInstructionsSha256 = (entry as {
+				developerInstructionsSha256?: unknown;
+			}).developerInstructionsSha256;
+			const developerInstructionsPromptSha256 = (entry as {
+				developerInstructionsPromptSha256?: unknown;
+			}).developerInstructionsPromptSha256;
+			const generatedResolvedModel = (entry as { generatedResolvedModel?: unknown }).generatedResolvedModel;
+			const parsedEntry: NativeAgentInstallManifestEntry = {
+				...(typeof sha256 === "string" && /^[0-9a-f]{64}$/i.test(sha256)
+					? { sha256: sha256.toLowerCase() } : {}),
+				...(typeof developerInstructionsSha256 === "string" && /^[0-9a-f]{64}$/i.test(developerInstructionsSha256)
+					? { developerInstructionsSha256: developerInstructionsSha256.toLowerCase() } : {}),
+				...(typeof developerInstructionsPromptSha256 === "string" && /^[0-9a-f]{64}$/i.test(developerInstructionsPromptSha256)
+					? { developerInstructionsPromptSha256: developerInstructionsPromptSha256.toLowerCase() } : {}),
+				...(typeof generatedResolvedModel === "string" ? { generatedResolvedModel } : {}),
+			};
+			if (Object.keys(parsedEntry).length > 0) files[fileName] = parsedEntry;
 		}
 		return { version: 1, files };
 	} catch {
@@ -5907,7 +6021,11 @@ async function syncNativeAgentToml(
 		if (!options.dryRun) {
 			await mkdir(dirname(dstPath), { recursive: true });
 			await writeFile(dstPath, content);
-			manifest.files[fileName] = { sha256: nextHash };
+			const instructions = getDeveloperInstructions(content);
+			manifest.files[fileName] = {
+				sha256: nextHash,
+				...(instructions === undefined ? {} : generatedInstructionManifestFields(instructions)),
+			};
 		}
 		summary.updated += 1;
 		if (options.verbose) {
@@ -5919,25 +6037,51 @@ async function syncNativeAgentToml(
 	}
 
 	const existing = await readFile(dstPath, "utf-8");
-	const existingHash = hashContent(existing);
 	if (existing === content) {
 		if (!options.dryRun) {
-			manifest.files[fileName] = { sha256: nextHash };
+			const instructions = getDeveloperInstructions(content);
+			manifest.files[fileName] = {
+				sha256: nextHash,
+				...(instructions === undefined ? {} : generatedInstructionManifestFields(instructions)),
+			};
 		}
 		summary.unchanged += 1;
 		return;
 	}
 
-	const priorHash = manifest.files[fileName]?.sha256;
-	const differsOnlyByModelConfig = differsOnlyByNativeAgentConfig(existing, content);
-	const safeToOverwrite = options.force || priorHash === existingHash || differsOnlyByModelConfig;
-	if (!safeToOverwrite) {
+	const previous = manifest.files[fileName];
+	const reconciled = options.force
+		? { content, customizedInstructions: false }
+		: reconcileGeneratedAgentToml(existing, content, previous);
+	if (!reconciled) {
 		summary.skipped += 1;
 		if (options.verbose) {
 			console.log(
 				`  skipped ${verboseLabel} (local modifications preserved; use --force to overwrite)`,
 			);
 		}
+		return;
+	}
+	if (reconciled.content === existing) {
+		if (!options.dryRun) {
+			const instructions = getDeveloperInstructions(existing);
+			const previousEntry = previous ?? {};
+			const nextEntry: NativeAgentInstallManifestEntry = {
+				...(existing === content ? { sha256: nextHash } : previousEntry.sha256 === undefined ? {} : { sha256: previousEntry.sha256 }),
+				...(instructions !== undefined && instructions === getDeveloperInstructions(content)
+					? generatedInstructionManifestFields(instructions)
+					: previousEntry.developerInstructionsSha256 === undefined
+						? {}
+						: {
+							developerInstructionsSha256: previousEntry.developerInstructionsSha256,
+							...(previousEntry.developerInstructionsPromptSha256 === undefined ? {} : { developerInstructionsPromptSha256: previousEntry.developerInstructionsPromptSha256 }),
+							...(previousEntry.generatedResolvedModel === undefined ? {} : { generatedResolvedModel: previousEntry.generatedResolvedModel }),
+						}),
+			};
+			if (Object.keys(nextEntry).length === 0) delete manifest.files[fileName];
+			else manifest.files[fileName] = nextEntry;
+		}
+		summary.unchanged += 1;
 		return;
 	}
 
@@ -5947,8 +6091,26 @@ async function syncNativeAgentToml(
 
 	if (!options.dryRun) {
 		await mkdir(dirname(dstPath), { recursive: true });
-		await writeFile(dstPath, content);
-		manifest.files[fileName] = { sha256: nextHash };
+		await writeFile(dstPath, reconciled.content);
+		const oldEntry = previous;
+		const body = getDeveloperInstructions(reconciled.content);
+		const bodyMatchesGenerated = !reconciled.customizedInstructions && body !== undefined && body === getDeveloperInstructions(content);
+		const nextEntry: NativeAgentInstallManifestEntry = {
+			...(reconciled.content === content
+				? { sha256: nextHash }
+				: oldEntry?.sha256 === undefined ? {} : { sha256: oldEntry.sha256 }),
+			...(bodyMatchesGenerated
+				? generatedInstructionManifestFields(body)
+				: oldEntry?.developerInstructionsSha256 === undefined
+					? {}
+					: {
+						developerInstructionsSha256: oldEntry.developerInstructionsSha256,
+						...(oldEntry.developerInstructionsPromptSha256 === undefined ? {} : { developerInstructionsPromptSha256: oldEntry.developerInstructionsPromptSha256 }),
+						...(oldEntry.generatedResolvedModel === undefined ? {} : { generatedResolvedModel: oldEntry.generatedResolvedModel }),
+					}),
+		};
+		if (Object.keys(nextEntry).length === 0) delete manifest.files[fileName];
+		else manifest.files[fileName] = nextEntry;
 	}
 
 	summary.updated += 1;

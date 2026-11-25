@@ -14,6 +14,8 @@
  */
 
 import { existsSync } from "fs";
+import { createHash } from "crypto";
+import TOML from "@iarna/toml";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
@@ -118,7 +120,7 @@ export interface GeneratedNativeAgentConfig {
   reasoningEffort?: PerAgentReasoningEffort;
 }
 
-interface AgentModelResolutionOptions {
+export interface AgentModelResolutionOptions {
   codexHomeOverride?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -149,6 +151,81 @@ function resolveAgentModel(
   }
   // Custom provider: the provider's configured model (if any) is metadata only; no tier model applies.
   return getCodexConfigEffectiveModel(options.codexHomeOverride);
+}
+
+export interface NativeAgentModelFields {
+  model?: string;
+  modelProvider?: string;
+  reasoningEffort?: PerAgentReasoningEffort;
+}
+
+/** The canonical generated model fields shared by setup and doctor. */
+export function resolveNativeAgentModelFields(
+  agent: AgentDefinition,
+  options: AgentModelResolutionOptions = {},
+): NativeAgentModelFields {
+  return {
+    model: resolveAgentModel(agent, options),
+    // Providers are inherited from config.toml; never pin them in generated agent files.
+    modelProvider: undefined,
+    reasoningEffort: getAgentReasoningOverride(agent.name, options.codexHomeOverride) ?? agent.reasoningEffort,
+  };
+}
+
+/** Hash the exact decoded TOML body, including generated routing metadata. */
+export function hashGeneratedDeveloperInstructions(instructions: string): string {
+  return createHash("sha256").update(instructions).digest("hex");
+}
+
+export function getGeneratedResolvedModel(instructions: string): string | undefined {
+  const match = instructions.match(/(?:^|\n)- resolved_model: ([^\r\n]*)(?:\n)?$/);
+  return match?.[1];
+}
+
+/** Compare prompt prose while removing only the exact previously generated terminal model line. */
+export function hashGeneratedDeveloperPrompt(
+  instructions: string,
+  previousResolvedModel: string | undefined,
+): string {
+  if (previousResolvedModel === undefined) return hashGeneratedDeveloperInstructions(instructions);
+  const suffix = `\n- resolved_model: ${previousResolvedModel}`;
+  // Generator TOML decodes with a final newline before the closing delimiter.
+  // Treat its absence as a user edit rather than normalizing it away.
+  if (!instructions.endsWith(`${suffix}\n`)) {
+    return createHash("sha256").update(`${instructions}\u0000missing-previous-resolved-model`).digest("hex");
+  }
+  const normalized = instructions.slice(0, -suffix.length - 1);
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+/** Whether setup can safely patch top-level generated settings without reserializing user TOML. */
+export function isSafelyEditableNativeAgentToml(
+  content: string,
+  expectedName: string,
+  replaceDeveloperInstructions = false,
+): boolean {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = TOML.parse(content) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (parsed.name !== expectedName) return false;
+  if (content.includes("\r\n") && /(?<!\r)\n/.test(content)) return false;
+  if (/\r(?!\n)/.test(content)) return false;
+  const lines = content.split(/\r?\n/);
+  const instructionsLine = lines.findIndex((line) => /^\s*developer_instructions\s*=/.test(line));
+  if (instructionsLine < 0) return false;
+  if (replaceDeveloperInstructions) {
+    const bodyBlock = /^developer_instructions\s*=\s*"""\r?\n[\s\S]*?^"""(?=\r?$)/m;
+    if (!bodyBlock.test(content)) return false;
+  }
+  for (const line of lines.slice(0, instructionsLine)) {
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+    if (/"""|'''|^\s*\[/.test(line)) return false;
+    if (!/^\s*[A-Za-z0-9_-]+\s*=\s*[^\r\n]*$/.test(line)) return false;
+  }
+  return true;
 }
 
 export function composeRoleInstructions(
@@ -287,10 +364,10 @@ export function generateAgentToml(
   promptContent: string,
   options: AgentModelResolutionOptions = {},
 ): string {
-  const resolvedModel = resolveAgentModel(agent, options);
-  const reasoningOverride = getAgentReasoningOverride(agent.name, options.codexHomeOverride);
-  const isBuiltin = isBuiltinProvider(getCodexConfigEffectiveModelProvider(options.codexHomeOverride));
-  const hasAgentModelOverride = !!getAgentModelOverride(agent.name, options.codexHomeOverride);
+	const resolvedModel = resolveAgentModel(agent, options);
+	const modelFields = resolveNativeAgentModelFields(agent, options);
+	const isBuiltin = isBuiltinProvider(getCodexConfigEffectiveModelProvider(options.codexHomeOverride));
+	const hasAgentModelOverride = !!getAgentModelOverride(agent.name, options.codexHomeOverride);
 
   return generateStandaloneAgentToml({
     name: agent.name,
@@ -303,12 +380,12 @@ export function generateAgentToml(
     ),
     // Built-in providers: always write the resolved tier model. Custom providers: only write the
     // model when agentModels[role] is set; otherwise the agent inherits the provider default at runtime.
-    model: (isBuiltin || hasAgentModelOverride) ? resolvedModel : undefined,
+		model: (isBuiltin || hasAgentModelOverride) ? modelFields.model : undefined,
     // Never include modelProvider field in agent TOMLs to prevent staleness.
     // Agents inherit model_provider from config.toml at runtime. Not pinning provider for
     // model-only overrides allows independent provider updates at runtime.
-    modelProvider: undefined,
-    reasoningEffort: reasoningOverride ?? agent.reasoningEffort,
+		modelProvider: modelFields.modelProvider,
+		reasoningEffort: modelFields.reasoningEffort,
   });
 }
 

@@ -31,6 +31,8 @@ Team worker fallback uses the same `agentModels[role]` > tier environment variab
 
 Reasoning efforts remain unchanged per role. Use `.omx-config.json` `agentReasoning` to override a role's reasoning effort.
 
+Generated `.codex/agents/*.toml` model fields are not a supported user configuration surface. Set per-role models with `.omx-config.json` `agentModels` (and tier defaults with the documented environment keys); `omx setup` and the setup refresh after explicit `omx update` reconcile generated model/provider/reasoning fields. `omx doctor` reports drift and prompt provenance. Do not edit `model`, `model_provider`, or `model_reasoning_effort` directly in generated TOMLs: those fields are regenerated. The `developer_instructions` body is handled separately: unchanged generated text is refreshed, while a detected customized body is preserved and reported by doctor. If the body is a legacy/ambiguous version without a recorded baseline, doctor reports that ambiguity and setup preserves it; `omx setup --force` remains the explicit whole-file overwrite escape hatch.
+
 ## Task Tiers
 
 - `LOW`:
