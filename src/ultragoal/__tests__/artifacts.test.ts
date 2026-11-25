@@ -401,6 +401,18 @@ describe('ultragoal artifacts', () => {
       });
       const perStory = await startNextUltragoal(cwd);
       const perStoryInstruction = buildCodexGoalInstruction(perStory.goal!, perStory.plan);
+      for (const [goal, plan] of [[started.goal!, started.plan], [perStory.goal!, perStory.plan]] as const) {
+        const scoped = buildCodexGoalInstruction(goal, plan, { autopilotSupervised: true });
+        assert.match(scoped, /agent_type: "executor"/);
+        assert.match(scoped, /cleanup and review-fix product edits/);
+        assert.match(scoped, /ai-slop-cleaner/);
+        assert.match(scoped, /rerun verification/);
+        assert.match(scoped, /independentReview/);
+        const unavailable = buildCodexGoalInstruction(goal, plan, { autopilotSupervised: true, nativeSubagentSupport: { status: 'role_routing_unavailable', source: 'persisted_role_routing_marker' } });
+        assert.match(unavailable, /BLOCKED for product edits/);
+        assert.doesNotMatch(unavailable, /agent_type: "executor"/);
+      }
+
 
       assert.match(perStoryInstruction, /independentReview evidence from both code-reviewer and architect subagents/);
       assert.match(perStoryInstruction, /independent delegation is unavailable\/skipped\/failed, do not call update_goal/);

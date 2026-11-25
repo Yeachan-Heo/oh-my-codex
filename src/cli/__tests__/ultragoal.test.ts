@@ -307,6 +307,82 @@ describe('cli/ultragoal', () => {
     });
   });
 
+  it('scopes the executor handoff to the active exact Autopilot session on start and resume', async () => {
+    await withCwd(async (cwd) => {
+      const old = process.env.OMX_SESSION_ID;
+      const session = 'executor-session';
+      const stateDir = join(cwd, '.omx/state');
+      const sessionDir = join(stateDir, 'sessions', session);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: session, cwd, state_root: stateDir }));
+      process.env.OMX_SESSION_ID = session;
+      const state = async (value: object) => writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify(value));
+      const next = async () => {
+        const result = await capture(() => ultragoalCommand(['complete-goals', '--json']));
+        assert.equal(result.exitCode, undefined, result.stderr.join('\n'));
+        return JSON.parse(result.stdout.join('\n'));
+      };
+      try {
+        const created = await capture(() => ultragoalCommand(['create-goals', '--brief', 'Implement source and tests']));
+        assert.equal(created.exitCode, undefined, created.stderr.join('\n'));
+        await state({ mode: 'autopilot', active: true, current_phase: 'ultragoal', session_id: session });
+        const first = await next();
+        const resumed = await next();
+        assert.equal(first.resumed, false);
+        assert.equal(resumed.resumed, true);
+        for (const output of [first.instruction, resumed.instruction]) {
+          assert.match(output, /agent_type: "executor"/);
+          assert.match(output, /source or test/);
+          assert.match(output, /cleanup and review-fix/);
+          assert.match(output, /read-only and Main-owned metadata/i);
+          assert.match(output, /ai-slop-cleaner/);
+          assert.match(output, /independentReview/);
+        }
+        const capacityFile = join(stateDir, 'native-subagent-capacity-blocker.json');
+        const capacity = { cwd, session_id: session, reason: 'agent_thread_limit_reached', expires_at: '2099-01-01T00:00:00.000Z' };
+        await writeFile(capacityFile, JSON.stringify(capacity));
+        const blocked = (await next()).instruction;
+        assert.match(blocked, /capacity is currently exhausted/);
+        assert.match(blocked, /Reuse a reachable executor/);
+        assert.doesNotMatch(blocked, /agent_type: "executor"/);
+        for (const invalid of [{ ...capacity, session_id: 'foreign' }, { ...capacity, expires_at: '2000-01-01T00:00:00.000Z' }]) {
+          await writeFile(capacityFile, JSON.stringify(invalid));
+          const unknown = (await next()).instruction;
+          assert.doesNotMatch(unknown, /capacity is currently exhausted/);
+          assert.match(unknown, /Check that the host exposes native role routing/);
+        }
+        await rm(capacityFile);
+        const unsupportedFile = join(stateDir, NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE);
+        await writeFile(unsupportedFile, JSON.stringify({ status: 'unsupported', reason: 'native_subagents_unsupported', source: 'persisted_support_blocker', cwd, session_id: session, expires_at: '2099-01-01T00:00:00.000Z' }));
+        const unsupported = (await next()).instruction;
+        assert.match(unsupported, /BLOCKED for product edits/);
+        assert.doesNotMatch(unsupported, /agent_type: "executor"/);
+        await rm(unsupportedFile);
+        for (const invalid of [
+          { mode: 'autopilot', active: false, current_phase: 'ultragoal', session_id: session },
+          { mode: 'autopilot', active: true, current_phase: 'ralplan', session_id: session },
+          { mode: 'autopilot', active: true, current_phase: 'waiting-for-user', session_id: session, state: { deep_interview_question: { previous_phase: 'ultragoal' } } },
+          { mode: 'autopilot', active: true, current_phase: 'ultragoal', session_id: 'foreign' },
+        ]) {
+          await state(invalid);
+          assert.doesNotMatch((await next()).instruction, /Autopilot executor handoff/);
+        }
+        await rm(join(sessionDir, 'autopilot-state.json'));
+        await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify({ mode: 'autopilot', active: true, current_phase: 'ultragoal' }));
+        assert.doesNotMatch((await next()).instruction, /Autopilot executor handoff/);
+        const foreignDir = join(stateDir, 'sessions', 'foreign');
+        await mkdir(foreignDir, { recursive: true });
+        await writeFile(join(foreignDir, 'autopilot-state.json'), JSON.stringify({ mode: 'autopilot', active: true, current_phase: 'ultragoal', session_id: 'foreign' }));
+        assert.doesNotMatch((await next()).instruction, /Autopilot executor handoff/);
+        delete process.env.OMX_SESSION_ID;
+        await rm(join(stateDir, 'session.json'));
+        assert.doesNotMatch((await next()).instruction, /Autopilot executor handoff/);
+      } finally {
+        if (old === undefined) delete process.env.OMX_SESSION_ID; else process.env.OMX_SESSION_ID = old;
+      }
+    });
+  });
+
   it('checkpoints a goal and reports status as json', async () => {
     await withCwd(async (cwd) => {
       await capture(() => ultragoalCommand(['create-goals', '--brief', '- First milestone']));

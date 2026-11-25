@@ -9,9 +9,12 @@ import {
 } from '../goal-workflows/codex-goal-snapshot.js';
 import {
   NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
+  canonicalizeOriginCwd,
   resolveNativeSubagentSupportStatus,
 } from '../leader/contract.js';
 import { resolveRuntimeStateScope } from '../mcp/state-paths.js';
+import { readModeStateForActiveDecision } from '../modes/base.js';
+import { normalizeAutopilotPhase } from '../autopilot/fsm.js';
 import { readRoleRoutingMarker } from '../subagents/role-routing-marker.js';
 import {
   addUltragoalGoal,
@@ -205,13 +208,28 @@ async function resolveCodexGoalNativeSubagentSupport(cwd: string) {
   const persistedRoleRoutingMarker = scope.sessionId
     ? readRoleRoutingMarker(scope.baseStateDir, { cwd: scope.cwd, sessionId: scope.sessionId })
     : null;
-  return resolveNativeSubagentSupportStatus({
+  const nativeSubagentSupport = resolveNativeSubagentSupportStatus({
     persistedSupportBlocker,
     persistedRoleRoutingMarker,
     persistedCapacityBlocker,
     cwd: scope.cwd,
     sessionId: scope.sessionId,
   });
+  const autopilot = scope.sessionId
+    ? await readModeStateForActiveDecision('autopilot', scope.sessionId, cwd)
+    : null;
+  const embeddedSession = autopilot?.session_id;
+  const autopilotSupervised = Boolean(scope.sessionId && autopilot?.mode === 'autopilot' && autopilot.active === true
+    && normalizeAutopilotPhase(autopilot.current_phase) === 'ultragoal'
+    && (embeddedSession === undefined || embeddedSession === scope.sessionId));
+  // Capacity is only actionable here when the marker binds to this exact workspace and session.
+  const capacityBlocked = nativeSubagentSupport.source === 'capacity_blocker'
+    && nativeSubagentSupport.reason === 'agent_thread_limit_reached'
+    && typeof persistedCapacityBlocker?.cwd === 'string'
+    && canonicalizeOriginCwd(persistedCapacityBlocker.cwd) === canonicalizeOriginCwd(scope.cwd)
+    && persistedCapacityBlocker?.session_id === scope.sessionId
+    && Boolean(scope.sessionId);
+  return { nativeSubagentSupport, autopilotSupervised, capacityBlocked };
 }
 
 const STEERING_KINDS = new Set<UltragoalSteeringMutationKind>(ULTRAGOAL_STEERING_MUTATION_KINDS);
@@ -505,8 +523,8 @@ export async function ultragoalCommand(args: string[], deps: UltragoalCommandDep
         } else console.log(handoff ?? (result.done ? 'ultragoal: all goals complete' : 'ultragoal: no pending goals (use --retry-failed to retry failed goals)'));
         return;
       }
-      const nativeSubagentSupport = await resolveCodexGoalNativeSubagentSupport(cwd);
-      const instruction = buildGoalInstruction(result.goal, result.plan, { nativeSubagentSupport });
+      const guidanceOptions = await resolveCodexGoalNativeSubagentSupport(cwd);
+      const instruction = buildGoalInstruction(result.goal, result.plan, guidanceOptions);
       if (json) printJson({ ok: true, resumed: result.resumed, goal: result.goal, instruction });
       else console.log(instruction);
       return;
