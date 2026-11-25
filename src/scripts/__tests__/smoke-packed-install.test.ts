@@ -519,7 +519,7 @@ test('packed lifecycle requires enabled command handlers and integer hook metada
 });
 
 
-test('packed lifecycle requires exactly the current OMX trust keys and an isolated approval target', () => {
+test('packed lifecycle requires exactly nine generated OMX trust keys and an isolated approval target', () => {
   const hooks = MANAGED_CODEX_HOOK_EVENTS.map((event, index) => ({
     event,
     command: 'node /tmp/omx/dist/scripts/codex-native-hook.js',
@@ -536,11 +536,11 @@ test('packed lifecycle requires exactly the current OMX trust keys and an isolat
       ...trust,
       '/tmp/project/.codex/hooks.json:foreign:0:0': 'sha256:foreign',
     }, hooks),
-    /exactly the \d+ current OMX hooks with no stale keys/,
+    /exactly the 9 current OMX hooks with no stale keys/,
   );
   assert.throws(
     () => assertGeneratedTrustMatchesCodex(Object.fromEntries(Object.entries(trust).slice(0, -1)), hooks),
-    /exactly the \d+ current OMX hooks with no stale keys/,
+    /exactly the 9 current OMX hooks with no stale keys/,
   );
   assert.doesNotThrow(() => assertCodexBatchWriteResult({
     filePath: '/tmp/isolated-codex-home/config.toml',
@@ -591,7 +591,7 @@ test('packed lifecycle fails closed on malformed project hooks.state entries and
   const staleRawTrust = generatedHookTrustState(`${validConfig}\nforeign = { trusted_hash = "sha256:foreign" }`);
   assert.throws(
     () => assertGeneratedTrustMatchesCodex(staleRawTrust, hooks),
-    /exactly the \d+ current OMX hooks with no stale keys/,
+    /exactly the 9 current OMX hooks with no stale keys/,
   );
 
   const protoRawTrust = generatedHookTrustState(
@@ -600,7 +600,7 @@ test('packed lifecycle fails closed on malformed project hooks.state entries and
   assert.equal(Object.hasOwn(protoRawTrust, '__proto__'), true);
   assert.throws(
     () => assertGeneratedTrustMatchesCodex(protoRawTrust, hooks),
-    /exactly the \d+ current OMX hooks with no stale keys/,
+    /exactly the 9 current OMX hooks with no stale keys/,
   );
 });
 test('packed lifecycle treats only the production command grammar as managed ownership', () => {
