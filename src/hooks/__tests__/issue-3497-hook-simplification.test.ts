@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, before, after } from "node:test";
@@ -138,6 +138,35 @@ describe("issue #3497 hook simplification / Codex App capability warnings", () =
         const permission = (output.hookSpecificOutput as { permissionDecision?: string } | undefined)
           ?.permissionDecision;
         assert.notEqual(permission, "deny");
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Autopilot lifecycle and service metadata writes advisory across phases", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3497-autopilot-service-"));
+    const sessionId = "sess-3497-autopilot-service";
+    const stateDir = join(cwd, ".omx", "state");
+    const sessionDir = join(stateDir, "sessions", sessionId);
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, "session.json"), JSON.stringify({ session_id: sessionId, cwd, state_root: stateDir }));
+      for (const phase of ["deep-interview", "ralplan", "ultragoal", "code-review"]) {
+        await writeFile(join(sessionDir, "autopilot-state.json"), JSON.stringify({ mode: "autopilot", active: true, current_phase: phase, session_id: sessionId }));
+        for (const tool of [
+          { name: "Bash", input: { command: `omx state write --input '{"mode":"autopilot","current_phase":"${phase}"}' --json` } },
+          { name: "Bash", input: { command: 'omx ultragoal checkpoint --goal-id G001 --status complete --evidence verified --codex-goal-json snapshot.json' } },
+          { name: "Edit", input: { file_path: join(sessionDir, "autopilot-state.json") } },
+          { name: "Edit", input: { file_path: join(cwd, ".omx", "ultragoal", "ledger.jsonl") } },
+        ]) {
+          const result = await dispatchCodexNativeHook({
+            hook_event_name: "PreToolUse", tool_name: tool.name, tool_input: tool.input,
+            cwd, session_id: sessionId, source: "native",
+          }, { cwd });
+          assert.notEqual(result.outputJson?.decision, "block", `${phase}: ${tool.name}`);
+          assert.notEqual((result.outputJson?.hookSpecificOutput as { permissionDecision?: string } | undefined)?.permissionDecision, "deny", `${phase}: ${tool.name}`);
+        }
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
