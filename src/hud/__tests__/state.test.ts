@@ -1455,6 +1455,37 @@ describe('readAllState canonical skill precedence', () => {
     });
   });
 
+  it('reads only the current session’s recent, incomplete native agents for the stacked roster', async () => {
+    await withTempRepo('omx-hud-native-roster-', async (cwd) => {
+      const stateDir = join(cwd, '.omx', 'state');
+      const sessionId = 'sess-native-roster';
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: stateDir }));
+      const timestamp = new Date().toISOString();
+      const entries = [
+        { threadId: 'leader', kind: 'leader' as const },
+        { threadId: 'fresh-1', agentNickname: 'Banach', role: 'explore' },
+        { threadId: 'fresh-2', agentNickname: 'Euler', mode: 'executor', scope: 'HUD ownership' },
+        { threadId: 'completed', completed: true },
+        { threadId: 'closed', status: 'closed' as const },
+        { threadId: 'stale', timestamp: '2000-01-01T00:00:00.000Z' },
+        { threadId: 'long-running', agentNickname: 'Curie', nativeStarted: true, timestamp: '2020-01-01T00:00:00.000Z' },
+        { threadId: 'other-session', sessionId: 'sess-other', agentNickname: 'Wrong pane' },
+      ];
+      const tracking = entries.reduce((state, entry) => recordSubagentTurn(state, {
+        sessionId, timestamp, kind: 'subagent', ...entry,
+      }), createSubagentTrackingState());
+      await writeSubagentTrackingState(cwd, tracking);
+      const state = await readAllState(cwd);
+      assert.deepEqual(state.nativeAgents, [
+        { name: 'Banach', role: 'explore', firstSeenAt: timestamp },
+        { name: 'Euler', role: 'executor', scope: 'HUD ownership', firstSeenAt: timestamp },
+        { name: 'Curie', firstSeenAt: '2020-01-01T00:00:00.000Z' },
+      ]);
+      assert.equal((await readHudLayoutProjection(cwd)).nativeAgentCount, 3);
+    });
+  });
+
   it('surfaces live code-reviewer subagent evidence when canonical autopilot state is inactive', async () => {
     await withTempRepo('omx-hud-inactive-autopilot-live-review-', async (cwd) => {
       const rootStateDir = join(cwd, '.omx', 'state');

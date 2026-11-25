@@ -229,7 +229,11 @@ describe("native hook protocol compatibility", () => {
     assert.deepEqual(Object.keys(config.hooks), [...MANAGED_HOOK_EVENTS]);
     for (const event of MANAGED_HOOK_EVENTS) {
       assert.equal(extractRawCodexHookEventName(JSON.stringify({ hook_event_name: event })), event);
-      assert.ok(mapCodexHookEventToOmxEvent(event));
+      if (event === "SubagentStart") {
+        assert.equal(mapCodexHookEventToOmxEvent(event), null, "HUD start is not a generic OMX hook dispatch");
+      } else {
+        assert.ok(mapCodexHookEventToOmxEvent(event));
+      }
       assert.match(config.hooks[event][0]!.hooks[0]!.command, /codex-native-hook\.js/);
     }
     assert.equal(mapCodexHookEventToOmxEvent("SubagentStop"), "subagent-stop");

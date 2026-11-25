@@ -845,6 +845,7 @@ describe("codex native hook config", () => {
 			"UserPromptSubmit",
 			"PreCompact",
 			"PostCompact",
+			"SubagentStart",
 			"SubagentStop",
 			"Stop",
 		]);
@@ -5198,6 +5199,41 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
     }
   });
 
+  it("tracks Codex SubagentStart and SubagentStop with child session IDs, without adopting a foreign parent", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-subagent-lifecycle-"));
+    try {
+      const canonicalSessionId = "omx-leader-session";
+      const leader = "codex-leader";
+      const child = "codex-child";
+      await writeSessionStart(cwd, canonicalSessionId, { nativeSessionId: leader, pid: process.pid });
+      const transcript = join(cwd, "subagent-rollout.jsonl");
+      const writeTranscript = (parent: string) => writeFile(transcript, JSON.stringify({
+        type: "session_meta",
+        payload: { id: child, source: { subagent: { thread_spawn: { parent_thread_id: parent, agent_nickname: "Hegel" } } } },
+      }) + "\n");
+      const event = { cwd, session_id: child, agent_id: child, agent_type: "worker", turn_id: "child-turn" };
+      const start = { ...event, hook_event_name: "SubagentStart", transcript_path: transcript };
+      await writeTranscript("other-pane");
+      await dispatchCodexNativeHook(start, { cwd });
+      assert.equal((await readSubagentTrackingState(cwd)).sessions[canonicalSessionId], undefined);
+
+      await writeTranscript(leader);
+      assert.equal((await dispatchCodexNativeHook(start, { cwd })).outputJson, null);
+      const started = (await readSubagentTrackingState(cwd)).sessions[canonicalSessionId]?.threads[child];
+      assert.equal(started?.agent_nickname, "Hegel");
+      assert.equal(started?.mode, "worker");
+      assert.equal(started?.native_started_at, started?.first_seen_at);
+      assert.equal(started?.direct_child_root_id, undefined, "HUD evidence must not grant reopen authority");
+
+      await dispatchCodexNativeHook({ ...event, hook_event_name: "SubagentStop", agent_transcript_path: transcript }, { cwd });
+      const completed = (await readSubagentTrackingState(cwd)).sessions[canonicalSessionId]?.threads[child];
+      assert.equal(completed?.status, "closed");
+      assert.equal(completed?.completion_source, "native_stop_event");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps subagent SessionStart from replacing the canonical leader session", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-session-start-"));
     const originalCodexHome = process.env.CODEX_HOME;
@@ -5302,6 +5338,11 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       assert.equal(tracking.sessions?.[canonicalSessionId]?.leader_thread_id, leaderNativeSessionId);
       assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.kind, "subagent");
       assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.mode, "critic");
+      assert.equal(
+        (await readSubagentTrackingState(cwd)).sessions[canonicalSessionId]?.threads[childNativeSessionId]?.agent_nickname,
+        "Hegel",
+        "the native child's SessionStart nickname is available to the HUD before it uses tools",
+      );
       assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.direct_child_root_id, leaderNativeSessionId);
       assert.equal(tracking.sessions?.[canonicalSessionId]?.threads?.[childNativeSessionId]?.direct_child_parent_id, leaderNativeSessionId);
       assert.equal(tracking.sessions?.[leaderNativeSessionId]?.leader_thread_id, leaderNativeSessionId);

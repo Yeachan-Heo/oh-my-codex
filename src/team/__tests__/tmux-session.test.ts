@@ -6431,6 +6431,7 @@ esac
               assert.match(error.message, /unexpected=\[%7,%8\]/);
               assert.match(error.message, /missing=\[\]/);
               assert.match(error.message, /isolated tmux window with no host-owned foreign panes/);
+              assert.match(error.message, /open a new tmux window.*retry `omx team`/i);
               return true;
             },
           );

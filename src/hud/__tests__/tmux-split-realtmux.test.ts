@@ -9,6 +9,7 @@ import {
   findHudWatchPaneIds,
   listCurrentWindowPanes,
   readHudHookHealth,
+  readHudLeaderOwnerIdentity,
   registerHudResizeHook,
 } from '../tmux.js';
 import { isRealTmuxAvailable, type TempTmuxSessionFixture, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
@@ -252,6 +253,43 @@ async function waitForOwnedHudHooksHealthy(
 }
 
 describe('createHudWatchPane real private-server split transaction', () => {
+  it('retains both HUDs when a vertically split sibling becomes the latest session owner', async (t) => {
+    if (!skipUnlessPrivateRealTmux(t)) return;
+
+    const workDir = await mkdtemp(join(tmpdir(), 'omx-hud-two-leaders-'));
+    try {
+      await withTempTmuxSession({}, async (fixture) => {
+        const topId = fixture.leaderPaneId;
+        const bottomId = fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-v', '-t', topId]);
+        fixture.run(['set-option', '-t', fixture.sessionName, '@omx_instance_id', 'top-owner']);
+        fixture.run(['set-option', '-p', '-t', topId, '@omx_pane_instance_id', 'top-owner']);
+        const top = createOwnedHud(fixture, workDir, 'top-owner');
+        await waitForPaneReady(fixture, top.hudPaneId);
+
+        fixture.run(['set-option', '-t', fixture.sessionName, '@omx_instance_id', 'bottom-owner']);
+        fixture.run(['set-option', '-p', '-t', bottomId, '@omx_pane_instance_id', 'bottom-owner']);
+        const bottomFixture = { ...fixture, leaderPaneId: bottomId };
+        const bottom = createOwnedHud(bottomFixture, workDir, 'bottom-owner');
+        await waitForPaneReady(fixture, bottom.hudPaneId);
+
+        const execTmux = (args: string[]) => `${fixture.run(args)}\n`;
+        assert.equal(readHudLeaderOwnerIdentity(topId, 'top-owner', execTmux), 'current');
+        assert.equal(readHudLeaderOwnerIdentity(bottomId, 'bottom-owner', execTmux), 'current');
+        assert.equal(registerHudResizeHook(top.hudPaneId, topId, 2, {
+          cwd: workDir,
+          env: { ...fixture.env, OMX_SESSION_ID: 'top-owner', OMX_ENTRY_PATH: top.omxEntry },
+        }, execTmux), true);
+        await waitForOwnedHudHooksHealthy(fixture, workDir, 'top-owner', top.hudPaneId, top.omxEntry);
+
+        fixture.run(['set-option', '-p', '-t', bottomId, '@omx_pane_instance_id', 'bottom-successor']);
+        await waitForPaneToDisappear(fixture, bottom.hudPaneId, 'bottom leader ownership change');
+        assertPaneExists(fixture, top.hudPaneId, 'closing the bottom HUD must not retire the top HUD');
+      });
+    } finally {
+      await removeTempDirWithRetry(workDir);
+    }
+  });
+
   it('creates one healthy HUD after a cramped window grows and retires it when ownership changes', async (t) => {
     if (!skipUnlessPrivateRealTmux(t)) return;
 

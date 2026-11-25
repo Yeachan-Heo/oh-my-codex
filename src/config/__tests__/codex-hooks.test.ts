@@ -1298,6 +1298,7 @@ describe("codex hooks helpers", () => {
       "/home/me/.codex/hooks.json:pre_tool_use:0:0",
       "/home/me/.codex/hooks.json:session_start:0:0",
       "/home/me/.codex/hooks.json:stop:0:0",
+      "/home/me/.codex/hooks.json:subagent_start:0:0",
       "/home/me/.codex/hooks.json:subagent_stop:0:0",
       "/home/me/.codex/hooks.json:user_prompt_submit:0:0",
     ]);
@@ -1782,7 +1783,7 @@ describe("codex hooks helpers", () => {
       }),
     );
 
-    assert.deepEqual(missing, ["PreToolUse", "PostToolUse", "UserPromptSubmit", "PreCompact", "PostCompact", "SubagentStop", "Stop"]);
+    assert.deepEqual(missing, ["PreToolUse", "PostToolUse", "UserPromptSubmit", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop"]);
   });
 
   it("returns null for invalid hooks.json content", () => {
@@ -2194,6 +2195,7 @@ describe("codex hooks helpers", () => {
       "PreToolUse",
       "SessionStart",
       "Stop",
+      "SubagentStart",
       "SubagentStop",
       "UserPromptSubmit",
     ]);

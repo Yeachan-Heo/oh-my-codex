@@ -753,6 +753,21 @@ describe('official Codex plugin layout', () => {
       assert.equal(child.status, 0, child.stderr || child.stdout);
       assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'codex-native-hook');
       await rm(calledPath, { force: true });
+      for (const agentId of ['foreign-child', 'child-codex-session']) {
+        const result = runPluginNativeHook(cachePluginRoot, JSON.stringify({
+          hook_event_name: 'SubagentStart',
+          session_id: 'child-codex-session',
+          agent_id: agentId,
+          transcript_path: childTranscriptPath,
+        }), inheritedEnv);
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        if (agentId === 'foreign-child') {
+          await assert.rejects(readFile(calledPath, 'utf-8'), { code: 'ENOENT' });
+        } else {
+          assert.equal((await readFile(calledPath, 'utf-8')).trim(), 'codex-native-hook');
+          await rm(calledPath, { force: true });
+        }
+      }
       for (const eventName of ['PreToolUse', 'PostToolUse'] as const) {
         const result = runPluginNativeHook(
           cachePluginRoot,

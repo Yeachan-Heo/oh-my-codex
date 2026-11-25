@@ -34,6 +34,7 @@ import type {
   CodeReviewStateForHud,
   UltraqaStateForHud,
   TeamStateForHud,
+  NativeAgentForHud,
   HudMetrics,
   HudNotifyState,
   HudConfig,
@@ -824,19 +825,43 @@ function resolveTeamForHud(
     : null;
 }
 
+function readNativeAgents(tracking: SubagentTrackingState, sessionId?: string): NativeAgentForHud[] {
+  if (!sessionId) return [];
+  const summary = summarizeSubagentSession(tracking, sessionId);
+  if (!summary) return [];
+  const activeIds = new Set(summary.activeSubagentThreadIds);
+  const threads = tracking.sessions[sessionId].threads;
+  return summary.allSubagentThreadIds.filter((threadId) => {
+    const thread = threads[threadId];
+    return activeIds.has(threadId) || Boolean(thread.native_started_at
+      && !thread.completed_at && thread.status !== 'closed' && thread.status !== 'unavailable');
+  }).map((threadId) => {
+    const thread = threads[threadId];
+    const role = thread.role ?? thread.mode;
+    return {
+      name: thread.agent_nickname ?? thread.lane_id ?? `agent-${threadId.slice(-8)}`,
+      ...(role ? { role } : {}),
+      ...(thread.scope ? { scope: thread.scope } : {}),
+      firstSeenAt: thread.native_started_at ?? thread.first_seen_at,
+    };
+  });
+}
+
 export interface HudLayoutProjection {
   ultragoalActive: boolean;
   teamWorkerCount: number;
+  nativeAgentCount?: number;
 }
 
 export async function readHudLayoutProjection(cwd: string): Promise<HudLayoutProjection> {
   const stateDir = getBaseStateDir(cwd);
   const currentSessionId = await readCurrentSessionId(cwd);
-  const [canonicalSkillState, ultragoalArtifact, ultragoalDetail, teamDetail] = await Promise.all([
+  const [canonicalSkillState, ultragoalArtifact, ultragoalDetail, teamDetail, subagentTracking] = await Promise.all([
     readVisibleSkillActiveStateForStateDir(stateDir, currentSessionId),
     readUltragoalState(cwd),
     readAuthoritativeModeStateForSession<UltragoalStateForHud>(cwd, 'ultragoal', currentSessionId),
     readAuthoritativeModeStateForSession<TeamStateForHud>(cwd, 'team', currentSessionId),
+    readSubagentTrackingState(cwd),
   ]);
   const canonicalSkills = new Map(
     listActiveSkills(canonicalSkillState).map((entry) => [entry.skill, entry] as const),
@@ -847,10 +872,12 @@ export async function readHudLayoutProjection(cwd: string): Promise<HudLayoutPro
   const members = team?.active === true && teamName && TEAM_NAME_SAFE_PATTERN.test(teamName)
     ? await readTeamMembers(stateDir, teamName)
     : null;
+  const nativeAgentCount = readNativeAgents(subagentTracking, currentSessionId).length;
 
   return {
     ultragoalActive: ultragoal?.active === true,
     teamWorkerCount: members?.length ?? 0,
+    ...(nativeAgentCount > 0 ? { nativeAgentCount } : {}),
   };
 }
 
@@ -1043,6 +1070,7 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     codeReview,
     ultraqa,
     team: await readTeamWorkers(cwd, team, stateDir),
+    nativeAgents: readNativeAgents(subagentTracking, currentSessionId),
     guardexFinish,
     metrics,
     hudNotify,
