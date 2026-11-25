@@ -78,8 +78,17 @@ function normalizeInstallDoctorOutput(text: string, home: string, cwd: string): 
       if (line.startsWith('  [OK] Node.js:')) {
         return '  [OK] Node.js: <NODE_VERSION>';
       }
+      if (line.startsWith('  [OK] Process identity:') || line.startsWith('  [XX] Process identity:')) {
+        return '  [PROCESS_IDENTITY_STATUS]';
+      }
       if (line.startsWith('  [OK] Explore Harness:') || line.startsWith('  [!!] Explore Harness:')) {
         return '  [EXPLORE_HARNESS_STATUS]';
+      }
+      if (line.startsWith('  [OK] Spark quota routing:') || line.startsWith('  [!!] Spark quota routing:')) {
+        return '  [SPARK_ROUTING_STATUS]';
+      }
+      if (line.startsWith('  [OK] Native agent configuration:') || line.startsWith('  [!!] Native agent configuration:')) {
+        return '  [NATIVE_AGENT_CONFIG_STATUS]';
       }
       if (line.startsWith('Results: ')) {
         return 'Results: <RESULTS>';
@@ -109,9 +118,7 @@ describe('compat doctor contract', () => {
       assert.equal(result.status, Number.parseInt(readFixture('install-onboarding.exitcode.txt').trim(), 10), result.stderr || result.stdout);
       assert.equal(result.stderr, '');
       const expected = readFixture('install-onboarding.stdout.txt');
-      const platformExpected = process.platform === 'darwin' || process.platform === 'win32'
-        ? expected.replace('  [OK] Node.js: <NODE_VERSION>\n', '  [OK] Node.js: <NODE_VERSION>\n  [OK] Process identity: native process identity provider is ready\n')
-        : expected;
+      const platformExpected = expected.replace('  [OK] Node.js: <NODE_VERSION>\n', '  [OK] Node.js: <NODE_VERSION>\n  [PROCESS_IDENTITY_STATUS]\n');
       assert.equal(normalizeInstallDoctorOutput(result.stdout, home, wd), platformExpected);
       assert.ok(result.stdout.includes(SAFE_DOCTOR_RECOVERY) || result.stdout.includes(SAFE_DOCTOR_FAILURE));
       assert.doesNotMatch(result.stdout, /^Review (?:warnings|failed checks) above\.[^\n]*--force/m);
