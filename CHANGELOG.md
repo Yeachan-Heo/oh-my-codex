@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.27] - 2026-11-25
+
+Patch release includes fixes for HUD pane independence, native subagent support, and external launcher setup management.
+
+### Fixed
+
+- **KEEP TMUX HUDS INDEPENDENT AND SHOW STACKED NATIVE SUBAGENTS (#4194):** Fixes #4191. Keeps tmux HUD ownership pane-local, shows native subagents as a vertical roster, and lets external launchers opt out of deferred setup without skipping the package update. Tested: isolated npm upgrade and real tmux probes; compiled update, HUD, hook and Team regressions.
+
+- **INFER AUTOPILOT MODE FOR EXACT-SESSION STATE (#4197):** Fixes #4196. Resolves the Codex P2 that shipped unresolved in v0.22.26 by properly inferring autopilot mode for exact-session state.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.26...v0.22.27
+
 ## [0.22.26] - 2026-11-25
 
 Patch release includes fixes for native agent TOML handling, autopilot setup, and model refresh ownership.
