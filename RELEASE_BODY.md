@@ -1,16 +1,26 @@
-# oh-my-codex v0.22.25
+# oh-my-codex v0.22.26
 
 ## Summary
 
-This patch release fixes a regression in Autopilot Deep Interview mode that prevented valid questions from being asked when running in exact-session autopilot mode.
+Patch release includes fixes for native agent TOML handling, autopilot setup, and model refresh ownership rules.
 
 ## Fixed
 
-- **ALLOW AUTOPILOT DEEP INTERVIEW QUESTIONS (#4182):** Fixes #4183. When running in Autopilot mode with an exact-session `autopilot-state.json` file that lacks the autopilot marker, the mode is now correctly inferred as autopilot, allowing Deep Interview questions to proceed. The fix ensures that Deep Interview questions are not incorrectly blocked when autopilot state is present but the marker is missing, and normalizeSessionId is now properly exported for session identifier handling.
+- **REFRESH MODEL FIELDS FOR PRISTINE AGENT TOMLs (#4193):** Fixes #4152. When setting up pristine agent TOMLs, model instructions are now properly refreshed to prevent stale configuration.
+
+- **PRESERVE ASSIGNED TEAM EXECUTOR LANE (#4192):** Fixes autopilot mode behavior where assigned Team executor lanes were not being preserved.
+
+- **NATIVE AGENT TOML SAFETY (#4189):** Addresses review findings from #4186. TOML parsing is now more robust.
+
+- **ROUTE IMPLEMENTATION STORIES TO EXECUTOR (#4188):** Fixes autopilot mode by routing implementation stories correctly.
+
+- **KEEP USER-MODIFIED NATIVE AGENTS UNTOUCHED (#4190):** Preserves native agents that have been manually modified.
+
+- **MODEL REFRESH OWNERSHIP RULE AND TEST ASSERTION (#2820 follow-up):** Restores test assertions and clarifies ownership rules.
 
 ## Compatibility
 
-No breaking changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.25`.
+No breaking changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.26`.
 
 ## Verification
 
@@ -19,9 +29,9 @@ No breaking changes. Release-coupled metadata (`package.json`, `package-lock.jso
 
 ## Contributors
 
-Thanks to iqdoctor for fixing Autopilot Deep Interview mode and improving session handling.
+Thanks to Yeachan-Heo and contributors for fixing native agent setup and autopilot routing.
 
-**Full Changelog**: [`v0.22.24...v0.22.25`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.24...v0.22.25)
+**Full Changelog**: [`v0.22.25...v0.22.26`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.25...v0.22.26)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*

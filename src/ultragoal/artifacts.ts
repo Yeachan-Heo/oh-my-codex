@@ -11,6 +11,7 @@ import {
 } from '../goal-workflows/codex-goal-snapshot.js';
 import {
   LEADER_CONDUCTOR_BLOCK,
+  buildAutopilotUnsupportedNativeGuidance,
   buildRoleRoutingUnavailableGuidance,
   buildUnsupportedNativeSubagentGuidance,
   type NativeSubagentSupportEvidence,
@@ -262,6 +263,8 @@ export interface RecordFinalReviewBlockersOptions extends AddUltragoalGoalOption
 
 export interface CodexGoalInstructionOptions {
   nativeSubagentSupport?: NativeSubagentSupportEvidence;
+  autopilotSupervised?: boolean;
+  capacityBlocked?: boolean;
 }
 
 export interface UltragoalQualityGate {
@@ -2171,19 +2174,44 @@ export async function recordFinalReviewBlockers(cwd: string, options: RecordFina
   });
 }
 
-export function codexGoalConductorGuidance(options: CodexGoalInstructionOptions): string {
+export function codexGoalConductorGuidance(options: CodexGoalInstructionOptions, finalStory = true): string {
   if (options.nativeSubagentSupport?.status === 'role_routing_unavailable') {
     return buildRoleRoutingUnavailableGuidance(options.nativeSubagentSupport);
   }
   if (options.nativeSubagentSupport?.status === 'unsupported') {
     return [
-      buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),
-      'Native independent review unavailable: do not treat final review as clean, do not call update_goal for clean completion, and use omx ultragoal record-review-blockers to create a non-clean blocker for the missing native independent review.',
-    ].join('\n');
+      options.autopilotSupervised
+        ? buildAutopilotUnsupportedNativeGuidance(options.nativeSubagentSupport)
+        : buildUnsupportedNativeSubagentGuidance(options.nativeSubagentSupport),
+      !options.autopilotSupervised
+        ? 'Native independent review unavailable: do not treat final review as clean, do not call update_goal for clean completion, and use omx ultragoal record-review-blockers to create a non-clean blocker for the missing native independent review.'
+        : finalStory
+          ? 'Native independent review unavailable: do not treat final review as clean or call update_goal for clean completion; follow the final quality gate after story execution and verification.'
+          : null,
+    ].filter(Boolean).join('\n');
   }
   return [
     LEADER_CONDUCTOR_BLOCK,
     'Native capability: under ordinary native support with inherited permissions, delegated performer lanes may implement, mutate, and report bounded work directly through the native result surface; ordinary native reporting is completion, not a separate authority grant.',
+  ].join('\n');
+}
+
+function autopilotExecutorHandoff(options: CodexGoalInstructionOptions): string | null {
+  if (!options.autopilotSupervised) return null;
+  const support = options.nativeSubagentSupport;
+  const teamHandoff = 'If this story is already assigned to an active Team, confirm the exact Team identity and assignment using the Team protocol and continue with its assigned worker(s); do not dispatch a redundant native executor. Use one performer lane per story; task text or labels alone do not establish Team authority.';
+  if (support?.status === 'unsupported' || support?.status === 'role_routing_unavailable') {
+    return [teamHandoff, 'Otherwise, Autopilot executor handoff: BLOCKED for product edits: native typed executor delegation is unavailable. Do not implement in Main; use a supported surface with the installed executor role and resume. Read-only and Main-owned metadata work may continue.'].join('\n');
+  }
+  if (options.capacityBlocked) {
+    return [teamHandoff, 'Otherwise, Autopilot executor handoff: native agent capacity is currently exhausted. Reuse a reachable executor for this lane if available; otherwise report a blocker and resume when capacity returns or on a supported surface. Do not repeatedly spawn/close agents or implement in Main. Read-only and Main-owned metadata work may continue.'].join('\n');
+  }
+  return [
+    'Autopilot executor handoff: for work requiring source or test edits, including cleanup and review-fix product edits, Main must not write those artifacts directly.',
+    teamHandoff,
+    'Otherwise: Check that the host exposes native role routing and the installed executor role; then dispatch or reuse a reachable performer with agent_type: "executor" before product edits. Give the story ID and objective, bounded file ownership, acceptance checks, and required changed-file and verification evidence; await and inspect its result.',
+    'For the native executor lane, if the role or routing is unavailable, report the blocker and resume on a supported surface with the installed executor; do not silently fall back to Main. Read-only and Main-owned metadata work do not require an executor.',
+    'Main may initiate ai-slop-cleaner and independent review, but the selected performer lane performs any product edits they require; rerun verification after cleanup and keep the independent review gate.',
   ].join('\n');
 }
 
@@ -2203,7 +2231,8 @@ function buildPerStoryCodexGoalInstruction(goal: UltragoalItem, plan: UltragoalP
   };
   const finalStory = isFinalRunCompletionCandidate(plan, goal);
   return [
-    codexGoalConductorGuidance(options),
+    codexGoalConductorGuidance(options, finalStory),
+    autopilotExecutorHandoff(options),
     '',
     'Ultragoal active-goal handoff',
     `Plan: ${plan.goalsPath}`,
@@ -2259,7 +2288,8 @@ function buildAggregateCodexGoalInstruction(goal: UltragoalItem, plan: Ultragoal
   const createPayload = { objective };
   const checkpointStatus = finalStory ? 'complete' : 'active';
   return [
-    codexGoalConductorGuidance(options),
+    codexGoalConductorGuidance(options, finalStory),
+    autopilotExecutorHandoff(options),
     '',
     'Ultragoal aggregate-goal handoff',
     `Plan: ${prefixedStatePath(statePathPrefix, ULTRAGOAL_GOALS)}`,

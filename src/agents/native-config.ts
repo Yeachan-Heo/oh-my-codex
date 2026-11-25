@@ -14,6 +14,8 @@
  */
 
 import { existsSync } from "fs";
+import { createHash } from "crypto";
+import TOML from "@iarna/toml";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { AGENT_DEFINITIONS, AgentDefinition } from "./definitions.js";
@@ -118,7 +120,7 @@ export interface GeneratedNativeAgentConfig {
   reasoningEffort?: PerAgentReasoningEffort;
 }
 
-interface AgentModelResolutionOptions {
+export interface AgentModelResolutionOptions {
   codexHomeOverride?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -149,6 +151,144 @@ function resolveAgentModel(
   }
   // Custom provider: the provider's configured model (if any) is metadata only; no tier model applies.
   return getCodexConfigEffectiveModel(options.codexHomeOverride);
+}
+
+export interface NativeAgentModelFields {
+  model?: string;
+  modelProvider?: string;
+  reasoningEffort?: PerAgentReasoningEffort;
+}
+
+/** The canonical generated model fields shared by setup and doctor. */
+export function resolveNativeAgentModelFields(
+  agent: AgentDefinition,
+  options: AgentModelResolutionOptions = {},
+): NativeAgentModelFields {
+  return {
+    model: resolveAgentModel(agent, options),
+    // Providers are inherited from config.toml; never pin them in generated agent files.
+    modelProvider: undefined,
+    reasoningEffort: getAgentReasoningOverride(agent.name, options.codexHomeOverride) ?? agent.reasoningEffort,
+  };
+}
+
+/** Hash the exact decoded TOML body, including generated routing metadata. */
+export function hashGeneratedDeveloperInstructions(instructions: string): string {
+  return createHash("sha256").update(instructions).digest("hex");
+}
+
+export function getGeneratedResolvedModel(instructions: string): string | undefined {
+  const match = instructions.match(/(?:^|\n)- resolved_model: ([^\r\n]*)(?:\n)?$/);
+  return match?.[1];
+}
+
+/** Compare prompt prose while removing only the exact previously generated terminal model line. */
+export function hashGeneratedDeveloperPrompt(
+  instructions: string,
+  previousResolvedModel: string | undefined,
+): string {
+  if (previousResolvedModel === undefined) return hashGeneratedDeveloperInstructions(instructions);
+  const suffix = `\n- resolved_model: ${previousResolvedModel}`;
+  // Generator TOML decodes with a final newline before the closing delimiter.
+  // Treat its absence as a user edit rather than normalizing it away.
+  if (!instructions.endsWith(`${suffix}\n`)) {
+    return createHash("sha256").update(`${instructions}\u0000missing-previous-resolved-model`).digest("hex");
+  }
+  const normalized = instructions.slice(0, -suffix.length - 1);
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+/** Whether setup can safely patch top-level generated settings without reserializing user TOML. */
+export function isSafelyEditableNativeAgentToml(
+  content: string,
+  expectedName: string,
+  replaceDeveloperInstructions = false,
+): boolean {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = TOML.parse(content) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (parsed.name !== expectedName) return false;
+  if (content.includes("\r\n") && /(?<!\r)\n/.test(content)) return false;
+  if (/\r(?!\n)/.test(content)) return false;
+  const lines = content.split(/\r?\n/);
+  const instructionsLine = lines.findIndex((line) => /^\s*developer_instructions\s*=/.test(line));
+  if (instructionsLine < 0) return false;
+  if (replaceDeveloperInstructions) {
+    const bodyBlock = /^developer_instructions\s*=\s*"""\r?\n[\s\S]*?^"""(?=\r?$)/m;
+    if (!bodyBlock.test(content)) return false;
+  }
+  for (const line of lines.slice(0, instructionsLine)) {
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+    if (/"""|'''|^\s*\[/.test(line)) return false;
+    if (!/^\s*[A-Za-z0-9_-]+\s*=\s*[^\r\n]*$/.test(line)) return false;
+  }
+
+  // Check whether developer_instructions is a multiline triple-quoted string.
+  // A TOML with top-level keys after developer_instructions body is unsafe
+  // because setup cannot patch those fields without reserializing the entire file.
+  // However, single-line developer_instructions are always editable, so we only
+  // need to check for trailing content when the body is a multiline triple-quoted string.
+  //
+  // Find the developer_instructions line and determine if it's a triple-quoted string.
+  const instructionsMatch = content.match(/^developer_instructions\s*=\s*"""(?:\r?\n)?/m);
+  if (!instructionsMatch) {
+    // Not a triple-quoted string (or no developer_instructions); safe to edit.
+    return true;
+  }
+  // This is a triple-quoted string. Find the closing """ delimiter.
+  // The challenge is that the content can end with any number of quote characters,
+  // so we need to find where the actual closing delimiter is.
+  const bodyStartIndex = instructionsMatch.index! + instructionsMatch[0].length;
+  // Search for the closing delimiter by finding """ followed by either whitespace or EOF.
+  // TOML allows for quotes in the content, so we match from after the body start,
+  // consuming everything until we find """ at the start of a line, or """ on the same line
+  // but not followed by other non-whitespace characters (accounting for content that ends with quotes).
+  const contentAfterStart = content.substring(bodyStartIndex);
+  // Look for a closing delimiter: either on a new line or at end of line/file.
+  // We need to find where """ appears in a way that closes the string.
+  // Strategy: find """ and check if it's followed by nothing, whitespace, comment, or EOF on that line.
+  let closingIndex = -1;
+  let searchIndex = 0;
+  while (searchIndex < contentAfterStart.length) {
+    const quoteIndex = contentAfterStart.indexOf('"""', searchIndex);
+    if (quoteIndex === -1) return false; // No closing delimiter found
+    // Check what follows this potential closing delimiter
+    const afterDelim = contentAfterStart.substring(quoteIndex + 3);
+    // The delimiter is valid if it's followed by:
+    // - newline (possibly with \r)
+    // - whitespace/comment until newline
+    // - EOF
+    const lineMatch = afterDelim.match(/^(\s*(?:#[^\r\n]*)?)(?:\r?\n|$)/);
+    if (lineMatch) {
+      closingIndex = quoteIndex;
+      break;
+    }
+    searchIndex = quoteIndex + 1;
+  }
+  if (closingIndex === -1) return false;
+  // Found the closing delimiter. Check if it has a preceding newline.
+  // If there's a newline before the closing delimiter, this is a multiline string.
+  const beforeDelim = contentAfterStart.substring(0, closingIndex);
+  const hasNewline = /\r?\n$/.test(beforeDelim);
+  if (!hasNewline) {
+    // Single-line triple-quoted string (no newline before closing delimiter).
+    // These are safe to edit since they can be edited without issues.
+    return true;
+  }
+  // Multiline triple-quoted string; check for top-level keys after the closing delimiter.
+  const afterDelimStart = bodyStartIndex + closingIndex + 3;
+  const afterBody = content.substring(afterDelimStart);
+  // Check that only blank lines and comments follow the closing """
+  for (const line of afterBody.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    // Any non-blank, non-comment line after developer_instructions is unsafe
+    return false;
+  }
+  return true;
 }
 
 export function composeRoleInstructions(
@@ -287,10 +427,10 @@ export function generateAgentToml(
   promptContent: string,
   options: AgentModelResolutionOptions = {},
 ): string {
-  const resolvedModel = resolveAgentModel(agent, options);
-  const reasoningOverride = getAgentReasoningOverride(agent.name, options.codexHomeOverride);
-  const isBuiltin = isBuiltinProvider(getCodexConfigEffectiveModelProvider(options.codexHomeOverride));
-  const hasAgentModelOverride = !!getAgentModelOverride(agent.name, options.codexHomeOverride);
+	const resolvedModel = resolveAgentModel(agent, options);
+	const modelFields = resolveNativeAgentModelFields(agent, options);
+	const isBuiltin = isBuiltinProvider(getCodexConfigEffectiveModelProvider(options.codexHomeOverride));
+	const hasAgentModelOverride = !!getAgentModelOverride(agent.name, options.codexHomeOverride);
 
   return generateStandaloneAgentToml({
     name: agent.name,
@@ -303,12 +443,12 @@ export function generateAgentToml(
     ),
     // Built-in providers: always write the resolved tier model. Custom providers: only write the
     // model when agentModels[role] is set; otherwise the agent inherits the provider default at runtime.
-    model: (isBuiltin || hasAgentModelOverride) ? resolvedModel : undefined,
+		model: (isBuiltin || hasAgentModelOverride) ? modelFields.model : undefined,
     // Never include modelProvider field in agent TOMLs to prevent staleness.
     // Agents inherit model_provider from config.toml at runtime. Not pinning provider for
     // model-only overrides allows independent provider updates at runtime.
-    modelProvider: undefined,
-    reasoningEffort: reasoningOverride ?? agent.reasoningEffort,
+		modelProvider: modelFields.modelProvider,
+		reasoningEffort: modelFields.reasoningEffort,
   });
 }
 

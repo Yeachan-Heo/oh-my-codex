@@ -1419,7 +1419,7 @@
       ]
     },
     "skills": {
-      "digest": "6a5352accd3c2c231f0cb6008f99b06c09ff19496994a72d0a4569f9e52dfdfe",
+      "digest": "35b8cdef844724bc58330c5a5fbd9c3e645a5a8506d59ff5aa3922d0950ff009",
       "files": [
         {
           "digest": "d81095f3480b4d15dc8607d85c9dd5c872fe0786e29561a3d101a117f104e77b",
@@ -1434,7 +1434,7 @@
           "path": "skills/ask/SKILL.md"
         },
         {
-          "digest": "c26fc9f4742f6e9656df9f939d71d1cba20b2c26e3dc3057663403d41e47c583",
+          "digest": "bea66904d45423019b4d2a904742347a238d1a43232ed96d2b3329e9ce4df551",
           "path": "skills/autopilot/SKILL.md"
         },
         {

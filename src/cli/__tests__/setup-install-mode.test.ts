@@ -4721,7 +4721,6 @@ describe("omx setup install mode behavior", () => {
 						output,
 						/Native agent role refresh complete/,
 					);
-
 					const backupRoot = join(wd, "home", ".omx", "backups", "setup");
 					const backupRuns = await readdir(backupRoot);
 					assert.ok(backupRuns.length > 0);
@@ -4787,6 +4786,102 @@ describe("omx setup install mode behavior", () => {
 
 					assert.equal(await readFile(customAgentPath, "utf-8"), customAgentToml);
 					assert.equal(existsSync(generatedAgentPath), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("skips native agent model refresh when legacy agent has user-modified body", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					// First setup installs with legacy, creating the initial agents
+					await setup({ scope: "user", installMode: "legacy" });
+
+					// Modify an existing agent to have user changes without model fields.
+					// This simulates a legacy agent that the user has edited.
+					const agentPath = join(codexHomeDir, "agents", "planner.toml");
+					const userEditedLegacy = [
+						"# oh-my-codex agent: planner",
+						'name = "planner"',
+						'description = "user-modified planner description"',
+						'developer_instructions = """custom user instructions"""',
+						"",
+					].join("\n");
+					await writeFile(agentPath, userEditedLegacy);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin", verbose: true });
+					});
+
+					// File must be preserved byte-identical because it's a legacy agent (#2820)
+					const finalContent = await readFile(agentPath, "utf-8");
+					assert.equal(finalContent, userEditedLegacy);
+					assert.match(
+						output,
+						/skipped .* \(local modifications preserved/,
+					);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("writes model fields to pristine agent TOML even when initially lacking them", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					// First setup installs with legacy, creating agents with model fields
+					await setup({ scope: "user", installMode: "legacy" });
+
+					// Strip model lines from an agent to simulate an older version without model fields
+					const agentPath = join(codexHomeDir, "agents", "planner.toml");
+					const originalContent = await readFile(agentPath, "utf-8");
+					
+					// Extract just the lines before model fields begin
+					const lines = originalContent.split("\n");
+					const instructionsIndex = lines.findIndex(line => /^developer_instructions\s*=/.test(line));
+					assert.ok(instructionsIndex > 0, "agent should have developer_instructions");
+					
+					// Remove model/model_provider/model_reasoning_effort lines
+					const strippedLines = lines.filter(line =>
+						!/^(model|model_provider|model_reasoning_effort)\s*=/.test(line)
+					);
+					const strippedContent = strippedLines.join("\n");
+					await writeFile(agentPath, strippedContent);
+					
+					// Update the manifest to record the stripped version as pristine
+					const manifestPath = join(codexHomeDir, ".omx", "native-agents.json");
+					const manifestContent = await readFile(manifestPath, "utf-8");
+					const manifest = JSON.parse(manifestContent) as { version: number; files: Record<string, unknown> };
+					
+					// Calculate sha256 of stripped content
+					const strippedHash = createHash("sha256").update(strippedContent).digest("hex");
+					
+					// Update manifest with new hash as pristine marker
+					if (!manifest.files["planner.toml"]) {
+						manifest.files["planner.toml"] = {};
+					}
+					(manifest.files["planner.toml"] as Record<string, unknown>)["sha256"] = strippedHash;
+					await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+					
+					// Verify that model fields are indeed missing before setup
+					const beforeSetup = await readFile(agentPath, "utf-8");
+					assert.ok(!beforeSetup.includes("model ="), "model line should be stripped before setup");
+					assert.ok(!beforeSetup.includes("model_reasoning_effort ="), "model_reasoning_effort should be stripped before setup");
+					
+					// Run plain setup (not force) to trigger reconciliation
+					await setup({ scope: "user", installMode: "legacy" });
+					
+					// Verify that model fields ARE written (because file is pristine)
+					const finalContent = await readFile(agentPath, "utf-8");
+					assert.ok(finalContent.includes("model ="), "model line should be written back for pristine file");
+					assert.ok(finalContent.includes("model_reasoning_effort ="), "model_reasoning_effort should be written back for pristine file");
 				});
 			});
 		} finally {

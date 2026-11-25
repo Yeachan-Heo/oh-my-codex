@@ -164,8 +164,8 @@ import {
   NATIVE_SUBAGENT_SUPPORT_BLOCKER_FILE,
   actionKindForConductorArtifact,
   authorizeConductorAction,
+  buildAutopilotUnsupportedNativeGuidance,
   buildRoleRoutingUnavailableGuidance,
-  buildUnsupportedNativeSubagentGuidance,
   canonicalizeNativeCollaborationToolName,
   classifyConductorArtifactKind,
   parseNativeSubagentResultDisposition,
@@ -2743,7 +2743,7 @@ function buildAutopilotPromptActivationNote(
     sessionId: options.sessionId,
   });
   const conductorGuidance = nativeSubagentSupport.status === "unsupported"
-    ? buildUnsupportedNativeSubagentGuidance(nativeSubagentSupport)
+    ? buildAutopilotUnsupportedNativeGuidance(nativeSubagentSupport)
     : nativeSubagentSupport.status === "role_routing_unavailable"
       ? buildRoleRoutingUnavailableGuidance(nativeSubagentSupport)
       : `${LEADER_CONDUCTOR_BLOCK} ${LEADER_CONDUCTOR_REUSE_AND_LEDGER_GUIDANCE}`;

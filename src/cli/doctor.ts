@@ -17,6 +17,7 @@ import {
 	type RegularFileDurabilityTracker,
 } from "../utils/file-durability.js";
 import { constants, existsSync, readFileSync, type Stats } from "fs";
+import { createHash } from "crypto";
 import { access, chown, lstat, mkdir, mkdtemp, readdir, readFile, rename, rmdir, rm } from "fs/promises";
 import { spawnSync } from "child_process";
 import { basename, dirname, join, relative, resolve } from "path";
@@ -106,7 +107,6 @@ import { hasOmxAgentsContract } from "../utils/agents-md.js";
 import {
 	OMX_DEFAULT_SPARK_MODEL_ENV,
 	OMX_SPARK_MODEL_ENV,
-	getAgentModelOverride,
 	getCodexConfigRootModelProvider,
 	getConfiguredTeamLowComplexityModel,
 	getEnvConfiguredSparkDefaultModel,
@@ -115,7 +115,13 @@ import {
 	getStandardDefaultModel,
 } from "../config/models.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
-import { getInstallableNativeAgentNames } from "../agents/policy.js";
+import { getInstallableNativeAgentNames, TEAM_MODE_NATIVE_AGENT_NAMES } from "../agents/policy.js";
+import {
+	generateAgentToml,
+	hashGeneratedDeveloperInstructions,
+	hashGeneratedDeveloperPrompt,
+	isSafelyEditableNativeAgentToml,
+} from "../agents/native-config.js";
 import { readCatalogManifest } from "../catalog/reader.js";
 import {
 	defaultProcessInspectionProvider,
@@ -900,6 +906,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 6.4: Spark/model lane routing (issue #2757)
 	checks.push(checkSparkRouting(paths));
+	checks.push(await checkNativeAgentConfigDrift(paths, cwd));
 
 	// Check 6.5: Legacy/current skill-root overlap
 	if (scopeResolution.scope === "user") {
@@ -3955,7 +3962,6 @@ function checkNativeReviewerRoles(
 
 interface InstalledAgentModelInfo {
 	exists: boolean;
-	model?: string;
 	modelProvider?: string;
 }
 
@@ -3963,15 +3969,10 @@ function readInstalledAgentModelInfo(tomlPath: string): InstalledAgentModelInfo 
 	if (!existsSync(tomlPath)) return { exists: false };
 	try {
 		const parsed = parseToml(readFileSync(tomlPath, "utf-8")) as {
-			model?: unknown;
 			model_provider?: unknown;
 		};
 		return {
 			exists: true,
-			model:
-				typeof parsed.model === "string" && parsed.model.trim() !== ""
-					? parsed.model.trim()
-					: undefined,
 			modelProvider:
 				typeof parsed.model_provider === "string" &&
 				parsed.model_provider.trim() !== ""
@@ -4028,18 +4029,13 @@ function getInstallableSparkLaneAgentNames(): string[] {
  * not draw from native Spark quota.
  */
 export function checkSparkRouting(paths: DoctorPaths): Check {
-	const name = "Spark routing";
+	const name = "Spark quota routing";
 	const codexHomeOverride = paths.codexHomeDir;
 	const sparkModel = getSparkDefaultModel(codexHomeOverride);
 	const frontierModel = getFrontierDefaultModel(codexHomeOverride);
 	const standardModel = getStandardDefaultModel(codexHomeOverride);
 	const sparkSource = resolveSparkModelSource(codexHomeOverride);
 	const rootProvider = getCodexConfigRootModelProvider(codexHomeOverride);
-	const explicitSparkAgentOverrides = new Map(
-		getInstallableSparkLaneAgentNames()
-			.map((agentName) => [agentName, getAgentModelOverride(agentName, codexHomeOverride)] as const)
-			.filter((entry): entry is readonly [string, string] => typeof entry[1] === "string"),
-	);
 
 	const laneSummary =
 		`lanes: frontier=\`${frontierModel}\`, standard=\`${standardModel}\`, ` +
@@ -4062,51 +4058,10 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 		const info = readInstalledAgentModelInfo(
 			join(paths.agentsDir, `${agentName}.toml`),
 		);
-		if (!info.exists) {
-			problems.push(
-				`${agentName}.toml is missing under ${paths.agentsDir} (run \`omx setup --force\`)`,
-			);
-			continue;
-		}
-		const explicitOverride = explicitSparkAgentOverrides.get(agentName);
-		if (!info.model) {
-			// No model field in TOML: check if it's intentional runtime inheritance or stale
-			if (!explicitOverride) {
-				// No override configured -> agent will inherit from config.toml at runtime (intended behavior since 0.21.18)
-				wired.push(
-					`${agentName} -> \`${sparkModel}\` (runtime inheritance)${info.modelProvider ? ` (provider: ${info.modelProvider})` : ""}`,
-				);
-				continue;
-			}
-			// Explicit override configured but TOML has no model field -> stale
-			problems.push(
-				`${agentName}.toml has no model field but agentModels.${agentName} explicitly resolves to \`${explicitOverride}\` (stale install; run \`omx setup --force\`)`,
-			);
-			continue;
-		}
-		if (explicitOverride) {
-			if (info.model !== explicitOverride) {
-				problems.push(
-					`${agentName}.toml model is \`${info.model}\` but agentModels.${agentName} explicitly resolves to \`${explicitOverride}\` (stale install; run \`omx setup --force\`)`,
-				);
-				continue;
-			}
-			wired.push(
-				`${agentName} -> \`${info.model}\` (agentModels override)${
-					info.modelProvider ? ` (provider: ${info.modelProvider})` : ""
-				}`,
-			);
-			continue;
-		}
-		if (info.model !== sparkModel) {
-			problems.push(
-				`${agentName}.toml model is \`${info.model}\` but the resolved Spark model is \`${sparkModel}\` (stale install; run \`omx setup --force\`)`,
-			);
-			continue;
-		}
+		if (!info.exists) continue;
 		if (info.modelProvider && rootProvider && info.modelProvider !== rootProvider) {
 			problems.push(
-				`${agentName}.toml model_provider \`${info.modelProvider}\` differs from the config root provider \`${rootProvider}\` (stale install; run \`omx setup --force\`)`,
+				`${agentName}.toml pins model_provider \`${info.modelProvider}\` but config.toml selects \`${rootProvider}\``,
 			);
 			continue;
 		}
@@ -4117,9 +4072,7 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 			continue;
 		}
 		wired.push(
-			`${agentName} -> \`${info.model}\`${
-				info.modelProvider ? ` (provider: ${info.modelProvider})` : ""
-			}`,
+			`${agentName}${info.modelProvider ? ` (provider: ${info.modelProvider})` : ""}`,
 		);
 	}
 
@@ -4127,7 +4080,7 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 		return {
 			name,
 			status: "warn",
-			message: `${laneSummary}; Spark lane issue(s): ${problems.join("; ")}`,
+			message: `${laneSummary}; quota routing issue(s): ${problems.join("; ")}`,
 		};
 	}
 
@@ -4135,9 +4088,131 @@ export function checkSparkRouting(paths: DoctorPaths): Check {
 		name,
 		status: "pass",
 		message:
-			`${laneSummary}; Spark-lane native agent(s) wired: ${wired.join(", ")}. ` +
-			`If Spark quota is still unused, the leader may not be delegating read-only lookups to the Spark lane, or the Codex usage view may lag.`,
+			`${laneSummary}; provider quota routing is valid for installed Spark-lane role(s): ${wired.join(", ") || "none found"}. ` +
+			`Model-field drift is reported by Native agent configuration.`,
 	};
+}
+
+interface NativeAgentManifestEntry {
+	sha256?: string;
+	developerInstructionsSha256?: string;
+	developerInstructionsPromptSha256?: string;
+	generatedResolvedModel?: string;
+}
+
+export async function checkNativeAgentConfigDrift(paths: DoctorPaths, cwd: string): Promise<Check> {
+	const name = "Native agent configuration";
+	const root = getPackageRoot();
+	let roleNames: string[];
+	const teamModeEnabled = (await readPersistedSetupPreferences(cwd))?.teamMode !== "disabled";
+	try {
+		roleNames = [...getInstallableNativeAgentNames(readCatalogManifest(root))]
+			.filter((role) => teamModeEnabled || !TEAM_MODE_NATIVE_AGENT_NAMES.has(role))
+			.sort();
+	} catch (error) {
+		return { name, status: "warn", message: `cannot determine installable native agent roles: ${String(error)}` };
+	}
+	let manifest: Record<string, NativeAgentManifestEntry> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(join(paths.agentsDir, "..", ".omx", "native-agents.json"), "utf-8")) as {
+			version?: unknown; files?: unknown;
+		};
+		if (parsed.version === 1 && parsed.files && typeof parsed.files === "object") {
+			manifest = parsed.files as Record<string, NativeAgentManifestEntry>;
+		}
+	} catch {
+		// An absent/legacy manifest is diagnosed per-file below; doctor remains read-only.
+	}
+
+	const issues: string[] = [];
+	const ready: string[] = [];
+	for (const role of roleNames) {
+		const agent = AGENT_DEFINITIONS[role];
+		const promptPath = join(root, "prompts", `${role}.md`);
+		const agentPath = join(paths.agentsDir, `${role}.toml`);
+		if (!agent || !existsSync(promptPath)) continue;
+		if (!existsSync(agentPath)) {
+			issues.push(`${role}.toml is missing; run \`omx setup\` to install/update generated files`);
+			continue;
+		}
+		let content: string;
+		try {
+			content = readFileSync(agentPath, "utf-8");
+		} catch (error) {
+			issues.push(`${role}.toml is unreadable (${error instanceof Error ? error.message : String(error)}); check file permissions`);
+			continue;
+		}
+		let installed: Record<string, unknown>;
+		try {
+			installed = parseToml(content) as Record<string, unknown>;
+		} catch {
+			issues.push(`${role}.toml is malformed TOML; doctor cannot safely classify or update it`);
+			continue;
+		}
+		const entry = manifest[`${role}.toml`];
+		const fullHash = createHash("sha256").update(content).digest("hex");
+		const markerOwned = content.split(/\r?\n/, 1)[0]?.trim() === `# oh-my-codex agent: ${role}`;
+		const manifestOwned = entry?.sha256 === fullHash;
+		if (installed.name !== role || (!markerOwned && !manifestOwned)) {
+			issues.push(`${role}.toml is not a proven OMX-generated file; no automatic rewrite is safe`);
+			continue;
+		}
+		const expectedContent = generateAgentToml(agent, readFileSync(promptPath, "utf-8"), {
+			codexHomeOverride: paths.codexHomeDir,
+		});
+		const expected = parseToml(expectedContent) as Record<string, unknown>;
+		const actualInstructions = typeof installed.developer_instructions === "string"
+			? installed.developer_instructions
+			: undefined;
+		const expectedInstructions = typeof expected.developer_instructions === "string"
+			? expected.developer_instructions
+			: undefined;
+		if (actualInstructions === undefined || expectedInstructions === undefined) {
+			issues.push(`${role}.toml has no readable developer_instructions body`);
+			continue;
+		}
+		const actualBodyHash = hashGeneratedDeveloperInstructions(actualInstructions);
+		const expectedBodyHash = hashGeneratedDeveloperInstructions(expectedInstructions);
+		const digest = entry?.developerInstructionsSha256;
+		const promptDigest = entry?.developerInstructionsPromptSha256;
+		const bodyMatchesPrevious = actualBodyHash === digest || (
+			promptDigest !== undefined &&
+			promptDigest === hashGeneratedDeveloperPrompt(actualInstructions, entry?.generatedResolvedModel)
+		);
+		const pristineLegacy = entry?.sha256 === fullHash;
+		const bodyNeedsRefresh = actualBodyHash !== expectedBodyHash && (
+			bodyMatchesPrevious || (!digest && !promptDigest && pristineLegacy)
+		);
+		const safeToPatch = isSafelyEditableNativeAgentToml(content, role, bodyNeedsRefresh);
+		const drift: string[] = [];
+		for (const field of ["model", "model_provider", "model_reasoning_effort"] as const) {
+			if (installed[field] !== expected[field]) drift.push(field);
+		}
+		if (drift.length > 0) {
+			issues.push(safeToPatch
+				? `${role}.toml has unsupported/stale ${drift.join(", ")} value(s); set role/tier models in .omx-config.json and run \`omx setup\``
+				: `${role}.toml has ${drift.join(", ")} drift, but its valid TOML source layout is unsafe for the needed automatic refresh; setup preserves it. Keep model choices in .omx-config.json and repair the TOML source layout without changing developer_instructions`);
+		}
+		if (digest || promptDigest) {
+			if (!bodyMatchesPrevious) {
+				issues.push(`${role}.toml contains a customized user developer_instructions version; setup preserves it`);
+			} else if (actualBodyHash !== expectedBodyHash) {
+				issues.push(safeToPatch
+					? `${role}.toml has the previous generated developer_instructions version; run \`omx setup\` to refresh it`
+					: `${role}.toml has an older generated developer_instructions version, but its valid TOML body representation is unsafe for automatic replacement; setup preserves it`);
+			}
+		} else if (actualBodyHash !== expectedBodyHash) {
+			issues.push(pristineLegacy
+				? safeToPatch
+					? `${role}.toml has a previous generated developer_instructions version; run \`omx setup\` to refresh it`
+					: `${role}.toml has a previous generated developer_instructions version, but its valid TOML body representation is unsafe for automatic replacement; setup preserves it`
+				: `${role}.toml developer_instructions provenance is ambiguous (legacy manifest has no prompt baseline); doctor preserves the body`);
+		}
+		if (drift.length === 0 && actualBodyHash === expectedBodyHash) ready.push(role);
+	}
+	return issues.length > 0
+		? { name, status: "warn", message: issues.join("; ") }
+		: { name, status: "pass", message: `generated model fields and prompt bodies match for ${ready.length} installable role(s)` };
 }
 
 async function checkSkills(

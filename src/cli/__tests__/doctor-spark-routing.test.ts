@@ -69,7 +69,7 @@ describe('checkSparkRouting', () => {
     const result = checkSparkRouting(makePaths(workDir));
     assert.equal(result.status, 'pass');
     assert.match(result.message, new RegExp(SPARK_DEFAULT));
-    assert.match(result.message, /wired/);
+    assert.match(result.message, /provider quota routing is valid/);
     assert.match(result.message, /spark=/);
   });
 
@@ -93,22 +93,20 @@ describe('checkSparkRouting', () => {
     assert.match(result.message, /source: \.omx-config\.json models\.team_low_complexity/);
   });
 
-  it('warns when the Spark-lane agent toml is missing', () => {
+  it('leaves missing role-file diagnosis to the all-role native agent check', () => {
     const result = checkSparkRouting(makePaths(workDir));
-    assert.equal(result.status, 'warn');
-    assert.match(result.message, /explore\.toml is missing/);
-    assert.match(result.message, /omx setup --force/);
+    assert.equal(result.status, 'pass');
+    assert.match(result.message, /none found/);
   });
 
-  it('warns when the installed model diverges from the resolved Spark model', () => {
+  it('leaves model drift diagnosis to the shared all-role native agent check', () => {
     writeExploreToml(`name = "explore"\nmodel = "gpt-5.6-terra"\n`);
     const result = checkSparkRouting(makePaths(workDir));
-    assert.equal(result.status, 'warn');
-    assert.match(result.message, /gpt-5\.6-terra/);
-    assert.match(result.message, /stale install/);
+    assert.equal(result.status, 'pass');
+    assert.match(result.message, /Model-field drift is reported by Native agent configuration/);
   });
 
-  it('passes and reports intentional explore model override instead of stale spark guidance', () => {
+  it('does not duplicate the explicit agent model override diagnosis', () => {
     writeFileSync(join(workDir, '.omx-config.json'), JSON.stringify({
       agentModels: {
         explore: 'gpt-5.6-sol-explore',
@@ -119,9 +117,7 @@ describe('checkSparkRouting', () => {
     const result = checkSparkRouting(makePaths(workDir));
 
     assert.equal(result.status, 'pass');
-    assert.match(result.message, /agentModels override/);
-    assert.match(result.message, /gpt-5\.6-sol-explore/);
-    assert.doesNotMatch(result.message, /stale install/);
+    assert.match(result.message, /Model-field drift is reported by Native agent configuration/);
   });
 
   it('warns when the Spark-lane agent routes through a non-default provider', () => {
@@ -143,12 +139,10 @@ describe('checkSparkRouting', () => {
     );
     const result = checkSparkRouting(makePaths(workDir));
     assert.equal(result.status, 'pass', `expected pass but got ${result.status}: ${result.message}`);
-    assert.match(result.message, /wired/);
-    assert.doesNotMatch(result.message, /stale install/);
+    assert.match(result.message, /provider quota routing is valid/);
   });
 
-  it('warns when the Spark-lane agent TOML has no model field but config has an explicit agentModels override', () => {
-    // Mismatch: override configured but not written to TOML -> stale
+  it('leaves a missing explicit model override diagnosis to the all-role native agent check', () => {
     writeFileSync(join(workDir, '.omx-config.json'), JSON.stringify({
       agentModels: {
         explore: 'gpt-5.6-sol-explore',
@@ -158,8 +152,7 @@ describe('checkSparkRouting', () => {
       `name = "explore"\ndescription = "Explore with lightweight synthesis"\n`,
     );
     const result = checkSparkRouting(makePaths(workDir));
-    assert.equal(result.status, 'warn');
-    assert.match(result.message, /stale install/);
-    assert.match(result.message, /gpt-5\.6-sol-explore/);
+    assert.equal(result.status, 'pass');
+    assert.match(result.message, /Model-field drift is reported by Native agent configuration/);
   });
 });

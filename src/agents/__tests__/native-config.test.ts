@@ -12,6 +12,7 @@ import {
   composeRoleInstructionsForRole,
   generateAgentToml,
   installNativeAgentConfigs,
+  isSafelyEditableNativeAgentToml,
 } from "../native-config.js";
 
 function manifestWithAgents(names: string[]): CatalogManifest {
@@ -543,5 +544,80 @@ describe("agents/native-config", () => {
       else delete process.env.CODEX_HOME;
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("isSafelyEditableNativeAgentToml: rejects TOML with top-level keys after developer_instructions body", () => {
+    const unsafe = [
+      'name = "test"\n',
+      'developer_instructions = """\n',
+      'instructions here\n',
+      '"""\n',
+      'model = "claude-3-5-sonnet"\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(unsafe, "test"), false);
+  });
+
+  it("isSafelyEditableNativeAgentToml: rejects TOML with any top-level key after multiline developer_instructions", () => {
+    const unsafe = [
+      'name = "test"\n',
+      'developer_instructions = """\n',
+      'instructions\n',
+      '"""\n',
+      'model_reasoning_effort = "high"\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(unsafe, "test"), false);
+  });
+
+  it("isSafelyEditableNativeAgentToml: accepts TOML with single-line developer_instructions and top-level keys before it", () => {
+    const safe = [
+      'name = "test"\n',
+      'model = "claude-3-5-sonnet"\n',
+      'developer_instructions = "My custom prompt"\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(safe, "test"), true);
+  });
+
+  it("isSafelyEditableNativeAgentToml: accepts TOML with triple-quoted single-line developer_instructions", () => {
+    const safe = [
+      'name = "test"\n',
+      'model = "claude-3-5-sonnet"\n',
+      'developer_instructions = """My custom prompt"""\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(safe, "test"), true);
+  });
+
+  it("isSafelyEditableNativeAgentToml: accepts TOML with content ending in quotes adjacent to closing delimiter", () => {
+    const safe = [
+      'name = "test"\n',
+      'model = "claude-3-5-sonnet"\n',
+      'developer_instructions = """My favorite quote: \\""""\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(safe, "test"), true);
+  });
+
+  it("isSafelyEditableNativeAgentToml: accepts TOML with trailing blank lines and comments", () => {
+    const safe = [
+      'name = "test"\n',
+      'developer_instructions = """\n',
+      'instructions\n',
+      '"""\n',
+      '\n',
+      '# trailing comment\n',
+      '\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(safe, "test"), true);
+  });
+
+  it("isSafelyEditableNativeAgentToml: accepts normal generated TOML file", () => {
+    const normal = [
+      'name = "executor"\n',
+      'model = "claude-3-5-sonnet"\n',
+      'model_reasoning_effort = "medium"\n',
+      'developer_instructions = """\n',
+      'You are an executor.\n',
+      'Your role is to execute tasks.\n',
+      '"""\n',
+    ].join("");
+    assert.equal(isSafelyEditableNativeAgentToml(normal, "executor"), true);
   });
 });

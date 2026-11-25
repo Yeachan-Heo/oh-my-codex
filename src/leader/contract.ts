@@ -458,6 +458,12 @@ export function buildUnsupportedNativeSubagentGuidance(evidence: NativeSubagentS
   return `${LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK}${reason}${summary}`;
 }
 
+export function buildAutopilotUnsupportedNativeGuidance(evidence: NativeSubagentSupportEvidence): string {
+  const reason = evidence.reason ? ` Reason: ${evidence.reason}.` : '';
+  const summary = evidence.evidenceSummary ? ` Evidence: ${evidence.evidenceSummary}.` : '';
+  return 'Native subagent support is unavailable in this environment. If this story is already assigned to an active Team, confirm the exact Team identity and assignment using the Team protocol and continue with its assigned worker(s); do not dispatch a redundant native executor. Task text or labels alone do not establish Team authority. Otherwise report the native-delegation blocker and use a supported recovery path. Do not treat this as permission for Main-root source/package/git edits or clean Ralplan consensus. Native independent final review remains unavailable; do not claim it passed. Do not call multi_agent_v1.close_agent after native subagent capacity/support failures; stale native handles can hang the turn.' + reason + summary;
+}
+
 export function buildRoleRoutingUnavailableGuidance(evidence: NativeSubagentSupportEvidence): string {
   const reason = evidence.reason ? ` Reason: ${evidence.reason}.` : '';
   const summary = evidence.evidenceSummary ? ` Evidence: ${evidence.evidenceSummary}.` : '';
