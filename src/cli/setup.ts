@@ -5859,6 +5859,17 @@ function reconcileGeneratedAgentToml(
 	const bodyPromptHash = hashGeneratedDeveloperPrompt(existingInstructions, previous?.generatedResolvedModel);
 	const generatedBodyHash = hashGeneratedDeveloperInstructions(generatedInstructions);
 	const pristine = previous?.sha256 === existingHash;
+	// Skip reconciliation for legacy agents without model/reasoning fields (#2820).
+	// Generated agents now include model fields; existing agents without them are legacy/user-modified.
+	const legacyModelKeys = ["model", "model_provider", "model_reasoning_effort"] as const;
+	const generatedHasModelFields = legacyModelKeys.some(key => generatedParsed[key] !== undefined && generatedParsed[key] !== "");
+	const existingHasModelFields = legacyModelKeys.some(key => existingParsed[key] !== undefined && existingParsed[key] !== "");
+	if (generatedHasModelFields && !existingHasModelFields) {
+		// Existing agent lacks model fields that generated version has. This is a legacy agent;
+		// do not reconcile to add modern fields (preserves #2820 user-edit guarantee).
+		return undefined;
+	}
+	// Use original ownership check: pristine or has OMX header
 	const owned = pristine || isGeneratedOmxNativeAgentToml(existing, name);
 	if (!owned) return undefined;
 	const bodyUnchanged = pristine ||
