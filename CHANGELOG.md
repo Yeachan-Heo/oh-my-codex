@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.26] - 2026-11-25
+
+Patch release includes fixes for native agent TOML handling, autopilot setup, and model refresh ownership.
+
+### Fixed
+
+- **REFRESH MODEL FIELDS FOR PRISTINE AGENT TOMLs (#4193):** Fixes #4152. When setting up pristine agent TOMLs, model instructions are now properly refreshed to prevent stale configuration. The refresh hook ensures that environment-scoped model instructions are correctly applied during setup.
+
+- **PRESERVE ASSIGNED TEAM EXECUTOR LANE (#4192):** Fixes autopilot mode behavior where assigned Team executor lanes were not being preserved during task execution.
+
+- **NATIVE AGENT TOML SAFETY (#4189):** Addresses review findings from #4186. TOML parsing is now more robust, and doctor setup scope is properly limited to prevent unintended side effects.
+
+- **ROUTE IMPLEMENTATION STORIES TO EXECUTOR (#4188):** Fixes autopilot mode by routing implementation stories correctly to the executor.
+
+- **KEEP USER-MODIFIED NATIVE AGENTS UNTOUCHED (#4190):** Fixes #2820 regression. Native agents that have been manually modified by users are now preserved during setup, preventing unexpected overwrites.
+
+- **MODEL REFRESH OWNERSHIP RULE AND TEST ASSERTION (#2820 follow-up):** Restores test assertions and clarifies ownership rules for model refresh operations.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.25...v0.22.26
+
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+## [Unreleased]
+
 ## [0.22.25] - 2026-11-25
 
 Patch release fixes a regression in Autopilot Deep Interview mode that prevented valid questions from being asked when running in exact-session autopilot mode.
