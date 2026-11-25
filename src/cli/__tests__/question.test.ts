@@ -343,14 +343,16 @@ describe('omx question CLI', () => {
     const cwd = await makeRepo();
     const sessionDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q');
     const autopilotPath = join(sessionDir, 'autopilot-state.json');
-    await writeFile(autopilotPath, JSON.stringify({
+    const stateWrite = spawnSync(process.execPath, [omxBin, 'state', 'write', '--input', JSON.stringify({
       mode: 'autopilot',
       active: true,
       current_phase: 'deep-interview',
-      run_outcome: 'interviewing',
-      lifecycle_outcome: 'running',
+      run_outcome: 'continue',
       session_id: 'sess-q',
-    }, null, 2));
+    }), '--json'], { cwd, env: makeQuestionCliEnv(cwd), encoding: 'utf8' });
+    assert.equal(stateWrite.status, 0, stateWrite.stderr || stateWrite.stdout);
+    const initialAutopilot = JSON.parse(await readFile(autopilotPath, 'utf8'));
+    assert.equal(Object.hasOwn(initialAutopilot, 'mode'), false);
     await writeFile(join(sessionDir, 'deep-interview-state.json'), JSON.stringify({
       mode: 'deep-interview',
       active: true,
@@ -427,6 +429,7 @@ describe('omx question CLI', () => {
     const payload = JSON.parse(stdout);
     assert.equal(payload.ok, true);
     assert.equal(payload.answer.value, 'exact-page');
+    assert.equal(payload.answers[0].answer.value, 'exact-page');
 
     const finalAutopilot = JSON.parse(await readFile(autopilotPath, 'utf-8')) as {
       current_phase?: string;
@@ -435,11 +438,47 @@ describe('omx question CLI', () => {
       state?: { deep_interview_question?: { status?: string; question_id?: string; satisfied_at?: string } };
     };
     assert.equal(finalAutopilot.current_phase, 'deep-interview');
-    assert.equal(finalAutopilot.run_outcome, 'interviewing');
-    assert.equal(finalAutopilot.lifecycle_outcome, 'running');
+    assert.equal(finalAutopilot.run_outcome, 'continue');
+    assert.equal(finalAutopilot.lifecycle_outcome, undefined);
     assert.equal(finalAutopilot.state?.deep_interview_question?.status, 'satisfied');
     assert.equal(finalAutopilot.state?.deep_interview_question?.question_id, record?.question_id);
     assert.ok(finalAutopilot.state?.deep_interview_question?.satisfied_at);
+  });
+
+  it('infers a missing autopilot mode only for valid session-scoped state', async () => {
+    const cwd = await makeRepo();
+    const stateDir = join(cwd, '.omx', 'state');
+    const state = { active: true, current_phase: 'deep-interview' };
+    await writeFile(join(stateDir, 'autopilot-state.json'), JSON.stringify(state));
+    const sessionDir = join(stateDir, 'sessions', 'sess-q');
+    const sessionPath = join(sessionDir, 'autopilot-state.json');
+    const helperModule = new URL('../../question/autopilot-wait.js', import.meta.url).href;
+    const runCheck = (sessionId: string | null): boolean => JSON.parse(execFileSync(
+      process.execPath,
+      ['--input-type=module', '-e', `
+        import { canStartAutopilotDeepInterviewQuestion } from ${JSON.stringify(helperModule)};
+        console.log(JSON.stringify(await canStartAutopilotDeepInterviewQuestion(process.cwd(), ${JSON.stringify(sessionId)} ?? undefined)));
+      `],
+      { cwd, env: makeQuestionCliEnv(cwd), encoding: 'utf8' },
+    ));
+
+    assert.equal(runCheck(null), false, 'mode-less root state must not supply session identity');
+    assert.equal(runCheck('sess-other'), false, 'another session must not fall back to root state');
+    assert.equal(runCheck('../outside'), false, 'invalid session identifiers must fail closed');
+    await writeFile(sessionPath, JSON.stringify(state));
+    assert.equal(runCheck('sess-q'), true);
+    for (const mode of [null, '', 'ralph']) {
+      await writeFile(sessionPath, JSON.stringify({ ...state, mode }));
+      assert.equal(runCheck('sess-q'), false, `explicit mode ${JSON.stringify(mode)} must not be replaced`);
+    }
+    for (const invalidState of [null, [], 'not-an-object']) {
+      await writeFile(sessionPath, JSON.stringify(invalidState));
+      assert.equal(runCheck('sess-q'), false);
+    }
+    await writeFile(sessionPath, JSON.stringify({ ...state, active: false }));
+    assert.equal(runCheck('sess-q'), false);
+    await writeFile(sessionPath, JSON.stringify({ ...state, current_phase: 'ultragoal' }));
+    assert.equal(runCheck('sess-q'), false);
   });
 
   it('allows the owning spawned deep-interview question after Autopilot records the wait', async () => {

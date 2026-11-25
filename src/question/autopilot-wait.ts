@@ -5,7 +5,7 @@ import {
   isAutopilotSupervisingChild,
   normalizeAutopilotPhase,
 } from '../autopilot/fsm.js';
-import { getBaseStateDir, getStateFilePath } from '../mcp/state-paths.js';
+import { getBaseStateDir, getStateFilePath, normalizeSessionId } from '../mcp/state-paths.js';
 import { writeStateFile } from '../state/operations.js';
 import { sleep } from '../utils/sleep.js';
 import type { DeepInterviewQuestionEnforcementState } from './deep-interview.js';
@@ -59,9 +59,15 @@ function isPendingAutopilotQuestionWait(wait: Record<string, unknown>): boolean 
 }
 
 async function readAutopilotState(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
+  if (sessionId !== undefined && normalizeSessionId(sessionId) !== sessionId) return null;
   const statePath = getStateFilePath(AUTOPILOT_STATE_FILE, cwd, sessionId);
   try {
-    return JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
+    const state: unknown = JSON.parse(await readFile(statePath, 'utf-8'));
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
+    // The session-scoped filename supplies the mode when the state writer omitted it.
+    // Do not infer it for root state or override an explicitly supplied marker.
+    if (sessionId && !Object.hasOwn(state, 'mode')) return { ...state, mode: 'autopilot' };
+    return state as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -183,8 +189,8 @@ export async function claimAutopilotDeepInterviewQuestionWaiting(
   sessionId: string | undefined,
   obligation: DeepInterviewQuestionEnforcementState,
 ): Promise<AutopilotDeepInterviewQuestionWaitClaim> {
-  const normalizedSessionId = safeString(sessionId);
-  if (!normalizedSessionId) return 'not_applicable';
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  if (!normalizedSessionId || normalizedSessionId !== sessionId) return 'not_applicable';
   return await withAutopilotQuestionWaitLock(
     cwd,
     normalizedSessionId,
