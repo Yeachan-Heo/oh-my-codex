@@ -9,6 +9,9 @@ export const NON_NATIVE_AGENT_PROMPT_ASSETS = new Set([
   "team-orchestrator",
 ]);
 
+/** Native agent roles managed only when Team mode is enabled. */
+export const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
+
 export function isNativeAgentInstallableStatus(
   status: CatalogEntryStatus | string | undefined,
 ): boolean {
