@@ -21999,6 +21999,11 @@ export async function dispatchCodexNativeHook(
   if (hookEventName === "SubagentStart") {
     // Modern Codex emits the child's session and agent IDs, not the parent's ID.
     // Correlate only the transcript named by this event with the selected OMX session.
+    // A Team worker may share the leader's pointer, but Team provenance does
+    // not bind a native root ID to that worker. Do not borrow the leader's scope.
+    if (hasRawTeamWorkerDeclaration()) {
+      return { hookEventName, omxEventName, skillState: null, outputJson: null };
+    }
     const eventId = readUnambiguousSessionStartNativeId(payload);
     const agentId = normalizeSessionId(payload.agent_id);
     const transcriptPath = readStrictStopPayloadTranscriptPath(payload);
@@ -22029,6 +22034,10 @@ export async function dispatchCodexNativeHook(
     let sessionId: string | null = null;
     let pluginDiscoveryCwd: string | undefined;
     if (eventSessionId && agentId && eventSessionId === agentId) {
+      // As with modern starts, a Team worker cannot use the shared leader pointer.
+      if (hasRawTeamWorkerDeclaration()) {
+        return { hookEventName, omxEventName, skillState: null, outputJson: null };
+      }
       const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
       if (pointer.status === "usable" && pointer.state && !sessionPointerAliases(pointer.state).has(agentId)) {
         const summary = await readSubagentSessionSummary(cwd, pointer.state.session_id);

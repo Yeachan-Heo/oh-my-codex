@@ -1462,6 +1462,7 @@ describe('readAllState canonical skill precedence', () => {
       await mkdir(stateDir, { recursive: true });
       await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId, cwd, state_root: stateDir }));
       const timestamp = new Date().toISOString();
+      const longRunning = new Date(Date.parse(timestamp) - 10 * 60_000).toISOString();
       const entries = [
         { threadId: 'leader', kind: 'leader' as const },
         { threadId: 'fresh-1', agentNickname: 'Banach', role: 'explore' },
@@ -1469,7 +1470,8 @@ describe('readAllState canonical skill precedence', () => {
         { threadId: 'completed', completed: true },
         { threadId: 'closed', status: 'closed' as const },
         { threadId: 'stale', timestamp: '2000-01-01T00:00:00.000Z' },
-        { threadId: 'long-running', agentNickname: 'Curie', nativeStarted: true, timestamp: '2020-01-01T00:00:00.000Z' },
+        { threadId: 'long-running', agentNickname: 'Curie', nativeStarted: true, timestamp: longRunning },
+        { threadId: 'lost-stop', agentNickname: 'Lost stop', nativeStarted: true, timestamp: '2020-01-01T00:00:00.000Z' },
         { threadId: 'other-session', sessionId: 'sess-other', agentNickname: 'Wrong pane' },
       ];
       const tracking = entries.reduce((state, entry) => recordSubagentTurn(state, {
@@ -1480,7 +1482,7 @@ describe('readAllState canonical skill precedence', () => {
       assert.deepEqual(state.nativeAgents, [
         { name: 'Banach', role: 'explore', firstSeenAt: timestamp },
         { name: 'Euler', role: 'executor', scope: 'HUD ownership', firstSeenAt: timestamp },
-        { name: 'Curie', firstSeenAt: '2020-01-01T00:00:00.000Z' },
+        { name: 'Curie', firstSeenAt: longRunning },
       ]);
       assert.equal((await readHudLayoutProjection(cwd)).nativeAgentCount, 3);
     });

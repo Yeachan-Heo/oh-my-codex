@@ -5234,6 +5234,56 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
     }
   });
 
+  it("keeps modern Team worker child events out of both absent and shared leader pointer scopes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-team-worker-child-lifecycle-"));
+    try {
+      const leader = "leader-native";
+      const child = "child-native";
+      const transcript = join(cwd, "child.jsonl");
+      const start = {
+        hook_event_name: "SubagentStart", cwd, session_id: child, agent_id: child, transcript_path: transcript,
+      };
+      const stop = {
+        hook_event_name: "SubagentStop", cwd, session_id: child, agent_id: child, agent_transcript_path: transcript,
+      };
+      const writeTranscript = (parent: string) => writeFile(transcript, JSON.stringify({
+        type: "session_meta",
+        payload: { id: child, source: { subagent: { thread_spawn: { parent_thread_id: parent } } } },
+      }) + "\n");
+      await configureAuthoritativeTeamWorker(cwd, "modern-child-team");
+      const pointerPath = join(cwd, ".omx", "state", "session.json");
+      assert.equal(existsSync(pointerPath), false);
+      await writeTranscript("worker-native");
+      await dispatchCodexNativeHook(start, { cwd });
+      await dispatchCodexNativeHook(stop, { cwd });
+      assert.deepEqual((await readSubagentTrackingState(cwd)).sessions, {});
+
+      await writeSessionStart(cwd, "leader-session", { nativeSessionId: leader, pid: process.pid });
+      const pointerBefore = await readFile(pointerPath, "utf-8");
+      await writeTranscript(leader);
+      await dispatchCodexNativeHook(start, { cwd });
+      assert.deepEqual((await readSubagentTrackingState(cwd)).sessions, {},
+        "Team worker must not record a modern child in the leader's session");
+
+      const { OMX_TEAM_INTERNAL_WORKER, OMX_TEAM_WORKER } = process.env;
+      delete process.env.OMX_TEAM_INTERNAL_WORKER;
+      delete process.env.OMX_TEAM_WORKER;
+      process.env.TMUX_PANE = "%42";
+      await dispatchCodexNativeHook(start, { cwd });
+      const trackingBefore = await readSubagentTrackingState(cwd);
+      assert.ok(trackingBefore.sessions["leader-session"]?.threads[child]?.native_started_at);
+      process.env.OMX_TEAM_INTERNAL_WORKER = OMX_TEAM_INTERNAL_WORKER!;
+      process.env.OMX_TEAM_WORKER = OMX_TEAM_WORKER!;
+      process.env.TMUX_PANE = "%10";
+      await dispatchCodexNativeHook(stop, { cwd });
+      assert.deepEqual(await readSubagentTrackingState(cwd), trackingBefore,
+        "Team worker must not close a modern child tracked by the leader");
+      assert.equal(await readFile(pointerPath, "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps subagent SessionStart from replacing the canonical leader session", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-subagent-session-start-"));
     const originalCodexHome = process.env.CODEX_HOME;

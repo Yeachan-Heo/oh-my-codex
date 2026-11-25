@@ -825,15 +825,19 @@ function resolveTeamForHud(
     : null;
 }
 
+const NATIVE_AGENT_HUD_IDLE_MS = 30 * 60_000;
+
 function readNativeAgents(tracking: SubagentTrackingState, sessionId?: string): NativeAgentForHud[] {
   if (!sessionId) return [];
   const summary = summarizeSubagentSession(tracking, sessionId);
   if (!summary) return [];
   const activeIds = new Set(summary.activeSubagentThreadIds);
   const threads = tracking.sessions[sessionId].threads;
+  const cutoff = Date.now() - NATIVE_AGENT_HUD_IDLE_MS;
   return summary.allSubagentThreadIds.filter((threadId) => {
     const thread = threads[threadId];
     return activeIds.has(threadId) || Boolean(thread.native_started_at
+      && Date.parse(thread.last_seen_at) >= cutoff
       && !thread.completed_at && thread.status !== 'closed' && thread.status !== 'unavailable');
   }).map((threadId) => {
     const thread = threads[threadId];
