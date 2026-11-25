@@ -4717,6 +4717,10 @@ describe("omx setup install mode behavior", () => {
 						output,
 						/Archived and removed .* legacy OMX-managed prompt file/,
 					);
+					assert.match(
+						output,
+						/Native agent role refresh complete/,
+					);
 					const backupRoot = join(wd, "home", ".omx", "backups", "setup");
 					const backupRuns = await readdir(backupRoot);
 					assert.ok(backupRuns.length > 0);
@@ -4782,6 +4786,44 @@ describe("omx setup install mode behavior", () => {
 
 					assert.equal(await readFile(customAgentPath, "utf-8"), customAgentToml);
 					assert.equal(existsSync(generatedAgentPath), false);
+				});
+			});
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("skips native agent model refresh when legacy agent has user-modified body", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					// First setup installs with legacy, creating the initial agents
+					await setup({ scope: "user", installMode: "legacy" });
+
+					// Modify an existing agent to have user changes without model fields.
+					// This simulates a legacy agent that the user has edited.
+					const agentPath = join(codexHomeDir, "agents", "planner.toml");
+					const userEditedLegacy = [
+						"# oh-my-codex agent: planner",
+						'name = "planner"',
+						'description = "user-modified planner description"',
+						'developer_instructions = """custom user instructions"""',
+						"",
+					].join("\n");
+					await writeFile(agentPath, userEditedLegacy);
+
+					const output = await captureConsoleOutput(async () => {
+						await setup({ scope: "user", installMode: "plugin", verbose: true });
+					});
+
+					// File must be preserved byte-identical because it's a legacy agent (#2820)
+					const finalContent = await readFile(agentPath, "utf-8");
+					assert.equal(finalContent, userEditedLegacy);
+					assert.match(
+						output,
+						/skipped .* \(local modifications preserved/,
+					);
 				});
 			});
 		} finally {
