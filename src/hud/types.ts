@@ -113,6 +113,13 @@ export interface TeamStateForHud {
   workers?: TeamWorkerForHud[];
 }
 
+export interface NativeAgentForHud {
+  name: string;
+  role?: string;
+  scope?: string;
+  firstSeenAt?: string;
+}
+
 /** Active GitGuardex branch-finish progress for HUD display. */
 export interface GuardexFinishStateForHud {
   active: true;
@@ -163,6 +170,7 @@ export interface HudRenderContext {
   codeReview?: CodeReviewStateForHud | null;
   ultraqa: UltraqaStateForHud | null;
   team: TeamStateForHud | null;
+  nativeAgents?: NativeAgentForHud[];
   guardexFinish?: GuardexFinishStateForHud | null;
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;

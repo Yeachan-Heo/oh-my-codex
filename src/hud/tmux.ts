@@ -12,6 +12,9 @@ import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
 const HUD_HOOK_NODE_STARTUP_GRACE_MS = 5_000;
+// A sibling launch rewrites the session option but not this leader's pane option.
+// Fall back only for untagged panes (legacy and detached launches).
+const HUD_LEADER_OWNER_FORMAT = '#{?#{==:#{@omx_pane_instance_id},},#{@omx_instance_id},#{@omx_pane_instance_id}}';
 
 export interface TmuxPaneSnapshot {
   paneId: string;
@@ -928,7 +931,7 @@ export function readHudLeaderOwnerIdentity(
   if (!paneId || !expectedOwnerId.trim()) return 'unknown';
   try {
     const output = parseExactTmuxAuthorityScalar(execTmuxSync([
-      'display-message', '-p', '-t', paneId, '#{pane_id}|#{pane_dead}|#{@omx_instance_id}',
+      'display-message', '-p', '-t', paneId, `#{pane_id}|#{pane_dead}|${HUD_LEADER_OWNER_FORMAT}`,
     ]));
     if (!output) return 'unknown';
     const fields = output.split('|');
@@ -1064,7 +1067,7 @@ function normalizeHudMutationAuthority(authority: HudTmuxMutationAuthority): Hud
 function buildHudMutationAuthorityCondition(authority: HudTmuxMutationAuthority): string {
   return combineTmuxConditions(
     buildHudHookIncarnationCondition(authority.leaderPaneId, authority.leaderPanePid),
-    `#{==:#{@omx_instance_id},${authority.ownerId}}`,
+    `#{==:${HUD_LEADER_OWNER_FORMAT},${authority.ownerId}}`,
   );
 }
 
@@ -1127,7 +1130,7 @@ function buildAtomicHudHookCommand(
     'if-shell', '-F', '-t', context.leaderPaneId,
     [
       buildHudHookIncarnationCondition(context.leaderPaneId, context.leaderPanePid),
-      ...(context.ownerId ? [`#{==:#{@omx_instance_id},${context.ownerId}}`] : []),
+      ...(context.ownerId ? [`#{==:${HUD_LEADER_OWNER_FORMAT},${context.ownerId}}`] : []),
     ].reduce((combined, condition) => `#{&&:${combined},${condition}}`),
     hudConditional,
     unregister,
@@ -1289,7 +1292,7 @@ export function readHudHookHealth(
     '#{pane_pid}',
     '#{session_id}',
     '#{window_id}',
-    '#{@omx_instance_id}',
+    HUD_LEADER_OWNER_FORMAT,
     ...slots.map(slot => `#{?#{&&:#{==:#{${slot}},#{${hudHookExpectedCommandOption(slot)}}},#{==:#{${hudHookConfigurationOption(slot)}},${hudHookConfigurationToken(ownedContext, slot, input.heightLines, input.cwd?.trim() || process.cwd())}}},1,0}`),
     ...identityOptions.map(option => `#{${option}}`),
   ].join('|');
@@ -2148,7 +2151,7 @@ export function registerHudResizeHook(
   let observedOwnerId: string | null = null;
   try {
     const observedOwner = parseExactTmuxAuthorityScalar(execTmuxSync([
-      'display-message', '-p', '-t', canonicalLeaderPaneId, '#{@omx_instance_id}',
+      'display-message', '-p', '-t', canonicalLeaderPaneId, HUD_LEADER_OWNER_FORMAT,
     ]));
     if (observedOwner && /^\S+$/.test(observedOwner)) {
       if (expectedOwnerId && observedOwner !== expectedOwnerId) return false;
@@ -2233,7 +2236,7 @@ export function isHudOwnerCurrent(
   if (!paneId || !ownerId) return false;
   try {
     const observedOwner = parseExactTmuxAuthorityScalar(execTmuxSync([
-      'display-message', '-p', '-t', paneId, '#{@omx_instance_id}',
+      'display-message', '-p', '-t', paneId, HUD_LEADER_OWNER_FORMAT,
     ]));
     return !observedOwner || observedOwner === ownerId;
   } catch {

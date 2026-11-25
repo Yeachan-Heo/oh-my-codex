@@ -58,16 +58,30 @@ function isPendingAutopilotQuestionWait(wait: Record<string, unknown>): boolean 
     && safeString(wait.obligation_id).length > 0;
 }
 
+/**
+ * Infer autopilot mode for exact-session state that lacks explicit mode marker.
+ * Returns the state with inferred mode 'autopilot' if sessionId is provided and mode is not set.
+ * Never infers for root state (sessionId undefined) or overrides explicit mode.
+ */
+export function inferAutopilotModeForExactSession(
+  state: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  // The session-scoped filename supplies the mode when the state writer omitted it.
+  // Do not infer it for root state or override an explicitly supplied marker.
+  if (sessionId && !Object.hasOwn(state, 'mode')) {
+    return { ...state, mode: 'autopilot' };
+  }
+  return state;
+}
+
 async function readAutopilotState(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
   if (sessionId !== undefined && normalizeSessionId(sessionId) !== sessionId) return null;
   const statePath = getStateFilePath(AUTOPILOT_STATE_FILE, cwd, sessionId);
   try {
     const state: unknown = JSON.parse(await readFile(statePath, 'utf-8'));
     if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
-    // The session-scoped filename supplies the mode when the state writer omitted it.
-    // Do not infer it for root state or override an explicitly supplied marker.
-    if (sessionId && !Object.hasOwn(state, 'mode')) return { ...state, mode: 'autopilot' };
-    return state as Record<string, unknown>;
+    return inferAutopilotModeForExactSession(state as Record<string, unknown>, sessionId);
   } catch {
     return null;
   }

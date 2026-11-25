@@ -61,6 +61,43 @@ describe('renderHud – empty context', () => {
 
 // ── Version ───────────────────────────────────────────────────────────────────
 
+describe('renderHud – stacked native agents', () => {
+  it('keeps one live native agent per row below the HUD header in every preset', () => {
+    mock.method(Date, 'now', () => Date.parse('2026-11-25T07:00:40.000Z'));
+    const ctx = {
+      ...emptyCtx(),
+      nativeAgents: [
+        { name: 'Banach', role: 'explore', firstSeenAt: '2026-11-25T07:00:00.000Z' },
+        { name: 'Euler', role: 'executor', scope: 'HUD ownership', firstSeenAt: '2026-11-25T07:00:30.000Z' },
+      ],
+    };
+    assert.equal(getHudRenderMaxLines(ctx), 4);
+    for (const preset of ['minimal', 'focused', 'full'] as const) {
+      const lines = stripSgr(renderHud(ctx, preset, { maxWidth: 64 })).split('\n');
+      assert.match(lines[0], /agents:2/);
+      assert.match(lines[1], /Banach.*explore.*40s/);
+      assert.match(lines[2], /Euler.*executor.*10s.*HUD ownership/);
+      assert.ok(lines.every(line => line.length <= 64));
+    }
+  });
+
+  it('retains Team workers and fits native rows or overflow in the same height budget', () => {
+    const ctx = {
+      ...emptyCtx(),
+      team: { active: true, workers: [{ name: 'worker-1', state: 'working' as const }] },
+      nativeAgents: [{ name: 'Banach' }, { name: 'Euler' }],
+    };
+    const normal = stripSgr(renderHud(ctx, 'focused', { maxWidth: 36 })).split('\n');
+    assert.match(normal[1], /worker-1 working/);
+    assert.match(normal[2], /Banach/);
+    assert.match(normal[3], /Euler/);
+    const compact = stripSgr(renderHud(ctx, 'focused', { maxWidth: 36, maxLines: 3 })).split('\n');
+    assert.equal(compact.length, 3);
+    assert.match(compact[1], /worker-1 working/);
+    assert.match(compact[2], /\+2 agents/);
+  });
+});
+
 describe('renderHud – version', () => {
   it('strips the "v" prefix from a semver version', () => {
     const ctx = { ...emptyCtx(), version: 'v1.2.3' };

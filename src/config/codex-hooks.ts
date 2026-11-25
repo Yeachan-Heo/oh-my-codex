@@ -10,6 +10,7 @@ export const MANAGED_HOOK_EVENTS = [
   "UserPromptSubmit",
   "PreCompact",
   "PostCompact",
+  "SubagentStart",
   "SubagentStop",
   "Stop",
 ] as const;
@@ -79,6 +80,7 @@ const CODEX_HOOK_EVENT_LABELS: Record<ManagedHookEventName, string> = {
   UserPromptSubmit: "user_prompt_submit",
   PreCompact: "pre_compact",
   PostCompact: "post_compact",
+  SubagentStart: "subagent_start",
   SubagentStop: "subagent_stop",
   Stop: "stop",
 };
@@ -509,6 +511,9 @@ export function buildManagedCodexHooksConfig(
         buildCommandHook(command),
       ],
       PostCompact: [
+        buildCommandHook(command),
+      ],
+      SubagentStart: [
         buildCommandHook(command),
       ],
       SubagentStop: [

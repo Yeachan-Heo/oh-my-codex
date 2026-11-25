@@ -1481,6 +1481,28 @@ describe('deferred update worker', () => {
       assert.match(stamp.updated_at, /^\d{4}-\d{2}-\d{2}T/);
       await assert.rejects(readFile(payloadPath), { code: 'ENOENT' });
       await assert.rejects(readFile(stage), { code: 'ENOENT' });
+
+      // An external launcher owns this Codex home. Updating must not replay the
+      // persisted OMX setup, even if the preceding install used that setup.
+      await rm(capturePath);
+      await mkdir(stage, { mode: 0o700 });
+      const externallyManaged = JSON.stringify({
+        ...JSON.parse(serialized),
+        setupArgs: null,
+      });
+      await writeFile(payloadPath, externallyManaged, { mode: 0o600 });
+      const external = spawnSync(process.execPath, [workerPath, payloadPath, digest(externallyManaged), digest(await readFile(workerPath))], {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+      assert.equal(external.status, 0, external.stderr);
+      assert.equal(existsSync(capturePath), false);
+      const externalStamp = JSON.parse(await readFile(stampPath, 'utf-8'));
+      assert.equal(externalStamp.installed_version, '0.14.1');
+      assert.equal(externalStamp.setup_completed_version, undefined);
+      assert.match(await readFile(join(root, 'update.log'), 'utf-8'), /setup is managed by the launcher/);
+      await assert.rejects(readFile(stage), { code: 'ENOENT' });
+
       await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'unexpected-package', version: '0.14.1', bin: { omx: 'dist/cli.js' } }));
       await mkdir(stage, { recursive: true });
       await chmod(stage, 0o700);

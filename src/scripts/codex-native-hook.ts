@@ -214,6 +214,7 @@ type CodexHookEventName =
   | "UserPromptSubmit"
   | "PreCompact"
   | "PostCompact"
+  | "SubagentStart"
   | "SubagentStop"
   | "Stop";
 
@@ -517,6 +518,7 @@ async function recordNativeSubagentSessionStart(
       authorityEvidence,
       implicatedChildThreadIds,
       mode: metadata.agentRole,
+      agentNickname: metadata.agentNickname,
     });
   } catch {
     authorityTrackingFailed = true;
@@ -722,6 +724,7 @@ function readHookEventName(payload: CodexHookPayload): CodexHookEventName | null
     || raw === "UserPromptSubmit"
     || raw === "PreCompact"
     || raw === "PostCompact"
+    || raw === "SubagentStart"
     || raw === "SubagentStop"
     || raw === "Stop"
   ) {
@@ -21993,27 +21996,68 @@ export async function dispatchCodexNativeHook(
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
   const reconcileAdvisory = options.reconcileRalplanAdvisoryFn ?? reconcileRalplanAdvisory;
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
+  if (hookEventName === "SubagentStart") {
+    // Modern Codex emits the child's session and agent IDs, not the parent's ID.
+    // Correlate only the transcript named by this event with the selected OMX session.
+    // A Team worker may share the leader's pointer, but Team provenance does
+    // not bind a native root ID to that worker. Do not borrow the leader's scope.
+    if (hasRawTeamWorkerDeclaration()) {
+      return { hookEventName, omxEventName, skillState: null, outputJson: null };
+    }
+    const eventId = readUnambiguousSessionStartNativeId(payload);
+    const agentId = normalizeSessionId(payload.agent_id);
+    const transcriptPath = readStrictStopPayloadTranscriptPath(payload);
+    if (eventId.ok && agentId && eventId.value === agentId && transcriptPath) {
+      const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
+      const metadata = readNativeSubagentSessionStartMetadata(transcriptPath);
+      const state = pointer.status === "usable" ? pointer.state : null;
+      if (state && metadata?.childSessionId === agentId
+        && metadata.parentThreadId !== agentId && !sessionPointerAliases(state).has(agentId)
+        && await nativeSubagentSessionStartBelongsToCanonicalSession(cwd, state.session_id, state, metadata)) {
+        await recordSubagentTurnForSession(cwd, {
+          sessionId: state.session_id,
+          threadId: agentId,
+          turnId: readPayloadTurnId(payload) || undefined,
+          kind: "subagent",
+          mode: metadata.agentRole ?? safeString(payload.agent_type).trim(),
+          agentNickname: metadata.agentNickname,
+          nativeStarted: true,
+        }).catch(() => {});
+      }
+    }
+    return { hookEventName, omxEventName, skillState: null, outputJson: null };
+  }
   if (hookEventName === "SubagentStop") {
-    // This event names the parent session and child agent separately; it is not a leader Stop.
-    const parentSessionId = readStrictStopPayloadSessionId(payload);
+    // Older payloads identify the parent session; modern Codex uses the child ID.
+    const eventSessionId = readStrictStopPayloadSessionId(payload);
     const agentId = normalizeSessionId(safeString(payload.agent_id).trim());
     let sessionId: string | null = null;
     let pluginDiscoveryCwd: string | undefined;
-    if (parentSessionId && agentId && agentId !== parentSessionId) {
+    if (eventSessionId && agentId && eventSessionId === agentId) {
+      // As with modern starts, a Team worker cannot use the shared leader pointer.
+      if (hasRawTeamWorkerDeclaration()) {
+        return { hookEventName, omxEventName, skillState: null, outputJson: null };
+      }
+      const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
+      if (pointer.status === "usable" && pointer.state && !sessionPointerAliases(pointer.state).has(agentId)) {
+        const summary = await readSubagentSessionSummary(cwd, pointer.state.session_id);
+        if (summary?.allSubagentThreadIds.includes(agentId)) sessionId = pointer.state.session_id;
+      }
+    } else if (eventSessionId && agentId) {
       const authoritativeTeamWorker = hasRawTeamWorkerDeclaration()
         ? await resolveAuthoritativeTeamWorkerContext(cwd)
         : null;
       if (authoritativeTeamWorker) {
         // Team workers can own child agents without the shared leader pointer or tracker summary.
-        sessionId = parentSessionId;
+        sessionId = eventSessionId;
         pluginDiscoveryCwd = authoritativeTeamWorker.canonicalLeaderCwd;
       } else {
         const pointer = await readSessionPointer(resolveSessionPointerContext(cwd));
         if (pointer.status === "usable" && pointer.state && !sessionPointerAliases(pointer.state).has(agentId)) {
           const candidateSessionId = pointer.state.session_id;
           const summary = await readSubagentSessionSummary(cwd, candidateSessionId);
-          if (payloadMatchesSessionPointer(parentSessionId, pointer.state)
-            || summary?.allThreadIds.includes(parentSessionId)) {
+          if (payloadMatchesSessionPointer(eventSessionId, pointer.state)
+            || summary?.allThreadIds.includes(eventSessionId)) {
             sessionId = candidateSessionId;
           }
         }
@@ -23062,7 +23106,7 @@ function inferHookEventNameFromMalformedInput(
   rawHookEventName?: CodexHookEventName | null,
 ): CodexHookEventName | null {
   if (rawHookEventName) return rawHookEventName;
-  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|SubagentStop|Stop)\b/i);
+  const match = raw.match(/(?:\"|['"])?hook[_-]?event[_-]?name(?:\"|['"])?\s*:\s*(?:\"|['"])?(SessionStart|PreToolUse|PostToolUse|UserPromptSubmit|PreCompact|PostCompact|SubagentStart|SubagentStop|Stop)\b/i);
   const value = match?.[1];
   if (!value) return null;
   return readHookEventName({ hook_event_name: value });
@@ -23093,7 +23137,7 @@ function buildMalformedStdinHookOutput(
   if (inferredHookEventName === "PreToolUse") {
     return buildUnparseablePreToolUseDenyOutput(reason, systemMessage);
   }
-  if (inferredHookEventName === "SubagentStop") return {};
+  if (inferredHookEventName === "SubagentStart" || inferredHookEventName === "SubagentStop") return {};
   if (inferredHookEventName === "Stop" || (!inferredHookEventName && hasNativeStopRuntimeSurface(cwd))) {
     return {
       decision: "block",
@@ -23142,7 +23186,7 @@ async function buildOversizedStdinHookOutput(
 ): Promise<Record<string, unknown>> {
   const systemMessage =
     `OMX native hook rejected oversized stdin JSON before parsing; maxBytes=${MAX_NATIVE_STDIN_JSON_BYTES}.`;
-  if (rawHookEventName === "SubagentStop") return {};
+  if (rawHookEventName === "SubagentStart" || rawHookEventName === "SubagentStop") return {};
   if (rawHookEventName === "PreToolUse") {
     return buildUnparseablePreToolUseDenyOutput(systemMessage, systemMessage);
   }

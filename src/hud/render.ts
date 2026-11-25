@@ -4,7 +4,7 @@
  * Renders HudRenderContext into formatted ANSI strings.
  */
 
-import type { HudRenderContext, HudPreset, TeamWorkerForHud } from './types.js';
+import type { HudRenderContext, HudPreset, NativeAgentForHud, TeamWorkerForHud } from './types.js';
 import { green, yellow, cyan, dim, bold, magenta, getRalphColor, isColorEnabled, RESET } from './colors.js';
 import { HUD_TMUX_HEIGHT_LINES, HUD_TMUX_MAX_HEIGHT_LINES, HUD_TMUX_ULTRAGOAL_HEIGHT_LINES } from './constants.js';
 
@@ -200,9 +200,9 @@ function truncateDynamicText(value: string, maxLength: number): string {
   return normalizeTrailingEllipsis(`${value.slice(0, maxLength - 1).trimEnd()}…`);
 }
 
-export function getHudRenderMaxLines(ctx: Pick<HudRenderContext, 'ultragoal' | 'team'>): number {
+export function getHudRenderMaxLines(ctx: Pick<HudRenderContext, 'ultragoal' | 'team' | 'nativeAgents'>): number {
   const summaryLines = ctx.ultragoal?.active ? HUD_TMUX_ULTRAGOAL_HEIGHT_LINES : HUD_TMUX_HEIGHT_LINES;
-  return summaryLines + (ctx.team?.active ? ctx.team.workers?.length ?? 0 : 0);
+  return summaryLines + (ctx.team?.active ? ctx.team.workers?.length ?? 0 : 0) + (ctx.nativeAgents?.length ?? 0);
 }
 
 function clampHudMaxLines(ctx: HudRenderContext, maxLines: number | undefined): number {
@@ -262,6 +262,16 @@ function renderTeamWorkers(workers: TeamWorkerForHud[], maxWidth: number): strin
       : state === 'blocked' || state === 'failed' ? yellow(label) : dim(label);
     return [status, ...padded.slice(2).map((value, position) => columns[position + 2] === 5 ? dim(value) : value)].join(separator);
   });
+}
+
+function renderNativeAgent(agent: NativeAgentForHud): string {
+  const name = sanitizeDynamicText(agent.name);
+  const role = sanitizeDynamicText(agent.role ?? '');
+  const scope = sanitizeDynamicText(agent.scope ?? '');
+  const firstSeenAt = Date.parse(agent.firstSeenAt ?? '');
+  const seconds = Math.max(0, Math.floor((Date.now() - firstSeenAt) / 1000));
+  const elapsed = Number.isFinite(seconds) ? (seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`) : '';
+  return [cyan(`● ${name}`), role === name ? '' : role, elapsed && dim(elapsed), scope].filter(Boolean).join(SEP);
 }
 
 function renderUltragoal(ctx: HudRenderContext): string | null {
@@ -563,6 +573,8 @@ export function renderHud(
   const parts = orderedElements
     .map(fn => fn(ctx))
     .filter((s): s is string => s !== null);
+  const agents = ctx.nativeAgents ?? [];
+  if (agents.length > 0) parts.splice(ctx.team?.active ? 1 : 0, 0, cyan(`agents:${agents.length}`));
 
   const ver = ctx.version ? `#${ctx.version.replace(/^v/, '')}` : '';
   const label = bold(`[OMX${ver}]`);
@@ -576,16 +588,29 @@ export function renderHud(
   }
 
   const workers = ctx.team?.active ? ctx.team.workers ?? [] : [];
-  if (workers.length === 0) return wrapHudParts(label, parts, renderOptions);
-  const headerBudget = Math.max(1, renderOptions.maxLines - workers.length);
+  const rosterCount = workers.length + agents.length;
+  if (rosterCount === 0) return wrapHudParts(label, parts, renderOptions);
+  const headerBudget = Math.max(1, renderOptions.maxLines - rosterCount);
   const header = wrapHudParts(label, parts, { ...renderOptions, maxLines: headerBudget });
   const availableRows = renderOptions.maxLines - countRenderedHudLines(header);
-  const overflow = workers.length > availableRows;
-  const visibleWorkers = workers.slice(0, Math.max(0, availableRows - (overflow ? 1 : 0)));
+  const overflow = rosterCount > availableRows;
+  const rowBudget = Math.max(0, availableRows - (overflow ? 1 : 0));
+  const visibleWorkers = Math.min(rowBudget, workers.length);
+  const visibleAgents = Math.max(0, rowBudget - visibleWorkers);
   const width = Number.isFinite(options.maxWidth) && (options.maxWidth ?? 0) > 0
     ? Math.max(12, Math.floor(options.maxWidth ?? 0)) : Infinity;
-  const rows = renderTeamWorkers(workers, width).slice(0, visibleWorkers.length);
-  if (overflow && availableRows > 0) rows.push(dim(`+${workers.length - visibleWorkers.length} workers`));
+  const rows = [
+    ...renderTeamWorkers(workers, width).slice(0, visibleWorkers),
+    ...agents.slice(0, visibleAgents).map(renderNativeAgent),
+  ];
+  if (overflow && availableRows > 0) {
+    const hiddenWorkers = workers.length - visibleWorkers;
+    const hiddenAgents = agents.length - visibleAgents;
+    rows.push(dim([
+      hiddenWorkers > 0 ? `+${hiddenWorkers} workers` : '',
+      hiddenAgents > 0 ? `+${hiddenAgents} agents` : '',
+    ].filter(Boolean).join(', ')));
+  }
   // Keep identity, status, and task ahead of optional metadata on narrow panes.
   return [header, ...rows.map(row => visibleLength(row) > width ? `${sliceAnsiVisible(row, 0, width - 1)}…` : row)].join('\n');
 }

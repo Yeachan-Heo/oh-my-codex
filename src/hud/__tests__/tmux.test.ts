@@ -459,7 +459,7 @@ describe('HUD resize hook helpers', () => {
     }
     const serverRoot = mkdtempSync(join(tmpdir(), 'omx-hud-tmux-'));
     const socketPath = join(serverRoot, 's');
-    const tmux = (args: string[]): string => execFileSync('tmux', ['-S', socketPath, ...args], { encoding: 'utf8' });
+    const tmux = (args: string[]): string => execFileSync('tmux', ['-f', '/dev/null', '-S', socketPath, ...args], { encoding: 'utf8' });
     try {
       tmux(['new-session', '-d', '-s', 'omx-hook-health', 'sleep 30']);
       tmux(['split-window', '-t', 'omx-hook-health', 'sleep 30']);
@@ -696,7 +696,7 @@ describe('HUD resize hook helpers', () => {
       calls.push(args);
       if (args[0] === 'list-panes') return '%1 0 101\n%9 0 109\n';
       if (args[0] === 'display-message' && args.at(-1) === '#{session_id}|#{window_id}') return '$7|@3\n';
-      if (args[0] === 'display-message' && args.at(-1) === '#{@omx_instance_id}') return 'sess-b\n';
+      if (args[0] === 'display-message' && args.at(-1)?.includes('@omx_pane_instance_id')) return 'sess-b\n';
       return '';
     });
 
@@ -716,7 +716,7 @@ describe('HUD resize hook helpers', () => {
       calls.push(args);
       if (args[0] === 'list-panes') return '%1 0 101\n%9 0 109\n';
       if (args[0] === 'display-message' && args.at(-1) === '#{session_id}|#{window_id}') return '$7|@3\n';
-      if (args[0] === 'display-message' && args.at(-1) === '#{@omx_instance_id}') return 'sess-a\n';
+      if (args[0] === 'display-message' && args.at(-1)?.includes('@omx_pane_instance_id')) return 'sess-a\n';
       return '';
     }), false);
     assert.ok(!calls.some(args => args[0] === 'set-hook' || args[0] === 'if-shell'));

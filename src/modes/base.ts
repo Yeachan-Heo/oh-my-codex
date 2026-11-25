@@ -5,6 +5,7 @@
 
 import { readFile, mkdir, readdir } from 'fs/promises';
 import { assertValidHandoffCarriersIn, requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
+import { inferAutopilotModeForExactSession } from '../question/autopilot-wait.js';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
@@ -367,7 +368,13 @@ export async function readModeStateForActiveDecision(
   } catch {
     return null;
   }
-  return readModeStateFromPaths(paths);
+  const state = await readModeStateFromPaths(paths);
+  if (!state) return null;
+  // For autopilot mode with an exact session, infer the mode if not explicitly set
+  if (mode === 'autopilot') {
+    return inferAutopilotModeForExactSession(state as Record<string, unknown>, sessionId) as ModeState;
+  }
+  return state;
 }
 
 function assertRalphUpdateMatchesSession(state: ModeState, sessionId?: string): void {

@@ -8,6 +8,7 @@ type CodexHookEventName =
   | "UserPromptSubmit"
   | "PreCompact"
   | "PostCompact"
+  | "SubagentStart"
   | "SubagentStop"
   | "Stop";
 
