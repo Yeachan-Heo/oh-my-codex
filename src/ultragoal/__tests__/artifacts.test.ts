@@ -376,6 +376,14 @@ describe('ultragoal artifacts', () => {
       assert.doesNotMatch(instruction, /fresh (?:Codex )?(?:thread|session)s?/i);
       assert.doesNotMatch(instruction, /\.\.\/\.\.\/codex/);
       assert.doesNotMatch(instruction, /`codex\s+goal\b/i);
+      const unsupported = buildCodexGoalInstruction(started.goal!, started.plan, {
+        autopilotSupervised: true,
+        nativeSubagentSupport: { status: 'unsupported', reason: 'native_subagents_unsupported', source: 'persisted_support_blocker', evidenceSummary: 'native support disabled' },
+      });
+      assert.match(unsupported, /Reason: native_subagents_unsupported/);
+      assert.match(unsupported, /Evidence: native support disabled/);
+      assert.doesNotMatch(unsupported, /record-review-blockers/);
+      assert.match(unsupported, /already assigned to an active Team.*Team protocol/i);
     });
   });
 
@@ -408,9 +416,27 @@ describe('ultragoal artifacts', () => {
         assert.match(scoped, /ai-slop-cleaner/);
         assert.match(scoped, /rerun verification/);
         assert.match(scoped, /independentReview/);
+        assert.match(scoped, /already assigned to an active Team.*Team protocol/i);
+        assert.match(scoped, /do not dispatch a redundant native executor/i);
+        assert.match(scoped, /one performer lane per story/i);
         const unavailable = buildCodexGoalInstruction(goal, plan, { autopilotSupervised: true, nativeSubagentSupport: { status: 'role_routing_unavailable', source: 'persisted_role_routing_marker' } });
         assert.match(unavailable, /BLOCKED for product edits/);
         assert.doesNotMatch(unavailable, /agent_type: "executor"/);
+        assert.match(unavailable, /already assigned to an active Team.*Team protocol/i);
+        assert.match(unavailable, /otherwise.*BLOCKED for product edits/i);
+        const unsupportedAutopilot = buildCodexGoalInstruction(goal, plan, { autopilotSupervised: true, nativeSubagentSupport: { status: 'unsupported', reason: 'native_subagents_unsupported', source: 'persisted_support_blocker' } });
+        assert.match(unsupportedAutopilot, /already assigned to an active Team.*Team protocol/i);
+        assert.match(unsupportedAutopilot, /Native independent review unavailable/);
+        assert.doesNotMatch(unsupportedAutopilot, /terminalize the workflow as blocked/i);
+        assert.equal((unsupportedAutopilot.match(/omx ultragoal record-review-blockers/g) ?? []).length, 1);
+        const verificationIndex = unsupportedAutopilot.indexOf('rerun verification');
+        assert.ok(verificationIndex >= 0, 'final quality gate must include post-cleaner verification');
+        assert.ok(unsupportedAutopilot.indexOf('omx ultragoal record-review-blockers') > verificationIndex);
+        const capacity = buildCodexGoalInstruction(goal, plan, { autopilotSupervised: true, capacityBlocked: true });
+        assert.match(capacity, /already assigned to an active Team.*Team protocol/i);
+        assert.match(capacity, /do not dispatch a redundant native executor/i);
+        assert.match(capacity, /otherwise.*capacity is currently exhausted/i);
+        assert.doesNotMatch(buildCodexGoalInstruction(goal, plan), /Autopilot executor handoff/);
       }
 
 
