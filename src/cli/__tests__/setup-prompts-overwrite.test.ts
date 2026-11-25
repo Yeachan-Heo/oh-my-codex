@@ -146,7 +146,7 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
         skillsDir: join(wd, '.codex', 'skills'),
         agentsDir: join(wd, '.codex', 'agents'),
         stateDir: join(wd, '.omx', 'state'),
-      });
+      }, wd);
       assert.doesNotMatch(doctor.message, /executor\.toml has unsupported\/stale model/);
       assert.match(doctor.message, /executor\.toml contains a customized user developer_instructions version/);
       await setup({ scope: 'project' });
@@ -212,7 +212,7 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
         skillsDir: join(wd, '.codex', 'skills'),
         agentsDir: join(wd, '.codex', 'agents'),
         stateDir: join(wd, '.omx', 'state'),
-      });
+      }, wd);
       assert.match(doctor.message, /executor\.toml contains a customized user developer_instructions version/);
     } finally {
       process.chdir(previousCwd);
@@ -360,7 +360,7 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
         skillsDir: join(wd, '.codex', 'skills'),
         agentsDir: join(wd, '.codex', 'agents'),
         stateDir: join(wd, '.omx', 'state'),
-      });
+      }, wd);
       assert.match(doctor.message, /executor\.toml developer_instructions provenance is ambiguous/);
 
       await setup({ scope: 'project' });

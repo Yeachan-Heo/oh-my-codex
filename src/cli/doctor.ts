@@ -906,7 +906,7 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
 	// Check 6.4: Spark/model lane routing (issue #2757)
 	checks.push(checkSparkRouting(paths));
-	checks.push(await checkNativeAgentConfigDrift(paths));
+	checks.push(await checkNativeAgentConfigDrift(paths, cwd));
 
 	// Check 6.5: Legacy/current skill-root overlap
 	if (scopeResolution.scope === "user") {
@@ -4100,11 +4100,11 @@ interface NativeAgentManifestEntry {
 	generatedResolvedModel?: string;
 }
 
-export async function checkNativeAgentConfigDrift(paths: DoctorPaths): Promise<Check> {
+export async function checkNativeAgentConfigDrift(paths: DoctorPaths, cwd: string): Promise<Check> {
 	const name = "Native agent configuration";
 	const root = getPackageRoot();
 	let roleNames: string[];
-	const teamModeEnabled = (await readPersistedSetupPreferences(dirname(dirname(paths.stateDir))))?.teamMode !== "disabled";
+	const teamModeEnabled = (await readPersistedSetupPreferences(cwd))?.teamMode !== "disabled";
 	try {
 		roleNames = [...getInstallableNativeAgentNames(readCatalogManifest(root))]
 			.filter((role) => teamModeEnabled || !TEAM_MODE_NATIVE_AGENT_NAMES.has(role))
