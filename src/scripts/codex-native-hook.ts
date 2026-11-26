@@ -4917,7 +4917,7 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   // Explicitly reject any command containing shell operators or subshells (;, &&, ||, |, &, $(...), backticks, parentheses, redirections)
   // Check AFTER detecting Beads command markers but BEFORE allowing any further classification
   if (startsWithBd || hasCompoundBd || bdExecutableIndex !== -1) {
-    if (/[;&|<>`$()\[\]]|\n|\r/.test(command)) {
+    if (/[;&|<>`$(){}\n\r]/.test(command)) {
       return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
     }
   }
