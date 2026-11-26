@@ -13130,6 +13130,128 @@ exit 0
     }
   });
 
+  it("allows read-only Beads operations (list, ready, show) in all phases", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-readonly-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-readonly");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-readonly", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-readonly",
+        thread_id: "thread-beads-readonly",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-readonly",
+          thread_id: "thread-beads-readonly",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-readonly",
+        thread_id: "thread-beads-readonly",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-readonly", "thread-beads-readonly", cwd);
+
+      const readonlyCommands = [
+        "bd --db .beads/issues.db list --status open --json",
+        "bd --db .beads/issues.db ready --json",
+        "bd --db .beads/issues.db show OMX-1",
+      ];
+
+      for (const [index, command] of readonlyCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-readonly",
+            thread_id: "thread-beads-readonly",
+            agent_id: "thread-beads-readonly",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-readonly-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.ok(
+          !result.outputJson || !String(result.outputJson.reason).includes("not allowed"),
+          `expected read-only Beads operation to be allowed: ${command}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Beads commands with quoted punctuation in arguments", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-quoted-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-quoted");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-quoted", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-quoted",
+        thread_id: "thread-beads-quoted",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-quoted",
+          thread_id: "thread-beads-quoted",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-quoted",
+        thread_id: "thread-beads-quoted",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-quoted", "thread-beads-quoted", cwd);
+
+      const quotedCommands = [
+        "bd --db .beads/issues.db create 'Issue & note'",
+        "bd --db .beads/issues.db create \"Issue (with parens)\"",
+        "bd --db .beads/issues.db create 'Issue with $variable'",
+      ];
+
+      for (const [index, command] of quotedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-quoted",
+            thread_id: "thread-beads-quoted",
+            agent_id: "thread-beads-quoted",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-quoted-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.ok(
+          !result.outputJson || !String(result.outputJson.reason).includes("single literal"),
+          `expected Beads command with quoted punctuation to be allowed: ${command}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks unsafe Beads tracker targets and mixed implementation writes during Autopilot ralplan planning (#3497: hard PreToolUse gate removed — advisory only)", async () => {
     // Former hard-gate expectation retired by epic #3491 / issue #3497.
     // PreToolUse may only deny authority-decreasing cancel; ordinary path is advisory.
