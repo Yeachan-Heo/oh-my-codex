@@ -1,16 +1,22 @@
-# oh-my-codex v0.22.28
+# oh-my-codex v0.22.29
 
 ## Summary
 
-Patch release stops the per-second authority churn in attached HUDs.
+Minor release extends Beads command support to every workflow phase and fixes command detection regressions introduced during the stabilization.
+
+## Added
+
+- **ALLOW BEADS COMMANDS IN EVERY WORKFLOW PHASE (#4205):** Closes #4200. Read-only Beads operations (list, ready, show) are now allowed in every phase, not just specific phases. The fix ensures that Beads commands are properly tokenized to avoid false positives from punctuation in quoted arguments (e.g., 'Issue & note').
 
 ## Fixed
 
-- **STOP PER-SECOND AUTHORITY CHURN IN ATTACHED HUDS (#4203):** Refs #4201. The HUD authority tick no longer writes any state file while rate-limited, and the watch loop runs the authority tick at most once per 5s instead of every second, reducing file writes and authority calls with several attached HUDs (5 HUDs on one repo: 1.08% -> 0.72% CPU per HUD in a single noisy run; 1 HUD within noise). Tested: new no-write cooldown and 12-ticks-to-3-calls watch regressions; tsc, no-unused, lint and build clean.
+- **ADDRESS UNRESOLVED CODEX P2S FOR BEADS COMMANDS (#4211):** Fixes integration with Beads metadata by properly detecting Beads commands in all workflow phases while preserving other PreToolUse advisories like destructive-command detection.
+
+- **NORMALIZE EXISTING OUTPUT BEFORE MERGING BEADS ADVISORY (#4212):** Fixes regression where destructive commands in chained shell commands (e.g., 'bd && rm -rf dist') were not being detected. Updated regex matching to work after shell operators (&, ;, |).
 
 ## Compatibility
 
-No breaking changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.28`.
+No breaking changes. Release-coupled metadata (`package.json`, `package-lock.json`, Cargo workspace, and plugin metadata) all report `0.22.29`.
 
 ## Verification
 
@@ -19,9 +25,9 @@ No breaking changes. Release-coupled metadata (`package.json`, `package-lock.jso
 
 ## Contributors
 
-Thanks to contributors for the HUD authority-tick fix.
+Thanks to contributors for the Beads command improvements and regression fixes.
 
-**Full Changelog**: [`v0.22.27...v0.22.28`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.27...v0.22.28)
+**Full Changelog**: [`v0.22.28...v0.22.29`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.28...v0.22.29)
 
 —
 *[repo owner's gaebal-gajae (clawdbot) 🦞]*
