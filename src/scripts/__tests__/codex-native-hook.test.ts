@@ -13258,6 +13258,149 @@ exit 0
     }
   });
 
+  it("preserves both Lore and Beads guidance when shell-chained Beads command combines with Lore-guarded git commit (#4211: normalize existing output before merging)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-lore-normalize-"));
+    const original = process.env.OMX_LORE_COMMIT_GUARD;
+    try {
+      // Enable Lore commit guard so git commit returns a block decision
+      process.env.OMX_LORE_COMMIT_GUARD = "1";
+
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-lore");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-lore", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-lore",
+        thread_id: "thread-beads-lore",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-lore",
+          thread_id: "thread-beads-lore",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-lore",
+        thread_id: "thread-beads-lore",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-lore", "thread-beads-lore", cwd);
+
+      // Chained command: Beads read-only followed by non-Lore git commit
+      const command = 'bd --db .beads/issues.db list && git commit -m "fix something"';
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-beads-lore",
+          thread_id: "thread-beads-lore",
+          agent_id: "thread-beads-lore",
+          tool_name: "Bash",
+          tool_use_id: "tool-beads-lore-chain",
+          tool_input: { command },
+        },
+        { cwd },
+      );
+
+      // After sanitization, output should be advisory-only (no decision/reason fields)
+      const outputJson = result.outputJson as Record<string, any> | null;
+      assert.ok(outputJson, "expected advisory output for chained Beads + git commit");
+      assert.ok(!outputJson.decision, `expected no decision field in sanitized output, got: ${JSON.stringify(outputJson.decision)}`);
+      assert.ok(!outputJson.reason, `expected no reason field in sanitized output, got: ${JSON.stringify(outputJson.reason)}`);
+
+      // The final systemMessage should include BOTH:
+      // 1. Lore guidance about git commit needing to satisfy Lore format
+      // 2. Beads guidance about single literal invocation
+      const systemMessage = String(outputJson.systemMessage ?? "");
+      assert.ok(
+        systemMessage.includes("Lore") || systemMessage.includes("git commit"),
+        `expected Lore guidance in merged message, got: ${systemMessage}`,
+      );
+      assert.ok(
+        systemMessage.includes("single literal"),
+        `expected Beads single-literal warning in merged message, got: ${systemMessage}`,
+      );
+    } finally {
+      if (original === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+      else process.env.OMX_LORE_COMMIT_GUARD = original;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves destructive-advisory when shell-chained with blocked Beads command (#4211: plain destructive case)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-destructive-normalize-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-destructive");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-destructive", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-destructive",
+        thread_id: "thread-beads-destructive",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-destructive",
+          thread_id: "thread-beads-destructive",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-destructive",
+        thread_id: "thread-beads-destructive",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-destructive", "thread-beads-destructive", cwd);
+
+      // Chained command: Beads write followed by destructive rm
+      const command = "bd --db .beads/issues.db create 'Issue' && rm -rf dist";
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-beads-destructive",
+          thread_id: "thread-beads-destructive",
+          agent_id: "thread-beads-destructive",
+          tool_name: "Bash",
+          tool_use_id: "tool-beads-destructive-chain",
+          tool_input: { command },
+        },
+        { cwd },
+      );
+
+      const outputJson = result.outputJson as Record<string, any> | null;
+      assert.ok(outputJson, "expected advisory output for chained Beads + destructive");
+
+      // The final systemMessage should include BOTH:
+      // 1. Destructive command warning
+      // 2. Beads single-literal invocation guidance
+      const systemMessage = String(outputJson.systemMessage ?? "");
+      assert.ok(
+        systemMessage.includes("Destructive") || systemMessage.includes("rm -rf"),
+        `expected destructive warning in merged message, got: ${systemMessage}`,
+      );
+      assert.ok(
+        systemMessage.includes("single literal"),
+        `expected Beads single-literal warning in merged message, got: ${systemMessage}`,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks unsafe Beads tracker targets and mixed implementation writes during Autopilot ralplan planning (#3497: hard PreToolUse gate removed — advisory only)", async () => {
     // Former hard-gate expectation retired by epic #3491 / issue #3497.
     // PreToolUse may only deny authority-decreasing cancel; ordinary path is advisory.
