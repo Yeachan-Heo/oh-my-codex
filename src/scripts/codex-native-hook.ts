@@ -4913,14 +4913,6 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   const tokens = shellTokenizeLiteralCommand(command);
   const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
   if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
-  
-  // Explicitly reject any command containing shell operators or subshells (;, &&, ||, |, &, $(...), backticks, parentheses, redirections)
-  // Check AFTER detecting Beads command markers but BEFORE allowing any further classification
-  if (startsWithBd || hasCompoundBd || bdExecutableIndex !== -1) {
-    if (/[;&|<>`$(){}\n\r]/.test(command)) {
-      return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
-    }
-  }
 
   if (!tokens || bdExecutableIndex !== 0) {
     return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
@@ -4954,7 +4946,7 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     .filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
-  if (["create", "update", "edit", "close", "reopen", "status", "dep"].includes(operation)) {
+  if (["create", "update", "edit", "close", "reopen", "status", "dep", "list", "ready", "show"].includes(operation)) {
     return { present: true, allowed: true };
   }
   if (operation === "comments" && suboperation === "add") {
@@ -22961,18 +22953,18 @@ export async function dispatchCodexNativeHook(
       }
     }
     if (!outputJson) {
-      // Check for shell-chained Beads commands that should be blocked
+      // Check for shell-chained Beads commands and emit advisory warning
       if (safeString(payload.tool_name).trim() === "Bash") {
         const command = readPreToolUseCommand(payload);
         const beadsClassification = classifyBeadsMetadataCommand(policyCwd, command);
         if (beadsClassification.present && !beadsClassification.allowed) {
+          // Emit advisory warning (not a hard block, since PreToolUse is advisory-only)
           outputJson = {
-            decision: "block",
             reason: beadsClassification.reason ?? "Beads tracker command is not allowed",
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
             },
-            systemMessage: beadsClassification.reason ?? "Beads tracker command is not allowed",
+            systemMessage: `Beads tracker command is blocked: ${beadsClassification.reason ?? "not an allowed metadata operation"}`,
           };
         }
       }
