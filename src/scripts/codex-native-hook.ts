@@ -4833,6 +4833,7 @@ interface BeadsCommandClassification {
   present: boolean;
   allowed: boolean;
   reason?: string;
+  isReadOnly?: boolean;
 }
 
 function shellTokenizeLiteralCommand(command: string): string[] | null {
@@ -4906,6 +4907,11 @@ function isAllowedBeadsDbPath(cwd: string, rawPath: string): boolean {
   return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
 }
 
+function beadsOperationIsReadOnly(operation: string, suboperation: string): boolean {
+  // Read-only Beads operations that are allowed in all phases
+  return ["list", "ready", "show", "dep", "status"].includes(operation);
+}
+
 function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsCommandClassification {
   const trimmedCommand = command.trim();
   const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
@@ -4946,7 +4952,14 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     .filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
-  if (["create", "update", "edit", "close", "reopen", "status", "dep", "list", "ready", "show"].includes(operation)) {
+  
+  // Check for read-only operations that are allowed in all phases
+  if (beadsOperationIsReadOnly(operation, suboperation)) {
+    return { present: true, allowed: true, isReadOnly: true };
+  }
+  
+  // Check for write operations
+  if (["create", "update", "edit", "close", "reopen"].includes(operation)) {
     return { present: true, allowed: true };
   }
   if (operation === "comments" && suboperation === "add") {
@@ -22957,15 +22970,41 @@ export async function dispatchCodexNativeHook(
       if (safeString(payload.tool_name).trim() === "Bash") {
         const command = readPreToolUseCommand(payload);
         const beadsClassification = classifyBeadsMetadataCommand(policyCwd, command);
-        if (beadsClassification.present && !beadsClassification.allowed) {
+        // Read-only Beads operations are allowed in all phases; don't emit advisory for them
+        if (beadsClassification.present && !beadsClassification.allowed && !beadsClassification.isReadOnly) {
+          // For compound commands with Beads violations, preserve existing advisories by merging
+          // rather than replacing them. Build the existing advisory first.
+          const existingAdvisory = buildNativePreToolUseOutput(payload);
+          
           // Emit advisory warning (not a hard block, since PreToolUse is advisory-only)
-          outputJson = {
-            reason: beadsClassification.reason ?? "Beads tracker command is not allowed",
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-            },
-            systemMessage: `Beads tracker command is blocked: ${beadsClassification.reason ?? "not an allowed metadata operation"}`,
-          };
+          // Only emit systemMessage, not reason, to avoid being intercepted as cancel-deny
+          const beadsMessage = `Beads tracker command is blocked: ${beadsClassification.reason ?? "not an allowed metadata operation"}`;
+          
+          if (existingAdvisory) {
+            // Merge advisories: preserve existing safety guidance (e.g., destructive-command advisory)
+            // and add Beads-specific guidance
+            const existingMessage = safeString(existingAdvisory.systemMessage).trim();
+            const existingHookOutput = safeObject(existingAdvisory.hookSpecificOutput);
+            outputJson = {
+              ...existingAdvisory,
+              systemMessage: [
+                existingMessage,
+                beadsMessage,
+              ].filter(Boolean).join(" "),
+              hookSpecificOutput: {
+                ...existingHookOutput,
+                hookEventName: "PreToolUse",
+              },
+            };
+          } else {
+            // No existing advisory, just emit the Beads advisory
+            outputJson = {
+              systemMessage: beadsMessage,
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+              },
+            };
+          }
         }
       }
       // Advisory guidance only (capability warnings, destructive confirm, etc.).
