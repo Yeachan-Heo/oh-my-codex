@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getPackageRoot } from '../utils/package.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
@@ -44,6 +44,8 @@ interface HudAuthorityState {
   last_status: 'spawned' | 'skipped' | 'failed' | 'locked';
   last_reason: string;
   last_error?: string;
+  idle_streak?: number;
+  state_fingerprint?: string;
 }
 
 interface AuthorityLock {
@@ -112,6 +114,58 @@ function parseIsoMs(value: unknown): number | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Idle ticks double the spawn interval up to this cap; activity or a HUD-visible
+// state change drops back to the minimum interval.
+const AUTHORITY_IDLE_MAX_INTERVAL_MS = 60_000;
+
+// Cheap signature of what the HUD renders or the authority must drain (mode state files, teams,
+// team dispatch queues, sessions).
+async function readHudStateFingerprint(stateDir: string): Promise<string> {
+  const parts: string[] = [];
+  const collect = async (dir: string, label: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith('notify-fallback')) continue;
+      if (entry.isDirectory()) {
+        if (label === '' && entry.name === 'team') {
+          for (const team of await readdir(join(dir, entry.name)).catch(() => [])) {
+            const requestsMtimeMs = (await stat(join(dir, entry.name, team, 'dispatch', 'requests.json')).catch(() => null))?.mtimeMs ?? 0;
+            parts.push(`team/${team}@${requestsMtimeMs}`);
+          }
+        } else if (label === '' && entry.name === 'sessions') {
+          for (const session of await readdir(join(dir, entry.name)).catch(() => [])) {
+            await collect(join(dir, entry.name, session), `sessions/${session}/`);
+          }
+        }
+      } else if (entry.name.endsWith('-state.json') || (label === '' && entry.name === 'dispatch.json')) {
+        const mtimeMs = (await stat(join(dir, entry.name)).catch(() => null))?.mtimeMs ?? 0;
+        parts.push(`${label}${entry.name}@${mtimeMs}`);
+      }
+    }
+  };
+  await collect(stateDir, '');
+  return parts.sort().join('|');
+}
+
+async function isWatcherCycleIdle(stateDir: string): Promise<boolean> {
+  try {
+    const watcherState = JSON.parse(await readFile(join(stateDir, 'notify-fallback-state.json'), 'utf-8'));
+    return Number(watcherState?.adaptive_poll?.idle_streak) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// A changed fingerprint lifts idle backoff, leaving only the minimum interval.
+function resolveNextAllowedMs(state: HudAuthorityState | null, fingerprint: string): number | null {
+  const nextAllowedMs = parseIsoMs(state?.next_allowed_at);
+  const lastSpawnMs = parseIsoMs(state?.last_spawn_at);
+  if (state && lastSpawnMs !== null && state.state_fingerprint !== fingerprint) {
+    return lastSpawnMs + state.cooldown_ms + state.jitter_ms;
+  }
+  return nextAllowedMs;
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -346,7 +400,8 @@ export async function runHudAuthorityTick(
     }
     return;
   }
-  const previousNextAllowedMs = parseIsoMs(previousState?.next_allowed_at);
+  const fingerprint = await readHudStateFingerprint(authorityStateDir);
+  const previousNextAllowedMs = resolveNextAllowedMs(previousState, fingerprint);
   if (previousState && previousNextAllowedMs !== null && nowMs < previousNextAllowedMs) {
     return;
   }
@@ -377,7 +432,7 @@ export async function runHudAuthorityTick(
     if (!diagnosticWritten) throw new Error('failed to persist HUD authority rate-limit state');
     return;
   }
-  const lockedNextAllowedMs = parseIsoMs(lockedState?.next_allowed_at);
+  const lockedNextAllowedMs = resolveNextAllowedMs(lockedState, fingerprint);
   if (lockedState && lockedNextAllowedMs !== null && nowMs < lockedNextAllowedMs) {
     await releaseAuthorityLock(lock);
     return;
@@ -389,6 +444,8 @@ export async function runHudAuthorityTick(
     next_allowed_at: nextAllowedAt,
     last_status: 'spawned',
     last_reason: 'spawned',
+    idle_streak: lockedState?.state_fingerprint === fingerprint ? lockedState.idle_streak : 0,
+    state_fingerprint: fingerprint,
   });
   await writeAuthorityState(authorityOwnerPath, spawnedState);
   if (!(await writeAuthorityState(authorityStatePath, spawnedState))) {
@@ -422,6 +479,18 @@ export async function runHudAuthorityTick(
         timeoutMs,
       },
     );
+    const idle = await isWatcherCycleIdle(authorityStateDir);
+    const idleStreak = idle ? (spawnedState.idle_streak ?? 0) + 1 : 0;
+    const backoffMs = idle
+      ? Math.min(Math.max(minIntervalMs, AUTHORITY_IDLE_MAX_INTERVAL_MS), minIntervalMs * 2 ** Math.min(idleStreak, 16))
+      : minIntervalMs;
+    const settledState = {
+      ...spawnedState,
+      idle_streak: idleStreak,
+      next_allowed_at: new Date(nowMs + backoffMs + jitterMs).toISOString(),
+    };
+    await writeAuthorityState(authorityOwnerPath, settledState);
+    await writeAuthorityState(authorityStatePath, settledState);
   } catch (error) {
     const failedAt = deps.nowMs?.() ?? Date.now();
     const failedState = buildAuthorityState(cwd, failedAt, minIntervalMs, jitterMs, {
