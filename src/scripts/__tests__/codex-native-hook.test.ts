@@ -13123,7 +13123,9 @@ exit 0
           { cwd },
         );
         assert.ok(result.outputJson, `expected shell-chained Beads command to be blocked: ${command}`);
-        assert.ok(String(result.outputJson.reason).includes("single literal"), `expected block reason to mention single literal invocation for: ${command}`);
+        // Advisory-only output includes systemMessage, not reason field
+        const advisory = String(result.outputJson.systemMessage ?? result.outputJson.reason ?? "");
+        assert.ok(advisory.includes("single literal"), `expected advisory to mention single literal invocation for: ${command} (got: ${advisory})`);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -13181,9 +13183,11 @@ exit 0
           },
           { cwd },
         );
+        // Read-only operations should not generate Beads advisories
+        const advisory = String(result.outputJson?.systemMessage ?? result.outputJson?.reason ?? "");
         assert.ok(
-          !result.outputJson || !String(result.outputJson.reason).includes("not allowed"),
-          `expected read-only Beads operation to be allowed: ${command}`,
+          !advisory.includes("not allowed"),
+          `expected read-only Beads operation to be allowed: ${command} (got: ${advisory})`,
         );
       }
     } finally {
@@ -13242,9 +13246,11 @@ exit 0
           },
           { cwd },
         );
+        // Quoted punctuation should be preserved in tokenization
+        const advisory = String(result.outputJson?.systemMessage ?? result.outputJson?.reason ?? "");
         assert.ok(
-          !result.outputJson || !String(result.outputJson.reason).includes("single literal"),
-          `expected Beads command with quoted punctuation to be allowed: ${command}`,
+          !advisory.includes("single literal"),
+          `expected Beads command with quoted punctuation to be allowed: ${command} (got: ${advisory})`,
         );
       }
     } finally {
