@@ -4907,7 +4907,7 @@ function isAllowedBeadsDbPath(cwd: string, rawPath: string): boolean {
   return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
 }
 
-function beadsOperationIsReadOnly(operation: string, suboperation: string): boolean {
+function beadsOperationIsReadOnly(operation: string): boolean {
   // Read-only Beads operations that are allowed in all phases
   return ["list", "ready", "show", "dep", "status"].includes(operation);
 }
@@ -4954,7 +4954,7 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   const suboperation = operationTokens[1] ?? "";
   
   // Check for read-only operations that are allowed in all phases
-  if (beadsOperationIsReadOnly(operation, suboperation)) {
+  if (beadsOperationIsReadOnly(operation)) {
     return { present: true, allowed: true, isReadOnly: true };
   }
   
