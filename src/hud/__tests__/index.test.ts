@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -975,6 +975,44 @@ await done;
     assert.ok(writes.some((chunk) => chunk.includes('frame')));
   });
 
+  it('calls the authority tick at most once per 5s interval', async () => {
+    let sigintHandler: (() => void) | undefined;
+    let timerTick: (() => void) | undefined;
+    let clock = 1_000_000;
+    let renders = 0;
+    let authorityCalls = 0;
+    mock.method(Date, 'now', () => clock);
+    try {
+      const promise = runWatchMode('/tmp', WATCH_FLAGS, {
+        isTTY: true,
+        env: {},
+        readAllStateFn: async () => { renders += 1; return emptyCtx(); },
+        readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
+        renderHudFn: () => 'frame',
+        writeStdout: () => {},
+        writeStderr: () => {},
+        registerSigint: (handler) => { sigintHandler = handler; },
+        setIntervalFn: (handler) => { timerTick = handler; return ({}) as ReturnType<typeof setInterval>; },
+        clearIntervalFn: () => {},
+        runAuthorityTickFn: async () => { authorityCalls += 1; },
+      });
+      await flush();
+      const ticks = 12;
+      for (let i = 0; i < ticks; i += 1) {
+        clock += 1_000;
+        timerTick?.();
+        await flush();
+      }
+      sigintHandler?.();
+      await promise;
+
+      assert.equal(renders, ticks + 1, 'every 1s tick still renders');
+      assert.equal(authorityCalls, 3, 'authority runs on the first tick, then every 5s (t=0,5,10)');
+    } finally {
+      mock.restoreAll();
+    }
+  });
+
   it('keeps rendering when the authority tick fails after a frame', async () => {
     const writes: string[] = [];
     const errors: string[] = [];
@@ -1019,11 +1057,12 @@ await done;
 
     timerTick?.();
     await withTimeout(secondReadStarted.promise, 'watch should render again after authority tick failure');
+    await flush();
     sigintHandler?.();
     await promise;
 
     assert.equal(renderCount, 2);
-    assert.equal(authorityCalls, 2);
+    assert.equal(authorityCalls, 1, 'a failed authority tick is not retried before the 5s interval');
     assert.equal(process.exitCode, undefined);
     assert.equal((writes.join('').match(/frame/g) ?? []).length, 2);
     assert.ok(!errors.some((line) => line.includes('HUD watch render failed')));

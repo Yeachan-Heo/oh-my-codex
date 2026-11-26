@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -210,11 +210,28 @@ describe('runHudAuthorityTick', () => {
 
       assert.equal(calls.length, 1, 'second HUD frame should not respawn an authority-only child');
       const state = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'notify-fallback-authority-state.json'), 'utf-8'));
-      assert.equal(state.last_status, 'skipped');
-      assert.equal(state.last_reason, 'rate_limited');
-      assert.equal(state.skip_count, 1);
+      assert.equal(state.last_status, 'spawned');
       assert.equal(state.last_spawn_at, new Date(1_000).toISOString());
       assert.equal(state.next_allowed_at, new Date(6_000).toISOString());
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('writes no files when called inside the cooldown', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-authority-no-churn-'));
+    const stateDir = join(cwd, '.omx', 'state');
+    const files = ['notify-fallback-authority-owner.json', 'notify-fallback-authority-state.json'].map((name) => join(stateDir, name));
+    const options = { cwd, nodePath: '/node', packageRoot: '/pkg', minIntervalMs: 5_000, jitterMs: 0 };
+    try {
+      await runHudAuthorityTick(options, { nowMs: () => 1_000, random: () => 0, runProcess: async () => {} });
+      const old = new Date(1_000);
+      for (const file of files) await utimes(file, old, old);
+      const before = files.map((file) => ({ body: readFileSync(file, 'utf-8'), mtimeMs: statSync(file).mtimeMs }));
+
+      await runHudAuthorityTick(options, { nowMs: () => 2_000, random: () => 0, runProcess: async () => assert.fail('must not spawn') });
+
+      assert.deepEqual(files.map((file) => ({ body: readFileSync(file, 'utf-8'), mtimeMs: statSync(file).mtimeMs })), before);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -299,8 +316,7 @@ describe('runHudAuthorityTick', () => {
 
       assert.equal(calls, 1, 'contender should re-check cooldown after locking and skip spawning');
       const state = JSON.parse(await readFile(statePath, 'utf-8'));
-      assert.equal(state.last_status, 'skipped');
-      assert.equal(state.last_reason, 'rate_limited_after_lock');
+      assert.equal(state.last_status, 'spawned');
       assert.equal(state.next_allowed_at, new Date(6_000).toISOString());
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -322,7 +338,6 @@ describe('runHudAuthorityTick', () => {
       next_allowed_at: new Date(6_000).toISOString(),
       cooldown_ms: 5_000,
       jitter_ms: 0,
-      skip_count: 0,
       last_status: 'spawned',
       last_reason: 'spawned',
     };
@@ -518,10 +533,9 @@ describe('runHudAuthorityTick', () => {
       );
 
       assert.equal(calls, 0, 'repaired invalid-state diagnostic should still enforce cooldown on the next tick');
-      const skippedState = JSON.parse(await readFile(statePath, 'utf-8'));
-      assert.equal(skippedState.last_status, 'skipped');
-      assert.equal(skippedState.last_reason, 'rate_limited');
-      assert.equal(skippedState.next_allowed_at, new Date(6_000).toISOString());
+      const unchangedState = JSON.parse(await readFile(statePath, 'utf-8'));
+      assert.equal(unchangedState.last_reason, 'invalid_authority_state');
+      assert.equal(unchangedState.next_allowed_at, new Date(6_000).toISOString());
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
