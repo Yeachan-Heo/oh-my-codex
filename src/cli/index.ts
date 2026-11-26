@@ -45,6 +45,7 @@ import {
 } from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
+import { supervisionCommand } from "./supervision.js";
 import { apiCommand } from "./api.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
@@ -325,6 +326,8 @@ Usage:
   omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
                 Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
                 (also used as an adaptive backend for qualifying read-only explore tasks)
+  omx supervision [--window <s>] [--no-analyze] [--file] [--json] [<user-prompt>]
+                Check live OMX sessions for known repeat problems, rank findings P0-P3, optionally file issues
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
@@ -469,6 +472,7 @@ type CliCommand =
   | "explore"
   | "api"
   | "sparkshell"
+  | "supervision"
   | "team"
   | "session"
   | "url"
@@ -533,6 +537,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "url",
   "api",
   "sparkshell",
+  "supervision",
   "team",
   "tmux-hook",
 ]);
@@ -5124,6 +5129,7 @@ export async function main(args: string[]): Promise<void> {
     "explore",
     "api",
     "sparkshell",
+    "supervision",
     "team",
     "autopilot",
     "ralph",
@@ -5299,6 +5305,9 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "sparkshell":
         await sparkshellCommand(args.slice(1));
+        break;
+      case "supervision":
+        await supervisionCommand(args.slice(1));
         break;
       case "team":
         await teamCommand(args.slice(1), options);
