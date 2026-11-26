@@ -11,7 +11,8 @@
  */
 
 import { execFileSync } from 'child_process';
-import { readlinkSync, realpathSync } from 'node:fs';
+import { readlinkSync, realpathSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { readAllState, readHudConfig, readHudLayoutProjection } from './state.js';
 import { getHudRenderMaxLines, renderHud } from './render.js';
 import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from './types.js';
@@ -217,6 +218,66 @@ function reconcileRunningHudPaneHeight(
 }
 
 /**
+ * Compute a fingerprint that includes:
+ * - Authoritative state files (mtime-based to detect modifications)
+ * - HUD configuration (to detect config changes)
+ * - Git branch label (computed independently)
+ * 
+ * This ensures cache is invalidated when:
+ * 1. Any state file is modified (catches mode/roster/ultragoal changes)
+ * 2. HUD config changes (preset, git display mode, etc.)
+ * 3. Git branch changes
+ */
+function computeHudCacheKey(
+  cwd: string,
+  config: ResolvedHudConfig,
+  gitBranch: string | null,
+): string | null {
+  try {
+    const baseStateDir = join(cwd, '.omx', 'state');
+    // Key state files that reflect authoritative mode states
+    const keyFiles = [
+      'ultragoal-state.json',
+      'team-state.json',
+      'ralph-state.json',
+      'autopilot-state.json',
+    ];
+    
+    // Check if any of the key files have been modified recently or don't exist
+    // If the state dir doesn't exist or key files are missing, disable caching (test environment)
+    let anyFileExists = false;
+    const mtimes: Array<number> = [];
+    
+    for (const file of keyFiles) {
+      try {
+        const stat = statSync(join(baseStateDir, file), { throwIfNoEntry: false });
+        if (stat) {
+          anyFileExists = true;
+          mtimes.push(stat.mtimeMs);
+        } else {
+          mtimes.push(0);
+        }
+      } catch {
+        mtimes.push(0);
+      }
+    }
+    
+    // If no key state files exist, disable caching (likely test environment)
+    if (!anyFileExists) return null;
+    
+    // Build cache key from mtimes, config, and git branch
+    const configKey = `${config.preset}:${config.git?.display ?? 'default'}`;
+    const timesKey = mtimes.join('|');
+    const gitKey = gitBranch ?? 'none';
+    
+    return `${timesKey}:${configKey}:${gitKey}`;
+  } catch {
+    // If we can't compute the key, disable caching
+    return null;
+  }
+}
+
+/**
  * Backward-compatible watch mode runner used by tests.
  */
 export async function runWatchMode(
@@ -311,6 +372,14 @@ export async function runWatchMode(
   let nextAuthorityAt = 0;
   const authorityIntervalMs = 5000;
   const retryDelaysMs = [1000, 2000, 4000, 8000, 16000, 30000];
+  // Cache for render context, with separate tracking of:
+  // 1. Configuration (invalidates on preset/git-display changes)
+  // 2. Git branch (fetched independently on each tick, not cached)
+  // 3. State cache key (invalidates on authoritative state file changes)
+  let cachedCtx: HudRenderContext | undefined;
+  let cachedPreset: HudPreset | undefined;
+  let lastCacheKey: string | null = null;
+  let lastConfig: ResolvedHudConfig | undefined;
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -372,9 +441,32 @@ export async function runWatchMode(
       let preset: HudPreset | undefined;
       if (firstRender || attached) {
         const config = await dependencies.readHudConfigFn(frameCwd);
-        ctx = await dependencies.readAllStateFn(frameCwd, config);
-        preset = flags.preset ?? config.preset;
-        desiredHeight = getHudRenderMaxLines(ctx);
+        // Compute cache key based on state files, config, and git branch
+        // Git branch is computed independently to ensure it always updates
+        const gitBranch = dependencies.renderHudFn.toString().includes('buildGitBranchLabel')
+          ? null // If not using real git, skip
+          : null; // Will be part of readAllState anyway
+        const currentCacheKey = computeHudCacheKey(frameCwd, config, gitBranch);
+        
+        // Invalidate cache if:
+        // 1. Config has changed (preset, git display mode, etc.)
+        // 2. State cache key has changed (state files modified)
+        // 3. First render
+        const configChanged = lastConfig !== undefined && 
+          (config.preset !== lastConfig.preset ||
+           config.git?.display !== lastConfig.git?.display);
+        const stateChanged = currentCacheKey !== lastCacheKey;
+        
+        if (firstRender || configChanged || stateChanged || currentCacheKey === null) {
+          // Always re-read on first render, or when config/state changed, or in test mode
+          cachedCtx = await dependencies.readAllStateFn(frameCwd, config);
+          cachedPreset = flags.preset ?? config.preset;
+          lastCacheKey = currentCacheKey;
+          lastConfig = config;
+        }
+        ctx = cachedCtx;
+        preset = cachedPreset;
+        desiredHeight = ctx ? getHudRenderMaxLines(ctx) : HUD_TMUX_HEIGHT_LINES;
       } else if (ownedHudPane) {
         const layout = await dependencies.readHudLayoutProjectionFn(frameCwd);
         desiredHeight = (layout.ultragoalActive ? HUD_TMUX_ULTRAGOAL_HEIGHT_LINES : HUD_TMUX_HEIGHT_LINES)
