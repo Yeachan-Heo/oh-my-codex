@@ -13101,6 +13101,11 @@ exit 0
         "bd --db .beads/issues.db status OMX-1; rm -rf dist",
         "bd --db .beads/issues.db list | grep bad",
         "(bd --db .beads/issues.db create 'Issue')",
+        "bd --db .beads/issues.db create 'Issue' || echo fallback",
+        "bd --db .beads/issues.db status OMX-1 | grep active",
+        "bd --db .beads/issues.db create 'Issue' > output.txt",
+        "bd --db .beads/issues.db status OMX-1 2>&1",
+        "bd --db .beads/issues.db list $(cat config.txt)",
       ];
 
       for (const [index, command] of blockedCommands.entries()) {

@@ -4913,6 +4913,14 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   const tokens = shellTokenizeLiteralCommand(command);
   const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
   if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
+  
+  // Explicitly reject any command containing shell operators or subshells (;, &&, ||, |, &, $(...), backticks, parentheses, redirections)
+  // Check AFTER detecting Beads command markers but BEFORE allowing any further classification
+  if (startsWithBd || hasCompoundBd || bdExecutableIndex !== -1) {
+    if (/[;&|<>`$()\[\]]|\n|\r/.test(command)) {
+      return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+    }
+  }
 
   if (!tokens || bdExecutableIndex !== 0) {
     return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
@@ -22953,9 +22961,24 @@ export async function dispatchCodexNativeHook(
       }
     }
     if (!outputJson) {
+      // Check for shell-chained Beads commands that should be blocked
+      if (safeString(payload.tool_name).trim() === "Bash") {
+        const command = readPreToolUseCommand(payload);
+        const beadsClassification = classifyBeadsMetadataCommand(policyCwd, command);
+        if (beadsClassification.present && !beadsClassification.allowed) {
+          outputJson = {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+            },
+            reason: beadsClassification.reason ?? "Beads tracker command is not allowed",
+          };
+        }
+      }
       // Advisory guidance only (capability warnings, destructive confirm, etc.).
       // sanitizeCodexHookOutput strips any residual deny/block at the CLI boundary.
-      outputJson = buildNativePreToolUseOutput(payload);
+      if (!outputJson) {
+        outputJson = buildNativePreToolUseOutput(payload);
+      }
     }
   } else if (hookEventName === "PostToolUse") {
     if (allowImplicitSessionSideEffects) {
