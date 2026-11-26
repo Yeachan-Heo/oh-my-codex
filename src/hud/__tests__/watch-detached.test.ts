@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -82,7 +82,21 @@ async function withTimeout(promise: Promise<void>, message: string, timeoutMs = 
   }
 }
 
+// The watch loop runs the authority tick at most once per 5s; jump the clock so each manual tick is due.
+const realNow = Date.now;
+let skewMs = 0;
+function tick(handler: (() => void) | undefined): void {
+  skewMs += 5_000;
+  handler?.();
+}
+
+beforeEach(() => {
+  skewMs = 0;
+  mock.method(Date, 'now', () => realNow() + skewMs);
+});
+
 afterEach(() => {
+  mock.restoreAll();
   process.exitCode = undefined;
 });
 
@@ -138,7 +152,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(secondAuthority.promise, 'detached layout projection tick should complete');
     sigintHandler?.();
     await promise;
@@ -199,11 +213,11 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(fourthAuthority.promise, 'three detached projection ticks should complete');
     sigintHandler?.();
     await promise;
@@ -253,7 +267,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(repairStarted.promise, 'missing hook should request detached HUD repair');
     sigintHandler?.();
     await promise;
@@ -359,7 +373,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(secondAuthority.promise, 'unknown owner tick should remain observational');
     sigintHandler?.();
     await promise;
@@ -413,7 +427,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     await flush();
     assert.equal(repairs, 1);
     timerTick?.();
-    await withTimeout(secondAuthority.promise, 'immediate retry tick should complete');
+    await flush();
     assert.equal(repairs, 1);
     await new Promise((resolve) => setTimeout(resolve, 1_050));
     timerTick?.();
@@ -462,7 +476,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
 
     await flush();
     assert.ok(timerTick, 'interval tick should be registered');
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(secondAuthorityStarted.promise, 'second authority tick should run while detached');
     sigintHandler?.();
     await promise;
@@ -510,13 +524,13 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     await flush();
     // Detached tick: suppressed render.
     attached = false;
-    timerTick?.();
+    tick(timerTick);
     await flush();
     assert.equal(stateReads, 1, 'detached tick must not read state');
 
     // Reattach: the next tick renders immediately with fresh state.
     attached = true;
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(secondReadDone.promise, 'reattached tick must render immediately');
     sigintHandler?.();
     await promise;
@@ -555,8 +569,8 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
-    timerTick?.();
+    tick(timerTick);
+    tick(timerTick);
     await withTimeout(thirdReadStarted.promise, 'attached ticks must keep rendering');
     sigintHandler?.();
     await promise;
@@ -597,7 +611,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(secondReadStarted.promise, 'failing probe must fall back to rendering');
     sigintHandler?.();
     await promise;
@@ -634,7 +648,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
     });
 
     await flush();
-    timerTick?.();
+    tick(timerTick);
     await withTimeout(secondAuthority.promise, 'second detached tick should complete');
     sigintHandler?.();
     await promise;
@@ -687,7 +701,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
       assert.ok(timerTick, 'interval tick should be registered');
       // Second tick must render: injected env has no TMUX, so the default
       // probe must answer "attached" regardless of the ambient tmux env.
-      timerTick?.();
+      tick(timerTick);
       await withTimeout(secondReadDone.promise, 'injected env (no TMUX) must keep rendering despite inherited tmux env');
       sigintHandler?.();
       await promise;
@@ -753,7 +767,7 @@ describe('runWatchMode detached attachment gating (closes #3577)', () => {
 
       await flush();
       assert.ok(timerTick, 'interval tick should be registered');
-      timerTick?.();
+      tick(timerTick);
       await withTimeout(secondAuthority.promise, 'second detached tick should complete without a state read');
       sigintHandler?.();
       await promise;

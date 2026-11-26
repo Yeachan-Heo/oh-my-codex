@@ -308,6 +308,8 @@ export async function runWatchMode(
   let lastRepairFingerprint = '';
   let retryAt = 0;
   let retryIndex = 0;
+  let nextAuthorityAt = 0;
+  const authorityIntervalMs = 5000;
   const retryDelaysMs = [1000, 2000, 4000, 8000, 16000, 30000];
   const stop = () => {
     if (stopped) return;
@@ -518,11 +520,14 @@ export async function runWatchMode(
           });
         }
       }
-      try {
-        await dependencies.runAuthorityTickFn({ cwd: frameCwd });
-      } catch (authorityError) {
-        const message = authorityError instanceof Error ? authorityError.message : String(authorityError);
-        dependencies.writeStderr(`HUD watch authority tick failed: ${message}\n`);
+      if (Date.now() >= nextAuthorityAt) {
+        nextAuthorityAt = Date.now() + authorityIntervalMs;
+        try {
+          await dependencies.runAuthorityTickFn({ cwd: frameCwd });
+        } catch (authorityError) {
+          const message = authorityError instanceof Error ? authorityError.message : String(authorityError);
+          dependencies.writeStderr(`HUD watch authority tick failed: ${message}\n`);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
