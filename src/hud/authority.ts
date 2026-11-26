@@ -38,11 +38,9 @@ interface HudAuthorityState {
   cwd: string;
   heartbeat_at: string;
   last_spawn_at?: string;
-  last_skip_at?: string;
   next_allowed_at?: string;
   cooldown_ms: number;
   jitter_ms: number;
-  skip_count: number;
   last_status: 'spawned' | 'skipped' | 'failed' | 'locked';
   last_reason: string;
   last_error?: string;
@@ -156,9 +154,6 @@ function validateAuthorityState(value: unknown): HudAuthorityState {
   if (typeof state.jitter_ms !== 'number' || !Number.isFinite(state.jitter_ms) || state.jitter_ms < 0) {
     throw new Error('authority state jitter_ms must be a non-negative number');
   }
-  if (typeof state.skip_count !== 'number' || !Number.isInteger(state.skip_count) || state.skip_count < 0) {
-    throw new Error('authority state skip_count must be a non-negative integer');
-  }
   if (!isAuthorityStatus(state.last_status)) throw new Error('authority state last_status is invalid');
   if (typeof state.last_reason !== 'string' || !state.last_reason) {
     throw new Error('authority state last_reason must be a non-empty string');
@@ -186,16 +181,6 @@ async function writeAuthorityState(path: string, state: HudAuthorityState): Prom
     await rm(tempPath, { force: true }).catch(() => {});
     return false;
   }
-}
-
-async function writeAuthorityStateUnlessNewerCooldown(path: string, state: HudAuthorityState): Promise<boolean> {
-  const currentState = await readAuthorityState(path).catch(() => null);
-  const currentNextAllowedMs = parseIsoMs(currentState?.next_allowed_at);
-  const candidateNextAllowedMs = parseIsoMs(state.next_allowed_at);
-  if (currentNextAllowedMs !== null && candidateNextAllowedMs !== null && currentNextAllowedMs > candidateNextAllowedMs) {
-    return true;
-  }
-  return writeAuthorityState(path, state);
 }
 
 async function tryCreateAuthorityLock(lockPath: string, nowMs: number): Promise<AuthorityLock | null> {
@@ -288,34 +273,10 @@ function buildAuthorityState(
     heartbeat_at: new Date(nowMs).toISOString(),
     cooldown_ms: cooldownMs,
     jitter_ms: jitterMs,
-    skip_count: 0,
     last_status: 'spawned',
     last_reason: 'spawned',
     ...overrides,
   };
-}
-
-async function writeRateLimitSkipState(
-  path: string,
-  ownerPath: string,
-  cwd: string,
-  nowMs: number,
-  cooldownMs: number,
-  fallbackJitterMs: number,
-  previousState: HudAuthorityState,
-  reason: 'rate_limited' | 'rate_limited_after_lock',
-): Promise<void> {
-  const skippedState = buildAuthorityState(cwd, nowMs, cooldownMs, previousState.jitter_ms ?? fallbackJitterMs, {
-    last_spawn_at: previousState.last_spawn_at,
-    last_skip_at: new Date(nowMs).toISOString(),
-    next_allowed_at: previousState.next_allowed_at,
-    skip_count: (previousState.skip_count ?? 0) + 1,
-    last_status: 'skipped',
-    last_reason: reason,
-    last_error: previousState.last_error,
-  });
-  await writeAuthorityState(ownerPath, skippedState);
-  await writeAuthorityStateUnlessNewerCooldown(path, skippedState);
 }
 
 async function writeInvalidStateDiagnostic(
@@ -328,7 +289,6 @@ async function writeInvalidStateDiagnostic(
   error: unknown,
 ): Promise<boolean> {
   const failedState = buildAuthorityState(cwd, nowMs, cooldownMs, jitterMs, {
-    last_skip_at: new Date(nowMs).toISOString(),
     next_allowed_at: new Date(nowMs + cooldownMs + jitterMs).toISOString(),
     last_status: 'failed',
     last_reason: 'invalid_authority_state',
@@ -388,16 +348,6 @@ export async function runHudAuthorityTick(
   }
   const previousNextAllowedMs = parseIsoMs(previousState?.next_allowed_at);
   if (previousState && previousNextAllowedMs !== null && nowMs < previousNextAllowedMs) {
-    await writeRateLimitSkipState(
-      authorityStatePath,
-      authorityOwnerPath,
-      cwd,
-      nowMs,
-      minIntervalMs,
-      jitterMs,
-      previousState,
-      'rate_limited',
-    );
     return;
   }
 
@@ -407,9 +357,7 @@ export async function runHudAuthorityTick(
     const diagnosticState = latestState ?? previousState;
     const lockedState = buildAuthorityState(cwd, nowMs, minIntervalMs, diagnosticState?.jitter_ms ?? jitterMs, {
       last_spawn_at: diagnosticState?.last_spawn_at,
-      last_skip_at: new Date(nowMs).toISOString(),
       next_allowed_at: diagnosticState?.next_allowed_at,
-      skip_count: (diagnosticState?.skip_count ?? 0) + 1,
       last_status: 'locked',
       last_reason: 'spawn_lock_active',
       last_error: diagnosticState?.last_error,
@@ -431,16 +379,6 @@ export async function runHudAuthorityTick(
   }
   const lockedNextAllowedMs = parseIsoMs(lockedState?.next_allowed_at);
   if (lockedState && lockedNextAllowedMs !== null && nowMs < lockedNextAllowedMs) {
-    await writeRateLimitSkipState(
-      authorityStatePath,
-      authorityOwnerPath,
-      cwd,
-      nowMs,
-      minIntervalMs,
-      jitterMs,
-      lockedState,
-      'rate_limited_after_lock',
-    );
     await releaseAuthorityLock(lock);
     return;
   }
@@ -449,7 +387,6 @@ export async function runHudAuthorityTick(
   const spawnedState = buildAuthorityState(cwd, nowMs, minIntervalMs, jitterMs, {
     last_spawn_at: new Date(nowMs).toISOString(),
     next_allowed_at: nextAllowedAt,
-    skip_count: previousState?.skip_count ?? 0,
     last_status: 'spawned',
     last_reason: 'spawned',
   });
@@ -490,7 +427,6 @@ export async function runHudAuthorityTick(
     const failedState = buildAuthorityState(cwd, failedAt, minIntervalMs, jitterMs, {
       last_spawn_at: spawnedState.last_spawn_at,
       next_allowed_at: nextAllowedAt,
-      skip_count: previousState?.skip_count ?? 0,
       last_status: 'failed',
       last_reason: 'child_failed',
       last_error: error instanceof Error ? error.message : String(error),
