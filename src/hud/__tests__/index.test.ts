@@ -216,6 +216,44 @@ describe('hudCommand reconcile entrypoint', () => {
 });
 
 describe('runWatchMode', () => {
+  it('re-reads HUD state on every attached tick even when other state inputs change under a root state file (#4202 review)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-hud-state-reread-'));
+    let tick: (() => void) | undefined;
+    let stop: (() => void) | undefined;
+    let reads = 0;
+    try {
+      await mkdir(join(root, '.omx', 'state'), { recursive: true });
+      await writeFile(join(root, '.omx', 'state', 'ralph-state.json'), '{}');
+      const promise = runWatchMode(root, WATCH_FLAGS, {
+        isTTY: true,
+        env: {},
+        resolveWatchCwdFn: () => root,
+        isSessionAttachedFn: () => true,
+        readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
+        readAllStateFn: async () => { reads += 1; return emptyCtx(); },
+        renderHudFn: () => 'frame',
+        runAuthorityTickFn: async () => {},
+        writeStdout: () => {}, writeStderr: () => {},
+        registerSigint: handler => { stop = handler; },
+        setIntervalFn: handler => { tick = handler; return {} as ReturnType<typeof setInterval>; },
+        clearIntervalFn: () => {},
+      });
+      await flush();
+      for (let index = 0; index < 3; index += 1) {
+        // Inputs readAllState consumes that the cache key never fingerprints.
+        await mkdir(join(root, '.omx', 'ultragoal'), { recursive: true });
+        await writeFile(join(root, '.omx', 'ultragoal', 'goals.json'), JSON.stringify({ n: index }));
+        tick?.();
+        await flush();
+      }
+      stop?.();
+      await promise;
+      assert.equal(reads, 4);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a verified owned HUD idle for sixty watcher ticks without reconciliation', async () => {
     let tick: (() => void) | undefined;
     let stop: (() => void) | undefined;
@@ -1307,125 +1345,5 @@ exit 0
       }
       await rm(tmp, { recursive: true, force: true });
     }
-  });
-
-  describe('HUD state caching regression tests', () => {
-    it('shows mode/roster changes within one tick (not cached across state changes)', async () => {
-      const root = await mkdtemp(join(tmpdir(), 'omx-hud-mode-change-'));
-      try {
-        await mkdir(join(root, '.omx', 'state'), { recursive: true });
-        // Create initial state
-        await writeFile(join(root, '.omx', 'state', 'ralph-state.json'), '{}');
-        await writeFile(join(root, '.omx', 'state', 'team-state.json'), '{"active":false}');
-        
-        let tick: (() => void) | undefined;
-        let stop: (() => void) | undefined;
-        let readCount = 0;
-        const ctxs: HudRenderContext[] = [];
-        
-        const promise = runWatchMode(root, WATCH_FLAGS, {
-          isTTY: true,
-          env: { ...repairWatchEnv('mode-change-test') },
-          isOwnerAliveFn: async () => true,
-          isSessionAttachedFn: () => true,
-          listCurrentWindowPanesFn: () => [],
-          readHudLeaderOwnerFn: () => 'current',
-          readHudConfigFn: async () => REPAIR_WATCH_CONFIG,
-          readAllStateFn: async () => {
-            readCount++;
-            if (readCount === 1) {
-              return { ...emptyCtx(), team: null };
-            } else {
-              return { ...emptyCtx(), team: { active: true, agent_count: 2, team_name: 'team-1' } };
-            }
-          },
-          renderHudFn: (ctx) => `team:${ctx.team?.active ?? false}`,
-          runAuthorityTickFn: async () => {},
-          writeStdout: (text) => { if (text.includes('team:')) ctxs.push(emptyCtx()); }, // Track renders
-          writeStderr: () => {},
-          registerSigint: handler => { stop = handler; },
-          setIntervalFn: handler => { tick = handler; return {} as ReturnType<typeof setInterval>; },
-          clearIntervalFn: () => {},
-        });
-        
-        try {
-          tick?.();
-          await new Promise(resolve => setTimeout(resolve, 50));
-          const firstRenderCount = readCount;
-          
-          tick?.();
-          await new Promise(resolve => setTimeout(resolve, 50));
-          const secondRenderCount = readCount;
-          
-          // Should have read state twice (cache invalidated by state file change)
-          assert.ok(secondRenderCount >= 1, 'state should be re-read when files change');
-        } finally {
-          stop?.();
-          await promise;
-        }
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
-    });
-
-    it('invalidates cache when config changes (preset/git-display)', async () => {
-      const root = await mkdtemp(join(tmpdir(), 'omx-hud-config-change-'));
-      try {
-        await mkdir(join(root, '.omx', 'state'), { recursive: true });
-        await writeFile(join(root, '.omx', 'state', 'ralph-state.json'), '{}');
-        
-        let tick: (() => void) | undefined;
-        let stop: (() => void) | undefined;
-        let readCount = 0;
-        let configChangeAfterTick = false;
-        
-        const promise = runWatchMode(root, WATCH_FLAGS, {
-          isTTY: true,
-          env: { ...repairWatchEnv('config-change-test') },
-          isOwnerAliveFn: async () => true,
-          isSessionAttachedFn: () => true,
-          listCurrentWindowPanesFn: () => [],
-          readHudLeaderOwnerFn: () => 'current',
-          readHudConfigFn: async () => {
-            // Return different config after first tick
-            const config = configChangeAfterTick
-              ? { ...REPAIR_WATCH_CONFIG, preset: 'minimal' as const }
-              : REPAIR_WATCH_CONFIG;
-            return config;
-          },
-          readAllStateFn: async () => {
-            readCount++;
-            return emptyCtx();
-          },
-          renderHudFn: () => 'frame',
-          runAuthorityTickFn: async () => {},
-          writeStdout: () => {},
-          writeStderr: () => {},
-          registerSigint: handler => { stop = handler; },
-          setIntervalFn: handler => { tick = handler; return {} as ReturnType<typeof setInterval>; },
-          clearIntervalFn: () => {},
-        });
-        
-        try {
-          tick?.();
-          await new Promise(resolve => setTimeout(resolve, 50));
-          const firstReadCount = readCount;
-          
-          // Now change config
-          configChangeAfterTick = true;
-          tick?.();
-          await new Promise(resolve => setTimeout(resolve, 50));
-          const secondReadCount = readCount;
-          
-          // Should have re-read state due to config change
-          assert.ok(secondReadCount > firstReadCount, 'state should be re-read when config changes');
-        } finally {
-          stop?.();
-          await promise;
-        }
-      } finally {
-        await rm(root, { recursive: true, force: true });
-      }
-    });
   });
 });
