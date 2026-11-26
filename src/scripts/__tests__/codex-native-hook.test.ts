@@ -13038,7 +13038,6 @@ exit 0
       ];
 
       for (const [index, command] of allowedBeadsCommands.entries()) {
-        // eslint-disable-next-line no-await-in-loop
         const result = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
@@ -13105,7 +13104,6 @@ exit 0
       ];
 
       for (const [index, command] of blockedCommands.entries()) {
-        // eslint-disable-next-line no-await-in-loop
         const result = await dispatchCodexNativeHook(
           {
             hook_event_name: "PreToolUse",
