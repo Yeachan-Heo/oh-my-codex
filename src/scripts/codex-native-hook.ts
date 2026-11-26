@@ -22967,10 +22967,12 @@ export async function dispatchCodexNativeHook(
         const beadsClassification = classifyBeadsMetadataCommand(policyCwd, command);
         if (beadsClassification.present && !beadsClassification.allowed) {
           outputJson = {
+            decision: "block",
+            reason: beadsClassification.reason ?? "Beads tracker command is not allowed",
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
             },
-            reason: beadsClassification.reason ?? "Beads tracker command is not allowed",
+            systemMessage: beadsClassification.reason ?? "Beads tracker command is not allowed",
           };
         }
       }
