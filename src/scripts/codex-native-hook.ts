@@ -134,7 +134,7 @@ import {
 import {
   TEAM_TMUX_CAPABILITY_WARNING
 } from "../hooks/native/capability-warnings.js";
-import { sanitizeNativeHookOutput } from "../hooks/native/pre-tool-use-advisory.js";
+import { sanitizeNativeHookOutput, toAdvisoryOrCancelPreToolUseOutput } from "../hooks/native/pre-tool-use-advisory.js";
 import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
 import { maybeNudgeLeaderForAllowedWorkerStop } from "./notify-hook/team-worker-stop.js";
 import {
@@ -22974,7 +22974,13 @@ export async function dispatchCodexNativeHook(
         if (beadsClassification.present && !beadsClassification.allowed && !beadsClassification.isReadOnly) {
           // For compound commands with Beads violations, preserve existing advisories by merging
           // rather than replacing them. Build the existing advisory first.
-          const existingAdvisory = buildNativePreToolUseOutput(payload);
+          let existingAdvisory = buildNativePreToolUseOutput(payload);
+          
+          // Normalize the existing advisory to pure advisory form (without decision/reason fields)
+          // so that when we merge with Beads message, the CLI sanitizer won't use reason over systemMessage
+          if (existingAdvisory) {
+            existingAdvisory = toAdvisoryOrCancelPreToolUseOutput(existingAdvisory);
+          }
           
           // Emit advisory warning (not a hard block, since PreToolUse is advisory-only)
           // Only emit systemMessage, not reason, to avoid being intercepted as cancel-deny
@@ -22982,11 +22988,10 @@ export async function dispatchCodexNativeHook(
           
           if (existingAdvisory) {
             // Merge advisories: preserve existing safety guidance (e.g., destructive-command advisory)
-            // and add Beads-specific guidance
+            // and add Beads-specific guidance. Both messages are now in advisory form.
             const existingMessage = safeString(existingAdvisory.systemMessage).trim();
             const existingHookOutput = safeObject(existingAdvisory.hookSpecificOutput);
             outputJson = {
-              ...existingAdvisory,
               systemMessage: [
                 existingMessage,
                 beadsMessage,
