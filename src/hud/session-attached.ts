@@ -1,6 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
+export interface IsHudWatchSessionAttachedDeps {
+  env?: NodeJS.ProcessEnv;
+  execTmuxSync?: (args: string[]) => string;
+}
+
 /**
  * Reports whether any tmux client is attached to the session this HUD pane
  * belongs to. Used by watch mode to avoid render-only work (state reads, git
@@ -12,10 +17,7 @@ import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
  * query failure — detached suppression only happens on a trusted "0".
  */
 export function isHudWatchSessionAttached(
-  deps: {
-    env?: NodeJS.ProcessEnv;
-    execTmuxSync?: (args: string[]) => string;
-  } = {},
+  deps: IsHudWatchSessionAttachedDeps = {},
 ): boolean {
   const env = deps.env ?? process.env;
   if (!env.TMUX) return true;
@@ -50,4 +52,66 @@ export function isHudWatchSessionAttached(
   } catch {
     return true;
   }
+}
+
+/**
+ * Cache state for the attachment check.
+ */
+interface AttachmentCacheEntry {
+  result: boolean;
+  expiresAtMs: number;
+  paneId: string;
+  tmuxSocket: string;
+}
+
+/**
+ * Creates a cached version of isHudWatchSessionAttached that reuses results
+ * for a bounded TTL (default 3 seconds). This avoids the expensive synchronous
+ * tmux subprocess call on every render tick.
+ *
+ * Cache is keyed by (tmux socket, pane id) to handle multi-session layouts.
+ * Expiration is wall-clock based, so TTL is approximate but always respected.
+ */
+export function createCachedIsHudWatchSessionAttached(
+  ttlMs: number = 3000,
+): (deps?: IsHudWatchSessionAttachedDeps) => boolean {
+  const cache = new Map<string, AttachmentCacheEntry>();
+
+  return function isHudWatchSessionAttachedCached(
+    deps: IsHudWatchSessionAttachedDeps = {},
+  ): boolean {
+    const env = deps.env ?? process.env;
+
+    // Extract cache key from environment
+    const tmuxSocket = env.TMUX?.split(',')[0] ?? '';
+    const paneId = env.TMUX_PANE?.trim() ?? '';
+    const cacheKey = `${tmuxSocket}:${paneId}`;
+
+    // Check cache
+    const now = Date.now();
+    const cached = cache.get(cacheKey);
+    if (cached && now < cached.expiresAtMs) {
+      return cached.result;
+    }
+
+    // Cache miss or expired: query and store
+    const result = isHudWatchSessionAttached(deps);
+    cache.set(cacheKey, {
+      result,
+      expiresAtMs: now + ttlMs,
+      paneId,
+      tmuxSocket,
+    });
+
+    // Clean up expired entries to prevent unbounded memory growth
+    if (cache.size > 100) {
+      for (const [key, entry] of cache.entries()) {
+        if (now >= entry.expiresAtMs) {
+          cache.delete(key);
+        }
+      }
+    }
+
+    return result;
+  };
 }

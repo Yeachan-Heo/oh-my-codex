@@ -23,7 +23,7 @@ import {
 import { spawnReconcileWithTimeout } from './spawn-reconcile-with-timeout.js';
 import { sleep } from '../utils/sleep.js';
 import { runHudAuthorityTick } from './authority.js';
-import { isHudWatchSessionAttached } from './session-attached.js';
+import { isHudWatchSessionAttached, createCachedIsHudWatchSessionAttached } from './session-attached.js';
 import { closeOwnedHudPane, createHudOwnerAliveProbe } from './watch-owner.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 import {
@@ -226,6 +226,13 @@ export async function runWatchMode(
 ): Promise<void> {
   if (!flags.watch) return;
 
+  // Create a persistent cached attachment check for this watch session.
+  // The cache TTL (3 seconds) is longer than the typical render interval
+  // (1 second) and shorter than the authority tick interval (5 seconds),
+  // so we get immediate correctness on first frame, refresh on
+  // terminal size/pane change signals, and avoid per-tick tmux overhead.
+  const cachedAttachmentCheck = createCachedIsHudWatchSessionAttached(3000);
+
   const dependencies: RunWatchModeDependencies = {
     isTTY: deps.isTTY ?? Boolean(process.stdout.isTTY),
     env: deps.env ?? process.env,
@@ -277,7 +284,7 @@ export async function runWatchMode(
     }),
     setIntervalFn: deps.setIntervalFn ?? ((handler: () => void, intervalMs: number) => setInterval(handler, intervalMs)),
     clearIntervalFn: deps.clearIntervalFn ?? ((timer: ReturnType<typeof setInterval>) => clearInterval(timer)),
-    isSessionAttachedFn: deps.isSessionAttachedFn ?? (() => isHudWatchSessionAttached({ env: dependencies.env })),
+    isSessionAttachedFn: deps.isSessionAttachedFn ?? (() => cachedAttachmentCheck({ env: dependencies.env })),
     isOwnerAliveFn: deps.isOwnerAliveFn ?? createHudOwnerAliveProbe(deps.env ?? process.env),
     closeOwnedPaneFn: deps.closeOwnedPaneFn ?? (() => closeOwnedHudPane(dependencies.env)),
   };
