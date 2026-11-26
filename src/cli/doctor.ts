@@ -161,7 +161,7 @@ export interface StateProjectionRepairResult {
 	skipped: string[];
 }
 
-interface Check {
+export interface Check {
 	name: string;
 	status: "pass" | "warn" | "fail";
 	message: string;
@@ -210,16 +210,16 @@ interface ProcessIdentityReadinessOptions {
 	provider?: Pick<ProcessInspectionProvider, "observeProcess">;
 }
 
-type DoctorSetupScope = "user" | "project";
+export type DoctorSetupScope = "user" | "project";
 
-interface DoctorScopeResolution {
+export interface DoctorScopeResolution {
 	scope: DoctorSetupScope;
 	source: "persisted" | "config" | "default";
 	installMode?: SetupInstallMode;
 	mcpMode?: SetupMcpMode;
 }
 
-interface DoctorPaths {
+export interface DoctorPaths {
 	codexHomeDir: string;
 	configPath: string;
 	hooksPath: string;
@@ -229,7 +229,7 @@ interface DoctorPaths {
 	stateDir: string;
 }
 
-async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
+export async function resolveDoctorScope(cwd: string): Promise<DoctorScopeResolution> {
 	const persisted = await readPersistedSetupPreferences(cwd);
 	if (persisted?.scope) {
 		const inferred = await inferPluginInstallModeFromConfigForScope(cwd, persisted.scope);
@@ -298,7 +298,7 @@ function inferPluginMcpModeFromConfig(configContent: string): SetupMcpMode {
 		: "none";
 }
 
-function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
+export function resolveDoctorPaths(cwd: string, scope: DoctorSetupScope): DoctorPaths {
 	if (scope === "project") {
 		const codexHomeDir = join(cwd, ".codex");
 		return {
@@ -3789,7 +3789,7 @@ async function readDoctorInstallStamp(codexHomeDir: string): Promise<{
 	}
 }
 
-async function checkPluginVersionDiagnostics(
+export async function checkPluginVersionDiagnostics(
 	codexHomeDir: string,
 ): Promise<Check> {
 	const packagedMarketplace = await resolvePackagedOmxMarketplace(getPackageRoot());
