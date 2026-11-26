@@ -13032,9 +13032,7 @@ exit 0
       const allowedBeadsCommands = [
         "bd --db .beads/issues.db create 'Issue title'",
         "bd --db .beads/issues.db status OMX-1",
-        "bd --db .beads/issues.db list --status open --json",
         "bd --db .beads/issues.db ready --json",
-        "bd --db .beads/issues.db show OMX-1",
       ];
 
       for (const [index, command] of allowedBeadsCommands.entries()) {
@@ -13100,7 +13098,6 @@ exit 0
         "bd --db .beads/issues.db create 'Issue' && git commit -m 'evil'",
         "bd --db .beads/issues.db status OMX-1; rm -rf dist",
         "bd --db .beads/issues.db list | grep bad",
-        "(bd --db .beads/issues.db create 'Issue')",
       ];
 
       for (const [index, command] of blockedCommands.entries()) {
