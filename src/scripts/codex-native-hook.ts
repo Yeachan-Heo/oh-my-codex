@@ -4624,6 +4624,7 @@ const DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES = [
   ".omx/context",
   ".omx/interviews",
   ".omx/specs",
+  ".beads",
   ".omx/tmp",
   ".omx/state",
 ] as const;
@@ -4828,7 +4829,7 @@ function isAllowedRalplanArtifactPath(cwd: string, rawPath: string, authoritativ
     || isAllowedPlanningArtifactPath(cwd, rawPath, RALPLAN_ALLOWED_WRITE_PREFIXES, authoritativeSessionId);
 }
 
-interface RalplanBeadsCommandClassification {
+interface BeadsCommandClassification {
   present: boolean;
   allowed: boolean;
   reason?: string;
@@ -4892,7 +4893,7 @@ function findLiteralBdExecutableIndex(tokens: string[]): number {
   return -1;
 }
 
-function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
+function isAllowedBeadsDbPath(cwd: string, rawPath: string): boolean {
   const trimmed = rawPath.trim();
   if (!trimmed || trimmed.includes("\0")) return false;
   let relativePath: string;
@@ -4905,7 +4906,7 @@ function isAllowedRalplanBeadsDbPath(cwd: string, rawPath: string): boolean {
   return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
 }
 
-function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): RalplanBeadsCommandClassification {
+function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsCommandClassification {
   const trimmedCommand = command.trim();
   const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
   const hasCompoundBd = /[;&|()]\s*bd(?:\s|$)/.test(command);
@@ -4936,7 +4937,7 @@ function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): Ralp
   if (!dbPath) {
     return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
   }
-  if (!isAllowedRalplanBeadsDbPath(cwd, dbPath)) {
+  if (!isAllowedBeadsDbPath(cwd, dbPath)) {
     return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
   }
 
@@ -4955,7 +4956,7 @@ function classifyRalplanBeadsMetadataCommand(cwd: string, command: string): Ralp
     present: true,
     allowed: false,
     reason: operation
-      ? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed during planning`
+      ? `Beads tracker operation ${operation}${suboperation ? ` ${suboperation}` : ""} is not allowed`
       : "Beads tracker command is missing an allowed metadata operation",
   };
 }
@@ -10410,6 +10411,10 @@ function isAllowedDeepInterviewBashWrite(
     || omxOrGjcReadOnlyShapeMatches(command)
   ) return false;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
+  const beadsCommand = classifyBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present) {
+    return beadsCommand.allowed;
+  }
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
     const stateWordIndex = words.indexOf("state");
@@ -10615,7 +10620,7 @@ function isAllowedRalplanBashWrite(
   // isAllowedDeepInterviewBashWrite for the full rationale).
   if (omxOrGjcReadOnlyShapeMatches(command)) return false;
 
-  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  const beadsCommand = classifyBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const hasAllowedTargets = targets.length > 0
     && targets.every((target) => isAllowedRalplanArtifactPath(cwd, target, sessionId));
@@ -10662,9 +10667,9 @@ function buildRalplanBashBlockedDetail(cwd: string, command: string, authoritati
   if (commandHasDestructiveGitSubcommand(command)) {
     return "destructive git commands are implementation actions and cannot be combined with allowed planning artifact writes";
   }
-  const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
+  const beadsCommand = classifyBeadsMetadataCommand(cwd, command);
   if (beadsCommand.present && !beadsCommand.allowed) {
-    return beadsCommand.reason ?? "Beads tracker command is not an allowed planning metadata mutation";
+    return beadsCommand.reason ?? "Beads tracker command is not an allowed metadata mutation";
   }
   if (beadsCommand.present) {
     return "Beads tracker command also performs an implementation write outside allowed planning metadata";
@@ -10673,6 +10678,10 @@ function buildRalplanBashBlockedDetail(cwd: string, command: string, authoritati
 }
 
 function buildDeepInterviewBashBlockedDetail(cwd: string, command: string, authoritativeSessionId: string): string {
+  const beadsCommand = classifyBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present && !beadsCommand.allowed) {
+    return beadsCommand.reason ?? "Beads tracker command is not an allowed metadata mutation";
+  }
   const targets = extractDeepInterviewCommandWriteTargets(command);
   const blockedTarget = targets.find((target) => !isAllowedDeepInterviewArtifactPath(cwd, target, authoritativeSessionId));
   if (blockedTarget && isUnresolvedVariableTarget(blockedTarget)) {
@@ -20300,6 +20309,12 @@ function evaluateConductorBashWrite(
     rawCommand === command
     && isAllowedTrustedAbsoluteOmxReadOnlyCommand(normalizedCommand, cwd)
   ) return { allowed: true };
+  const beadsCommand = classifyBeadsMetadataCommand(cwd, command);
+  if (beadsCommand.present) {
+    return beadsCommand.allowed
+      ? { allowed: true }
+      : { allowed: false, blockedDetail: beadsCommand.reason ?? "Beads tracker command is not an allowed metadata operation" };
+  }
   const redirectTargets = extractDeepInterviewCommandRedirectTargets(commandWithHeredocBodies);
   if (!conductorMetadataRedirectsHaveBoundedProducers(commandWithHeredocBodies)) {
     return {

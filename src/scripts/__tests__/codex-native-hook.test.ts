@@ -12991,6 +12991,142 @@ exit 0
     }
   });
 
+  it("allows Deep-Interview Beads tracker metadata writes (#4200: phase-independent Beads commands)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-beads-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-deep-interview-beads");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-deep-interview-beads", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "intent-first",
+        session_id: "sess-deep-interview-beads",
+        thread_id: "thread-deep-interview-beads",
+        active_skills: [
+          {
+            skill: "deep-interview",
+            phase: "intent-first",
+            active: true,
+            session_id: "sess-deep-interview-beads",
+            thread_id: "thread-deep-interview-beads",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-deep-interview-beads",
+        thread_id: "thread-deep-interview-beads",
+      });
+      await writeCanonicalLeaderFixture(
+        stateDir,
+        "sess-deep-interview-beads",
+        "thread-deep-interview-beads",
+        cwd,
+      );
+
+      const allowedBeadsCommands = [
+        "bd --db .beads/issues.db create 'Issue title'",
+        "bd --db .beads/issues.db status OMX-1",
+        "bd --db .beads/issues.db list --status open --json",
+        "bd --db .beads/issues.db ready --json",
+        "bd --db .beads/issues.db show OMX-1",
+      ];
+
+      for (const [index, command] of allowedBeadsCommands.entries()) {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-deep-interview-beads",
+            thread_id: "thread-deep-interview-beads",
+            agent_id: "thread-deep-interview-beads",
+            tool_name: "Bash",
+            tool_use_id: `tool-deep-interview-beads-bd-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson, null, `expected Beads metadata command to be allowed in deep-interview: ${command}`);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks shell-chained Beads commands to prevent smuggling unsafe operations (#4200)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-chaining-blocks-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-chaining");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-chaining", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-chaining",
+        thread_id: "thread-beads-chaining",
+        active_skills: [
+          {
+            skill: "ralplan",
+            phase: "planning",
+            active: true,
+            session_id: "sess-beads-chaining",
+            thread_id: "thread-beads-chaining",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-chaining",
+        thread_id: "thread-beads-chaining",
+      });
+      await writeCanonicalLeaderFixture(
+        stateDir,
+        "sess-beads-chaining",
+        "thread-beads-chaining",
+        cwd,
+      );
+
+      const blockedCommands = [
+        "bd --db .beads/issues.db create 'Issue' && git commit -m 'evil'",
+        "bd --db .beads/issues.db status OMX-1; rm -rf dist",
+        "bd --db .beads/issues.db list | grep bad",
+        "(bd --db .beads/issues.db create 'Issue')",
+      ];
+
+      for (const [index, command] of blockedCommands.entries()) {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-chaining",
+            thread_id: "thread-beads-chaining",
+            agent_id: "thread-beads-chaining",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-chaining-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.ok(result.outputJson, `expected shell-chained Beads command to be blocked: ${command}`);
+        assert.ok(String(result.outputJson.reason).includes("single literal"), `expected block reason to mention single literal invocation for: ${command}`);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks unsafe Beads tracker targets and mixed implementation writes during Autopilot ralplan planning (#3497: hard PreToolUse gate removed — advisory only)", async () => {
     // Former hard-gate expectation retired by epic #3491 / issue #3497.
     // PreToolUse may only deny authority-decreasing cancel; ordinary path is advisory.
