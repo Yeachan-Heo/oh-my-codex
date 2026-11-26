@@ -132,7 +132,7 @@ export function normalizePostToolUsePayload(
 }
 
 function matchesDestructiveFixture(command: string): boolean {
-  return /^\s*rm\s+-rf\s+dist(?:\s|$)/.test(command);
+  return /(?:^|[;&|]\s*)rm\s+-rf\s+dist(?:\s|$)/.test(command);
 }
 
 function isMcpLikeToolName(toolName: string): boolean {

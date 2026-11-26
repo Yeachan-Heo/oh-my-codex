@@ -12991,6 +12991,416 @@ exit 0
     }
   });
 
+  it("allows Deep-Interview Beads tracker metadata writes (#4200: phase-independent Beads commands)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-pretool-deep-interview-beads-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-deep-interview-beads");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-deep-interview-beads", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "deep-interview",
+        phase: "intent-first",
+        session_id: "sess-deep-interview-beads",
+        thread_id: "thread-deep-interview-beads",
+        active_skills: [
+          {
+            skill: "deep-interview",
+            phase: "intent-first",
+            active: true,
+            session_id: "sess-deep-interview-beads",
+            thread_id: "thread-deep-interview-beads",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "deep-interview-state.json"), {
+        active: true,
+        mode: "deep-interview",
+        current_phase: "intent-first",
+        session_id: "sess-deep-interview-beads",
+        thread_id: "thread-deep-interview-beads",
+      });
+      await writeCanonicalLeaderFixture(
+        stateDir,
+        "sess-deep-interview-beads",
+        "thread-deep-interview-beads",
+        cwd,
+      );
+
+      const allowedBeadsCommands = [
+        "bd --db .beads/issues.db create 'Issue title'",
+        "bd --db .beads/issues.db status OMX-1",
+        "bd --db .beads/issues.db list --status open --json",
+        "bd --db .beads/issues.db ready --json",
+        "bd --db .beads/issues.db show OMX-1",
+      ];
+
+      for (const [index, command] of allowedBeadsCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-deep-interview-beads",
+            thread_id: "thread-deep-interview-beads",
+            agent_id: "thread-deep-interview-beads",
+            tool_name: "Bash",
+            tool_use_id: `tool-deep-interview-beads-bd-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.equal(result.outputJson, null, `expected Beads metadata command to be allowed in deep-interview: ${command}`);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks shell-chained Beads commands to prevent smuggling unsafe operations (#4200)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-chaining-blocks-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-chaining");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-chaining", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-chaining",
+        thread_id: "thread-beads-chaining",
+        active_skills: [
+          {
+            skill: "ralplan",
+            phase: "planning",
+            active: true,
+            session_id: "sess-beads-chaining",
+            thread_id: "thread-beads-chaining",
+          },
+        ],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-chaining",
+        thread_id: "thread-beads-chaining",
+      });
+      await writeCanonicalLeaderFixture(
+        stateDir,
+        "sess-beads-chaining",
+        "thread-beads-chaining",
+        cwd,
+      );
+
+      const blockedCommands = [
+        "bd --db .beads/issues.db create 'Issue' && git commit -m 'evil'",
+        "bd --db .beads/issues.db status OMX-1; rm -rf dist",
+        "bd --db .beads/issues.db list | grep bad",
+        "(bd --db .beads/issues.db create 'Issue')",
+        "bd --db .beads/issues.db create 'Issue' || echo fallback",
+        "bd --db .beads/issues.db status OMX-1 | grep active",
+        "bd --db .beads/issues.db create 'Issue' > output.txt",
+        "bd --db .beads/issues.db status OMX-1 2>&1",
+        "bd --db .beads/issues.db list $(cat config.txt)",
+      ];
+
+      for (const [index, command] of blockedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-chaining",
+            thread_id: "thread-beads-chaining",
+            agent_id: "thread-beads-chaining",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-chaining-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.ok(result.outputJson, `expected shell-chained Beads command to be blocked: ${command}`);
+        // Advisory-only output includes systemMessage, not reason field
+        const advisory = String(result.outputJson.systemMessage ?? result.outputJson.reason ?? "");
+        assert.ok(advisory.includes("single literal"), `expected advisory to mention single literal invocation for: ${command} (got: ${advisory})`);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows read-only Beads operations (list, ready, show) in all phases", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-readonly-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-readonly");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-readonly", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-readonly",
+        thread_id: "thread-beads-readonly",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-readonly",
+          thread_id: "thread-beads-readonly",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-readonly",
+        thread_id: "thread-beads-readonly",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-readonly", "thread-beads-readonly", cwd);
+
+      const readonlyCommands = [
+        "bd --db .beads/issues.db list --status open --json",
+        "bd --db .beads/issues.db ready --json",
+        "bd --db .beads/issues.db show OMX-1",
+      ];
+
+      for (const [index, command] of readonlyCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-readonly",
+            thread_id: "thread-beads-readonly",
+            agent_id: "thread-beads-readonly",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-readonly-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // Read-only operations should not generate Beads advisories
+        const advisory = String(result.outputJson?.systemMessage ?? result.outputJson?.reason ?? "");
+        assert.ok(
+          !advisory.includes("not allowed"),
+          `expected read-only Beads operation to be allowed: ${command} (got: ${advisory})`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows Beads commands with quoted punctuation in arguments", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-quoted-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-quoted");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-quoted", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-quoted",
+        thread_id: "thread-beads-quoted",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-quoted",
+          thread_id: "thread-beads-quoted",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-quoted",
+        thread_id: "thread-beads-quoted",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-quoted", "thread-beads-quoted", cwd);
+
+      const quotedCommands = [
+        "bd --db .beads/issues.db create 'Issue & note'",
+        "bd --db .beads/issues.db create \"Issue (with parens)\"",
+        "bd --db .beads/issues.db create 'Issue with $variable'",
+      ];
+
+      for (const [index, command] of quotedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-quoted",
+            thread_id: "thread-beads-quoted",
+            agent_id: "thread-beads-quoted",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-quoted-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // Quoted punctuation should be preserved in tokenization
+        const advisory = String(result.outputJson?.systemMessage ?? result.outputJson?.reason ?? "");
+        assert.ok(
+          !advisory.includes("single literal"),
+          `expected Beads command with quoted punctuation to be allowed: ${command} (got: ${advisory})`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves both Lore and Beads guidance when shell-chained Beads command combines with Lore-guarded git commit (#4211: normalize existing output before merging)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-lore-normalize-"));
+    const original = process.env.OMX_LORE_COMMIT_GUARD;
+    try {
+      // Enable Lore commit guard so git commit returns a block decision
+      process.env.OMX_LORE_COMMIT_GUARD = "1";
+
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-lore");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-lore", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-lore",
+        thread_id: "thread-beads-lore",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-lore",
+          thread_id: "thread-beads-lore",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-lore",
+        thread_id: "thread-beads-lore",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-lore", "thread-beads-lore", cwd);
+
+      // Chained command: Beads read-only followed by non-Lore git commit
+      const command = 'bd --db .beads/issues.db list && git commit -m "fix something"';
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-beads-lore",
+          thread_id: "thread-beads-lore",
+          agent_id: "thread-beads-lore",
+          tool_name: "Bash",
+          tool_use_id: "tool-beads-lore-chain",
+          tool_input: { command },
+        },
+        { cwd },
+      );
+
+      // After sanitization, output should be advisory-only (no decision/reason fields)
+      const outputJson = result.outputJson as Record<string, any> | null;
+      assert.ok(outputJson, "expected advisory output for chained Beads + git commit");
+      assert.ok(!outputJson.decision, `expected no decision field in sanitized output, got: ${JSON.stringify(outputJson.decision)}`);
+      assert.ok(!outputJson.reason, `expected no reason field in sanitized output, got: ${JSON.stringify(outputJson.reason)}`);
+
+      // The final systemMessage should include BOTH:
+      // 1. Lore guidance about git commit needing to satisfy Lore format
+      // 2. Beads guidance about single literal invocation
+      const systemMessage = String(outputJson.systemMessage ?? "");
+      assert.ok(
+        systemMessage.includes("Lore") || systemMessage.includes("git commit"),
+        `expected Lore guidance in merged message, got: ${systemMessage}`,
+      );
+      assert.ok(
+        systemMessage.includes("single literal"),
+        `expected Beads single-literal warning in merged message, got: ${systemMessage}`,
+      );
+    } finally {
+      if (original === undefined) delete process.env.OMX_LORE_COMMIT_GUARD;
+      else process.env.OMX_LORE_COMMIT_GUARD = original;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves destructive-advisory when shell-chained with blocked Beads command (#4211: plain destructive case)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-destructive-normalize-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-destructive");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-destructive", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-destructive",
+        thread_id: "thread-beads-destructive",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-destructive",
+          thread_id: "thread-beads-destructive",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-destructive",
+        thread_id: "thread-beads-destructive",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-destructive", "thread-beads-destructive", cwd);
+
+      // Chained command: Beads write followed by destructive rm
+      const command = "bd --db .beads/issues.db create 'Issue' && rm -rf dist";
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "sess-beads-destructive",
+          thread_id: "thread-beads-destructive",
+          agent_id: "thread-beads-destructive",
+          tool_name: "Bash",
+          tool_use_id: "tool-beads-destructive-chain",
+          tool_input: { command },
+        },
+        { cwd },
+      );
+
+      const outputJson = result.outputJson as Record<string, any> | null;
+      assert.ok(outputJson, "expected advisory output for chained Beads + destructive");
+
+      // The final systemMessage should include BOTH:
+      // 1. Destructive command warning
+      // 2. Beads single-literal invocation guidance
+      const systemMessage = String(outputJson.systemMessage ?? "");
+      assert.ok(
+        systemMessage.includes("Destructive") || systemMessage.includes("rm -rf"),
+        `expected destructive warning in merged message, got: ${systemMessage}`,
+      );
+      assert.ok(
+        systemMessage.includes("single literal"),
+        `expected Beads single-literal warning in merged message, got: ${systemMessage}`,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("blocks unsafe Beads tracker targets and mixed implementation writes during Autopilot ralplan planning (#3497: hard PreToolUse gate removed — advisory only)", async () => {
     // Former hard-gate expectation retired by epic #3491 / issue #3497.
     // PreToolUse may only deny authority-decreasing cancel; ordinary path is advisory.
