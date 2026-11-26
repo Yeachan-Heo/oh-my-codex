@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.28] - 2026-11-26
+
+Patch release stops the per-second authority churn in attached HUDs.
+
+### Fixed
+
+- **STOP PER-SECOND AUTHORITY CHURN IN ATTACHED HUDS (#4203):** Refs #4201. The HUD authority tick no longer writes any state file while rate-limited, and the watch loop runs the authority tick at most once per 5s instead of every second, reducing file writes and authority calls with several attached HUDs (5 HUDs on one repo: 1.08% -> 0.72% CPU per HUD in a single noisy run; 1 HUD within noise). Tested: new no-write cooldown and 12-ticks-to-3-calls watch regressions; tsc, no-unused, lint and build clean.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.27...v0.22.28
+
 ## [0.22.27] - 2026-11-25
 
 Patch release includes fixes for HUD pane independence, native subagent support, and external launcher setup management.
