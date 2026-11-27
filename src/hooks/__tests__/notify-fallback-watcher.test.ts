@@ -2,6 +2,7 @@ import { after, before, describe, it } from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { appendFile, chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -4832,6 +4833,169 @@ setInterval(() => {}, 1000);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  describe('persistent HUD authority pid ownership', () => {
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    async function startPersistentAuthority(
+      wd: string,
+      tempHome: string,
+      extraEnv: Record<string, string> = {},
+      parentPid: number = process.pid,
+    ) {
+      const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+      return spawn(
+        process.execPath,
+        [
+          watcherScript, '--authority-only', '--cwd', wd, '--notify-script', notifyHook,
+          '--poll-ms', '50', '--idle-max-poll-ms', '100',
+          '--parent-pid', String(parentPid), '--max-lifetime-ms', '15000',
+        ],
+        {
+          cwd: wd,
+          stdio: 'ignore',
+          env: buildCleanNotifyEnv({ HOME: tempHome, OMX_HUD_AUTHORITY_PERSISTENT: '1', ...extraEnv }),
+        },
+      );
+    }
+
+    it('does not reap a live primary watcher recorded in notify-fallback.pid', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-pid-primary-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-pid-primary-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const primary = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        const primaryPidPath = join(stateDir, 'notify-fallback.pid');
+        await writeFile(primaryPidPath, JSON.stringify({ pid: primary.pid, cwd: wd, started_at: new Date().toISOString() }));
+        authority = await startPersistentAuthority(wd, tempHome);
+        await waitFor(async () => {
+          try {
+            return JSON.parse(await readFile(join(stateDir, 'notify-fallback-authority.pid'), 'utf-8')).pid === authority?.pid;
+          } catch {
+            return false;
+          }
+        }, 4000, 25);
+        await sleep(300);
+        assert.equal(isAlive(primary.pid as number), true, 'authority must not SIGTERM the primary watcher');
+        assert.equal(JSON.parse(await readFile(primaryPidPath, 'utf-8')).pid, primary.pid);
+      } finally {
+        authority?.kill('SIGKILL');
+        primary.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('consumes the HUD marker under cwd even when OMX_ROOT points elsewhere', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-marker-root-'));
+      const root = await mkdtemp(join(tmpdir(), 'omx-authority-marker-root-override-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-marker-root-home-'));
+      const markerPath = join(wd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+        await mkdir(join(root, '.omx', 'logs'), { recursive: true });
+        authority = await startPersistentAuthority(wd, tempHome, { OMX_ROOT: root });
+        await waitFor(async () => existsSync(join(root, '.omx', 'state', 'notify-fallback-authority.pid')), 4000, 25);
+        await writeFile(markerPath, JSON.stringify({ fingerprint: 'test' }));
+        await waitFor(async () => !existsSync(markerPath), 3000, 25);
+      } finally {
+        authority?.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(root, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('exits and removes its pid file when its parent HUD exits', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-parent-gone-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-parent-gone-home-'));
+      const pidPath = join(wd, '.omx', 'state', 'notify-fallback-authority.pid');
+      const hud = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        authority = await startPersistentAuthority(wd, tempHome, {}, hud.pid as number);
+        await waitFor(async () => existsSync(pidPath), 4000, 25);
+        hud.kill('SIGKILL');
+        await waitFor(async () => !isAlive(authority?.pid as number), 5000, 50);
+        assert.equal(existsSync(pidPath), false, 'pid file must be removed when the authority exits');
+      } finally {
+        authority?.kill('SIGKILL');
+        hud.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    for (const mode of ['ralph'] as const) {
+      it(`exits when its parent HUD exits even while ${mode} is active`, async () => {
+        const wd = await mkdtemp(join(tmpdir(), `omx-authority-parent-gone-${mode}-`));
+        const tempHome = await mkdtemp(join(tmpdir(), `omx-authority-parent-gone-${mode}-home-`));
+        const stateDir = join(wd, '.omx', 'state');
+        const pidPath = join(stateDir, 'notify-fallback-authority.pid');
+        const hud = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+        let authority: ReturnType<typeof spawn> | undefined;
+        try {
+          await mkdir(stateDir, { recursive: true });
+          await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+          await writeFile(join(stateDir, `${mode}-state.json`), JSON.stringify({ active: true, current_phase: 'executing', team_name: 'persist-team' }));
+          authority = await startPersistentAuthority(wd, tempHome, {}, hud.pid as number);
+          await waitFor(async () => existsSync(pidPath), 4000, 25);
+          hud.kill('SIGKILL');
+          await waitFor(async () => !isAlive(authority?.pid as number), 5000, 50);
+          assert.equal(existsSync(pidPath), false, 'pid file must be removed when the authority exits');
+        } finally {
+          authority?.kill('SIGKILL');
+          hud.kill('SIGKILL');
+          await rm(wd, { recursive: true, force: true });
+          await rm(tempHome, { recursive: true, force: true });
+        }
+      });
+    }
+
+    it('does not treat itself as the primary watcher, so marker requests still run the control plane', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-pid-self-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-pid-self-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const statePath = join(stateDir, 'notify-fallback-state.json');
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        authority = await startPersistentAuthority(wd, tempHome);
+        const readRuns = async (): Promise<number> => {
+          try {
+            return JSON.parse(await readFile(statePath, 'utf-8')).dispatch_drain?.run_count ?? 0;
+          } catch {
+            return 0;
+          }
+        };
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 4000, 25);
+        await sleep(400);
+        assert.equal(await readRuns(), 0, 'persistent authority must not run authority work without a marker');
+        await writeFile(join(stateDir, 'notify-fallback-authority-tick-marker.json'), JSON.stringify({ fingerprint: 'test' }));
+        await waitFor(async () => (await readRuns()) > 0, 3000, 25);
+        assert.equal(existsSync(join(stateDir, 'notify-fallback.pid')), false, 'authority must not write the primary pid file');
+        assert.equal(JSON.parse(await readFile(join(stateDir, 'notify-fallback-authority.pid'), 'utf-8')).pid, authority.pid);
+      } finally {
+        authority?.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
   });
 
 });
