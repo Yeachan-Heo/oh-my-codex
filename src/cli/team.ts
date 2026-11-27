@@ -1444,7 +1444,8 @@ function looksLikeExplicitTicketReferences(task: string): boolean {
   ];
   
   // Pattern for known tracker prefixes (e.g., TASK-123, ISSUE-456)
-  const trackerPattern = new RegExp(`\\b(${knownTrackerPrefixes.join('|')})-\\d+\\b`, 'i');
+  // Do NOT use 'i' flag: ticket IDs are uppercase only, lowercase prose should not match
+  const trackerPattern = new RegExp(`\\b(${knownTrackerPrefixes.join('|')})-\\d+\\b`);
   
   // Pattern for common issue reference formats: #123, Beads#999
   const hashPatterns = [
@@ -1884,7 +1885,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   }
 
   const parsed = parseTeamArgs(teamArgs, cwd);
-  const preflightInfo = performTeamPreflightCheck(cwd, parsed.task, parsed.allowRepoAwareDagHandoff, parsed.allowLegacyDecomposition ?? false);
+  let preflightInfo = performTeamPreflightCheck(cwd, parsed.task, parsed.allowRepoAwareDagHandoff, parsed.allowLegacyDecomposition ?? false);
   const executionPlan = buildRepoAwareTeamExecutionPlan({
     task: parsed.task,
     workerCount: parsed.workerCount,
@@ -1897,6 +1898,19 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     dagFallbackReason: parsed.dagFallbackReason,
     approvedRepositoryContextSummary: parsed.approvedRepositoryContextSummary,
   });
+  
+  // If using legacy_text decomposition and we don't have preflight info yet, generate it for display
+  if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !preflightInfo) {
+    const gitLayout = findGitLayout(cwd);
+    const cwdDisplay = formatPathDisplay(cwd);
+    const fallbackReason = parsed.dagFallbackReason || (gitLayout ? 'dag_handoff_fallback_inside_repo' : 'outside_git_repo');
+    preflightInfo = {
+      cwdDisplay,
+      decompositionSource: 'legacy_text',
+      fallbackReason,
+    };
+  }
+  
   const tasks = executionPlan.tasks;
   const effectiveParsed = executionPlan.workerCount === parsed.workerCount
     ? parsed

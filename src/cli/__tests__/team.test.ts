@@ -3988,4 +3988,96 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('allows team launch with --allow-legacy-decomposition flag', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-allow-legacy-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // With the flag set, it should warn but not throw
+      const { code, stderr, stdout } = await runNodeCli(
+        ['team', '2:executor', '--allow-legacy-decomposition', 'Work on tickets TASK-1, TASK-2, TASK-3, and TASK-4'],
+        { cwd: externalDir }
+      );
+      const output = stdout + '\n' + stderr;
+      // When the flag is set, the preflight error should be a warning, not a fatal error
+      // The warning message shows resolved_cwd, decomposition_source, and fallback_reason
+      assert.ok(
+        stderr.includes('[omx] warning:') && stderr.includes('decomposition_source: legacy_text') && stderr.includes('fallback_reason:'),
+        `Should warn with preflight info when flag is set. stderr: ${stderr}`
+      );
+      // The flag should have been stripped from the task (not passed to workers)
+      // This is verified by the fact that we got the preflight warning, not an immediate error
+      assert.ok(
+        output.includes('cwd:') && output.includes('decomposition_source:') && output.includes('fallback_reason:'),
+        `Should print preflight info (cwd/decomposition_source/fallback_reason). Output: ${output}`
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat lowercase ticket prose as explicit tickets', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-lowercase-prose-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // These should NOT be treated as explicit tickets since the trackerPattern no longer has 'i' flag
+      const lowercaseProse = [
+        'test-1 the validation logic',
+        'doc-2 the API endpoints',
+        'ci-3 integration with main branch',
+        'pr-4 for the merge request',
+        'task-5 is not a ticket reference',
+      ];
+      
+      for (const task of lowercaseProse) {
+        await assert.doesNotReject(
+          () => withoutTeamTestWorkerEnv(async () => {
+            try {
+              await teamCommand(['2:executor', task]);
+            } catch (error: unknown) {
+              if (error instanceof Error && error.message.includes('Team launch: cannot start with explicit tickets')) {
+                throw error; // Re-throw if it's the preflight error
+              }
+              // Other errors (like tmux not available) are acceptable
+            }
+          }),
+          `Should not reject lowercase prose "${task}" as explicit tickets`
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('still treats uppercase explicit tickets correctly', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-uppercase-tickets-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // These SHOULD be treated as explicit tickets (uppercase)
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', 'TEST-1 the validation logic'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+        'Should reject uppercase TEST-1 as explicit ticket'
+      );
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', 'DOC-2 the API endpoints'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+        'Should reject uppercase DOC-2 as explicit ticket'
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
