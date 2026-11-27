@@ -1,7 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
-import { appendFile, chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, cp, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -4365,6 +4365,84 @@ exit 0
       if (first && isPidAlive(first.pid)) {
         first.kill('SIGTERM');
         await waitForExit(first, replacementTimeoutMs).catch(() => {});
+      }
+      await rm(wd, { recursive: true, force: true });
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('runs main() when the install path contains URL-escaped characters', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx fallback spaced path-'));
+    try {
+      await cp(new URL('../../../dist', import.meta.url).pathname, join(root, 'dist'), { recursive: true });
+      await symlink(new URL('../../../node_modules', import.meta.url).pathname, join(root, 'node_modules'), 'dir');
+      const result = spawnSync(process.execPath, [
+        join(root, 'dist', 'scripts', 'notify-fallback-watcher.js'),
+        '--cwd', root,
+        '--notify-script', join(root, 'missing-notify-hook.js'),
+        '--once',
+      ], { cwd: root, encoding: 'utf-8', timeout: 15_000, env: buildCleanNotifyEnv({ HOME: root }) });
+      // main() ran (and rejected the missing notify script) instead of silently exiting 0.
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /notify script missing/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('wakes from a long idle backoff sleep when rollout activity arrives', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-idle-wake-'));
+    const tempHome = await mkdtemp(join(tmpdir(), 'omx-fallback-idle-wake-home-'));
+    const sid = randomUUID();
+    const sessionDir = todaySessionDir(tempHome);
+    const rolloutPath = join(sessionDir, `rollout-test-fallback-idle-wake-${sid}.jsonl`);
+    const watcherScript = new URL('../../../dist/scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+    const notifyHook = new URL('../../../dist/scripts/notify-hook.js', import.meta.url).pathname;
+    const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+    const turnLogPath = join(wd, '.omx', 'logs', `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
+    let child: ReturnType<typeof spawn> | undefined;
+
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(rolloutPath, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        type: 'session_meta',
+        payload: { id: `thread-${sid}`, cwd: wd },
+      })}\n`);
+
+      child = spawn(
+        process.execPath,
+        [
+          watcherScript, '--cwd', wd, '--notify-script', notifyHook,
+          '--poll-ms', '50', '--idle-max-poll-ms', '200', '--idle-backoff-ceiling-ms', '8000',
+          '--parent-pid', String(process.pid), '--max-lifetime-ms', '30000',
+        ],
+        { cwd: wd, stdio: 'ignore', env: buildCleanNotifyEnv({ HOME: tempHome }) },
+      );
+
+      await waitFor(async () => {
+        try {
+          const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+          return watcherState.adaptive_poll?.current_ms >= 3000;
+        } catch {
+          return false;
+        }
+      }, 20_000, 50);
+
+      const freshTurnId = `turn-wake-${sid}`;
+      await appendLine(rolloutPath, {
+        timestamp: new Date().toISOString(),
+        type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: freshTurnId, last_agent_message: 'message during long idle sleep' },
+      });
+      // Well under the >=3s sleep the watcher is in: only a wake-up can explain this.
+      await waitFor(async () => (await readLines(turnLogPath)).some((line) => line.includes(freshTurnId)), 1500, 50);
+    } finally {
+      if (child && isPidAlive(child.pid)) {
+        child.kill('SIGTERM');
+        await waitForExit(child, 4000).catch(() => {});
       }
       await rm(wd, { recursive: true, force: true });
       await rm(tempHome, { recursive: true, force: true });
