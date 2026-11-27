@@ -15,6 +15,7 @@ import { withCrossProcessFileLockSync } from '../subagents/tracker.js';
 import { parseNotepadPruneDaysOld } from './memory-validation.js';
 import { autoStartStdioMcpServer } from './bootstrap.js';
 import { resolveWorkingDirectoryForState } from './state-paths.js';
+import { filterActiveDirectives, type ProjectDirective } from './directive-filter.js';
 
 function getMemoryPath(wd: string): string {
   return join(wd, '.omx', 'project-memory.json');
@@ -30,7 +31,7 @@ interface ProjectMemory {
   conventions?: string;
   structure?: string;
   notes?: Array<{ category: string; content: string; timestamp: string }>;
-  directives?: Array<{ directive: string; priority: string; context?: string; timestamp: string; expiresAt?: string }>;
+  directives?: ProjectDirective[];
 }
 
 function readProjectMemory(path: string): ProjectMemory {
@@ -41,11 +42,7 @@ function readProjectMemory(path: string): ProjectMemory {
   return value as ProjectMemory;
 }
 
-export function filterActiveDirectives(directives: ProjectMemory['directives']): Array<{ directive: string; priority: string; context?: string; timestamp: string; expiresAt?: string }> {
-  if (!directives) return [];
-  const now = new Date().toISOString();
-  return directives.filter(d => !d.expiresAt || d.expiresAt > now);
-}
+
 
 const server = new Server(
   { name: 'omx-memory', version: '0.1.0' },

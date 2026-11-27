@@ -105,7 +105,7 @@ import {
   resolveWritableStateScope,
   WRITABLE_STATE_SCOPE_ERRORS,
 } from "../mcp/state-paths.js";
-import { filterActiveDirectives } from "../mcp/memory-server.js";
+import { filterActiveDirectives } from "../mcp/directive-filter.js";
 import {
   classifyKeywordInput,
   recordSkillActivation,
@@ -2432,7 +2432,7 @@ async function buildSessionStartContext(
     if (conventions && !alreadyInStartupInstructions("Conventions", conventions)) summary.push(`- conventions: ${conventions}`);
     if (build && !alreadyInStartupInstructions("Build", build)) summary.push(`- build: ${build}`);
     if (directives.length > 0) {
-      const firstDirective = directives[0] as Record<string, unknown>;
+      const firstDirective = directives[0];
       const directive = safeContextSnippet(firstDirective.directive);
       if (directive && !alreadyInStartupInstructions("Directive", directive)) summary.push(`- directive: ${directive}`);
     }

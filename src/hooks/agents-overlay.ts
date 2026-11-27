@@ -32,7 +32,7 @@ import {
   getAuthoritativeActiveStatePaths,
   getStateDir,
 } from "../mcp/state-paths.js";
-import { filterActiveDirectives } from "../mcp/memory-server.js";
+import { filterActiveDirectives } from "../mcp/directive-filter.js";
 import { generateCodebaseMap } from "./codebase-map.js";
 import { buildExploreRoutingGuidance } from "./explore-routing.js";
 import {

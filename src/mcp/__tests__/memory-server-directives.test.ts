@@ -6,7 +6,8 @@ import { describe, it } from 'node:test';
 
 const previous = process.env.OMX_MCP_SERVER_DISABLE_AUTO_START;
 process.env.OMX_MCP_SERVER_DISABLE_AUTO_START = '1';
-const { handleMemoryToolCall, filterActiveDirectives } = await import('../memory-server.js');
+const { handleMemoryToolCall } = await import('../memory-server.js');
+const { filterActiveDirectives } = await import('../directive-filter.js');
 if (previous === undefined) delete process.env.OMX_MCP_SERVER_DISABLE_AUTO_START;
 else process.env.OMX_MCP_SERVER_DISABLE_AUTO_START = previous;
 

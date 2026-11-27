@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { codexHome, resolveProjectMemoryPath } from '../utils/paths.js';
-import { filterActiveDirectives } from '../mcp/memory-server.js';
+import { filterActiveDirectives } from '../mcp/directive-filter.js';
 import {
   appendLogUnsafe,
   getWikiDir,
@@ -200,8 +200,14 @@ function feedProjectMemory(root: string): void {
     const existing = readPage(root, 'environment.md');
     const memoryMtime = statSync(projectMemoryPath).mtimeMs;
     const existingUpdated = existing ? new Date(existing.frontmatter.updated).getTime() : 0;
+    
+    // Check if cache is still valid (memory not updated and no directives expired)
     if (existing && existingUpdated >= memoryMtime) {
-      return;
+      // Also check if any directives have expired since cache was written
+      const earliestExpiry = existing.frontmatter.earliestDirectiveExpiry as string | undefined;
+      if (!earliestExpiry || Date.parse(earliestExpiry) > Date.now()) {
+        return;
+      }
     }
 
     const sections: string[] = ['\n# Project Environment\n'];
@@ -231,6 +237,7 @@ function feedProjectMemory(root: string): void {
       sections.push('');
     }
 
+    let earliestDirectiveExpiry: string | undefined;
     if (Array.isArray(parsed.directives) && parsed.directives.length > 0) {
       sections.push('## Directives');
       const activeDirectives = filterActiveDirectives(parsed.directives as any);
@@ -241,6 +248,13 @@ function feedProjectMemory(root: string): void {
         if (content) sections.push(`- ${content}`);
       }
       sections.push('');
+      
+      // Track earliest expiry time to invalidate cache when directives expire
+      for (const directive of parsed.directives as any) {
+        if (directive?.expiresAt && (!earliestDirectiveExpiry || directive.expiresAt < earliestDirectiveExpiry)) {
+          earliestDirectiveExpiry = directive.expiresAt;
+        }
+      }
     }
 
     const now = new Date().toISOString();
@@ -257,6 +271,7 @@ function feedProjectMemory(root: string): void {
           category: 'environment',
           confidence: 'high',
           schemaVersion: WIKI_SCHEMA_VERSION,
+          ...(earliestDirectiveExpiry && { earliestDirectiveExpiry }),
         },
         content: sections.join('\n'),
       }, { allowReserved: true });
