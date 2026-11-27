@@ -124,6 +124,7 @@ const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'dist', 'scripts', 'notify-hook.js')));
 const runOnce = process.argv.includes('--once');
 const authorityOnly = process.argv.includes('--authority-only');
+const persistentAuthority = authorityOnly && !runOnce && process.env.OMX_HUD_AUTHORITY_PERSISTENT === '1';
 // Keep fallback control-plane ticks comfortably below the default dispatch
 // ack budget so leaderless team dispatch + stale-alert recovery do not feel
 // laggy between native notify-hook turns.
@@ -165,7 +166,11 @@ const omxDir = join(runtimeRoot, '.omx');
 const logsDir = join(omxDir, 'logs');
 const stateDir = join(omxDir, 'state');
 const statePath = join(stateDir, 'notify-fallback-state.json');
-const pidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
+const authorityTickMarkerPath = join(stateDir, 'notify-fallback-authority-tick-marker.json');
+// Health checks always read the primary watcher's pid file. The persistent HUD authority process
+// registers its own pid file so it neither reaps the live primary watcher nor mistakes itself for one.
+const primaryPidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
+const pidFilePath = persistentAuthority ? join(stateDir, 'notify-fallback-authority.pid') : primaryPidFilePath;
 const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
 const logRotatePath = `${logPath}.1`;
 const logLockPath = `${logPath}.lock`;
@@ -1072,7 +1077,7 @@ function latestWatcherTickIso(state: Record<string, unknown> | null): string {
 async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<AuthorityBackoffState> {
   if (!authorityOnly) return createAuthorityBackoffState('not_authority');
 
-  const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
+  const existingRecord = await readPidFileRecord(primaryPidFilePath).catch(() => null);
   if (!existingRecord) return createAuthorityBackoffState('pid_missing');
   if (existingRecord.cwd && !sameFilePath(existingRecord.cwd, cwd)) return createAuthorityBackoffState('cwd_mismatch');
   if (!isPidAlive(existingRecord.pid)) {
@@ -2160,17 +2165,50 @@ async function pumpTeamControlPlaneTick(): Promise<CycleActivitySummary> {
 }
 
 
+async function processPersistentAuthorityMarker(): Promise<boolean> {
+  if (!persistentAuthority) return false;
+  try {
+    const markerContent = await readFile(authorityTickMarkerPath, 'utf-8').catch(() => null);
+    if (!markerContent) return false;
+    // Marker exists, run authority cycle and clear it
+    const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
+    lastAuthorityBackoff = authorityBackoff;
+    if (!authorityBackoff.active) {
+      await pumpTeamControlPlaneTick();
+    }
+    // Clear the marker to signal the HUD tick that processing is complete
+    await unlink(authorityTickMarkerPath).catch(() => {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runWatcherCycle(): Promise<number> {
   await compactNotifyFallbackDeliveries(stateDir).catch(async (error) => {
     await eventLog({ type: 'fallback_notify_claim', reason: 'compaction_io_skip', error: error instanceof Error ? error.message : String(error) });
   });
+  
+  // Check for persistent authority marker and process if present
+  if (persistentAuthority) {
+    const markerProcessed = await processPersistentAuthorityMarker();
+    if (markerProcessed) {
+      await writeAuthorityBackoffState();
+      // Continue to next cycle iteration to check for more work
+      return Math.max(50, Math.min(idleMaxPollMs, 500));
+    }
+  }
+  
   let processedRolloutCount = 0;
   if (authorityOnly) {
     const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
     lastAuthorityBackoff = authorityBackoff;
     if (authorityBackoff.active) {
       await writeAuthorityBackoffState();
-      return processedRolloutCount;
+      // A persistent authority reschedules with this value; 0 would spin on state I/O.
+      return persistentAuthority
+        ? updateAdaptivePollState({ active: false, reason: 'primary_watcher_healthy' })
+        : processedRolloutCount;
     }
   } else {
     lastAuthorityBackoff = createAuthorityBackoffState('');

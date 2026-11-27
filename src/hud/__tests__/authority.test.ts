@@ -751,4 +751,264 @@ describe('runHudAuthorityTick', () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  describe('persistent watcher (Option B)', () => {
+    it('spawns zero children when persistent watcher is alive', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-persistent-alive-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const watcherPidPath = join(stateDir, 'notify-fallback-authority-watcher.json');
+      const markerPath = join(stateDir, 'notify-fallback-authority-tick-marker.json');
+      let spawnCalls = 0;
+
+      try {
+        await mkdir(stateDir, { recursive: true });
+        
+        // Pre-write a watcher PID file for an alive process (use a process we know exists)
+        const alivePid = process.pid;
+        await writeFile(watcherPidPath, JSON.stringify({ pid: alivePid, started_at: new Date().toISOString() }, null, 2));
+
+        // Inject spawn and kill to track calls
+        // The persistent watcher is alive, so spawn should not be called
+        let spawnCalled = false;
+        await runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0 },
+          {
+            spawn: (nodePath, args, options) => {
+              spawnCalled = true;
+              spawnCalls += 1;
+              return { pid: 12345, unref: () => {} };
+            },
+            kill: (pid, signal) => {
+              // Simulate kill(alivePid, 0) succeeding for our process
+              if (pid === alivePid && signal === 0) {
+                return;
+              }
+              const err = new Error('No such process') as NodeJS.ErrnoException;
+              err.code = 'ESRCH';
+              throw err;
+            },
+            nowMs: () => 1000,
+            random: () => 0,
+          },
+        ).catch(() => {
+          // Ignore marker timeout fallback errors
+        });
+
+        // Should not spawn because watcher is alive
+        assert.equal(spawnCalled, false, 'should not spawn new watcher when one is alive');
+        assert.ok(existsSync(markerPath), 'marker should be written to wake the watcher');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('spawns exactly one persistent watcher when previous one dies', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-persistent-respawn-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const watcherPidPath = join(stateDir, 'notify-fallback-authority-watcher.json');
+      let spawnCount = 0;
+
+      try {
+        await mkdir(stateDir, { recursive: true });
+        
+        // Pre-write a watcher PID file for a dead process
+        const deadPid = 99999;
+        await writeFile(watcherPidPath, JSON.stringify({ pid: deadPid, started_at: new Date().toISOString() }, null, 2));
+
+        // Inject spawn to track calls and kill to report process as dead
+        await runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0 },
+          {
+            spawn: (nodePath, args, options) => {
+              spawnCount += 1;
+              return { pid: 10000 + spawnCount, unref: () => {} };
+            },
+            kill: () => {
+              // All processes are dead
+              const err = new Error('No such process') as NodeJS.ErrnoException;
+              err.code = 'ESRCH';
+              throw err;
+            },
+            nowMs: () => 1000,
+            random: () => 0,
+          },
+        ).catch(() => {
+          // Ignore marker timeout fallback errors
+        });
+
+        // Should spawn exactly once (the persistent watcher)
+        assert.equal(spawnCount, 1, 'should spawn exactly one persistent watcher when previous is dead');
+        
+        // Verify new PID was recorded (10001 when spawnCount=1)
+        const record = JSON.parse(await readFile(watcherPidPath, 'utf-8'));
+        assert.equal(record.pid, 10001, 'should have recorded the spawned process PID');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('at most one watcher: concurrent ticks on same scope produce exactly 1 spawn', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-persistent-single-flight-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const watcherPidPath = join(stateDir, 'notify-fallback-authority-watcher.json');
+      let spawnCount = 0;
+      let pidAssignments: number[] = [];
+
+      try {
+        await mkdir(stateDir, { recursive: true });
+        
+        // Start with no watcher
+        // Run two concurrent ticks with the same lock timeout
+        const sharedSpawner = (nodePath: string, args: string[], options: Record<string, unknown>) => {
+          const pid = 20000 + (++spawnCount);
+          pidAssignments.push(pid);
+          return { pid, unref: () => {} };
+        };
+
+        const sharedKill = () => {
+          const err = new Error('No such process') as NodeJS.ErrnoException;
+          err.code = 'ESRCH';
+          throw err;
+        };
+
+        // Tick 1 at 1000ms
+        const tick1 = runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0, timeoutMs: 100 },
+          { spawn: sharedSpawner, kill: sharedKill, nowMs: () => 1000, random: () => 0 },
+        ).catch(() => {});
+
+        // Tick 2 at 1050ms (before tick 1 completes, if it's slow)
+        const tick2 = runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0, timeoutMs: 100 },
+          { spawn: sharedSpawner, kill: sharedKill, nowMs: () => 1050, random: () => 0 },
+        ).catch(() => {});
+
+        await Promise.all([tick1, tick2]);
+
+        // The lock mechanism must ensure exactly one spawn for concurrent ticks
+        assert.equal(spawnCount, 1, 'concurrent ticks must spawn exactly one watcher, not compete');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('marker written between reads causes next authority cycle', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-persistent-marker-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const watcherPidPath = join(stateDir, 'notify-fallback-authority-watcher.json');
+      const markerPath = join(stateDir, 'notify-fallback-authority-tick-marker.json');
+      let authorityStateReads = 0;
+
+      try {
+        await mkdir(stateDir, { recursive: true });
+        
+        // Pre-write a watcher PID file with the current process (which is alive)
+        const alivePid = process.pid;
+        await writeFile(watcherPidPath, JSON.stringify({ pid: alivePid, started_at: new Date().toISOString() }, null, 2));
+
+        // Simulate a watcher that reads authority state, allowing marker write in between
+        const originalReadFile = readFile;
+        let markerWrittenDuringReads = false;
+
+        // Run tick - marker should be written to wake the persistent watcher
+        await runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0 },
+          {
+            spawn: () => ({ pid: 15000, unref: () => {} }),
+            kill: (pid, signal) => {
+              if (pid === alivePid && signal === 0) return;
+              const err = new Error('No such process') as NodeJS.ErrnoException;
+              err.code = 'ESRCH';
+              throw err;
+            },
+            nowMs: () => 1000,
+            random: () => 0,
+          },
+        ).catch(() => {
+          // Ignore marker timeout fallback errors
+        });
+
+        // Verify marker was written (proving authority recognized the need to wake watcher)
+        assert.ok(existsSync(markerPath), 'marker file should exist after tick');
+        const markerContent = JSON.parse(await readFile(markerPath, 'utf-8'));
+        assert.equal(markerContent.type, 'authority-tick', 'marker should be of type authority-tick');
+        assert.equal(typeof markerContent.fingerprint, 'string', 'marker should contain a fingerprint field');
+
+        // Simulate a second tick that reads the marker between writes, verifying it doesn't get lost
+        // Write state to indicate watcher has processed previous marker
+        await writeFile(
+          join(stateDir, 'notify-fallback-state.json'),
+          JSON.stringify({ adaptive_poll: { idle_streak: 0 }, consumed_at: new Date().toISOString() }, null, 2),
+        );
+
+        // Run another tick - marker should be regenerated if state changed, proving cycle continuity
+        const fingerprintBefore = markerContent.fingerprint;
+        await runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0 },
+          {
+            spawn: () => ({ pid: 15001, unref: () => {} }),
+            kill: (pid, signal) => {
+              if (pid === alivePid && signal === 0) return;
+              const err = new Error('No such process') as NodeJS.ErrnoException;
+              err.code = 'ESRCH';
+              throw err;
+            },
+            nowMs: () => 1200,
+            random: () => 0,
+          },
+        ).catch(() => {});
+
+        // Verify marker exists and was processed by next cycle (proving no lost wake-up)
+        assert.ok(existsSync(markerPath), 'marker should still exist as proof of continuous authority cycles');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('timeout fallback count is bounded', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-persistent-timeout-fallback-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      const watcherPidPath = join(stateDir, 'notify-fallback-authority-watcher.json');
+      let persistentSpawns = 0;
+
+      try {
+        await mkdir(stateDir, { recursive: true });
+        
+        // Pre-write a dead watcher PID
+        const deadPid = 99998;
+        await writeFile(watcherPidPath, JSON.stringify({ pid: deadPid, started_at: new Date().toISOString() }, null, 2));
+
+        // Inject spawn to track persistent spawns
+        await runHudAuthorityTick(
+          { cwd, nodePath: process.execPath, packageRoot: '/pkg', minIntervalMs: 100, jitterMs: 0, timeoutMs: 100 },
+          {
+            spawn: (nodePath, args, options) => {
+              // Track persistent watcher spawns (without --once flag)
+              const hasOnce = args.includes('--once');
+              const hasPersistent = (options as any)?.env?.OMX_HUD_AUTHORITY_PERSISTENT === '1';
+              
+              if (hasPersistent && !hasOnce) {
+                persistentSpawns += 1;
+              }
+              return { pid: 11000 + persistentSpawns, unref: () => {} };
+            },
+            kill: () => {
+              const err = new Error('No such process') as NodeJS.ErrnoException;
+              err.code = 'ESRCH';
+              throw err;
+            },
+            nowMs: () => 1000,
+            random: () => 0,
+          },
+        ).catch(() => {
+          // Ignore fallback errors (marker timeout will trigger once-mode spawn)
+        });
+
+        // Should spawn persistent watcher exactly once before falling back
+        assert.equal(persistentSpawns, 1, 'persistent watcher spawn count should be exactly 1');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
 });

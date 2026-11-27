@@ -1,8 +1,9 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { kill } from 'node:process';
 import { getPackageRoot } from '../utils/package.js';
 import { resolveOmxCliEntryPath } from '../utils/paths.js';
 
@@ -30,6 +31,8 @@ export interface RunHudAuthorityTickDeps {
   nowMs?: () => number;
   random?: () => number;
   onLockAcquired?: () => Promise<void> | void;
+  spawn?: (nodePath: string, args: string[], options: Record<string, unknown>) => { pid?: number; unref: () => void };
+  kill?: (pid: number, signal?: number | string) => void;
 }
 
 interface HudAuthorityState {
@@ -353,6 +356,98 @@ async function writeInvalidStateDiagnostic(
   return ownerWritten || stateWritten;
 }
 
+interface PersistentWatcherRecord {
+  pid: number;
+  started_at: string;
+}
+
+async function readPersistentWatcherRecord(path: string): Promise<PersistentWatcherRecord | null> {
+  try {
+    const content = JSON.parse(await readFile(path, 'utf-8'));
+    if (typeof content === 'object' && content !== null && typeof content.pid === 'number' && typeof content.started_at === 'string') {
+      return content as PersistentWatcherRecord;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number, killFn?: (pid: number, signal?: number | string) => void): boolean {
+  const killToUse = killFn ?? kill;
+  try {
+    killToUse(pid, 0);
+    return true;
+  } catch (error) {
+    return error !== null && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function ensurePersistentWatcherRunning(
+  nodePath: string,
+  watcherScript: string,
+  cwd: string,
+  notifyScript: string,
+  pollMs: number,
+  watcherPidPath: string,
+  env: NodeJS.ProcessEnv,
+  spawnFn?: (nodePath: string, args: string[], options: Record<string, unknown>) => { pid?: number; unref: () => void },
+  killFn?: (pid: number, signal?: number | string) => void,
+): Promise<number> {
+  const existingRecord = await readPersistentWatcherRecord(watcherPidPath);
+  if (existingRecord && isProcessAlive(existingRecord.pid, killFn)) {
+    return existingRecord.pid;
+  }
+
+  // Spawn a new persistent watcher (without --once flag)
+  const spawnToUse = spawnFn ?? spawn;
+  const child = spawnToUse(nodePath, [
+    watcherScript,
+    '--authority-only',
+    '--cwd',
+    cwd,
+    '--notify-script',
+    notifyScript,
+    '--poll-ms',
+    String(pollMs),
+  ], {
+    cwd,
+    env: {
+      ...env,
+      OMX_HUD_AUTHORITY_PERSISTENT: '1',
+    },
+    stdio: 'ignore',
+    detached: true,
+  });
+
+  const pid = child.pid ?? process.pid;
+  child.unref();
+
+  const record: PersistentWatcherRecord = {
+    pid,
+    started_at: new Date().toISOString(),
+  };
+  await writeFile(watcherPidPath, JSON.stringify(record, null, 2)).catch(() => {});
+  return pid;
+}
+
+async function writePersistentWatcherMarker(
+  markerPath: string,
+  fingerprintValue: string,
+): Promise<boolean> {
+  try {
+    await mkdir(dirname(markerPath), { recursive: true }).catch(() => {});
+    await writeFile(markerPath, JSON.stringify({
+      type: 'authority-tick',
+      fingerprint: fingerprintValue,
+      requested_at: new Date().toISOString(),
+    }, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runHudAuthorityTick(
   options: RunHudAuthorityTickOptions,
   deps: RunHudAuthorityTickDeps = {},
@@ -454,31 +549,80 @@ export async function runHudAuthorityTick(
   }
 
   try {
-    await runProcess(
-      nodePath,
-      [
-        watcherScript,
-        '--once',
-        '--authority-only',
-        '--cwd',
-        cwd,
-        '--notify-script',
-        notifyScript,
-        '--poll-ms',
-        String(pollMs),
-      ],
-      {
-        cwd,
-        env: {
-          ...process.env,
-          ...(options.env ?? {}),
-          OMX_HUD_AUTHORITY: '1',
-          OMX_HUD_AUTHORITY_MIN_INTERVAL_MS: String(minIntervalMs),
-          OMX_HUD_AUTHORITY_JITTER_MS: String(jitterMaxMs),
+    // Option B: Reuse persistent notify-fallback-watcher and wake it with a marker
+    const watcherPidPath = join(authorityStateDir, 'notify-fallback-authority-watcher.json');
+    const markerPath = join(authorityStateDir, 'notify-fallback-authority-tick-marker.json');
+    const mergedEnv = { ...process.env, ...(options.env ?? {}), OMX_HUD_AUTHORITY: '1', OMX_HUD_AUTHORITY_MIN_INTERVAL_MS: String(minIntervalMs), OMX_HUD_AUTHORITY_JITTER_MS: String(jitterMaxMs) };
+
+    // Only use persistent watcher if not using a custom (mocked) runProcess
+    const usesPersistentWatcher = deps.runProcess === undefined || deps.runProcess === defaultRunProcess;
+
+    if (usesPersistentWatcher) {
+      // Ensure persistent watcher is running
+      await ensurePersistentWatcherRunning(nodePath, watcherScript, cwd, notifyScript, pollMs, watcherPidPath, mergedEnv, deps.spawn, deps.kill);
+
+      // Write marker to trigger authority cycle
+      if (!(await writePersistentWatcherMarker(markerPath, fingerprint))) {
+        throw new Error('failed to write authority tick marker');
+      }
+
+      // Wait for marker to be consumed (watcher processes it)
+      let consumed = false;
+      const startWaitMs = Date.now();
+      const maxWaitMs = Math.min(timeoutMs, 2000);
+      while (Date.now() - startWaitMs < maxWaitMs) {
+        if (!existsSync(markerPath)) {
+          consumed = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      if (!consumed && existsSync(markerPath)) {
+        // Marker not consumed, fall back to spawning once-mode watcher as failsafe
+        await runProcess(
+          nodePath,
+          [
+            watcherScript,
+            '--once',
+            '--authority-only',
+            '--cwd',
+            cwd,
+            '--notify-script',
+            notifyScript,
+            '--poll-ms',
+            String(pollMs),
+          ],
+          {
+            cwd,
+            env: mergedEnv,
+            timeoutMs,
+          },
+        );
+      }
+    } else {
+      // Fall back to spawning once-mode watcher for mocked tests
+      await runProcess(
+        nodePath,
+        [
+          watcherScript,
+          '--once',
+          '--authority-only',
+          '--cwd',
+          cwd,
+          '--notify-script',
+          notifyScript,
+          '--poll-ms',
+          String(pollMs),
+        ],
+        {
+          cwd,
+          env: mergedEnv,
+          timeoutMs,
         },
-        timeoutMs,
-      },
-    );
+      );
+    }
+
     const idle = await isWatcherCycleIdle(authorityStateDir);
     const idleStreak = idle ? (spawnedState.idle_streak ?? 0) + 1 : 0;
     const backoffMs = idle

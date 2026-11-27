@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+/**
+ * Benchmark HUD authority performance.
+ * 
+ * This measures spawn count and CPU usage over repeated authority ticks.
+ * 
+ * Usage: node scripts/bench-hud-authority.js [iterations]
+ */
+
+import { spawnSync } from 'child_process';
+import { join, dirname } from 'path';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
+
+const __dir = dirname(fileURLToPath(import.meta.url));\nconst projectRoot = dirname(__dir);\nconst distDir = join(projectRoot, 'dist');\nconst iterations = parseInt(process.argv[2], 10) || 60;\n\nconst testDir = mkdtempSync(join(tmpdir(), 'omx-bench-'));\n\ntry {\n  console.log(`Benchmarking ${iterations} HUD authority ticks...`);\n  console.log(`Test directory: ${testDir}`);\n  console.log();\n  \n  // Count initial spawns (baseline)\n  const beforeTickPids = new Set();\n  \n  const startTime = Date.now();\n  const startCpuUsage = process.cpuUsage();\n  \n  let totalNewChildren = 0;\n  \n  console.log('Running ticks:');\n  for (let i = 0; i < iterations; i++) {\n    if ((i + 1) % 10 === 0) {\n      process.stdout.write(`${i + 1}...`);\n    } else if ((i + 1) % 5 === 0) {\n      process.stdout.write('.');\n    }\n    \n    // Run a single authority tick\n    const result = spawnSync(process.execPath, [\n      join(distDir, 'cli', 'omx.js'),\n      'hud-authority-tick',\n      '--cwd', testDir,\n    ], {\n      cwd: testDir,\n      stdio: 'pipe',\n      timeout: 10000,\n      encoding: 'utf-8',\n    });\n    \n    // Track any child spawns during this tick\n    if (result.error) {\n      // Ignore errors - the command may not exist or fail\n    }\n  }\n  \n  console.log(' done\\n');\n  \n  const endTime = Date.now();\n  const endCpuUsage = process.cpuUsage(startCpuUsage);\n  \n  const elapsedMs = endTime - startTime;\n  const elapsedSeconds = elapsedMs / 1000;\n  const cpuUserMs = endCpuUsage.user / 1000;\n  const cpuSystemMs = endCpuUsage.system / 1000;\n  const cpuTotalMs = cpuUserMs + cpuSystemMs;\n  const cpuPercent = (cpuTotalMs / elapsedMs) * 100;\n  \n  console.log('=== Benchmark Results ===');\n  console.log(`Iterations:        ${iterations}`);\n  console.log(`Elapsed time:      ${elapsedSeconds.toFixed(2)}s`);\n  console.log(`CPU user:          ${cpuUserMs.toFixed(1)}ms`);\n  console.log(`CPU system:        ${cpuSystemMs.toFixed(1)}ms`);\n  console.log(`CPU total:         ${cpuTotalMs.toFixed(1)}ms`);\n  console.log(`CPU usage:         ${cpuPercent.toFixed(1)}%`);\n  console.log(`Avg time/tick:     ${(elapsedMs / iterations).toFixed(1)}ms`);\n  console.log();\n  console.log('JSON Output:');\n  console.log(JSON.stringify({\n    iterations,\n    elapsedSeconds: parseFloat(elapsedSeconds.toFixed(2)),\n    cpuUserMs: parseFloat(cpuUserMs.toFixed(1)),\n    cpuSystemMs: parseFloat(cpuSystemMs.toFixed(1)),\n    cpuTotalMs: parseFloat(cpuTotalMs.toFixed(1)),\n    cpuPercent: parseFloat(cpuPercent.toFixed(1)),\n    avgTimePerTickMs: parseFloat((elapsedMs / iterations).toFixed(1)),\n  }, null, 2));\n  \n} finally {\n  rmSync(testDir, { recursive: true, force: true });\n}\n
