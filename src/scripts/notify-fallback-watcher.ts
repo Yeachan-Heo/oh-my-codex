@@ -2362,7 +2362,10 @@ function ensureTeamDispatchWatcher(): void {
   try {
     const watcher = watchDirectory(teamDir, { persistent: false, recursive: true }, (_eventType, filename) => {
       const name = filename?.toString();
-      if (!name || name.replace(/\\/g, '/').endsWith('dispatch/requests.json')) wakeWatcher();
+      // Wake on legacy dispatch/requests.json (team-local) or the authoritative dispatch.json
+      // (from runtime bridge). The runtime bridge writes dispatch.json when commands like QueueDispatch
+      // are executed, allowing active dispatch updates to interrupt idle backoff sleep.
+      if (!name || name.replace(/\\/g, '/').endsWith('dispatch/requests.json') || name.replace(/\\/g, '/').endsWith('dispatch.json')) wakeWatcher();
     });
     watcher.on('error', () => {
       watcher.close();
