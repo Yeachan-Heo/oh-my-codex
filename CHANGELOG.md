@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.22.30] - 2026-11-27
+
+Minor release adds live-session health checks and triage with omx supervision, improves launcher reasoning flags, and includes fixes for HUD authority management and plugin hook launcher stability.
+
+### Added
+
+- **OMX SUPERVISION - LIVE-SESSION HEALTH CHECKS AND TRIAGE (#4218):** Introduces `omx supervision` command for checking and triaging the health of active Codex sessions. Provides live session monitoring and status diagnostics.
+
+- **ADD --LOW AND --MEDIUM LAUNCHER REASONING FLAGS (#4226):** Adds `--low` and `--medium` flags to launcher to allow users to control the reasoning level during task execution. These complementary flags provide granular control over how much reasoning effort is applied.
+
+### Fixed
+
+- **CHECK ALL ACTIVE SESSIONS WITH CORRECT STATE AUTHORITY (#4223):** Fixes #4222 and resolves P2s from #4218. The supervision command now correctly checks all active sessions and uses the appropriate state authority for session validation.
+
+- **BACK OFF AUTHORITY CHILD SPAWNS WHILE CONTROL PLANE IS IDLE (#4219):** Fixes #4215. HUD authority management now backs off from spawning child processes while the control plane is idle, reducing resource consumption during inactive periods.
+
+- **PIN STABLE HOMEBREW NODE IN PLUGIN HOOK LAUNCHER (#4230):** Fixes plugin hook launcher to use a stable Homebrew node installation, ensuring consistent behavior across macOS environments.
+
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.22.29...v0.22.30
+
 ## [0.22.29] - 2026-11-26
 
 Minor release extends Beads command support to every workflow phase and fixes command detection regressions introduced during the stabilization.
