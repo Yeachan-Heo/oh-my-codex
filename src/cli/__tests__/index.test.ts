@@ -885,6 +885,20 @@ describe("normalizeCodexLaunchArgs", () => {
     ]);
   });
 
+  it("maps --low to reasoning override", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--low"]), [
+      "-c",
+      'model_reasoning_effort="low"',
+    ]);
+  });
+
+  it("maps --medium to reasoning override", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--medium"]), [
+      "-c",
+      'model_reasoning_effort="medium"',
+    ]);
+  });
+
   it("maps --high to reasoning override", () => {
     assert.deepEqual(normalizeCodexLaunchArgs(["--high"]), [
       "-c",
@@ -934,6 +948,21 @@ describe("normalizeCodexLaunchArgs", () => {
     assert.deepEqual(normalizeCodexLaunchArgs(["--high", "--xhigh"]), [
       "-c",
       'model_reasoning_effort="xhigh"',
+    ]);
+  });
+
+  it("uses the last reasoning shorthand when low/medium/high/xhigh are mixed", () => {
+    assert.deepEqual(normalizeCodexLaunchArgs(["--low", "--high"]), [
+      "-c",
+      'model_reasoning_effort="high"',
+    ]);
+    assert.deepEqual(normalizeCodexLaunchArgs(["--medium", "--xhigh", "--low"]), [
+      "-c",
+      'model_reasoning_effort="low"',
+    ]);
+    assert.deepEqual(normalizeCodexLaunchArgs(["--xhigh", "--medium"]), [
+      "-c",
+      'model_reasoning_effort="medium"',
     ]);
   });
 

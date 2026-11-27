@@ -45,6 +45,7 @@ import {
 } from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
+import { supervisionCommand } from "./supervision.js";
 import { apiCommand } from "./api.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
@@ -65,6 +66,8 @@ import {
 import {
   MADMAX_FLAG,
   CODEX_BYPASS_FLAG,
+  LOW_REASONING_FLAG,
+  MEDIUM_REASONING_FLAG,
   HIGH_REASONING_FLAG,
   XHIGH_REASONING_FLAG,
   SPARK_FLAG,
@@ -325,6 +328,8 @@ Usage:
   omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
                 Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
                 (also used as an adaptive backend for qualifying read-only explore tasks)
+  omx supervision [--window <s>] [--no-analyze] [--file] [--json] [<user-prompt>]
+                Check live OMX sessions for known repeat problems, rank findings P0-P3, optionally file issues
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes
@@ -332,6 +337,10 @@ Usage:
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
+  --low         Launch Codex with low reasoning effort
+                (shorthand for: -c model_reasoning_effort="low")
+  --medium      Launch Codex with medium reasoning effort
+                (shorthand for: -c model_reasoning_effort="medium")
   --high        Launch Codex with high reasoning effort
                 (shorthand for: -c model_reasoning_effort="high")
   --xhigh       Launch Codex with xhigh reasoning effort
@@ -469,6 +478,7 @@ type CliCommand =
   | "explore"
   | "api"
   | "sparkshell"
+  | "supervision"
   | "team"
   | "session"
   | "url"
@@ -533,6 +543,7 @@ const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "url",
   "api",
   "sparkshell",
+  "supervision",
   "team",
   "tmux-hook",
 ]);
@@ -4231,7 +4242,7 @@ function normalizeMadmaxDetachedLaunchArgv(argv: readonly string[]): string[] {
       semanticFlags.add(arg);
       continue;
     }
-    if (arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) {
+    if (arg === LOW_REASONING_FLAG || arg === MEDIUM_REASONING_FLAG || arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) {
       reasoningFlag = arg;
       continue;
     }
@@ -5124,6 +5135,7 @@ export async function main(args: string[]): Promise<void> {
     "explore",
     "api",
     "sparkshell",
+    "supervision",
     "team",
     "autopilot",
     "ralph",
@@ -5299,6 +5311,9 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "sparkshell":
         await sparkshellCommand(args.slice(1));
+        break;
+      case "supervision":
+        await supervisionCommand(args.slice(1));
         break;
       case "team":
         await teamCommand(args.slice(1), options);
@@ -6149,6 +6164,16 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
         normalized.push(arg);
         hasBypass = true;
       }
+      continue;
+    }
+
+    if (arg === LOW_REASONING_FLAG) {
+      reasoningMode = "low";
+      continue;
+    }
+
+    if (arg === MEDIUM_REASONING_FLAG) {
+      reasoningMode = "medium";
       continue;
     }
 

@@ -50,6 +50,13 @@ describe('resume block formatting', () => {
     assert.equal(lines.at(-1), `  cd /src/proj && omx --madmax --high resume ${SID}`);
   });
 
+  it('keeps --low/--medium in the resume command with last reasoning flag winning', () => {
+    const hint = (launchArgs: string[]) => formatResumeBlock({ sessionId: SID, launchArgs, launchCwd: '/p' });
+    assert.match(hint(['--low']), new RegExp(`^  omx --low resume ${SID}$`, 'm'));
+    assert.match(hint(['--medium']), new RegExp(`^  omx --medium resume ${SID}$`, 'm'));
+    assert.match(hint(['--high', '--low']), new RegExp(`^  omx --low resume ${SID}$`, 'm'));
+  });
+
   it('worktree variant names the worktree and cds into it', () => {
     const out = formatResumeBlock({
       sessionId: SID,

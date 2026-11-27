@@ -35,6 +35,10 @@ Usage:
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
+  --low         Launch Codex with low reasoning effort
+                (shorthand for: -c model_reasoning_effort="low")
+  --medium      Launch Codex with medium reasoning effort
+                (shorthand for: -c model_reasoning_effort="medium")
   --high        Launch Codex with high reasoning effort
                 (shorthand for: -c model_reasoning_effort="high")
   --xhigh       Launch Codex with xhigh reasoning effort

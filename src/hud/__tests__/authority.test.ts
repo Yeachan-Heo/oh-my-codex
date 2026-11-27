@@ -218,6 +218,112 @@ describe('runHudAuthorityTick', () => {
     }
   });
 
+  describe('idle backoff', () => {
+    const setup = async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-authority-idle-'));
+      const stateDir = join(cwd, '.omx', 'state');
+      let spawns = 0;
+      let idle = true;
+      const tick = (nowMs: number) => runHudAuthorityTick(
+        { cwd, nodePath: '/node', packageRoot: '/pkg', minIntervalMs: 5_000, jitterMs: 0 },
+        {
+          nowMs: () => nowMs,
+          random: () => 0,
+          runProcess: async () => {
+            spawns += 1;
+            await writeFile(join(stateDir, 'notify-fallback-state.json'), JSON.stringify({ adaptive_poll: { idle_streak: idle ? 1 : 0 } }));
+          },
+        },
+      );
+      const nextAllowedMs = async () => Date.parse(JSON.parse(
+        await readFile(join(stateDir, 'notify-fallback-authority-state.json'), 'utf-8'),
+      ).next_allowed_at);
+      return { cwd, stateDir, tick, nextAllowedMs, spawns: () => spawns, setIdle: (value: boolean) => { idle = value; } };
+    };
+
+    it('backs off idle ticks up to the cap', async () => {
+      const { cwd, tick, nextAllowedMs, spawns } = await setup();
+      try {
+        const intervals: number[] = [];
+        let now = 1_000;
+        for (let i = 0; i < 7; i += 1) {
+          await tick(now);
+          intervals.push((await nextAllowedMs()) - now);
+          now = await nextAllowedMs();
+        }
+        assert.deepEqual(intervals, [10_000, 20_000, 40_000, 60_000, 60_000, 60_000, 60_000]);
+        await tick(now - 1);
+        assert.equal(spawns(), 7, 'tick inside the backoff window must not spawn');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('resets to the minimum interval when the watcher reports activity', async () => {
+      const { cwd, tick, nextAllowedMs, setIdle } = await setup();
+      try {
+        await tick(1_000);
+        await tick(11_000);
+        assert.equal((await nextAllowedMs()) - 11_000, 20_000);
+        setIdle(false);
+        await tick(31_000);
+        assert.equal((await nextAllowedMs()) - 31_000, 5_000);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('resets backoff when a session-scoped mode state file appears', async () => {
+      const { cwd, stateDir, tick, nextAllowedMs, spawns } = await setup();
+      try {
+        await mkdir(join(stateDir, 'sessions', 's1'), { recursive: true });
+        await tick(1_000);
+        await tick(11_000);
+        assert.equal((await nextAllowedMs()) - 11_000, 20_000);
+        await writeFile(join(stateDir, 'sessions', 's1', 'team-state.json'), JSON.stringify({ active: true }));
+        await tick(16_000);
+        assert.equal(spawns(), 3);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('resets backoff when an existing team dispatch queue changes', async () => {
+      const { cwd, stateDir, tick, nextAllowedMs, spawns } = await setup();
+      try {
+        const dispatchDir = join(stateDir, 'team', 'alpha', 'dispatch');
+        await mkdir(dispatchDir, { recursive: true });
+        await writeFile(join(dispatchDir, 'requests.json'), '[]');
+        await utimes(join(dispatchDir, 'requests.json'), 1, 1);
+        await tick(1_000);
+        await tick(11_000);
+        assert.equal((await nextAllowedMs()) - 11_000, 20_000);
+        await writeFile(join(dispatchDir, 'requests.json'), '[{"request_id":"r1"}]');
+        await tick(16_000);
+        assert.equal(spawns(), 3);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('resets backoff when HUD-visible state appears, still honoring the minimum interval', async () => {
+      const { cwd, stateDir, tick, nextAllowedMs, spawns } = await setup();
+      try {
+        await tick(1_000);
+        await tick(11_000);
+        assert.equal((await nextAllowedMs()) - 11_000, 20_000);
+        await writeFile(join(stateDir, 'ralph-state.json'), JSON.stringify({ active: true }));
+        await tick(13_000);
+        assert.equal(spawns(), 2, 'new state inside the minimum interval must not spawn');
+        await tick(16_000);
+        assert.equal(spawns(), 3, 'new active mode lifts the backoff after the minimum interval');
+        assert.equal((await nextAllowedMs()) - 16_000, 10_000, 'streak restarts after the reset');
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('writes no files when called inside the cooldown', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-hud-authority-no-churn-'));
     const stateDir = join(cwd, '.omx', 'state');

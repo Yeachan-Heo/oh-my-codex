@@ -825,6 +825,41 @@ function resolveTeamForHud(
     : null;
 }
 
+/**
+ * Mode -> phase projection of what readAllState() would render for the given
+ * canonical skills and session-scoped detail records. Supervision uses this for
+ * an explicit state root and session so it applies the HUD's own visibility,
+ * detail-first phase and stale-autopilot rules without reading process env.
+ */
+export function projectHudModes(
+  canonicalSkills: Map<string, { phase?: string }>,
+  details: Record<'ralph' | 'ultrawork' | 'autopilot' | 'ralplan' | 'deepInterview' | 'autoresearch' | 'ultraqa' | 'team', { active?: boolean; current_phase?: string } | null>,
+  currentAutopilotRecord: object | null,
+  canonicalTeamPhase?: string,
+): { modes: Record<string, { phase?: string }>; staleAutopilot: boolean } {
+  const surfaced = (skill: string, key: keyof typeof details) => (
+    shouldSurfaceCanonicalSkill(canonicalSkills, skill, details[key])
+      ? mergePhase(details[key]?.active === true ? details[key] : null, canonicalPhaseForSkill(canonicalSkills, skill))
+      : null
+  );
+  const autopilot = surfaced('autopilot', 'autopilot');
+  const rendered: Record<string, { current_phase?: string } | null> = {
+    ralph: surfaced('ralph', 'ralph'),
+    ultrawork: surfaced('ultrawork', 'ultrawork'),
+    autopilot,
+    ralplan: surfaced('ralplan', 'ralplan'),
+    deepInterview: surfaced('deep-interview', 'deepInterview'),
+    autoresearch: surfaced('autoresearch', 'autoresearch'),
+    ultraqa: surfaced('ultraqa', 'ultraqa') ?? supervisedAutopilotStage(autopilot as AutopilotStateForHud | null, 'ultraqa'),
+    team: resolveTeamForHud(canonicalSkills, details.team as TeamStateForHud | null, canonicalTeamPhase),
+  };
+  const modes: Record<string, { phase?: string }> = {};
+  for (const [key, value] of Object.entries(rendered)) {
+    if (value) modes[key] = value.current_phase ? { phase: value.current_phase } : {};
+  }
+  return { modes, staleAutopilot: autopilot === null && buildStaleCurrentAutopilotState(currentAutopilotRecord as AutopilotStateForHud | null) !== null };
+}
+
 const NATIVE_AGENT_HUD_IDLE_MS = 30 * 60_000;
 
 function readNativeAgents(tracking: SubagentTrackingState, sessionId?: string): NativeAgentForHud[] {

@@ -1,6 +1,8 @@
 export const MADMAX_FLAG = '--madmax';
 export const CODEX_BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 export const CLAUDE_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
+export const LOW_REASONING_FLAG = '--low';
+export const MEDIUM_REASONING_FLAG = '--medium';
 export const HIGH_REASONING_FLAG = '--high';
 export const XHIGH_REASONING_FLAG = '--xhigh';
 export const SPARK_FLAG = '--spark';

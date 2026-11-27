@@ -1,5 +1,5 @@
 import { basename, resolve } from 'node:path';
-import { MADMAX_FLAG, HIGH_REASONING_FLAG, XHIGH_REASONING_FLAG } from './constants.js';
+import { MADMAX_FLAG, LOW_REASONING_FLAG, MEDIUM_REASONING_FLAG, HIGH_REASONING_FLAG, XHIGH_REASONING_FLAG } from './constants.js';
 import { classifySessionStateLiveness, type SessionState } from '../hooks/session.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
@@ -73,7 +73,7 @@ function contextFlags(launchArgs: readonly string[]): string[] {
     const arg = launchArgs[i]!;
     if (arg === '--') break;
     if (arg === MADMAX_FLAG || arg === '--madmax-spark') madmax = true;
-    else if (arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) reasoning = arg;
+    else if (arg === LOW_REASONING_FLAG || arg === MEDIUM_REASONING_FLAG || arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) reasoning = arg;
     else if ((arg === '--model' || arg === '-m') && launchArgs[i + 1]) { model = launchArgs[i + 1]; i += 1; }
     else if (arg.startsWith('--model=')) model = arg.slice('--model='.length);
   }

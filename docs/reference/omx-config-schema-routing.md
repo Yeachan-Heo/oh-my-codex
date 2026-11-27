@@ -182,7 +182,7 @@ Root and per-agent reasoning vocabularies are deliberately separate:
 
 - Root `config.toml` accepts `model_reasoning_effort = "low"`, `"medium"`, `"high"`, or `"xhigh"`.
 - `omx reasoning <low|medium|high|xhigh>` edits that root setting. There is no `omx reasoning max`, `omx --max`, or root `max` shorthand.
-- `omx --high` and `omx --xhigh` pass `-c model_reasoning_effort="high|xhigh"` to Codex launch.
+- `omx --low`, `omx --medium`, `omx --high`, and `omx --xhigh` pass `-c model_reasoning_effort="low|medium|high|xhigh"` to Codex launch.
 - `.omx-config.json` `agentReasoning` accepts the five configured per-agent values described above and overrides selected role defaults for generated native agent TOML and role-based Team/Ralph staffing without changing built-in defaults.
 - Generated native agent TOML files otherwise write each role's unchanged built-in `reasoningEffort` metadata.
 
