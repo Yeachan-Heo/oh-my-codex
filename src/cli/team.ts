@@ -1125,6 +1125,30 @@ export function decomposeTaskString(
   return buildTeamExecutionPlan(task, workerCount, agentType, explicitAgentType, explicitWorkerCount).tasks;
 }
 
+/**
+ * Builds preflight info for legacy-text decomposition.
+ * Generates display metadata including resolved working directory, decomposition source, and fallback reason.
+ * 
+ * @param cwd - Current working directory
+ * @param executionPlan - The execution plan containing metadata with potential fallback_reason
+ * @param dagFallbackReason - Optional fallback reason from parsed args
+ * @returns PreflightInfo object with cwdDisplay, decompositionSource, and fallbackReason
+ */
+export function buildLegacyTextPreflightInfo(
+  cwd: string,
+  executionPlan: { metadata?: { fallback_reason?: string; decomposition_source?: string } },
+  dagFallbackReason?: string,
+): { cwdDisplay: string; decompositionSource: string; fallbackReason: string } {
+  const gitLayout = findGitLayout(cwd);
+  const cwdDisplay = formatPathDisplay(cwd);
+  const fallbackReason = executionPlan.metadata?.fallback_reason || dagFallbackReason || (gitLayout ? 'dag_handoff_fallback_inside_repo' : 'outside_git_repo');
+  return {
+    cwdDisplay,
+    decompositionSource: 'legacy_text',
+    fallbackReason,
+  };
+}
+
 const ACTIONABLE_TASK_PREFIX = /^(?:add|analy(?:se|ze)|audit|benchmark|build|clean(?:\s+up)?|create|debug|design|document|draft|fix|implement|improve|investigate|migrate|optimi(?:s|z)e|profile|refactor|repair|research|review|ship|summari(?:s|z)e|test|update|validate|verify|write)\b/i;
 const TASK_LABEL_PREFIX = /^(?:task|step|phase|part)\s+[\w-]+(?:\s+[\w-]+)?$/i;
 const ANALYSIS_TASK_PREFIX = /^(?:analy(?:se|ze)|audit|assess|evaluate|explore|investigate|research|review|study|summari(?:s|z)e)\b/i;
@@ -1901,14 +1925,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   
   // If using legacy_text decomposition and we don't have preflight info yet, generate it for display
   if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !preflightInfo) {
-    const gitLayout = findGitLayout(cwd);
-    const cwdDisplay = formatPathDisplay(cwd);
-    const fallbackReason = executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || (gitLayout ? 'dag_handoff_fallback_inside_repo' : 'outside_git_repo');
-    preflightInfo = {
-      cwdDisplay,
-      decompositionSource: 'legacy_text',
-      fallbackReason,
-    };
+    preflightInfo = buildLegacyTextPreflightInfo(cwd, executionPlan, parsed.dagFallbackReason);
   }
   
   const tasks = executionPlan.tasks;

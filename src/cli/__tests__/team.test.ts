@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../team.js';
+import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand, buildLegacyTextPreflightInfo } from '../team.js';
 import { readModeState } from '../../modes/base.js';
 import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 import { buildRepoAwareTeamExecutionPlan } from '../../team/repo-aware-decomposition.js';
@@ -4123,17 +4123,9 @@ process.on('SIGTERM', () => process.exit(0));
         executionPlan.metadata?.fallback_reason,
         `Should have fallback_reason set when using legacy_text decomposition`
       );
-      // Simulate the code from team.ts lines 1903-1910 that generates preflight info
-      let preflightInfo = null;
-      if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !preflightInfo) {
-        const cwdDisplay = wd; // simplified version of formatPathDisplay
-        preflightInfo = {
-          cwdDisplay,
-          decompositionSource: 'legacy_text',
-          fallbackReason: executionPlan.metadata.fallback_reason || 'outside_git_repo',
-        };
-      }
-      // Verify that preflightInfo would be printed by renderStartSummary
+      // Call the REAL buildLegacyTextPreflightInfo function from team.ts
+      const preflightInfo = buildLegacyTextPreflightInfo(wd, executionPlan, result.parsed.dagFallbackReason);
+      // Verify that preflightInfo is generated with all required fields
       assert.ok(preflightInfo, 'Should generate preflightInfo for legacy_text decomposition');
       assert.ok(preflightInfo.cwdDisplay, 'preflightInfo should include resolved_cwd');
       assert.equal(preflightInfo.decompositionSource, 'legacy_text', 'preflightInfo should include decomposition_source');
@@ -4181,17 +4173,9 @@ process.on('SIGTERM', () => process.exit(0));
         executionPlanReason !== genericDefault && executionPlanReason !== result.parsed.dagFallbackReason,
         `Execution plan reason (${executionPlanReason}) should be specific, not generic default or undefined parsed reason`
       );
-      // Test that the FIXED code uses the execution plan reason
-      let prefixedInfoWithFix = null;
-      if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !prefixedInfoWithFix) {
-        const fallbackReason = executionPlan.metadata?.fallback_reason || result.parsed.dagFallbackReason || genericDefault;
-        prefixedInfoWithFix = {
-          cwdDisplay: wd,
-          decompositionSource: 'legacy_text',
-          fallbackReason,
-        };
-      }
-      assert.equal(prefixedInfoWithFix?.fallbackReason, executionPlanReason, 'Fixed code should use execution plan fallback reason');
+      // Call the REAL buildLegacyTextPreflightInfo function to verify it uses the execution plan reason
+      const prefixedInfoWithFix = buildLegacyTextPreflightInfo(wd, executionPlan, result.parsed.dagFallbackReason);
+      assert.equal(prefixedInfoWithFix.fallbackReason, executionPlanReason, 'Fixed code should use execution plan fallback reason');
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -4234,7 +4218,9 @@ process.on('SIGTERM', () => process.exit(0));
       // fallbackReason = executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo'
       // which would use the actual execution plan reason
       const brokenReasonOutput = result.parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo';
-      const fixedReasonOutput = executionPlanReason || result.parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo';
+      // Call the REAL buildLegacyTextPreflightInfo function to verify it uses the execution plan reason
+      const prefixedInfo = buildLegacyTextPreflightInfo(wd, executionPlan, result.parsed.dagFallbackReason);
+      const fixedReasonOutput = prefixedInfo.fallbackReason;
       // Verify that the fix produces a different (correct) output than the broken version
       assert.ok(
         fixedReasonOutput === executionPlanReason && fixedReasonOutput !== brokenReasonOutput,
