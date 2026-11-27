@@ -1195,7 +1195,14 @@ async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<A
 
   const lastTickMs = parseIsoMillis(lastTickAt);
   const primaryPollMs = Math.max(50, asNumber(persistedState.poll_ms as string | number | undefined, 250));
-  const thresholdMs = Math.max(1_000, primaryPollMs * 4);
+  // Account for adaptive backoff: if the primary is in idle backoff, use its current poll interval
+  // instead of just the base poll_ms. This prevents false staleness reports when the primary is
+  // legitimately idle with a 60s backoff interval.
+  const primaryAdaptivePoll = persistedState.adaptive_poll as Record<string, unknown> | null | undefined;
+  const primaryCurrentMs = primaryAdaptivePoll && typeof primaryAdaptivePoll === 'object'
+    ? Math.max(50, asNumber(primaryAdaptivePoll.current_ms as string | number | undefined, primaryPollMs))
+    : primaryPollMs;
+  const thresholdMs = Math.max(1_000, primaryCurrentMs * 4);
   if (lastTickMs === null) {
     return createAuthorityBackoffState('tick_invalid', {
       primary_pid: existingRecord.pid,
