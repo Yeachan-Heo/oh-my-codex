@@ -22,6 +22,7 @@ import {
   fingerprintFor,
   planAnalysisLanes,
   readHudModel,
+  renderReportMarkdown,
   summarizeEvidence,
   toEvidenceBundle,
   isFileable,
@@ -40,6 +41,7 @@ import {
   type SessionCandidate,
   type SupervisionDeps,
   type SupervisionOptions,
+  type SupervisionReport,
   type SupervisionSnapshot,
 } from '../supervision.js';
 import { REPEAT_PROBLEM_REGISTRY, sourcesFor } from '../supervision-registry.js';
@@ -1194,6 +1196,95 @@ describe('finding #3: Draft bodies for non-primary sessions use that session\'s 
     assert.ok(drafts[1].body.includes('sess-2'), 'second draft includes sess-2 session ID');
     assert.ok(drafts[0].body.includes('test1'), 'first draft includes sess-1 reason');
     assert.ok(drafts[1].body.includes('test2'), 'second draft includes sess-2 reason');
+  });
+});
+
+describe('finding #6: Preserve session attribution in the Markdown report', () => {
+  it('includes sessionId in rendered checks and findings for secondary sessions', () => {
+    const report: SupervisionReport = {
+      generatedAt: '2026-11-26T12:00:00Z',
+      prompt: 'test prompt',
+      session: { mode: 'active', reason: 'selected', sessionId: 'primary-sess', cwd: '/work/a', fallback: false },
+      windowSeconds: 10,
+      checks: [
+        {
+          id: 'primary-check', area: 'resource', title: 'Primary Check', status: 'fail',
+          evidence: ['primary evidence'], fingerprint: 'fp1', severity: 'high', repro: 'persistent',
+          sources: [], blast: 1, sessionId: 'primary-sess',
+        },
+        {
+          id: 'secondary-check', area: 'resource', title: 'Secondary Check', status: 'fail',
+          evidence: ['secondary evidence'], fingerprint: 'fp2', severity: 'high', repro: 'persistent',
+          sources: [], blast: 1, sessionId: 'secondary-sess',
+        },
+      ],
+      findings: [
+        {
+          id: 'primary-finding', area: 'resource', title: 'Primary Finding', status: 'fail',
+          evidence: ['primary evidence'], fingerprint: 'fp1', severity: 'high', repro: 'persistent',
+          sources: [], blast: 1, priority: 'P1', score: 100, dedupe: 'none', sessionId: 'primary-sess',
+        },
+        {
+          id: 'secondary-finding', area: 'resource', title: 'Secondary Finding', status: 'fail',
+          evidence: ['secondary evidence'], fingerprint: 'fp3', severity: 'high', repro: 'persistent',
+          sources: [], blast: 1, priority: 'P1', score: 100, dedupe: 'none', sessionId: 'secondary-sess',
+        },
+      ],
+      lanes: [],
+      filed: [],
+      fileSkipped: [],
+      outputDir: null,
+      friction: [],
+    };
+
+    const markdown = renderReportMarkdown(report);
+
+    // Verify checks are rendered with session attribution
+    assert.ok(markdown.includes('FAIL `primary-check`'), 'primary check is rendered');
+    assert.ok(markdown.includes('(session: secondary-sess)'), 'secondary check includes session attribution');
+    assert.ok(!markdown.match(/primary-check.*session:/), 'primary check should not have session attribution');
+
+    // Verify findings are rendered with session attribution
+    assert.ok(markdown.includes('P1 `primary-finding`'), 'primary finding is rendered');
+    assert.ok(markdown.includes('P1 `secondary-finding`'), 'secondary finding is rendered');
+    assert.ok(markdown.includes('session: secondary-sess'), 'secondary finding includes session attribution');
+    assert.ok(!markdown.includes('Primary Finding') || !markdown.match(/Primary Finding[\s\S]*session: primary-sess/), 'primary finding should not have duplicate session attribution');
+  });
+
+  it('does not add session attribution when all findings are from the primary session', () => {
+    const report: SupervisionReport = {
+      generatedAt: '2026-11-26T12:00:00Z',
+      prompt: 'test prompt',
+      session: { mode: 'active', reason: 'selected', sessionId: 'primary-sess', cwd: '/work/a', fallback: false },
+      windowSeconds: 10,
+      checks: [
+        {
+          id: 'check1', area: 'resource', title: 'Check 1', status: 'pass',
+          evidence: ['evidence'], fingerprint: 'fp1', severity: 'high', repro: 'persistent',
+          sources: [], blast: 1, sessionId: 'primary-sess',
+        },
+      ],
+      findings: [
+        {
+          id: 'finding1', area: 'resource', title: 'Finding 1', status: 'pass',
+          evidence: ['evidence'], fingerprint: 'fp1', severity: 'high', repro: 'persistent',
+          sources: [], blast: 1, priority: 'P1', score: 100, dedupe: 'none', sessionId: 'primary-sess',
+        },
+      ],
+      lanes: [],
+      filed: [],
+      fileSkipped: [],
+      outputDir: null,
+      friction: [],
+    };
+
+    const markdown = renderReportMarkdown(report);
+
+    // Verify no spurious session attribution when all checks/findings are from primary session
+    assert.ok(!markdown.includes('(session: primary-sess)'), 'primary session should not have explicit attribution in checks');
+    // Count occurrences of 'session:' - should only appear in the header or not at all in findings
+    const sessionMatches = markdown.match(/- session:/g);
+    assert.ok(!sessionMatches || sessionMatches.length === 0, 'no session attribution line in findings for primary session');
   });
 });
 

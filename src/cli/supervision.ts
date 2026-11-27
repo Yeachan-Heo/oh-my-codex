@@ -1397,17 +1397,25 @@ export function renderReportMarkdown(report: SupervisionReport): string {
     ...(report.prompt ? ['', `User account: ${report.prompt}`] : []),
     '',
     '## Checks',
-    ...report.checks.map((check) => `- ${check.status.toUpperCase().padEnd(4)} \`${check.id}\` — ${(check.evidence[0] ?? '').slice(0, 160)}`),
+    ...report.checks.map((check) => {
+      const isSecondary = check.sessionId && check.sessionId !== report.session.sessionId;
+      const sessionAttr = isSecondary ? ` (session: ${check.sessionId})` : '';
+      return `- ${check.status.toUpperCase().padEnd(4)} \`${check.id}\`${sessionAttr} — ${(check.evidence[0] ?? '').slice(0, 160)}`;
+    }),
     '',
     '## Findings',
-    ...(report.findings.length === 0 ? ['None.'] : report.findings.flatMap((finding) => [
-      `### ${finding.priority} \`${finding.id}\` (${finding.status}, score ${finding.score})`,
-      finding.title,
-      ...finding.evidence.map((line) => `- ${line}`),
-      `- past issues: ${finding.sources.map((s) => `#${s}`).join(', ')}`,
-      `- fingerprint: ${finding.fingerprint} (${finding.dedupe}${finding.duplicate ? `: ${finding.duplicate.url}` : ''})`,
-      '',
-    ])),
+    ...(report.findings.length === 0 ? ['None.'] : report.findings.flatMap((finding) => {
+      const isSecondary = finding.sessionId && finding.sessionId !== report.session.sessionId;
+      const sessionAttr = isSecondary ? `\n- session: ${finding.sessionId}` : '';
+      return [
+        `### ${finding.priority} \`${finding.id}\` (${finding.status}, score ${finding.score})`,
+        finding.title,
+        ...finding.evidence.map((line) => `- ${line}`),
+        `- past issues: ${finding.sources.map((s) => `#${s}`).join(', ')}`,
+        `- fingerprint: ${finding.fingerprint} (${finding.dedupe}${finding.duplicate ? `: ${finding.duplicate.url}` : ''})${sessionAttr}`,
+        '',
+      ];
+    })),
   ];
   if (report.lanes.length > 0) {
     lines.push('## Analysis lanes');
