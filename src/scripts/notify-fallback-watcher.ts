@@ -311,6 +311,9 @@ interface CycleActivitySummary {
 const fileState = new Map<string, WatcherFileMeta>();
 const seenTurnKeys = new Set<string>();
 let rolloutDiscoveryScanCount = 0;
+
+// Test override for simulating parent loss in tests
+let testingOverrideParentIsGone: boolean | null = null;
 let lastRolloutDiscoveryAt: string | null = null;
 let lastRolloutDiscoveryAtMs = 0;
 let rolloutDiscoveryPending = true;
@@ -1395,6 +1398,8 @@ async function removePidFileIfOwned(): Promise<void> {
 }
 
 function parentIsGone(): boolean {
+  // Test override for simulating parent loss
+  if (testingOverrideParentIsGone !== null) return testingOverrideParentIsGone;
   if (!Number.isFinite(parentPid) || parentPid <= 0) return false;
   if (parentPid === process.pid) return false;
   return !isPidAlive(parentPid);
@@ -2455,6 +2460,14 @@ export const testingExports = Object.freeze({
       };
     }
   },
+  // Export lifecycle guard function for direct behavior testing
+  enforceLifecycleGuards,
+  parentIsGone,
+  // Test helpers for parent loss simulation
+  setTestingParentIsGone: (value: boolean | null) => {
+    testingOverrideParentIsGone = value;
+  },
+  getTestingParentIsGone: () => testingOverrideParentIsGone,
 });
 
 // Only run main() if this module is the entry point (not when imported for testing)
