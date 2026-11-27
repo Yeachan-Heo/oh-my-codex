@@ -3803,6 +3803,189 @@ process.on('SIGTERM', () => process.exit(0));
       () => withoutTeamTestWorkerEnv(() => teamCommand(['ralph', '1:executor', 'issue 742 linked ralph launch'])),
       /Deprecated usage: `omx team ralph \.\.\.` has been removed/,
     );
+
+  });
+  it('rejects team launch with explicit tickets from outside repo without opt-in', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-external-cwd-'));
+    const repoDir = join(wd, 'project');
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(repoDir, { recursive: true });
+      execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoDir, stdio: 'ignore' });
+      await writeFile(join(repoDir, 'README.md'), 'test', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: repoDir, stdio: 'ignore' });
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['4:executor', 'Work on tickets TASK-1, TASK-2, TASK-3, and TASK-4; do not take other tickets.'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects #NNNN issue references from outside repo without opt-in', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-hash-issue-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', 'Fix #4228 and the color #123456 bug'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects six- and eight-digit issue references outside a color context', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-long-hash-issue-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      for (const task of ['Fix #123456', 'Closes #12345678 and update the docs']) {
+        await assert.rejects(
+          () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', task])),
+          /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows team launch with explicit tickets from inside repo', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-inside-repo-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(wd, { recursive: true });
+      execFileSync('git', ['init'], { cwd: wd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: wd, stdio: 'ignore' });
+      await writeFile(join(wd, 'README.md'), 'test', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd: wd, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: wd, stdio: 'ignore' });
+      process.chdir(wd);
+      // This should not throw since we're inside a repo
+      await assert.doesNotReject(
+        () => withoutTeamTestWorkerEnv(async () => {
+          try {
+            await teamCommand(['2:executor', 'Work on TASK-1 and TASK-2']);
+          } catch (error: unknown) {
+            if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+              throw error;
+            }
+            // Other errors (like tmux not available) are acceptable
+          }
+        }),
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows team launch with generic tasks from outside repo', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-generic-task-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // This should not throw since the task has no explicit tickets
+      await assert.doesNotReject(
+        () => withoutTeamTestWorkerEnv(async () => {
+          try {
+            await teamCommand(['2:executor', 'Implement a feature and write tests']);
+          } catch (error: unknown) {
+            if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+              throw error;
+            }
+            // Other errors (like tmux not available) are acceptable
+          }
+        }),
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat numeric CSS color literals as ticket references outside a repo', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-color-literal-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      for (const task of [
+        'Create a landing page using background color #123456',
+        'Create a landing page with accent #12345678 and text color #123',
+      ]) {
+        await assert.doesNotReject(
+          () => withoutTeamTestWorkerEnv(async () => {
+            try {
+              await teamCommand(['2:executor', task]);
+            } catch (error: unknown) {
+              if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+                throw error;
+              }
+              // Other errors (like tmux not available) are acceptable
+            }
+          }),
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects false positive ticket patterns like UTF-8, SHA-256, ES-2015, HTTP-2', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-false-positives-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // These should not throw or be treated as explicit tickets
+      const falsePositives = [
+        'Review UTF-8 encoding in the parser',
+        'Implement SHA-256 hashing for security',
+        'Update ES-2015 compatibility layer',
+        'Debug HTTP-2 protocol issues',
+      ];
+      
+      for (const task of falsePositives) {
+        await assert.doesNotReject(
+          () => withoutTeamTestWorkerEnv(async () => {
+            try {
+              await teamCommand(['2:executor', task]);
+            } catch (error: unknown) {
+              if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+                throw error;
+              }
+              // Other errors (like tmux not available) are acceptable
+            }
+          }),
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 
 });
