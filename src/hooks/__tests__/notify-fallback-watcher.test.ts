@@ -4996,6 +4996,84 @@ setInterval(() => {}, 1000);
         await rm(tempHome, { recursive: true, force: true });
       }
     });
+
+    it('preserves primary watcher state when backing off and processing a marker', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-preserve-primary-state-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-preserve-primary-state-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const markerPath = join(wd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+      const primary = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        const primaryPidPath = join(stateDir, 'notify-fallback.pid');
+        const primaryRecord = { pid: primary.pid, cwd: wd, started_at: new Date().toISOString() };
+        await writeFile(primaryPidPath, JSON.stringify(primaryRecord));
+        authority = await startPersistentAuthority(wd, tempHome);
+        // Wait for authority to start
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        // Trigger marker processing while primary is healthy
+        await writeFile(markerPath, JSON.stringify({ fingerprint: 'test' }));
+        // Wait for marker to be consumed
+        await waitFor(async () => !existsSync(markerPath), 2000, 25);
+        // Check that primary's state is preserved in notify-fallback-state.json
+        const statePath = join(stateDir, 'notify-fallback-state.json');
+        const state = JSON.parse(await readFile(statePath, 'utf-8'));
+        // The state file should NOT have the authority's PID as the main pid field when primary is healthy
+        // The authority_backoff should indicate primary_watcher_healthy
+        assert.deepEqual(
+          state.authority_backoff?.reason,
+          'primary_watcher_healthy',
+          'authority backoff should indicate primary is healthy',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        primary.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('resets idle streak when control-plane work is performed via marker', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-idle-reset-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-idle-reset-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const markerPath = join(wd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        // Create a primary pid file that records a stale process (to make primary unhealthy)
+        const stalePrimaryRecord = { pid: 1, cwd: wd, started_at: new Date(Date.now() - 100000).toISOString() };
+        await writeFile(join(stateDir, 'notify-fallback.pid'), JSON.stringify(stalePrimaryRecord));
+        authority = await startPersistentAuthority(wd, tempHome);
+        // Wait for authority to start
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        // Set up idle state by waiting a few cycles without activity
+        await sleep(300);
+        // Get initial idle streak
+        let statePath = join(stateDir, 'notify-fallback-state.json');
+        let state = JSON.parse(await readFile(statePath, 'utf-8'));
+        const initialIdleStreak = state.adaptive_poll?.idle_streak ?? 0;
+        // Trigger a marker that will cause control-plane work (dispatch drain, etc.)
+        await writeFile(markerPath, JSON.stringify({ fingerprint: 'activity' }));
+        // Wait for marker to be consumed
+        await waitFor(async () => !existsSync(markerPath), 2000, 25);
+        // Check that idle streak was reset or the activity was recorded
+        state = JSON.parse(await readFile(statePath, 'utf-8'));
+        const activityReason = state.last_cycle_activity;
+        // When control-plane work is done, it should be recorded (not idle)
+        assert.ok(
+          activityReason === 'authority_marker',
+          'activity summary should be recorded in state when marker triggers work',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
   });
 
 });

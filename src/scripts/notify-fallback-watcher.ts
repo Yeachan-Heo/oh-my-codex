@@ -2171,22 +2171,32 @@ async function pumpTeamControlPlaneTick(): Promise<CycleActivitySummary> {
 }
 
 
-async function processPersistentAuthorityMarker(): Promise<boolean> {
-  if (!persistentAuthority) return false;
+interface PersistentMarkerProcessResult {
+  processed: boolean;
+  activitySummary: CycleActivitySummary;
+}
+
+async function processPersistentAuthorityMarker(): Promise<PersistentMarkerProcessResult> {
+  if (!persistentAuthority) return { processed: false, activitySummary: { active: false, reason: 'not_persistent_authority' } };
   try {
     const markerContent = await readFile(authorityTickMarkerPath, 'utf-8').catch(() => null);
-    if (!markerContent) return false;
+    if (!markerContent) return { processed: false, activitySummary: { active: false, reason: 'no_marker' } };
     // Marker exists, run authority cycle and clear it
     const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
     lastAuthorityBackoff = authorityBackoff;
+    let activitySummary: CycleActivitySummary;
     if (!authorityBackoff.active) {
-      await pumpTeamControlPlaneTick();
+      // Primary is not healthy, perform control-plane work and capture the activity summary
+      activitySummary = await pumpTeamControlPlaneTick();
+    } else {
+      // Primary is healthy, skip control-plane work but preserve its state
+      activitySummary = { active: false, reason: 'primary_watcher_healthy' };
     }
     // Clear the marker to signal the HUD tick that processing is complete
     await unlink(authorityTickMarkerPath).catch(() => {});
-    return true;
+    return { processed: true, activitySummary };
   } catch {
-    return false;
+    return { processed: false, activitySummary: { active: false, reason: 'marker_processing_error' } };
   }
 }
 
@@ -2197,11 +2207,17 @@ async function runWatcherCycle(): Promise<number> {
   
   // Check for persistent authority marker and process if present
   if (persistentAuthority) {
-    const markerProcessed = await processPersistentAuthorityMarker();
-    if (markerProcessed) {
-      await writeState({ last_cycle_activity: 'authority_marker' });
-      // Continue to next cycle iteration to check for more work
-      return Math.max(50, Math.min(idleMaxPollMs, 500));
+    const markerResult = await processPersistentAuthorityMarker();
+    if (markerResult.processed) {
+      // Preserve primary watcher state when backing off; otherwise write full state
+      if (markerResult.activitySummary.reason === 'primary_watcher_healthy') {
+        await writeAuthorityBackoffState();
+      } else {
+        await writeState({ last_cycle_activity: 'authority_marker' });
+      }
+      // Update adaptive poll state with the actual control-plane activity summary
+      const nextDelayMs = updateAdaptivePollState(markerResult.activitySummary);
+      return nextDelayMs;
     }
     // No marker consumed: a persistent authority does authority work only on request.
     return updateAdaptivePollState({ active: false, reason: 'awaiting_authority_marker' });
