@@ -51,7 +51,8 @@ export function onSessionStart(data: { cwd?: string }): { additionalContext?: st
     if (!existsSync(wikiDir) && !legacyFallbackActive) return {};
 
     const pages = listPages(root);
-    if (pages.length === 0) return {};
+    // Only skip wiki context if there are no user pages AND we're not feeding project memory
+    if (pages.length === 0 && !config.feedProjectMemoryOnStart) return {};
 
     if (legacyFallbackActive) {
       const summary = [

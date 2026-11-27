@@ -188,9 +188,9 @@ describe('directive lifecycle integration tests', () => {
 
       // Create project memory with expired and active directives
       // The directives array must contain both active and expired directives
-      await mkdir(join(cwd, '.omx'), { recursive: true });
+      // Note: project-memory.json at root is canonical location for SessionStart
       await writeFile(
-        join(cwd, '.omx', 'project-memory.json'),
+        join(cwd, 'project-memory.json'),
         JSON.stringify({
           techStack: 'TypeScript',
           directives: [
@@ -221,33 +221,37 @@ describe('directive lifecycle integration tests', () => {
 
       // Read the generated wiki page to verify filtering occurred
       const { readFileSync, existsSync } = await import('node:fs');
-      const envPath = join(cwd, '.omx', 'wiki', 'environment.md');
+      const envPath = join(cwd, 'omx_wiki', 'environment.md');
       
-      // Best-effort test: if the wiki file was created, verify the filtering worked
-      // The test verifies that filterActiveDirectives is called by temporarily removing it
-      // and confirming the test fails (see commit message for verification steps)
-      if (existsSync(envPath)) {
-        const envContent = readFileSync(envPath, 'utf-8');
-
-        // If the Directives section exists, verify that only active directives are included
-        if (envContent.includes('## Directives')) {
-          // Verify that active directives are present
-          assert.ok(
-            envContent.includes('Active wiki directive'),
-            'active directive should be in environment.md'
-          );
-          assert.ok(
-            envContent.includes('Future wiki directive'),
-            'future expiry directive should be in environment.md'
-          );
-          
-          // Verify that expired directive is NOT present (this proves filterActiveDirectives was called)
-          assert.ok(
-            !envContent.includes('Expired wiki directive'),
-            'expired directive should NOT be in environment.md (proof that filterActiveDirectives was called)'
-          );
-        }
-      }
+      // Environment.md MUST exist and be properly generated
+      assert.ok(
+        existsSync(envPath),
+        'environment.md should be created by feedProjectMemory'
+      );
+      
+      const envContent = readFileSync(envPath, 'utf-8');
+      
+      // Directives section MUST be present
+      assert.ok(
+        envContent.includes('## Directives'),
+        'Directives section should exist in environment.md'
+      );
+      
+      // Active directives MUST be present
+      assert.ok(
+        envContent.includes('Active wiki directive'),
+        'active directive should be in environment.md'
+      );
+      assert.ok(
+        envContent.includes('Future wiki directive'),
+        'future expiry directive should be in environment.md'
+      );
+      
+      // Expired directive MUST NOT be present (proves filterActiveDirectives is called)
+      assert.ok(
+        !envContent.includes('Expired wiki directive'),
+        'expired directive should NOT be in environment.md (proof that filterActiveDirectives was called)'
+      );
       // Note: verification that filterActiveDirectives is required happens by temporarily
       // removing the call in wiki/lifecycle.ts and confirming this test fails (see commit message)
     } finally {
@@ -265,15 +269,13 @@ describe('directive lifecycle integration tests', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-directive-wiki-expiry-'));
     try {
       const now = new Date();
-      // Create a directive that will expire soon (in the past for this test)
-      // We'll simulate expiration by changing the expiresAt time between calls
+      // Create a directive that will expire soon
       const futureTime = new Date(now.getTime() + 10 * 60 * 1000);
       const pastTime = new Date(now.getTime() - 10 * 60 * 1000);
 
       // Create project memory with an active directive that hasn't expired yet
-      await mkdir(join(cwd, '.omx'), { recursive: true });
       await writeFile(
-        join(cwd, '.omx', 'project-memory.json'),
+        join(cwd, 'project-memory.json'),
         JSON.stringify({
           techStack: 'TypeScript',
           directives: [
@@ -302,43 +304,56 @@ describe('directive lifecycle integration tests', () => {
       onSessionStart({ cwd });
 
       const { readFileSync, existsSync } = await import('node:fs');
-      const envPath = join(cwd, '.omx', 'wiki', 'environment.md');
+      const envPath = join(cwd, 'omx_wiki', 'environment.md');
 
-      // Best-effort test: if the wiki file was created, verify cache invalidation works
-      // The test verifies that filterActiveDirectives is called by temporarily removing it
-      // and confirming this test fails (see commit message for verification steps)
-      if (existsSync(envPath)) {
-        let envContent = readFileSync(envPath, 'utf-8');
-        
-        if (envContent.includes('Soon-to-expire wiki directive')) {
-          // Now simulate the directive expiring by updating project-memory.json
-          // Set the expiresAt to the past
-          await writeFile(
-            join(cwd, '.omx', 'project-memory.json'),
-            JSON.stringify({
-              techStack: 'TypeScript',
-              directives: [
-                { directive: 'Soon-to-expire wiki directive', priority: 'high', timestamp: now.toISOString(), expiresAt: pastTime.toISOString() },
-                { directive: 'Permanent wiki directive', priority: 'high', timestamp: now.toISOString() },
-              ],
-            }),
-          );
+      // After first session, environment.md MUST exist with both active directives
+      assert.ok(
+        existsSync(envPath),
+        'environment.md should be created by feedProjectMemory'
+      );
+      
+      let envContent = readFileSync(envPath, 'utf-8');
+      
+      // Both directives should be present before expiration
+      assert.ok(
+        envContent.includes('Soon-to-expire wiki directive'),
+        'soon-to-expire directive should be in environment.md after first session (before expiry)'
+      );
+      assert.ok(
+        envContent.includes('Permanent wiki directive'),
+        'permanent directive should be in environment.md after first session'
+      );
+      
+      // Add a small delay to ensure mtime changes
+      await new Promise(resolve => setTimeout(resolve, 10));
+      
+      // Simulate the directive expiring by updating project-memory.json with a new expiresAt time
+      // This triggers cache invalidation and verifies the snapshot is updated
+      await writeFile(
+        join(cwd, 'project-memory.json'),
+        JSON.stringify({
+          techStack: 'TypeScript',
+          directives: [
+            { directive: 'Soon-to-expire wiki directive', priority: 'high', timestamp: now.toISOString(), expiresAt: pastTime.toISOString() },
+            { directive: 'Permanent wiki directive', priority: 'high', timestamp: now.toISOString() },
+          ],
+        }),
+      );
 
-          // Second session: call onSessionStart again with the now-expired directive
-          onSessionStart({ cwd });
+      // Second session: call onSessionStart again
+      // Should detect that project-memory.json changed and regenerate environment.md
+      onSessionStart({ cwd });
 
-          // Verify second snapshot has the expired directive removed (proof that cache was invalidated by filterActiveDirectives)
-          envContent = readFileSync(envPath, 'utf-8');
-          assert.ok(
-            !envContent.includes('Soon-to-expire wiki directive'),
-            'expired directive should be removed from wiki snapshot after re-running onSessionStart (proof that filterActiveDirectives invalidates cache on expiry)'
-          );
-          assert.ok(
-            envContent.includes('Permanent wiki directive'),
-            'permanent directive should still be in wiki snapshot after expiry'
-          );
-        }
-      }
+      // After second session, expired directive MUST be removed (proves cache invalidation works)
+      envContent = readFileSync(envPath, 'utf-8');
+      assert.ok(
+        !envContent.includes('Soon-to-expire wiki directive'),
+        'expired directive should be removed from wiki snapshot after re-running onSessionStart (proof that filterActiveDirectives invalidates cache on expiry)'
+      );
+      assert.ok(
+        envContent.includes('Permanent wiki directive'),
+        'permanent directive should still be in wiki snapshot after expiry'
+      );
       // Note: verification that filterActiveDirectives and cache invalidation are required happens by
       // temporarily removing the calls in wiki/lifecycle.ts and confirming this test fails (see commit message)
     } finally {
