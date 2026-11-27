@@ -505,6 +505,11 @@ omx sparkshell git status
 omx sparkshell --tmux-pane %12 --tail-lines 400
 ```
 
+### Supervision
+
+- `omx supervision [--file] [<prompt>]` checks live OMX sessions for known repeat problems (see `omx supervision --help`)
+- `omx supervision codex-review-loop [--repo owner/name] [--post] [--watch [seconds]] [--json]` scans open PRs (drafts included) and plans `@codex review` for heads with no Codex review. It is a dry run unless `--post` is given, uses your own `gh` auth (your Codex quota), posts at most 10 per pass, and backs off 24h after a Codex usage-limit reply to your own trigger. A dry run writes nothing; `--post` records the block and a 6h per-head ledger in `~/.omx/state/supervision/codex-review-loop.json`, keyed by your GitHub login and shared by all worktrees and sessions of the same user
+
 ### Wiki
 
 - `omx wiki` is the CLI-first JSON surface for wiki operations; `omx_wiki` MCP is explicit compatibility only
