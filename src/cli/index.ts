@@ -66,6 +66,8 @@ import {
 import {
   MADMAX_FLAG,
   CODEX_BYPASS_FLAG,
+  LOW_REASONING_FLAG,
+  MEDIUM_REASONING_FLAG,
   HIGH_REASONING_FLAG,
   XHIGH_REASONING_FLAG,
   SPARK_FLAG,
@@ -335,6 +337,10 @@ Usage:
 
 Options:
   --yolo        Launch Codex in yolo mode (shorthand for: omx launch --yolo)
+  --low         Launch Codex with low reasoning effort
+                (shorthand for: -c model_reasoning_effort="low")
+  --medium      Launch Codex with medium reasoning effort
+                (shorthand for: -c model_reasoning_effort="medium")
   --high        Launch Codex with high reasoning effort
                 (shorthand for: -c model_reasoning_effort="high")
   --xhigh       Launch Codex with xhigh reasoning effort
@@ -4236,7 +4242,7 @@ function normalizeMadmaxDetachedLaunchArgv(argv: readonly string[]): string[] {
       semanticFlags.add(arg);
       continue;
     }
-    if (arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) {
+    if (arg === LOW_REASONING_FLAG || arg === MEDIUM_REASONING_FLAG || arg === HIGH_REASONING_FLAG || arg === XHIGH_REASONING_FLAG) {
       reasoningFlag = arg;
       continue;
     }
@@ -6158,6 +6164,16 @@ export function normalizeCodexLaunchArgs(args: string[]): string[] {
         normalized.push(arg);
         hasBypass = true;
       }
+      continue;
+    }
+
+    if (arg === LOW_REASONING_FLAG) {
+      reasoningMode = "low";
+      continue;
+    }
+
+    if (arg === MEDIUM_REASONING_FLAG) {
+      reasoningMode = "medium";
       continue;
     }
 
