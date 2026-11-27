@@ -328,66 +328,59 @@ describe('notify-fallback-watcher idle backoff behavior tests', () => {
   });
 
   it('dispatch watcher matches both legacy dispatch/requests.json and authoritative dispatch.json', () => {
-    // Test that the team dispatch watcher pattern correctly identifies both dispatch sources.
+    // Test that shouldWakeOnDispatchFilename correctly identifies both dispatch sources.
     // This verifies the fix for issue #4227 finding at line 2358: the watcher must wake up
     // when the runtime bridge writes dispatch.json (the authoritative dispatch source).
+    // Uses the REAL shouldWakeOnDispatchFilename export from notify-fallback-watcher.
     
-    // Mock the filename pattern matching used in ensureTeamDispatchWatcher
-    const testFilenames = [
-      'team/dispatch/requests.json',      // Legacy dispatch requests
-      'team/dispatch.json',               // Authoritative dispatch (from runtime bridge)
-      'team/other-file.txt',              // Should not match
-      'team/dispatch',                    // Directory, should not match
-      'dispatch/requests.json',           // Not in team/, should not match
+    const { shouldWakeOnDispatchFilename } = testingExports;
+    
+    const testCases = [
+      { filename: 'team/dispatch/requests.json', shouldWake: true, reason: 'legacy dispatch requests' },
+      { filename: 'team/dispatch.json', shouldWake: true, reason: 'authoritative dispatch (from runtime bridge)' },
+      { filename: 'team/other-file.txt', shouldWake: false, reason: 'non-dispatch file' },
+      { filename: 'team/dispatch', shouldWake: false, reason: 'directory, not file' },
+      { filename: 'dispatch/requests.json', shouldWake: true, reason: 'dispatch pattern matches even outside team/' },
+      { filename: null, shouldWake: true, reason: 'null filename' },
+      { filename: Buffer.from('team/dispatch.json'), shouldWake: true, reason: 'Buffer filename with dispatch.json' },
     ];
 
-    testFilenames.forEach((filename) => {
-      const normalized = filename.replace(/\\/g, '/');
-      const shouldWake = 
-        normalized.endsWith('dispatch/requests.json') || 
-        normalized.endsWith('dispatch.json');
-      
-      if (normalized.endsWith('dispatch/requests.json')) {
-        assert.ok(shouldWake, `should wake on legacy dispatch/requests.json: ${filename}`);
-      } else if (normalized.endsWith('dispatch.json')) {
-        assert.ok(shouldWake, `should wake on authoritative dispatch.json: ${filename}`);
-      } else {
-        assert.ok(!shouldWake, `should not wake on non-dispatch file: ${filename}`);
-      }
+    testCases.forEach(({ filename, shouldWake, reason }) => {
+      const result = shouldWakeOnDispatchFilename(filename);
+      assert.strictEqual(result, shouldWake, 
+        `shouldWakeOnDispatchFilename should ${shouldWake ? 'return true' : 'return false'} for ${reason}: ${filename}`);
     });
   });
 
   it('health check threshold accounts for primary watcher adaptive backoff', () => {
-    // Test that resolveAuthorityPrimaryWatcherHealth considers the primary watcher's
-    // adaptive backoff state when calculating staleness threshold.
-    // This verifies the fix for issue #4227 finding at line 508: when the primary watcher
-    // is in idle backoff (up to 60s), the secondary authority-only watcher should not
-    // report staleness too early.
+    // Test that calculateStalenessThreshold correctly accounts for adaptive backoff.
+    // This verifies the fix for issue #4227 finding at line 1203: when the primary watcher
+    // is in idle backoff (up to 60s), the threshold should scale accordingly.
+    // Uses the REAL calculateStalenessThreshold export from notify-fallback-watcher.
     
-    // Simulate primary watcher state at different backoff levels
-    const baseThreshold = (pollMs: number) => Math.max(1_000, pollMs * 4);
+    const { calculateStalenessThreshold } = testingExports;
     
     // Case 1: Primary at base poll rate (no backoff)
     const basePollMs = 250;
-    const baseExpectedThreshold = baseThreshold(basePollMs);
-    assert.ok(baseExpectedThreshold >= 1_000, 
-      `base threshold should be at least 1000ms: ${baseExpectedThreshold}`);
-    assert.ok(baseExpectedThreshold === 1_000,
-      `base threshold should equal Math.max(1000, 250*4) = 1000: ${baseExpectedThreshold}`);
+    const baseThreshold = calculateStalenessThreshold(basePollMs);
+    assert.ok(baseThreshold >= 1_000, 
+      `base threshold should be at least 1000ms: ${baseThreshold}`);
+    assert.strictEqual(baseThreshold, 1_000,
+      `base threshold should equal Math.max(1000, 250*4) = 1000: ${baseThreshold}`);
     
     // Case 2: Primary in slow backoff (60s)
     const backedOffPollMs = 60_000;
-    const backedOffThreshold = baseThreshold(backedOffPollMs);
-    assert.ok(backedOffThreshold > baseExpectedThreshold,
-      `backed-off threshold should be larger: ${backedOffThreshold} > ${baseExpectedThreshold}`);
-    assert.ok(backedOffThreshold === 240_000,
+    const backedOffThreshold = calculateStalenessThreshold(backedOffPollMs);
+    assert.ok(backedOffThreshold > baseThreshold,
+      `backed-off threshold should be larger: ${backedOffThreshold} > ${baseThreshold}`);
+    assert.strictEqual(backedOffThreshold, 240_000,
       `backed-off threshold should equal 60000*4 = 240000: ${backedOffThreshold}`);
     
     // The key insight: without accounting for adaptive backoff, the authority-only watcher
     // would use just pollMs (250) and think 240 seconds of idle ticks is stale after just 1 second.
     // With the fix, it uses the primary's current adaptive poll value (60s) and allows
     // up to 240 seconds before reporting staleness.
-    assert.ok(backedOffThreshold >= 60_000,
-      `threshold should be at least as large as the backoff interval: ${backedOffThreshold} >= 60000`);
+    assert.ok(backedOffThreshold >= backedOffPollMs,
+      `threshold should be at least as large as the backoff interval: ${backedOffThreshold} >= ${backedOffPollMs}`);
   });
 });

@@ -1202,7 +1202,7 @@ async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<A
   const primaryCurrentMs = primaryAdaptivePoll && typeof primaryAdaptivePoll === 'object'
     ? Math.max(50, asNumber(primaryAdaptivePoll.current_ms as string | number | undefined, primaryPollMs))
     : primaryPollMs;
-  const thresholdMs = Math.max(1_000, primaryCurrentMs * 4);
+  const thresholdMs = calculateStalenessThreshold(primaryCurrentMs);
   if (lastTickMs === null) {
     return createAuthorityBackoffState('tick_invalid', {
       primary_pid: existingRecord.pid,
@@ -2355,17 +2355,29 @@ function wakeWatcher(): void {
   void tick();
 }
 
+/** Check if a filename should trigger the team dispatch watcher wake. */
+function shouldWakeOnDispatchFilename(filename: string | Buffer | null): boolean {
+  if (!filename) return true;
+  const name = typeof filename === 'string' ? filename : filename.toString();
+  const normalized = name.replace(/\\/g, '/');
+  return normalized.endsWith('dispatch/requests.json') || normalized.endsWith('dispatch.json');
+}
+
+/** Calculate the staleness threshold for authority health checks based on the primary watcher's poll interval. */
+function calculateStalenessThreshold(pollMs: number): number {
+  return Math.max(1_000, pollMs * 4);
+}
+
 function ensureTeamDispatchWatcher(): void {
   if (teamDispatchWatcher || runOnce) return;
   const teamDir = join(stateDir, 'team');
   if (!existsSync(teamDir)) return;
   try {
     const watcher = watchDirectory(teamDir, { persistent: false, recursive: true }, (_eventType, filename) => {
-      const name = filename?.toString();
       // Wake on legacy dispatch/requests.json (team-local) or the authoritative dispatch.json
       // (from runtime bridge). The runtime bridge writes dispatch.json when commands like QueueDispatch
       // are executed, allowing active dispatch updates to interrupt idle backoff sleep.
-      if (!name || name.replace(/\\/g, '/').endsWith('dispatch/requests.json') || name.replace(/\\/g, '/').endsWith('dispatch.json')) wakeWatcher();
+      if (shouldWakeOnDispatchFilename(filename)) wakeWatcher();
     });
     watcher.on('error', () => {
       watcher.close();
@@ -2478,6 +2490,9 @@ export const testingExports = Object.freeze({
     testingOverrideParentIsGone = value;
   },
   getTestingParentIsGone: () => testingOverrideParentIsGone,
+  // Export dispatch and threshold calculation functions for testing
+  shouldWakeOnDispatchFilename,
+  calculateStalenessThreshold,
 });
 
 // Only run main() if this module is the entry point (not when imported for testing)
