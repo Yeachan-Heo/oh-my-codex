@@ -17,7 +17,7 @@ import { getSparkDefaultModel } from '../config/models.js';
 import { LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK, resolveNativeSubagentSupportStatus } from '../leader/contract.js';
 import { isHudWatchPane, parseTmuxPaneSnapshot, readHudPaneOwner, TMUX_PANE_FIELD_SEPARATOR } from '../hud/tmux.js';
 import type { TmuxPaneSnapshot } from '../hud/tmux.js';
-import { readAllState, readVersion } from '../hud/state.js';
+import { projectHudModes, readAllState, readVersion } from '../hud/state.js';
 import { getBaseStateDir } from '../mcp/state-paths.js';
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../state/skill-active.js';
 import { realpathSync } from 'node:fs';
@@ -171,7 +171,8 @@ export interface SupervisionSnapshot {
 export interface EvidenceBundle {
   schemaVersion: 1;
   collectedAt: string;
-  snapshot: SupervisionSnapshot;
+  snapshot: SupervisionSnapshot;  // Primary snapshot (for backward compatibility)
+  snapshots?: Map<string, SupervisionSnapshot>;  // All active session snapshots (optional, for multi-session support)
 }
 
 export function toEvidenceBundle(snapshot: SupervisionSnapshot): EvidenceBundle {
@@ -179,13 +180,25 @@ export function toEvidenceBundle(snapshot: SupervisionSnapshot): EvidenceBundle 
 }
 
 export function summarizeEvidence(bundle: EvidenceBundle): string {
-  const { snapshot } = bundle;
+  const { snapshot, snapshots } = bundle;
+  // Include all sessions when available; fallback to primary snapshot
+  const sessionsList = snapshots ? Array.from(snapshots.entries()).map(([sessionId, snap]) => ({
+    sessionId,
+    cwd: snap.selection.selected?.cwd,
+    mode: snap.selection.mode,
+    modes: snap.state.modes.map((record) => ({ mode: record.mode, active: record.data.active, phase: record.data.current_phase })),
+    friction: snap.friction,
+  })) : [{
+    sessionId: snapshot.selection.selected?.sessionId,
+    cwd: snapshot.selection.selected?.cwd,
+    mode: snapshot.selection.mode,
+    modes: snapshot.state.modes.map((record) => ({ mode: record.mode, active: record.data.active, phase: record.data.current_phase })),
+    friction: snapshot.friction,
+  }];
   return JSON.stringify({
     collectedAt: bundle.collectedAt,
-    session: snapshot.selection.selected && { id: snapshot.selection.selected.sessionId, cwd: snapshot.selection.selected.cwd, mode: snapshot.selection.mode },
-    modes: snapshot.state.modes.map((record) => ({ mode: record.mode, active: record.data.active, phase: record.data.current_phase, path: record.path })),
+    sessions: sessionsList,
     processes: snapshot.processes.map((proc) => ({ pid: proc.pid, kind: proc.kind, cpuPct: proc.cpuPct, rssKb: proc.rssKb })),
-    friction: snapshot.friction,
   }, null, 1);
 }
 
@@ -214,6 +227,7 @@ export interface CheckResult {
   repro: 'persistent' | 'sampled';
   sources: number[];
   blast: number;
+  sessionId?: string;  // Optional: identifies which session this check is for (multi-session support)
 }
 
 export interface Finding extends CheckResult {
@@ -545,8 +559,18 @@ const CHECK_RUNNERS: Record<string, CheckDefinition['run']> = {
       for (const record of activeModes(snapshot)) {
         if (!(ACTIVE_STATE_MODES as readonly string[]).includes(record.mode)) continue;
         const shown = snapshot.hud.modes[HUD_STATE_KEY[record.mode] as string];
-        // The HUD lets the canonical skill-active phase win over the mode file's phase.
-        const phase = canonical.find((skill) => skill.skill === record.mode)?.phase ?? phaseOf(record);
+        // Detail-first precedence: detail phase is preferred, canonical is a fallback (like HUD's mergePhase).
+        const detailPhase = phaseOf(record);
+        const canonicalPhase = canonical.find((skill) => skill.skill === record.mode)?.phase;
+        let phase = detailPhase ?? canonicalPhase;
+        if (record.mode === 'team') {
+          // Team precedence (HUD mergeTeamPhase): team/<name>/phase.json, then canonical skill phase, then detail.
+          const teamName = typeof record.data.team_name === 'string' ? record.data.team_name.trim() : '';
+          const logPhase = teamName
+            ? snapshot.state.teamPhases.find((log) => /[\\/]team[\\/]([^\\/]+)[\\/]phase\.json$/.exec(log.path)?.[1] === teamName)?.currentPhase?.trim()
+            : undefined;
+          phase = logPhase || canonicalPhase || detailPhase;
+        }
         if (!shown) mismatches.push(`${record.mode} is active in ${record.path} (phase ${phase ?? '?'}) but the HUD shows nothing`);
         else if (phase && shown.phase && shown.phase !== phase) mismatches.push(`${record.mode} phase is "${phase}" in state but HUD shows "${shown.phase}"`);
       }
@@ -733,6 +757,65 @@ export function isFileable(finding: Finding): boolean {
   return (finding.priority === 'P0' || finding.priority === 'P1') && finding.dedupe === 'none';
 }
 
+/**
+ * Consolidate findings with the same fingerprint from multiple sessions into a single finding
+ * that includes evidence from all affected sessions.
+ * Returns both the consolidated findings and a map of which original findings were consolidated.
+ */
+export function consolidateFindingsByFingerprint(findings: Finding[]): { consolidated: Finding[]; wasConsolidated: Map<Finding, boolean> } {
+  const byFingerprint = new Map<string, Finding[]>();
+  for (const finding of findings) {
+    const key = finding.fingerprint;
+    if (!byFingerprint.has(key)) {
+      byFingerprint.set(key, []);
+    }
+    byFingerprint.get(key)!.push(finding);
+  }
+
+  const consolidated: Finding[] = [];
+  const wasConsolidated = new Map<Finding, boolean>();
+  
+  for (const [, groupedFindings] of byFingerprint) {
+    if (groupedFindings.length === 1) {
+      consolidated.push(groupedFindings[0]);
+      wasConsolidated.set(groupedFindings[0], false);
+    } else {
+      // Multiple findings with same fingerprint - consolidate them
+      const primary = groupedFindings[0];
+      const affectedSessions = groupedFindings
+        .filter((f) => f.sessionId)
+        .map((f) => f.sessionId!)
+        .filter((s, i, arr) => arr.indexOf(s) === i); // unique sessions
+      
+      // Add affected sessions info to evidence
+      const seen = new Set(primary.evidence);
+      const secondaryEvidence = groupedFindings.slice(1).flatMap((f) => f.evidence.filter((line) => {
+        if (seen.has(line)) return false;
+        seen.add(line);
+        return true;
+      }).map((line) => (f.sessionId ? `[${f.sessionId}] ${line}` : line)));
+      const consolidatedEvidence = [
+        ...primary.evidence,
+        ...secondaryEvidence,
+        ...(affectedSessions.length > 1
+          ? [`Also observed in sessions: ${affectedSessions.join(', ')}`]
+          : []),
+      ];
+      
+      const consolidatedFinding = { ...primary, evidence: consolidatedEvidence };
+      consolidated.push(consolidatedFinding);
+      
+      // Mark all findings in this group as consolidated
+      wasConsolidated.set(primary, true);
+      for (let i = 1; i < groupedFindings.length; i++) {
+        wasConsolidated.set(groupedFindings[i], true);
+      }
+    }
+  }
+
+  return { consolidated, wasConsolidated };
+}
+
 export function buildIssueDraft(finding: Finding, context: { prompt: string; version: string; selection: SessionSelection; platform: string }): { title: string; body: string } {
   const lines = [
     markerFor(finding.fingerprint),
@@ -790,7 +873,12 @@ export function buildLanePrompt(lane: { id: string; findings: readonly Finding[]
     '',
     `Lane: ${lane.id}`,
     'Findings:',
-    ...lane.findings.map((finding) => [`- [${finding.priority}] ${finding.id} (${finding.status}) \u2014 past issues ${finding.sources.map((s) => `#${s}`).join(' ')}`, ...finding.evidence.map((line) => `    ${line}`)].join('\n')),
+    ...lane.findings.map((finding) => {
+      const findingHeader = [`- [${finding.priority}] ${finding.id} (${finding.status}) \u2014 past issues ${finding.sources.map((s) => `#${s}`).join(' ')}`];
+      if (finding.sessionId) findingHeader.push(`(session: ${finding.sessionId})`);
+      const indentedEvidence = finding.evidence.map((line) => `    ${line}`);
+      return [findingHeader.join(' '), ...indentedEvidence].join('\n');
+    }),
     '',
     'Evidence bundle:',
     evidenceSummary,
@@ -1071,31 +1159,43 @@ function discoverCandidates(cwd: string, processes: readonly ProcSample[], panes
   return [...byId.values()];
 }
 
-function collectStateFiles(stateDir: string, sessionId: string): ModeStateRecord[] {
+export function collectStateFiles(stateDir: string, sessionId: string): ModeStateRecord[] {
   const records: ModeStateRecord[] = [];
-  const scan = (dir: string, scope: 'root' | 'session') => {
-    let names: string[];
-    try {
-      names = readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      if (!name.endsWith('-state.json')) continue;
-      const path = join(dir, name);
-      const data = readJson(path);
-      if (data) records.push({ mode: name.slice(0, -'-state.json'.length), scope, path, mtimeMs: mtimeOf(path), data });
-    }
-  };
-  scan(join(stateDir, 'sessions', sessionId), 'session');
-  const sessionModes = new Set(records.map((record) => record.mode));
-  scan(stateDir, 'root');
-  // Session-scoped state wins over root state for the same mode, like the HUD reader.
-  return records.filter((record) => record.scope === 'session' || !sessionModes.has(record.mode));
+  // Read only session-scoped state, like the HUD reader does (not root compatibility records).
+  let names: string[];
+  try {
+    names = readdirSync(join(stateDir, 'sessions', sessionId));
+  } catch {
+    return records;
+  }
+  for (const name of names) {
+    if (!name.endsWith('-state.json')) continue;
+    const path = join(stateDir, 'sessions', sessionId, name);
+    const data = readJson(path);
+    if (data) records.push({ mode: name.slice(0, -'-state.json'.length), scope: 'session', path, mtimeMs: mtimeOf(path), data });
+  }
+  return records;
 }
 
-async function readHudModel(cwd: string): Promise<SupervisionSnapshot['hud']> {
+export async function readHudModel(cwd: string, stateDir?: string, sessionId?: string): Promise<SupervisionSnapshot['hud']> {
   try {
+    // Explicit state root + session: apply the HUD's projection rules without consulting process env.
+    if (stateDir && sessionId) {
+      const canonicalSkills = new Map(
+        listActiveSkills(await readVisibleSkillActiveStateForStateDir(stateDir, sessionId)).map((entry) => [entry.skill, entry] as const),
+      );
+      const detail = (mode: string) => readJson(join(stateDir, 'sessions', sessionId, `${mode}-state.json`)) as { active?: boolean; current_phase?: string; team_name?: string } | null;
+      // Same source as readAllState's readCanonicalTeamPhase, but rooted at the candidate's state dir.
+      const teamDetail = detail('team');
+      const teamName = teamDetail?.active === true && typeof teamDetail.team_name === 'string' ? teamDetail.team_name.trim() : '';
+      const teamPhase = teamName && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(teamName) ? readJson(join(stateDir, 'team', teamName, 'phase.json'))?.current_phase : undefined;
+      const canonicalTeamPhase = typeof teamPhase === 'string' && teamPhase.trim() ? teamPhase.trim() : undefined;
+      return projectHudModes(canonicalSkills, {
+        ralph: detail('ralph'), ultrawork: detail('ultrawork'), autopilot: detail('autopilot'), ralplan: detail('ralplan'),
+        deepInterview: detail('deep-interview'), autoresearch: detail('autoresearch'), ultraqa: detail('ultraqa'), team: detail('team'),
+      }, readJson(join(stateDir, 'current-autopilot.json')), canonicalTeamPhase);
+    }
+    // Fallback to reading from full HudRenderContext
     const hud = await readAllState(cwd);
     const modes: Record<string, { phase?: string }> = {};
     for (const key of ['ralph', 'ultrawork', 'autopilot', 'ralplan', 'deepInterview', 'autoresearch', 'ultraqa', 'team'] as const) {
@@ -1145,13 +1245,18 @@ function collectTeamPhases(stateDir: string): SupervisionSnapshot['state']['team
 }
 
 export async function collectEvidence(options: SupervisionOptions, cwd: string): Promise<EvidenceBundle> {
-  return toEvidenceBundle(await collectSnapshot(options, cwd));
+  const [processes, tmux] = await Promise.all([sampleProcesses(options.windowSeconds), Promise.resolve(listTmuxPanes())]);
+  const snapshots = await collectSnapshotsForAllActiveSessions(options, cwd, processes, tmux);
+  const primarySnapshot = Array.from(snapshots.values())[0] ?? (await collectSnapshot(options, cwd));
+  const bundle = toEvidenceBundle(primarySnapshot);
+  bundle.snapshots = snapshots;
+  return bundle;
 }
 
-export async function collectSnapshot(options: SupervisionOptions, cwd: string): Promise<SupervisionSnapshot> {
-  const [processes, tmux] = await Promise.all([sampleProcesses(options.windowSeconds), Promise.resolve(listTmuxPanes())]);
-  const selection = selectSession(discoverCandidates(cwd, processes, tmux.panes));
+export async function collectSnapshotForSession(options: SupervisionOptions, invokingCwd: string, processes: readonly ProcSample[], tmux: { panes: TmuxPaneSnapshot[]; available: boolean }, selection: SessionSelection): Promise<SupervisionSnapshot> {
   const selected = selection.selected;
+  // Sessions may belong to different projects: diagnostics follow the session's own cwd.
+  const cwd = selected?.cwd ?? invokingCwd;
   const stateDir = selected?.stateDir ?? null;
   const nowMs = Date.now();
 
@@ -1211,7 +1316,7 @@ export async function collectSnapshot(options: SupervisionOptions, cwd: string):
     windowSeconds: options.windowSeconds,
     platform: process.platform,
     selection,
-    processes,
+    processes: [...processes],
     panes: tmux.panes,
     tmuxAvailable: tmux.available,
     state: {
@@ -1226,10 +1331,40 @@ export async function collectSnapshot(options: SupervisionOptions, cwd: string):
       sizes: { stateBytes: stateSize.bytes, logsBytes: logsSize.bytes, rolloutBytes: rolloutSize.bytes, rolloutScanTruncated: rolloutSize.truncated },
       hookLog,
     },
-    hud: selected ? await readHudModel(selected.cwd) : null,
+    hud: selected && stateDir ? await readHudModel(selected.cwd, stateDir, selected.sessionId) : (selected ? await readHudModel(selected.cwd) : null),
     doctor: { nativeAgents, pluginVersions },
     friction,
   };
+}
+
+export async function collectSnapshot(options: SupervisionOptions, cwd: string): Promise<SupervisionSnapshot> {
+  const [processes, tmux] = await Promise.all([sampleProcesses(options.windowSeconds), Promise.resolve(listTmuxPanes())]);
+  const candidates = discoverCandidates(cwd, processes, tmux.panes);
+  const selection = selectSession(candidates);
+  return collectSnapshotForSession(options, cwd, processes, tmux, selection);
+}
+
+// Helper to create snapshots for all active sessions (for multi-session reporting)
+async function collectSnapshotsForAllActiveSessions(options: SupervisionOptions, cwd: string, processes: readonly ProcSample[], tmux: { panes: TmuxPaneSnapshot[]; available: boolean }): Promise<Map<string, SupervisionSnapshot>> {
+  const candidates = discoverCandidates(cwd, processes, tmux.panes);
+  const selection = selectSession(candidates);
+  const snapshots = new Map<string, SupervisionSnapshot>();
+  
+  // Create snapshots for all active sessions
+  const activeCandidates = selection.candidates.filter((c) => c.pidAlive);
+  for (const sessionCandidate of activeCandidates) {
+    const sessionSelection = { selected: sessionCandidate, mode: 'active' as const, reason: `session ${sessionCandidate.sessionId}`, candidates: selection.candidates };
+    const snapshot = await collectSnapshotForSession(options, cwd, processes, tmux, sessionSelection);
+    snapshots.set(sessionCandidate.sessionId, snapshot);
+  }
+  
+  // If no active sessions, include the fallback (most recent)
+  if (snapshots.size === 0 && selection.selected) {
+    const snapshot = await collectSnapshotForSession(options, cwd, processes, tmux, selection);
+    snapshots.set(selection.selected.sessionId, snapshot);
+  }
+  
+  return snapshots;
 }
 
 // ---------------------------------------------------------------------------
@@ -1310,8 +1445,22 @@ export const defaultSupervisionDeps: SupervisionDeps = {
 export async function runSupervision(options: SupervisionOptions, cwd: string, deps: SupervisionDeps = defaultSupervisionDeps): Promise<SupervisionReport> {
   const evidence = await deps.collect(options, cwd);
   const snapshot = evidence.snapshot;
-  const checks = evaluateChecks(snapshot, SUPERVISION_CHECKS, deps.history ?? IQDOCTOR_HISTORY);
-  let findings = triage(checks);
+  
+  // Collect findings from all active sessions
+  let allChecks: CheckResult[] = [];
+  const snapshots = (evidence.snapshots && evidence.snapshots.size > 0) ? evidence.snapshots : new Map([[snapshot.selection.selected?.sessionId ?? 'default', snapshot]]);
+  
+  for (const [sessionId, sessionSnapshot] of snapshots) {
+    const sessionChecks = evaluateChecks(sessionSnapshot, SUPERVISION_CHECKS, deps.history ?? IQDOCTOR_HISTORY);
+    // Tag each check result with the session ID
+    for (const check of sessionChecks) {
+      check.sessionId = sessionId;
+    }
+    allChecks.push(...sessionChecks);
+  }
+  const checks = allChecks;
+  
+  let findings = triage(allChecks);
   const lanes: LaneResult[] = [];
 
   if (options.analyze && findings.length > 0) {
@@ -1348,15 +1497,32 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
   const context = { prompt: options.prompt, version: deps.version(), selection: snapshot.selection, platform: snapshot.platform };
   await mkdir(join(outputDir, 'drafts'), { recursive: true });
   await mkdir(join(outputDir, 'evidence'), { recursive: true });
-  await writeFile(join(outputDir, 'evidence', 'bundle.json'), `${JSON.stringify(evidence, null, 2)}\n`);
-  const drafts = findings.map((finding) => ({ finding, draft: buildIssueDraft(finding, context) }));
+  // Convert evidence bundle to serializable format (Maps become objects)
+  const serializableEvidence = { ...evidence, snapshots: evidence.snapshots ? Object.fromEntries(evidence.snapshots) : undefined };
+  await writeFile(join(outputDir, 'evidence', 'bundle.json'), `${JSON.stringify(serializableEvidence, null, 2)}\n`);
+  const drafts = findings.map((finding) => {
+    const own = finding.sessionId ? snapshots.get(finding.sessionId) : undefined;
+    return { finding, draft: buildIssueDraft(finding, own ? { ...context, selection: own.selection } : context) };
+  });
   for (const { finding, draft } of drafts) {
-    await writeFile(join(outputDir, 'drafts', `${finding.priority}-${finding.id}-${finding.fingerprint}.md`), `# ${draft.title}\n\n${draft.body}\n`);
+    await writeFile(join(outputDir, 'drafts', `${[finding.priority, finding.id, finding.fingerprint, finding.sessionId].filter(Boolean).join('-')}.md`), `# ${draft.title}\n\n${draft.body}\n`);
   }
 
   if (options.file) {
-    for (const { finding, draft } of drafts) {
-      if (finding.priority !== 'P0' && finding.priority !== 'P1') continue;
+    // Consolidate same-fingerprint findings for filing to avoid duplicate issues
+    const fileableFindings = findings.filter((f) => f.priority === 'P0' || f.priority === 'P1');
+    const { consolidated: consolidatedForFiling } = consolidateFindingsByFingerprint(fileableFindings);
+    const consolidatedDrafts = consolidatedForFiling.map((finding) => {
+      // Use primary session's context if available, otherwise fall back to default context
+      const own = finding.sessionId ? snapshots.get(finding.sessionId) : undefined;
+      return { finding, draft: buildIssueDraft(finding, own ? { ...context, selection: own.selection } : context) };
+    });
+    
+    // Track which fingerprints were filed successfully
+    const filed = new Set<string>();
+    
+    // Process consolidated findings for filing
+    for (const { finding, draft } of consolidatedDrafts) {
       if (finding.dedupe === 'duplicate') {
         report.fileSkipped.push({ fingerprint: finding.fingerprint, reason: `duplicate of ${finding.duplicate?.url}` });
       } else if (finding.dedupe === 'unknown') {
@@ -1365,8 +1531,29 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
         try {
           const url = deps.gh(['issue', 'create', '-R', SUPERVISION_REPO, '--title', draft.title, '--body-file', '-'], draft.body).trim();
           report.filed.push({ fingerprint: finding.fingerprint, url });
+          filed.add(finding.fingerprint);
         } catch (error) {
           report.fileSkipped.push({ fingerprint: finding.fingerprint, reason: `gh issue create failed: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}` });
+        }
+      }
+    }
+    
+    // Mark consolidated findings that weren't the primary as "already filed"
+    // Group original findings by fingerprint to find non-primary ones
+    const byFingerprint = new Map<string, Finding[]>();
+    for (const finding of fileableFindings) {
+      if (!byFingerprint.has(finding.fingerprint)) {
+        byFingerprint.set(finding.fingerprint, []);
+      }
+      byFingerprint.get(finding.fingerprint)!.push(finding);
+    }
+    
+    // For each fingerprint that was filed, mark all non-primary findings as already filed
+    for (const [fingerprint, findingsForFp] of byFingerprint) {
+      if (filed.has(fingerprint) && findingsForFp.length > 1) {
+        // Mark all findings except the first one as already filed
+        for (let i = 1; i < findingsForFp.length; i++) {
+          report.fileSkipped.push({ fingerprint, reason: 'already filed in this run (same fingerprint from another session)' });
         }
       }
     }
