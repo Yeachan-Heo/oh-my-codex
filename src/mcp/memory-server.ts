@@ -30,7 +30,7 @@ interface ProjectMemory {
   conventions?: string;
   structure?: string;
   notes?: Array<{ category: string; content: string; timestamp: string }>;
-  directives?: Array<{ directive: string; priority: string; context?: string; timestamp: string }>;
+  directives?: Array<{ directive: string; priority: string; context?: string; timestamp: string; expiresAt?: string }>;
 }
 
 function readProjectMemory(path: string): ProjectMemory {
@@ -39,6 +39,12 @@ function readProjectMemory(path: string): ProjectMemory {
     throw new Error(`Invalid project memory object at ${path}`);
   }
   return value as ProjectMemory;
+}
+
+export function filterActiveDirectives(directives: ProjectMemory['directives']): Array<{ directive: string; priority: string; context?: string; timestamp: string; expiresAt?: string }> {
+  if (!directives) return [];
+  const now = new Date().toISOString();
+  return directives.filter(d => !d.expiresAt || d.expiresAt > now);
 }
 
 const server = new Server(
@@ -95,9 +101,33 @@ export function buildMemoryServerTools() {
           directive: { type: 'string', description: 'The directive text' },
           priority: { type: 'string', enum: ['high', 'normal'] },
           context: { type: 'string' },
+          expiresAt: { type: 'string', description: 'ISO 8601 timestamp when the directive expires' },
           workingDirectory: { type: 'string' },
         },
         required: ['directive'],
+      },
+    },
+    {
+      name: 'project_memory_list_directives',
+      description: 'List all active directives in project memory. Excludes expired directives.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          priority: { type: 'string', enum: ['high', 'normal', 'all'], description: 'Filter by priority (default: all)' },
+          workingDirectory: { type: 'string' },
+        },
+      },
+    },
+    {
+      name: 'project_memory_remove_directive',
+      description: 'Remove a directive from project memory by index or by text match.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          index: { type: 'integer', description: 'Index of directive to remove' },
+          text: { type: 'string', description: 'Remove directive containing this text (partial match)' },
+          workingDirectory: { type: 'string' },
+        },
       },
     },
     // Notepad tools
@@ -191,7 +221,7 @@ export async function handleMemoryToolCall(request: {
     };
   }
 
-  const memoryWrite = ['project_memory_write', 'project_memory_add_note', 'project_memory_add_directive'].includes(name);
+  const memoryWrite = ['project_memory_write', 'project_memory_add_note', 'project_memory_add_directive', 'project_memory_remove_directive'].includes(name);
   const notepadWrite = ['notepad_write_priority', 'notepad_write_working', 'notepad_write_manual', 'notepad_prune'].includes(name);
   if (memoryWrite || notepadWrite) {
     const path = memoryWrite ? getMemoryPath(wd) : getNotepadPath(wd);
@@ -268,9 +298,68 @@ function handleMemoryOperation(
         priority: (a.priority as string) || 'normal',
         context: a.context as string | undefined,
         timestamp: new Date().toISOString(),
+        expiresAt: a.expiresAt as string | undefined,
       });
       publish!(JSON.stringify(data, null, 2));
       return text({ success: true, directiveCount: data.directives.length });
+    }
+
+    case 'project_memory_list_directives': {
+      const memPath = getMemoryPath(wd);
+      if (!existsSync(memPath)) {
+        return text({ directives: [], active: 0, expired: 0 });
+      }
+      let data: ProjectMemory = {};
+      try {
+        data = readProjectMemory(memPath);
+      } catch {
+        return text({ directives: [], active: 0, expired: 0 });
+      }
+      const all = data.directives || [];
+      const active = filterActiveDirectives(all) || [];
+      const priorityFilter = a.priority as string | undefined;
+      const filtered = priorityFilter && priorityFilter !== 'all'
+        ? active.filter(d => d.priority === priorityFilter)
+        : active;
+      return text({
+        directives: filtered.map((d) => ({ index: all.indexOf(d), ...d })),
+        active: active.length,
+        expired: all.length - active.length,
+      });
+    }
+
+    case 'project_memory_remove_directive': {
+      const memPath = getMemoryPath(wd);
+      if (!existsSync(memPath)) {
+        return text({ success: false, message: 'No project memory found', removed: null });
+      }
+      let data: ProjectMemory = {};
+      try {
+        data = readProjectMemory(memPath);
+      } catch {
+        return text({ success: false, message: 'Failed to read project memory', removed: null });
+      }
+      if (!data.directives || data.directives.length === 0) {
+        return text({ success: false, message: 'No directives found', removed: null });
+      }
+      const index = a.index as number | undefined;
+      const text_match = a.text as string | undefined;
+      let removed: { directive: string; priority: string; context?: string; timestamp: string; expiresAt?: string } | null = null;
+      if (typeof index === 'number' && index >= 0 && index < data.directives.length) {
+        removed = data.directives[index]!;
+        data.directives.splice(index, 1);
+      } else if (text_match) {
+        const matchIdx = data.directives.findIndex(d => d.directive.includes(text_match));
+        if (matchIdx >= 0) {
+          removed = data.directives[matchIdx]!;
+          data.directives.splice(matchIdx, 1);
+        }
+      }
+      if (removed) {
+        publish!(JSON.stringify(data, null, 2));
+        return text({ success: true, removed, remaining: data.directives.length });
+      }
+      return text({ success: false, message: 'No matching directive found', removed: null });
     }
 
     // === Notepad ===

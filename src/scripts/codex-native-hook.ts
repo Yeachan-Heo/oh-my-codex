@@ -105,6 +105,7 @@ import {
   resolveWritableStateScope,
   WRITABLE_STATE_SCOPE_ERRORS,
 } from "../mcp/state-paths.js";
+import { filterActiveDirectives } from "../mcp/memory-server.js";
 import {
   classifyKeywordInput,
   recordSkillActivation,
@@ -2418,7 +2419,8 @@ async function buildSessionStartContext(
   const projectMemoryPath = resolveProjectMemoryPath(cwd);
   const projectMemory = projectMemoryPath ? await readJsonIfExists(projectMemoryPath) : null;
   if (projectMemory && projectMemoryPath) {
-    const directives = Array.isArray(projectMemory.directives) ? projectMemory.directives : [];
+    const allDirectives = Array.isArray(projectMemory.directives) ? projectMemory.directives : [];
+    const directives = filterActiveDirectives(allDirectives);
     const notes = Array.isArray(projectMemory.notes) ? projectMemory.notes : [];
     const techStack = safeContextSnippet(projectMemory.techStack);
     const conventions = safeContextSnippet(projectMemory.conventions);

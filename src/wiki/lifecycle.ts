@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { codexHome, resolveProjectMemoryPath } from '../utils/paths.js';
+import { filterActiveDirectives } from '../mcp/memory-server.js';
 import {
   appendLogUnsafe,
   getWikiDir,
@@ -232,7 +233,8 @@ function feedProjectMemory(root: string): void {
 
     if (Array.isArray(parsed.directives) && parsed.directives.length > 0) {
       sections.push('## Directives');
-      for (const directive of parsed.directives.slice(0, 20)) {
+      const activeDirectives = filterActiveDirectives(parsed.directives as any);
+      for (const directive of activeDirectives.slice(0, 20)) {
         const content = typeof (directive as { directive?: unknown }).directive === 'string'
           ? (directive as { directive: string }).directive.trim()
           : '';

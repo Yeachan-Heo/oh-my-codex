@@ -241,6 +241,8 @@ async function loadMemoryDescriptor(
         write: "project_memory_write",
         "add-note": "project_memory_add_note",
         "add-directive": "project_memory_add_directive",
+        "list-directives": "project_memory_list_directives",
+        "remove-directive": "project_memory_remove_directive",
       },
     handle: handleMemoryToolCall,
   };
