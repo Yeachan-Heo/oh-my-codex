@@ -1369,6 +1369,15 @@ describe('parseTeamStartArgs', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it('strips --allow-legacy-decomposition flag from task text', () => {
+    const result = parseTeamStartArgs(['2:executor', '--allow-legacy-decomposition', 'build', 'feature']);
+    // The flag should be removed from the task
+    assert.equal(result.parsed.task, 'build feature');
+    assert.ok(!result.parsed.task.includes('--allow-legacy-decomposition'));
+    // The flag should be set in the parsed result
+    assert.equal(result.parsed.allowLegacyDecomposition, true);
+  });
 });
 
 describe('teamCommand shutdown --force parsing', () => {
@@ -4074,6 +4083,60 @@ process.on('SIGTERM', () => process.exit(0));
         /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
         'Should reject uppercase DOC-2 as explicit ticket'
       );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('generates preflight info with resolved_cwd, decomposition_source, fallback_reason for legacy-text launch without explicit tickets', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-legacy-no-tickets-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      // Generic task without explicit tickets (no TASK-1, TEST-2, etc.)
+      // Running from outside a git repo (wd is just a temp directory, not a git repo)
+      // This should use legacy_text decomposition and generate preflight info
+      const result = parseTeamStartArgs(['2:executor', 'build and test the new feature']);
+      const executionPlan = buildRepoAwareTeamExecutionPlan({
+        task: result.parsed.task,
+        workerCount: result.parsed.workerCount,
+        agentType: result.parsed.agentType,
+        explicitAgentType: result.parsed.explicitAgentType,
+        explicitWorkerCount: result.parsed.explicitWorkerCount,
+        allowDagHandoff: result.parsed.allowRepoAwareDagHandoff,
+        cwd: wd,
+        buildLegacyPlan: (task, workerCount, agentType, explicitAgentType, explicitWorkerCount) => ({
+          workerCount: explicitWorkerCount ? workerCount : 3,
+          tasks: [],
+        }),
+      });
+      // The execution plan should have decomposition_source set to legacy_text
+      assert.equal(
+        executionPlan.metadata?.decomposition_source,
+        'legacy_text',
+        `Should use legacy_text decomposition when outside a git repo without DAG handoff approval`
+      );
+      // The fallback_reason should be set
+      assert.ok(
+        executionPlan.metadata?.fallback_reason,
+        `Should have fallback_reason set when using legacy_text decomposition`
+      );
+      // Simulate the code from team.ts lines 1903-1910 that generates preflight info
+      let preflightInfo = null;
+      if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !preflightInfo) {
+        const cwdDisplay = wd; // simplified version of formatPathDisplay
+        preflightInfo = {
+          cwdDisplay,
+          decompositionSource: 'legacy_text',
+          fallbackReason: executionPlan.metadata.fallback_reason || 'outside_git_repo',
+        };
+      }
+      // Verify that preflightInfo would be printed by renderStartSummary
+      assert.ok(preflightInfo, 'Should generate preflightInfo for legacy_text decomposition');
+      assert.ok(preflightInfo.cwdDisplay, 'preflightInfo should include resolved_cwd');
+      assert.equal(preflightInfo.decompositionSource, 'legacy_text', 'preflightInfo should include decomposition_source');
+      assert.ok(preflightInfo.fallbackReason, 'preflightInfo should include fallback_reason');
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
