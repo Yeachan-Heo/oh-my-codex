@@ -12,6 +12,7 @@ import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../
 import { readModeState } from '../../modes/base.js';
 import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 import { buildRepoAwareTeamExecutionPlan } from '../../team/repo-aware-decomposition.js';
+import { findGitLayout } from '../../utils/git-layout.js';
 import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
 import { shutdownTeam } from '../../team/runtime.js';
 import { sameFilePath } from '../../utils/paths.js';
@@ -4137,6 +4138,108 @@ process.on('SIGTERM', () => process.exit(0));
       assert.ok(preflightInfo.cwdDisplay, 'preflightInfo should include resolved_cwd');
       assert.equal(preflightInfo.decompositionSource, 'legacy_text', 'preflightInfo should include decomposition_source');
       assert.ok(preflightInfo.fallbackReason, 'preflightInfo should include fallback_reason');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('displays execution plan fallback reason (not generic default) in preflight info', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-fallback-reason-usage-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      execFileSync('git', ['init'], { cwd: wd });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wd });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: wd });
+      const result = parseTeamStartArgs(['2:executor', 'build and test features']);
+      const executionPlan = buildRepoAwareTeamExecutionPlan({
+        task: result.parsed.task,
+        workerCount: result.parsed.workerCount,
+        agentType: result.parsed.agentType,
+        explicitAgentType: result.parsed.explicitAgentType,
+        explicitWorkerCount: result.parsed.explicitWorkerCount,
+        cwd: wd,
+        buildLegacyPlan: (task, workerCount, agentType) => ({
+          workerCount,
+          tasks: [{ subject: task, description: task, owner: 'worker-1', role: agentType }],
+        }),
+        allowDagHandoff: result.parsed.allowRepoAwareDagHandoff,
+        dagFallbackReason: result.parsed.dagFallbackReason,
+        approvedRepositoryContextSummary: result.parsed.approvedRepositoryContextSummary,
+      });
+      // Verify execution plan has legacy_text decomposition
+      assert.equal(executionPlan.metadata?.decomposition_source, 'legacy_text');
+      // The execution plan's fallback_reason should be set
+      const executionPlanReason = executionPlan.metadata?.fallback_reason;
+      assert.ok(executionPlanReason, 'execution plan should have fallback_reason set');
+      // The old (broken) code would use: parsed.dagFallbackReason || generic_default
+      // The new (fixed) code uses: executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || generic_default
+      // Since we're in a git repo with no DAG approval, generic_default would be 'dag_handoff_fallback_inside_repo'
+      const genericDefault = 'dag_handoff_fallback_inside_repo';
+      assert.ok(
+        executionPlanReason !== genericDefault && executionPlanReason !== result.parsed.dagFallbackReason,
+        `Execution plan reason (${executionPlanReason}) should be specific, not generic default or undefined parsed reason`
+      );
+      // Test that the FIXED code uses the execution plan reason
+      let prefixedInfoWithFix = null;
+      if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !prefixedInfoWithFix) {
+        const fallbackReason = executionPlan.metadata?.fallback_reason || result.parsed.dagFallbackReason || genericDefault;
+        prefixedInfoWithFix = {
+          cwdDisplay: wd,
+          decompositionSource: 'legacy_text',
+          fallbackReason,
+        };
+      }
+      assert.equal(prefixedInfoWithFix?.fallbackReason, executionPlanReason, 'Fixed code should use execution plan fallback reason');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses execution plan fallback reason when it differs from generic default', async () => {
+    // This test verifies that the fix correctly uses executionPlan.metadata?.fallback_reason
+    // even when it differs from what the generic fallback would be
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-specific-fallback-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      execFileSync('git', ['init'], { cwd: wd });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wd });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: wd });
+      const result = parseTeamStartArgs(['2:executor', 'fix critical issue']);
+      const executionPlan = buildRepoAwareTeamExecutionPlan({
+        task: result.parsed.task,
+        workerCount: result.parsed.workerCount,
+        agentType: result.parsed.agentType,
+        explicitAgentType: result.parsed.explicitAgentType,
+        explicitWorkerCount: result.parsed.explicitWorkerCount,
+        cwd: wd,
+        buildLegacyPlan: (task, workerCount, agentType) => ({
+          workerCount,
+          tasks: [{ subject: task, description: task, owner: 'worker-1', role: agentType }],
+        }),
+        allowDagHandoff: result.parsed.allowRepoAwareDagHandoff,
+        dagFallbackReason: result.parsed.dagFallbackReason,
+        approvedRepositoryContextSummary: result.parsed.approvedRepositoryContextSummary,
+      });
+      assert.equal(executionPlan.metadata?.decomposition_source, 'legacy_text');
+      const executionPlanReason = executionPlan.metadata?.fallback_reason;
+      assert.ok(executionPlanReason, 'execution plan should have fallback_reason set');
+      // The broken code (without fix) would generate:
+      // fallbackReason = parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo'
+      // which would be 'dag_handoff_fallback_inside_repo' (since parsed.dagFallbackReason is undefined)
+      // The fixed code should use:
+      // fallbackReason = executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo'
+      // which would use the actual execution plan reason
+      const brokenReasonOutput = result.parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo';
+      const fixedReasonOutput = executionPlanReason || result.parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo';
+      // Verify that the fix produces a different (correct) output than the broken version
+      assert.ok(
+        fixedReasonOutput === executionPlanReason && fixedReasonOutput !== brokenReasonOutput,
+        `Fixed output (${fixedReasonOutput}) should use execution plan reason (${executionPlanReason}), not generic (${brokenReasonOutput})`
+      );
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });

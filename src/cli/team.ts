@@ -1903,7 +1903,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !preflightInfo) {
     const gitLayout = findGitLayout(cwd);
     const cwdDisplay = formatPathDisplay(cwd);
-    const fallbackReason = parsed.dagFallbackReason || (gitLayout ? 'dag_handoff_fallback_inside_repo' : 'outside_git_repo');
+    const fallbackReason = executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || (gitLayout ? 'dag_handoff_fallback_inside_repo' : 'outside_git_repo');
     preflightInfo = {
       cwdDisplay,
       decompositionSource: 'legacy_text',
