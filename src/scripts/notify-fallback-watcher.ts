@@ -1643,7 +1643,7 @@ async function enforceLifecycleGuards(): Promise<boolean> {
       return false;
     }
 
-    const activeTeam = await resolveActiveTeamStateWithCache();
+    const activeTeam = await resolveActiveTeamStateUncached();
     if (activeTeam.active) {
       const currentPhase = safeString(activeTeam.state?.current_phase);
       const nextParentGuard: ParentGuardState = {
@@ -2438,6 +2438,8 @@ export const testingExports = Object.freeze({
   },
   shouldSkipDispatchDrain,
   getCachedActiveTeamState: () => cachedActiveTeamState,
+  resolveActiveTeamStateUncached,
+  resolveActiveTeamStateWithCache,
   resetCachedActiveTeamState: () => {
     cachedActiveTeamState = null;
   },
