@@ -272,7 +272,7 @@ interface SetupRunSummary {
 interface SetupBackupContext {
 	backupRoot: string;
 	baseRoot: string;
-	/** Trusted existing directory from which backup ancestors are created and symlink-checked. */
+	/** Directory created if missing; ancestors below it are symlink-checked for backup safety. */
 	anchorRoot: string;
 }
 
@@ -2452,7 +2452,7 @@ async function assertManagedDestination(
  * Canonicalizes paths to handle OS-level symlinks (e.g., /tmp -> /private/tmp on macOS).
  * For project scope: validates against projectRoot (#4352912487)
  * Destinations under CODEX_HOME validate against CODEX_HOME;
- * Destinations under OMX_ROOT (if set) validate against OMX_ROOT (#4352912502);
+ * Destinations under OMX_ROOT or OMX_STATE_ROOT (if set) validate against the state root (#4352912502);
  * other paths (like ~/.omx, ~/.claude) validate against the user's home.
  */
 async function getValidationScopeRoot(destinationPath: string): Promise<string> {
@@ -2470,11 +2470,10 @@ async function getValidationScopeRoot(destinationPath: string): Promise<string> 
 	const realProjectRoot = await canonicalizePathToRealForm(projectRoot);
 
 	// Check OMX_ROOT override first (#4352912502)
+	// omxRoot is always absolute after resolveOmxRootCandidate
 	const omxRoot = resolveOmxRootCandidate(process.env.OMX_ROOT) ?? resolveOmxRootCandidate(process.env.OMX_STATE_ROOT);
 	if (omxRoot) {
-		const realOmxRoot = await canonicalizePathToRealForm(
-			isAbsolute(omxRoot) ? omxRoot : join(process.cwd(), omxRoot)
-		);
+		const realOmxRoot = await canonicalizePathToRealForm(omxRoot);
 		if (realDestPath.startsWith(realOmxRoot + sep) || realDestPath === realOmxRoot) {
 			return realOmxRoot; // Return the canonical OMX_ROOT for consistent scope comparison
 		}

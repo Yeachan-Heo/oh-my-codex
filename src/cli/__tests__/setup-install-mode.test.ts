@@ -137,11 +137,15 @@ async function withIsolatedUserHome<T>(
 ): Promise<T> {
 	const previousHome = process.env.HOME;
 	const previousCodexHome = process.env.CODEX_HOME;
+	const previousOmxRoot = process.env.OMX_ROOT;
+	const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 	const homeDir = join(wd, "home");
 	const codexHomeDir = join(homeDir, ".codex");
 	await mkdir(codexHomeDir, { recursive: true });
 	process.env.HOME = homeDir;
 	process.env.CODEX_HOME = codexHomeDir;
+	delete process.env.OMX_ROOT;
+	delete process.env.OMX_STATE_ROOT;
 	try {
 		return await fn(codexHomeDir);
 	} finally {
@@ -152,6 +156,10 @@ async function withIsolatedUserHome<T>(
 		} else {
 			delete process.env.CODEX_HOME;
 		}
+		if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+		else delete process.env.OMX_ROOT;
+		if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+		else delete process.env.OMX_STATE_ROOT;
 	}
 }
 
@@ -6918,7 +6926,7 @@ describe("issue 3918 plugin hook trust self-heal", () => {
 });
 
 describe("issue 4236 OMX_ROOT user scope isolation", () => {
-	it("respects OMX_ROOT for user-scope backup snapshots and legacy skill receipt", async () => {
+	it("respects OMX_ROOT for backup snapshots while keeping the current receipt under CODEX_HOME", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-omx-root-"));
 		try {
 			const homeDir = join(wd, "home");
@@ -6998,7 +7006,7 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 		}
 	});
 
-	it("preserves existing behavior when OMX_ROOT is not set", async () => {
+	it("preserves backup snapshots under HOME while keeping the current receipt under CODEX_HOME", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-no-omx-root-"));
 		try {
 			const homeDir = join(wd, "home");
@@ -7314,6 +7322,84 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			}
 		} finally {
 			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("respects OMX_STATE_ROOT outside cwd/ancestor topology", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-outside-topo-"));
+		const outsideStateRoot = await mkdtemp(join(tmpdir(), "omx-state-outside-"));
+		try {
+			const homeDir = join(wd, "home");
+			const codexHomeDir = join(homeDir, ".codex");
+
+			await mkdir(codexHomeDir, { recursive: true });
+			const configPath = join(codexHomeDir, "config.toml");
+			await writeFile(configPath, "# existing config\n");
+
+			const previousHome = process.env.HOME;
+			const previousCodexHome = process.env.CODEX_HOME;
+			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+			const previousCwd = process.cwd();
+
+			try {
+				process.env.HOME = homeDir;
+				process.env.CODEX_HOME = codexHomeDir;
+				delete process.env.OMX_ROOT;
+				process.env.OMX_STATE_ROOT = outsideStateRoot; // Absolute path outside cwd hierarchy
+				process.chdir(wd);
+
+				// Run user-scope setup
+				await setup({ scope: "user", installMode: "legacy" });
+
+				// Backups land under OMX_STATE_ROOT/.omx, not HOME/.omx
+				const expectedBackupRoot = join(outsideStateRoot, ".omx", "backups", "setup");
+				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_STATE_ROOT is set outside cwd");
+
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set outside cwd`,
+				);
+
+				// Verify backup file has correct relative layout
+				const timestampDirs = (
+					await readdir(expectedBackupRoot, { withFileTypes: true })
+				)
+					.filter((d) => d.isDirectory())
+					.map((d) => join(expectedBackupRoot, d.name));
+				assert(
+					timestampDirs.length > 0,
+					`Backup timestamp directory should exist under ${expectedBackupRoot}`,
+				);
+				const backupFile = join(timestampDirs[0], ".codex", "config.toml");
+				assert.equal(
+					existsSync(backupFile),
+					true,
+					`Backup file should maintain relative layout at ${backupFile}`,
+				);
+
+				// Verify current skill receipt is under CODEX_HOME
+				const expectedReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Current receipt should be under CODEX_HOME when OMX_STATE_ROOT is outside cwd`,
+				);
+			} finally {
+				process.chdir(previousCwd);
+				if (typeof previousHome === "string") process.env.HOME = previousHome;
+				else delete process.env.HOME;
+				if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+				else delete process.env.CODEX_HOME;
+				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+				else delete process.env.OMX_ROOT;
+				if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+				else delete process.env.OMX_STATE_ROOT;
+			}
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+			await rm(outsideStateRoot, { recursive: true, force: true });
 		}
 	});
 });
