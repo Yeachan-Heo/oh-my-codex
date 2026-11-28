@@ -13,6 +13,7 @@ const {
   getEarliestFutureExpiry,
   isValidExpiry,
   generateDirectiveId,
+  filterActiveDirectives,
 } = await import('../directive-filter.js');
 const { handleMemoryToolCall } = await import('../memory-server.js');
 const { generateOverlay } = await import('../../hooks/agents-overlay.js');
@@ -156,13 +157,13 @@ describe('directive behavior tests', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-directive-identical-'));
     try {
       const baseTime = new Date();
-      
+
       // Add a mix: 1 normal + 5 high-priority directives that exceed the max 3
       await call(cwd, 'project_memory_add_directive', {
         directive: 'Normal priority directive (should be absent from both)',
         priority: 'normal',
       });
-      
+
       for (let i = 0; i < 5; i++) {
         await call(cwd, 'project_memory_add_directive', {
           directive: `High priority directive ${i}`,
@@ -172,7 +173,7 @@ describe('directive behavior tests', () => {
 
       // Get directives from overlay
       const overlay = await generateOverlay(cwd, 'test-session');
-      
+
       // Get directives from hook
       const hookResult = await dispatchCodexNativeHook({
         hook_event_name: 'SessionStart',
@@ -196,14 +197,14 @@ describe('directive behavior tests', () => {
         }
         return directives;
       };
-      
+
       const overlayDirectives = getHighPriorityDirectives(overlay);
       const hookDirectives = getHighPriorityDirectives(hookOutput);
 
       // Both should have exactly 3 high-priority directives
       assert.equal(overlayDirectives.length, 3, 'overlay should have exactly 3 high-priority directives');
       assert.equal(hookDirectives.length, 3, 'hook should have exactly 3 high-priority directives');
-      
+
       // Both should have the same directives in the same order (newest first)
       // Extract just the directive IDs to verify they match in the same order
       const extractDirectiveIds = (lines: string[]): string[] => {
@@ -212,16 +213,16 @@ describe('directive behavior tests', () => {
           return match ? match[0] : '';
         }).filter(Boolean);
       };
-      
+
       const overlayIds = extractDirectiveIds(overlayDirectives);
       const hookIds = extractDirectiveIds(hookDirectives);
-      
+
       assert.deepEqual(
         overlayIds,
         hookIds,
         'hook and overlay should contain identical directive lists in identical order'
       );
-      
+
       // Normal priority directive should be absent from both
       assert.ok(
         !overlay.includes('Normal priority directive'),
@@ -248,6 +249,62 @@ describe('directive behavior tests', () => {
     for (const order of [[zuluLater, offsetEarlier], [offsetEarlier, zuluLater]]) {
       const directives: ProjectDirective[] = order.map((expiresAt, i) => ({ directive: `d${i}`, priority: 'normal', timestamp: ts, expiresAt }));
       assert.equal(getEarliestFutureExpiry(directives), offsetEarlier);
+    }
+  });
+
+  /**
+   * Test: selectHighPriorityDirectives sorts by instant, not string order.
+   * Demonstrates that timestamps with different offsets are sorted correctly.
+   * '2099-01-01T10:00:00+09:00' is 01:00Z (earlier instant),
+   * '2099-01-01T05:00:00Z' is 05:00Z (later instant),
+   * but sorts lexicographically later due to the offset.
+   */
+  it('selectHighPriorityDirectives sorts by instant, not string order (cross-offset test)', () => {
+    // These timestamps represent different instants:
+    // offsetEarlier: 2099-01-01T10:00:00+09:00 = 2099-01-01T01:00:00Z (1:00 AM UTC)
+    // zuluLater: 2099-01-01T05:00:00Z (5:00 AM UTC)
+    // String order: offsetEarlier > zuluLater (lexicographic)
+    // Instant order: offsetEarlier < zuluLater (actual time)
+    const offsetEarlier = '2099-01-01T10:00:00+09:00';
+    const zuluLater = '2099-01-01T05:00:00Z';
+
+    // Verify our fixture: string order disagrees with instant order
+    assert.ok(zuluLater < offsetEarlier, 'fixture: string order disagrees with instant order');
+    assert.ok(
+      Date.parse(offsetEarlier) < Date.parse(zuluLater),
+      'fixture: instant order has offsetEarlier earlier than zuluLater'
+    );
+
+    // Create directives with these timestamps (in either order)
+    for (const timestampOrder of [[zuluLater, offsetEarlier], [offsetEarlier, zuluLater]]) {
+      const directives: ProjectDirective[] = [
+        {
+          directive: `High priority 1 (instant order: ${timestampOrder[0] === offsetEarlier ? 'earlier' : 'later'})`,
+          priority: 'high',
+          timestamp: timestampOrder[0],
+        },
+        {
+          directive: `High priority 2 (instant order: ${timestampOrder[1] === offsetEarlier ? 'earlier' : 'later'})`,
+          priority: 'high',
+          timestamp: timestampOrder[1],
+        },
+      ];
+
+      const selected = selectHighPriorityDirectives(directives, 2);
+
+      // Should return both, sorted by instant (newest first)
+      assert.equal(selected.length, 2, 'should return both high-priority directives');
+      // The "later" instant should come first
+      assert.equal(
+        selected[0].timestamp,
+        zuluLater,
+        'zuluLater (later instant, later string) should be first (newest)'
+      );
+      assert.equal(
+        selected[1].timestamp,
+        offsetEarlier,
+        'offsetEarlier (earlier instant, later string) should be second'
+      );
     }
   });
 
@@ -465,6 +522,130 @@ describe('directive behavior tests', () => {
       assert.ok(
         overlay2.includes('DYNAMIC-DIRECTIVE'),
         'next overlay generation should include the newly added directive'
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Test: Malformed expiresAt is NOT injected or listed.
+   * Store a directive with malformed expiresAt (e.g., 'not-a-date') directly in
+   * project-memory.json (bypassing the add API), and verify it is:
+   * - NOT returned by list_directives
+   * - NOT injected in generateOverlay (agents-overlay)
+   * - NOT injected in dispatchCodexNativeHook (codex-native-hook SessionStart)
+   * - NOT returned by filterActiveDirectives
+   */
+  it('malformed expiresAt is NOT injected or listed through production paths', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-directive-malformed-expiry-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      const now = new Date();
+      const future = new Date(now.getTime() + 10 * 60 * 1000);
+
+      // Write project-memory.json directly with a malformed expiresAt directive
+      await writeFile(
+        join(cwd, '.omx', 'project-memory.json'),
+        JSON.stringify({
+          directives: [
+            {
+              directive: 'MALFORMED-EXPIRY directive (should be hidden)',
+              priority: 'high',
+              timestamp: now.toISOString(),
+              expiresAt: 'not-a-date',  // Malformed expiresAt
+            },
+            {
+              directive: 'ACTIVE directive (should be visible)',
+              priority: 'high',
+              timestamp: now.toISOString(),
+              expiresAt: future.toISOString(),
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      // Test 1: list_directives does NOT list the malformed directive
+      const listResponse = await call(cwd, 'project_memory_list_directives', {});
+      const listResult = extractText(listResponse);
+
+      assert.equal(
+        listResult.directives.length,
+        1,
+        'list_directives should return only 1 active directive (malformed should be filtered)'
+      );
+      assert.ok(
+        listResult.directives.every((d: any) => d.directive !== 'MALFORMED-EXPIRY directive (should be hidden)'),
+        'malformed directive should NOT be in list'
+      );
+      assert.ok(
+        listResult.directives.some((d: any) => d.directive === 'ACTIVE directive (should be visible)'),
+        'active directive should be in list'
+      );
+      assert.equal(listResult.active, 1, 'should count 1 active directive');
+      assert.equal(listResult.expired, 1, 'should count 1 expired/malformed directive');
+
+      // Test 2: agents-overlay does NOT inject the malformed directive
+      const overlay = await generateOverlay(cwd, 'test-session-malformed');
+
+      assert.ok(
+        !overlay.includes('MALFORMED-EXPIRY directive'),
+        'malformed directive should NOT appear in agents-overlay'
+      );
+      assert.ok(
+        overlay.includes('ACTIVE directive'),
+        'active directive should appear in agents-overlay'
+      );
+
+      // Test 3: codex-native-hook SessionStart does NOT inject the malformed directive
+      const hookResult = await dispatchCodexNativeHook({
+        hook_event_name: 'SessionStart',
+        cwd,
+        session_id: 'test-session-malformed-hook',
+      });
+
+      const hookOutput = (hookResult.outputJson as any)?.hookSpecificOutput?.additionalContext || '';
+
+      assert.ok(
+        !hookOutput.includes('MALFORMED-EXPIRY directive'),
+        'malformed directive should NOT appear in codex-native-hook SessionStart context'
+      );
+      assert.ok(
+        hookOutput.includes('ACTIVE directive'),
+        'active directive should appear in codex-native-hook SessionStart context'
+      );
+
+      // Test 4: filterActiveDirectives utility filters out the malformed directive
+      const all = [
+        {
+          directive: 'MALFORMED-EXPIRY directive (should be hidden)',
+          priority: 'high',
+          timestamp: now.toISOString(),
+          expiresAt: 'not-a-date',
+        },
+        {
+          directive: 'ACTIVE directive (should be visible)',
+          priority: 'high',
+          timestamp: now.toISOString(),
+          expiresAt: future.toISOString(),
+        },
+      ] as ProjectDirective[];
+
+      const filtered = filterActiveDirectives(all);
+
+      assert.equal(
+        filtered.length,
+        1,
+        'filterActiveDirectives should return 1 active directive'
+      );
+      assert.ok(
+        filtered.every((d: ProjectDirective) => d.directive !== 'MALFORMED-EXPIRY directive (should be hidden)'),
+        'filtered list should NOT contain malformed directive'
+      );
+      assert.ok(
+        filtered.some((d: ProjectDirective) => d.directive === 'ACTIVE directive (should be visible)'),
+        'filtered list should contain active directive'
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });

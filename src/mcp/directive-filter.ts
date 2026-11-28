@@ -60,8 +60,22 @@ export function selectHighPriorityDirectives(
 ): ProjectDirective[] {
   const active = filterActiveDirectives(directives);
   const high = active.filter(d => d.priority === 'high');
-  // Sort by timestamp descending (newest first)
-  return high.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, maxCount);
+  // Sort by timestamp instant (descending, newest first), not string order.
+  // Unparsable timestamps sort to the end (treated as earliest instant).
+  return high.sort((a, b) => {
+    const aTime = Date.parse(a.timestamp);
+    const bTime = Date.parse(b.timestamp);
+    const aValid = !isNaN(aTime);
+    const bValid = !isNaN(bTime);
+    // Both valid: compare by instant descending
+    if (aValid && bValid) return bTime - aTime;
+    // Only b is valid: b comes first (a is invalid/oldest)
+    if (bValid) return 1;
+    // Only a is valid: a comes first (b is invalid/oldest)
+    if (aValid) return -1;
+    // Both invalid: preserve order
+    return 0;
+  }).slice(0, maxCount);
 }
 
 /**
