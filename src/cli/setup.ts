@@ -499,14 +499,11 @@ function getBackupContext(
 	}
 	// For user scope, respect OMX_ROOT/OMX_STATE_ROOT if set for backup paths (#4236).
 	// When OMX_ROOT or OMX_STATE_ROOT is set, user-scope backups go under it for isolated installs.
-	// The baseRoot is used for validation scope determination per destination:
-	// - Destinations under CODEX_HOME are validated against CODEX_HOME
-	// - Destinations under ~/.omx are validated against OMX_ROOT/OMX_STATE_ROOT (if set) or homedir()
+	// Keep baseRoot as homedir() for relative layout calculation; backupRoot containment is enforced separately.
 	const omxPath = omxRoot(homedir());
-	const userScopeRoot = dirname(omxPath);
 	return {
 		backupRoot: join(omxPath, "backups", "setup", timestamp),
-		baseRoot: userScopeRoot,
+		baseRoot: homedir(),
 	};
 }
 
@@ -2056,28 +2053,34 @@ async function ensureSnapshotBackup(
 	if (bytes === null) return false;
 	const backupPath = nativeHookTransactionBackupPath(artifact.path, backupContext);
 	if (!options.dryRun) {
-		const relativeParent = relative(backupContext.baseRoot, dirname(backupPath));
+		// Validate under the backup root (containment check).
+		const relativeBackupPath = relative(backupContext.backupRoot, backupPath);
 		if (
-			isAbsolute(relativeParent) ||
-			relativeParent === ".." ||
-			relativeParent.startsWith(`..${sep}`)
+			isAbsolute(relativeBackupPath) ||
+			relativeBackupPath === ".." ||
+			relativeBackupPath.startsWith(`..${sep}`)
 		) {
-			throw new Error(`Refusing to back up ${artifact.path} outside controlled backup root.`);
+			throw new Error(
+				`Refusing to back up ${artifact.path} outside controlled backup root.`,
+			);
 		}
-		let currentPath = backupContext.baseRoot;
-		for (const component of relativeParent.split(sep).filter(Boolean)) {
-			currentPath = join(currentPath, component);
-			try {
-				const currentStat = await lstat(currentPath);
-				if (currentStat.isSymbolicLink() || !currentStat.isDirectory()) {
-					throw new Error(`Refusing to use unsafe backup ancestor ${currentPath}.`);
-				}
-			} catch (error) {
-				if (!isMissingPathError(error)) throw error;
-				await mkdir(currentPath);
-				const createdStat = await lstat(currentPath);
-				if (createdStat.isSymbolicLink() || !createdStat.isDirectory()) {
-					throw new Error(`Refusing to use unsafe created backup ancestor ${currentPath}.`);
+		// Create ancestor directories up to the backup root.
+		const backupDir = dirname(backupPath);
+		if (backupDir !== backupContext.backupRoot) {
+			await mkdir(backupDir, { recursive: true });
+			// Verify no symlinks in the path.
+			let currentPath = backupContext.backupRoot;
+			const components = relativeBackupPath
+				.split(sep)
+				.slice(0, -1)
+				.filter(Boolean);
+			for (const component of components) {
+				currentPath = join(currentPath, component);
+				const stat = await lstat(currentPath);
+				if (stat.isSymbolicLink() || !stat.isDirectory()) {
+					throw new Error(
+						`Refusing to use unsafe backup ancestor ${currentPath}.`,
+					);
 				}
 			}
 		}
@@ -2466,13 +2469,14 @@ async function getValidationScopeRoot(destinationPath: string): Promise<string> 
 	const realProjectCodexHome = await canonicalizePathToRealForm(projectCodexHome);
 	const realProjectRoot = await canonicalizePathToRealForm(projectRoot);
 
-	// Check OMX_ROOT override first (#4352912502)
-	const omxRoot = process.env.OMX_ROOT;
-	if (omxRoot) {
-		const realOmxRoot = await canonicalizePathToRealForm(
-			isAbsolute(omxRoot) ? omxRoot : join(process.cwd(), omxRoot)
-		);
-		if (realDestPath.startsWith(realOmxRoot + sep) || realDestPath === realOmxRoot) {
+	// Check OMX_ROOT override first (#4236)
+	const omxRootPath = omxRoot(projectRoot);
+	if (omxRootPath !== projectRoot) {
+		const realOmxRoot = await canonicalizePathToRealForm(omxRootPath);
+		if (
+			realDestPath.startsWith(realOmxRoot + sep) ||
+			realDestPath === realOmxRoot
+		) {
 			return realOmxRoot; // Return the canonical OMX_ROOT for consistent scope comparison
 		}
 	}
@@ -4676,13 +4680,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
-	// For user scope, compute the legacy receipt path, respecting OMX_ROOT/OMX_STATE_ROOT if set (#4236)
-	const legacySkillReceiptPath = resolvedScope.scope === "user"
-		? (() => {
-			const omxPath = omxRoot(homedir());
-			return join(omxPath, "state", "setup", "installed-skills.json");
-		})()
-		: undefined;
+	// For user scope, keep the historical legacy receipt path as a fallback candidate (#4236).
+	// The new receipt is under CODEX_HOME (via skillReceiptPath), and legacy under $HOME/.omx is tried as fallback.
+	const legacySkillReceiptPath =
+		resolvedScope.scope === "user"
+			? join(homedir(), ".omx", "state", "setup", "installed-skills.json")
+			: undefined;
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
 	if (repairPluginCache && !isPluginInstallMode) {
 		throw new Error("--repair-plugin-cache requires plugin setup mode; add --plugin.");

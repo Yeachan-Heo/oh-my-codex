@@ -6963,6 +6963,23 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_ROOT is set (backups should go under OMX_ROOT instead)`,
 				);
 				
+				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
+				const timestampDirs = (
+					await readdir(expectedBackupRoot, { withFileTypes: true })
+				)
+					.filter((d) => d.isDirectory())
+					.map((d) => join(expectedBackupRoot, d.name));
+				assert(
+					timestampDirs.length > 0,
+					`Backup timestamp directory should exist under ${expectedBackupRoot}`,
+				);
+				const backupFile = join(timestampDirs[0], ".codex", "config.toml");
+				assert.equal(
+					existsSync(backupFile),
+					true,
+					`Backup file should maintain relative layout at ${backupFile}, not flattened name`,
+				);
+				
 				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_ROOT differ
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
 				
@@ -7092,6 +7109,23 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set (backups should go under OMX_STATE_ROOT instead)`,
 				);
 				
+				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
+				const timestampDirs = (
+					await readdir(expectedBackupRoot, { withFileTypes: true })
+				)
+					.filter((d) => d.isDirectory())
+					.map((d) => join(expectedBackupRoot, d.name));
+				assert(
+					timestampDirs.length > 0,
+					`Backup timestamp directory should exist under ${expectedBackupRoot}`,
+				);
+				const backupFile = join(timestampDirs[0], ".codex", "config.toml");
+				assert.equal(
+					existsSync(backupFile),
+					true,
+					`Backup file should maintain relative layout at ${backupFile}, not flattened name`,
+				);
+				
 				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_STATE_ROOT differ
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
 				
@@ -7160,6 +7194,23 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					existsSync(unexpectedBackupRoot),
 					false,
 					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+				);
+				
+				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
+				const timestampDirs = (
+					await readdir(expectedBackupRoot, { withFileTypes: true })
+				)
+					.filter((d) => d.isDirectory())
+					.map((d) => join(expectedBackupRoot, d.name));
+				assert(
+					timestampDirs.length > 0,
+					`Backup timestamp directory should exist under ${expectedBackupRoot}`,
+				);
+				const backupFile = join(timestampDirs[0], ".codex", "config.toml");
+				assert.equal(
+					existsSync(backupFile),
+					true,
+					`Backup file should maintain relative layout at ${backupFile}, not flattened name`,
 				);
 				
 				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_STATE_ROOT differ (with relative path and whitespace)
