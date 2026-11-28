@@ -4842,42 +4842,42 @@ describe("omx setup install mode behavior", () => {
 					// Strip model lines from an agent to simulate an older version without model fields
 					const agentPath = join(codexHomeDir, "agents", "planner.toml");
 					const originalContent = await readFile(agentPath, "utf-8");
-					
+
 					// Extract just the lines before model fields begin
 					const lines = originalContent.split("\n");
 					const instructionsIndex = lines.findIndex(line => /^developer_instructions\s*=/.test(line));
 					assert.ok(instructionsIndex > 0, "agent should have developer_instructions");
-					
+
 					// Remove model/model_provider/model_reasoning_effort lines
 					const strippedLines = lines.filter(line =>
 						!/^(model|model_provider|model_reasoning_effort)\s*=/.test(line)
 					);
 					const strippedContent = strippedLines.join("\n");
 					await writeFile(agentPath, strippedContent);
-					
+
 					// Update the manifest to record the stripped version as pristine
 					const manifestPath = join(codexHomeDir, ".omx", "native-agents.json");
 					const manifestContent = await readFile(manifestPath, "utf-8");
 					const manifest = JSON.parse(manifestContent) as { version: number; files: Record<string, unknown> };
-					
+
 					// Calculate sha256 of stripped content
 					const strippedHash = createHash("sha256").update(strippedContent).digest("hex");
-					
+
 					// Update manifest with new hash as pristine marker
 					if (!manifest.files["planner.toml"]) {
 						manifest.files["planner.toml"] = {};
 					}
 					(manifest.files["planner.toml"] as Record<string, unknown>)["sha256"] = strippedHash;
 					await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-					
+
 					// Verify that model fields are indeed missing before setup
 					const beforeSetup = await readFile(agentPath, "utf-8");
 					assert.ok(!beforeSetup.includes("model ="), "model line should be stripped before setup");
 					assert.ok(!beforeSetup.includes("model_reasoning_effort ="), "model_reasoning_effort should be stripped before setup");
-					
+
 					// Run plain setup (not force) to trigger reconciliation
 					await setup({ scope: "user", installMode: "legacy" });
-					
+
 					// Verify that model fields ARE written (because file is pristine)
 					const finalContent = await readFile(agentPath, "utf-8");
 					assert.ok(finalContent.includes("model ="), "model line should be written back for pristine file");
@@ -6924,39 +6924,39 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			const homeDir = join(wd, "home");
 			const omxRoot = join(wd, "omxroot");
 			const codexHomeDir = join(homeDir, ".codex");
-			
+
 			await mkdir(codexHomeDir, { recursive: true });
 			await mkdir(omxRoot, { recursive: true });
 			// Pre-create a config file that will be updated and trigger backups
 			const configPath = join(codexHomeDir, "config.toml");
 			await writeFile(configPath, "# existing config\n");
-			
+
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
 			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
-			
+
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
 				process.env.OMX_ROOT = omxRoot;
 				delete process.env.OMX_STATE_ROOT;
 				process.chdir(wd);
-				
+
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
-				
+
 				// Backups land under OMX_ROOT/.omx, not HOME/.omx (#4236)
 				const expectedBackupRoot = join(omxRoot, ".omx", "backups", "setup");
 				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_ROOT is set");
-				
+
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
 					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is set`,
 				);
-				
+
 				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
 				const timestampDirs = (
 					await readdir(expectedBackupRoot, { withFileTypes: true })
@@ -6973,10 +6973,10 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					true,
 					`Backup file should maintain relative layout at ${backupFile}, not flattened name`,
 				);
-				
+
 				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_ROOT differ
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				
+
 				assert.equal(
 					existsSync(expectedCurrentReceiptPath),
 					true,
@@ -6997,46 +6997,46 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
-	
+
 	it("preserves existing behavior when OMX_ROOT is not set", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-no-omx-root-"));
 		try {
 			const homeDir = join(wd, "home");
 			const codexHomeDir = join(homeDir, ".codex");
-			
+
 			await mkdir(codexHomeDir, { recursive: true });
 			// Pre-create a config file that will be updated and trigger backups
 			const configPath = join(codexHomeDir, "config.toml");
 			await writeFile(configPath, "# existing config\n");
-			
+
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
 			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
-			
+
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
 				delete process.env.OMX_ROOT;
 				delete process.env.OMX_STATE_ROOT;
 				process.chdir(wd);
-				
+
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
-				
+
 				// Verify backups are under HOME/.omx (original behavior)
 				const expectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
-				
+
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
 					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is not set (preserve original behavior)`,
 				);
-				
+
 				// Verify current skill receipt is under CODEX_HOME
 				const expectedReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				
+
 				assert.equal(
 					existsSync(expectedReceiptPath),
 					true,
@@ -7064,39 +7064,39 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			const homeDir = join(wd, "home");
 			const omxStateRoot = join(wd, "state");
 			const codexHomeDir = join(homeDir, ".codex");
-			
+
 			await mkdir(codexHomeDir, { recursive: true });
 			await mkdir(omxStateRoot, { recursive: true });
 			// Pre-create a config file that will be updated and trigger backups
 			const configPath = join(codexHomeDir, "config.toml");
 			await writeFile(configPath, "# existing config\n");
-			
+
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
 			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
-			
+
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
 				delete process.env.OMX_ROOT;
 				process.env.OMX_STATE_ROOT = omxStateRoot;
 				process.chdir(wd);
-				
+
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
-				
+
 				// Backups land under OMX_STATE_ROOT/.omx, not HOME/.omx (#4236)
 				const expectedBackupRoot = join(omxStateRoot, ".omx", "backups", "setup");
 				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_STATE_ROOT is set");
-				
+
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
 					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set`,
 				);
-				
+
 				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
 				const timestampDirs = (
 					await readdir(expectedBackupRoot, { withFileTypes: true })
@@ -7113,10 +7113,10 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					true,
 					`Backup file should maintain relative layout at ${backupFile}, not flattened name`,
 				);
-				
+
 				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_STATE_ROOT differ
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				
+
 				assert.equal(
 					existsSync(expectedCurrentReceiptPath),
 					true,
@@ -7144,19 +7144,19 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			const stateSubdir = join(wd, "config", "state");
 			const homeDir = join(wd, "home");
 			const codexHomeDir = join(homeDir, ".codex");
-			
+
 			await mkdir(codexHomeDir, { recursive: true });
 			await mkdir(stateSubdir, { recursive: true });
 			// Pre-create a config file that will be updated and trigger backups
 			const configPath = join(codexHomeDir, "config.toml");
 			await writeFile(configPath, "# existing config\n");
-			
+
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
 			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
-			
+
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
@@ -7164,20 +7164,20 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				// Set OMX_STATE_ROOT with leading/trailing whitespace and a relative path
 				process.env.OMX_STATE_ROOT = "  ./config/state  ";
 				process.chdir(wd);
-				
+
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
-				
+
 				// Trimmed relative OMX_STATE_ROOT resolves against cwd; backups land there, not HOME/.omx (#4236)
 				const expectedBackupRoot = join(stateSubdir, ".omx", "backups", "setup");
 				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_STATE_ROOT is set");
-				
+
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
 					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set with whitespace and relative path`,
 				);
-				
+
 				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
 				const timestampDirs = (
 					await readdir(expectedBackupRoot, { withFileTypes: true })
@@ -7194,10 +7194,10 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					true,
 					`Backup file should maintain relative layout at ${backupFile}, not flattened name`,
 				);
-				
+
 				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_STATE_ROOT differ (with relative path and whitespace)
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				
+
 				assert.equal(
 					existsSync(expectedCurrentReceiptPath),
 					true,
@@ -7226,7 +7226,7 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			const homeDir = join(wd, "home");
 			const foreignBackupDir = join(wd, "foreign-backups");
 			const codexHomeDir = join(homeDir, ".codex");
-			
+
 			await mkdir(codexHomeDir, { recursive: true });
 			await mkdir(foreignBackupDir, { recursive: true });
 			await mkdir(join(homeDir, ".omx"), { recursive: true });
@@ -7235,20 +7235,20 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			// Pre-create a config file that would trigger backups
 			const configPath = join(codexHomeDir, "config.toml");
 			await writeFile(configPath, "# existing config\n");
-			
+
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
 			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
-			
+
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
 				delete process.env.OMX_ROOT;
 				delete process.env.OMX_STATE_ROOT;
 				process.chdir(wd);
-				
+
 				// Setup should refuse to write through the symlinked backups directory
 				await assert.rejects(
 					setup({ scope: "user", installMode: "legacy" }),
