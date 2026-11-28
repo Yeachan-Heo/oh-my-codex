@@ -1283,6 +1283,18 @@ async function registerPidFile(): Promise<void> {
   const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
   const existingPid = existingRecord?.pid ?? null;
   if (existingPid && existingPid !== process.pid && isPidAlive(existingPid)) {
+    // For persistent authority, verify cwd matches before killing to avoid cross-cwd reaping.
+    // The pid file is shared when using the same OMX_ROOT across different cwds.
+    if (persistentAuthority && existingRecord?.cwd && !sameFilePath(existingRecord.cwd, cwd)) {
+      await eventLog({
+        type: 'watcher_stale_pid_cwd_mismatch',
+        stale_pid: existingPid,
+        pid_file: pidFilePath,
+        expected_cwd: cwd,
+        existing_cwd: existingRecord.cwd,
+      });
+      return; // Do not reap; this pid belongs to a different cwd.
+    }
     try {
       process.kill(existingPid, 'SIGTERM');
       const exitedGracefully = await waitForPidExit(existingPid);
@@ -1539,7 +1551,15 @@ async function requestShutdown(reason: string, signal: string | null = null): Pr
   shutdownPromise = (async () => {
     await terminateActiveNotifyHookChild();
     await activeDeliveryPromise?.catch(() => undefined);
-    await writeState({ stop_reason: reason, stop_signal: signal, stopping: true });
+    // Persistent authority must not write to the primary's state file on shutdown.
+    // For --once authority mode or primary watcher, write to the primary state.
+    if (persistentAuthority) {
+      // Write only to authority's own state file, never to the primary's.
+      await writePersistentAuthorityState({ stopped_at: new Date().toISOString(), stop_reason: reason, stop_signal: signal });
+    } else {
+      // Primary watcher or --once authority: write to primary state.
+      await writeState({ stop_reason: reason, stop_signal: signal, stopping: true });
+    }
     await eventLog({
       type: 'watcher_stop',
       signal,
