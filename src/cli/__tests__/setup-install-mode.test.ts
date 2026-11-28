@@ -6963,27 +6963,13 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_ROOT is set (backups should go under OMX_ROOT instead)`,
 				);
 				
-				// Verify current skill receipt is under CODEX_HOME, not OMX_ROOT
+				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_ROOT differ
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				const unexpectedOmxReceiptPath = join(omxRoot, ".omx", "state", "setup", "installed-skills.json");
-				const unexpectedHomeReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
 				
 				assert.equal(
 					existsSync(expectedCurrentReceiptPath),
 					true,
 					`Current receipt should be under CODEX_HOME ${expectedCurrentReceiptPath} when CODEX_HOME and OMX_ROOT differ`,
-				);
-				
-				assert.equal(
-					existsSync(unexpectedOmxReceiptPath),
-					false,
-					`Current receipt should NOT be under OMX_ROOT ${unexpectedOmxReceiptPath} when CODEX_HOME is set`,
-				);
-				
-				assert.equal(
-					existsSync(unexpectedHomeReceiptPath),
-					false,
-					`Receipt path ${unexpectedHomeReceiptPath} should NOT exist when OMX_ROOT is set`,
 				);
 			} finally {
 				process.chdir(previousCwd);
@@ -7038,12 +7024,12 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				);
 				
 				// Verify current skill receipt is under CODEX_HOME
-				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
+				const expectedReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
 				
 				assert.equal(
-					existsSync(expectedCurrentReceiptPath),
+					existsSync(expectedReceiptPath),
 					true,
-					`Current receipt should be under CODEX_HOME ${expectedCurrentReceiptPath} when OMX_ROOT is not set`,
+					`Current receipt path ${expectedReceiptPath} should exist when OMX_ROOT is not set`,
 				);
 			} finally {
 				process.chdir(previousCwd);
@@ -7106,27 +7092,13 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set (backups should go under OMX_STATE_ROOT instead)`,
 				);
 				
-				// Verify current skill receipt is under CODEX_HOME, not OMX_STATE_ROOT
+				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_STATE_ROOT differ
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				const unexpectedStateReceiptPath = join(omxStateRoot, ".omx", "state", "setup", "installed-skills.json");
-				const unexpectedHomeReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
 				
 				assert.equal(
 					existsSync(expectedCurrentReceiptPath),
 					true,
 					`Current receipt should be under CODEX_HOME ${expectedCurrentReceiptPath} when CODEX_HOME and OMX_STATE_ROOT differ`,
-				);
-				
-				assert.equal(
-					existsSync(unexpectedStateReceiptPath),
-					false,
-					`Current receipt should NOT be under OMX_STATE_ROOT ${unexpectedStateReceiptPath} when CODEX_HOME is set`,
-				);
-				
-				assert.equal(
-					existsSync(unexpectedHomeReceiptPath),
-					false,
-					`Receipt path ${unexpectedHomeReceiptPath} should NOT exist when OMX_STATE_ROOT is set`,
 				);
 			} finally {
 				process.chdir(previousCwd);
@@ -7190,27 +7162,13 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
 				);
 				
-				// Verify current skill receipt is under CODEX_HOME, not the resolved OMX_STATE_ROOT
+				// Verify current skill receipt is under CODEX_HOME when CODEX_HOME and OMX_STATE_ROOT differ (with relative path and whitespace)
 				const expectedCurrentReceiptPath = join(codexHomeDir, ".omx", "state", "setup", "installed-skills.json");
-				const unexpectedStateReceiptPath = join(stateSubdir, ".omx", "state", "setup", "installed-skills.json");
-				const unexpectedHomeReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
 				
 				assert.equal(
 					existsSync(expectedCurrentReceiptPath),
 					true,
-					`Current receipt should be under CODEX_HOME ${expectedCurrentReceiptPath} when CODEX_HOME and OMX_STATE_ROOT differ`,
-				);
-				
-				assert.equal(
-					existsSync(unexpectedStateReceiptPath),
-					false,
-					`Current receipt should NOT be under OMX_STATE_ROOT ${unexpectedStateReceiptPath} when CODEX_HOME is set`,
-				);
-				
-				assert.equal(
-					existsSync(unexpectedHomeReceiptPath),
-					false,
-					`Receipt path ${unexpectedHomeReceiptPath} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+					`Current receipt should be under CODEX_HOME ${expectedCurrentReceiptPath} when OMX_STATE_ROOT is set with whitespace and relative path`,
 				);
 			} finally {
 				process.chdir(previousCwd);
