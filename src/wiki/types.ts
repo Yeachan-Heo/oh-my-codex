@@ -26,6 +26,7 @@ export interface WikiPageFrontmatter {
   category: WikiCategory;
   confidence: 'high' | 'medium' | 'low';
   schemaVersion: number;
+  earliestDirectiveExpiry?: string;
 }
 
 export interface WikiPage {

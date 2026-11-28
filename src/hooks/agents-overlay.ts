@@ -32,6 +32,7 @@ import {
   getAuthoritativeActiveStatePaths,
   getStateDir,
 } from "../mcp/state-paths.js";
+import { selectHighPriorityDirectives } from "../mcp/directive-filter.js";
 import { generateCodebaseMap } from "./codebase-map.js";
 import { buildExploreRoutingGuidance } from "./explore-routing.js";
 import {
@@ -258,11 +259,10 @@ async function readProjectMemorySummary(cwd: string): Promise<string> {
     if (data.conventions) parts.push(`- Conventions: ${data.conventions}`);
     if (data.build) parts.push(`- Build: ${data.build}`);
     if (data.directives && Array.isArray(data.directives)) {
-      const highPriority = data.directives.filter(
-        (d: { priority?: string }) => d.priority === "high",
-      );
-      for (const d of highPriority.slice(0, 3)) {
-        parts.push(`- Directive: ${d.directive}`);
+      const directives = selectHighPriorityDirectives(data.directives as any, 3);
+      for (const d of directives) {
+        const id = (d as any).id ? ` (${(d as any).id})` : '';
+        parts.push(`- Directive: ${d.directive}${id}`);
       }
     }
     return parts.join("\n");

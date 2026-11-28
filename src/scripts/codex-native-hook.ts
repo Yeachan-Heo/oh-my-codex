@@ -105,6 +105,7 @@ import {
   resolveWritableStateScope,
   WRITABLE_STATE_SCOPE_ERRORS,
 } from "../mcp/state-paths.js";
+import { selectHighPriorityDirectives } from "../mcp/directive-filter.js";
 import {
   classifyKeywordInput,
   recordSkillActivation,
@@ -2320,7 +2321,7 @@ async function buildPersistedSubagentReopenContext(
     const payload = safeObject(options.payload);
     const toolsValue = payload.available_tools ?? payload.availableTools ?? payload.tools;
     const availableTools = Array.isArray(toolsValue) ? toolsValue : null;
-    
+
     // Compute explicit unsupported evidence for native subagent capabilities.
     // This is used by getResumeAgentAvailability to determine if resume_agent tool is unavailable.
     const stateDir = getBaseStateDir(cwd);
@@ -2334,10 +2335,10 @@ async function buildPersistedSubagentReopenContext(
       cwd,
       sessionId: rootContext.rootNativeSessionId,
     });
-    
+
     // Pass unsupported evidence only when the status is 'unsupported'
     const unsupportedEvidence = nativeSubagentSupport.status === 'unsupported' ? nativeSubagentSupport : undefined;
-    
+
     return consumeDirectChildReopenContext(cwd, {
       sessionId: rootContext.sessionId,
       rootNativeSessionId: rootContext.rootNativeSessionId,
@@ -2418,7 +2419,8 @@ async function buildSessionStartContext(
   const projectMemoryPath = resolveProjectMemoryPath(cwd);
   const projectMemory = projectMemoryPath ? await readJsonIfExists(projectMemoryPath) : null;
   if (projectMemory && projectMemoryPath) {
-    const directives = Array.isArray(projectMemory.directives) ? projectMemory.directives : [];
+    const allDirectives = Array.isArray(projectMemory.directives) ? projectMemory.directives : [];
+    const directives = selectHighPriorityDirectives(allDirectives, 3);
     const notes = Array.isArray(projectMemory.notes) ? projectMemory.notes : [];
     const techStack = safeContextSnippet(projectMemory.techStack);
     const conventions = safeContextSnippet(projectMemory.conventions);
@@ -2429,10 +2431,12 @@ async function buildSessionStartContext(
     if (techStack && !alreadyInStartupInstructions("Stack", techStack)) summary.push(`- stack: ${techStack}`);
     if (conventions && !alreadyInStartupInstructions("Conventions", conventions)) summary.push(`- conventions: ${conventions}`);
     if (build && !alreadyInStartupInstructions("Build", build)) summary.push(`- build: ${build}`);
-    if (directives.length > 0) {
-      const firstDirective = directives[0] as Record<string, unknown>;
-      const directive = safeContextSnippet(firstDirective.directive);
-      if (directive && !alreadyInStartupInstructions("Directive", directive)) summary.push(`- directive: ${directive}`);
+    for (const d of directives) {
+      const directive = safeContextSnippet(d.directive);
+      if (directive && !alreadyInStartupInstructions("Directive", directive)) {
+        const id = d.id ? ` (${d.id})` : '';
+        summary.push(`- directive: ${directive}${id}`);
+      }
     }
     if (notes.length > 0) {
       const firstNote = notes[0] as Record<string, unknown>;
@@ -4952,12 +4956,12 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     .filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
-  
+
   // Check for read-only operations that are allowed in all phases
   if (beadsOperationIsReadOnly(operation)) {
     return { present: true, allowed: true, isReadOnly: true };
   }
-  
+
   // Check for write operations
   if (["create", "update", "edit", "close", "reopen"].includes(operation)) {
     return { present: true, allowed: true };
@@ -22975,17 +22979,17 @@ export async function dispatchCodexNativeHook(
           // For compound commands with Beads violations, preserve existing advisories by merging
           // rather than replacing them. Build the existing advisory first.
           let existingAdvisory = buildNativePreToolUseOutput(payload);
-          
+
           // Normalize the existing advisory to pure advisory form (without decision/reason fields)
           // so that when we merge with Beads message, the CLI sanitizer won't use reason over systemMessage
           if (existingAdvisory) {
             existingAdvisory = toAdvisoryOrCancelPreToolUseOutput(existingAdvisory);
           }
-          
+
           // Emit advisory warning (not a hard block, since PreToolUse is advisory-only)
           // Only emit systemMessage, not reason, to avoid being intercepted as cancel-deny
           const beadsMessage = `Beads tracker command is blocked: ${beadsClassification.reason ?? "not an allowed metadata operation"}`;
-          
+
           if (existingAdvisory) {
             // Merge advisories: preserve existing safety guidance (e.g., destructive-command advisory)
             // and add Beads-specific guidance. Both messages are now in advisory form.

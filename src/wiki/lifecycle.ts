@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { codexHome, resolveProjectMemoryPath } from '../utils/paths.js';
+import { filterActiveDirectives, getEarliestFutureExpiry } from '../mcp/directive-filter.js';
 import {
   appendLogUnsafe,
   getWikiDir,
@@ -50,7 +51,8 @@ export function onSessionStart(data: { cwd?: string }): { additionalContext?: st
     if (!existsSync(wikiDir) && !legacyFallbackActive) return {};
 
     const pages = listPages(root);
-    if (pages.length === 0) return {};
+    // Only skip wiki context if there are no user pages AND we're not feeding project memory
+    if (pages.length === 0 && !config.feedProjectMemoryOnStart) return {};
 
     if (legacyFallbackActive) {
       const summary = [
@@ -199,8 +201,14 @@ function feedProjectMemory(root: string): void {
     const existing = readPage(root, 'environment.md');
     const memoryMtime = statSync(projectMemoryPath).mtimeMs;
     const existingUpdated = existing ? new Date(existing.frontmatter.updated).getTime() : 0;
+
+    // Check if cache is still valid (memory not updated and no directives expired)
     if (existing && existingUpdated >= memoryMtime) {
-      return;
+      // Also check if any directives have expired since cache was written
+      const earliestExpiry = existing.frontmatter.earliestDirectiveExpiry as string | undefined;
+      if (!earliestExpiry || new Date(earliestExpiry).getTime() > Date.now()) {
+        return;
+      }
     }
 
     const sections: string[] = ['\n# Project Environment\n'];
@@ -230,15 +238,20 @@ function feedProjectMemory(root: string): void {
       sections.push('');
     }
 
+    let earliestDirectiveExpiry: string | undefined;
     if (Array.isArray(parsed.directives) && parsed.directives.length > 0) {
       sections.push('## Directives');
-      for (const directive of parsed.directives.slice(0, 20)) {
+      const activeDirectives = filterActiveDirectives(parsed.directives as any);
+      for (const directive of activeDirectives.slice(0, 20)) {
         const content = typeof (directive as { directive?: unknown }).directive === 'string'
           ? (directive as { directive: string }).directive.trim()
           : '';
         if (content) sections.push(`- ${content}`);
       }
       sections.push('');
+
+      // Calculate earliest future expiry time to invalidate cache when directives expire
+      earliestDirectiveExpiry = getEarliestFutureExpiry(parsed.directives as any);
     }
 
     const now = new Date().toISOString();
@@ -255,6 +268,7 @@ function feedProjectMemory(root: string): void {
           category: 'environment',
           confidence: 'high',
           schemaVersion: WIKI_SCHEMA_VERSION,
+          ...(earliestDirectiveExpiry && { earliestDirectiveExpiry }),
         },
         content: sections.join('\n'),
       }, { allowReserved: true });

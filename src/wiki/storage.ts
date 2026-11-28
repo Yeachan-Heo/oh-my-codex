@@ -130,6 +130,7 @@ export function parseFrontmatter(raw: string): { frontmatter: WikiPageFrontmatte
         category: (fm.category || 'reference') as WikiPageFrontmatter['category'],
         confidence: (fm.confidence || 'medium') as WikiPageFrontmatter['confidence'],
         schemaVersion: Number(fm.schemaVersion) || WIKI_SCHEMA_VERSION,
+        earliestDirectiveExpiry: fm.earliestDirectiveExpiry ? String(fm.earliestDirectiveExpiry) : undefined,
       },
       content,
     };
@@ -201,6 +202,7 @@ export function serializePage(page: WikiPage): string {
     `category: ${fm.category}`,
     `confidence: ${fm.confidence}`,
     `schemaVersion: ${fm.schemaVersion}`,
+    ...(fm.earliestDirectiveExpiry ? [`earliestDirectiveExpiry: ${fm.earliestDirectiveExpiry}`] : []),
   ].join('\n');
 
   return `---\n${yaml}\n---\n${page.content}`;

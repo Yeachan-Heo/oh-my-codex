@@ -8,6 +8,8 @@ const REQUIRED_TOOLS = [
   'project_memory_write',
   'project_memory_add_note',
   'project_memory_add_directive',
+  'project_memory_list_directives',
+  'project_memory_remove_directive',
   'notepad_read',
   'notepad_write_priority',
   'notepad_write_working',

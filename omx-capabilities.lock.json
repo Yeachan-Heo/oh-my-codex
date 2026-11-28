@@ -143,7 +143,7 @@
       ]
     },
     "configured_tools": {
-      "digest": "01aa27e33f4c314946d72863ac942d03aced63dcdf065a17112f2ca1c0aa5325",
+      "digest": "d724008de68a801c19f159fcc1e385f7f399cff3bbcac50a61afa65a078cafdf",
       "disabled_first_party_servers": [],
       "external_servers": [],
       "tools": [
@@ -838,6 +838,10 @@
                 "description": "The directive text",
                 "type": "string"
               },
+              "expiresAt": {
+                "description": "ISO 8601 timestamp when the directive expires",
+                "type": "string"
+              },
               "priority": {
                 "enum": [
                   "high",
@@ -884,6 +888,29 @@
           "server": "memory"
         },
         {
+          "description": "List all active directives in project memory. Excludes expired directives.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "priority": {
+                "description": "Filter by priority (default: all)",
+                "enum": [
+                  "high",
+                  "normal",
+                  "all"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "project_memory_list_directives",
+          "server": "memory"
+        },
+        {
           "description": "Read project memory. Can read full memory or a specific section.",
           "enabled": true,
           "inputSchema": {
@@ -907,6 +934,28 @@
             "type": "object"
           },
           "name": "project_memory_read",
+          "server": "memory"
+        },
+        {
+          "description": "Remove a directive from project memory by index or by text match.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "index": {
+                "description": "Index of directive to remove",
+                "type": "integer"
+              },
+              "text": {
+                "description": "Remove directive containing this text (partial match)",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "project_memory_remove_directive",
           "server": "memory"
         },
         {
@@ -1305,7 +1354,7 @@
       ]
     },
     "fixtures": {
-      "digest": "200564289c8a95e64ab816fff458ea77f4585f0f88868e4ea61eb70dcc053789",
+      "digest": "04f8dbf677960291f8f4f2a72e23b8b40f8d216562b6523d0e8a15234664ea35",
       "fixtures": [
         {
           "allowed_tools": [
@@ -1337,7 +1386,9 @@
             "notepad_write_working",
             "project_memory_add_directive",
             "project_memory_add_note",
+            "project_memory_list_directives",
             "project_memory_read",
+            "project_memory_remove_directive",
             "project_memory_write",
             "state_get_status",
             "state_list_active",
@@ -1388,7 +1439,9 @@
             "notepad_write_working",
             "project_memory_add_directive",
             "project_memory_add_note",
+            "project_memory_list_directives",
             "project_memory_read",
+            "project_memory_remove_directive",
             "project_memory_write",
             "state_get_status",
             "state_list_active",
