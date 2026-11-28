@@ -47,6 +47,7 @@ import {
 	detectLegacySkillRootOverlap,
 	omxPlansDir,
 	omxLogsDir,
+	omxRoot,
 } from "../utils/paths.js";
 import {
 	emitDegradedDurabilityWarning,
@@ -496,15 +497,15 @@ function getBackupContext(
 			baseRoot: projectRoot,
 		};
 	}
-	// For user scope, respect OMX_ROOT if set for backup paths (#4236).
-	// When OMX_ROOT is set, user-scope backups go under OMX_ROOT for isolated installs.
+	// For user scope, respect OMX_ROOT/OMX_STATE_ROOT if set for backup paths (#4236).
+	// When OMX_ROOT or OMX_STATE_ROOT is set, user-scope backups go under it for isolated installs.
 	// The baseRoot is used for validation scope determination per destination:
 	// - Destinations under CODEX_HOME are validated against CODEX_HOME
-	// - Destinations under ~/.omx are validated against OMX_ROOT (if set) or homedir()
-	const omxRootOverride = process.env.OMX_ROOT ?? process.env.OMX_STATE_ROOT;
-	const userScopeRoot = omxRootOverride || homedir();
+	// - Destinations under ~/.omx are validated against OMX_ROOT/OMX_STATE_ROOT (if set) or homedir()
+	const omxPath = omxRoot(homedir());
+	const userScopeRoot = dirname(omxPath);
 	return {
-		backupRoot: join(userScopeRoot, ".omx", "backups", "setup", timestamp),
+		backupRoot: join(omxPath, "backups", "setup", timestamp),
 		baseRoot: userScopeRoot,
 	};
 }
@@ -4675,12 +4676,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
-	// For user scope, compute the legacy receipt path, respecting OMX_ROOT if set (#4236)
+	// For user scope, compute the legacy receipt path, respecting OMX_ROOT/OMX_STATE_ROOT if set (#4236)
 	const legacySkillReceiptPath = resolvedScope.scope === "user"
 		? (() => {
-			const omxRootOverride = process.env.OMX_ROOT ?? process.env.OMX_STATE_ROOT;
-			const userScopeRoot = omxRootOverride || homedir();
-			return join(userScopeRoot, ".omx", "state", "setup", "installed-skills.json");
+			const omxPath = omxRoot(homedir());
+			return join(omxPath, "state", "setup", "installed-skills.json");
 		})()
 		: undefined;
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
