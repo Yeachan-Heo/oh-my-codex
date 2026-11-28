@@ -28,6 +28,7 @@ import { buildSubagentResumeLedger } from '../subagents/tracker.js';
 import type { SubagentTrackingState } from '../subagents/tracker.js';
 import { buildSessionFrictionReport } from '../session-history/friction.js';
 import { codexHome } from '../utils/paths.js';
+import { redactAuthSecrets } from '../auth/redact.js';
 import { REPEAT_PROBLEM_REGISTRY, sourcesFor } from './supervision-registry.js';
 import type { CheckArea, RepeatProblem, RepeatProblemHistory, Severity } from './supervision-registry.js';
 import { IQDOCTOR_HISTORY } from './supervision-history.iqdoctor.js';
@@ -819,15 +820,15 @@ export function consolidateFindingsByFingerprint(findings: Finding[]): { consoli
 }
 
 /** Redact sensitive paths, secrets, and log samples from public issue content. */
-function redactForIssue(text: string): string {
+export function redactForIssue(text: string): string {
   if (!text) return text;
   const homeDir = homedir();
-  // Redact paths under $HOME
-  let redacted = text.replace(new RegExp(homeDir, 'g'), '~');
-  // Redact common secret patterns (AWS keys, tokens, etc.)
+  // Redact paths under $HOME using literal string replacement (safe from regex metacharacters)
+  let redacted = text.split(homeDir).join('~');
+  // Redact auth secrets (Bearer tokens, access_token, refresh_token, sk-*, etc.)
+  redacted = redactAuthSecrets(redacted);
+  // Redact AWS keys (AKIA pattern not covered by redactAuthSecrets)
   redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, 'AKIA...');
-  redacted = redacted.replace(/gh[a-z]_[A-Za-z0-9_]{36,255}/g, 'gh*_...');
-  redacted = redacted.replace(/sk-[A-Za-z0-9_-]{20,}/g, 'sk_...');
   // Remove raw log sample lines (lines starting with timestamps or JSON)
   redacted = redacted
     .split('\n')
@@ -1187,7 +1188,7 @@ export function discoverCandidates(cwd: string, processes: readonly ProcSample[]
             cwd: owner.cwd,
             stateDir,
             ...(typeof owner.started_at === 'string' ? { startedAt: owner.started_at } : {}),
-            pidAlive: false,
+            pidAlive: typeof owner.pid === 'number' ? isPidAlive(owner.pid) : false,
             stateMtimeMs: mtimeOf(ownerPath),
             rolloutMtimeMs: null,
             sources: [`native session ${sessionDir}`],
