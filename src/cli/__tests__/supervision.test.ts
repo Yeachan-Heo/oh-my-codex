@@ -1503,6 +1503,9 @@ describe('finding #4234 release-review fixes', () => {
       { input: 'access_token=sk_test_abcdefghijklmnopqrstuvwxyz123456', shouldNotInclude: 'sk_test_abcdefghijklmnopqrstuvwxyz123456' },
       { input: 'refresh_token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz"', shouldNotInclude: '1234567890abcdefghijklmnopqrstuvwxyz' },
       { input: 'secret: sk-proj-aBcDefGhIjKlMnOpQrStUvWxYz1234567890', shouldNotInclude: 'aBcDefGhIjKlMnOpQrStUvWxYz1234567890' },
+      { input: `gh auth failed with ghp_${'a1B2c3D4e5'.repeat(4)}`, shouldNotInclude: 'a1B2c3D4e5a1B2c3D4e5' },
+      { input: `push rejected for gho_${'Zz09'.repeat(9)}`, shouldNotInclude: 'Zz09Zz09Zz09' },
+      { input: `token github_pat_11ABCDEFG0_${'q'.repeat(59)}`, shouldNotInclude: 'qqqqqqqqqqqq' },
       { input: 'JSON token field: {"access_token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.tzrQTwJjvP7wL3jqB"}', shouldNotInclude: 'eyJhbGciOiJIUzI1NiJ9' },
     ];
     for (const testCase of testCases) {

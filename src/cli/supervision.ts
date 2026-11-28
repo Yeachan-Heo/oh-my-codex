@@ -827,8 +827,10 @@ export function redactForIssue(text: string): string {
   let redacted = text.split(homeDir).join('~');
   // Redact auth secrets (Bearer tokens, access_token, refresh_token, sk-*, etc.)
   redacted = redactAuthSecrets(redacted);
-  // Redact AWS keys (AKIA pattern not covered by redactAuthSecrets)
+  // Redact AWS keys and bare GitHub tokens (not covered by redactAuthSecrets)
   redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, 'AKIA...');
+  redacted = redacted.replace(/\bgh[pousr]_[A-Za-z0-9]{20,255}\b/g, '[REDACTED]');
+  redacted = redacted.replace(/\bgithub_pat_[A-Za-z0-9_]{20,255}\b/g, '[REDACTED]');
   // Remove raw log sample lines (lines starting with timestamps or JSON)
   redacted = redacted
     .split('\n')
