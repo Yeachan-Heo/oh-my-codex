@@ -2320,7 +2320,7 @@ async function buildPersistedSubagentReopenContext(
     const payload = safeObject(options.payload);
     const toolsValue = payload.available_tools ?? payload.availableTools ?? payload.tools;
     const availableTools = Array.isArray(toolsValue) ? toolsValue : null;
-    
+
     // Compute explicit unsupported evidence for native subagent capabilities.
     // This is used by getResumeAgentAvailability to determine if resume_agent tool is unavailable.
     const stateDir = getBaseStateDir(cwd);
@@ -2334,10 +2334,10 @@ async function buildPersistedSubagentReopenContext(
       cwd,
       sessionId: rootContext.rootNativeSessionId,
     });
-    
+
     // Pass unsupported evidence only when the status is 'unsupported'
     const unsupportedEvidence = nativeSubagentSupport.status === 'unsupported' ? nativeSubagentSupport : undefined;
-    
+
     return consumeDirectChildReopenContext(cwd, {
       sessionId: rootContext.sessionId,
       rootNativeSessionId: rootContext.rootNativeSessionId,
@@ -4861,6 +4861,11 @@ function shellTokenizeLiteralCommand(command: string): string[] | null {
       quote = char;
       continue;
     }
+    // Reject newlines and carriage returns BEFORE checking for whitespace,
+    // so newline-injected commands are not tokenized as args
+    if (char === "\n" || char === "\r") {
+      return null;
+    }
     if (/\s/.test(char)) {
       if (current) {
         tokens.push(current);
@@ -4868,7 +4873,7 @@ function shellTokenizeLiteralCommand(command: string): string[] | null {
       }
       continue;
     }
-    if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
+    if (/[;&|<>`$(){}]/.test(char)) return null;
     current += char;
   }
 
@@ -4907,9 +4912,486 @@ function isAllowedBeadsDbPath(cwd: string, rawPath: string): boolean {
   return relativePath.startsWith(".beads/") && relativePath.length > ".beads/".length;
 }
 
+// Per-subcommand flag tables for bd command
+interface BdFlagTable {
+  valueFlags: Set<string>;  // Flags that take a value (--foo value or --foo=value)
+  booleanFlags: Set<string>; // Flags that don't take a value (--help, --json, etc.)
+}
+
+// Known flags for bd subcommands
+const BD_FLAG_TABLES: Record<string, BdFlagTable> = {
+  comments: {
+    valueFlags: new Set(["--author", "--status", "--type"]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  dep: {
+    valueFlags: new Set(["--type"]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  list: {
+    valueFlags: new Set(["--status"]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  show: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  status: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  ready: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  update: {
+    valueFlags: new Set(["--title", "--status", "--type"]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  create: {
+    valueFlags: new Set(["--type"]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  edit: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  close: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  reopen: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+  help: {
+    valueFlags: new Set([]),
+    booleanFlags: new Set(["--help", "-h", "--json"]),
+  },
+};
+
 function beadsOperationIsReadOnly(operation: string): boolean {
   // Read-only Beads operations that are allowed in all phases
-  return ["list", "ready", "show", "dep", "status"].includes(operation);
+  // Note: 'dep' is handled separately in bdCommandTokensAreReadOnly because
+  // it has both read subcommands (dep tree, dep list, dep show) and write subcommands (dep add, dep remove)
+  return ["list", "ready", "show", "status"].includes(operation);
+}
+
+function classifyCompoundBeadsCommand(cwd: string, command: string): BeadsCommandClassification {
+  // For compound commands, we need to:
+  // 1. Extract leading 'omx state read' segments (optional)
+  // 2. Extract the bd segment (should be read-only)
+  // 3. Verify all remaining segments are pure output filters
+
+  // Split on pipe, semicolon, &&, || while preserving the segments
+  // Use a regex that respects quotes
+  const segments = command.split(/\s*[|;]\s*|\s*&&\s*|\s*\|\|\s*/);
+
+  if (segments.length === 0) {
+    return { present: false, allowed: false };
+  }
+
+  // Check if we have leading 'omx state read' segments
+  let segmentIndex = 0;
+  while (segmentIndex < segments.length && isOmxStateReadSegment(segments[segmentIndex])) {
+    segmentIndex++;
+  }
+
+  // Now we should have a bd segment
+  if (segmentIndex >= segments.length) {
+    return { present: false, allowed: false };
+  }
+
+  const bdSegment = segments[segmentIndex];
+  const bdTokens = shellTokenizeLiteralCommand(bdSegment);
+  const bdExecutableIndex = bdTokens ? findLiteralBdExecutableIndex(bdTokens) : -1;
+
+  if (!bdTokens || bdExecutableIndex !== 0) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+
+  // Find the --db path
+  let dbPath = "";
+  let dbValueIndex = -1;
+  for (let index = bdExecutableIndex + 1; index < bdTokens.length; index += 1) {
+    const token = bdTokens[index] ?? "";
+    if (token === "--db") {
+      dbPath = bdTokens[index + 1] ?? "";
+      dbValueIndex = index + 1;
+      break;
+    }
+    if (token.startsWith("--db=")) {
+      dbPath = token.slice("--db=".length);
+      dbValueIndex = index;
+      break;
+    }
+  }
+
+  if (!dbPath) {
+    return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
+  }
+  if (!isAllowedBeadsDbPath(cwd, dbPath)) {
+    return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
+  }
+
+  // Check if the bd command is read-only
+  if (!bdCommandTokensAreReadOnly(bdTokens, dbValueIndex + 1)) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+
+  // All remaining segments must be pure output filters
+  for (let i = segmentIndex + 1; i < segments.length; i++) {
+    if (!isPureOutputFilterSegment(segments[i])) {
+      return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+    }
+  }
+
+  // All checks passed - it's a safe read-only compound command
+  return { present: true, allowed: true, isReadOnly: true };
+}
+
+// Check if a segment is a valid 'omx state read' command with only allowed flags
+function isOmxStateReadSegment(segment: string): boolean {
+  const trimmed = segment.trim();
+  if (!trimmed) return false;
+
+  // Check for command substitution or backticks in the raw string
+  if (/[$`]|\(\(|\)\)/.test(trimmed)) return false;
+
+  // Try to tokenize the segment
+  const tokens = shellTokenizeLiteralCommand(trimmed);
+  if (!tokens || tokens.length < 3) return false;
+
+  // Check if it starts with 'omx state read' or 'gjc state read'
+  if ((tokens[0] !== "omx" && tokens[0] !== "gjc") || tokens[1] !== "state" || tokens[2] !== "read") {
+    return false;
+  }
+
+  // Parse the flags: only --mode <name>, --json, and optionally --session <id> are allowed
+  let hasMode = false;
+  let hasJson = false;
+  let hasSession = false;
+  let i = 3;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token === "--json") {
+      if (hasJson) return false; // Duplicate flag
+      hasJson = true;
+      i++;
+    } else if (token === "--mode") {
+      if (hasMode) return false; // Duplicate flag
+      hasMode = true;
+      i++;
+      // Next token should be the mode name
+      if (i >= tokens.length) return false;
+      i++; // Skip the mode name
+    } else if (token === "--session") {
+      if (hasSession) return false; // Duplicate flag
+      hasSession = true;
+      i++;
+      // Next token should be the session id
+      if (i >= tokens.length) return false;
+      i++; // Skip the session id
+    } else {
+      // Unknown flag or argument
+      return false;
+    }
+  }
+
+  // Must have --mode flag
+  if (!hasMode) return false;
+
+  return true;
+}
+
+function isPureOutputFilterSegment(segment: string): boolean {
+  const trimmed = segment.trim();
+  if (!trimmed) return false;
+
+  // Check for command substitution or backticks in the raw string
+  // These cannot be quoted safely, so we reject them immediately
+  if (/[$`]|\(\(|\)\)/.test(trimmed)) return false;
+
+  // Try to tokenize the segment
+  // If tokenization fails, it means there are unquoted shell operators
+  const tokens = shellTokenizeLiteralCommand(trimmed);
+  if (!tokens || tokens.length === 0) return false;
+
+  const cmd = tokens[0];
+
+  // Whitelist of safe output filters: commands that only read and filter without side effects
+  // Strictly limited set:
+  // - head, tail, wc: always safe
+  // - grep: only without file operands and without -f/--file/-r/-R
+  // - cut, sort, uniq: only with zero positional file operands and without output file options
+  const basicSafeFilters = new Set(["head", "tail", "wc"]);
+
+  if (basicSafeFilters.has(cmd)) {
+    return true;
+  }
+
+  // For grep: allow only with no file operands and no -f/--file/-r/-R flags
+  if (cmd === "grep") {
+    let hasPatternOrFileArg = false;
+    for (const token of tokens.slice(1)) {
+      // Check for file input flags
+      if (token === "-f" || token === "--file" || token === "-r" || token === "-R") {
+        return false;
+      }
+      // Check for combined flags like -rf, -Rf, -fr, -Fr
+      if (token.startsWith("-")) {
+        // Combined flags: check if any include 'r', 'R', or 'f' together
+        if ((token.includes("r") || token.includes("R")) && token.includes("f")) {
+          return false;
+        }
+      } else {
+        // This is a positional argument. First one is typically the pattern (allowed),
+        // subsequent ones are file operands (not allowed)
+        if (hasPatternOrFileArg) {
+          // This is a file operand (second positional argument)
+          return false;
+        }
+        hasPatternOrFileArg = true;
+      }
+    }
+    return true;
+  }
+
+  // For cut: allow only with zero positional file operands
+  if (cmd === "cut") {
+    for (const token of tokens.slice(1)) {
+      if (!token.startsWith("-")) {
+        // Positional file operand found
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // For sort: allow only with zero positional file operands and no -o/--output
+  if (cmd === "sort") {
+    for (const token of tokens.slice(1)) {
+      if (token === "-o" || token === "--output") {
+        return false;
+      }
+      if (token.startsWith("--output=")) {
+        return false;
+      }
+      if (!token.startsWith("-")) {
+        // Positional file operand found
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // For uniq: allow only with zero positional file operands (and no output file positional)
+  if (cmd === "uniq") {
+    // Count positional arguments
+    let positionalCount = 0;
+    for (const token of tokens.slice(1)) {
+      if (!token.startsWith("-")) {
+        positionalCount++;
+        // uniq takes at most 1 positional for input, and optionally 1 for output
+        // We reject any positional arguments to be strictly safe
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+// Helper to extract positional arguments after the operation, properly skipping flags and their values.
+// If operation is known, uses explicit flag tables to avoid false positives. If operation is unknown
+// or has unknown flags, returns a marker to indicate the command should be blocked.
+function extractPositionalArgs(tokens: string[], knownOperation?: string): string[] | "UNKNOWN_FLAG" {
+  const positionals: string[] = [];
+  const flagTable = knownOperation ? BD_FLAG_TABLES[knownOperation] : undefined;
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (!token) {
+      i++;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      let flagName = token;
+      let hasInlineValue = false;
+      if (token.includes("=")) {
+        // Flag with inline value like --foo=bar
+        flagName = token.slice(0, token.indexOf("="));
+        hasInlineValue = true;
+      }
+      // If we have a flag table for this operation, use it
+      if (flagTable) {
+        // Check if this is a known flag
+        if (flagTable.booleanFlags.has(flagName)) {
+          // Boolean flag, skip just this token
+          i++;
+        } else if (flagTable.valueFlags.has(flagName)) {
+          // Value flag, skip this token and potentially the next
+          i++;
+          if (!hasInlineValue && i < tokens.length && tokens[i] && !tokens[i].startsWith("-")) {
+            i++;
+          }
+        } else {
+          // Unknown flag for this operation - mark as unsafe
+          return "UNKNOWN_FLAG";
+        }
+      } else {
+        // No flag table, use conservative approach: assume flags without = take values
+        i++;
+        if (!hasInlineValue && i < tokens.length && tokens[i] && !tokens[i].startsWith("-")) {
+          i++;
+        }
+      }
+    } else {
+      // This is a positional argument
+      positionals.push(token);
+      i++;
+    }
+  }
+  return positionals;
+}
+
+function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boolean {
+  // Check if the bd command starting at startIndex (after --db value) is read-only
+  // Extract operation and check if it's read-only
+  // Note: --help/-h flags do NOT make write operations read-only when there are
+  // actual operation parameters (e.g., 'update OMX-1 --title --help' is still a write op).
+  // Only when --help is the only positional arg after operation (e.g., 'update --help') is it read-only.
+
+  const allTokens = tokens.slice(startIndex);
+  // First pass: get the operation without strict flag checking
+  const firstPassResult = extractPositionalArgs(allTokens);
+  if (firstPassResult === "UNKNOWN_FLAG") {
+    // Even in first pass, unknown flag means not read-only
+    return false;
+  }
+  const operation = firstPassResult[0] ?? "";
+
+  // Second pass: now that we know the operation, extract with strict flag checking
+  const operationTokensResult = extractPositionalArgs(allTokens, operation);
+  if (operationTokensResult === "UNKNOWN_FLAG") {
+    // Unknown flag for this operation - not read-only
+    return false;
+  }
+  const operationTokens = operationTokensResult;
+  const operationArg = operationTokens[1] ?? "";  // First arg after operation (e.g., issue ID or subcommand)
+
+  // Check if the operation itself is 'help'
+  if (operation === "help") {
+    // 'help' as the operation is read-only
+    return true;
+  }
+
+  // Check for read-only operations
+  if (beadsOperationIsReadOnly(operation)) {
+    return true;
+  }
+
+  // For 'dep' operation, check if it has a recognized subcommand
+  if (operation === "dep") {
+    // Read-only dep subcommands
+    const readOnlyDepSubcommands = ["tree", "list", "show"];
+    // Write dep subcommands that must be blocked
+    const writeDepSubcommands = ["add", "remove", "rm"];
+
+    if (operationArg === "help") {
+      // 'dep help' or 'dep --help' is read-only
+      return true;
+    }
+
+    if (writeDepSubcommands.includes(operationArg)) {
+      // 'dep add', 'dep remove', 'dep rm' are write operations
+      return false;
+    }
+
+    if (readOnlyDepSubcommands.includes(operationArg)) {
+      // 'dep tree', 'dep list', 'dep show' are read-only
+      return true;
+    }
+
+    // For bare 'dep <ID>' (no recognized subcommand), check if it's followed by --help
+    // If there are no recognized subcommands and only an ID with --help, it's read-only
+    if (operationArg && !operationArg.startsWith("-")) {
+      // This looks like 'dep <ID>' - check if it has actual write args beyond the ID
+      // If operationTokens has length 2, it's just 'dep <ID>', which is read-only
+      // If operationTokens has length > 2, there are additional positional args, which is write
+      return operationTokens.length === 2; // read-only if only operation and ID, write if more args
+    }
+
+    // Unknown dep subcommand
+    return false;
+  }
+
+  // For 'comments' operation, check if it has a subcommand or ID
+  if (operation === "comments") {
+    // Write subcommands that must be blocked
+    const writeCommentsSubcommands = ["add", "delete", "del"];
+
+    if (operationArg === "help") {
+      // 'comments help' is read-only
+      return true;
+    }
+
+    if (writeCommentsSubcommands.includes(operationArg)) {
+      // 'comments add', 'comments delete', etc. are write operations
+      return false;
+    }
+
+    // For 'comments <id>' (no recognized subcommand), it's read-only
+    if (operationArg && !operationArg.startsWith("-")) {
+      // Check if there are more positional args beyond the ID
+      // If operationTokens has length 2, it's just 'comments <id>', which is read-only
+      // If operationTokens has length > 2, there are additional args, which is write
+      return operationTokens.length === 2; // read-only if only operation and ID, write if more args
+    }
+
+    // 'comments' with no args or only flags is read-only
+    return true;
+  }
+
+  // If operation is a write operation (create, update, edit, close, reopen),
+  // check if there are actual operation parameters (not just --help)
+  if (["create", "update", "edit", "close", "reopen"].includes(operation)) {
+    // If there's a positional arg that's not from help request, it's a write operation
+    if (operationArg && operationArg !== "help") {
+      // This is a write operation with actual args, NOT read-only
+      return false;
+    }
+    // If there are ONLY help flags and no other args, it's asking for help (read-only)
+    // Count operationTokens to determine if there are args beyond the operation name
+    // operationTokens[0] is the operation, operationTokens[1] is the first arg, etc.
+    if (operationTokens.length === 1) {
+      // No positional args, only the operation name
+      // Check if --help or -h is present
+      for (let i = startIndex; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token === "--help" || token === "-h") {
+          // This is asking for help, which is read-only
+          return true;
+        }
+      }
+    } else {
+      // There are positional args beyond the operation name, so it's a write operation
+      return false;
+    }
+  }
+
+  // For unknown operations, check if --help is the only flag
+  if (operation === "") {
+    for (const token of allTokens) {
+      if (token === "--help" || token === "-h") {
+        // This is asking for help, which is read-only
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsCommandClassification {
@@ -4920,7 +5402,12 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
   if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
 
+  // Handle compound commands (with pipes, semicolons, etc.)
   if (!tokens || bdExecutableIndex !== 0) {
+    // If we can't tokenize cleanly or bd is not at position 0, check if it's a safe compound command
+    if (hasCompoundBd || command.includes("|") || command.includes(";") || command.includes("&&") || command.includes("||")) {
+      return classifyCompoundBeadsCommand(cwd, command);
+    }
     return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
   }
 
@@ -4947,22 +5434,53 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
   }
 
-  const operationTokens = tokens
-    .slice(dbValueIndex + 1)
-    .filter((token) => token && !token.startsWith("-"));
+  const operationTokensResult = extractPositionalArgs(
+    tokens.slice(dbValueIndex + 1)
+  );
+  // Handle UNKNOWN_FLAG case - in single-literal context, still allow it for now
+  // (strict checking happens in compound pipeline context)
+  const operationTokens = operationTokensResult === "UNKNOWN_FLAG" ? [] : operationTokensResult;
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
-  
+  const operationArg = operationTokens[1] ?? "";  // First positional arg after operation
+
   // Check for read-only operations that are allowed in all phases
   if (beadsOperationIsReadOnly(operation)) {
     return { present: true, allowed: true, isReadOnly: true };
   }
-  
+  // A single literal `bd dep ...` stays an allowed metadata operation (e.g. Ralplan `dep add`);
+  // only its read subcommands count as read-only for compound pipelines.
+  if (operation === "dep") {
+    return { present: true, allowed: true, isReadOnly: bdCommandTokensAreReadOnly(tokens, dbValueIndex + 1) };
+  }
+
+  // Check if there's a help flag in the command
+  let hasHelpFlag = false;
+  for (let i = dbValueIndex + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--help" || token === "-h") {
+      hasHelpFlag = true;
+      break;
+    }
+  }
+
   // Check for write operations
   if (["create", "update", "edit", "close", "reopen"].includes(operation)) {
+    // If there are positional args (operation parameters) with help flags, it's a write op attempt
+    // and should be blocked (--help does not make a write op read-only)
+    if (operationArg && operationArg !== "help" && hasHelpFlag) {
+      // Write op with args AND help flag - block it
+      return { present: true, allowed: false, reason: `Beads tracker operation ${operation} with --help flag and actual arguments is not allowed` };
+    }
     return { present: true, allowed: true };
   }
   if (operation === "comments" && suboperation === "add") {
+    // If there are positional args (comment content) with help flags, it's a write op attempt
+    // and should be blocked
+    if (operationTokens.length > 2 && hasHelpFlag) {
+      // comments add with args AND help flag - block it
+      return { present: true, allowed: false, reason: "Beads tracker operation comments add with --help flag and actual arguments is not allowed" };
+    }
     return { present: true, allowed: true };
   }
   return {
@@ -22975,17 +23493,17 @@ export async function dispatchCodexNativeHook(
           // For compound commands with Beads violations, preserve existing advisories by merging
           // rather than replacing them. Build the existing advisory first.
           let existingAdvisory = buildNativePreToolUseOutput(payload);
-          
+
           // Normalize the existing advisory to pure advisory form (without decision/reason fields)
           // so that when we merge with Beads message, the CLI sanitizer won't use reason over systemMessage
           if (existingAdvisory) {
             existingAdvisory = toAdvisoryOrCancelPreToolUseOutput(existingAdvisory);
           }
-          
+
           // Emit advisory warning (not a hard block, since PreToolUse is advisory-only)
           // Only emit systemMessage, not reason, to avoid being intercepted as cancel-deny
           const beadsMessage = `Beads tracker command is blocked: ${beadsClassification.reason ?? "not an allowed metadata operation"}`;
-          
+
           if (existingAdvisory) {
             // Merge advisories: preserve existing safety guidance (e.g., destructive-command advisory)
             // and add Beads-specific guidance. Both messages are now in advisory form.
