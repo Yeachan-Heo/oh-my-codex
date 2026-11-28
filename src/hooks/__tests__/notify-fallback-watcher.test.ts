@@ -5396,8 +5396,8 @@ setInterval(() => {}, 1000);
         await mkdir(stateDir, { recursive: true });
         await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
         
-        // Create PID file recording a watcher from cwdB (different cwd)
-        const pidFilePath = join(stateDir, 'notify-fallback.pid');
+        // A live authority recorded for cwdB in the shared authority pid file (same OMX state dir).
+        const pidFilePath = join(stateDir, 'notify-fallback-authority.pid');
         const stalePidRecord = {
           pid: stalePid.pid,
           cwd: cwdB,  // Different cwd
@@ -5409,9 +5409,9 @@ setInterval(() => {}, 1000);
         
         // Start persistent authority for cwd A (wd)
         authority = await startPersistentAuthority(wd, tempHome);
-        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
-        
-        // Let authority run long enough to process the PID file on startup
+        // The pid file already exists, so wait for the startup log entry instead of file creation.
+        const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().slice(0, 10)}.jsonl`);
+        await waitFor(async () => existsSync(logPath) && (await readFile(logPath, 'utf-8')).includes('watcher_stale_pid'), 3000, 25).catch(() => undefined);
         await sleep(300);
         
         // Verify that the stale process is still alive (authority must NOT have killed it)
