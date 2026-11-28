@@ -13099,13 +13099,14 @@ exit 0
       const blockedCommands = [
         "bd --db .beads/issues.db create 'Issue' && git commit -m 'evil'",
         "bd --db .beads/issues.db status OMX-1; rm -rf dist",
-        "bd --db .beads/issues.db list | grep bad",
         "(bd --db .beads/issues.db create 'Issue')",
         "bd --db .beads/issues.db create 'Issue' || echo fallback",
-        "bd --db .beads/issues.db status OMX-1 | grep active",
         "bd --db .beads/issues.db create 'Issue' > output.txt",
         "bd --db .beads/issues.db status OMX-1 2>&1",
         "bd --db .beads/issues.db list $(cat config.txt)",
+        "bd --db .beads/issues.db update X --status done; head",
+        "bd --db .beads/issues.db comments add OMX-1 'note' | head",
+        "bd --db .beads/issues.db list && rm -rf x",
       ];
 
       for (const [index, command] of blockedCommands.entries()) {
@@ -13188,6 +13189,75 @@ exit 0
         assert.ok(
           !advisory.includes("not allowed"),
           `expected read-only Beads operation to be allowed: ${command} (got: ${advisory})`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows read-only Beads commands piped to output filters (Fixes #4239)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-readonly-compound-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-readonly-compound");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-readonly-compound", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-readonly-compound",
+        thread_id: "thread-beads-readonly-compound",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-readonly-compound",
+          thread_id: "thread-beads-readonly-compound",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-readonly-compound",
+        thread_id: "thread-beads-readonly-compound",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-readonly-compound", "thread-beads-readonly-compound", cwd);
+
+      const allowedCompoundCommands = [
+        "bd --db .beads/issues.db list | head -20",
+        "bd --db .beads/issues.db list | grep active",
+        "bd --db .beads/issues.db status OMX-1 | grep open",
+        "bd --db .beads/issues.db show OMX-1 | head -50",
+        "bd --db .beads/issues.db ready --json | wc -l",
+        "bd --db .beads/issues.db dep OMX-1 | tail -5",
+        "bd --db .beads/issues.db comments OMX-1 | head -10",
+        "bd --db .beads/issues.db comments --help | head -80",
+        "bd --db .beads/issues.db update --help | head -100",
+      ];
+
+      for (const [index, command] of allowedCompoundCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-readonly-compound",
+            thread_id: "thread-beads-readonly-compound",
+            agent_id: "thread-beads-readonly-compound",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-readonly-compound-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // Read-only compound commands should be allowed (outputJson should be null)
+        const advisory = String(result.outputJson?.systemMessage ?? result.outputJson?.reason ?? "");
+        assert.ok(
+          result.outputJson === null || !advisory.includes("single literal"),
+          `expected read-only compound Beads operation to be allowed: ${command} (got: ${advisory})`,
         );
       }
     } finally {

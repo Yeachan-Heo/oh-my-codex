@@ -4912,6 +4912,142 @@ function beadsOperationIsReadOnly(operation: string): boolean {
   return ["list", "ready", "show", "dep", "status"].includes(operation);
 }
 
+function classifyCompoundBeadsCommand(cwd: string, command: string): BeadsCommandClassification {
+  // For compound commands, we need to:
+  // 1. Extract the bd segment (everything before the first pipe/semicolon/etc.)
+  // 2. Verify it's a read-only bd command with valid --db path
+  // 3. Verify all other segments are pure output filters
+  
+  // Split on pipe, semicolon, &&, || while preserving the segments
+  // Use a regex that respects quotes
+  const segments = command.split(/\s*[|;]\s*|\s*&&\s*|\s*\|\|\s*/);
+  
+  if (segments.length === 0) {
+    return { present: false, allowed: false };
+  }
+  
+  // The first segment should be a valid bd command
+  const bdSegment = segments[0];
+  const bdTokens = shellTokenizeLiteralCommand(bdSegment);
+  const bdExecutableIndex = bdTokens ? findLiteralBdExecutableIndex(bdTokens) : -1;
+  
+  if (!bdTokens || bdExecutableIndex !== 0) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+  
+  // Find the --db path
+  let dbPath = "";
+  let dbValueIndex = -1;
+  for (let index = bdExecutableIndex + 1; index < bdTokens.length; index += 1) {
+    const token = bdTokens[index] ?? "";
+    if (token === "--db") {
+      dbPath = bdTokens[index + 1] ?? "";
+      dbValueIndex = index + 1;
+      break;
+    }
+    if (token.startsWith("--db=")) {
+      dbPath = token.slice("--db=".length);
+      dbValueIndex = index;
+      break;
+    }
+  }
+  
+  if (!dbPath) {
+    return { present: true, allowed: false, reason: "Beads tracker command is missing a literal --db .beads/<db> target" };
+  }
+  if (!isAllowedBeadsDbPath(cwd, dbPath)) {
+    return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
+  }
+  
+  // Check if the bd command is read-only
+  if (!bdCommandTokensAreReadOnly(bdTokens, dbValueIndex + 1)) {
+    return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+  }
+  
+  // All other segments must be pure output filters
+  for (let i = 1; i < segments.length; i++) {
+    if (!isPureOutputFilterSegment(segments[i])) {
+      return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
+    }
+  }
+  
+  // All checks passed - it's a safe read-only compound command
+  return { present: true, allowed: true, isReadOnly: true };
+}
+
+function isPureOutputFilterSegment(segment: string): boolean {
+  const trimmed = segment.trim();
+  if (!trimmed) return false;
+  
+  // Check for command substitution or backticks in the raw string
+  // These cannot be quoted safely, so we reject them immediately
+  if (/[$`]|\(\(|\)\)/.test(trimmed)) return false;
+  
+  // Try to tokenize the segment
+  // If tokenization fails, it means there are unquoted shell operators
+  const tokens = shellTokenizeLiteralCommand(trimmed);
+  if (!tokens || tokens.length === 0) return false;
+  
+  const cmd = tokens[0];
+  
+  // Whitelist of safe output filters: commands that read and filter without side effects
+  const safeFilters = new Set([
+    "head", "tail", "grep", "wc", "sed", "cat", "less", "more",
+    "cut", "sort", "uniq", "awk", "tr", "expand", "unexpand",
+    "fmt", "pr", "od", "hexdump", "strings", "file"
+  ]);
+  
+  if (!safeFilters.has(cmd)) return false;
+  
+  // For sed, check that it's read-only (only -n flag for non-modifying)
+  if (cmd === "sed") {
+    for (const token of tokens.slice(1)) {
+      // Reject tokens that contain write operations like 'w', 'e', or file outputs
+      if (token.startsWith("-")) {
+        // Check for write-enabling flags
+        if (token.includes("w") && token !== "-n") return false;
+        if (token.includes("e")) return false;
+      }
+      // Also reject if it looks like a sed script with write command
+      if (/[^'/]w\s|^w\s/.test(token)) return false;
+    }
+  }
+  
+  return true;
+}
+
+function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boolean {
+  // Check if the bd command starting at startIndex (after --db value) is read-only
+  // Extract operation and check if it's read-only or if it's a help flag
+  
+  const operationTokens = tokens
+    .slice(startIndex)
+    .filter((token) => token && !token.startsWith("-"));
+  const operation = operationTokens[0] ?? "";
+  const suboperation = operationTokens[1] ?? "";
+  
+  // Check if any argument is a help flag
+  for (let i = startIndex; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--help" || token === "-h" || token === "help") {
+      // help flags are always read-only, even for write commands
+      return true;
+    }
+  }
+  
+  // Check for read-only operations
+  if (beadsOperationIsReadOnly(operation)) {
+    return true;
+  }
+  
+  // comments read (without add) is also read-only
+  if (operation === "comments" && suboperation !== "add") {
+    return true;
+  }
+  
+  return false;
+}
+
 function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsCommandClassification {
   const trimmedCommand = command.trim();
   const startsWithBd = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"$`]*"|'[^']*'|[^\s"'$`;&|<>]+)\s+)*bd(?:\s|$)/.test(trimmedCommand);
@@ -4920,7 +5056,12 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   const bdExecutableIndex = tokens ? findLiteralBdExecutableIndex(tokens) : -1;
   if (!startsWithBd && !hasCompoundBd && bdExecutableIndex === -1) return { present: false, allowed: false };
 
+  // Handle compound commands (with pipes, semicolons, etc.)
   if (!tokens || bdExecutableIndex !== 0) {
+    // If we can't tokenize cleanly or bd is not at position 0, check if it's a safe compound command
+    if (hasCompoundBd || command.includes("|") || command.includes(";") || command.includes("&&") || command.includes("||")) {
+      return classifyCompoundBeadsCommand(cwd, command);
+    }
     return { present: true, allowed: false, reason: "Beads tracker command must be a single literal bd invocation" };
   }
 
