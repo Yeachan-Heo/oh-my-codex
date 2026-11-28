@@ -6951,13 +6951,33 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				const expectedBackupRoot = join(omxRoot, ".omx", "backups", "setup");
 				const unexpectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
 				
-				if (existsSync(expectedBackupRoot)) {
-					assert.equal(
-						existsSync(unexpectedBackupRoot),
-						false,
-						`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_ROOT is set (backups should go under OMX_ROOT instead)`,
-					);
-				}
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is set`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedBackupRoot),
+					false,
+					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_ROOT is set (backups should go under OMX_ROOT instead)`,
+				);
+				
+				// Verify legacy skill receipt is also under OMX_ROOT
+				const expectedReceiptPath = join(omxRoot, ".omx", "state", "setup", "installed-skills.json");
+				const unexpectedReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
+				
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Expected receipt path ${expectedReceiptPath} should exist when OMX_ROOT is set`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedReceiptPath),
+					false,
+					`Receipt path ${unexpectedReceiptPath} should NOT exist when OMX_ROOT is set`,
+				);
 			} finally {
 				process.chdir(previousCwd);
 				if (typeof previousHome === "string") process.env.HOME = previousHome;
@@ -7004,24 +7024,34 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				// Verify backups are under HOME/.omx (original behavior)
 				const expectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
 				
-				if (existsSync(expectedBackupRoot)) {
-					// If backups were created, verify they are under HOME/.omx as expected
-					// This is good - it means backups went to the right place
-				}
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is not set (preserve original behavior)`,
+				);
+				
+				// Verify legacy skill receipt is also under HOME/.omx
+				const expectedReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
+				
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Expected receipt path ${expectedReceiptPath} should exist when OMX_ROOT is not set`,
+				);
+			} finally {
+				process.chdir(previousCwd);
+				if (typeof previousHome === "string") process.env.HOME = previousHome;
+				else delete process.env.HOME;
+				if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+				else delete process.env.CODEX_HOME;
+				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+				else delete process.env.OMX_ROOT;
+				if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+				else delete process.env.OMX_STATE_ROOT;
+			}
 		} finally {
-			process.chdir(previousCwd);
-			if (typeof previousHome === "string") process.env.HOME = previousHome;
-			else delete process.env.HOME;
-			if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
-			else delete process.env.CODEX_HOME;
-			if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
-			else delete process.env.OMX_ROOT;
-			if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
-			else delete process.env.OMX_STATE_ROOT;
+			await rm(wd, { recursive: true, force: true });
 		}
-	} finally {
-		await rm(wd, { recursive: true, force: true });
-	}
 	});
 
 	it("respects OMX_STATE_ROOT for user-scope backup snapshots and legacy skill receipt when OMX_ROOT is unset", async () => {
@@ -7057,13 +7087,33 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				const expectedBackupRoot = join(omxStateRoot, ".omx", "backups", "setup");
 				const unexpectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
 				
-				if (existsSync(expectedBackupRoot)) {
-					assert.equal(
-						existsSync(unexpectedBackupRoot),
-						false,
-						`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set (backups should go under OMX_STATE_ROOT instead)`,
-					);
-				}
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedBackupRoot),
+					false,
+					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set (backups should go under OMX_STATE_ROOT instead)`,
+				);
+				
+				// Verify legacy skill receipt is also under OMX_STATE_ROOT
+				const expectedReceiptPath = join(omxStateRoot, ".omx", "state", "setup", "installed-skills.json");
+				const unexpectedReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
+				
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Expected receipt path ${expectedReceiptPath} should exist when OMX_STATE_ROOT is set`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedReceiptPath),
+					false,
+					`Receipt path ${unexpectedReceiptPath} should NOT exist when OMX_STATE_ROOT is set`,
+				);
 			} finally {
 				process.chdir(previousCwd);
 				if (typeof previousHome === "string") process.env.HOME = previousHome;
@@ -7114,13 +7164,33 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				const expectedBackupRoot = join(stateSubdir, ".omx", "backups", "setup");
 				const unexpectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
 				
-				if (existsSync(expectedBackupRoot)) {
-					assert.equal(
-						existsSync(unexpectedBackupRoot),
-						false,
-						`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
-					);
-				}
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedBackupRoot),
+					false,
+					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+				);
+				
+				// Verify legacy skill receipt is also under the resolved OMX_STATE_ROOT
+				const expectedReceiptPath = join(stateSubdir, ".omx", "state", "setup", "installed-skills.json");
+				const unexpectedReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
+				
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Expected receipt path ${expectedReceiptPath} should exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedReceiptPath),
+					false,
+					`Receipt path ${unexpectedReceiptPath} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+				);
 			} finally {
 				process.chdir(previousCwd);
 				if (typeof previousHome === "string") process.env.HOME = previousHome;

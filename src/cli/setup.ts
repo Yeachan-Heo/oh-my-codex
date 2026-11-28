@@ -2679,9 +2679,13 @@ interface InstalledSkillReceipt {
 }
 
 function installedSkillReceiptPath(scope: SetupScope, projectRoot: string): string {
-  // For user scope, use CODEX_HOME as the managed authority root, not the user's home directory.
-  const authorityRoot = scope === "project" ? projectRoot : codexHome();
-  return join(authorityRoot, ".omx", "state", "setup", "installed-skills.json");
+  if (scope === "project") {
+    return join(projectRoot, ".omx", "state", "setup", "installed-skills.json");
+  }
+  // For user scope, respect OMX_ROOT/OMX_STATE_ROOT if set for isolated installs (#4236).
+  // When set, user-scope receipts go under OMX_ROOT/OMX_STATE_ROOT, not under CODEX_HOME.
+  const omxPath = omxRoot(homedir());
+  return join(omxPath, "state", "setup", "installed-skills.json");
 }
 
 async function readInstalledSkillReceipt(receiptPath: string, legacyReceiptPath?: string): Promise<InstalledSkillReceipt> {

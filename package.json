@@ -100,6 +100,7 @@
     "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@napi-rs/lzma": "1.4.5",
+    "@typescript/typescript-linux-x64": "^7.0.2",
     "tar-stream": "3.2.2",
     "yauzl": "3.4.0",
     "zod": "^4.3.6"
