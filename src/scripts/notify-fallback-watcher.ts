@@ -4,6 +4,7 @@ import { existsSync, watch as watchDirectory, type FSWatcher } from 'fs';
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { spawn, type ChildProcess } from 'child_process';
 import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { homedir } from 'os';
 import { StringDecoder } from 'string_decoder';
 import { spawnPlatformCommandSync } from '../utils/platform-command.js';
@@ -132,6 +133,14 @@ const idleMaxPollMs = Math.max(
   pollMs,
   asNumber(argValue('--idle-max-poll-ms', process.env.OMX_NOTIFY_FALLBACK_IDLE_MAX_POLL_MS || '1000'), 1000),
 );
+// Idle backoff ceiling: when idle streak reaches this many consecutive no-ops,
+// back off to this maximum to avoid wasting CPU on repeated no-op ticks.
+const idleBackoffCeilingMs = Math.max(
+  idleMaxPollMs,
+  asNumber(argValue('--idle-backoff-ceiling-ms', process.env.OMX_NOTIFY_FALLBACK_IDLE_BACKOFF_CEILING_MS || '60000'), 60_000),
+);
+// Number of consecutive no-op cycles before switching to slow backoff
+const idleStreakBackoffThreshold = 5;
 // Directory events are primary; this repairs missed events and date-directory changes.
 const rolloutDiscoveryIntervalMs = Math.max(
   pollMs,
@@ -302,6 +311,9 @@ interface CycleActivitySummary {
 const fileState = new Map<string, WatcherFileMeta>();
 const seenTurnKeys = new Set<string>();
 let rolloutDiscoveryScanCount = 0;
+
+// Test override for simulating parent loss in tests
+let testingOverrideParentIsGone: boolean | null = null;
 let lastRolloutDiscoveryAt: string | null = null;
 let lastRolloutDiscoveryAtMs = 0;
 let rolloutDiscoveryPending = true;
@@ -412,13 +424,27 @@ let lastFallbackAutoNudge: FallbackAutoNudgeState = {
 let adaptivePollState: AdaptivePollState = {
   enabled: true,
   base_ms: pollMs,
-  max_ms: idleMaxPollMs,
+  max_ms: idleBackoffCeilingMs,
   current_ms: pollMs,
   idle_streak: 0,
   last_tick_at: null,
   last_activity_at: null,
   last_activity_reason: 'init',
 };
+
+// Cache for active team state to avoid expensive re-reads when idle.
+// The cache is invalidated when activity is detected, after a timeout, or when
+// the team-state.json file is modified on disk.
+interface CachedActiveTeamState {
+  result: ActiveTeamResult;
+  cachedAtMs: number;
+  teamStateMtimeMs: number; // Track team-state.json mtime to detect file changes
+}
+let cachedActiveTeamState: CachedActiveTeamState | null = null;
+const activeTeamCacheTtlMs = 5000; // Cache for 5 seconds during idle
+let nextTickTimer: NodeJS.Timeout | null = null;
+let wakeRequested = false;
+let teamDispatchWatcher: FSWatcher | null = null;
 
 function shouldSuppressEventLog(event: Record<string, unknown>): boolean {
   const eventType = safeString(event.type).trim();
@@ -476,18 +502,23 @@ function shouldLogLeaderNudgeTick(reason: string): boolean {
   return reason === 'leader_nudge_checked' || reason === 'leader_nudge_failed';
 }
 
-function nextIdlePollMs(currentMs: number): number {
+export function nextIdlePollMs(currentMs: number, idleStreak: number): number {
+  // After idle-streak threshold, use slow exponential backoff to ceiling
+  if (idleStreak >= idleStreakBackoffThreshold) {
+    return Math.min(idleBackoffCeilingMs, Math.max(idleMaxPollMs, currentMs * 1.5));
+  }
+  // Before threshold, use normal exponential backoff up to idleMaxPollMs
   return Math.min(idleMaxPollMs, Math.max(pollMs, currentMs * 2));
 }
 
-function updateAdaptivePollState(summary: CycleActivitySummary): number {
+export function updateAdaptivePollState(summary: CycleActivitySummary): number {
   const nowIso = new Date().toISOString();
   if (summary.active) {
     adaptivePollState = {
       ...adaptivePollState,
       enabled: true,
       base_ms: pollMs,
-      max_ms: idleMaxPollMs,
+      max_ms: idleBackoffCeilingMs,
       current_ms: pollMs,
       idle_streak: 0,
       last_tick_at: nowIso,
@@ -497,14 +528,15 @@ function updateAdaptivePollState(summary: CycleActivitySummary): number {
     return adaptivePollState.current_ms;
   }
 
-  const nextMs = nextIdlePollMs(adaptivePollState.current_ms);
+  const nextIdleStreak = adaptivePollState.idle_streak + 1;
+  const nextMs = nextIdlePollMs(adaptivePollState.current_ms, nextIdleStreak);
   adaptivePollState = {
     ...adaptivePollState,
     enabled: true,
     base_ms: pollMs,
-    max_ms: idleMaxPollMs,
+    max_ms: idleBackoffCeilingMs,
     current_ms: nextMs,
-    idle_streak: adaptivePollState.idle_streak + 1,
+    idle_streak: nextIdleStreak,
     last_tick_at: nowIso,
     last_activity_reason: summary.reason,
   };
@@ -595,8 +627,8 @@ async function loadPersistedWatcherState(): Promise<void> {
     adaptivePollState = {
       enabled: persistedAdaptivePoll.enabled !== false,
       base_ms: pollMs,
-      max_ms: idleMaxPollMs,
-      current_ms: Math.min(idleMaxPollMs, Math.max(pollMs, asNumber(persistedAdaptivePoll.current_ms as string | number | undefined, pollMs))),
+      max_ms: idleBackoffCeilingMs,
+      current_ms: Math.min(idleBackoffCeilingMs, Math.max(pollMs, asNumber(persistedAdaptivePoll.current_ms as string | number | undefined, pollMs))),
       idle_streak: Math.max(0, Math.trunc(asNumber(persistedAdaptivePoll.idle_streak as string | number | undefined, 0))),
       last_tick_at: safeString(persistedAdaptivePoll.last_tick_at) || null,
       last_activity_at: safeString(persistedAdaptivePoll.last_activity_at) || null,
@@ -680,7 +712,66 @@ async function resolveActiveRalphState(): Promise<ActiveModeResult> {
   return resolveActiveModeState('ralph');
 }
 
-async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
+// Wrapper around resolveActiveTeamState that caches results during idle periods.
+// When idle, repeated re-reads of team state files are expensive. This cache
+// avoids that cost while still responding quickly to activity changes.
+async function resolveActiveTeamStateWithCache(now = Date.now()): Promise<ActiveTeamResult> {
+  // Invalidate cache if activity was detected or cache has expired
+  if (cachedActiveTeamState && (now - cachedActiveTeamState.cachedAtMs) < activeTeamCacheTtlMs) {
+    // Also check if team-state.json has been modified on disk
+    // This ensures we detect changes even within the cache TTL
+    const teamStatePath = join(stateDir, 'team-state.json');
+    const sessionState = await readSessionState(cwd).catch(() => null);
+    const sessionId = sessionState?.session_id ? normalizeValidSessionId(sessionState.session_id) : '';
+    const sessionTeamStatePath = sessionId ? join(stateDir, 'sessions', sessionId, 'team-state.json') : '';
+    
+    // Check both possible locations for team-state.json
+    for (const path of [teamStatePath, sessionTeamStatePath]) {
+      if (!path) continue;
+      const fileStat = await stat(path).catch(() => null);
+      if (fileStat && fileStat.mtimeMs !== cachedActiveTeamState.teamStateMtimeMs) {
+        // File has been modified, invalidate cache
+        cachedActiveTeamState = null;
+        break;
+      }
+    }
+    
+    if (cachedActiveTeamState) {
+      return cachedActiveTeamState.result;
+    }
+  }
+  cachedActiveTeamState = null;
+
+  // Perform the expensive team state resolution
+  const result = await resolveActiveTeamStateUncached();
+  
+  // Record the mtime of team-state.json files for future cache invalidation checks
+  let teamStateMtimeMs = 0;
+  const teamStatePath = join(stateDir, 'team-state.json');
+  const sessionState = await readSessionState(cwd).catch(() => null);
+  const sessionId = sessionState?.session_id ? normalizeValidSessionId(sessionState.session_id) : '';
+  const sessionTeamStatePath = sessionId ? join(stateDir, 'sessions', sessionId, 'team-state.json') : '';
+  
+  // Use the mtime of whichever file exists and was used in the lookup
+  for (const path of [sessionTeamStatePath, teamStatePath]) {
+    if (!path) continue;
+    const fileStat = await stat(path).catch(() => null);
+    if (fileStat) {
+      teamStateMtimeMs = Math.max(teamStateMtimeMs, fileStat.mtimeMs);
+      break; // Use the first one we find
+    }
+  }
+  
+  cachedActiveTeamState = { result, cachedAtMs: now, teamStateMtimeMs };
+  return result;
+}
+
+// Invalidate active team cache when activity is detected
+export function invalidateActiveTeamCache(): void {
+  cachedActiveTeamState = null;
+}
+
+async function resolveActiveTeamStateUncached(): Promise<ActiveTeamResult> {
   const candidateDirs: string[] = [];
   let currentSessionId = '';
   let currentSessionIsLive = false;
@@ -1104,7 +1195,14 @@ async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<A
 
   const lastTickMs = parseIsoMillis(lastTickAt);
   const primaryPollMs = Math.max(50, asNumber(persistedState.poll_ms as string | number | undefined, 250));
-  const thresholdMs = Math.max(1_000, primaryPollMs * 4);
+  // Account for adaptive backoff: if the primary is in idle backoff, use its current poll interval
+  // instead of just the base poll_ms. This prevents false staleness reports when the primary is
+  // legitimately idle with a 60s backoff interval.
+  const primaryAdaptivePoll = persistedState.adaptive_poll as Record<string, unknown> | null | undefined;
+  const primaryCurrentMs = primaryAdaptivePoll && typeof primaryAdaptivePoll === 'object'
+    ? Math.max(50, asNumber(primaryAdaptivePoll.current_ms as string | number | undefined, primaryPollMs))
+    : primaryPollMs;
+  const thresholdMs = calculateStalenessThreshold(primaryCurrentMs);
   if (lastTickMs === null) {
     return createAuthorityBackoffState('tick_invalid', {
       primary_pid: existingRecord.pid,
@@ -1307,6 +1405,8 @@ async function removePidFileIfOwned(): Promise<void> {
 }
 
 function parentIsGone(): boolean {
+  // Test override for simulating parent loss
+  if (testingOverrideParentIsGone !== null) return testingOverrideParentIsGone;
   if (!Number.isFinite(parentPid) || parentPid <= 0) return false;
   if (parentPid === process.pid) return false;
   return !isPidAlive(parentPid);
@@ -1366,7 +1466,7 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
       ...adaptivePollState,
       enabled: true,
       base_ms: pollMs,
-      max_ms: idleMaxPollMs,
+      max_ms: idleBackoffCeilingMs,
     },
     ...extra,
   };
@@ -1504,6 +1604,10 @@ async function runFallbackAutoNudgeTick(): Promise<void> {
 async function requestShutdown(reason: string, signal: string | null = null): Promise<void> {
   if (shutdownPromise) return shutdownPromise;
   stopping = true;
+  if (nextTickTimer) clearTimeout(nextTickTimer);
+  nextTickTimer = null;
+  teamDispatchWatcher?.close();
+  teamDispatchWatcher = null;
   closeRolloutDirectoryWatchers();
   shutdownPromise = (async () => {
     await terminateActiveNotifyHookChild();
@@ -1551,7 +1655,7 @@ async function enforceLifecycleGuards(): Promise<boolean> {
       return false;
     }
 
-    const activeTeam = await resolveActiveTeamState();
+    const activeTeam = await resolveActiveTeamStateUncached();
     if (activeTeam.active) {
       const currentPhase = safeString(activeTeam.state?.current_phase);
       const nextParentGuard: ParentGuardState = {
@@ -1642,6 +1746,7 @@ function flushFilenameLessDirtyDirectories(now: number): boolean {
 function handleRolloutDirectoryEvent(dir: string, filename: string | Buffer | null): void {
   const name = filename?.toString();
   if (!name) {
+    wakeWatcher();
     rolloutDirectoryFilenameLessEventCount += 1;
     includeRecentRolloutEventsOnNextDiscovery = true;
     filenameLessDirtyDirectories.add(dir);
@@ -1651,6 +1756,7 @@ function handleRolloutDirectoryEvent(dir: string, filename: string | Buffer | nu
     return;
   }
   if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) return;
+  wakeWatcher();
 
   const path = join(dir, name);
   if (fileState.has(path)) {
@@ -2029,7 +2135,7 @@ async function runLeaderNudgeTick(): Promise<boolean> {
     return false;
   }
 
-  const activeTeam = await resolveActiveTeamState();
+  const activeTeam = await resolveActiveTeamStateWithCache();
   if (!activeTeam.active) {
     leaderNudgeRuns += 1;
     lastLeaderNudge = {
@@ -2040,6 +2146,7 @@ async function runLeaderNudgeTick(): Promise<boolean> {
       last_tick_at: startedIso,
       last_error: `inactive_team:${activeTeam.reason}`,
     };
+    // Skip expensive spawns when team is inactive/blocked
     return false;
   }
 
@@ -2096,8 +2203,28 @@ async function runLeaderNudgeTick(): Promise<boolean> {
   }
 }
 
+async function shouldSkipDispatchDrain(dir: string, nowMs = Date.now()): Promise<boolean> {
+  const cached = cachedActiveTeamState;
+  if (!cached || cached.result.active || (nowMs - cached.cachedAtMs) >= activeTeamCacheTtlMs) return false;
+  // The cached result is scoped to the current session, but drainPendingTeamDispatch()
+  // scans every team directory. Only skip when that scan would find no team at all.
+  const entries = await readdir(join(dir, 'team'), { withFileTypes: true }).catch(() => []);
+  return !entries.some((entry) => entry.isDirectory() || entry.isSymbolicLink());
+}
+
 async function runDispatchDrainTick(): Promise<boolean> {
   const startedIso = new Date().toISOString();
+  // Skip dispatch drain when there's no active team, as it can't succeed anyway
+  if (await shouldSkipDispatchDrain(stateDir)) {
+    dispatchDrainRuns += 1;
+    lastDispatchDrain = {
+      leader_only: safeString(process.env.OMX_TEAM_WORKER || '').trim() === '',
+      last_tick_at: startedIso,
+      last_result: { processed: 0, skipped: 0, failed: 0, reason: 'no_active_team_cached' },
+      last_error: null,
+    };
+    return false;
+  }
   try {
     const result = await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax } as any);
     dispatchDrainRuns += 1;
@@ -2191,6 +2318,10 @@ async function runWatcherCycle(): Promise<number> {
       : ralphActive
         ? { active: true, reason: 'ralph_continue_steer' }
         : { active: false, reason: controlPlaneSummary.reason || lastRalphContinueSteer.last_reason || 'idle' };
+  // Invalidate team state cache on activity to respond quickly to team changes
+  if (summary.active) {
+    invalidateActiveTeamCache();
+  }
   const nextDelayMs = updateAdaptivePollState(summary);
   await writeState({ last_cycle_activity: summary.reason });
   return nextDelayMs;
@@ -2199,11 +2330,63 @@ async function runWatcherCycle(): Promise<number> {
 async function tick(): Promise<void> {
   if (stopping) return;
   if (await enforceLifecycleGuards()) return;
-  const nextDelayMs = await runWatcherCycle();
+  ensureTeamDispatchWatcher();
+  const cycleDelayMs = await runWatcherCycle();
   if (await enforceLifecycleGuards()) return;
-  setTimeout(() => {
+  // Activity that arrived mid-cycle must not wait out an idle backoff.
+  const nextDelayMs = wakeRequested ? pollMs : cycleDelayMs;
+  wakeRequested = false;
+  nextTickTimer = setTimeout(() => {
+    nextTickTimer = null;
     void tick();
   }, nextDelayMs);
+}
+
+/** Interrupt a pending idle-backoff sleep so new rollout/dispatch activity is handled at base poll latency. */
+function wakeWatcher(): void {
+  if (stopping || runOnce) return;
+  if (!nextTickTimer) {
+    wakeRequested = true;
+    return;
+  }
+  clearTimeout(nextTickTimer);
+  nextTickTimer = null;
+  adaptivePollState = { ...adaptivePollState, current_ms: pollMs, idle_streak: 0 };
+  void tick();
+}
+
+/** Check if a filename should trigger the team dispatch watcher wake. */
+function shouldWakeOnDispatchFilename(filename: string | Buffer | null): boolean {
+  if (!filename) return true;
+  const name = typeof filename === 'string' ? filename : filename.toString();
+  const normalized = name.replace(/\\/g, '/');
+  return normalized.endsWith('dispatch/requests.json') || normalized.endsWith('dispatch.json');
+}
+
+/** Calculate the staleness threshold for authority health checks based on the primary watcher's poll interval. */
+function calculateStalenessThreshold(pollMs: number): number {
+  return Math.max(1_000, pollMs * 4);
+}
+
+function ensureTeamDispatchWatcher(): void {
+  if (teamDispatchWatcher || runOnce) return;
+  const teamDir = join(stateDir, 'team');
+  if (!existsSync(teamDir)) return;
+  try {
+    const watcher = watchDirectory(teamDir, { persistent: false, recursive: true }, (_eventType, filename) => {
+      // Wake on legacy dispatch/requests.json (team-local) or the authoritative dispatch.json
+      // (from runtime bridge). The runtime bridge writes dispatch.json when commands like QueueDispatch
+      // are executed, allowing active dispatch updates to interrupt idle backoff sleep.
+      if (shouldWakeOnDispatchFilename(filename)) wakeWatcher();
+    });
+    watcher.on('error', () => {
+      watcher.close();
+      if (teamDispatchWatcher === watcher) teamDispatchWatcher = null;
+    });
+    teamDispatchWatcher = watcher;
+  } catch {
+    // best effort: the idle ceiling still bounds latency
+  }
 }
 
 function shutdown(signal: string): void {
@@ -2257,14 +2440,72 @@ async function main(): Promise<void> {
   await tick();
 }
 
-main().catch(async (err) => {
-  await mkdir(dirname(logPath), { recursive: true }).catch(() => {});
-  const message = err instanceof Error ? err.message : safeString(err);
-  await eventLog({
-    type: 'watcher_error',
-    reason: 'fatal',
-    error: message,
-  });
-  process.stderr.write(`notify-fallback-watcher: fatal: ${message || 'unknown error'}\n`);
-  process.exit(1);
+// Export test utilities and constants for testing purposes
+export const testingExports = Object.freeze({
+  // Backoff calculation constants
+  pollMs,
+  idleMaxPollMs,
+  idleBackoffCeilingMs,
+  idleStreakBackoffThreshold,
+  activeTeamCacheTtlMs,
+
+  // State inspection/manipulation for testing
+  getAdaptivePollState: () => ({ ...adaptivePollState }),
+  resetAdaptivePollState: () => {
+    adaptivePollState = {
+      enabled: true,
+      base_ms: pollMs,
+      max_ms: idleBackoffCeilingMs,
+      current_ms: pollMs,
+      idle_streak: 0,
+      last_tick_at: null,
+      last_activity_at: null,
+      last_activity_reason: 'init',
+    };
+  },
+  shouldSkipDispatchDrain,
+  getCachedActiveTeamState: () => cachedActiveTeamState,
+  resolveActiveTeamStateUncached,
+  resolveActiveTeamStateWithCache,
+  resetCachedActiveTeamState: () => {
+    cachedActiveTeamState = null;
+  },
+  // For testing cache invalidation behavior
+  setCachedActiveTeamStateForTesting: (result: ActiveTeamResult | null) => {
+    if (result === null) {
+      cachedActiveTeamState = null;
+    } else {
+      cachedActiveTeamState = {
+        result,
+        cachedAtMs: Date.now(),
+        teamStateMtimeMs: Date.now(),
+      };
+    }
+  },
+  // Export lifecycle guard function for direct behavior testing
+  enforceLifecycleGuards,
+  parentIsGone,
+  // Test helpers for parent loss simulation
+  setTestingParentIsGone: (value: boolean | null) => {
+    testingOverrideParentIsGone = value;
+  },
+  getTestingParentIsGone: () => testingOverrideParentIsGone,
+  // Export dispatch and threshold calculation functions for testing
+  shouldWakeOnDispatchFilename,
+  calculateStalenessThreshold,
 });
+
+// Only run main() if this module is the entry point (not when imported for testing)
+if (process.argv[1] && sameFilePath(process.argv[1], fileURLToPath(import.meta.url))) {
+  main().catch(async (err) => {
+    await mkdir(dirname(logPath), { recursive: true }).catch(() => {});
+    const message = err instanceof Error ? err.message : safeString(err);
+    await eventLog({
+      type: 'watcher_error',
+      reason: 'fatal',
+      error: message,
+    });
+    process.stderr.write(`notify-fallback-watcher: fatal: ${message || 'unknown error'}\n`);
+    process.exit(1);
+  });
+}
