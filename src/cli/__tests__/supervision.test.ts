@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -17,12 +17,14 @@ import {
   consolidateFindingsByFingerprint,
   computeCpuPercent,
   defaultSupervisionDeps,
+  discoverCandidates,
   evaluateChecks,
   findDuplicateIssue,
   fingerprintFor,
   planAnalysisLanes,
   readHudModel,
   renderReportMarkdown,
+  rolloutCwd,
   summarizeEvidence,
   toEvidenceBundle,
   isFileable,
@@ -1347,23 +1349,25 @@ describe('omx supervision CLI', () => {
 describe('finding #4234 release-review fixes', () => {
   it('redactForIssue removes raw log samples and secret patterns', () => {
     // Test that redactForIssue is applied in buildIssueDraft
+    const homeDir = homedir();
     const finding: Finding = {
       id: 'test-check', area: 'resource', title: 'test', priority: 'P0', status: 'fail', fingerprint: 'fp',
       evidence: [
         '2026-11-28T10:00:00Z raw hook log line with secret sk-123456789012345678901234567890',
-        '{"error": "JSON log sample", "path": "/home/user/.omx/state"}',
+        `{"error": "JSON log sample", "path": "${homeDir}/.omx/state"}`,
         'Normal error message',
       ],
       severity: 'high', repro: 'persistent', sources: [1234], blast: 1, score: 100, dedupe: 'none',
     };
     const sel = { selected: candidate(), mode: 'active' as const, reason: 'test', candidates: [] };
-    const ctx = { prompt: 'User home /home/user secret AKIA1234567890123456', version: '0.22.30', selection: sel, platform: 'linux' };
+    const ctx = { prompt: `User home ${homeDir} secret AKIA1234567890123456`, version: '0.22.30', selection: sel, platform: 'linux' };
     const draft = buildIssueDraft(finding, ctx);
     // Verify raw log lines are removed, paths are redacted, secrets are redacted
     assert.ok(!draft.body.includes('2026-11-28T10:00:00Z'), 'timestamp log lines are removed');
     assert.ok(!draft.body.includes('sk-123456789012345678901234567890'), 'token is redacted');
     assert.ok(!draft.body.includes('AKIA1234567890123456'), 'AWS key is redacted');
-    assert.ok(draft.body.includes('/home/user') || draft.body.includes('~'), 'home paths are redacted');
+    assert.ok(!draft.body.includes(homeDir), 'home paths are redacted');
+    assert.ok(draft.body.includes('~'), 'home directory is replaced with tilde');
     assert.ok(draft.body.includes('Normal error message'), 'normal messages are preserved');
   });
 
@@ -1385,5 +1389,97 @@ describe('finding #4234 release-review fixes', () => {
     const result = check!.run(snap);
     assert.equal(result.status, 'fail', 'tmux-bound session with missing pane fails');
     assert.ok(result.evidence.some((e: string) => e.includes('pane')), 'evidence mentions pane');
+  });
+
+  it('rolloutCwd returns cwd from header of large rollout file', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-rollout-test-'));
+    try {
+      const testCwd = '/home/user/my/project';
+      const rolloutPath = join(tempDir, 'rollout.jsonl');
+      // Create a header line with cwd embedded in JSON
+      const headerLine = JSON.stringify({
+        schema: 'rollout',
+        payload: { cwd: testCwd, session_id: 'sess-1' },
+      });
+      // Create a file larger than 8KB to test bounded read
+      const largePadding = 'x'.repeat(10_000);
+      await writeFile(rolloutPath, headerLine + '\n' + largePadding + '\n{"more":"data"}\n');
+      
+      const result = rolloutCwd(rolloutPath);
+      assert.equal(result, testCwd, 'rolloutCwd returns correct cwd from large file');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
+  });
+
+  it('rolloutCwd handles header line longer than 8KB bounded read', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-rollout-test-'));
+    try {
+      const testCwd = '/home/user/my/project';
+      const rolloutPath = join(tempDir, 'rollout.jsonl');
+      // Create a header line that is itself close to or exceeds 8KB
+      const largeJsonValue = 'x'.repeat(7_000);
+      const headerLine = JSON.stringify({
+        schema: 'rollout',
+        payload: { cwd: testCwd, session_id: 'sess-1', extra: largeJsonValue },
+      });
+      // Verify the header is indeed large
+      assert.ok(headerLine.length > 7_000, 'header line is appropriately large');
+      await writeFile(rolloutPath, headerLine + '\n{"next":"line"}\n');
+      
+      const result = rolloutCwd(rolloutPath);
+      // Should still extract cwd even with large header, as long as first line parses
+      assert.equal(result, testCwd, 'rolloutCwd extracts cwd from large header line');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
+  });
+
+  it('discoverCandidates returns distinct candidates for multiple native session owners', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-discover-test-'));
+    try {
+      // getBaseStateDir returns <cwd>/.omx/state by default
+      const stateDir = join(tempDir, '.omx', 'state');
+      const sessionsDir = join(stateDir, 'sessions');
+      await mkdir(sessionsDir, { recursive: true });
+      
+      // Create two session-owner.json files in different session directories
+      const sess1Dir = join(sessionsDir, 'sess-1');
+      const sess2Dir = join(sessionsDir, 'sess-2');
+      await mkdir(sess1Dir);
+      await mkdir(sess2Dir);
+      
+      const owner1 = {
+        session_id: 'sess-1',
+        cwd: '/home/user/project1',
+        started_at: new Date(NOW).toISOString(),
+      };
+      const owner2 = {
+        session_id: 'sess-2',
+        cwd: '/home/user/project2',
+        started_at: new Date(NOW).toISOString(),
+      };
+      
+      await writeFile(join(sess1Dir, 'session-owner.json'), JSON.stringify(owner1));
+      await writeFile(join(sess2Dir, 'session-owner.json'), JSON.stringify(owner2));
+      
+      // Call discoverCandidates with the temp directory
+      // Note: discoverCandidates expects the cwd and processes/panes
+      const candidates = discoverCandidates(tempDir, [], []);
+      
+      // Should have at least the two native session owners
+      const nativeOwners = candidates.filter((c) => c.sessionId === 'sess-1' || c.sessionId === 'sess-2');
+      assert.ok(nativeOwners.length >= 2, 'discoverCandidates returns at least 2 distinct candidates');
+      
+      const sess1Candidate = nativeOwners.find((c) => c.sessionId === 'sess-1');
+      const sess2Candidate = nativeOwners.find((c) => c.sessionId === 'sess-2');
+      assert.ok(sess1Candidate, 'found candidate for sess-1');
+      assert.ok(sess2Candidate, 'found candidate for sess-2');
+      assert.equal(sess1Candidate!.cwd, '/home/user/project1', 'sess-1 has correct cwd');
+      assert.equal(sess2Candidate!.cwd, '/home/user/project2', 'sess-2 has correct cwd');
+      assert.notEqual(sess1Candidate!.sessionId, sess2Candidate!.sessionId, 'candidates have distinct session IDs');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
   });
 });

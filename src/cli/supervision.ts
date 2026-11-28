@@ -1125,7 +1125,7 @@ function newestRollouts(sessionsRoot: string, limit: number): Array<{ path: stri
   return out;
 }
 
-function rolloutCwd(path: string): string | null {
+export function rolloutCwd(path: string): string | null {
   try {
     // Read only the first 8 KiB using a bounded file descriptor read to avoid loading entire large rollouts.
     const fd = openSync(path, 'r');
@@ -1164,7 +1164,7 @@ function readCandidate(cwd: string, omxRoot: string | undefined, rolloutMtimeMs:
   };
 }
 
-function discoverCandidates(cwd: string, processes: readonly ProcSample[], panes: readonly TmuxPaneSnapshot[]): SessionCandidate[] {
+export function discoverCandidates(cwd: string, processes: readonly ProcSample[], panes: readonly TmuxPaneSnapshot[]): SessionCandidate[] {
   const byId = new Map<string, SessionCandidate>();
   const add = (candidate: SessionCandidate | null) => {
     if (!candidate) return;
