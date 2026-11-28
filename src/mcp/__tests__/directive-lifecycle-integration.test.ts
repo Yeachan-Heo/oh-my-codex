@@ -372,17 +372,21 @@ describe('directive lifecycle integration tests', () => {
       const future = new Date(now.getTime() + 10 * 60 * 1000);
       const past = new Date(now.getTime() - 10 * 60 * 1000);
 
-      // Add directives using CLI
-      await call(cwd, 'project_memory_add_directive', {
+      // Add directives using CLI and capture their IDs
+      const addResponse1 = await call(cwd, 'project_memory_add_directive', {
         directive: 'CLI active directive',
         priority: 'high',
       });
+      const addResult1 = extractText(addResponse1);
+      const id1 = addResult1.id;
 
-      await call(cwd, 'project_memory_add_directive', {
+      const addResponse2 = await call(cwd, 'project_memory_add_directive', {
         directive: 'CLI soon-to-expire',
         priority: 'normal',
         expiresAt: future.toISOString(),
       });
+      const addResult2 = extractText(addResponse2);
+      const id2 = addResult2.id;
 
       await call(cwd, 'project_memory_add_directive', {
         directive: 'CLI already expired',
@@ -413,8 +417,8 @@ describe('directive lifecycle integration tests', () => {
         'expired directive should NOT be listed'
       );
 
-      // Remove a directive by index (remove the first active one)
-      const removeResponse = await call(cwd, 'project_memory_remove_directive', { index: 0 });
+      // Remove a directive by id (remove the first active one)
+      const removeResponse = await call(cwd, 'project_memory_remove_directive', { id: id1 });
       const removeResult = extractText(removeResponse);
 
       assert.ok(removeResult.success, 'remove should succeed');
@@ -434,17 +438,17 @@ describe('directive lifecycle integration tests', () => {
       assert.equal(listResult3.active, 1, 'verify 1 active before final removal');
       assert.equal(listResult3.expired, 1, 'verify 1 expired before final removal');
 
-      // Test removing by text match (the remaining active one, using unique substring)
-      const removeByTextResponse = await call(cwd, 'project_memory_remove_directive', {
-        text: 'soon-to-expire',
+      // Test removing by id (the remaining active one)
+      const removeByIdResponse = await call(cwd, 'project_memory_remove_directive', {
+        id: id2,
       });
-      const removeByTextResult = extractText(removeByTextResponse);
+      const removeByIdResult = extractText(removeByIdResponse);
 
-      assert.ok(removeByTextResult.success, 'remove by text should succeed');
-      assert.ok(removeByTextResult.removed.directive.includes('soon-to-expire'));
+      assert.ok(removeByIdResult.success, 'remove by id should succeed');
+      assert.ok(removeByIdResult.removed.directive.includes('soon-to-expire'));
       // After removing the active directive, only the expired one should be left in total
       // But the count should be 0 for active and 1 for expired in total
-      assert.equal(removeByTextResult.remaining, 1, 'should have 1 remaining directive (the expired one)');
+      assert.equal(removeByIdResult.remaining, 1, 'should have 1 remaining directive (the expired one)');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -481,15 +485,13 @@ describe('directive lifecycle integration tests', () => {
   it('CLI remove-directive returns error for unknown id', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-directive-cli-error-'));
     try {
-      // Try to remove from empty list
-      const removeResponse = await call(cwd, 'project_memory_remove_directive', { index: 999 });
+      // Try to remove non-existent id
+      const removeResponse = await call(cwd, 'project_memory_remove_directive', { id: 'dir-nonexistent' });
       const removeResult = extractText(removeResponse);
 
       assert.equal(removeResult.success, false, 'remove should fail');
       assert.ok(
-        removeResult.message.toLowerCase().includes('no') ||
-        removeResult.message.toLowerCase().includes('not') ||
-        removeResult.message.toLowerCase().includes('found'),
+        removeResult.message.toLowerCase().includes('not found'),
         'error message should indicate directive not found'
       );
       assert.equal(removeResult.removed, null, 'removed should be null on error');

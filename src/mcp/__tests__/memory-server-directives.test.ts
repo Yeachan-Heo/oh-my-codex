@@ -73,20 +73,23 @@ describe('directive lifecycle (list, remove, expiry)', () => {
     }
   });
 
-  it('removes directive by index', async () => {
+  it('removes directive by id', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-directives-remove-'));
     try {
       // Add some directives
-      await call(cwd, 'project_memory_add_directive', { directive: 'Remove me', priority: 'normal' });
+      const addResponse1 = await call(cwd, 'project_memory_add_directive', { directive: 'Remove me', priority: 'normal' });
+      const addResult1 = extractText(addResponse1);
+      const idToRemove = addResult1.id;
+
       await call(cwd, 'project_memory_add_directive', { directive: 'Keep me', priority: 'normal' });
 
-      // List to get index
+      // List to verify both are there
       const listResponse = await call(cwd, 'project_memory_list_directives', {});
       const listResult = extractText(listResponse);
       assert.equal(listResult.directives.length, 2);
 
-      // Remove by index
-      const removeResponse = await call(cwd, 'project_memory_remove_directive', { index: 0 });
+      // Remove by id
+      const removeResponse = await call(cwd, 'project_memory_remove_directive', { id: idToRemove });
       const removeResult = extractText(removeResponse);
 
       assert.ok(removeResult.success, 'remove should succeed');
@@ -103,15 +106,18 @@ describe('directive lifecycle (list, remove, expiry)', () => {
     }
   });
 
-  it('removes directive by text match', async () => {
+  it('removes directive by id from list', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-directives-remove-text-'));
     try {
       // Add some directives
-      await call(cwd, 'project_memory_add_directive', { directive: 'Find and remove this one', priority: 'normal' });
+      const addResponse1 = await call(cwd, 'project_memory_add_directive', { directive: 'Find and remove this one', priority: 'normal' });
+      const addResult1 = extractText(addResponse1);
+      const idToRemove = addResult1.id;
+
       await call(cwd, 'project_memory_add_directive', { directive: 'Keep this one', priority: 'normal' });
 
-      // Remove by text match
-      const removeResponse = await call(cwd, 'project_memory_remove_directive', { text: 'Find and remove' });
+      // Remove by id obtained from add response
+      const removeResponse = await call(cwd, 'project_memory_remove_directive', { id: idToRemove });
       const removeResult = extractText(removeResponse);
 
       assert.ok(removeResult.success, 'remove should succeed');
@@ -172,7 +178,9 @@ describe('directive lifecycle (list, remove, expiry)', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-directives-session-'));
     try {
       // Add initial directive
-      await call(cwd, 'project_memory_add_directive', { directive: 'Initial directive', priority: 'normal' });
+      const addResponse1 = await call(cwd, 'project_memory_add_directive', { directive: 'Initial directive', priority: 'normal' });
+      const addResult1 = extractText(addResponse1);
+      const id1 = addResult1.id;
 
       // List directives
       const response1 = await call(cwd, 'project_memory_list_directives', {});
@@ -187,8 +195,8 @@ describe('directive lifecycle (list, remove, expiry)', () => {
       const result2 = extractText(response2);
       assert.equal(result2.active, 2, 'session should immediately see new directive');
 
-      // Remove a directive
-      await call(cwd, 'project_memory_remove_directive', { index: 0 });
+      // Remove a directive by its id
+      await call(cwd, 'project_memory_remove_directive', { id: id1 });
 
       // List again - should immediately reflect the removal
       const response3 = await call(cwd, 'project_memory_list_directives', {});
@@ -258,11 +266,11 @@ describe('directive lifecycle (list, remove, expiry)', () => {
       assert.equal(result.active, 0);
       assert.equal(result.expired, 0);
 
-      // Try to remove from empty list
-      const removeResponse = await call(cwd, 'project_memory_remove_directive', { index: 0 });
+      // Try to remove non-existent id
+      const removeResponse = await call(cwd, 'project_memory_remove_directive', { id: 'dir-nonexistent' });
       const removeResult = extractText(removeResponse);
       assert.equal(removeResult.success, false);
-      assert.ok(removeResult.message.includes('No') && (removeResult.message.includes('found') || removeResult.message.includes('matching')));
+      assert.ok(removeResult.message.includes('not found'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { codexHome, resolveProjectMemoryPath } from '../utils/paths.js';
-import { filterActiveDirectives } from '../mcp/directive-filter.js';
+import { filterActiveDirectives, getEarliestFutureExpiry } from '../mcp/directive-filter.js';
 import {
   appendLogUnsafe,
   getWikiDir,
@@ -201,12 +201,12 @@ function feedProjectMemory(root: string): void {
     const existing = readPage(root, 'environment.md');
     const memoryMtime = statSync(projectMemoryPath).mtimeMs;
     const existingUpdated = existing ? new Date(existing.frontmatter.updated).getTime() : 0;
-    
+
     // Check if cache is still valid (memory not updated and no directives expired)
     if (existing && existingUpdated >= memoryMtime) {
       // Also check if any directives have expired since cache was written
       const earliestExpiry = existing.frontmatter.earliestDirectiveExpiry as string | undefined;
-      if (!earliestExpiry || Date.parse(earliestExpiry) > Date.now()) {
+      if (!earliestExpiry || new Date(earliestExpiry).getTime() > Date.now()) {
         return;
       }
     }
@@ -249,13 +249,9 @@ function feedProjectMemory(root: string): void {
         if (content) sections.push(`- ${content}`);
       }
       sections.push('');
-      
-      // Track earliest expiry time to invalidate cache when directives expire
-      for (const directive of parsed.directives as any) {
-        if (directive?.expiresAt && (!earliestDirectiveExpiry || directive.expiresAt < earliestDirectiveExpiry)) {
-          earliestDirectiveExpiry = directive.expiresAt;
-        }
-      }
+
+      // Calculate earliest future expiry time to invalidate cache when directives expire
+      earliestDirectiveExpiry = getEarliestFutureExpiry(parsed.directives as any);
     }
 
     const now = new Date().toISOString();
