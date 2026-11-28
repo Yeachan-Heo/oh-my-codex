@@ -4914,7 +4914,9 @@ function isAllowedBeadsDbPath(cwd: string, rawPath: string): boolean {
 
 function beadsOperationIsReadOnly(operation: string): boolean {
   // Read-only Beads operations that are allowed in all phases
-  return ["list", "ready", "show", "dep", "status"].includes(operation);
+  // Note: 'dep' is handled separately in bdCommandTokensAreReadOnly because
+  // it has both read subcommands (dep tree, dep list, dep show) and write subcommands (dep add, dep remove)
+  return ["list", "ready", "show", "status"].includes(operation);
 }
 
 function classifyCompoundBeadsCommand(cwd: string, command: string): BeadsCommandClassification {
@@ -5101,6 +5103,41 @@ function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boole
   // Check for read-only operations
   if (beadsOperationIsReadOnly(operation)) {
     return true;
+  }
+  
+  // For 'dep' operation, check if it has a recognized subcommand
+  if (operation === "dep") {
+    // Read-only dep subcommands
+    const readOnlyDepSubcommands = ["tree", "list", "show"];
+    // Write dep subcommands that must be blocked
+    const writeDepSubcommands = ["add", "remove", "rm"];
+    
+    if (operationArg === "help") {
+      // 'dep help' or 'dep --help' is read-only
+      return true;
+    }
+    
+    if (writeDepSubcommands.includes(operationArg)) {
+      // 'dep add', 'dep remove', 'dep rm' are write operations
+      return false;
+    }
+    
+    if (readOnlyDepSubcommands.includes(operationArg)) {
+      // 'dep tree', 'dep list', 'dep show' are read-only
+      return true;
+    }
+    
+    // For bare 'dep <ID>' (no recognized subcommand), check if it's followed by --help
+    // If there are no recognized subcommands and only an ID with --help, it's read-only
+    if (operationArg && !operationArg.startsWith("-")) {
+      // This looks like 'dep <ID>' - check if it has actual write args beyond the ID
+      // If operationTokens has length 2, it's just 'dep <ID>', which is read-only
+      // If operationTokens has length > 2, there are additional positional args, which is write
+      return operationTokens.length === 2; // read-only if only operation and ID, write if more args
+    }
+    
+    // Unknown dep subcommand
+    return false;
   }
   
   // For 'comments' operation, check if it has a suboperation

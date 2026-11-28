@@ -12967,7 +12967,6 @@ exit 0
         "bd --db .beads/issues.db close OMX-1",
         "bd --db .beads/issues.db reopen OMX-1",
         "bd --db .beads/issues.db status OMX-1",
-        "bd --db .beads/issues.db dep add OMX-1 OMX-2",
       ];
 
       for (const [index, command] of allowedCommands.entries()) {
@@ -12985,6 +12984,51 @@ exit 0
           { cwd },
         );
         assert.equal(result.outputJson, null, `expected Beads metadata command to be allowed: ${command}`);
+      }
+
+      // Test negative cases: blocked dep operations
+      const blockedCommands = [
+        {
+          command: "bd --db .beads/issues.db dep add OMX-1 OMX-2 | head",
+          description: "dep add with arguments should be blocked",
+        },
+        {
+          command: "bd --db .beads/issues.db dep remove OMX-1 OMX-2 | head",
+          description: "dep remove should be blocked",
+        },
+        {
+          command: "bd --db .beads/issues.db dep rm OMX-1 OMX-2 | head",
+          description: "dep rm should be blocked",
+        },
+        {
+          command: "bd --db .beads/issues.db dep add OMX-1 OMX-2 --help | head",
+          description: "dep add with --help flag should be blocked",
+        },
+      ];
+
+      for (const { command, description } of blockedCommands) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-ralplan-beads",
+            thread_id: "thread-ralplan-beads",
+            agent_id: "thread-ralplan-beads",
+            tool_name: "Bash",
+            tool_use_id: `tool-ralplan-beads-blocked-${command}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        assert.ok(
+          result.outputJson && typeof result.outputJson === "object",
+          `expected Beads metadata command to be blocked: ${description} (${command})`,
+        );
+        const reason = String(result.outputJson.systemMessage ?? result.outputJson.reason ?? "");
+        assert.ok(
+          reason,
+          `expected blocking reason for: ${description} (${command})`,
+        );
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
