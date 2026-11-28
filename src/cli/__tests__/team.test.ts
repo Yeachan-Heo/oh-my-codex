@@ -8,10 +8,11 @@ import { spawn } from 'node:child_process';
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../team.js';
+import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand, buildLegacyTextPreflightInfo } from '../team.js';
 import { readModeState } from '../../modes/base.js';
 import { readApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 import { buildRepoAwareTeamExecutionPlan } from '../../team/repo-aware-decomposition.js';
+import { findGitLayout } from '../../utils/git-layout.js';
 import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
 import { shutdownTeam } from '../../team/runtime.js';
 import { sameFilePath } from '../../utils/paths.js';
@@ -1368,6 +1369,15 @@ describe('parseTeamStartArgs', () => {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it('strips --allow-legacy-decomposition flag from task text', () => {
+    const result = parseTeamStartArgs(['2:executor', '--allow-legacy-decomposition', 'build', 'feature']);
+    // The flag should be removed from the task
+    assert.equal(result.parsed.task, 'build feature');
+    assert.ok(!result.parsed.task.includes('--allow-legacy-decomposition'));
+    // The flag should be set in the parsed result
+    assert.equal(result.parsed.allowLegacyDecomposition, true);
   });
 });
 
@@ -3803,6 +3813,423 @@ process.on('SIGTERM', () => process.exit(0));
       () => withoutTeamTestWorkerEnv(() => teamCommand(['ralph', '1:executor', 'issue 742 linked ralph launch'])),
       /Deprecated usage: `omx team ralph \.\.\.` has been removed/,
     );
+
+  });
+  it('rejects team launch with explicit tickets from outside repo without opt-in', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-external-cwd-'));
+    const repoDir = join(wd, 'project');
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(repoDir, { recursive: true });
+      execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoDir, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoDir, stdio: 'ignore' });
+      await writeFile(join(repoDir, 'README.md'), 'test', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: repoDir, stdio: 'ignore' });
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['4:executor', 'Work on tickets TASK-1, TASK-2, TASK-3, and TASK-4; do not take other tickets.'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects #NNNN issue references from outside repo without opt-in', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-hash-issue-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', 'Fix #4228 and the color #123456 bug'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects six- and eight-digit issue references outside a color context', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-long-hash-issue-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      for (const task of ['Fix #123456', 'Closes #12345678 and update the docs']) {
+        await assert.rejects(
+          () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', task])),
+          /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows team launch with explicit tickets from inside repo', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-inside-repo-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(wd, { recursive: true });
+      execFileSync('git', ['init'], { cwd: wd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wd, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: wd, stdio: 'ignore' });
+      await writeFile(join(wd, 'README.md'), 'test', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd: wd, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: wd, stdio: 'ignore' });
+      process.chdir(wd);
+      // This should not throw since we're inside a repo
+      await assert.doesNotReject(
+        () => withoutTeamTestWorkerEnv(async () => {
+          try {
+            await teamCommand(['2:executor', 'Work on TASK-1 and TASK-2']);
+          } catch (error: unknown) {
+            if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+              throw error;
+            }
+            // Other errors (like tmux not available) are acceptable
+          }
+        }),
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows team launch with generic tasks from outside repo', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-generic-task-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // This should not throw since the task has no explicit tickets
+      await assert.doesNotReject(
+        () => withoutTeamTestWorkerEnv(async () => {
+          try {
+            await teamCommand(['2:executor', 'Implement a feature and write tests']);
+          } catch (error: unknown) {
+            if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+              throw error;
+            }
+            // Other errors (like tmux not available) are acceptable
+          }
+        }),
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat numeric CSS color literals as ticket references outside a repo', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-color-literal-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      for (const task of [
+        'Create a landing page using background color #123456',
+        'Create a landing page with accent #12345678 and text color #123',
+      ]) {
+        await assert.doesNotReject(
+          () => withoutTeamTestWorkerEnv(async () => {
+            try {
+              await teamCommand(['2:executor', task]);
+            } catch (error: unknown) {
+              if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+                throw error;
+              }
+              // Other errors (like tmux not available) are acceptable
+            }
+          }),
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects false positive ticket patterns like UTF-8, SHA-256, ES-2015, HTTP-2', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-preflight-false-positives-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // These should not throw or be treated as explicit tickets
+      const falsePositives = [
+        'Review UTF-8 encoding in the parser',
+        'Implement SHA-256 hashing for security',
+        'Update ES-2015 compatibility layer',
+        'Debug HTTP-2 protocol issues',
+      ];
+      
+      for (const task of falsePositives) {
+        await assert.doesNotReject(
+          () => withoutTeamTestWorkerEnv(async () => {
+            try {
+              await teamCommand(['2:executor', task]);
+            } catch (error: unknown) {
+              if (error instanceof Error && error.message.includes('Team launch: cannot start')) {
+                throw error;
+              }
+              // Other errors (like tmux not available) are acceptable
+            }
+          }),
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows team launch with --allow-legacy-decomposition flag', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-allow-legacy-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // With the flag set, it should warn but not throw
+      const { code, stderr, stdout } = await runNodeCli(
+        ['team', '2:executor', '--allow-legacy-decomposition', 'Work on tickets TASK-1, TASK-2, TASK-3, and TASK-4'],
+        { cwd: externalDir }
+      );
+      const output = stdout + '\n' + stderr;
+      // When the flag is set, the preflight error should be a warning, not a fatal error
+      // The warning message shows resolved_cwd, decomposition_source, and fallback_reason
+      assert.ok(
+        stderr.includes('[omx] warning:') && stderr.includes('decomposition_source: legacy_text') && stderr.includes('fallback_reason:'),
+        `Should warn with preflight info when flag is set. stderr: ${stderr}`
+      );
+      // The flag should have been stripped from the task (not passed to workers)
+      // This is verified by the fact that we got the preflight warning, not an immediate error
+      assert.ok(
+        output.includes('cwd:') && output.includes('decomposition_source:') && output.includes('fallback_reason:'),
+        `Should print preflight info (cwd/decomposition_source/fallback_reason). Output: ${output}`
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat lowercase ticket prose as explicit tickets', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-lowercase-prose-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // These should NOT be treated as explicit tickets since the trackerPattern no longer has 'i' flag
+      const lowercaseProse = [
+        'test-1 the validation logic',
+        'doc-2 the API endpoints',
+        'ci-3 integration with main branch',
+        'pr-4 for the merge request',
+        'task-5 is not a ticket reference',
+      ];
+      
+      for (const task of lowercaseProse) {
+        await assert.doesNotReject(
+          () => withoutTeamTestWorkerEnv(async () => {
+            try {
+              await teamCommand(['2:executor', task]);
+            } catch (error: unknown) {
+              if (error instanceof Error && error.message.includes('Team launch: cannot start with explicit tickets')) {
+                throw error; // Re-throw if it's the preflight error
+              }
+              // Other errors (like tmux not available) are acceptable
+            }
+          }),
+          `Should not reject lowercase prose "${task}" as explicit tickets`
+        );
+      }
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('still treats uppercase explicit tickets correctly', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-uppercase-tickets-'));
+    const externalDir = join(wd, 'home');
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(externalDir, { recursive: true });
+      process.chdir(externalDir);
+      // These SHOULD be treated as explicit tickets (uppercase)
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', 'TEST-1 the validation logic'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+        'Should reject uppercase TEST-1 as explicit ticket'
+      );
+      await assert.rejects(
+        () => withoutTeamTestWorkerEnv(() => teamCommand(['2:executor', 'DOC-2 the API endpoints'])),
+        /Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in/,
+        'Should reject uppercase DOC-2 as explicit ticket'
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('generates preflight info with resolved_cwd, decomposition_source, fallback_reason for legacy-text launch without explicit tickets', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-legacy-no-tickets-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      // Generic task without explicit tickets (no TASK-1, TEST-2, etc.)
+      // Running from outside a git repo (wd is just a temp directory, not a git repo)
+      // This should use legacy_text decomposition and generate preflight info
+      const result = parseTeamStartArgs(['2:executor', 'build and test the new feature']);
+      const executionPlan = buildRepoAwareTeamExecutionPlan({
+        task: result.parsed.task,
+        workerCount: result.parsed.workerCount,
+        agentType: result.parsed.agentType,
+        explicitAgentType: result.parsed.explicitAgentType,
+        explicitWorkerCount: result.parsed.explicitWorkerCount,
+        allowDagHandoff: result.parsed.allowRepoAwareDagHandoff,
+        cwd: wd,
+        buildLegacyPlan: (task, workerCount, agentType, explicitAgentType, explicitWorkerCount) => ({
+          workerCount: explicitWorkerCount ? workerCount : 3,
+          tasks: [],
+        }),
+      });
+      // The execution plan should have decomposition_source set to legacy_text
+      assert.equal(
+        executionPlan.metadata?.decomposition_source,
+        'legacy_text',
+        `Should use legacy_text decomposition when outside a git repo without DAG handoff approval`
+      );
+      // The fallback_reason should be set
+      assert.ok(
+        executionPlan.metadata?.fallback_reason,
+        `Should have fallback_reason set when using legacy_text decomposition`
+      );
+      // Call the REAL buildLegacyTextPreflightInfo function from team.ts
+      const preflightInfo = buildLegacyTextPreflightInfo(wd, executionPlan, result.parsed.dagFallbackReason);
+      // Verify that preflightInfo is generated with all required fields
+      assert.ok(preflightInfo, 'Should generate preflightInfo for legacy_text decomposition');
+      assert.ok(preflightInfo.cwdDisplay, 'preflightInfo should include resolved_cwd');
+      assert.equal(preflightInfo.decompositionSource, 'legacy_text', 'preflightInfo should include decomposition_source');
+      assert.ok(preflightInfo.fallbackReason, 'preflightInfo should include fallback_reason');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('displays execution plan fallback reason (not generic default) in preflight info', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-fallback-reason-usage-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      execFileSync('git', ['init'], { cwd: wd });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wd });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: wd });
+      const result = parseTeamStartArgs(['2:executor', 'build and test features']);
+      const executionPlan = buildRepoAwareTeamExecutionPlan({
+        task: result.parsed.task,
+        workerCount: result.parsed.workerCount,
+        agentType: result.parsed.agentType,
+        explicitAgentType: result.parsed.explicitAgentType,
+        explicitWorkerCount: result.parsed.explicitWorkerCount,
+        cwd: wd,
+        buildLegacyPlan: (task, workerCount, agentType) => ({
+          workerCount,
+          tasks: [{ subject: task, description: task, owner: 'worker-1', role: agentType }],
+        }),
+        allowDagHandoff: result.parsed.allowRepoAwareDagHandoff,
+        dagFallbackReason: result.parsed.dagFallbackReason,
+        approvedRepositoryContextSummary: result.parsed.approvedRepositoryContextSummary,
+      });
+      // Verify execution plan has legacy_text decomposition
+      assert.equal(executionPlan.metadata?.decomposition_source, 'legacy_text');
+      // The execution plan's fallback_reason should be set
+      const executionPlanReason = executionPlan.metadata?.fallback_reason;
+      assert.ok(executionPlanReason, 'execution plan should have fallback_reason set');
+      // The old (broken) code would use: parsed.dagFallbackReason || generic_default
+      // The new (fixed) code uses: executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || generic_default
+      // Since we're in a git repo with no DAG approval, generic_default would be 'dag_handoff_fallback_inside_repo'
+      const genericDefault = 'dag_handoff_fallback_inside_repo';
+      assert.ok(
+        executionPlanReason !== genericDefault && executionPlanReason !== result.parsed.dagFallbackReason,
+        `Execution plan reason (${executionPlanReason}) should be specific, not generic default or undefined parsed reason`
+      );
+      // Call the REAL buildLegacyTextPreflightInfo function to verify it uses the execution plan reason
+      const prefixedInfoWithFix = buildLegacyTextPreflightInfo(wd, executionPlan, result.parsed.dagFallbackReason);
+      assert.equal(prefixedInfoWithFix.fallbackReason, executionPlanReason, 'Fixed code should use execution plan fallback reason');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('uses execution plan fallback reason when it differs from generic default', async () => {
+    // This test verifies that the fix correctly uses executionPlan.metadata?.fallback_reason
+    // even when it differs from what the generic fallback would be
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-specific-fallback-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(wd);
+      execFileSync('git', ['init'], { cwd: wd });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: wd });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: wd });
+      const result = parseTeamStartArgs(['2:executor', 'fix critical issue']);
+      const executionPlan = buildRepoAwareTeamExecutionPlan({
+        task: result.parsed.task,
+        workerCount: result.parsed.workerCount,
+        agentType: result.parsed.agentType,
+        explicitAgentType: result.parsed.explicitAgentType,
+        explicitWorkerCount: result.parsed.explicitWorkerCount,
+        cwd: wd,
+        buildLegacyPlan: (task, workerCount, agentType) => ({
+          workerCount,
+          tasks: [{ subject: task, description: task, owner: 'worker-1', role: agentType }],
+        }),
+        allowDagHandoff: result.parsed.allowRepoAwareDagHandoff,
+        dagFallbackReason: result.parsed.dagFallbackReason,
+        approvedRepositoryContextSummary: result.parsed.approvedRepositoryContextSummary,
+      });
+      assert.equal(executionPlan.metadata?.decomposition_source, 'legacy_text');
+      const executionPlanReason = executionPlan.metadata?.fallback_reason;
+      assert.ok(executionPlanReason, 'execution plan should have fallback_reason set');
+      // The broken code (without fix) would generate:
+      // fallbackReason = parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo'
+      // which would be 'dag_handoff_fallback_inside_repo' (since parsed.dagFallbackReason is undefined)
+      // The fixed code should use:
+      // fallbackReason = executionPlan.metadata?.fallback_reason || parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo'
+      // which would use the actual execution plan reason
+      const brokenReasonOutput = result.parsed.dagFallbackReason || 'dag_handoff_fallback_inside_repo';
+      // Call the REAL buildLegacyTextPreflightInfo function to verify it uses the execution plan reason
+      const prefixedInfo = buildLegacyTextPreflightInfo(wd, executionPlan, result.parsed.dagFallbackReason);
+      const fixedReasonOutput = prefixedInfo.fallbackReason;
+      // Verify that the fix produces a different (correct) output than the broken version
+      assert.ok(
+        fixedReasonOutput === executionPlanReason && fixedReasonOutput !== brokenReasonOutput,
+        `Fixed output (${fixedReasonOutput}) should use execution plan reason (${executionPlanReason}), not generic (${brokenReasonOutput})`
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
   });
 
 });

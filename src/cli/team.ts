@@ -46,6 +46,7 @@ import {
   renderUltragoalCheckpointGuidanceText,
 } from '../team/ultragoal-context.js';
 import { resolveCodexHomeForChildExport, resolveCodexHomeForLaunch } from './codex-home.js';
+import { findGitLayout } from '../utils/git-layout.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -60,6 +61,7 @@ interface ParsedTeamArgs {
   teamName: string;
   displayName?: string;
   allowRepoAwareDagHandoff: boolean;
+  allowLegacyDecomposition?: boolean;
   dagFallbackReason?: string;
   approvedRepositoryContextSummary?: ApprovedRepositoryContextSummary;
   approvedExecution?: ApprovedTeamExecutionBinding;
@@ -850,6 +852,14 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
   let agentType = 'executor';
   let explicitAgentType = false;
   let explicitWorkerCount = false;
+  let allowLegacyDecomposition = false;
+
+  // Extract --allow-legacy-decomposition flag
+  const legacyFlagIndex = tokens.indexOf('--allow-legacy-decomposition');
+  if (legacyFlagIndex >= 0) {
+    allowLegacyDecomposition = true;
+    tokens.splice(legacyFlagIndex, 1);
+  }
 
   if (tokens[0]?.toLowerCase() === 'ralph') {
     throw new Error('Deprecated usage: `omx team ralph ...` has been removed. Use `omx team ...` or run `omx ralph ...` separately.');
@@ -937,6 +947,7 @@ export function parseTeamArgs(args: string[], cwd: string = process.cwd()): Pars
     teamName,
     displayName: teamName,
     allowRepoAwareDagHandoff,
+    ...(allowLegacyDecomposition ? { allowLegacyDecomposition } : {}),
     ...(dagFallbackReason ? { dagFallbackReason } : {}),
     ...(approvedRepositoryContextSummary ? { approvedRepositoryContextSummary } : {}),
     ...(allowRepoAwareDagHandoff && approvedHint
@@ -1112,6 +1123,30 @@ export function decomposeTaskString(
   explicitWorkerCount = false,
 ): TeamExecutionPlan['tasks'] {
   return buildTeamExecutionPlan(task, workerCount, agentType, explicitAgentType, explicitWorkerCount).tasks;
+}
+
+/**
+ * Builds preflight info for legacy-text decomposition.
+ * Generates display metadata including resolved working directory, decomposition source, and fallback reason.
+ * 
+ * @param cwd - Current working directory
+ * @param executionPlan - The execution plan containing metadata with potential fallback_reason
+ * @param dagFallbackReason - Optional fallback reason from parsed args
+ * @returns PreflightInfo object with cwdDisplay, decompositionSource, and fallbackReason
+ */
+export function buildLegacyTextPreflightInfo(
+  cwd: string,
+  executionPlan: { metadata?: { fallback_reason?: string; decomposition_source?: string } },
+  dagFallbackReason?: string,
+): { cwdDisplay: string; decompositionSource: string; fallbackReason: string } {
+  const gitLayout = findGitLayout(cwd);
+  const cwdDisplay = formatPathDisplay(cwd);
+  const fallbackReason = executionPlan.metadata?.fallback_reason || dagFallbackReason || (gitLayout ? 'dag_handoff_fallback_inside_repo' : 'outside_git_repo');
+  return {
+    cwdDisplay,
+    decompositionSource: 'legacy_text',
+    fallbackReason,
+  };
 }
 
 const ACTIONABLE_TASK_PREFIX = /^(?:add|analy(?:se|ze)|audit|benchmark|build|clean(?:\s+up)?|create|debug|design|document|draft|fix|implement|improve|investigate|migrate|optimi(?:s|z)e|profile|refactor|repair|research|review|ship|summari(?:s|z)e|test|update|validate|verify|write)\b/i;
@@ -1386,13 +1421,18 @@ async function persistTeamShutdownModeState(
 }
 
 
-async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupStaffingPlan): Promise<void> {
+async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupStaffingPlan, preflightInfo?: { cwdDisplay: string; decompositionSource: string; fallbackReason: string } | null): Promise<void> {
   console.log(`Team started: ${runtime.teamName}`);
   console.log(`tmux target: ${runtime.sessionName}`);
   console.log(`workers: ${runtime.config.worker_count}`);
   console.log(`agent_type: ${runtime.config.agent_type}`);
   if (runtime.config.workspace_mode) {
     console.log(`workspace_mode: ${runtime.config.workspace_mode}`);
+  }
+  if (preflightInfo) {
+    console.log(`resolved_cwd: ${preflightInfo.cwdDisplay}`);
+    console.log(`decomposition_source: ${preflightInfo.decompositionSource}`);
+    console.log(`fallback_reason: ${preflightInfo.fallbackReason}`);
   }
   if (staffingPlan) {
     console.log(`available_agent_types: ${staffingPlan.rosterSummary}`);
@@ -1413,6 +1453,105 @@ async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupS
   for (const hint of buildLeaderMonitoringHints(runtime.teamName)) {
     console.log(hint);
   }
+}
+
+/**
+ * Detects if the task prompt references explicit ticket or issue identifiers.
+ * Avoids false positives on UTF-8, SHA-256, ES-2015, HTTP-2, etc.
+ * Examples: "TASK-1", "ISSUE-123", "#456", "GH-789", "Beads#999"
+ */
+function looksLikeExplicitTicketReferences(task: string): boolean {
+  // Known tracker prefixes to detect ticket patterns more accurately
+  const knownTrackerPrefixes = [
+    'TASK', 'ISSUE', 'BUG', 'FEATURE', 'GH', 'PR', 'MR', 'CI', 'CD',
+    'JIRA', 'BEADS', 'EPIC', 'STORY', 'SPIKE', 'CHORE', 'TEST', 'DOC',
+  ];
+  
+  // Pattern for known tracker prefixes (e.g., TASK-123, ISSUE-456)
+  // Do NOT use 'i' flag: ticket IDs are uppercase only, lowercase prose should not match
+  const trackerPattern = new RegExp(`\\b(${knownTrackerPrefixes.join('|')})-\\d+\\b`);
+  
+  // Pattern for common issue reference formats: #123, Beads#999
+  const hashPatterns = [
+    /\b[A-Za-z]+#\d+\b/, // Jira-style: PROJ#123, Beads#456
+  ];
+
+  // GitHub-style #123, except right after a color word ("background color #123"). Six- and eight-digit
+  // numbers are also valid CSS hex colors (#123456 / #12345678), so they only count as issue references
+  // right after an issue word ("Fix #123456").
+  const colorContext = /(?:colou?r|background|foreground|fill|stroke|border|hex|rgba?)\W+(?:\w+\W+)?$/i;
+  const issueContext = /(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?|refs?|issues?|tickets?|bugs?|pr|pull request)\W+$/i;
+  const hasIssueHash = [...task.matchAll(/#(\d+)\b/g)].some((match) => {
+    const before = task.slice(0, match.index);
+    if (colorContext.test(before)) return false;
+    if (match[1].length === 6 || match[1].length === 8) return issueContext.test(before);
+    return true;
+  });
+
+  return trackerPattern.test(task) || hasIssueHash || hashPatterns.some(pattern => pattern.test(task));
+}
+
+/**
+ * Displays a path with HOME substitution using path-segment check.
+ * Correctly handles HOME unset and avoids partial path matches like /home/bob2 matching /home/bob.
+ */
+function formatPathDisplay(path: string): string {
+  const home = process.env.HOME;
+  if (!home) {
+    return path;
+  }
+  
+  // Check if path starts with home followed by a path separator or equals home exactly
+  if (path === home || path.startsWith(home + '/')) {
+    return `~${path.slice(home.length)}`;
+  }
+  
+  return path;
+}
+
+/**
+ * Performs preflight checks before starting a team.
+ * Detects if cwd is outside the git repo and task names explicit tickets without DAG handoff.
+ * Returns decomposition info or throws/warns depending on allowLegacyDecomposition flag.
+ */
+function performTeamPreflightCheck(
+  cwd: string,
+  task: string,
+  allowDagHandoff: boolean,
+  allowLegacyDecomposition: boolean = false,
+): { cwdDisplay: string; decompositionSource: string; fallbackReason: string } | null {
+  const gitLayout = findGitLayout(cwd);
+  const isInsideRepo = gitLayout !== null;
+  const hasExplicitTickets = looksLikeExplicitTicketReferences(task);
+
+  // If CWD is not inside a git repo AND the task names explicit tickets AND DAG handoff is not approved
+  if (!isInsideRepo && hasExplicitTickets && !allowDagHandoff) {
+    const cwdDisplay = formatPathDisplay(cwd);
+    const decompositionSource = 'legacy_text';
+    const fallbackReason = 'dag_handoff_not_approved_for_invocation';
+    
+    const message = 
+      `Team launch: cannot start with explicit tickets from outside a git repository without explicit opt-in.\n` +
+      `\nResolved state:\n` +
+      `  cwd: ${cwdDisplay} (not a git repository)\n` +
+      `  task: ${task}\n` +
+      `  decomposition_source: ${decompositionSource}\n` +
+      `  fallback_reason: ${fallbackReason}\n` +
+      `\nThis suggests you intended to work on specific repository tickets, but are running from outside the repo.\n` +
+      `\nResolution:\n` +
+      `  1. Run omx team from the project directory: cd <project> && omx team ...\n` +
+      `  2. Or remove explicit ticket references and use generic task descriptions.\n` +
+      `  3. Or allow legacy decomposition: omx team --allow-legacy-decomposition <args>`;
+    
+    if (allowLegacyDecomposition) {
+      console.warn(`[omx] warning: ${message}`);
+      return { cwdDisplay, decompositionSource, fallbackReason };
+    } else {
+      throw new Error(message);
+    }
+  }
+  
+  return null;
 }
 
 export function buildLeaderMonitoringHints(teamName: string): string[] {
@@ -1770,6 +1909,7 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   }
 
   const parsed = parseTeamArgs(teamArgs, cwd);
+  let preflightInfo = performTeamPreflightCheck(cwd, parsed.task, parsed.allowRepoAwareDagHandoff, parsed.allowLegacyDecomposition ?? false);
   const executionPlan = buildRepoAwareTeamExecutionPlan({
     task: parsed.task,
     workerCount: parsed.workerCount,
@@ -1782,6 +1922,12 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
     dagFallbackReason: parsed.dagFallbackReason,
     approvedRepositoryContextSummary: parsed.approvedRepositoryContextSummary,
   });
+  
+  // If using legacy_text decomposition and we don't have preflight info yet, generate it for display
+  if (executionPlan.metadata?.decomposition_source === 'legacy_text' && !preflightInfo) {
+    preflightInfo = buildLegacyTextPreflightInfo(cwd, executionPlan, parsed.dagFallbackReason);
+  }
+  
   const tasks = executionPlan.tasks;
   const effectiveParsed = executionPlan.workerCount === parsed.workerCount
     ? parsed
@@ -1811,5 +1957,5 @@ export async function teamCommand(args: string[], _options: TeamCliOptions = {})
   if (executionPlan.overOrchestrationNotice) {
     console.log(`${executionPlan.overOrchestrationNotice.code}: ${executionPlan.overOrchestrationNotice.message}`);
   }
-  await renderStartSummary(runtime, staffingPlan);
+  await renderStartSummary(runtime, staffingPlan, preflightInfo);
 }
