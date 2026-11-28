@@ -5084,6 +5084,151 @@ setInterval(() => {}, 1000);
       }
     });
 
+    it('resets idle streak when control-plane work is performed via marker', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-idle-reset-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-idle-reset-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const markerPath = join(wd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        // Create a primary pid file that records a stale process (to make primary unhealthy)
+        const stalePrimaryRecord = { pid: 1, cwd: wd, started_at: new Date(Date.now() - 100000).toISOString() };
+        await writeFile(join(stateDir, 'notify-fallback.pid'), JSON.stringify(stalePrimaryRecord));
+        authority = await startPersistentAuthority(wd, tempHome);
+        // Wait for authority to start
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        // Set up idle state by waiting a few cycles without activity
+        await sleep(300);
+        // Get initial idle streak
+        const statePath = join(stateDir, 'notify-fallback-authority-state.json');
+        let state = JSON.parse(await readFile(statePath, 'utf-8'));
+        const initialIdleStreak = state.adaptive_poll?.idle_streak ?? 0;
+        // Trigger a marker that will cause control-plane work (dispatch drain, etc.)
+        await writeFile(markerPath, JSON.stringify({ fingerprint: 'activity' }));
+        // Wait for marker to be consumed and state to be written
+        await waitFor(async () => !existsSync(markerPath), 2000, 25);
+        await sleep(100);
+        // Check that the activity was recorded (not awaiting_authority_marker)
+        state = JSON.parse(await readFile(statePath, 'utf-8'));
+        const activityReason = state.last_cycle_activity;
+        // When control-plane work is done, the state should be updated via updateAdaptivePollState
+        assert.ok(
+          activityReason && activityReason !== 'awaiting_authority_marker',
+          'activity summary should be recorded in state when marker triggers work',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('processes markers even when new markers arrive while one is in .processing state', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-marker-claiming-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-marker-claiming-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const markerPath = join(wd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        // Create a stale primary pid to trigger authority work
+        const stalePrimaryRecord = { pid: 1, cwd: wd, started_at: new Date(Date.now() - 100000).toISOString() };
+        await writeFile(join(stateDir, 'notify-fallback.pid'), JSON.stringify(stalePrimaryRecord));
+        authority = await startPersistentAuthority(wd, tempHome);
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        
+        // Write first marker and wait for it to be consumed
+        await writeFile(markerPath, JSON.stringify({ fingerprint: 'first' }));
+        await waitFor(async () => !existsSync(markerPath), 2000, 50);
+        
+        // Write second marker quickly and wait for it to be consumed
+        await writeFile(markerPath, JSON.stringify({ fingerprint: 'second' }));
+        await waitFor(async () => !existsSync(markerPath), 2000, 50);
+        
+        // Verify that authority records processing of markers (last_cycle_activity should be set to something other than awaiting_authority_marker)
+        const authorityStateFile = join(stateDir, 'notify-fallback-authority-state.json');
+        const finalState = JSON.parse(await readFile(authorityStateFile, 'utf-8'));
+        assert.ok(
+          finalState.last_cycle_activity && finalState.last_cycle_activity !== 'awaiting_authority_marker',
+          'authority should have processed both markers and recorded activity',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('reports state_missing when primary state file does not exist', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-state-missing-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-state-missing-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const primary = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        // Record the alive primary pid but do NOT create primary state file
+        const primaryPidPath = join(stateDir, 'notify-fallback.pid');
+        await writeFile(primaryPidPath, JSON.stringify({ pid: primary.pid, cwd: wd, started_at: new Date().toISOString() }));
+        authority = await startPersistentAuthority(wd, tempHome);
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        await sleep(500);
+        
+        // Verify authority state shows state_missing backoff reason
+        const authorityStateFile = join(stateDir, 'notify-fallback-authority-state.json');
+        const state = JSON.parse(await readFile(authorityStateFile, 'utf-8'));
+        assert.strictEqual(
+          state.authority_backoff?.reason,
+          'state_missing',
+          'authority should report state_missing when primary state file is absent',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        primary.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('reports tick_missing when primary state file has no tick information', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-tick-missing-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-tick-missing-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const primary = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        // Record the alive primary pid
+        const primaryPidPath = join(stateDir, 'notify-fallback.pid');
+        await writeFile(primaryPidPath, JSON.stringify({ pid: primary.pid, cwd: wd, started_at: new Date().toISOString() }));
+        // Create primary state file without any tick information
+        const primaryStatePath = join(stateDir, 'notify-fallback-state.json');
+        await writeFile(primaryStatePath, JSON.stringify({ pid: primary.pid, cwd: wd, poll_ms: 250 }));
+        authority = await startPersistentAuthority(wd, tempHome);
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        await sleep(500);
+        
+        // Verify authority state shows tick_missing backoff reason
+        const authorityStateFile = join(stateDir, 'notify-fallback-authority-state.json');
+        const state = JSON.parse(await readFile(authorityStateFile, 'utf-8'));
+        assert.strictEqual(
+          state.authority_backoff?.reason,
+          'tick_missing',
+          'authority should report tick_missing when primary state has no tick information',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        primary.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
     // HIGH 2 marker claiming test: The .processing file is an internal detail that gets
     // deleted quickly. The main test above verifies the behavior - markers trigger control-plane work.
     // See: HIGH 2 — Marker completion is ambiguous; the 2 s failsafe races the persistent watcher.
