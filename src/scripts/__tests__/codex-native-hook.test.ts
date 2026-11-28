@@ -13270,10 +13270,79 @@ exit 0
           { cwd },
         );
         // Read-only compound commands should be allowed (outputJson should be null)
-        const advisory = String(result.outputJson?.systemMessage ?? result.outputJson?.reason ?? "");
+        assert.strictEqual(
+          result.outputJson,
+          null,
+          `expected read-only compound Beads operation to be allowed: ${command}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks injection attempts and write ops with --help/-h flags via dispatchCodexNativeHook", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-injection-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-injection");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-injection", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-injection",
+        thread_id: "thread-beads-injection",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-injection",
+          thread_id: "thread-beads-injection",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-injection",
+        thread_id: "thread-beads-injection",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-injection", "thread-beads-injection", cwd);
+
+      const injectionAndBlockedCommands = [
+        // Newline injection attempts (should be rejected by shellTokenizeLiteralCommand)
+        "bd --db .beads/issues.db list | head\ntouch PWNED",
+        "bd --db .beads/issues.db list\ntouch PWNED",
+        // Write operations with --help/-h flags should be blocked
+        "bd --db .beads/issues.db update OMX-1 --title --help | head",
+        "bd --db .beads/issues.db update OMX-1 --status done -h",
+        // Create with help flag
+        "bd --db .beads/issues.db create 'Issue' --help",
+        // Comments add with help flag
+        "bd --db .beads/issues.db comments add OMX-1 'note' -h",
+      ];
+
+      for (const [index, command] of injectionAndBlockedCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-injection",
+            thread_id: "thread-beads-injection",
+            agent_id: "thread-beads-injection",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-injection-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // These commands should be blocked (not allowed)
         assert.ok(
-          result.outputJson === null || !advisory.includes("single literal"),
-          `expected read-only compound Beads operation to be allowed: ${command} (got: ${advisory})`,
+          result.outputJson !== null,
+          `expected injection/write-with-help command to be blocked: ${command}`,
         );
       }
     } finally {

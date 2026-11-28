@@ -4861,6 +4861,11 @@ function shellTokenizeLiteralCommand(command: string): string[] | null {
       quote = char;
       continue;
     }
+    // Reject newlines and carriage returns BEFORE checking for whitespace,
+    // so newline-injected commands are not tokenized as args
+    if (char === "\n" || char === "\r") {
+      return null;
+    }
     if (/\s/.test(char)) {
       if (current) {
         tokens.push(current);
@@ -4868,7 +4873,7 @@ function shellTokenizeLiteralCommand(command: string): string[] | null {
       }
       continue;
     }
-    if (/[;&|<>`$(){}\n\r]/.test(char)) return null;
+    if (/[;&|<>`$(){}]/.test(char)) return null;
     current += char;
   }
 
@@ -5076,23 +5081,16 @@ function isPureOutputFilterSegment(segment: string): boolean {
 
 function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boolean {
   // Check if the bd command starting at startIndex (after --db value) is read-only
-  // Extract operation and check if it's read-only or if it's a help flag
+  // Extract operation and check if it's read-only
+  // Note: --help/-h flags do NOT make write operations read-only when there are
+  // actual operation parameters (e.g., 'update OMX-1 --title --help' is still a write op).
+  // Only when --help is the only positional arg after operation (e.g., 'update --help') is it read-only.
   
-  const operationTokens = tokens
-    .slice(startIndex)
-    .filter((token) => token && !token.startsWith("-"));
+  const allTokens = tokens.slice(startIndex);
+  const operationTokens = allTokens.filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
-  const suboperation = operationTokens[1] ?? "";
-  
-  // Treat only --help and -h flags as help requests
-  // A bare 'help' token is help only when it is the operation itself (bd --db X help)
-  for (let i = startIndex; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token === "--help" || token === "-h") {
-      // These flags are always read-only, even for write commands
-      return true;
-    }
-  }
+  const operationArg = operationTokens[1] ?? "";  // First arg after operation (e.g., issue ID)
+  const suboperation = operationTokens[2] ?? "";  // Second arg after operation (for commands like 'comments add')
   
   // Check if the operation itself is 'help'
   if (operation === "help") {
@@ -5105,9 +5103,51 @@ function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boole
     return true;
   }
   
-  // comments read (without add) is also read-only
-  if (operation === "comments" && suboperation !== "add") {
+  // For 'comments' operation, check if it has a suboperation
+  if (operation === "comments") {
+    // 'comments add' is a write operation
+    if (operationArg === "add") {
+      return false;
+    }
+    // All other 'comments' forms are read-only (comments, comments read, etc.)
     return true;
+  }
+  
+  // If operation is a write operation (create, update, edit, close, reopen),
+  // check if there are actual operation parameters (not just --help)
+  if (["create", "update", "edit", "close", "reopen"].includes(operation)) {
+    // If there's a positional arg that's not from help request, it's a write operation
+    if (operationArg && operationArg !== "help") {
+      // This is a write operation with actual args, NOT read-only
+      return false;
+    }
+    // If there are ONLY help flags and no other args, it's asking for help (read-only)
+    // Count operationTokens to determine if there are args beyond the operation name
+    // operationTokens[0] is the operation, operationTokens[1] is the first arg, etc.
+    if (operationTokens.length === 1) {
+      // No positional args, only the operation name
+      // Check if --help or -h is present
+      for (let i = startIndex; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token === "--help" || token === "-h") {
+          // This is asking for help, which is read-only
+          return true;
+        }
+      }
+    } else {
+      // There are positional args beyond the operation name, so it's a write operation
+      return false;
+    }
+  }
+  
+  // For unknown operations, check if --help is the only flag
+  if (operation === "") {
+    for (const token of allTokens) {
+      if (token === "--help" || token === "-h") {
+        // This is asking for help, which is read-only
+        return true;
+      }
+    }
   }
   
   return false;
@@ -5158,17 +5198,40 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     .filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
+  const operationArg = operationTokens[1] ?? "";  // First positional arg after operation
   
   // Check for read-only operations that are allowed in all phases
   if (beadsOperationIsReadOnly(operation)) {
     return { present: true, allowed: true, isReadOnly: true };
   }
   
+  // Check if there's a help flag in the command
+  let hasHelpFlag = false;
+  for (let i = dbValueIndex + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--help" || token === "-h") {
+      hasHelpFlag = true;
+      break;
+    }
+  }
+  
   // Check for write operations
   if (["create", "update", "edit", "close", "reopen"].includes(operation)) {
+    // If there are positional args (operation parameters) with help flags, it's a write op attempt
+    // and should be blocked (--help does not make a write op read-only)
+    if (operationArg && operationArg !== "help" && hasHelpFlag) {
+      // Write op with args AND help flag - block it
+      return { present: true, allowed: false, reason: `Beads tracker operation ${operation} with --help flag and actual arguments is not allowed` };
+    }
     return { present: true, allowed: true };
   }
   if (operation === "comments" && suboperation === "add") {
+    // If there are positional args (comment content) with help flags, it's a write op attempt
+    // and should be blocked
+    if (operationTokens.length > 2 && hasHelpFlag) {
+      // comments add with args AND help flag - block it
+      return { present: true, allowed: false, reason: "Beads tracker operation comments add with --help flag and actual arguments is not allowed" };
+    }
     return { present: true, allowed: true };
   }
   return {
