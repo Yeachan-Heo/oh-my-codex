@@ -5096,6 +5096,16 @@ setInterval(() => {}, 1000);
         // Create a primary pid file that records a stale process (to make primary unhealthy)
         const stalePrimaryRecord = { pid: 1, cwd: wd, started_at: new Date(Date.now() - 100000).toISOString() };
         await writeFile(join(stateDir, 'notify-fallback.pid'), JSON.stringify(stalePrimaryRecord));
+        // Set up a team with pending dispatch to trigger control-plane work
+        await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+        await bindCanonicalDispatchWorkerFixture(wd);
+        // Queue a dispatch request so dispatch_drain will be active when marker is processed
+        await enqueueDispatchRequest('dispatch-team', {
+          kind: 'inbox',
+          to_worker: 'worker-1',
+          worker_index: 1,
+          trigger_message: 'marker processing dispatch test',
+        }, wd);
         authority = await startPersistentAuthority(wd, tempHome);
         // Wait for authority to start
         await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
@@ -5105,22 +5115,32 @@ setInterval(() => {}, 1000);
         const statePath = join(stateDir, 'notify-fallback-authority-state.json');
         let state = JSON.parse(await readFile(statePath, 'utf-8'));
         const initialIdleStreak = state.adaptive_poll?.idle_streak ?? 0;
+        // Before marker: assert idle_streak is positive (we've had idle cycles)
+        assert.ok(
+          initialIdleStreak > 0,
+          `idle_streak should be > 0 before marker trigger, got ${initialIdleStreak}`,
+        );
         // Trigger a marker that will cause control-plane work (dispatch drain, etc.)
         await writeFile(markerPath, JSON.stringify({ fingerprint: 'activity' }));
         // Wait for marker to be consumed and state to be written
         await waitFor(async () => !existsSync(markerPath), 2000, 25);
-        // Wait for state to be written with the activity reason
+        // Wait for state to be written with dispatch_drain activity reason
         await waitFor(async () => {
           const latestState = JSON.parse(await readFile(statePath, 'utf-8').catch(() => '{}'));
-          return latestState.last_cycle_activity && latestState.last_cycle_activity !== 'awaiting_authority_marker';
+          return latestState.last_cycle_activity === 'dispatch_drain';
         }, 2000, 50);
-        // Check that the activity was recorded (not awaiting_authority_marker)
+        // Check that dispatch_drain activity was recorded
         state = JSON.parse(await readFile(statePath, 'utf-8'));
-        const activityReason = state.last_cycle_activity;
-        // When control-plane work is done, the state should be updated via updateAdaptivePollState
-        assert.ok(
-          activityReason && activityReason !== 'awaiting_authority_marker',
-          'activity summary should be recorded in state when marker triggers work',
+        assert.strictEqual(
+          state.last_cycle_activity,
+          'dispatch_drain',
+          'dispatch_drain activity should be recorded when marker triggers work',
+        );
+        // After marker processing with actual work: assert idle_streak is reset to 0
+        assert.strictEqual(
+          state.adaptive_poll?.idle_streak,
+          0,
+          'idle_streak should be reset to 0 after marker triggers dispatch_drain work',
         );
       } finally {
         authority?.kill('SIGKILL');
@@ -5134,6 +5154,8 @@ setInterval(() => {}, 1000);
       const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-marker-claiming-home-'));
       const stateDir = join(wd, '.omx', 'state');
       const markerPath = join(wd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+      const markerProcessingPath = `${markerPath}.processing`;
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
       let authority: ReturnType<typeof spawn> | undefined;
       try {
         await mkdir(stateDir, { recursive: true });
@@ -5141,23 +5163,79 @@ setInterval(() => {}, 1000);
         // Create a stale primary pid to trigger authority work
         const stalePrimaryRecord = { pid: 1, cwd: wd, started_at: new Date(Date.now() - 100000).toISOString() };
         await writeFile(join(stateDir, 'notify-fallback.pid'), JSON.stringify(stalePrimaryRecord));
+        // Set up a team with pending dispatch to trigger control-plane work when markers are processed
+        await initTeamState('dispatch-team', 'task', 'executor', 2, wd);
+        await bindCanonicalDispatchWorkerFixture(wd);
+        // Queue dispatch requests so each marker processing triggers dispatch_drain
+        for (let i = 0; i < 2; i += 1) {
+          await enqueueDispatchRequest('dispatch-team', {
+            kind: 'inbox',
+            to_worker: 'worker-1',
+            worker_index: 1,
+            trigger_message: `marker race test dispatch ${i + 1}`,
+          }, wd);
+        }
         authority = await startPersistentAuthority(wd, tempHome);
         await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
         
-        // Write first marker and wait for it to be consumed
+        // Allow authority to stabilize and start cycling
+        await sleep(200);
+        
+        // Track initial activity count to detect processing
+        const readLogLines = async (): Promise<Array<Record<string, unknown>>> => {
+          try {
+            const content = await readFile(logPath, 'utf-8').catch(() => '');
+            return content.trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+          } catch {
+            return [];
+          }
+        };
+        
+        // Write first marker
         await writeFile(markerPath, JSON.stringify({ fingerprint: 'first' }));
-        await waitFor(async () => !existsSync(markerPath), 2000, 50);
         
-        // Write second marker quickly and wait for it to be consumed
+        // Try to write second marker quickly while first might still be in .processing state
+        // Wait a very short time to try to catch the window where first is claimed but not yet fully processed
+        await sleep(5);
         await writeFile(markerPath, JSON.stringify({ fingerprint: 'second' }));
-        await waitFor(async () => !existsSync(markerPath), 2000, 50);
         
-        // Verify that authority records processing of markers (last_cycle_activity should be set to something other than awaiting_authority_marker)
-        const authorityStateFile = join(stateDir, 'notify-fallback-authority-state.json');
-        const finalState = JSON.parse(await readFile(authorityStateFile, 'utf-8'));
+        // Wait for both markers to be consumed
+        await waitFor(async () => {
+          const marker = existsSync(markerPath);
+          const processing = existsSync(markerProcessingPath);
+          return !marker && !processing;
+        }, 3000, 25);
+        
+        // Verify that markers were processed by checking logs and state
+        const logLines = await readLogLines();
+        
+        // With the rename-claim protection, both markers should be claimed and processed successfully.
+        // If there are claim_failed events, it means the rename-claim wasn't working correctly.
+        const claimFailures = logLines.filter(
+          (entry: Record<string, unknown>) => entry.type === 'authority_marker' && entry.reason === 'claim_failed',
+        );
+        const processingErrors = logLines.filter(
+          (entry: Record<string, unknown>) => entry.type === 'authority_marker' && entry.reason === 'processing_error',
+        );
+        
+        assert.equal(
+          claimFailures.length,
+          0,
+          'markers should be claimed successfully without claim_failed errors (rename-claim protection must work)',
+        );
+        assert.equal(
+          processingErrors.length,
+          0,
+          'markers should be processed without errors',
+        );
+        
+        // Verify that at least some dispatch drain work happened (markers were processed with active work)
+        const dispatchEvents = logLines.filter(
+          (entry: Record<string, unknown>) => entry.type === 'dispatch_drain_tick',
+        );
         assert.ok(
-          finalState.last_cycle_activity && finalState.last_cycle_activity !== 'awaiting_authority_marker',
-          'authority should have processed both markers and recorded activity',
+          dispatchEvents.length > 0,
+          'dispatch_drain work should have been performed when markers were processed',
         );
       } finally {
         authority?.kill('SIGKILL');
