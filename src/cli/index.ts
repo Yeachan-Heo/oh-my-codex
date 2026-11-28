@@ -46,6 +46,7 @@ import {
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
 import { supervisionCommand } from "./supervision.js";
+import { CODEX_REVIEW_LOOP_USAGE } from "./supervision-codex-review.js";
 import { apiCommand } from "./api.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
@@ -330,6 +331,8 @@ Usage:
                 (also used as an adaptive backend for qualifying read-only explore tasks)
   omx supervision [--window <s>] [--no-analyze] [--file] [--json] [<user-prompt>]
                 Check live OMX sessions for known repeat problems, rank findings P0-P3, optionally file issues
+  ${CODEX_REVIEW_LOOP_USAGE}
+                Dry-run plan (or --post) of '@codex review' on open PRs whose head has no Codex review
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes

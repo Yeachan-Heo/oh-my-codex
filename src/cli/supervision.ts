@@ -21,6 +21,7 @@ import { projectHudModes, readAllState, readVersion } from '../hud/state.js';
 import { getBaseStateDir } from '../mcp/state-paths.js';
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../state/skill-active.js';
 import { realpathSync } from 'node:fs';
+import { CODEX_REVIEW_LOOP_USAGE, codexReviewLoopCommand } from './supervision-codex-review.js';
 import { normalizeAutopilotPhase } from '../autopilot/fsm.js';
 import { isValidTransition } from '../team/orchestrator.js';
 import type { TeamPhase } from '../team/orchestrator.js';
@@ -43,6 +44,7 @@ export const SUPERVISION_HELP = `omx supervision - Live OMX session health check
 
 Usage:
   omx supervision [options] [<user-prompt>]
+  ${CODEX_REVIEW_LOOP_USAGE}
 
 Inspects the running OMX sessions (or the most recent one when none is running),
 runs deterministic health checks, optionally analyses failures with spark explore
@@ -1573,6 +1575,7 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
 }
 
 export async function supervisionCommand(args: string[]): Promise<void> {
+  if (args[0] === 'codex-review-loop') return codexReviewLoopCommand(args.slice(1));
   const options = parseSupervisionArgs(args);
   if (options.help) {
     console.log(SUPERVISION_HELP);
