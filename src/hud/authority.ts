@@ -441,11 +441,14 @@ async function writePersistentWatcherMarker(
 ): Promise<boolean> {
   try {
     await mkdir(dirname(markerPath), { recursive: true }).catch(() => {});
-    await writeFile(markerPath, JSON.stringify({
+    // Write marker atomically via temp+rename to avoid torn reads
+    const tempPath = `${markerPath}.tmp`;
+    await writeFile(tempPath, JSON.stringify({
       type: 'authority-tick',
       fingerprint: fingerprintValue,
       requested_at: new Date().toISOString(),
     }, null, 2));
+    await rename(tempPath, markerPath);
     return true;
   } catch {
     return false;
@@ -570,7 +573,7 @@ export async function runHudAuthorityTick(
         throw new Error('failed to write authority tick marker');
       }
 
-      // Wait for marker to be consumed (watcher processes it)
+      // Wait for marker to be consumed (watcher processes it and renames it to .processing)
       let consumed = false;
       const startWaitMs = Date.now();
       const maxWaitMs = Math.min(timeoutMs, 2000);
@@ -582,8 +585,11 @@ export async function runHudAuthorityTick(
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
-      if (!consumed && existsSync(markerPath)) {
-        // Marker not consumed, fall back to spawning once-mode watcher as failsafe
+      // Only spawn failsafe if marker is still unclaimed (not renamed to .processing)
+      const markerProcessingPath = `${markerPath}.processing`;
+      const markerStillUnclaimed = existsSync(markerPath) && !existsSync(markerProcessingPath);
+      if (markerStillUnclaimed) {
+        // Marker is unclaimed and not consumed; fall back to spawning once-mode watcher as failsafe
         await runProcess(
           nodePath,
           [
