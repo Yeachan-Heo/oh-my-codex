@@ -225,8 +225,9 @@ publishing. A review is a GitHub review submission; an inline review comment is 
   summary `body`, and `comments[]`. `gh pr review` submits a body-only review; use
   the REST endpoint when inline comments are required.
 - Each line-anchored finding is an inline comment:
-  `{ path, line, side: "RIGHT", start_line?, body }`. Verify both endpoints exist on
-  the new side of the PR diff; use `start_line` for a range. Findings without a
+  `{ path, line, side: "RIGHT", start_line?, start_side?, body }`. Verify both
+  endpoints exist on the new side of the PR diff; use `start_line` for a range and
+  set `start_side: "RIGHT"` whenever `start_line` is supplied. Findings without a
   stable line anchor belong in the review body; do not invent a line.
 - The body carries scope, reviewed commit, finding counts, architectural status,
   validation, final recommendation, and a pointer to the inline findings.
