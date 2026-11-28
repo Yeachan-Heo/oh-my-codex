@@ -496,14 +496,16 @@ function getBackupContext(
 			baseRoot: projectRoot,
 		};
 	}
-	// For user scope, keep backups under ~/.omx/backups (not under CODEX_HOME).
+	// For user scope, respect OMX_ROOT if set for backup paths (#4236).
+	// When OMX_ROOT is set, user-scope backups go under OMX_ROOT for isolated installs.
 	// The baseRoot is used for validation scope determination per destination:
 	// - Destinations under CODEX_HOME are validated against CODEX_HOME
-	// - Destinations under ~/.omx are validated against homedir() (or OMX_ROOT if set)
-	const homeDir = homedir();
+	// - Destinations under ~/.omx are validated against OMX_ROOT (if set) or homedir()
+	const omxRootOverride = process.env.OMX_ROOT ?? process.env.OMX_STATE_ROOT;
+	const userScopeRoot = omxRootOverride || homedir();
 	return {
-		backupRoot: join(homeDir, ".omx", "backups", "setup", timestamp),
-		baseRoot: homeDir,
+		backupRoot: join(userScopeRoot, ".omx", "backups", "setup", timestamp),
+		baseRoot: userScopeRoot,
 	};
 }
 
@@ -4673,8 +4675,14 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
 	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
-	// For user scope, compute the legacy receipt path at $HOME/.omx/state/setup/installed-skills.json
-	const legacySkillReceiptPath = resolvedScope.scope === "user" ? join(homedir(), ".omx", "state", "setup", "installed-skills.json") : undefined;
+	// For user scope, compute the legacy receipt path, respecting OMX_ROOT if set (#4236)
+	const legacySkillReceiptPath = resolvedScope.scope === "user"
+		? (() => {
+			const omxRootOverride = process.env.OMX_ROOT ?? process.env.OMX_STATE_ROOT;
+			const userScopeRoot = omxRootOverride || homedir();
+			return join(userScopeRoot, ".omx", "state", "setup", "installed-skills.json");
+		})()
+		: undefined;
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
 	if (repairPluginCache && !isPluginInstallMode) {
 		throw new Error("--repair-plugin-cache requires plugin setup mode; add --plugin.");

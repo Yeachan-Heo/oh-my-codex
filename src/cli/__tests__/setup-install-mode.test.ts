@@ -6907,13 +6907,137 @@ describe("issue 3918 plugin hook trust self-heal", () => {
 					assert.doesNotMatch(await readFile(configPath, "utf-8"), /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
 					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
 
-					await setup({ scope: "user", installMode: "plugin" });
-					assert.doesNotMatch(await readFile(configPath, "utf-8"), /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
-					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
-				});
-			});
+			await setup({ scope: "user", installMode: "plugin" });
+			assert.doesNotMatch(await readFile(configPath, "utf-8"), /oh-my-codex@oh-my-codex-local:hooks\/hooks\.json:/);
+			assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
+		});
+	});
+} finally {
+		await rm(wd, { recursive: true, force: true });
+	}
+});
+
+describe("issue 4236 OMX_ROOT user scope isolation", () => {
+	it("respects OMX_ROOT for user-scope backup snapshots and legacy skill receipt", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-omx-root-"));
+		try {
+			const homeDir = join(wd, "home");
+			const omxRoot = join(wd, "omxroot");
+			const codexHomeDir = join(homeDir, ".codex");
+			
+			await mkdir(codexHomeDir, { recursive: true });
+			await mkdir(omxRoot, { recursive: true });
+			
+			const previousHome = process.env.HOME;
+			const previousCodexHome = process.env.CODEX_HOME;
+			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousCwd = process.cwd();
+			
+			try {
+				process.env.HOME = homeDir;
+				process.env.CODEX_HOME = codexHomeDir;
+				process.env.OMX_ROOT = omxRoot;
+				process.chdir(wd);
+				
+				// Run user-scope setup
+				await setup({ scope: "user", installMode: "legacy" });
+				
+				// Verify backups are under OMX_ROOT, not HOME
+				const expectedBackupRoot = join(omxRoot, ".omx", "backups", "setup");
+				const unexpectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
+				
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is set`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedBackupRoot),
+					false,
+					`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_ROOT is set (backups should go under OMX_ROOT instead)`,
+				);
+				
+				// Verify legacy skill receipt is also under OMX_ROOT
+				const expectedReceiptPath = join(omxRoot, ".omx", "state", "setup", "installed-skills.json");
+				const unexpectedReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
+				
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Expected receipt path ${expectedReceiptPath} should exist when OMX_ROOT is set`,
+				);
+				
+				assert.equal(
+					existsSync(unexpectedReceiptPath),
+					false,
+					`Receipt path ${unexpectedReceiptPath} should NOT exist when OMX_ROOT is set`,
+				);
+			} finally {
+				process.chdir(previousCwd);
+				if (typeof previousHome === "string") process.env.HOME = previousHome;
+				else delete process.env.HOME;
+				if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+				else delete process.env.CODEX_HOME;
+				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+				else delete process.env.OMX_ROOT;
+			}
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	
+	it("preserves existing behavior when OMX_ROOT is not set", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-no-omx-root-"));
+		try {
+			const homeDir = join(wd, "home");
+			const codexHomeDir = join(homeDir, ".codex");
+			
+			await mkdir(codexHomeDir, { recursive: true });
+			
+			const previousHome = process.env.HOME;
+			const previousCodexHome = process.env.CODEX_HOME;
+			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousCwd = process.cwd();
+			
+			try {
+				process.env.HOME = homeDir;
+				process.env.CODEX_HOME = codexHomeDir;
+				delete process.env.OMX_ROOT;
+				process.chdir(wd);
+				
+				// Run user-scope setup
+				await setup({ scope: "user", installMode: "legacy" });
+				
+				// Verify backups are under HOME/.omx (original behavior)
+				const expectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
+				
+				assert.equal(
+					existsSync(expectedBackupRoot),
+					true,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is not set (preserve original behavior)`,
+				);
+				
+				// Verify legacy skill receipt is also under HOME/.omx
+				const expectedReceiptPath = join(homeDir, ".omx", "state", "setup", "installed-skills.json");
+				
+				assert.equal(
+					existsSync(expectedReceiptPath),
+					true,
+					`Expected receipt path ${expectedReceiptPath} should exist when OMX_ROOT is not set (preserve original behavior)`,
+				);
+			} finally {
+				process.chdir(previousCwd);
+				if (typeof previousHome === "string") process.env.HOME = previousHome;
+				else delete process.env.HOME;
+				if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+				else delete process.env.CODEX_HOME;
+				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+				else delete process.env.OMX_ROOT;
+			}
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+});
 });
