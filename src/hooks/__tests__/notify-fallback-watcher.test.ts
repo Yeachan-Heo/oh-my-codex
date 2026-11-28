@@ -5311,6 +5311,131 @@ setInterval(() => {}, 1000);
       }
     });
 
+    it('MEDIUM 1: persistent authority writes only to its own state file on shutdown via signal', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-shutdown-primary-state-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-shutdown-primary-state-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      const logsDir = join(wd, '.omx', 'logs');
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(logsDir, { recursive: true });
+        
+        // Create primary state file with specific content
+        const primaryStatePath = join(stateDir, 'notify-fallback-state.json');
+        const initialPrimaryState = {
+          pid: 9999,
+          cwd: wd,
+          started_at: new Date().toISOString(),
+          poll_ms: 250,
+          dispatch_drain: { run_count: 100, last_tick_at: new Date().toISOString() },
+        };
+        await writeFile(primaryStatePath, JSON.stringify(initialPrimaryState));
+        
+        // Record the primary pid
+        const primaryPidPath = join(stateDir, 'notify-fallback.pid');
+        await writeFile(primaryPidPath, JSON.stringify({ pid: 9999, cwd: wd, started_at: new Date().toISOString() }));
+        
+        // Start persistent authority
+        authority = await startPersistentAuthority(wd, tempHome);
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        
+        // Let it run briefly to generate authority state
+        await sleep(200);
+        
+        // Get primary state content BEFORE shutdown (as bytes for byte-identical check)
+        const primaryStateBefore = await readFile(primaryStatePath, 'utf-8');
+        
+        // Trigger shutdown via signal
+        authority.kill('SIGTERM');
+        
+        // Wait for authority to exit
+        await waitForExit(authority, 5000);
+        
+        // Verify primary state file is BYTE-IDENTICAL (untouched)
+        const primaryStateAfter = await readFile(primaryStatePath, 'utf-8');
+        assert.strictEqual(
+          primaryStateAfter,
+          primaryStateBefore,
+          'primary state file must be byte-identical after authority shutdown; persistent authority must not write to primary state file',
+        );
+        
+        // Verify that authority wrote to its own state file with stop_reason
+        const authorityStatePath = join(stateDir, 'notify-fallback-authority-state.json');
+        assert.ok(
+          existsSync(authorityStatePath),
+          'authority should write its own state file on shutdown',
+        );
+        const authorityState = JSON.parse(await readFile(authorityStatePath, 'utf-8'));
+        assert.strictEqual(
+          typeof authorityState.stop_reason,
+          'string',
+          'authority state should contain stop_reason on shutdown',
+        );
+        assert.ok(
+          authorityState.stopped_at,
+          'authority state should contain stopped_at timestamp on shutdown',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
+    it('MEDIUM 3: persistent authority does not reap watcher from different cwd', async () => {
+      const wd = await mkdtemp(join(tmpdir(), 'omx-authority-cwd-mismatch-'));
+      const cwdB = await mkdtemp(join(tmpdir(), 'omx-authority-cwd-mismatch-b-'));
+      const tempHome = await mkdtemp(join(tmpdir(), 'omx-authority-cwd-mismatch-home-'));
+      const stateDir = join(wd, '.omx', 'state');
+      
+      // Create a fake stale process to simulate a watcher from a different cwd
+      const stalePid = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      let authority: ReturnType<typeof spawn> | undefined;
+      try {
+        await mkdir(stateDir, { recursive: true });
+        await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+        
+        // Create PID file recording a watcher from cwdB (different cwd)
+        const pidFilePath = join(stateDir, 'notify-fallback.pid');
+        const stalePidRecord = {
+          pid: stalePid.pid,
+          cwd: cwdB,  // Different cwd
+          started_at: new Date().toISOString(),
+          owner_token: 'old-owner-token',
+        };
+        await writeFile(pidFilePath, JSON.stringify(stalePidRecord));
+        const pidFileContentBefore = JSON.stringify(stalePidRecord);
+        
+        // Start persistent authority for cwd A (wd)
+        authority = await startPersistentAuthority(wd, tempHome);
+        await waitFor(async () => existsSync(join(stateDir, 'notify-fallback-authority.pid')), 2000, 25);
+        
+        // Let authority run long enough to process the PID file on startup
+        await sleep(300);
+        
+        // Verify that the stale process is still alive (authority must NOT have killed it)
+        assert.ok(
+          isAlive(stalePid.pid as number),
+          'persistent authority must NOT kill a watcher whose cwd does not match; cross-cwd reaping is prevented',
+        );
+        
+        // Verify that the PID file still records the old process (not updated to authority pid)
+        const pidFileContentAfter = await readFile(pidFilePath, 'utf-8');
+        assert.strictEqual(
+          pidFileContentAfter,
+          pidFileContentBefore,
+          'PID file should not be updated when cwd does not match; persistent authority must not register',
+        );
+      } finally {
+        authority?.kill('SIGKILL');
+        stalePid.kill('SIGKILL');
+        await rm(wd, { recursive: true, force: true });
+        await rm(cwdB, { recursive: true, force: true });
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    });
+
     // HIGH 2 marker claiming test: The .processing file is an internal detail that gets
     // deleted quickly. The main test above verifies the behavior - markers trigger control-plane work.
     // See: HIGH 2 — Marker completion is ambiguous; the 2 s failsafe races the persistent watcher.
