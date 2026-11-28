@@ -18,7 +18,7 @@ export function codexHome(): string {
 export const OMX_ENTRY_PATH_ENV = "OMX_ENTRY_PATH";
 export const OMX_STARTUP_CWD_ENV = "OMX_STARTUP_CWD";
 
-function resolveOmxRootCandidate(raw?: string): string | null {
+export function resolveOmxRootCandidate(raw?: string): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
