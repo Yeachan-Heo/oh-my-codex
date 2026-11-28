@@ -209,10 +209,13 @@ merge-ready without the required evidence.
 
 ## GitHub PR publication
 
-When the user asks to publish a review on a GitHub PR, publish a **PR review with
-inline review comments**, not a single issue comment. A review is a GitHub review
-submission; an inline review comment is a `pulls/{n}/comments` object anchored to
-the diff and linked by `pull_request_review_id`.
+When the user provides a GitHub PR link for review (or asks to review a PR), finish
+the analysis by publishing the result to that PR as a **PR review with inline review
+comments**, not a single issue comment; do not wait for a separate "publish" request.
+If the user explicitly asks for a read-only review, return the report without
+publishing. A review is a GitHub review submission; an inline review comment is a
+`pulls/{n}/comments` object anchored to the diff and linked by
+`pull_request_review_id`.
 
 - Bind to the reviewed source: resolve the PR head SHA, confirm it matches the
   reviewed commit, and pass it as `commit_id`. Do not publish against a changed
