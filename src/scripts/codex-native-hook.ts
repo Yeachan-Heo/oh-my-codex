@@ -5081,6 +5081,37 @@ function isPureOutputFilterSegment(segment: string): boolean {
   return false;
 }
 
+// Helper to extract positional arguments after the operation, properly skipping flags and their values.
+function extractPositionalArgs(tokens: string[]): string[] {
+  const positionals: string[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (!token) {
+      i++;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      if (token.includes("=")) {
+        // Flag with inline value like --foo=bar, skip just this token
+        i++;
+      } else {
+        // Flag without inline value like --foo, skip this and potentially the next token
+        i++;
+        // Check if next token exists and doesn't start with dash (it's the flag's value)
+        if (i < tokens.length && tokens[i] && !tokens[i].startsWith("-")) {
+          i++;
+        }
+      }
+    } else {
+      // This is a positional argument
+      positionals.push(token);
+      i++;
+    }
+  }
+  return positionals;
+}
+
 function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boolean {
   // Check if the bd command starting at startIndex (after --db value) is read-only
   // Extract operation and check if it's read-only
@@ -5089,9 +5120,9 @@ function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boole
   // Only when --help is the only positional arg after operation (e.g., 'update --help') is it read-only.
   
   const allTokens = tokens.slice(startIndex);
-  const operationTokens = allTokens.filter((token) => token && !token.startsWith("-"));
+  const operationTokens = extractPositionalArgs(allTokens);
   const operation = operationTokens[0] ?? "";
-  const operationArg = operationTokens[1] ?? "";  // First arg after operation (e.g., issue ID)
+  const operationArg = operationTokens[1] ?? "";  // First arg after operation (e.g., issue ID or subcommand)
   
   // Check if the operation itself is 'help'
   if (operation === "help") {
@@ -5139,13 +5170,30 @@ function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boole
     return false;
   }
   
-  // For 'comments' operation, check if it has a suboperation
+  // For 'comments' operation, check if it has a subcommand or ID
   if (operation === "comments") {
-    // 'comments add' is a write operation
-    if (operationArg === "add") {
+    // Write subcommands that must be blocked
+    const writeCommentsSubcommands = ["add", "delete", "del"];
+
+    if (operationArg === "help") {
+      // 'comments help' is read-only
+      return true;
+    }
+
+    if (writeCommentsSubcommands.includes(operationArg)) {
+      // 'comments add', 'comments delete', etc. are write operations
       return false;
     }
-    // All other 'comments' forms are read-only (comments, comments read, etc.)
+
+    // For 'comments <id>' (no recognized subcommand), it's read-only
+    if (operationArg && !operationArg.startsWith("-")) {
+      // Check if there are more positional args beyond the ID
+      // If operationTokens has length 2, it's just 'comments <id>', which is read-only
+      // If operationTokens has length > 2, there are additional args, which is write
+      return operationTokens.length === 2; // read-only if only operation and ID, write if more args
+    }
+
+    // 'comments' with no args or only flags is read-only
     return true;
   }
   
@@ -5229,9 +5277,9 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     return { present: true, allowed: false, reason: `Beads tracker db target ${dbPath} is outside repo-local .beads metadata` };
   }
 
-  const operationTokens = tokens
-    .slice(dbValueIndex + 1)
-    .filter((token) => token && !token.startsWith("-"));
+  const operationTokens = extractPositionalArgs(
+    tokens.slice(dbValueIndex + 1)
+  );
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
   const operationArg = operationTokens[1] ?? "";  // First positional arg after operation

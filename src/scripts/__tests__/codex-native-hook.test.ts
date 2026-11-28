@@ -13368,6 +13368,13 @@ exit 0
         "bd --db .beads/issues.db create 'Issue' --help",
         // Comments add with help flag
         "bd --db .beads/issues.db comments add OMX-1 'note' -h",
+        // Compound bypass tests: comments/dep write subcommands with flags should be blocked (Fixes #4239)
+        // These bypass the flag value, treating --author x as the first positional
+        "bd --db .beads/issues.db comments --author x add OMX-1 pwned | head",
+        // comments delete is a write operation and should be blocked in compound commands
+        "bd --db .beads/issues.db comments delete OMX-1 1 | head",
+        // dep add with --type flag should be blocked in compound commands
+        "bd --db .beads/issues.db dep --type blocks add A B | head",
       ];
 
       for (const [index, command] of injectionAndBlockedCommands.entries()) {
