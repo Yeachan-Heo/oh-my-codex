@@ -1419,7 +1419,7 @@
       ]
     },
     "skills": {
-      "digest": "9d2f0698cfe3153ea4c35fce543034dc0d837d92deee75d444eb48f1e43aa949",
+      "digest": "a7d0d544dd9c741ddee61ec0c831e5010bf2394a1a5484b201ba69217d4436f1",
       "files": [
         {
           "digest": "d81095f3480b4d15dc8607d85c9dd5c872fe0786e29561a3d101a117f104e77b",
@@ -1454,7 +1454,7 @@
           "path": "skills/cancel/SKILL.md"
         },
         {
-          "digest": "176d0abeb7055fe43b029aaa58aeb620d4223e185d3e3319f3d5ba8c81c4dc16",
+          "digest": "7ef0ea23bd4a607a0ce031ee79712519df527e33cd22b6e6b8e76df286ff7560",
           "path": "skills/code-review/SKILL.md"
         },
         {
