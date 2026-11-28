@@ -5109,7 +5109,11 @@ setInterval(() => {}, 1000);
         await writeFile(markerPath, JSON.stringify({ fingerprint: 'activity' }));
         // Wait for marker to be consumed and state to be written
         await waitFor(async () => !existsSync(markerPath), 2000, 25);
-        await sleep(100);
+        // Wait for state to be written with the activity reason
+        await waitFor(async () => {
+          const latestState = JSON.parse(await readFile(statePath, 'utf-8').catch(() => '{}'));
+          return latestState.last_cycle_activity && latestState.last_cycle_activity !== 'awaiting_authority_marker';
+        }, 2000, 50);
         // Check that the activity was recorded (not awaiting_authority_marker)
         state = JSON.parse(await readFile(statePath, 'utf-8'));
         const activityReason = state.last_cycle_activity;
