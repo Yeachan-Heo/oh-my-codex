@@ -5056,7 +5056,7 @@ function isOmxStateReadSegment(segment: string): boolean {
   if (!trimmed) return false;
 
   // Check for command substitution or backticks in the raw string
-  if (/[$`]|\(\)|\)\)/.test(trimmed)) return false;
+  if (/[$`]|\(\(|\)\)/.test(trimmed)) return false;
 
   // Try to tokenize the segment
   const tokens = shellTokenizeLiteralCommand(trimmed);
