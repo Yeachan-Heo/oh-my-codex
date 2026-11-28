@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -17,12 +17,15 @@ import {
   consolidateFindingsByFingerprint,
   computeCpuPercent,
   defaultSupervisionDeps,
+  discoverCandidates,
   evaluateChecks,
   findDuplicateIssue,
   fingerprintFor,
   planAnalysisLanes,
   readHudModel,
+  redactForIssue,
   renderReportMarkdown,
+  rolloutCwd,
   summarizeEvidence,
   toEvidenceBundle,
   isFileable,
@@ -183,7 +186,8 @@ const FIXTURES: Record<string, { pass: () => SupervisionSnapshot; fail: () => Su
   'question-outside-tmux': {
     failStatus: 'fail',
     pass: () => snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, panes: [{ paneId: '%1', currentCommand: 'node', startCommand: 'codex' }], selection: { selected: candidate({ tmuxPaneId: '%1' }), mode: 'active', reason: 't', candidates: [] } }),
-    fail: () => snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, selection: { selected: candidate(), mode: 'active', reason: 't', candidates: [] } }),
+    // Native sessions without tmuxPaneId pass (tmux not required); fail only when tmux pane is specified but not live
+    fail: () => snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, panes: [], selection: { selected: candidate({ tmuxPaneId: '%99' }), mode: 'active', reason: 't', candidates: [] } }),
   },
   'stale-omx-root': {
     failStatus: 'fail',
@@ -334,33 +338,33 @@ describe('review fixes (#4218)', () => {
       const sessionId = 'test-session-123';
       const stateDir = join(root, '.omx', 'state');
       const sessionDir = join(stateDir, 'sessions', sessionId);
-      
+
       // Create both root and session directories
       await mkdir(join(stateDir, 'sessions'), { recursive: true });
       await mkdir(sessionDir, { recursive: true });
-      
+
       // Write a root state file (should NOT be collected)
       await writeFile(
         join(stateDir, 'ralplan-state.json'),
         JSON.stringify({ active: true, current_phase: 'draft', source: 'root' })
       );
-      
+
       // Write a session-scoped state file (SHOULD be collected)
       await writeFile(
         join(sessionDir, 'ultragoal-state.json'),
         JSON.stringify({ active: true, current_phase: 'draft', source: 'session' })
       );
-      
+
       // Collect state files for this session
       const collected = collectStateFiles(stateDir, sessionId);
-      
+
       // Should have only the session-scoped file, not the root file
       assert.equal(collected.length, 1, 'should collect exactly one state file');
       assert.equal(collected[0].mode, 'ultragoal', 'collected mode should be ultragoal (session-scoped)');
       assert.equal(collected[0].scope, 'session', 'scope should be session');
       const data = collected[0].data as Record<string, unknown>;
       assert.equal(data.source, 'session', 'should have session data, not root data');
-      
+
       // Verify that if we were still importing root files, the test would catch it
       // by checking that ralplan (the root file) is NOT present
       const hasRalplan = collected.some((record) => record.mode === 'ralplan');
@@ -732,7 +736,7 @@ describe('analysis lanes and orchestration', () => {
 
     const report = await runSupervision(options({ analyze: false }), cwd, { ...defaultSupervisionDeps, collect });
     const findings = report.findings;
-    
+
     // Should have hud-authority-churn finding from sess-2 (the second session with mismatch)
     const hudFinding = findings.find((f) => f.id === 'hud-authority-churn');
     assert.ok(hudFinding, 'Should find hud-authority-churn issue');
@@ -830,7 +834,7 @@ describe('analysis lanes and orchestration', () => {
 
     const report = await runSupervision(options({ analyze: false }), cwd, { ...defaultSupervisionDeps, collect });
     const findings = report.findings;
-    
+
     // Should have hud-authority-churn finding from sess-2 (the session with mismatch)
     const hudFinding = findings.find((f) => f.id === 'hud-authority-churn');
     assert.ok(hudFinding, 'Should find hud-authority-churn issue from sess-2');
@@ -846,13 +850,13 @@ describe('finding #4: HUD collection binds to each session\'s state root', () =>
       const baseStateDir = join(tmpRoot, '.omx', 'state');
       await mkdir(join(baseStateDir, 'sessions', 'sess-1'), { recursive: true });
       await mkdir(join(baseStateDir, 'sessions', 'sess-2'), { recursive: true });
-      
+
       // Session 1: has autopilot phase
       await writeFile(join(baseStateDir, 'sessions', 'sess-1', 'autopilot-state.json'), JSON.stringify({ active: true, current_phase: 'code-review' }));
-      
+
       // Session 2: has ralplan phase (different mode)
       await writeFile(join(baseStateDir, 'sessions', 'sess-2', 'ralplan-state.json'), JSON.stringify({ active: true, current_phase: 'draft' }));
-      
+
       // Create snapshots that would use these state directories
       const sess1Snap = snapshot({
         selection: { selected: candidate({ sessionId: 'sess-1', cwd: tmpRoot, stateDir: baseStateDir, pidAlive: true }), mode: 'active' as const, reason: 'test', candidates: [] },
@@ -864,7 +868,7 @@ describe('finding #4: HUD collection binds to each session\'s state root', () =>
         state: { stateDir: baseStateDir, modes: [mode('ralplan', { active: true, current_phase: 'draft' })], currentAutopilot: null, nativeStop: null, supportBlockers: [], canonicalSkills: [], teamPhases: [], subagentTracking: null, sizes: { stateBytes: 1024, logsBytes: 1024, rolloutBytes: 1024, rolloutScanTruncated: false }, hookLog: null },
         hud: { modes: { ralplan: { phase: 'draft' } }, staleAutopilot: false },
       });
-      
+
       // Verify each snapshot has the correct HUD modes for its session
       assert.deepEqual(sess1Snap.hud?.modes, { autopilot: { phase: 'code-review' } }, 'sess-1 HUD from autopilot state');
       assert.deepEqual(sess2Snap.hud?.modes, { ralplan: { phase: 'draft' } }, 'sess-2 HUD from ralplan state');
@@ -881,15 +885,15 @@ describe('finding #4: HUD collection binds to each session\'s state root', () =>
       const baseStateDir = join(tmpRoot, '.omx', 'state');
       const sessionDir = join(baseStateDir, 'sessions', 'sess-di');
       await mkdir(sessionDir, { recursive: true });
-      
+
       // Create a deep-interview state file (note: filename uses hyphen, not camelCase)
       await writeFile(join(sessionDir, 'deep-interview-state.json'), JSON.stringify({ active: true, current_phase: 'gathering-requirements' }));
-      
+
       // Create a snapshot using collectSnapshot or collectStateFiles to verify the key is correct
       // We use collectStateFiles which is the function that reads the state directory
       const modeRecords = collectStateFiles(baseStateDir, 'sess-di');
       const deepInterviewRecord = modeRecords.find((r) => r.mode === 'deep-interview' || r.mode === 'deepInterview');
-      
+
       // The readHudModel function should map 'deep-interview' filename stem to 'deepInterview' key
       // This test verifies that the modes object uses 'deepInterview' (not 'deep-interview')
       assert.ok(deepInterviewRecord, 'deep-interview state should be found in collectStateFiles');
@@ -901,7 +905,7 @@ describe('finding #4: HUD collection binds to each session\'s state root', () =>
         // The HUD model should use 'deepInterview' as the key (not 'deep-interview')
         hud: { modes: { deepInterview: { phase: 'gathering-requirements' } }, staleAutopilot: false },
       });
-      
+
       // Verify that the HUD modes use 'deepInterview' (the HudRenderContext key), not 'deep-interview' (the filename stem)
       assert.deepEqual(snap.hud?.modes, { deepInterview: { phase: 'gathering-requirements' } }, 'deep-interview state should be keyed as deepInterview');
     } finally {
@@ -1052,15 +1056,15 @@ describe('finding #5: Analysis lane prompts include secondary-session evidence',
       processes: [proc({ cpuPct: 2 })],
       friction: [{ code: 'test', severity: 'high', message: 'test friction' }],
     });
-    
+
     // Build evidence bundle with multiple snapshots
     const bundle = toEvidenceBundle(snap1);
     bundle.snapshots = new Map([['sess-1', snap1], ['sess-2', snap2]]);
-    
+
     // Summarize evidence should include all sessions
     const summary = summarizeEvidence(bundle);
     const parsed = JSON.parse(summary);
-    
+
     // Verify both sessions are represented in the evidence summary
     assert.ok(Array.isArray(parsed.sessions), 'sessions array in summary');
     assert.ok(parsed.sessions.some((s: { sessionId: string }) => s.sessionId === 'sess-1'), 'sess-1 in summary');
@@ -1083,13 +1087,13 @@ describe('finding #1: Issue drafts from different sessions do not overwrite each
         blast: 1, priority: 'P2', score: 50, dedupe: 'none', sessionId: 'sess-2',
       },
     ];
-    
+
     // Build drafts from findings
     const context = { prompt: '', version: '1.0', selection: { mode: 'active' as const, reason: 'test', selected: candidate(), candidates: [] }, platform: 'test' };
     const snap1 = snapshot({ selection: context.selection });
     const snap2 = snapshot({ selection: { ...context.selection, selected: candidate({ sessionId: 'sess-2' }) } });
     const snapshots = new Map([['sess-1', snap1], ['sess-2', snap2]]);
-    
+
     const draftFiles: string[] = [];
     for (const finding of findings) {
       const own = finding.sessionId ? snapshots.get(finding.sessionId) : undefined;
@@ -1097,7 +1101,7 @@ describe('finding #1: Issue drafts from different sessions do not overwrite each
       const filename = `${[finding.priority, finding.id, finding.fingerprint, finding.sessionId].filter(Boolean).join('-')}.md`;
       draftFiles.push(filename);
     }
-    
+
     // Verify draft filenames are distinct and include sessionId
     assert.equal(draftFiles.length, 2, 'two drafts created');
     assert.notEqual(draftFiles[0], draftFiles[1], 'draft filenames are different');
@@ -1121,7 +1125,7 @@ describe('finding #2: Deduplicate same-fingerprint P0/P1 findings across session
         blast: 10, priority: 'P1', score: 100, dedupe: 'none', sessionId: 'sess-2',
       },
     ];
-    
+
     // Verify that when filing, we track attempted fingerprints and don't file duplicates
     const attempted = new Set<string>();
     let filedCount = 0;
@@ -1134,7 +1138,7 @@ describe('finding #2: Deduplicate same-fingerprint P0/P1 findings across session
       attempted.add(finding.fingerprint);
       filedCount++;
     }
-    
+
     // Verify only one issue is filed despite two findings with same fingerprint
     assert.equal(filedCount, 1, 'only one issue filed despite two findings');
     assert.equal(attempted.size, 1, 'one unique fingerprint tracked');
@@ -1168,7 +1172,7 @@ describe('finding #3: Draft bodies for non-primary sessions use that session\'s 
     const snap1 = snapshot({ selection: { mode: 'active' as const, reason: 'test1', selected: candidate({ sessionId: 'sess-1', cwd: '/work/a' }), candidates: [] } });
     const snap2 = snapshot({ selection: { mode: 'active' as const, reason: 'test2', selected: candidate({ sessionId: 'sess-2', cwd: '/work/b' }), candidates: [] } });
     const snapshots = new Map([['sess-1', snap1], ['sess-2', snap2]]);
-    
+
     const findings: Finding[] = [
       {
         id: 'check-x', area: 'resource', title: 'Issue X', status: 'fail', evidence: [],
@@ -1181,16 +1185,16 @@ describe('finding #3: Draft bodies for non-primary sessions use that session\'s 
         blast: 1, priority: 'P2', score: 50, dedupe: 'none', sessionId: 'sess-2',
       },
     ];
-    
+
     const baseContext = { prompt: '', version: '1.0', platform: 'test', selection: snap1.selection };
-    
+
     // Build drafts using session-specific contexts
     const drafts = findings.map((finding) => {
       const own = finding.sessionId ? snapshots.get(finding.sessionId) : undefined;
       const draftContext = own ? { ...baseContext, selection: own.selection } : baseContext;
       return buildIssueDraft(finding, draftContext);
     });
-    
+
     // Verify each draft uses its session's context
     assert.ok(drafts[0].body.includes('sess-1'), 'first draft includes sess-1 session ID');
     assert.ok(drafts[1].body.includes('sess-2'), 'second draft includes sess-2 session ID');
@@ -1329,7 +1333,7 @@ describe('omx supervision CLI', () => {
     const out = run(['--no-analyze', '--json', '--window', '1', 'testing CLI multi-session collection']);
     assert.equal(out.status, 0, `CLI failed: ${out.stderr}`);
     const report = JSON.parse(out.stdout);
-    
+
     // Verify report has all expected fields and correct structure
     assert.ok(Array.isArray(report.checks), 'report.checks is array');
     assert.ok(report.checks.length > 0, 'report has checks');
@@ -1340,5 +1344,183 @@ describe('omx supervision CLI', () => {
     const hasFailures = report.checks.some((c: CheckResult) => c.status === 'fail');
     // Don't assert on failures count since it depends on system state
     assert.ok(typeof hasFailures === 'boolean', 'checks have status field');
+  });
+});
+
+describe('finding #4234 release-review fixes', () => {
+  it('redactForIssue removes raw log samples and secret patterns', () => {
+    // Test that redactForIssue is applied in buildIssueDraft
+    const homeDir = homedir();
+    const finding: Finding = {
+      id: 'test-check', area: 'resource', title: 'test', priority: 'P0', status: 'fail', fingerprint: 'fp',
+      evidence: [
+        '2026-11-28T10:00:00Z raw hook log line with secret sk-123456789012345678901234567890',
+        `{"error": "JSON log sample", "path": "${homeDir}/.omx/state"}`,
+        'Normal error message',
+      ],
+      severity: 'high', repro: 'persistent', sources: [1234], blast: 1, score: 100, dedupe: 'none',
+    };
+    const sel = { selected: candidate(), mode: 'active' as const, reason: 'test', candidates: [] };
+    const ctx = { prompt: `User home ${homeDir} secret AKIA1234567890123456`, version: '0.22.30', selection: sel, platform: 'linux' };
+    const draft = buildIssueDraft(finding, ctx);
+    // Verify raw log lines are removed, paths are redacted, secrets are redacted
+    assert.ok(!draft.body.includes('2026-11-28T10:00:00Z'), 'timestamp log lines are removed');
+    assert.ok(!draft.body.includes('sk-123456789012345678901234567890'), 'token is redacted');
+    assert.ok(!draft.body.includes('AKIA1234567890123456'), 'AWS key is redacted');
+    assert.ok(!draft.body.includes(homeDir), 'home paths are redacted');
+    assert.ok(draft.body.includes('~'), 'home directory is replaced with tilde');
+    assert.ok(draft.body.includes('Normal error message'), 'normal messages are preserved');
+  });
+
+  it('question-outside-tmux passes for native sessions without tmux', () => {
+    // Native sessions without tmuxPaneId should pass the check
+    const snap = snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, selection: { selected: candidate(), mode: 'active', reason: 't', candidates: [] } });
+    const check = SUPERVISION_CHECKS.find((c) => c.id === 'question-outside-tmux');
+    assert.ok(check, 'question-outside-tmux check exists');
+    const result = check!.run(snap);
+    assert.equal(result.status, 'pass', 'native session without tmux passes the check');
+    assert.ok(result.evidence.some((e: string) => e.includes('tmux not required')), 'evidence mentions native session support');
+  });
+
+  it('question-outside-tmux fails only when tmux pane is specified but not live', () => {
+    // Session with tmuxPaneId that is not in panes list should fail
+    const snap = snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, panes: [], selection: { selected: candidate({ tmuxPaneId: '%99' }), mode: 'active', reason: 't', candidates: [] } });
+    const check = SUPERVISION_CHECKS.find((c) => c.id === 'question-outside-tmux');
+    assert.ok(check, 'question-outside-tmux check exists');
+    const result = check!.run(snap);
+    assert.equal(result.status, 'fail', 'tmux-bound session with missing pane fails');
+    assert.ok(result.evidence.some((e: string) => e.includes('pane')), 'evidence mentions pane');
+  });
+
+  it('rolloutCwd returns cwd from header of large rollout file', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-rollout-test-'));
+    try {
+      const testCwd = '/home/user/my/project';
+      const rolloutPath = join(tempDir, 'rollout.jsonl');
+      // Create a header line with cwd embedded in JSON
+      const headerLine = JSON.stringify({
+        schema: 'rollout',
+        payload: { cwd: testCwd, session_id: 'sess-1' },
+      });
+      // Create a file larger than 8KB to test bounded read
+      const largePadding = 'x'.repeat(10_000);
+      await writeFile(rolloutPath, headerLine + '\n' + largePadding + '\n{"more":"data"}\n');
+
+      const result = rolloutCwd(rolloutPath);
+      assert.equal(result, testCwd, 'rolloutCwd returns correct cwd from large file');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
+  });
+
+  it('rolloutCwd handles header line longer than 8KB bounded read', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-rollout-test-'));
+    try {
+      const testCwd = '/home/user/my/project';
+      const rolloutPath = join(tempDir, 'rollout.jsonl');
+      // Create a header line that is itself close to or exceeds 8KB
+      const largeJsonValue = 'x'.repeat(7_000);
+      const headerLine = JSON.stringify({
+        schema: 'rollout',
+        payload: { cwd: testCwd, session_id: 'sess-1', extra: largeJsonValue },
+      });
+      // Verify the header is indeed large
+      assert.ok(headerLine.length > 7_000, 'header line is appropriately large');
+      await writeFile(rolloutPath, headerLine + '\n{"next":"line"}\n');
+
+      const result = rolloutCwd(rolloutPath);
+      // Should still extract cwd even with large header, as long as first line parses
+      assert.equal(result, testCwd, 'rolloutCwd extracts cwd from large header line');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
+  });
+
+  it('discoverCandidates returns distinct candidates for multiple native session owners', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-discover-test-'));
+    try {
+      const stateDir = join(tempDir, '.omx', 'state');
+      const sessionsDir = join(stateDir, 'sessions');
+      await mkdir(sessionsDir, { recursive: true });
+      const sess1Dir = join(sessionsDir, 'sess-1');
+      const sess2Dir = join(sessionsDir, 'sess-2');
+      await mkdir(sess1Dir);
+      await mkdir(sess2Dir);
+      const owner1 = { session_id: 'sess-1', cwd: '/home/user/project1', started_at: new Date(NOW).toISOString() };
+      const owner2 = { session_id: 'sess-2', cwd: '/home/user/project2', started_at: new Date(NOW).toISOString() };
+      await writeFile(join(sess1Dir, 'session-owner.json'), JSON.stringify(owner1));
+      await writeFile(join(sess2Dir, 'session-owner.json'), JSON.stringify(owner2));
+      const candidates = discoverCandidates(tempDir, [], []);
+      const nativeOwners = candidates.filter((c) => c.sessionId === 'sess-1' || c.sessionId === 'sess-2');
+      assert.ok(nativeOwners.length >= 2, 'discoverCandidates returns at least 2 distinct candidates');
+      const sess1Candidate = nativeOwners.find((c) => c.sessionId === 'sess-1');
+      const sess2Candidate = nativeOwners.find((c) => c.sessionId === 'sess-2');
+      assert.ok(sess1Candidate, 'found candidate for sess-1');
+      assert.ok(sess2Candidate, 'found candidate for sess-2');
+      assert.equal(sess1Candidate!.cwd, '/home/user/project1', 'sess-1 has correct cwd');
+      assert.equal(sess2Candidate!.cwd, '/home/user/project2', 'sess-2 has correct cwd');
+      assert.notEqual(sess1Candidate!.sessionId, sess2Candidate!.sessionId, 'candidates have distinct session IDs');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
+  });
+
+  it('native owner pidAlive determination: live pid appears in collection', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'omx-native-pid-test-'));
+    try {
+      const wd = join(tempDir, 'work');
+      const stateDir = join(wd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', 'live-native-sess'), { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'dead-native-sess'), { recursive: true });
+      const liveOwner = JSON.stringify({ session_id: 'live-native-sess', cwd: wd, pid: process.pid, started_at: new Date().toISOString() });
+      await writeFile(join(stateDir, 'sessions', 'live-native-sess', 'session-owner.json'), liveOwner);
+      const deadOwner = JSON.stringify({ session_id: 'dead-native-sess', cwd: wd, pid: 2147483647, started_at: new Date().toISOString() });
+      await writeFile(join(stateDir, 'sessions', 'dead-native-sess', 'session-owner.json'), deadOwner);
+      const candidates = discoverCandidates(wd, [], []);
+      const liveCandidate = candidates.find((c) => c.sessionId === 'live-native-sess');
+      const deadCandidate = candidates.find((c) => c.sessionId === 'dead-native-sess');
+      assert.ok(liveCandidate, 'live native session candidate discovered');
+      assert.equal(liveCandidate!.pidAlive, true, 'live native session has pidAlive=true');
+      assert.ok(deadCandidate, 'dead native session candidate discovered');
+      assert.equal(deadCandidate!.pidAlive, false, 'dead native session has pidAlive=false');
+    } finally {
+      await rm(tempDir, { recursive: true });
+    }
+  });
+  it('redactForIssue safely handles home paths with regex metacharacters', () => {
+    const homeDir = homedir();
+    const testText = `Error in ${homeDir}/.omx/state with path like /tmp/a+b(c) and ${homeDir}/project`;
+    const result = redactForIssue(testText);
+    assert.ok(result.includes('~/.omx/state'), 'first path is redacted');
+    assert.ok(result.includes('~/project'), 'second path is redacted');
+    assert.ok(!result.includes(homeDir), 'original home path is not in result');
+    assert.ok(result.includes('/tmp/a+b(c)'), 'non-home path with metacharacters is preserved');
+    assert.ok(result.includes('path like'), 'context is preserved');
+  });
+  it('redactForIssue removes various token formats', () => {
+    const testCases = [
+      { input: 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0', shouldNotInclude: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' },
+      { input: 'access_token=sk_test_abcdefghijklmnopqrstuvwxyz123456', shouldNotInclude: 'sk_test_abcdefghijklmnopqrstuvwxyz123456' },
+      { input: 'refresh_token: "ghp_1234567890abcdefghijklmnopqrstuvwxyz"', shouldNotInclude: '1234567890abcdefghijklmnopqrstuvwxyz' },
+      { input: 'secret: sk-proj-aBcDefGhIjKlMnOpQrStUvWxYz1234567890', shouldNotInclude: 'aBcDefGhIjKlMnOpQrStUvWxYz1234567890' },
+      { input: `gh auth failed with ghp_${'a1B2c3D4e5'.repeat(4)}`, shouldNotInclude: 'a1B2c3D4e5a1B2c3D4e5' },
+      { input: `push rejected for gho_${'Zz09'.repeat(9)}`, shouldNotInclude: 'Zz09Zz09Zz09' },
+      { input: `token github_pat_11ABCDEFG0_${'q'.repeat(59)}`, shouldNotInclude: 'qqqqqqqqqqqq' },
+      { input: 'JSON token field: {"access_token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.tzrQTwJjvP7wL3jqB"}', shouldNotInclude: 'eyJhbGciOiJIUzI1NiJ9' },
+    ];
+    for (const testCase of testCases) {
+      const result = redactForIssue(testCase.input);
+      assert.ok(!result.includes(testCase.shouldNotInclude), `token format redacted: ${testCase.input.substring(0, 50)}...`);
+      assert.ok(result.includes('[REDACTED]'), 'token is replaced with [REDACTED] marker');
+    }
+  });
+  it('redactForIssue preserves normal text while redacting secrets', () => {
+    const testText = 'Error occurred in process with Bearer sk_test_1234567890. Please check the logs.\n2026-11-28T10:00:00Z raw log line';
+    const result = redactForIssue(testText);
+    assert.ok(result.includes('Error occurred'), 'normal text is preserved');
+    assert.ok(result.includes('in process'), 'normal text is preserved');
+    assert.ok(result.includes('Please check'), 'normal text is preserved');
+    assert.ok(!result.includes('2026-11-28T10:00:00Z'), 'timestamp log lines are removed');
+    assert.ok(!result.includes('sk_test_1234567890'), 'token is redacted');
   });
 });
