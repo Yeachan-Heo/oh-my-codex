@@ -13465,6 +13465,199 @@ exit 0
     }
   });
 
+  it("blocks Beads commands with unknown flags in compound context (#4239: fail-closed on unknown flags)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-unknown-flags-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-unknown-flags");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-unknown-flags", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-unknown-flags",
+        thread_id: "thread-beads-unknown-flags",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-unknown-flags",
+          thread_id: "thread-beads-unknown-flags",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-unknown-flags",
+        thread_id: "thread-beads-unknown-flags",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-unknown-flags", "thread-beads-unknown-flags", cwd);
+
+      const unknownFlagCommands = [
+        // Unknown flags in compound context should be blocked
+        "bd --db .beads/issues.db comments --unknownflag add OMX-1 x | head",
+        "bd --db .beads/issues.db dep --unknownflag tree OMX-1 | head",
+        "bd --db .beads/issues.db list --unknownflag | head",
+      ];
+
+      for (const [index, command] of unknownFlagCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-unknown-flags",
+            thread_id: "thread-beads-unknown-flags",
+            agent_id: "thread-beads-unknown-flags",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-unknown-flags-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // Commands with unknown flags should be blocked
+        assert.ok(
+          result.outputJson !== null,
+          `expected compound Beads command with unknown flag to be blocked: ${command}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows 'omx state read' commands in compound pipelines with read-only bd (#4239: allow omx state read + bd)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-omx-state-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-omx-state");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-omx-state", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-omx-state",
+        thread_id: "thread-beads-omx-state",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-omx-state",
+          thread_id: "thread-beads-omx-state",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-omx-state",
+        thread_id: "thread-beads-omx-state",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-omx-state", "thread-beads-omx-state", cwd);
+
+      const allowedOmxStateCommands = [
+        // Positive tests: omx state read with bd show
+        "omx state read --mode deep-interview --json; bd --db .beads/issues.db show vp-bod --json",
+        "omx state read --mode autopilot --json; bd --db .beads/issues.db list | head",
+        "omx state read --mode ralplan --json; omx state read --mode deep-interview --json; bd --db .beads/issues.db status OMX-1 | grep active",
+        "gjc state read --mode deep-interview --json; bd --db .beads/issues.db show vp-bod",
+        "omx state read --mode deep-interview --session sess-123 --json; bd --db .beads/issues.db show vp-bod --json",
+      ];
+
+      for (const [index, command] of allowedOmxStateCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-omx-state",
+            thread_id: "thread-beads-omx-state",
+            agent_id: "thread-beads-omx-state",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-omx-state-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // These should be allowed (outputJson should be null)
+        assert.strictEqual(
+          result.outputJson,
+          null,
+          `expected omx state read + bd compound command to be allowed: ${command}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks 'omx state write/clear' commands in compound pipelines with bd (#4239: fail-closed on state write/clear)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-omx-state-write-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionDir = join(stateDir, "sessions", "sess-beads-omx-state-write");
+      await mkdir(sessionDir, { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-beads-omx-state-write", cwd });
+      await writeJson(join(sessionDir, "skill-active-state.json"), {
+        version: 1,
+        active: true,
+        skill: "ralplan",
+        phase: "planning",
+        session_id: "sess-beads-omx-state-write",
+        thread_id: "thread-beads-omx-state-write",
+        active_skills: [{
+          skill: "ralplan",
+          phase: "planning",
+          active: true,
+          session_id: "sess-beads-omx-state-write",
+          thread_id: "thread-beads-omx-state-write",
+        }],
+      });
+      await writeJson(join(sessionDir, "ralplan-state.json"), {
+        active: true,
+        mode: "ralplan",
+        current_phase: "planning",
+        session_id: "sess-beads-omx-state-write",
+        thread_id: "thread-beads-omx-state-write",
+      });
+      await writeCanonicalLeaderFixture(stateDir, "sess-beads-omx-state-write", "thread-beads-omx-state-write", cwd);
+
+      const blockedOmxStateCommands = [
+        // Negative tests: omx state write/clear should be blocked
+        "omx state write --input '{\"mode\":\"ralplan\"}' --json; bd --db .beads/issues.db show vp-bod",
+        "omx state clear; bd --db .beads/issues.db show vp-bod",
+        "omx state read --mode deep-interview --json > /tmp/f; bd --db .beads/issues.db show vp-bod",
+        "omx state read --mode deep-interview > /tmp/f; bd --db .beads/issues.db show vp-bod --json",
+      ];
+
+      for (const [index, command] of blockedOmxStateCommands.entries()) {
+        const result = await dispatchCodexNativeHook(
+          {
+            hook_event_name: "PreToolUse",
+            cwd,
+            session_id: "sess-beads-omx-state-write",
+            thread_id: "thread-beads-omx-state-write",
+            agent_id: "thread-beads-omx-state-write",
+            tool_name: "Bash",
+            tool_use_id: `tool-beads-omx-state-write-${index}`,
+            tool_input: { command },
+          },
+          { cwd },
+        );
+        // These should be blocked (not allowed)
+        assert.ok(
+          result.outputJson !== null,
+          `expected compound command with omx state write/clear or redirection to be blocked: ${command}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("preserves both Lore and Beads guidance when shell-chained Beads command combines with Lore-guarded git commit (#4211: normalize existing output before merging)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-beads-lore-normalize-"));
     const original = process.env.OMX_LORE_COMMIT_GUARD;
