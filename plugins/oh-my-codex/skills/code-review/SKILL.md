@@ -207,6 +207,41 @@ recommendation. Report `APPROVE` only under the approval criteria; otherwise lea
 bounded `REQUEST CHANGES`, `COMMENT`, or unavailable-review result. Never claim
 merge-ready without the required evidence.
 
+## GitHub PR publication
+
+When the user provides a GitHub PR link for review (or asks to review a PR), finish
+the analysis by publishing the result to that PR as a **PR review with inline review
+comments**, not a single issue comment; do not wait for a separate "publish" request.
+If the user explicitly asks for a read-only review, return the report without
+publishing. A review is a GitHub review submission; an inline review comment is a
+`pulls/{n}/comments` object anchored to the diff and linked by
+`pull_request_review_id`.
+
+- Bind to the reviewed source: resolve the PR head SHA, confirm it matches the
+  reviewed commit, and pass it as `commit_id`. Do not publish against a changed
+  head; re-review and bind a new review to the new SHA instead.
+- Use the REST reviews endpoint (`POST /repos/{owner}/{repo}/pulls/{number}/reviews`)
+  with `commit_id`, `event` (`APPROVE` | `COMMENT` | `REQUEST_CHANGES`), a readable
+  summary `body`, and `comments[]`. `gh pr review` submits a body-only review; use
+  the REST endpoint when inline comments are required.
+- Each line-anchored finding is an inline comment:
+  `{ path, line, side: "RIGHT", start_line?, start_side?, body }`. Verify both
+  endpoints exist on the new side of the PR diff; use `start_line` for a range and
+  set `start_side: "RIGHT"` whenever `start_line` is supplied. Findings without a
+  stable line anchor belong in the review body; do not invent a line.
+- The body carries scope, reviewed commit, finding counts, architectural status,
+  validation, final recommendation, and a pointer to the inline findings.
+- Publish findings supported by the code, tests, or CLI contract; mark hypotheses as
+  hypotheses. Keep internal receipts, raw gate/subagent logs, secrets, and
+  unsupported claims about external services out of the public review unless the
+  user explicitly asks for them.
+- Match `event` to the final recommendation; never APPROVE without the approval
+  criteria above.
+- Verify after submission: review state, `pull_request_review_id` on comments, and
+  review threads (`path`/`line`). The REST API can delete only pending reviews; if a
+  submitted body-only review already exists, update its body to point at the
+  structured review or supersede it instead of duplicating content.
+
 ## Quality Gates
 
 Custom quality gates can be configured for the code-review stage via `.omx-config.json` under `qualityGates."code-review"`. See [Custom Quality Gates Configuration](https://github.com/Yeachan-Heo/oh-my-codex/blob/dev/docs/reference/omx-config-quality-gates.md).
