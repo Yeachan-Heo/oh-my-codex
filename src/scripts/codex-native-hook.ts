@@ -5241,6 +5241,11 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
   if (beadsOperationIsReadOnly(operation)) {
     return { present: true, allowed: true, isReadOnly: true };
   }
+  // A single literal `bd dep ...` stays an allowed metadata operation (e.g. Ralplan `dep add`);
+  // only its read subcommands count as read-only for compound pipelines.
+  if (operation === "dep") {
+    return { present: true, allowed: true, isReadOnly: bdCommandTokensAreReadOnly(tokens, dbValueIndex + 1) };
+  }
   
   // Check if there's a help flag in the command
   let hasHelpFlag = false;

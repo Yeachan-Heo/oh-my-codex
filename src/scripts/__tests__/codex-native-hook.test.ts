@@ -12967,6 +12967,7 @@ exit 0
         "bd --db .beads/issues.db close OMX-1",
         "bd --db .beads/issues.db reopen OMX-1",
         "bd --db .beads/issues.db status OMX-1",
+        "bd --db .beads/issues.db dep add OMX-1 OMX-2",
       ];
 
       for (const [index, command] of allowedCommands.entries()) {
