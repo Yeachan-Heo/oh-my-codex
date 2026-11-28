@@ -13097,6 +13097,7 @@ exit 0
       );
 
       const blockedCommands = [
+        // Destructive operations combined with other commands
         "bd --db .beads/issues.db create 'Issue' && git commit -m 'evil'",
         "bd --db .beads/issues.db status OMX-1; rm -rf dist",
         "(bd --db .beads/issues.db create 'Issue')",
@@ -13107,6 +13108,18 @@ exit 0
         "bd --db .beads/issues.db update X --status done; head",
         "bd --db .beads/issues.db comments add OMX-1 'note' | head",
         "bd --db .beads/issues.db list && rm -rf x",
+        // Disallowed filter commands in pipelines
+        "bd --db .beads/issues.db list | awk 'BEGIN{system(\"rm -rf /\")}'" ,
+        "bd --db .beads/issues.db list | sed -i 's/a/b/'",
+        "bd --db .beads/issues.db list | sed 's/a/b/e'",
+        "bd --db .beads/issues.db list | sed 's/a/b/w FILE'",
+        "bd --db .beads/issues.db list | sort -o /tmp/out.txt",
+        "bd --db .beads/issues.db list | uniq infile.txt outfile.txt",
+        "bd --db .beads/issues.db list | less",
+        "bd --db .beads/issues.db list | cat /etc/passwd",
+        // Bare 'help' as an argument (not the operation) should NOT be treated as a help flag
+        // and write operations should be blocked
+        "bd --db .beads/issues.db update ISSUE --title help | head",
       ];
 
       for (const [index, command] of blockedCommands.entries()) {
@@ -13228,10 +13241,13 @@ exit 0
       await writeCanonicalLeaderFixture(stateDir, "sess-beads-readonly-compound", "thread-beads-readonly-compound", cwd);
 
       const allowedCompoundCommands = [
+        // Positive tests: list|head, status|grep, show|wc and others
         "bd --db .beads/issues.db list | head -20",
-        "bd --db .beads/issues.db list | grep active",
+        "bd --db .beads/issues.db list | grep bad",
+        "bd --db .beads/issues.db status OMX-1 | grep active",
         "bd --db .beads/issues.db status OMX-1 | grep open",
         "bd --db .beads/issues.db show OMX-1 | head -50",
+        "bd --db .beads/issues.db show OMX-1 | wc -l",
         "bd --db .beads/issues.db ready --json | wc -l",
         "bd --db .beads/issues.db dep OMX-1 | tail -5",
         "bd --db .beads/issues.db comments OMX-1 | head -10",

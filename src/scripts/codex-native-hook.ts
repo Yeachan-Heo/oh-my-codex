@@ -4990,30 +4990,88 @@ function isPureOutputFilterSegment(segment: string): boolean {
   
   const cmd = tokens[0];
   
-  // Whitelist of safe output filters: commands that read and filter without side effects
-  const safeFilters = new Set([
-    "head", "tail", "grep", "wc", "sed", "cat", "less", "more",
-    "cut", "sort", "uniq", "awk", "tr", "expand", "unexpand",
-    "fmt", "pr", "od", "hexdump", "strings", "file"
-  ]);
+  // Whitelist of safe output filters: commands that only read and filter without side effects
+  // Strictly limited set:
+  // - head, tail, wc: always safe
+  // - grep: only without file operands and without -f/--file/-r/-R
+  // - cut, sort, uniq: only with zero positional file operands and without output file options
+  const basicSafeFilters = new Set(["head", "tail", "wc"]);
   
-  if (!safeFilters.has(cmd)) return false;
-  
-  // For sed, check that it's read-only (only -n flag for non-modifying)
-  if (cmd === "sed") {
-    for (const token of tokens.slice(1)) {
-      // Reject tokens that contain write operations like 'w', 'e', or file outputs
-      if (token.startsWith("-")) {
-        // Check for write-enabling flags
-        if (token.includes("w") && token !== "-n") return false;
-        if (token.includes("e")) return false;
-      }
-      // Also reject if it looks like a sed script with write command
-      if (/[^'/]w\s|^w\s/.test(token)) return false;
-    }
+  if (basicSafeFilters.has(cmd)) {
+    return true;
   }
   
-  return true;
+  // For grep: allow only with no file operands and no -f/--file/-r/-R flags
+  if (cmd === "grep") {
+    let hasPatternOrFileArg = false;
+    for (const token of tokens.slice(1)) {
+      // Check for file input flags
+      if (token === "-f" || token === "--file" || token === "-r" || token === "-R") {
+        return false;
+      }
+      // Check for combined flags like -rf, -Rf, -fr, -Fr
+      if (token.startsWith("-")) {
+        // Combined flags: check if any include 'r', 'R', or 'f' together
+        if ((token.includes("r") || token.includes("R")) && token.includes("f")) {
+          return false;
+        }
+      } else {
+        // This is a positional argument. First one is typically the pattern (allowed),
+        // subsequent ones are file operands (not allowed)
+        if (hasPatternOrFileArg) {
+          // This is a file operand (second positional argument)
+          return false;
+        }
+        hasPatternOrFileArg = true;
+      }
+    }
+    return true;
+  }
+  
+  // For cut: allow only with zero positional file operands
+  if (cmd === "cut") {
+    for (const token of tokens.slice(1)) {
+      if (!token.startsWith("-")) {
+        // Positional file operand found
+        return false;
+      }
+    }
+    return true;
+  }
+  
+  // For sort: allow only with zero positional file operands and no -o/--output
+  if (cmd === "sort") {
+    for (const token of tokens.slice(1)) {
+      if (token === "-o" || token === "--output") {
+        return false;
+      }
+      if (token.startsWith("--output=")) {
+        return false;
+      }
+      if (!token.startsWith("-")) {
+        // Positional file operand found
+        return false;
+      }
+    }
+    return true;
+  }
+  
+  // For uniq: allow only with zero positional file operands (and no output file positional)
+  if (cmd === "uniq") {
+    // Count positional arguments
+    let positionalCount = 0;
+    for (const token of tokens.slice(1)) {
+      if (!token.startsWith("-")) {
+        positionalCount++;
+        // uniq takes at most 1 positional for input, and optionally 1 for output
+        // We reject any positional arguments to be strictly safe
+        return false;
+      }
+    }
+    return true;
+  }
+  
+  return false;
 }
 
 function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boolean {
@@ -5026,13 +5084,20 @@ function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boole
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
   
-  // Check if any argument is a help flag
+  // Treat only --help and -h flags as help requests
+  // A bare 'help' token is help only when it is the operation itself (bd --db X help)
   for (let i = startIndex; i < tokens.length; i++) {
     const token = tokens[i];
-    if (token === "--help" || token === "-h" || token === "help") {
-      // help flags are always read-only, even for write commands
+    if (token === "--help" || token === "-h") {
+      // These flags are always read-only, even for write commands
       return true;
     }
+  }
+  
+  // Check if the operation itself is 'help'
+  if (operation === "help") {
+    // 'help' as the operation is read-only
+    return true;
   }
   
   // Check for read-only operations
