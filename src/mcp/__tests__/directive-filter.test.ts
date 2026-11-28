@@ -6,7 +6,7 @@ describe('directive-filter', () => {
   it('filters directives using instant comparison, not string comparison', () => {
     // This test specifically validates that Date.parse is used, not string comparison.
     // With string comparison, ISO dates can be incorrectly ordered due to string ordering differences.
-    
+
     const baseTime = new Date();
     const basePlus5min = new Date(baseTime.getTime() + 5 * 60 * 1000);
     const basePlus10min = new Date(baseTime.getTime() + 10 * 60 * 1000);

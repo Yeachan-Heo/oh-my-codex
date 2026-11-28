@@ -31,7 +31,7 @@ function extractText(response: unknown): any {
 
 /**
  * Integration tests for directive lifecycle (expiry, filtering, etc.)
- * 
+ *
  * These tests verify that:
  * 1. filterActiveDirectives is imported from memory-server in production code
  * 2. The function is called in key code paths:
@@ -39,7 +39,7 @@ function extractText(response: unknown): any {
  *    - agents-overlay.ts (generateOverlay)
  *    - wiki/lifecycle.ts (feedProjectMemory)
  * 3. The CLI commands (list-directives, remove-directive) work end-to-end
- * 
+ *
  * Reverting the production changes should cause the agents-overlay test to fail,
  * which demonstrates that filterActiveDirectives is being called and used.
  */
@@ -104,18 +104,18 @@ describe('directive lifecycle integration tests', () => {
       );
       const hookSpecificOutput = hookOutput.hookSpecificOutput as Record<string, unknown>;
       const additionalContext = hookSpecificOutput.additionalContext as string | null;
-      
+
       assert.ok(
         additionalContext,
         'additionalContext should be present and non-empty'
       );
-      
+
       // Verify that the active directive is included in the context
       assert.ok(
         additionalContext.includes('ACTIVE-HOOK-TEST'),
         'active directive should be included in SessionStart context'
       );
-      
+
       // Verify that the expired directive is NOT included in the context
       assert.ok(
         !additionalContext.includes('EXPIRED-HOOK-TEST'),
@@ -222,21 +222,21 @@ describe('directive lifecycle integration tests', () => {
       // Read the generated wiki page to verify filtering occurred
       const { readFileSync, existsSync } = await import('node:fs');
       const envPath = join(cwd, 'omx_wiki', 'environment.md');
-      
+
       // Environment.md MUST exist and be properly generated
       assert.ok(
         existsSync(envPath),
         'environment.md should be created by feedProjectMemory'
       );
-      
+
       const envContent = readFileSync(envPath, 'utf-8');
-      
+
       // Directives section MUST be present
       assert.ok(
         envContent.includes('## Directives'),
         'Directives section should exist in environment.md'
       );
-      
+
       // Active directives MUST be present
       assert.ok(
         envContent.includes('Active wiki directive'),
@@ -246,7 +246,7 @@ describe('directive lifecycle integration tests', () => {
         envContent.includes('Future wiki directive'),
         'future expiry directive should be in environment.md'
       );
-      
+
       // Expired directive MUST NOT be present (proves filterActiveDirectives is called)
       assert.ok(
         !envContent.includes('Expired wiki directive'),
@@ -311,9 +311,9 @@ describe('directive lifecycle integration tests', () => {
         existsSync(envPath),
         'environment.md should be created by feedProjectMemory'
       );
-      
+
       let envContent = readFileSync(envPath, 'utf-8');
-      
+
       // Both directives should be present before expiration
       assert.ok(
         envContent.includes('Soon-to-expire wiki directive'),
@@ -323,10 +323,10 @@ describe('directive lifecycle integration tests', () => {
         envContent.includes('Permanent wiki directive'),
         'permanent directive should be in environment.md after first session'
       );
-      
+
       // Add a small delay to ensure mtime changes
       await new Promise(resolve => setTimeout(resolve, 10));
-      
+
       // Simulate the directive expiring by updating project-memory.json with a new expiresAt time
       // This triggers cache invalidation and verifies the snapshot is updated
       await writeFile(
