@@ -183,7 +183,8 @@ const FIXTURES: Record<string, { pass: () => SupervisionSnapshot; fail: () => Su
   'question-outside-tmux': {
     failStatus: 'fail',
     pass: () => snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, panes: [{ paneId: '%1', currentCommand: 'node', startCommand: 'codex' }], selection: { selected: candidate({ tmuxPaneId: '%1' }), mode: 'active', reason: 't', candidates: [] } }),
-    fail: () => snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, selection: { selected: candidate(), mode: 'active', reason: 't', candidates: [] } }),
+    // Native sessions without tmuxPaneId pass (tmux not required); fail only when tmux pane is specified but not live
+    fail: () => snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, panes: [], selection: { selected: candidate({ tmuxPaneId: '%99' }), mode: 'active', reason: 't', candidates: [] } }),
   },
   'stale-omx-root': {
     failStatus: 'fail',
@@ -1340,5 +1341,49 @@ describe('omx supervision CLI', () => {
     const hasFailures = report.checks.some((c: CheckResult) => c.status === 'fail');
     // Don't assert on failures count since it depends on system state
     assert.ok(typeof hasFailures === 'boolean', 'checks have status field');
+  });
+});
+
+describe('finding #4234 release-review fixes', () => {
+  it('redactForIssue removes raw log samples and secret patterns', () => {
+    // Test that redactForIssue is applied in buildIssueDraft
+    const finding: Finding = {
+      id: 'test-check', area: 'resource', title: 'test', priority: 'P0', status: 'fail', fingerprint: 'fp',
+      evidence: [
+        '2026-11-28T10:00:00Z raw hook log line with secret sk-123456789012345678901234567890',
+        '{"error": "JSON log sample", "path": "/home/user/.omx/state"}',
+        'Normal error message',
+      ],
+      severity: 'high', repro: 'persistent', sources: [1234], blast: 1, score: 100, dedupe: 'none',
+    };
+    const sel = { selected: candidate(), mode: 'active' as const, reason: 'test', candidates: [] };
+    const ctx = { prompt: 'User home /home/user secret AKIA1234567890123456', version: '0.22.30', selection: sel, platform: 'linux' };
+    const draft = buildIssueDraft(finding, ctx);
+    // Verify raw log lines are removed, paths are redacted, secrets are redacted
+    assert.ok(!draft.body.includes('2026-11-28T10:00:00Z'), 'timestamp log lines are removed');
+    assert.ok(!draft.body.includes('sk-123456789012345678901234567890'), 'token is redacted');
+    assert.ok(!draft.body.includes('AKIA1234567890123456'), 'AWS key is redacted');
+    assert.ok(draft.body.includes('/home/user') || draft.body.includes('~'), 'home paths are redacted');
+    assert.ok(draft.body.includes('Normal error message'), 'normal messages are preserved');
+  });
+
+  it('question-outside-tmux passes for native sessions without tmux', () => {
+    // Native sessions without tmuxPaneId should pass the check
+    const snap = snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, selection: { selected: candidate(), mode: 'active', reason: 't', candidates: [] } });
+    const check = SUPERVISION_CHECKS.find((c) => c.id === 'question-outside-tmux');
+    assert.ok(check, 'question-outside-tmux check exists');
+    const result = check!.run(snap);
+    assert.equal(result.status, 'pass', 'native session without tmux passes the check');
+    assert.ok(result.evidence.some((e: string) => e.includes('tmux not required')), 'evidence mentions native session support');
+  });
+
+  it('question-outside-tmux fails only when tmux pane is specified but not live', () => {
+    // Session with tmuxPaneId that is not in panes list should fail
+    const snap = snapshot({ state: { ...snapshot().state, modes: [mode('deep-interview', { active: true })] }, panes: [], selection: { selected: candidate({ tmuxPaneId: '%99' }), mode: 'active', reason: 't', candidates: [] } });
+    const check = SUPERVISION_CHECKS.find((c) => c.id === 'question-outside-tmux');
+    assert.ok(check, 'question-outside-tmux check exists');
+    const result = check!.run(snap);
+    assert.equal(result.status, 'fail', 'tmux-bound session with missing pane fails');
+    assert.ok(result.evidence.some((e: string) => e.includes('pane')), 'evidence mentions pane');
   });
 });

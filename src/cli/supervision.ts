@@ -10,9 +10,10 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { getSparkDefaultModel } from '../config/models.js';
 import { LEADER_CONDUCTOR_UNSUPPORTED_NATIVE_DEGRADE_BLOCK, resolveNativeSubagentSupportStatus } from '../leader/contract.js';
 import { isHudWatchPane, parseTmuxPaneSnapshot, readHudPaneOwner, TMUX_PANE_FIELD_SEPARATOR } from '../hud/tmux.js';
@@ -20,7 +21,6 @@ import type { TmuxPaneSnapshot } from '../hud/tmux.js';
 import { projectHudModes, readAllState, readVersion } from '../hud/state.js';
 import { getBaseStateDir } from '../mcp/state-paths.js';
 import { listActiveSkills, readVisibleSkillActiveStateForStateDir } from '../state/skill-active.js';
-import { realpathSync } from 'node:fs';
 import { normalizeAutopilotPhase } from '../autopilot/fsm.js';
 import { isValidTransition } from '../team/orchestrator.js';
 import type { TeamPhase } from '../team/orchestrator.js';
@@ -596,12 +596,14 @@ const CHECK_RUNNERS: Record<string, CheckDefinition['run']> = {
       const selected = snapshot.selection.selected;
       const asking = activeModes(snapshot).filter((record) => record.mode === 'deep-interview' || (record.mode === 'autopilot' && phaseOf(record) === 'deep-interview'));
       if (!selected || snapshot.selection.mode !== 'active' || asking.length === 0) return { status: 'pass', evidence: ['no active deep-interview in a live session'] };
-      const paneKnown = selected.tmuxPaneId ? snapshot.panes.some((pane) => pane.paneId === selected.tmuxPaneId) : false;
+      // Only check renderer availability for tmux-bound sessions; native Codex sessions outside tmux are supported.
+      if (!selected.tmuxPaneId) return { status: 'pass', evidence: [`${asking.map((record) => record.mode).join(', ')} is active in native session (tmux not required)`] };
+      const paneKnown = snapshot.panes.some((pane) => pane.paneId === selected.tmuxPaneId);
       if (paneKnown) return { status: 'pass', evidence: [`pane ${selected.tmuxPaneId} is live`] };
       return {
         status: 'fail',
         key: 'question-no-tmux',
-        evidence: [`${asking.map((record) => record.mode).join(', ')} is active but session ${selected.sessionId} has ${selected.tmuxPaneId ? `tmux pane ${selected.tmuxPaneId} that is not live` : 'no tmux_pane_id'}${snapshot.tmuxAvailable ? '' : ' (tmux server unreachable)'}`],
+        evidence: [`${asking.map((record) => record.mode).join(', ')} is active but tmux pane ${selected.tmuxPaneId} is not live${snapshot.tmuxAvailable ? '' : ' (tmux server unreachable)'}`],
       };
     },
   'stale-omx-root': (snapshot) => {
@@ -774,7 +776,7 @@ export function consolidateFindingsByFingerprint(findings: Finding[]): { consoli
 
   const consolidated: Finding[] = [];
   const wasConsolidated = new Map<Finding, boolean>();
-  
+
   for (const [, groupedFindings] of byFingerprint) {
     if (groupedFindings.length === 1) {
       consolidated.push(groupedFindings[0]);
@@ -786,7 +788,7 @@ export function consolidateFindingsByFingerprint(findings: Finding[]): { consoli
         .filter((f) => f.sessionId)
         .map((f) => f.sessionId!)
         .filter((s, i, arr) => arr.indexOf(s) === i); // unique sessions
-      
+
       // Add affected sessions info to evidence
       const seen = new Set(primary.evidence);
       const secondaryEvidence = groupedFindings.slice(1).flatMap((f) => f.evidence.filter((line) => {
@@ -801,10 +803,10 @@ export function consolidateFindingsByFingerprint(findings: Finding[]): { consoli
           ? [`Also observed in sessions: ${affectedSessions.join(', ')}`]
           : []),
       ];
-      
+
       const consolidatedFinding = { ...primary, evidence: consolidatedEvidence };
       consolidated.push(consolidatedFinding);
-      
+
       // Mark all findings in this group as consolidated
       wasConsolidated.set(primary, true);
       for (let i = 1; i < groupedFindings.length; i++) {
@@ -816,6 +818,24 @@ export function consolidateFindingsByFingerprint(findings: Finding[]): { consoli
   return { consolidated, wasConsolidated };
 }
 
+/** Redact sensitive paths, secrets, and log samples from public issue content. */
+function redactForIssue(text: string): string {
+  if (!text) return text;
+  const homeDir = homedir();
+  // Redact paths under $HOME
+  let redacted = text.replace(new RegExp(homeDir, 'g'), '~');
+  // Redact common secret patterns (AWS keys, tokens, etc.)
+  redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, 'AKIA...');
+  redacted = redacted.replace(/gh[a-z]_[A-Za-z0-9_]{36,255}/g, 'gh*_...');
+  redacted = redacted.replace(/sk-[A-Za-z0-9_-]{20,}/g, 'sk_...');
+  // Remove raw log sample lines (lines starting with timestamps or JSON)
+  redacted = redacted
+    .split('\n')
+    .filter((line) => !(/^\d{4}-\d{2}-\d{2}T/i.test(line) || /^{/.test(line.trim())))
+    .join('\n');
+  return redacted;
+}
+
 export function buildIssueDraft(finding: Finding, context: { prompt: string; version: string; selection: SessionSelection; platform: string }): { title: string; body: string } {
   const lines = [
     markerFor(finding.fingerprint),
@@ -823,7 +843,7 @@ export function buildIssueDraft(finding: Finding, context: { prompt: string; ver
     `**${finding.priority}** · check \`${finding.id}\` · status \`${finding.status}\``,
     '',
     '## Evidence',
-    ...finding.evidence.map((line) => `- ${line}`),
+    ...finding.evidence.map((line) => `- ${redactForIssue(line)}`),
     '',
     '## Derived from past failures',
     finding.sources.map((source) => `#${source}`).join(', '),
@@ -832,8 +852,8 @@ export function buildIssueDraft(finding: Finding, context: { prompt: string; ver
     `- omx ${context.version} on ${context.platform}`,
     `- session: ${context.selection.selected?.sessionId ?? 'none'} (${context.selection.mode}; ${context.selection.reason})`,
   ];
-  if (context.prompt) lines.push('', '## Reporter note', context.prompt);
-  if (finding.analysis) lines.push('', '## Analysis lane output', finding.analysis);
+  if (context.prompt) lines.push('', '## Reporter note', redactForIssue(context.prompt));
+  if (finding.analysis) lines.push('', '## Analysis lane output', redactForIssue(finding.analysis));
   lines.push('', 'Generated by `omx supervision` (Refs #4217).');
   return { title: `[supervision] ${finding.title}`, body: lines.join('\n') };
 }
@@ -1107,9 +1127,17 @@ function newestRollouts(sessionsRoot: string, limit: number): Array<{ path: stri
 
 function rolloutCwd(path: string): string | null {
   try {
-    const head = readFileSync(path, { encoding: 'utf-8', flag: 'r' }).slice(0, 8192).split('\n', 1)[0] ?? '';
-    const payload = (JSON.parse(head) as { payload?: { cwd?: unknown } }).payload;
-    return typeof payload?.cwd === 'string' ? payload.cwd : null;
+    // Read only the first 8 KiB using a bounded file descriptor read to avoid loading entire large rollouts.
+    const fd = openSync(path, 'r');
+    try {
+      const buffer = Buffer.alloc(8192);
+      const bytesRead = readSync(fd, buffer, 0, 8192, 0);
+      const head = buffer.toString('utf-8', 0, bytesRead).split('\n', 1)[0] ?? '';
+      const payload = (JSON.parse(head) as { payload?: { cwd?: unknown } }).payload;
+      return typeof payload?.cwd === 'string' ? payload.cwd : null;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
@@ -1144,9 +1172,44 @@ function discoverCandidates(cwd: string, processes: readonly ProcSample[], panes
     if (existing) existing.sources.push(...candidate.sources);
     else byId.set(candidate.sessionId, candidate);
   };
+
+  // Helper to discover per-session native owners from sessions/<id>/session-owner.json
+  const discoverPerSessionOwners = (stateDir: string) => {
+    const sessionsPath = join(stateDir, 'sessions');
+    if (!existsSync(sessionsPath)) return;
+    try {
+      for (const sessionDir of readdirSync(sessionsPath)) {
+        const ownerPath = join(sessionsPath, sessionDir, 'session-owner.json');
+        const owner = readJson(ownerPath);
+        if (owner && typeof owner.cwd === 'string' && typeof owner.session_id === 'string') {
+          const candidate: SessionCandidate = {
+            sessionId: owner.session_id,
+            cwd: owner.cwd,
+            stateDir,
+            ...(typeof owner.started_at === 'string' ? { startedAt: owner.started_at } : {}),
+            pidAlive: false,
+            stateMtimeMs: mtimeOf(ownerPath),
+            rolloutMtimeMs: null,
+            sources: [`native session ${sessionDir}`],
+          };
+          add(candidate);
+        }
+      }
+    } catch (e) {
+      // Ignore errors reading session directories
+    }
+  };
+
   add(readCandidate(cwd, undefined, null, 'supervision cwd'));
+  const stateDir = getBaseStateDir(cwd, {});
+  discoverPerSessionOwners(stateDir);
+
   for (const proc of processes) {
     if (proc.cwd) add(readCandidate(proc.cwd, proc.omxRoot, null, `${proc.kind} pid ${proc.pid}`));
+    if (proc.omxRoot) {
+      const procStateDir = stateDirForRoot(proc.omxRoot);
+      discoverPerSessionOwners(procStateDir);
+    }
   }
   for (const pane of panes) {
     if (pane.currentPath && isHudWatchPane(pane)) add(readCandidate(pane.currentPath, undefined, null, `HUD pane ${pane.paneId}`));
@@ -1349,7 +1412,7 @@ async function collectSnapshotsForAllActiveSessions(options: SupervisionOptions,
   const candidates = discoverCandidates(cwd, processes, tmux.panes);
   const selection = selectSession(candidates);
   const snapshots = new Map<string, SupervisionSnapshot>();
-  
+
   // Create snapshots for all active sessions
   const activeCandidates = selection.candidates.filter((c) => c.pidAlive);
   for (const sessionCandidate of activeCandidates) {
@@ -1357,13 +1420,13 @@ async function collectSnapshotsForAllActiveSessions(options: SupervisionOptions,
     const snapshot = await collectSnapshotForSession(options, cwd, processes, tmux, sessionSelection);
     snapshots.set(sessionCandidate.sessionId, snapshot);
   }
-  
+
   // If no active sessions, include the fallback (most recent)
   if (snapshots.size === 0 && selection.selected) {
     const snapshot = await collectSnapshotForSession(options, cwd, processes, tmux, selection);
     snapshots.set(selection.selected.sessionId, snapshot);
   }
-  
+
   return snapshots;
 }
 
@@ -1453,11 +1516,11 @@ export const defaultSupervisionDeps: SupervisionDeps = {
 export async function runSupervision(options: SupervisionOptions, cwd: string, deps: SupervisionDeps = defaultSupervisionDeps): Promise<SupervisionReport> {
   const evidence = await deps.collect(options, cwd);
   const snapshot = evidence.snapshot;
-  
+
   // Collect findings from all active sessions
   let allChecks: CheckResult[] = [];
   const snapshots = (evidence.snapshots && evidence.snapshots.size > 0) ? evidence.snapshots : new Map([[snapshot.selection.selected?.sessionId ?? 'default', snapshot]]);
-  
+
   for (const [sessionId, sessionSnapshot] of snapshots) {
     const sessionChecks = evaluateChecks(sessionSnapshot, SUPERVISION_CHECKS, deps.history ?? IQDOCTOR_HISTORY);
     // Tag each check result with the session ID
@@ -1467,7 +1530,7 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
     allChecks.push(...sessionChecks);
   }
   const checks = allChecks;
-  
+
   let findings = triage(allChecks);
   const lanes: LaneResult[] = [];
 
@@ -1525,10 +1588,10 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
       const own = finding.sessionId ? snapshots.get(finding.sessionId) : undefined;
       return { finding, draft: buildIssueDraft(finding, own ? { ...context, selection: own.selection } : context) };
     });
-    
+
     // Track which fingerprints were filed successfully
     const filed = new Set<string>();
-    
+
     // Process consolidated findings for filing
     for (const { finding, draft } of consolidatedDrafts) {
       if (finding.dedupe === 'duplicate') {
@@ -1545,7 +1608,7 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
         }
       }
     }
-    
+
     // Mark consolidated findings that weren't the primary as "already filed"
     // Group original findings by fingerprint to find non-primary ones
     const byFingerprint = new Map<string, Finding[]>();
@@ -1555,7 +1618,7 @@ export async function runSupervision(options: SupervisionOptions, cwd: string, d
       }
       byFingerprint.get(finding.fingerprint)!.push(finding);
     }
-    
+
     // For each fingerprint that was filed, mark all non-primary findings as already filed
     for (const [fingerprint, findingsForFp] of byFingerprint) {
       if (filed.has(fingerprint) && findingsForFp.length > 1) {
