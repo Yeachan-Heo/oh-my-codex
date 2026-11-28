@@ -5092,7 +5092,6 @@ function bdCommandTokensAreReadOnly(tokens: string[], startIndex: number): boole
   const operationTokens = allTokens.filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
   const operationArg = operationTokens[1] ?? "";  // First arg after operation (e.g., issue ID)
-  const suboperation = operationTokens[2] ?? "";  // Second arg after operation (for commands like 'comments add')
   
   // Check if the operation itself is 'help'
   if (operation === "help") {
@@ -5235,9 +5234,7 @@ function classifyBeadsMetadataCommand(cwd: string, command: string): BeadsComman
     .filter((token) => token && !token.startsWith("-"));
   const operation = operationTokens[0] ?? "";
   const suboperation = operationTokens[1] ?? "";
-  // For 'comments add', operationArg is the actual argument (operationTokens[2])
-  // For other ops like 'update', operationArg is the first positional (operationTokens[1])
-  const operationArg = operation === "comments" ? operationTokens[2] ?? "" : operationTokens[1] ?? "";
+  const operationArg = operationTokens[1] ?? "";  // First positional arg after operation
   
   // Check for read-only operations that are allowed in all phases
   if (beadsOperationIsReadOnly(operation)) {
