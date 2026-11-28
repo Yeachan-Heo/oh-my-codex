@@ -6931,12 +6931,14 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
 			
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
 				process.env.OMX_ROOT = omxRoot;
+				delete process.env.OMX_STATE_ROOT;
 				process.chdir(wd);
 				
 				// Run user-scope setup
@@ -6981,6 +6983,8 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				else delete process.env.CODEX_HOME;
 				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
 				else delete process.env.OMX_ROOT;
+				if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+				else delete process.env.OMX_STATE_ROOT;
 			}
 		} finally {
 			await rm(wd, { recursive: true, force: true });
@@ -6998,12 +7002,14 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			const previousHome = process.env.HOME;
 			const previousCodexHome = process.env.CODEX_HOME;
 			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
 			const previousCwd = process.cwd();
-			
+		
 			try {
 				process.env.HOME = homeDir;
 				process.env.CODEX_HOME = codexHomeDir;
 				delete process.env.OMX_ROOT;
+				delete process.env.OMX_STATE_ROOT;
 				process.chdir(wd);
 				
 				// Run user-scope setup
@@ -7034,6 +7040,8 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				else delete process.env.CODEX_HOME;
 				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
 				else delete process.env.OMX_ROOT;
+				if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+				else delete process.env.OMX_STATE_ROOT;
 			}
 		} finally {
 			await rm(wd, { recursive: true, force: true });
