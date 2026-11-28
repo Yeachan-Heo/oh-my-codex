@@ -574,12 +574,10 @@ export async function runHudAuthorityTick(
       }
 
       // Wait for marker to be consumed (watcher processes it and renames it to .processing)
-      let consumed = false;
       const startWaitMs = Date.now();
       const maxWaitMs = Math.min(timeoutMs, 2000);
       while (Date.now() - startWaitMs < maxWaitMs) {
         if (!existsSync(markerPath)) {
-          consumed = true;
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
