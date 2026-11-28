@@ -124,6 +124,7 @@ const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'dist', 'scripts', 'notify-hook.js')));
 const runOnce = process.argv.includes('--once');
 const authorityOnly = process.argv.includes('--authority-only');
+const persistentAuthority = authorityOnly && !runOnce && process.env.OMX_HUD_AUTHORITY_PERSISTENT === '1';
 // Keep fallback control-plane ticks comfortably below the default dispatch
 // ack budget so leaderless team dispatch + stale-alert recovery do not feel
 // laggy between native notify-hook turns.
@@ -165,7 +166,15 @@ const omxDir = join(runtimeRoot, '.omx');
 const logsDir = join(omxDir, 'logs');
 const stateDir = join(omxDir, 'state');
 const statePath = join(stateDir, 'notify-fallback-state.json');
-const pidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
+// Authority writes to its own state file; never corrupts the primary's state file
+const authorityStatePath = persistentAuthority ? join(stateDir, 'notify-fallback-authority-state.json') : null;
+// The HUD writes the marker under its own cwd, not the OMX_ROOT/OMX_STATE_ROOT runtime root.
+const authorityTickMarkerPath = join(cwd, '.omx', 'state', 'notify-fallback-authority-tick-marker.json');
+const authorityTickMarkerProcessingPath = `${authorityTickMarkerPath}.processing`;
+// Health checks always read the primary watcher's pid file. The persistent HUD authority process
+// registers its own pid file so it neither reaps the live primary watcher nor mistakes itself for one.
+const primaryPidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
+const pidFilePath = persistentAuthority ? join(stateDir, 'notify-fallback-authority.pid') : primaryPidFilePath;
 const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
 const logRotatePath = `${logPath}.1`;
 const logLockPath = `${logPath}.lock`;
@@ -1072,7 +1081,7 @@ function latestWatcherTickIso(state: Record<string, unknown> | null): string {
 async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<AuthorityBackoffState> {
   if (!authorityOnly) return createAuthorityBackoffState('not_authority');
 
-  const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
+  const existingRecord = await readPidFileRecord(primaryPidFilePath).catch(() => null);
   if (!existingRecord) return createAuthorityBackoffState('pid_missing');
   if (existingRecord.cwd && !sameFilePath(existingRecord.cwd, cwd)) return createAuthorityBackoffState('cwd_mismatch');
   if (!isPidAlive(existingRecord.pid)) {
@@ -1083,6 +1092,8 @@ async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<A
 
   const persistedState = await readJsonObject(statePath);
   if (!persistedState) {
+    // Primary has not written state yet; we cannot determine health.
+    // Do not fabricate health during the startup grace period.
     return createAuthorityBackoffState('state_missing', {
       primary_pid: existingRecord.pid,
     });
@@ -1097,6 +1108,8 @@ async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<A
 
   const lastTickAt = latestWatcherTickIso(persistedState);
   if (!lastTickAt) {
+    // No tick information recorded yet. The primary is initializing or stalled.
+    // Do not assume health; wait for real evidence.
     return createAuthorityBackoffState('tick_missing', {
       primary_pid: existingRecord.pid,
     });
@@ -1270,6 +1283,18 @@ async function registerPidFile(): Promise<void> {
   const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
   const existingPid = existingRecord?.pid ?? null;
   if (existingPid && existingPid !== process.pid && isPidAlive(existingPid)) {
+    // For persistent authority, verify cwd matches before killing to avoid cross-cwd reaping.
+    // The pid file is shared when using the same OMX_ROOT across different cwds.
+    if (persistentAuthority && existingRecord?.cwd && !sameFilePath(existingRecord.cwd, cwd)) {
+      await eventLog({
+        type: 'watcher_stale_pid_cwd_mismatch',
+        stale_pid: existingPid,
+        pid_file: pidFilePath,
+        expected_cwd: cwd,
+        existing_cwd: existingRecord.cwd,
+      });
+      return; // Do not reap; this pid belongs to a different cwd.
+    }
     try {
       process.kill(existingPid, 'SIGTERM');
       const exitedGracefully = await waitForPidExit(existingPid);
@@ -1375,11 +1400,29 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
 
 async function writeAuthorityBackoffState(): Promise<void> {
   await mkdir(stateDir, { recursive: true }).catch(() => {});
-  const existing = await readJsonObject(statePath);
+  // For persistent authority, write to its own state file; for --once authority, write to primary state file.
+  const targetPath = authorityStatePath || statePath;
+  const existing = await readJsonObject(targetPath);
   const state = existing && typeof existing === 'object'
     ? { ...existing, authority_backoff: lastAuthorityBackoff }
     : { authority_backoff: lastAuthorityBackoff };
-  await writeJsonObjectAtomically(statePath, state).catch(() => {});
+  await writeJsonObjectAtomically(targetPath, state).catch(() => {});
+}
+
+async function writePersistentAuthorityState(extra: Record<string, unknown> = {}): Promise<void> {
+  if (!authorityStatePath) return;
+  await mkdir(stateDir, { recursive: true }).catch(() => {});
+  // Authority writes only to its own state file, never to the primary's state file.
+  // This protects the primary's dispatch_drain counters and other essential state.
+  const state = {
+    authority_pid: process.pid,
+    started_at: new Date(startedAt).toISOString(),
+    authority_backoff: lastAuthorityBackoff,
+    adaptive_poll: adaptivePollState,
+    effective_poll_ms: adaptivePollState.current_ms,
+    ...extra,
+  };
+  await writeJsonObjectAtomically(authorityStatePath, state).catch(() => {});
 }
 
 async function readJsonObject(path: string): Promise<Record<string, unknown> | null> {
@@ -1508,7 +1551,15 @@ async function requestShutdown(reason: string, signal: string | null = null): Pr
   shutdownPromise = (async () => {
     await terminateActiveNotifyHookChild();
     await activeDeliveryPromise?.catch(() => undefined);
-    await writeState({ stop_reason: reason, stop_signal: signal, stopping: true });
+    // Persistent authority must not write to the primary's state file on shutdown.
+    // For --once authority mode or primary watcher, write to the primary state.
+    if (persistentAuthority) {
+      // Write only to authority's own state file, never to the primary's.
+      await writePersistentAuthorityState({ stopped_at: new Date().toISOString(), stop_reason: reason, stop_signal: signal });
+    } else {
+      // Primary watcher or --once authority: write to primary state.
+      await writeState({ stop_reason: reason, stop_signal: signal, stopping: true });
+    }
     await eventLog({
       type: 'watcher_stop',
       signal,
@@ -1525,6 +1576,11 @@ async function requestShutdown(reason: string, signal: string | null = null): Pr
 async function enforceLifecycleGuards(): Promise<boolean> {
   if (runOnce) return false;
   if (parentIsGone()) {
+    // The persistent authority is bound to its HUD: no active mode defers its exit.
+    if (persistentAuthority) {
+      await requestShutdown('parent_gone');
+      return true;
+    }
     const activeRalph = await resolveActiveRalphState();
     if (activeRalph.active) {
       const currentPhase = safeString(activeRalph.state?.current_phase);
@@ -2160,17 +2216,87 @@ async function pumpTeamControlPlaneTick(): Promise<CycleActivitySummary> {
 }
 
 
+interface PersistentMarkerProcessResult {
+  processed: boolean;
+  activitySummary: CycleActivitySummary;
+}
+
+async function processPersistentAuthorityMarker(): Promise<PersistentMarkerProcessResult> {
+  if (!persistentAuthority) return { processed: false, activitySummary: { active: false, reason: 'not_persistent_authority' } };
+  try {
+    const markerExists = existsSync(authorityTickMarkerPath);
+    if (!markerExists) return { processed: false, activitySummary: { active: false, reason: 'no_marker' } };
+    
+    // Atomically claim the marker by renaming it to .processing.
+    // This prevents the HUD failsafe from spawning a duplicate --once process.
+    try {
+      await rename(authorityTickMarkerPath, authorityTickMarkerProcessingPath);
+    } catch (err) {
+      // Another process claimed the marker, or the marker was deleted.
+      await eventLog({ type: 'authority_marker', reason: 'claim_failed', error: err instanceof Error ? err.message : String(err) });
+      return { processed: false, activitySummary: { active: false, reason: 'marker_claimed_by_other' } };
+    }
+    
+    // Marker is now claimed. Process it.
+    const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
+    lastAuthorityBackoff = authorityBackoff;
+    let activitySummary: CycleActivitySummary;
+    if (!authorityBackoff.active) {
+      // Primary is not healthy, perform control-plane work and capture the activity summary
+      activitySummary = await pumpTeamControlPlaneTick();
+      // Update adaptive state before persisting
+      updateAdaptivePollState(activitySummary);
+      await writePersistentAuthorityState({ last_cycle_activity: activitySummary.reason });
+    } else {
+      // Primary is healthy, skip control-plane work but preserve its state
+      activitySummary = { active: false, reason: 'primary_watcher_healthy' };
+      await writeAuthorityBackoffState();
+    }
+    
+    // Delete the .processing file to signal the HUD tick that processing is complete.
+    await unlink(authorityTickMarkerProcessingPath).catch(() => {});
+    return { processed: true, activitySummary };
+  } catch (err) {
+    // Log the error but do not leave the marker in a claimed state.
+    await eventLog({ type: 'authority_marker', reason: 'processing_error', error: err instanceof Error ? err.message : String(err) });
+    // If marker is still in .processing state, delete it so the HUD doesn't retry indefinitely.
+    await unlink(authorityTickMarkerProcessingPath).catch(() => {});
+    return { processed: false, activitySummary: { active: false, reason: 'marker_processing_error' } };
+  }
+}
+
 async function runWatcherCycle(): Promise<number> {
   await compactNotifyFallbackDeliveries(stateDir).catch(async (error) => {
     await eventLog({ type: 'fallback_notify_claim', reason: 'compaction_io_skip', error: error instanceof Error ? error.message : String(error) });
   });
+  
+  // Check for persistent authority marker and process if present
+  if (persistentAuthority) {
+    const markerResult = await processPersistentAuthorityMarker();
+    if (markerResult.processed) {
+      // Marker processing already updated and wrote state; just compute the next delay.
+      const nextDelayMs = updateAdaptivePollState(markerResult.activitySummary);
+      return nextDelayMs;
+    }
+    // No marker consumed: a persistent authority does authority work only on request.
+    // But we still write authority state so the HUD can read adaptive_poll and health status.
+    const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
+    lastAuthorityBackoff = authorityBackoff;
+    const nextDelayMs = updateAdaptivePollState({ active: false, reason: 'awaiting_authority_marker' });
+    await writePersistentAuthorityState({ last_cycle_activity: 'awaiting_authority_marker' });
+    return nextDelayMs;
+  }
+  
   let processedRolloutCount = 0;
   if (authorityOnly) {
     const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
     lastAuthorityBackoff = authorityBackoff;
     if (authorityBackoff.active) {
       await writeAuthorityBackoffState();
-      return processedRolloutCount;
+      // A persistent authority reschedules with this value; 0 would spin on state I/O.
+      return persistentAuthority
+        ? updateAdaptivePollState({ active: false, reason: 'primary_watcher_healthy' })
+        : processedRolloutCount;
     }
   } else {
     lastAuthorityBackoff = createAuthorityBackoffState('');
