@@ -7079,5 +7079,62 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("properly resolves relative paths and whitespace in OMX_STATE_ROOT", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-relative-state-root-"));
+		try {
+			const stateSubdir = join(wd, "config", "state");
+			const homeDir = join(wd, "home");
+			const codexHomeDir = join(homeDir, ".codex");
+			
+			await mkdir(codexHomeDir, { recursive: true });
+			await mkdir(stateSubdir, { recursive: true });
+			// Pre-create a config file that will be updated and trigger backups
+			const configPath = join(codexHomeDir, "config.toml");
+			await writeFile(configPath, "# existing config\n");
+			
+			const previousHome = process.env.HOME;
+			const previousCodexHome = process.env.CODEX_HOME;
+			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+			const previousCwd = process.cwd();
+			
+			try {
+				process.env.HOME = homeDir;
+				process.env.CODEX_HOME = codexHomeDir;
+				delete process.env.OMX_ROOT;
+				// Set OMX_STATE_ROOT with leading/trailing whitespace and a relative path
+				process.env.OMX_STATE_ROOT = "  ./config/state  ";
+				process.chdir(wd);
+				
+				// Run user-scope setup
+				await setup({ scope: "user", installMode: "legacy" });
+				
+				// Verify backups are under the resolved absolute path, not HOME
+				const expectedBackupRoot = join(stateSubdir, ".omx", "backups", "setup");
+				const unexpectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
+				
+				if (existsSync(expectedBackupRoot)) {
+					assert.equal(
+						existsSync(unexpectedBackupRoot),
+						false,
+						`Backup root ${unexpectedBackupRoot} should NOT exist when OMX_STATE_ROOT is set with whitespace and relative path`,
+					);
+				}
+			} finally {
+				process.chdir(previousCwd);
+				if (typeof previousHome === "string") process.env.HOME = previousHome;
+				else delete process.env.HOME;
+				if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+				else delete process.env.CODEX_HOME;
+				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+				else delete process.env.OMX_ROOT;
+				if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+				else delete process.env.OMX_STATE_ROOT;
+			}
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 });
 });
