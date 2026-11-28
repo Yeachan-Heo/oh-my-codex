@@ -55,7 +55,7 @@ describe('omx setup skill validation', () => {
         () => installSkills(
           srcDir,
           dstDir,
-          { backupRoot: join(root, 'backups'), baseRoot: root },
+          { backupRoot: join(root, 'backups'), baseRoot: root, anchorRoot: root },
           { force: false, dryRun: false, verbose: false },
         ),
         /src-skills\/ask\/SKILL\.md.*unterminated quoted string/i,

@@ -272,6 +272,8 @@ interface SetupRunSummary {
 interface SetupBackupContext {
 	backupRoot: string;
 	baseRoot: string;
+	/** Trusted existing directory from which backup ancestors are created and symlink-checked. */
+	anchorRoot: string;
 }
 
 interface LegacySkillOverlapNotice {
@@ -496,12 +498,15 @@ function getBackupContext(
 		return {
 			backupRoot: join(projectRoot, ".omx", "backups", "setup", timestamp),
 			baseRoot: projectRoot,
+			anchorRoot: projectRoot,
 		};
 	}
-	const homeDir = homedir();
+	// User-scope backups live under the OMX root (#4236): OMX_ROOT/OMX_STATE_ROOT when set, else ~/.omx.
+	const userOmxDir = omxRoot(homedir());
 	return {
-		backupRoot: join(homeDir, ".omx", "backups", "setup", timestamp),
-		baseRoot: homeDir,
+		backupRoot: join(userOmxDir, "backups", "setup", timestamp),
+		baseRoot: homedir(),
+		anchorRoot: dirname(userOmxDir),
 	};
 }
 
@@ -2051,7 +2056,7 @@ async function ensureSnapshotBackup(
 	if (bytes === null) return false;
 	const backupPath = nativeHookTransactionBackupPath(artifact.path, backupContext);
 	if (!options.dryRun) {
-		const relativeParent = relative(backupContext.baseRoot, dirname(backupPath));
+		const relativeParent = relative(backupContext.anchorRoot, dirname(backupPath));
 		if (
 			isAbsolute(relativeParent) ||
 			relativeParent === ".." ||
@@ -2059,7 +2064,10 @@ async function ensureSnapshotBackup(
 		) {
 			throw new Error(`Refusing to back up ${artifact.path} outside controlled backup root.`);
 		}
-		let currentPath = backupContext.baseRoot;
+		// The anchor is the user-chosen OMX_ROOT/OMX_STATE_ROOT (or HOME/project root); create it if needed,
+		// then create and symlink-check every component below it one at a time.
+		await mkdir(backupContext.anchorRoot, { recursive: true });
+		let currentPath = backupContext.anchorRoot;
 		for (const component of relativeParent.split(sep).filter(Boolean)) {
 			currentPath = join(currentPath, component);
 			try {

@@ -6947,13 +6947,14 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
 				
-				// Verify backups are still under HOME/.omx (backups are not affected by OMX_ROOT override)
-				const expectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
+				// Backups land under OMX_ROOT/.omx, not HOME/.omx (#4236)
+				const expectedBackupRoot = join(omxRoot, ".omx", "backups", "setup");
+				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_ROOT is set");
 				
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
-					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is set (backups always use HOME/.omx)`,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_ROOT is set`,
 				);
 				
 				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
@@ -7086,13 +7087,14 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
 				
-				// Verify backups are still under HOME/.omx (backups are not affected by OMX_STATE_ROOT override)
-				const expectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
+				// Backups land under OMX_STATE_ROOT/.omx, not HOME/.omx (#4236)
+				const expectedBackupRoot = join(omxStateRoot, ".omx", "backups", "setup");
+				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_STATE_ROOT is set");
 				
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
-					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set (backups always use HOME/.omx)`,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set`,
 				);
 				
 				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
@@ -7166,13 +7168,14 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 				// Run user-scope setup
 				await setup({ scope: "user", installMode: "legacy" });
 				
-				// Verify backups are still under HOME/.omx (backups are not affected by OMX_STATE_ROOT override even with whitespace and relative path)
-				const expectedBackupRoot = join(homeDir, ".omx", "backups", "setup");
+				// Trimmed relative OMX_STATE_ROOT resolves against cwd; backups land there, not HOME/.omx (#4236)
+				const expectedBackupRoot = join(stateSubdir, ".omx", "backups", "setup");
+				assert.equal(existsSync(join(homeDir, ".omx", "backups")), false, "no backups under HOME/.omx when OMX_STATE_ROOT is set");
 				
 				assert.equal(
 					existsSync(expectedBackupRoot),
 					true,
-					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set with whitespace and relative path (backups always use HOME/.omx)`,
+					`Expected backup root ${expectedBackupRoot} should exist when OMX_STATE_ROOT is set with whitespace and relative path`,
 				);
 				
 				// Verify backup file has correct relative layout (.codex/config.toml, not flattened name)
@@ -7252,6 +7255,52 @@ describe("issue 4236 OMX_ROOT user scope isolation", () => {
 					/unsafe backup ancestor|symlink/,
 					"Setup should refuse to use a symlinked backup directory",
 				);
+			} finally {
+				process.chdir(previousCwd);
+				if (typeof previousHome === "string") process.env.HOME = previousHome;
+				else delete process.env.HOME;
+				if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+				else delete process.env.CODEX_HOME;
+				if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+				else delete process.env.OMX_ROOT;
+				if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+				else delete process.env.OMX_STATE_ROOT;
+			}
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses to write backups through a symlinked OMX_ROOT/.omx/backups directory", async () => {
+		if (process.platform === "win32") return;
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-symlinked-omx-root-backups-"));
+		try {
+			const homeDir = join(wd, "home");
+			const omxRootDir = join(wd, "omxroot");
+			const foreignBackupDir = join(wd, "foreign-backups");
+			const codexHomeDir = join(homeDir, ".codex");
+			await mkdir(codexHomeDir, { recursive: true });
+			await mkdir(foreignBackupDir, { recursive: true });
+			await mkdir(join(omxRootDir, ".omx"), { recursive: true });
+			await symlink(foreignBackupDir, join(omxRootDir, ".omx", "backups"));
+			await writeFile(join(codexHomeDir, "config.toml"), "# existing config\n");
+
+			const previousHome = process.env.HOME;
+			const previousCodexHome = process.env.CODEX_HOME;
+			const previousOmxRoot = process.env.OMX_ROOT;
+			const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+			const previousCwd = process.cwd();
+			try {
+				process.env.HOME = homeDir;
+				process.env.CODEX_HOME = codexHomeDir;
+				process.env.OMX_ROOT = omxRootDir;
+				delete process.env.OMX_STATE_ROOT;
+				process.chdir(wd);
+				await assert.rejects(
+					setup({ scope: "user", installMode: "legacy" }),
+					/unsafe backup ancestor/,
+				);
+				assert.deepEqual(await readdir(foreignBackupDir), [], "nothing is written through the symlink");
 			} finally {
 				process.chdir(previousCwd);
 				if (typeof previousHome === "string") process.env.HOME = previousHome;
